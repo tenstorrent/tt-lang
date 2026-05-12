@@ -58,10 +58,13 @@ def some_compute():
 
 ## API Reference
 
+`ttl.CircularBuffer` is preserved as a deprecated alias for `ttl.DataflowBuffer`;
+new code should use `DataflowBuffer`.
+
 | Function | Description |
 | :---- | :---- |
-| `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size) -> ttl.CircularBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
-| `ttl.CircularBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a free block is available. A free block is typically used by a producer to write the data into. |
-| `ttl.CircularBuffer.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block filled with data is available. **This function is non-blocking.** |
-| `ttl.CircularBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
-| `ttl.CircularBuffer.pop(self)` | Pop a block from a dataflow buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |
+| `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+| `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a free block is available. A free block is typically used by a producer to write the data into. |
+| `ttl.DataflowBuffer.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block filled with data is available. **This function is non-blocking.** |
+| `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
+| `ttl.DataflowBuffer.pop(self)` | Pop a block from a dataflow buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |

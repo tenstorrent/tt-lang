@@ -38,3 +38,15 @@ func.func @pipe_without_cb(%t: tensor<32x32xf32>) {
 // Test: attributes must match result pipe type.
 // expected-error @+1 {{'ttl.create_pipe' op attributes must match result pipe type}}
 %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
+
+// -----
+
+// Test: dst start must not exceed dst end on x.
+// expected-error @+1 {{'ttl.create_pipe' op destination start must not exceed destination end on any axis}}
+%p = ttl.create_pipe src(0, 0) dst(3, 0) to(0, 0) net 0 : !ttl.pipe<src(0, 0) dst(3, 0) to(0, 0) net 0>
+
+// -----
+
+// Test: dst start must not exceed dst end on y.
+// expected-error @+1 {{'ttl.create_pipe' op destination start must not exceed destination end on any axis}}
+%p = ttl.create_pipe src(0, 0) dst(0, 5) to(0, 2) net 0 : !ttl.pipe<src(0, 0) dst(0, 5) to(0, 2) net 0>

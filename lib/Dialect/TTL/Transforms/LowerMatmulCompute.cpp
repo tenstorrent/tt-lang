@@ -7,12 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // Lowers a ComputeOp containing tile_matmul_block into a single DstSectionOp
-// with the matmul call, cloned body ops (elementwise, copy_tile, etc.),
-// and per-output-view stores. Called from LowerComputeToLoops when the
-// compute body contains a matmul.
-//
-// CB lifecycle (wait/pop for inputs, reserve/push for output) is NOT emitted
-// here -- it comes from the user's DFB operations outside the compute.
+// with the matmul call, cloned body ops (elementwise, copy_tile, etc.), and
+// per-output-view stores.
 //
 //===----------------------------------------------------------------------===//
 

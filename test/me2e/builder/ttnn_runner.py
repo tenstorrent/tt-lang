@@ -25,7 +25,7 @@ from ttl.kernel_runner import (
     KernelSpec as RunnerKernelSpec,
     run_kernel_on_device,
 )
-from ttl.circular_buffer import CircularBuffer
+from ttl.dataflow_buffer import DataflowBuffer
 
 from .kernels import KernelSpec
 
@@ -183,10 +183,10 @@ def _run_op(
         ),
     ]
 
-    # Build CB configs: CircularBuffer objects for each tensor.
+    # Build DFB configs: DataflowBuffer objects for each tensor.
     # Shape is (1, 1) for single tile, block_count is 1 for single buffering.
-    cb_configs: List[CircularBuffer] = [
-        CircularBuffer(tensor=tensor, shape=(1, 1), block_count=1)
+    dfb_configs: List[DataflowBuffer] = [
+        DataflowBuffer(tensor=tensor, shape=(1, 1), block_count=1)
         for tensor in io_tensors
     ]
 
@@ -194,7 +194,7 @@ def _run_op(
     run_kernel_on_device(
         kernel_specs=runner_specs,
         tensors=io_tensors,
-        cb_configs=cb_configs,
+        cb_configs=dfb_configs,
         core_ranges=core_grid,
     )
 

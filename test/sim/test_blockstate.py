@@ -5,7 +5,8 @@
 Tests for BlockStateMachine and Block access-state enforcement.
 
 Covers state transitions, access restrictions, ROR(N) multi-copy counting,
-push/pop validation, and NAW copy-destination locking.
+push/pop validation, NAW copy-destination locking, and user-facing error
+message content from the block state helpers and DataflowBuffer.
 """
 
 import pytest
@@ -19,14 +20,20 @@ from test_utils import (
 
 from sim import TILE_SHAPE, copy, ttnn
 from sim.blockstate import (
+    AccessState,
     BlockAcquisition,
     ExpectedOp,
     ThreadType,
+    format_block_finished_error,
+    format_cannot_read_block,
+    format_cannot_write_block,
+    format_validate_mismatch,
 )
 from sim.context import (
     clear_current_thread_type,
     set_current_thread_type,
 )
+from sim.copy import copy as dm_copy
 from sim.dfb import Block, DataflowBuffer
 
 
@@ -62,7 +69,10 @@ def test_block_state_machine_restrictions() -> None:
     read_block = dfb.wait()
 
     # Cannot write - wait() blocks expect STORE_SRC, not STORE
-    with pytest.raises(RuntimeError, match="Cannot perform store.*Expected one of"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"(?s)Cannot perform store\(\): not a valid next dataflow step.*\[STORE_SRC\]",
+    ):
         read_block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))))
 
     # Use waited block as STORE_SRC before pop
@@ -95,7 +105,8 @@ def test_copy_sets_block_to_na_state() -> None:
 
         # Block is locked as copy destination (NAW state)
         with pytest.raises(
-            RuntimeError, match="Cannot write to Block.*copy lock error.*NAW"
+            RuntimeError,
+            match=r"(?s)Cannot write to this buffer block.*NAW.*copy lock error",
         ):
             block.store(Block.from_tensor(ttnn.Tensor(torch.ones((64, 32)))))
 
@@ -129,7 +140,7 @@ def test_push_validates_expected_state() -> None:
         # push() on a wait() block must fail: STORE_SRC is expected, not PUSH
         with pytest.raises(
             RuntimeError,
-            match="Cannot perform push\\(\\): Expected one of \\[STORE_SRC\\], but got push\\(\\)",
+            match=r"(?s)Cannot perform push\(\): not a valid next dataflow step.*\[STORE_SRC\].*attempted PUSH",
         ):
             waited_block.mark_push_complete()
 
@@ -173,7 +184,7 @@ class TestAssignSrcTransition:
         blk.push()
 
         set_current_thread_type(ThreadType.COMPUTE)
-        waited = dfb.wait()
+        waited = dfb.wait(name="compute_in")
         return dfb, waited
 
     def test_assign_src_unlocks_pop(self) -> None:
@@ -230,8 +241,11 @@ class TestAssignSrcTransition:
         try:
             block.mark_assign_src_complete()
             block.pop()
-            with pytest.raises(RuntimeError, match="never reached a store"):
+            with pytest.raises(RuntimeError) as err:
                 dfb.validate_no_pending_blocks()
+            msg = str(err.value)
+            assert "never reached a store" in msg
+            assert "block_name='compute_in'" in msg
         finally:
             clear_current_thread_type()
 
@@ -300,11 +314,15 @@ class TestRORState:
         tx2 = copy(block, make_rand_tensor(64, 32))
 
         for _ in range(2):
-            with pytest.raises(RuntimeError, match="has no access.*ROR state"):
+            with pytest.raises(
+                RuntimeError, match="Cannot write to this buffer block.*ROR"
+            ):
                 block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
         tx1.wait()
-        with pytest.raises(RuntimeError, match="has no access.*ROR state"):
+        with pytest.raises(
+            RuntimeError, match="Cannot write to this buffer block.*ROR"
+        ):
             block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
         tx2.wait()
@@ -364,6 +382,237 @@ class TestRORState:
 
         tx3.wait()
         assert block._access_state.name == "RW"
+
+
+# ---------------------------------------------------------------------------
+# User-facing error message text (format helpers + DFB)
+# ---------------------------------------------------------------------------
+
+
+def test_format_validate_mismatch_includes_what_to_do_and_details() -> None:
+    """The mismatch template always carries a lead-in, follow-up, and a Details line."""
+    msg = format_validate_mismatch(
+        "store()",
+        ExpectedOp.STORE,
+        {ExpectedOp.STORE_SRC, ExpectedOp.POP},
+        AccessState.MR,
+        BlockAcquisition.WAIT,
+        ThreadType.COMPUTE,
+    )
+    assert "Next:" in msg
+    assert "Details: expected one of" in msg
+    assert "attempted STORE" in msg
+    assert "acquisition=WAIT" in msg
+    assert "kernel=COMPUTE" in msg
+    assert "access=MR" in msg
+
+
+def test_format_validate_mismatch_store_on_waited_block_mentions_out_block_store() -> (
+    None
+):
+    """A common failure mode is store() on a wait() block: hint names the right pattern."""
+    msg = format_validate_mismatch(
+        "store()",
+        ExpectedOp.STORE,
+        {ExpectedOp.STORE_SRC},
+        AccessState.MR,
+        BlockAcquisition.WAIT,
+        ThreadType.COMPUTE,
+    )
+    assert "wait() block" in msg
+    assert "out_block.store" in msg
+
+
+def test_format_validate_mismatch_push_on_wait_block_mentions_pop_not_push() -> None:
+    """push() on a wait() block: hint distinguishes reserve vs wait shutdown."""
+    msg = format_validate_mismatch(
+        "push()",
+        ExpectedOp.PUSH,
+        {ExpectedOp.STORE_SRC},
+        AccessState.MR,
+        BlockAcquisition.WAIT,
+        ThreadType.COMPUTE,
+    )
+    assert "push() is for reserve() only" in msg
+    assert "pop()" in msg
+
+
+def test_format_validate_mismatch_naw_mentions_in_flight_and_wait() -> None:
+    """NAW errors point at the async copy and the need to wait."""
+    msg = format_validate_mismatch(
+        "store()",
+        ExpectedOp.STORE,
+        {ExpectedOp.TX_WAIT},
+        AccessState.NAW,
+        BlockAcquisition.RESERVE,
+        ThreadType.DM,
+    )
+    assert (
+        "may still be in flight" in msg.lower() or "wait until the copy" in msg.lower()
+    )
+
+
+def test_format_validate_mismatch_includes_copy_callsite_when_pending_provided() -> (
+    None
+):
+    """Mismatch errors during NAW/ROR include the recorded copy(...) callsite when available."""
+    msg = format_validate_mismatch(
+        "store()",
+        ExpectedOp.STORE,
+        {ExpectedOp.TX_WAIT},
+        AccessState.NAW,
+        BlockAcquisition.RESERVE,
+        ThreadType.DM,
+        pending_copy_location=("/x/y/z.py", 12),
+    )
+    assert "Where: the copy involving this block was requested at /x/y/z.py:12" in msg
+
+
+def test_format_block_finished_error_mentions_reacquire_and_push_pop() -> None:
+    """Finished / inactive blocks tell the user to get a new block, not to reuse the handle."""
+    msg = format_block_finished_error("store()", AccessState.OS)
+    assert "no longer active" in msg
+    assert "reserve()" in msg
+    assert "wait()" in msg
+    assert "expected-ops=empty" in msg
+
+
+def test_format_cannot_read_mw_and_naw_explain_cause() -> None:
+    """Read guards name MW vs NAW and suggest fill/wait as appropriate."""
+    msg_mw = format_cannot_read_block(
+        AccessState.MW, {ExpectedOp.COPY_DST}, BlockAcquisition.RESERVE
+    )
+    assert "this buffer block" in msg_mw
+    assert "MW" in msg_mw
+    assert "Next:" in msg_mw
+    assert "state=MW" in msg_mw
+
+    msg_naw = format_cannot_read_block(
+        AccessState.NAW, {ExpectedOp.TX_WAIT}, BlockAcquisition.RESERVE
+    )
+    assert "this buffer block" in msg_naw
+    assert "NAW" in msg_naw
+    assert "in flight" in msg_naw.lower()
+    assert "wait for that copy" in msg_naw.lower()
+
+
+def test_format_cannot_write_naw_includes_copy_lock_phrase() -> None:
+    """NAW write errors stay aligned with copy_lock_error example and tests."""
+    msg = format_cannot_write_block(AccessState.NAW, {ExpectedOp.TX_WAIT})
+    assert "this buffer block" in msg
+    assert "copy lock error" in msg
+    assert "state=NAW" in msg
+    assert "copy" in msg.lower() and "wait" in msg.lower()
+
+
+def test_format_cannot_write_naw_includes_pending_copy_callsite_when_provided() -> None:
+    """NAW messages name the user callsite of copy(..., block) when available."""
+    msg = format_cannot_write_block(
+        AccessState.NAW,
+        {ExpectedOp.TX_WAIT},
+        pending_copy_location=("/src/kernel.py", 99),
+    )
+    assert "Where: copy into this block was requested at /src/kernel.py:99" in msg
+
+
+def test_format_cannot_write_ror_mentions_further_tx_waits() -> None:
+    """ROR write rejection explains outstanding copies, not a bare enum dump."""
+    msg = format_cannot_write_block(
+        AccessState.ROR, {ExpectedOp.COPY_SRC, ExpectedOp.TX_WAIT}
+    )
+    assert "this buffer block" in msg
+    assert "ROR" in msg
+    assert "in-flight" in msg.lower()
+    assert "wait" in msg.lower()
+
+
+def test_format_cannot_write_ror_includes_pending_copy_callsite_when_provided() -> None:
+    """ROR messages name the user callsite of copy(block, ...) when available."""
+    msg = format_cannot_write_block(
+        AccessState.ROR,
+        {ExpectedOp.COPY_SRC, ExpectedOp.TX_WAIT},
+        pending_copy_location=("/src/k.py", 5),
+    )
+    assert "Where: copy from this block was requested at /src/k.py:5" in msg
+
+
+def test_bsm_validate_finished_block_uses_block_finished_error() -> None:
+    """Empty expected-ops should surface the reacquire / lifecycle message."""
+    dfb = DataflowBuffer(likeness_tensor=make_zeros_tile(), shape=(1, 1), block_count=2)
+    b = dfb.reserve()
+    b.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0))))
+    b.push()
+    with pytest.raises(RuntimeError) as err:
+        b.mark_store_complete()
+    msg = str(err.value)
+    assert "no longer active" in msg
+    assert "Next:" in msg
+
+
+def test_block_cannot_read_mw_uses_friendly_read_message(
+    dm_thread_context,
+) -> None:  # noqa: ARG001
+    """Reading before the first write uses format_cannot_read (MW) wording."""
+    dfb = DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2)
+    b = dfb.reserve(name="read_test")
+    with pytest.raises(RuntimeError) as err:
+        _ = b.get_item(0)
+    m = str(err.value)
+    assert "Cannot read from this buffer block" in m
+    assert "name: 'read_test'" in m
+    assert "MW" in m
+
+
+def test_validate_no_pending_reserved_mentions_push_and_incomplete(
+    dm_thread_context,
+) -> None:  # noqa: ARG001
+    """A held reserve() without release should surface a numbered, actionable blurb."""
+    dfb = DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2)
+    dfb.reserve(name="held_buf")
+    with pytest.raises(RuntimeError) as err:
+        dfb.validate_no_pending_blocks()
+    msg = str(err.value)
+    assert "incomplete or unconsumed" in msg
+    assert "reserve() acquired" in msg
+    assert "push" in msg.lower()
+    assert "1)" in msg
+    assert "held_buf" in msg
+    assert "block_name=" in msg
+    assert "name: 'held_buf'" in msg
+
+
+def test_validate_no_pending_wait_mentions_pop_and_incomplete(
+    dm_thread_context,
+) -> None:  # noqa: ARG001
+    """A held wait() without pop() should name pop() and the DFB header."""
+    element = make_ones_tile()
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
+    blk = dfb.reserve()
+    tx = dm_copy(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0)), blk)
+    tx.wait()
+    blk.push()
+
+    set_current_thread_type(ThreadType.COMPUTE)
+    try:
+        waited = dfb.wait(name="consumer_view")
+        with pytest.raises(RuntimeError) as err:
+            dfb.validate_no_pending_blocks()
+        msg = str(err.value)
+        assert "incomplete or unconsumed" in msg
+        assert "wait() acquired" in msg
+        assert "pop" in msg.lower()
+        assert "1)" in msg
+        assert "consumer_view" in msg
+        assert "block_name=" in msg
+        assert "name: 'consumer_view'" in msg
+    finally:
+        # WAIT compute blocks require store-as-source before pop(); drain then release the slot.
+        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
+        out_block = out_dfb.reserve()
+        out_block.store(waited)
+        out_block.push()
+        waited.pop()
+        clear_current_thread_type()
 
 
 if __name__ == "__main__":

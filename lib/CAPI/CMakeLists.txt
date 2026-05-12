@@ -15,4 +15,5 @@ add_mlir_library(TTLangCAPI
   MLIRFuncDialect
   MLIRTTLDialect
   TTLangTTLTransforms
+  TTLangTTLPipelines
 )

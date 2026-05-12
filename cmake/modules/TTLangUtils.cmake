@@ -16,9 +16,12 @@ macro(ttlang_set_version VERSION)
     message(FATAL_ERROR "Invalid version format: ${VERSION}. Expected format: MAJOR.MINOR.PATCH[.devN][+LOCAL] (e.g., 0.2.0, 0.2.0.dev5, 1.0.0+uplift, 1.0.0.dev3+uplift)")
   endif()
 
-  set(TTLANG_VERSION_MAJOR ${CMAKE_MATCH_1} CACHE STRING "tt-lang major version")
-  set(TTLANG_VERSION_MINOR ${CMAKE_MATCH_2} CACHE STRING "tt-lang minor version")
-  set(TTLANG_VERSION_PATCH ${CMAKE_MATCH_3} CACHE STRING "tt-lang patch version")
+  # FORCE so reconfigures pick up new git tags. Without FORCE, CACHE STRING
+  # only writes on first configure and the values stick at their initial
+  # snapshot indefinitely.
+  set(TTLANG_VERSION_MAJOR ${CMAKE_MATCH_1} CACHE STRING "tt-lang major version" FORCE)
+  set(TTLANG_VERSION_MINOR ${CMAKE_MATCH_2} CACHE STRING "tt-lang minor version" FORCE)
+  set(TTLANG_VERSION_PATCH ${CMAKE_MATCH_3} CACHE STRING "tt-lang patch version" FORCE)
   # Preserve the full version string including .devX suffix if present
   set(TTLANG_VERSION "${VERSION}")
   message(STATUS "tt-lang version: ${TTLANG_VERSION}")

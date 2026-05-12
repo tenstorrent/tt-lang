@@ -44,29 +44,45 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DTTLANG_USE_TOOLCHAIN=ON
 
-      - name: Build wheel
+      - name: Install wheel build tools
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip install auditwheel patchelf
+
+      - name: Build tt-lang wheel
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation
 
-      - name: Repair wheel
+      - name: Repair tt-lang wheel
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
-          pip install auditwheel patchelf
           auditwheel repair dist-raw/*.whl --wheel-dir=dist
 
-      - name: Test wheel
+      - name: Test tt-lang wheel
         run: |
-          python3.12 -m venv /tmp/test-venv
-          source /tmp/test-venv/bin/activate
-          pip install dist/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          python3.12 -m venv /tmp/test-venv-hw
+          source /tmp/test-venv-hw/bin/activate
+          pip install dist/tt_lang-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
           python .github/scripts/smoke-test-wheel.py
 
-      - name: Report wheel size
+      - name: Build tt-lang-sim wheel
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip wheel packaging/sim --wheel-dir=dist --no-deps --no-build-isolation
+
+      - name: Test tt-lang-sim wheel
+        run: |
+          python3.12 -m venv /tmp/test-venv-sim
+          source /tmp/test-venv-sim/bin/activate
+          pip install dist/tt_lang_sim-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          python .github/scripts/smoke-test-wheel.py
+
+      - name: Report wheel sizes
         run: ls -lh dist-raw/*.whl dist/*.whl
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: tt-lang-wheels
           path: dist/*.whl

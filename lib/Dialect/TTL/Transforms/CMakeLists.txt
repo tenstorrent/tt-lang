@@ -9,11 +9,14 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
   TTLAnnotateL1AccLoops.cpp
+  TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
   TTLFinalizeDFBIndices.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
+  TTLVerifyPipeNetGuards.cpp
+  TTLErasePipeNetScopes.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
