@@ -120,6 +120,13 @@ struct TTLSetComputeKernelConfigPass
       funcOp->setAttr(kDstFullSyncEnAttrName,
                       BoolAttr::get(funcOp.getContext(), true));
     }
+    // Unconditional write so the absence-default behavior of
+    // getKernelBoolAttr (returns false) is never used silently. Downstream
+    // consumers can rely on this attribute being present after this pass.
+    if (!funcOp->hasAttr(kEnableFPUBinaryOpsAttrName)) {
+      funcOp->setAttr(kEnableFPUBinaryOpsAttrName,
+                      BoolAttr::get(funcOp.getContext(), enableFPUBinaryOps));
+    }
   }
 };
 

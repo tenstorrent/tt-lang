@@ -8,7 +8,7 @@
 // CHECK-SAME:  %[[B:.*arg1]]: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-SAME: %[[CBA:.*arg2]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
 // CHECK-SAME: %[[CBB:.*arg3]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-// CHECK-SAME: %[[CBOUT:.*arg4]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+// CHECK-SAME: %[[CBOUT:.*arg4]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 func.func @compute_with_cbs(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
                             %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
                             %cbb: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
@@ -66,7 +66,7 @@ func.func @compute_with_cbs(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor
 // CHECK-LABEL: func.func @compute_with_cbs_reuse
 // CHECK-SAME: (%[[A:.*arg0]]: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-SAME:  %[[CBA:.*arg1]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-// CHECK-SAME:  %[[CBOUT:.*arg2]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+// CHECK-SAME:  %[[CBOUT:.*arg2]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 func.func @compute_with_cbs_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                   %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
                                   %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)

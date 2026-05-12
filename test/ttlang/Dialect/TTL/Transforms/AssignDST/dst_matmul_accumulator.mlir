@@ -3,7 +3,7 @@
 // and output intervals merged so they receive the same dst_idx. The actual
 // copy_tile to pre-load the accumulator into DST is emitted during TTKernel
 // lowering, not here; this test verifies the interval merge only.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

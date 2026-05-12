@@ -225,7 +225,7 @@ func.func @bf16_reduce_row_auto_fp32(
 // Purpose: Blackhole ROW reduce does not trigger fp32_dest_acc_en while issue
 // #533 remains open.
 // BLACKHOLE-LABEL: func.func @blackhole_bf16_reduce_row_no_auto_fp32
-// BLACKHOLE-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+// BLACKHOLE-SAME: ttl.kernel_thread = #ttkernel.thread<compute>
 module attributes {ttl.target_arch = "blackhole"} {
   func.func @blackhole_bf16_reduce_row_no_auto_fp32(
       %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -329,7 +329,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // reduce-full-fp32.
 // WORMHOLE-LABEL: func.func @wormhole_bf16_reduce_row_no_auto_fp32
 // WORMHOLE-NOT: fp32_dest_acc_en
-// WORMHOLE-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+// WORMHOLE-SAME: ttl.kernel_thread = #ttkernel.thread<compute>
 module attributes {ttl.target_arch = "wormhole_b0"} {
   func.func @wormhole_bf16_reduce_row_no_auto_fp32(
       %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,

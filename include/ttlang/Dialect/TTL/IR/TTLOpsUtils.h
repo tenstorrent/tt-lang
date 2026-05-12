@@ -71,7 +71,6 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
 /// Return the circular buffer attached to `tensor`, or null if none.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
   tensor = traceUnrealizedCasts(tensor);
-
   if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
     return getAttachedCB(slice.getSource());
   }
@@ -138,10 +137,97 @@ inline bool isTileBinaryOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileBinaryOpTrait>();
 }
 
-/// True if op reads inputs from CB at runtime (by trait or FPU marking).
+//===----------------------------------------------------------------------===//
+// Tile value location (per-operand source resolution)
+//===----------------------------------------------------------------------===//
+
+/// Where a tile-typed SSA value currently resides.
+enum class TileValueLocation { CB, DST };
+
+/// Resolve where a tile-typed SSA value lives. ttl.compute `ins` block args
+/// are in CB; everything else (output args, op results, func params) is DST.
+inline TileValueLocation getTileValueLocation(mlir::Value v) {
+  if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(v)) {
+    if (auto compute =
+            mlir::dyn_cast_or_null<ComputeOp>(arg.getOwner()->getParentOp())) {
+      return arg.getArgNumber() < compute.getNumInputs()
+                 ? TileValueLocation::CB
+                 : TileValueLocation::DST;
+    }
+    return TileValueLocation::DST;
+  }
+  return TileValueLocation::DST;
+}
+
+// Forward declaration: getKernelBoolAttr is defined later in this header.
+inline bool getKernelBoolAttr(mlir::Operation *op, llvm::StringRef attrName);
+
+/// Return true when an add/sub/mul tile op is eligible to lower to its FPU
+/// form. Eligibility requires all of:
+///   1. op carries TTLStrategyDependentBinaryOpTrait;
+///   2. the enclosing func.func has ttl.enable_fpu_binary_ops = true
+///      (absent or false ⇒ not eligible);
+///   3. both operands resolve to the same CB-backed indexing source. Two
+///      IR shapes satisfy this:
+///        pre-ttl-lower-to-loops: both operands are block args of one
+///          ttl.compute, both refer to ins operands (arg number <
+///          getNumInputs()), and the corresponding indexing maps are
+///          equal;
+///        post-ttl-lower-to-loops: both operands are tensor.extract ops
+///          on CB-attached tensors (getAttachedCB returns non-null) with
+///          equal index lists.
+///
+/// Eligibility checks IR shape only. Resolving a usable CB handle for the
+/// operands is the caller's responsibility.
+inline bool isFPUEligibleBinaryOp(mlir::Operation *op) {
+  if (!op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    return false;
+  }
+  if (!getKernelBoolAttr(op, kEnableFPUBinaryOpsAttrName)) {
+    return false;
+  }
+  mlir::Value lhs = op->getOperand(0);
+  mlir::Value rhs = op->getOperand(1);
+
+  // Pre-lower-to-loops: operands are block args of the same ttl.compute,
+  // both indexing into ins operands with matching indexing maps.
+  if (auto lhsArg = mlir::dyn_cast<mlir::BlockArgument>(lhs)) {
+    auto rhsArg = mlir::dyn_cast<mlir::BlockArgument>(rhs);
+    if (!rhsArg || lhsArg.getOwner() != rhsArg.getOwner()) {
+      return false;
+    }
+    auto computeOp =
+        mlir::dyn_cast_or_null<ComputeOp>(lhsArg.getOwner()->getParentOp());
+    if (!computeOp) {
+      return false;
+    }
+    unsigned numInputs = computeOp.getNumInputs();
+    if (lhsArg.getArgNumber() >= numInputs ||
+        rhsArg.getArgNumber() >= numInputs) {
+      return false;
+    }
+    auto indexingMaps = computeOp.getIndexingMapsArray();
+    return indexingMaps[lhsArg.getArgNumber()] ==
+           indexingMaps[rhsArg.getArgNumber()];
+  }
+
+  // Post-lower-to-loops: operands are tensor.extract on tile tensors with
+  // identical induction-variable indices (the lowered form of matching
+  // indexing maps under identity iv-to-result mapping).
+  auto lhsExtract = lhs.getDefiningOp<mlir::tensor::ExtractOp>();
+  auto rhsExtract = rhs.getDefiningOp<mlir::tensor::ExtractOp>();
+  if (!lhsExtract || !rhsExtract) {
+    return false;
+  }
+  return lhsExtract.getIndices() == rhsExtract.getIndices();
+}
+
+/// True if op reads inputs from CB at runtime. Unconditional for trait-bearing
+/// ops (bcast/transpose/reduce/...); conditional for strategy-dep add/sub/mul
+/// (delegated to isFPUEligibleBinaryOp). The strategy-dep answer can flip
+/// across TTLAssignDST copy insertion — re-query, do not cache.
 inline bool isCBInputOp(mlir::Operation *op) {
-  return op->hasTrait<TTLCBInputTileOpTrait>() ||
-         op->hasAttr(kFPUBinaryAttrName);
+  return op->hasTrait<TTLCBInputTileOpTrait>() || isFPUEligibleBinaryOp(op);
 }
 
 /// Check if an operation is any elementwise tensor op (unary or binary).

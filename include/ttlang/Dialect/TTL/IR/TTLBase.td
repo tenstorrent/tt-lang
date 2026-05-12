@@ -78,4 +78,8 @@ def TTL_AccumulatingOpTrait : TTL_Trait<"TTLAccumulatingOpTrait", []>;
 def TTL_CBOutputTileOpTrait : TTL_Trait<"TTLCBOutputTileOpTrait", []>;
 def TTL_DstResultOpTrait : TTL_Trait<"TTLDstResultOpTrait", []>;
 
+// Input source resolved by operand provenance via isFPUEligibleBinaryOp().
+def TTL_StrategyDependentBinaryOpTrait
+    : TTL_Trait<"TTLStrategyDependentBinaryOpTrait", []>;
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLBASE_TD
