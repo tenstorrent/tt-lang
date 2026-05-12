@@ -14,24 +14,25 @@
 #   source "<this-file>"
 
 if [ -n "${ZSH_VERSION:-}" ]; then
-  # --- zsh ---------------------------------------------------------------
-  # With prompt_subst (enabled by oh-my-zsh, powerlevel10k, etc.), parameter
-  # expansions inside single-quoted PROMPT are re-evaluated every prompt.
-  # ${TTLANG_ENV_ACTIVATED:+(ᴛᴛʟᴀɴɢ) } expands to the tag when the var is
-  # set and to nothing after `deactivate` unsets it.
-  #
-  # Guard against double-prepend on re-activation.
+  # zsh: ${...} inside PROMPT only expands with prompt_subst, which plain
+  # zsh (macOS default) leaves off. Enable it; remember to restore.
+  if [[ -o prompt_subst ]]; then
+    _TTLANG_SET_PROMPT_SUBST=0
+  else
+    _TTLANG_SET_PROMPT_SUBST=1
+    setopt prompt_subst
+  fi
+
   case "$PROMPT" in
     *'${TTLANG_ENV_ACTIVATED:+'*) ;;
     *) PROMPT='${TTLANG_ENV_ACTIVATED:+(ᴛᴛʟᴀɴɢ) }'$PROMPT ;;
   esac
 
-  # Wrap deactivate to also unset TTLANG_ENV_ACTIVATED (venv's deactivate
-  # does not know about it).  The prompt tag disappears automatically on the
-  # next prompt evaluation.
   _ttlang_orig_deactivate="$(functions deactivate)"
   deactivate() {
     unset TTLANG_ENV_ACTIVATED
+    [ "${_TTLANG_SET_PROMPT_SUBST:-0}" = "1" ] && unsetopt prompt_subst
+    unset _TTLANG_SET_PROMPT_SUBST
     eval "${_ttlang_orig_deactivate}" && deactivate "$@"
     unset _ttlang_orig_deactivate
   }

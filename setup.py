@@ -32,13 +32,41 @@ class NoSdist(_sdist):
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
+def _ttnn_device_extras():
+    """Build the `device` extras list from the canonical tt-metal version.
+
+    third-party/tt-metal-version holds a single tt-metal release tag (e.g.
+    `v0.69.0`); the matching ttnn PyPI version is the tag minus the leading
+    `v`. Linux x86_64 / aarch64 only — ttnn isn't published for other
+    platforms.
+    """
+    version_file = REPO_ROOT / "third-party" / "tt-metal-version"
+    tag = version_file.read_text().strip()
+    if not tag.startswith("v"):
+        raise SystemExit(f"{version_file}: '{tag}' must start with 'v'")
+    version = tag[1:]
+    marker = (
+        "sys_platform == 'linux' "
+        "and (platform_machine == 'x86_64' or platform_machine == 'aarch64')"
+    )
+    return [f"ttnn == {version} ; {marker}"]
+
+
 def get_version_from_git():
     """Get version from git tags, matching cmake/modules/GetVersionFromGit.cmake.
 
     Tag format: vMAJOR.MINOR.PATCH[+LOCAL]. Per PEP 440 the .devN segment must
     sit between the public release and the +local label, so the tag is split
     on '+' before the dev counter is inserted.
+
+    Override mechanism: if TTLANG_PRETEND_VERSION is set in the environment, it
+    is returned verbatim. Used by the publish-pypi workflow to stamp wheels
+    built from a branch with a caller-supplied PEP 440 version (e.g. an rc/dev
+    pre-release) when no matching git tag exists.
     """
+    pretend = os.environ.get("TTLANG_PRETEND_VERSION", "").strip()
+    if pretend:
+        return pretend
     try:
         tag = (
             subprocess.check_output(
@@ -215,20 +243,31 @@ with open(str(readme_path), "r", encoding="utf-8") as readme_file:
 
 setup(
     version=get_version_from_git(),
+    extras_require={"device": _ttnn_device_extras()},
     packages=[
         "ttl",
         "ttl._src",
+        "ttl._setup",
         "ttl.pykernel",
         "ttl.pykernel._src",
         "ttl.sim",
+        "ttl.tutorials",
+        "ttl.tutorials.elementwise",
+        "ttl.tutorials.matmul",
+        "ttl.tutorials.broadcast",
         "ttl.utils",
     ],
     package_dir={
         "ttl": "python/ttl",
         "ttl._src": "python/ttl/_src",
+        "ttl._setup": "python/ttl/_setup",
         "ttl.pykernel": "python/pykernel",
         "ttl.pykernel._src": "python/pykernel/_src",
         "ttl.sim": "python/sim",
+        "ttl.tutorials": "python/ttl/tutorials",
+        "ttl.tutorials.elementwise": "examples/elementwise-tutorial",
+        "ttl.tutorials.matmul": "examples/matmul-tutorial",
+        "ttl.tutorials.broadcast": "examples/tutorial",
         "ttl.utils": "python/utils",
     },
     ext_modules=[ttlang_c],

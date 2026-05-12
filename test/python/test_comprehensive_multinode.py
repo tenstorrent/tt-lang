@@ -4,9 +4,9 @@
 
 """
 Comprehensive multinode test combining multiple features:
-- 2MB DRAM inputs (a, b) + L1 input (c)
-- 2MB DRAM outputs (out1, out2) + L1 output (out3)
-- 8x8 multinode grid with dynamic indexing via core(dims=2)
+- DRAM inputs (a, b) + L1 input (c)
+- DRAM outputs (out1, out2) + L1 output (out3)
+- 8 cols x 7 rows multinode grid with dynamic indexing via core(dims=2)
 - 4x4 DFB shape with block_count=2
 - 20 fused ops using bounded operations
 - Random inputs
@@ -22,16 +22,15 @@ from ttlang_test_utils import to_dram, to_l1
 import ttl
 
 TILE_SIZE = 32
-GRID_ROWS = 8
+GRID_ROWS = 7
 GRID_COLS = 8
 CB_ROWS = 4
 CB_COLS = 4
 
-# 8x8 grid * 4x4 DFB = 32x32 tiles = 1024x1024 elements = 2MB per tensor
 TENSOR_SHAPE = (GRID_ROWS * CB_ROWS * TILE_SIZE, GRID_COLS * CB_COLS * TILE_SIZE)
 
 
-@ttl.operation(grid=(GRID_ROWS, GRID_COLS))
+@ttl.operation(grid=(GRID_COLS, GRID_ROWS))
 def comprehensive_kernel(a, b, c, out1, out2, out3):
     """
     Multinode kernel with 20 fused ops across 3 outputs.

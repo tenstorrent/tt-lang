@@ -7,3 +7,10 @@ PyYAML>=5.4.0,<=6.0.1
 typing_extensions>=4.12.2
 ml_dtypes>=0.1.0,<=0.6.0; python_version<'3.13'
 ml_dtypes>=0.5.0,<=0.6.0; python_version>='3.13'
+# Note: ttnn is *not* listed here because it would force every base install
+# (including sim-only / macOS / dev environments and CI sim tests) to pull
+# the ~hundreds-of-MB ttnn wheel, and importing real ttnn on a runner with
+# no hardware or sfpi crashes the process. The ttnn version lives in
+# pyproject.toml's `[project.optional-dependencies] device` extras (derived
+# dynamically by setup.py from third-party/tt-metal-version) and is
+# verified by .github/scripts/check-tt-metal-version.sh.

@@ -30,13 +30,19 @@ classifiers = [
   "Topic :: Software Development :: Code Generators"
 ]
 
-dynamic = ["version", "readme", "dependencies"]
+dynamic = ["version", "readme", "dependencies", "optional-dependencies"]
 
-[project.optional-dependencies]
-device = ["ttnn"]
+# `optional-dependencies` is dynamic: the `device` extras are derived from
+# third-party/tt-metal-version by setup.py:_ttnn_device_extras() so the
+# ttnn version only ever lives in one place. Available on Linux x86_64 /
+# aarch64 (where ttnn publishes wheels); on other platforms tt-lang is
+# sim-only and the extras list is empty.
 
 [project.scripts]
 ttlang-sim = "ttl.sim.ttlang_sim:main"
+tt-lang-setup = "ttl._setup.cli:main"
+tt-lang-setup-host = "ttl._setup.host:main"
+tt-lang-setup-tutorials = "ttl._setup.tutorials:main"
 
 [project.urls]
 Homepage = "https://github.com/tenstorrent/tt-lang"

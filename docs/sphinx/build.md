@@ -3,9 +3,10 @@
 ## Overview
 
 TT-Lang uses a CMake-based build system that compiles LLVM/MLIR, a minimal
-tt-mlir subset, tt-metal, and TT-Lang's own dialects and tools from pinned git
-submodules. A single `cmake -G Ninja -B build && cmake --build build` invocation
-produces a fully working environment.
+tt-mlir subset, tt-metal, and TT-Lang's own dialects and tools from git
+submodules at recorded commits. A single
+`cmake -G Ninja -B build && cmake --build build` invocation produces a
+fully working environment.
 
 ## Prerequisites
 
@@ -127,17 +128,19 @@ Open `http://localhost:8000` to browse the docs locally.
 
 ## Submodules
 
-`.gitmodules` pins three submodules:
+`.gitmodules` declares three submodules:
 
-| Submodule                    | Purpose                                           |
-| ---------------------------- | ------------------------------------------------- |
-| `third-party/llvm-project` | LLVM/MLIR source (built at configure time)        |
-| `third-party/tt-mlir`      | tt-mlir source (only select directories compiled) |
-| `third-party/tt-metal`     | Runtime (built at configure time)                 |
+| Submodule                    | Purpose                                                                      |
+| ---------------------------- | ---------------------------------------------------------------------------- |
+| `third-party/llvm-project` | LLVM/MLIR source (built at configure time)                                   |
+| `third-party/tt-mlir`      | tt-mlir source (only select directories compiled)                            |
+| `third-party/tt-metal`     | Runtime (built at configure time). Canonical version file: `third-party/tt-metal-version` |
+
+To update any of these, see [Uplifting Submodules](#uplifting-submodules).
 
 ### Switching branches
 
-Different branches may pin different submodule commits. After switching branches,
+Different branches may record different submodule commits. After switching branches,
 update the submodules to match:
 
 ```bash
@@ -184,31 +187,106 @@ mismatch.
 
 ## Uplifting Submodules
 
-Uplifting means updating submodule pins to newer commits. tt-mlir defines the
-compatible versions of LLVM and tt-metal, so when updating tt-mlir, update the
-other submodules to match. Note that you can specify other SHAs for LLVM
-or tt-metal, but then may have to bypass SHA mismatch checks by specifying the
-`TTLANG_ACCEPT_LLVM_MISMATCH` and `TTLANG_ACCEPT_TTMETAL_MISMATCH` options to cmake.
+Each submodule in `third-party` records its commit independently; the three
+recorded commits are not derived from one another.
 
-### Local uplift procedure
+- The LLVM commit in `third-party/llvm-project` is typically newer than
+  `LLVM_PROJECT_VERSION` in `third-party/tt-mlir/env/CMakeLists.txt`, and
+  the tt-metal commit is on a release tag picked independently from the
+  one tt-mlir records in `TT_METAL_VERSION`. Both mismatches are the
+  expected steady state, not exceptions.
+- tt-lang compiles a subset of tt-mlir and applies patches in
+  `third-party/patches/` to make that subset build against the newer LLVM.
+- Because the LLVM and tt-metal mismatches are expected, every uplift
+  build must bypass cmake's SHA-match check. Pass
+  `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` and `-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON`
+  to cmake. `scripts/build-and-install.sh` accepts the equivalent
+  `--accept-ttmetal-mismatch` flag.
+- The tt-metal version is recorded in `third-party/tt-metal-version`, a
+  one-line file holding a tt-metal release tag. See
+  [Updating tt-metal](#updating-tt-metal).
+
+### Updating tt-metal
+
+Edit the canonical version file and run the verifier in update mode. The
+verifier checks out `third-party/tt-metal` at the tag's commit; the ttnn
+version under `[project.optional-dependencies] device` in `pyproject.toml`
+is computed dynamically by `setup.py` from the same file, so no rewrite
+is needed:
 
 ```bash
-# Update tt-mlir to the desired commit
-cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
-
-# Update LLVM and tt-metal to the versions tt-mlir expects
-scripts/update-submodules.sh
-
-# Rebuild
-cmake -G Ninja -B build
-cmake --build build
+echo v0.69.0 > third-party/tt-metal-version
+.github/scripts/check-tt-metal-version.sh --update
 ```
 
-Commit all submodule pointer changes together:
+Background: `third-party/tt-metal-version` is the single source of truth
+for the tt-metal version (one tt-metal release tag, e.g. `v0.69.0`). The
+submodule SHA, the `ttnn` version under `[project.optional-dependencies]
+device` in `pyproject.toml`, and the `--build-arg TT_METAL_TAG` passed to
+`Dockerfile.base` are all derived from it. CI runs
+`.github/scripts/check-tt-metal-version.sh` on every PR to catch drift.
+
+### Updating LLVM
 
 ```bash
-git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal
-git commit -m "Update submodules to tt-mlir <short-sha>"
+cd third-party/llvm-project && git fetch && git checkout <commit> && cd ../..
+```
+
+### Updating tt-mlir
+
+```bash
+cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
+```
+
+### Rebuilding and committing
+
+A submodule uplift changes what the toolchain (LLVM, tt-metal) is built
+from, so the toolchain must be rebuilt; rebuilding tt-lang alone against
+the old toolchain will not work. It is recommended to install
+the new toolchain to a separate
+directory at least initially, so the working default toolchain at
+`/opt/ttlang-toolchain` is preserved
+in case the uplift fails to build. `scripts/build-and-install.sh` uses
+`build-toolchain/` as its cmake build directory by default (set
+`CMAKE_BINARY_DIR` to override); you could use a `build-uplift-toolchain/`
+to keep the existing `build-toolchain/` artifacts untouched if desired. It
+is best to remove any pre-existing uplift-related toolchain build directory
+before starting the new toolchain build.
+
+Build the toolchain (LLVM + tt-metal) into the parallel locations:
+
+```bash
+CMAKE_BINARY_DIR=build-uplift-toolchain \
+TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
+  scripts/build-and-install.sh --toolchain-only --accept-ttmetal-mismatch
+```
+
+Then build tt-lang against that toolchain and run the test suites to
+validate the uplift before installing it to `/opt/ttlang-toolchain`:
+
+```bash
+TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
+  cmake -G Ninja -B build-uplift -DTTLANG_USE_TOOLCHAIN=ON
+cmake --build build-uplift
+
+source build-uplift/env/activate
+ninja -C build-uplift check-ttlang-mlir          # MLIR lit tests, no hardware
+ninja -C build-uplift check-ttlang-all           # full suite (Docker for hw)
+```
+
+Test failures here mean the new submodule combination is incompatible —
+fix patches under `third-party/patches/` or pick a different SHA before
+installing the uplifted toolchain to `/opt/ttlang-toolchain`.
+
+Once the uplift builds and tests cleanly, replace the system toolchain by
+re-running without the overrides (so `CMAKE_BINARY_DIR=build-toolchain` and
+`TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain`), then commit the submodule
+pointer changes together:
+
+```bash
+git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
+        third-party/tt-metal-version pyproject.toml
+git commit -m "Uplift submodules"
 ```
 
 ### CI: toolchain cache and Docker images
@@ -223,23 +301,23 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    toolchain.
 
 2. **Docker images** -- `ird` and `dist` container images tagged by the nearest
-   git version tag (e.g. `v0.1.9`, see `.github/containers/get-version-tag.sh`).
-   Rebuilds overwrite the same tag. A `latest` tag is also pushed alongside
-   each versioned tag. After building, `call-build-docker.yml` runs the
-   tutorial examples in the dist container to verify the image works.
+   git version tag (see `.github/containers/get-version-tag.sh`). Rebuilds
+   overwrite the same tag. A `latest` tag is also pushed alongside each
+   versioned tag. After building, `call-build-docker.yml` runs the tutorial
+   examples in the dist container to verify the image works.
 
    Tags may carry SemVer build metadata after `+` to mark uplift rebuilds of
-   an existing release (e.g. `v1.0.0+uplift`). Because Docker tags forbid `+`,
-   `get-version-tag.sh` translates `+` to `-` when forming the image tag, so
-   git tag `v1.0.0+uplift` produces Docker tag `v1.0.0-uplift`. Use the
-   sanitized form (`v1.0.0-uplift`) anywhere a `docker_tag` parameter is
-   passed to a workflow.
+   an existing release. Because Docker tags forbid `+`, `get-version-tag.sh`
+   translates `+` to `-` when forming the image tag (e.g. git tag
+   `<TAG>+<local>` produces Docker tag `<TAG>-<local>`). Use the sanitized
+   form anywhere a `docker_tag` parameter is passed to a workflow.
 
 #### Triggering a toolchain cache rebuild on PRs
 
 By default, PR and push workflows use a pre-built Docker container and skip
-building the toolchain from source. For uplift PRs where the submodule pins have
-changed, pass `build_toolchain: true` to force a from-source build:
+building the toolchain from source. For uplift PRs where the recorded
+submodule commits have changed, pass `build_toolchain: true` to force a
+from-source build:
 
 ```yaml
 # In on-pr.yml or on-push.yml, pass build_toolchain to call-build.yml:
@@ -248,7 +326,7 @@ build:
   secrets: inherit
   with:
     build_toolchain: true
-    docker_tag: "v0.1.9"
+    docker_tag: "<DOCKER_TAG>"
 ```
 
 When `build_toolchain` is true, the workflow:
@@ -265,8 +343,9 @@ pre-built `ird` Docker container, which already contains the toolchain.
 
 #### Rebuilding Docker images
 
-Docker images are rebuilt automatically by `call-build-docker.yml`, which runs
-on version tags (`v*.*.*` or `v*.*.*+<local>`) or manual dispatch. The workflow:
+Docker images are built by `call-build-docker.yml`, which is invoked either by
+manual `workflow_dispatch` or as a reusable sub-workflow of `publish-pypi.yml`
+(see [Publishing to PyPI](#publishing-to-pypi) below). The workflow:
 
 1. Generates a deterministic tag from submodule SHAs and Dockerfile content
    hashes.
@@ -274,25 +353,102 @@ on version tags (`v*.*.*` or `v*.*.*+<local>`) or manual dispatch. The workflow:
 3. On cache miss, builds the toolchain (or restores from GitHub Actions cache),
    then packages `base`, `ird`, and `dist` images.
 
-After an uplift merges, create a new version tag to trigger image rebuilds.
-For uplifts that rebuild against a prior release (rather than advancing
-MAJOR/MINOR/PATCH), append `+uplift` (or another `+<local>` identifier) so the
-tag preserves SemVer ordering with the original release:
+Pushing a release tag triggers `publish-pypi.yml`, which calls
+`call-build-docker.yml` as its first step — so the same `git push <tag>` that
+publishes a release also rebuilds the Docker images. For uplifts that rebuild
+against a prior release (rather than advancing MAJOR/MINOR/PATCH), append
+`+uplift` (or another `+<local>` identifier) so the tag preserves SemVer
+ordering with the original release:
 
 ```bash
 # Standard release bump:
-git tag v0.1.9
-git push origin v0.1.9
+git tag <TAG>
+git push origin <TAG>
 
-# Uplift of an existing release (e.g., new submodule SHAs on top of v1.0.0):
-git tag v1.0.0+uplift
-git push origin v1.0.0+uplift
+# Uplift of an existing release (new submodule SHAs on top of an existing tag):
+git tag <TAG>+<local>
+git push origin <TAG>+<local>
 ```
 
 Once the new images are published, update the `docker_tag` parameter in
 `on-pr.yml` and `on-push.yml` to reference the new tag. For `+`-suffixed
-tags, use the Docker-sanitized form: git tag `v1.0.0+uplift` -> docker_tag
-`v1.0.0-uplift`.
+tags, use the Docker-sanitized form: git tag `<TAG>+<local>` -> docker_tag
+`<TAG>-<local>`.
+
+(publishing-to-pypi)=
+#### Publishing to PyPI
+
+`publish-pypi.yml` is the orchestrator that turns a release tag into a wheel
+on PyPI. It triggers automatically on push of `v*.*.*` or `v*.*.*+<local>`
+tags, and can also be dispatched manually for re-runs and dry-runs.
+
+```text
+   push release tag
+ or workflow_dispatch
+          |
+          v
+   +--------------+
+   |  preflight   |   verify GITHUB_REF is a v* tag
+   +--------------+   (skipped if dry_run=true)
+          |
+          +-----------------------+
+          |                       |
+          v                       |
+   +--------------+               |
+   | build-docker |   call-build-docker.yml
+   +--------------+   (skipped if docker_tag input is set)
+          |                       |
+          +-----------------------+
+          |
+          v
+   +--------------+
+   | build-wheels |   call-build-wheels.yml
+   +--------------+   (builds wheel inside ird container,
+          |            uploads tt-lang-wheels artifact)
+          |
+          +-----------------------+
+          v                       v
+   +--------------+        +------------------+
+   |   publish    |        | dry-run-summary  |
+   +--------------+        +------------------+
+   tag push or              workflow_dispatch
+   dry_run=false            with dry_run=true
+   (uploads to PyPI)        (lists artifacts only)
+```
+
+Job-by-job:
+
+1. **`preflight`** — runs `require-release-tag.sh`, which fails unless
+   `GITHUB_REF` looks like `refs/tags/v[0-9]...`. Skipped under
+   `dry_run: true`. Exposes `tag_version` (tag with leading `v` stripped) for
+   the wheel-version check.
+2. **`build-docker`** — calls `call-build-docker.yml` on tag push (where no
+   `docker_tag` input is supplied). Skipped on `workflow_dispatch`, which
+   requires `docker_tag`. Outputs the freshly built ird tag.
+3. **`build-wheels`** — calls `call-build-wheels.yml` against either the
+   `docker_tag` input (manual dispatch) or the `build-docker` output (tag
+   push). Builds the wheel inside the ird container and uploads it as the
+   `tt-lang-wheels` artifact.
+4. **`publish`** — runs on tag push or when `dry_run` is false. Downloads the
+   artifact, verifies every wheel filename's version field matches
+   `preflight.outputs.tag_version`, and uploads via
+   `pypa/gh-action-pypi-publish` using OIDC trusted publishing
+   (`environment: pypi`, `id-token: write`).
+5. **`dry-run-summary`** — runs only on `workflow_dispatch` with
+   `dry_run: true`. Downloads the artifact and lists what would have been
+   uploaded. No `environment`, no PyPI credentials.
+
+Common scenarios:
+
+Common scenarios (`<TAG>` denotes a release tag, `<DOCKER_TAG>` an existing
+ird image tag):
+
+| Trigger                                                       | docker_tag input | Result                                                              |
+| ------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------- |
+| `git push origin <TAG>`                                       | (n/a)            | Build docker, build wheel, publish to PyPI as the tag's version     |
+| Dispatch from a tag ref with `docker_tag: <DOCKER_TAG>`       | required         | Skip docker build, reuse the supplied ird image, publish to PyPI    |
+| Dispatch from a non-tag ref with `dry_run: true`              | required         | Build wheel against the supplied tag, skip PyPI upload              |
+| Dispatch from a non-tag ref with `dry_run: false`             | required         | Fails at `preflight` because `GITHUB_REF` is not a release tag      |
 
 ## CMake Options
 
