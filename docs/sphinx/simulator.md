@@ -59,7 +59,8 @@ python -m pytest test/sim/ --run-slow
 ## Simulator statistics (`ttlang-sim-stats`)
 
 Tensor, pipe, and dataflow-buffer statistics are **not** printed by `ttlang-sim`
-itself. Record a JSON Lines trace with **`ttlang-sim --trace`**, then pass that
+itself. Record a JSON Lines trace with **`ttlang-sim`** using **`--trace`**
+(after the script path), then pass that
 file to **`ttlang-sim-stats`** to print the same summary tables (for sharing,
 diffing, or inspecting a run without re-executing the kernel). The
 **`ttlang-sim-stats`** command is installed together with **`tt-lang-sim`** (or
@@ -76,7 +77,7 @@ with **`PYTHON`** if needed (for example
    default file name is `trace.jsonl`):
 
    ```bash
-   ./bin/ttlang-sim --trace /tmp/my_run.jsonl examples/eltwise_add.py
+   ./bin/ttlang-sim examples/eltwise_add.py --trace /tmp/my_run.jsonl
    ```
 
 2. **Print statistics from that file**:
@@ -88,7 +89,7 @@ with **`PYTHON`** if needed (for example
 Statistics are derived from trace events such as `copy_end`, `pipe_send`,
 `pipe_recv`, `dfb_reserve_end`, and `dfb_wait_end`. If the trace was recorded
 with a restricted event set, some tables may be empty. Regenerate the trace
-with `ttlang-sim --trace` and the default categories, or enable the relevant
+with `ttlang-sim SCRIPT.py --trace` and the default categories, or enable the relevant
 groups via `--trace-events` (see the tracing guide in `docs/TRACING.md` in the
 repository). For full CLI details:
 
