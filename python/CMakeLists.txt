@@ -281,6 +281,14 @@ add_mlir_python_modules(TTLangPythonModules
 # Ensure generated elementwise ops are created before Python modules are built
 add_dependencies(TTLangPythonModules TTLangGeneratedElementwise)
 
+# pykernel is a subpackage of ttl (ttl/__init__.py transitively imports
+# from ttl.pykernel._src.utils via ttl_api.py), so TTLangPythonModules is
+# functionally incomplete without it. Without this dependency, targets
+# that DEPEND on TTLangPythonModules (e.g. check-ttlang-python-bindings)
+# can run before pykernel files have been copied into python_packages/,
+# producing ModuleNotFoundError at test time.
+add_dependencies(TTLangPythonModules PykernelPythonModules)
+
 # Add include paths for the _ttmlir extension so wrapper .cpp files can find
 # TTMLIRMinimalModule.h and the upstream tt-mlir Python sources (TTModule.cpp,
 # TTKernelModule.cpp) that get #included from our wrappers.
@@ -303,6 +311,16 @@ add_custom_target(TTLangSimPackage ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/sim"
     "${TTLANG_PYTHON_PACKAGES_DIR}/ttl/sim"
   COMMENT "Symlinking sim package into ttl/sim/"
+)
+
+# Backend-neutral OperationPipeNets package. Imported by both ttl and sim
+# without either depending on the other; staged at the top of python_packages
+# so `import _pipenets` works the same as in the source tree.
+add_custom_target(TTLangPipeNetGraphPackage ALL
+  COMMAND ${CMAKE_COMMAND} -E create_symlink
+    "${CMAKE_CURRENT_SOURCE_DIR}/_pipenets"
+    "${TTLANG_PYTHON_PACKAGES_DIR}/_pipenets"
+  COMMENT "Symlinking _pipenets package"
 )
 
 # ###############################################################################
