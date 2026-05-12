@@ -419,6 +419,54 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
+def TTLVerifyPipeNetGuards
+    : Pass<"ttl-verify-pipenet-guards", "::mlir::ModuleOp"> {
+  let summary = "Verify PipeNet-coupled DFB and pipe operations are role-guarded";
+  let description = [{
+    Checks that every operation coupled to a PipeNet executes only on launch
+    coordinates where its role is defined. A launch coordinate is a
+    `(core_x, core_y)` point in the 2D grid declared by the module's
+    `ttl.launch_grid` attribute; each kernel function runs once per
+    coordinate. A domain is a subset of those coordinates.
+
+    A forward dataflow analysis tracks, at each program point, the domain on
+    which it may execute under the enclosing region predicates (`scf.if`,
+    `affine.if`, `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`). At each
+    `ttl.copy`, `ttl.cb_wait`, and `ttl.cb_push` the analysis verifies the
+    point's domain is contained in the pipe's source or destination domain;
+    out-of-domain uses, scopes broader than their declared role, unmatched
+    `ttl.cb_wait`s, and unanalyzable coord-dependent predicates are reported.
+    Each diagnostic carries an example offending coordinate, the contributing
+    PipeNet(s), and a suggested guard.
+
+    The pass expects one module per `@ttl.operation`, a well-formed
+    `ttl.launch_grid` (i64 array of length 2 with positive entries), static
+    `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
+    (i.e. `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices`
+    have run).
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLErasePipeNetScopes
+    : Pass<"ttl-erase-pipenet-scopes", "::mlir::ModuleOp"> {
+  let summary = "Inline and erase `ttl.pipenet_scope` regions";
+  let description = [{
+    `ttl.pipenet_scope` is a structural marker emitted by the frontend and
+    consumed by `ttl-verify-pipenet-guards`. After verification the markers
+    serve no further purpose; this pass inlines each scope's body into its
+    parent block and erases the scope op so downstream lowering sees a
+    scope-free IR. Runs after `ttl-verify-pipenet-guards`.
+  }];
+
+  let dependentDialects = ["::mlir::tt::ttl::TTLDialect"];
+}
+
 def TTLLowerDPrintToEmitC
     : Pass<"ttl-lower-dprint-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Lower ttl.dprint ops to EmitC verbatim for debug printing";

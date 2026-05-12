@@ -12,6 +12,7 @@ import pathlib
 import platform
 import shutil
 import subprocess
+import sys
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
@@ -32,13 +33,16 @@ class NoSdist(_sdist):
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
-def _ttnn_device_extras():
-    """Build the `device` extras list from the canonical tt-metal version.
+def _ttnn_requirement():
+    """Build the platform-conditional ttnn requirement from the canonical
+    tt-metal version.
 
     third-party/tt-metal-version holds a single tt-metal release tag (e.g.
     `v0.69.0`); the matching ttnn PyPI version is the tag minus the leading
-    `v`. Linux x86_64 / aarch64 only — ttnn isn't published for other
-    platforms.
+    `v`. ttnn only publishes wheels for Linux x86_64 / aarch64, so the
+    requirement is conditioned on those platforms via a PEP 508 marker;
+    on macOS / Windows it is silently skipped (those platforms are
+    sim-only via the separate `tt-lang-sim` package).
     """
     version_file = REPO_ROOT / "third-party" / "tt-metal-version"
     tag = version_file.read_text().strip()
@@ -49,7 +53,22 @@ def _ttnn_device_extras():
         "sys_platform == 'linux' "
         "and (platform_machine == 'x86_64' or platform_machine == 'aarch64')"
     )
-    return [f"ttnn == {version} ; {marker}"]
+    return f"ttnn == {version} ; {marker}"
+
+
+def _read_install_requires():
+    """Read base runtime requirements from requirements-runtime.txt and
+    append the dynamic ttnn requirement.
+    """
+    req_file = REPO_ROOT / "requirements-runtime.txt"
+    requirements = []
+    for line in req_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        requirements.append(line)
+    requirements.append(_ttnn_requirement())
+    return requirements
 
 
 def get_version_from_git():
@@ -237,13 +256,20 @@ class CMakeBuild(build_ext):
 
 ttlang_c = TTLangExtension("ttl")
 
+sys.path.insert(0, str(REPO_ROOT / "packaging"))
+from rewrite_readme import absolutize_readme_images, ref_for_version  # noqa: E402
+
+_version = get_version_from_git()
+
 readme_path = REPO_ROOT / "README.md"
 with open(str(readme_path), "r", encoding="utf-8") as readme_file:
-    readme = readme_file.read()
+    readme = absolutize_readme_images(
+        readme_file.read(), ref_for_version(_version), REPO_ROOT
+    )
 
 setup(
-    version=get_version_from_git(),
-    extras_require={"device": _ttnn_device_extras()},
+    version=_version,
+    install_requires=_read_install_requires(),
     packages=[
         "ttl",
         "ttl._src",

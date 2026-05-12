@@ -9,9 +9,7 @@
 
 namespace mlir::tt::ttkernel {
 
-/// Populate cleanup patterns for TTKernel ops. These patterns optimize
-/// TTKernel code by removing redundant operations (e.g., deduplicating
-/// consecutive barriers of the same type).
+/// Populate cleanup patterns for TTKernel ops.
 void populateTTKernelCleanupPatterns(RewritePatternSet &patterns);
 
 } // namespace mlir::tt::ttkernel

@@ -179,8 +179,7 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 // Tile op emission for fusion
 //===----------------------------------------------------------------------===//
 
-/// Emit the tile-level op corresponding to a block-level elementwise op.
-/// Returns the result Value, or null on failure.
+/// Returns the result Value, or null if the source op is unsupported.
 static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
                            ValueRange tileOperands, Type tileType) {
 

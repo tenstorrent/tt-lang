@@ -12,8 +12,12 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 from setuptools import setup
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from rewrite_readme import absolutize_readme_images, ref_for_version  # noqa: E402
 
 PKG_ROOT = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = PKG_ROOT.parent.parent
@@ -92,7 +96,7 @@ stage()
 
 readme_path = REPO_ROOT / "README.md"
 with open(readme_path, "r", encoding="utf-8") as f:
-    readme = f.read()
+    readme = absolutize_readme_images(f.read(), ref_for_version(VERSION), REPO_ROOT)
 
 
 def read_runtime_requirements() -> list[str]:

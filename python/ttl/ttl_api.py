@@ -66,7 +66,12 @@ from ._src.tensor_registry import (
     register_tensor_source,
 )
 from ._src.ttl_ast import TTLGenericCompiler
-from .circular_buffer import CircularBuffer, CompilerAllocatedDFBConfig, get_cb_count
+from .dataflow_buffer import (
+    CircularBuffer,
+    CompilerAllocatedDFBConfig,
+    DataflowBuffer,
+    get_cb_count,
+)
 from .pipe import Pipe, PipeNet
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
@@ -435,10 +440,11 @@ def _device_target_arch(args) -> Optional[str]:
 
 
 def _resolve_grid(grid, args, kwargs):
-    """Resolve grid, evaluating callable or 'auto' if needed."""
+    """Resolve the compile-time grid: callable is evaluated; both "auto"
+    and "full" expand to the device compute grid."""
     if callable(grid):
         return grid(*args, **kwargs)
-    if grid == "auto":
+    if grid in ("auto", "full"):
         device = _require_device(args)
         device_grid = device.compute_with_storage_grid_size()
         return (device_grid.x, device_grid.y)
@@ -650,6 +656,7 @@ def _compile_ttnn_kernel(
     source_lines=None,
     all_source_lines=None,
     kernel_line_offsets=None,
+    num_pipe_nets: int = 0,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -801,7 +808,7 @@ def _compile_ttnn_kernel(
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
-        num_pipe_nets=PipeNet._next_id,
+        num_pipe_nets=num_pipe_nets,
     )
 
     if verbose:
@@ -840,9 +847,58 @@ def _compile_ttnn_kernel(
     return compiled_kernel
 
 
+def _build_operation_pipenets(f: Callable, threads):
+    """Discover PipeNets reachable from the operation and its threads, build
+    the OperationPipeNets, validate it, and assign each Pipe its
+    operation-local pipe-net id for AST emission.
+
+    Discovery walks the operation function's closure plus each thread
+    function's closure (matching the spec's "captured by the operation
+    function" wording). PipeNets are deduplicated by `id()`, so a
+    captured PipeNet referenced from multiple threads contributes one
+    entry.
+    """
+    from _pipenets import OperationPipeNets
+    from .pipe import _pipe_to_pipe_use
+
+    seen: Dict[int, PipeNet] = {}
+
+    def visit(func):
+        if func is None:
+            return
+        closure = getattr(func, "__closure__", None) or ()
+        for cell in closure:
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(value, PipeNet) and id(value) not in seen:
+                seen[id(value)] = value
+        fn_globals = getattr(func, "__globals__", None) or {}
+        for value in fn_globals.values():
+            if isinstance(value, PipeNet) and id(value) not in seen:
+                seen[id(value)] = value
+
+    visit(f)
+    for thread in threads:
+        visit(getattr(thread, "__wrapped__", None))
+
+    graph = OperationPipeNets()
+    for net in seen.values():
+        net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
+        net.pipe_net_id = net_use.id
+        # Assign every Pipe in this net the operation-local id so the AST
+        # visitor's create_pipe emission uses the same id space.
+        for pipe in net.pipes:
+            pipe.pipe_net_id = net_use.id
+
+    graph.validate()
+    return graph
+
+
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, CircularBuffer, Pipe]]:
+) -> Dict[str, Union[int, DataflowBuffer, Pipe]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -863,7 +919,7 @@ def _collect_captures(
             return val
         elif is_ttnn_tensor(val):
             return val
-        elif isinstance(val, CircularBuffer):
+        elif isinstance(val, DataflowBuffer):
             return val
         elif isinstance(val, Pipe):
             return val
@@ -879,9 +935,9 @@ def _collect_captures(
 
 
 def _collect_cb_configs(threads):
-    """Extract CircularBuffer objects from thread closures, indexed by cb_index.
+    """Extract DataflowBuffer objects from thread closures, indexed by dfb index.
 
-    Returns a list of CircularBuffer objects indexed by cb_index. Each CB has
+    Returns a list of DataflowBuffer objects indexed by dfb index. Each DFB has
     shape, block_count, tensor (for dtype), and _cb_index attributes.
     """
     cb_configs_dict = {}
@@ -892,7 +948,7 @@ def _collect_cb_configs(threads):
             continue
         for cell in closure:
             val = cell.cell_contents
-            if isinstance(val, CircularBuffer):
+            if isinstance(val, DataflowBuffer):
                 cb_configs_dict[val._cb_index] = val
 
     if not cb_configs_dict:
@@ -1167,7 +1223,6 @@ def _compile_kernel(
     Returns:
         CompiledTTNNKernel ready for execution
     """
-    PipeNet._next_id = 0
     f_params = inspect.signature(f).parameters
 
     # Get kernel source location for error reporting
@@ -1219,7 +1274,7 @@ def _compile_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
-    from .circular_buffer import _reset_cb_counter, CircularBuffer
+    from .dataflow_buffer import _reset_cb_counter
     from .operators import _set_current_grid
 
     _reset_cb_counter()
@@ -1234,6 +1289,10 @@ def _compile_kernel(
             "No threads found. Define at least one @ttl.compute() or "
             "@ttl.datamovement() function inside your kernel."
         )
+
+    pipenets = _build_operation_pipenets(f, threads)
+
+    launch_grid = grid
 
     cb_configs = _collect_cb_configs(threads)
 
@@ -1313,6 +1372,13 @@ def _compile_kernel(
                 kernel_line_offsets[ct.name] = ct.line_offset
 
         module = Module.create(loc)
+        module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
+            [
+                IntegerAttr.get(IntegerType.get_signless(64, ctx), dim)
+                for dim in launch_grid
+            ],
+            ctx,
+        )
         if target_arch is not None:
             module.operation.attributes["ttl.target_arch"] = StringAttr.get(target_arch)
 
@@ -1388,6 +1454,8 @@ def _compile_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
+        pipeline_passes.append("ttl-verify-pipenet-guards")
+        pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:
             pipeline_passes.append(
                 f"ttl-validate-cb-budget{{l1-budget-override={l1_budget_override}}}"
@@ -1500,11 +1568,13 @@ def _compile_kernel(
         compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
 
-        # Compile to CompiledTTNNKernel for ttnn.generic_op
+        # Compile to CompiledTTNNKernel for ttnn.generic_op.
+        # `launch_grid` may be smaller than `grid` when grid="auto" reduces
+        # the launch to the PipeNet work extent; only core_ranges uses it.
         compiled_kernel = _compile_ttnn_kernel(
             module,
             args,
-            grid,
+            launch_grid,
             num_outs,
             thread_tensor_indices,
             cb_configs,
@@ -1514,6 +1584,7 @@ def _compile_kernel(
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
+            num_pipe_nets=len(pipenets.pipe_nets),
         )
         return compiled_kernel
 
@@ -1699,6 +1770,7 @@ __all__ = [
     "compute",
     "datamovement",
     "TensorBlock",
+    "DataflowBuffer",
     "CircularBuffer",
     "CopyTransferHandler",
     "copy",

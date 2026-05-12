@@ -59,6 +59,8 @@ def compile_ttl_to_ttkernel(
         f"func.func({func_pipeline}),"
         f"ttl-finalize-dfb-indices,"
         f"func.func(ttl-annotate-cb-associations),"
+        f"ttl-verify-pipenet-guards,"
+        f"ttl-erase-pipenet-scopes,"
         f"ttl-validate-cb-budget,"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"

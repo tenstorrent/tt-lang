@@ -1,4 +1,17 @@
-# tt-lang
+<div align="center">
+
+<h1>
+
+[Hardware](https://tenstorrent.com/cards/) | [Documentation](https://docs.tenstorrent.com/tt-lang/) | [Discord](https://discord.gg/tenstorrent) | [Join Us](https://job-boards.greenhouse.io/tenstorrent?gh_src=22e462047us) | [Issues](https://github.com/tenstorrent/tt-lang/issues)
+
+</h1>
+
+<picture>
+  <img alt="TT-Lang" src="docs/public/images/ttlang_logo.png" height="220">
+</picture>
+
+</div>
+<br>
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 ![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
@@ -6,11 +19,18 @@
 
 A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current simulator and compiler support.
 
+-----
+**Contents:** [Vision](#1-vision) · [Quick Start](#2-quick-start) · [Documentation](#3-documentation) · [Contributing](#4-contributing) · [Support](#5-support) · [License](#6-license)
+
+-----
+
 ## 1. Vision
 
 TT-Lang joins the Tenstorrent software ecosystem as an expressive yet ergonomic middle ground between [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html) and [TT-Metalium](https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/index.html), aiming to provide a unified entrypoint with integrated simulation, performance analysis, and AI-assisted development tooling.
 
-![ecosystem graph](docs/ecosystem-diagram.png)
+<div align="center">
+  <img alt="ecosystem graph" src="docs/public/images/ecosystem-diagram.png" height="360">
+</div>
 
 The language is designed to support generative AI workflows and a robust tooling ecosystem: Python as the host language enables AI tools to translate GPU DSL kernels (Triton, CUDA, cuTile, TileLang) to Tenstorrent hardware more reliably than direct TT-Metalium translation, while tight integration with functional simulation will allow AI agents to propose kernel implementations, validate correctness, and iterate on configurations autonomously. Developers should be able to catch errors and performance issues in their IDE rather than on hardware, with a functional simulator to surface bugs early. Line-by-line performance metrics and data flow graphs can guide both programmers and AI agents to easily spot bottle necks and optimization opportunities.
 
@@ -224,10 +244,9 @@ cd third-party/llvm-project && git fetch && git checkout <llvm-sha> && cd ../..
 
 Update tt-metal to the compatible version. The canonical tt-metal version
 lives in `third-party/tt-metal-version` (a tt-metal release tag, e.g.
-`v0.69.0`); the submodule SHA, the `ttnn` version under
-`[project.optional-dependencies] device` in `pyproject.toml`, and the docker
-`TT_METAL_TAG` build arg are all derived from it. Edit the file and run the
-verifier in update mode to check out the submodule at the matching commit:
+`v0.69.0`); see [build.md](docs/sphinx/build.md#updating-tt-metal) for the
+full list of artifacts derived from it. Edit the file and run the verifier
+in update mode to check out the submodule at the matching commit:
 
 ```bash
 echo v0.69.0 > third-party/tt-metal-version

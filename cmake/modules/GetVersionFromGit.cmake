@@ -5,13 +5,17 @@
 
 find_package(Git QUIET)
 
+# Fallback used when git is unavailable or no v* tag is reachable.
+# Deliberately not a plausible-looking release version.
+set(_TTLANG_VERSION_FALLBACK "0.0.0+unknown")
+
 if(GIT_FOUND)
   execute_process(
     COMMAND ${GIT_EXECUTABLE} describe --tags --match "v[0-9]*" --abbrev=0
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     OUTPUT_VARIABLE GIT_TAG
     OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
+    ERROR_VARIABLE GIT_DESCRIBE_ERR
   )
 
   if(GIT_TAG)
@@ -31,13 +35,11 @@ if(GIT_FOUND)
     set(_local "${CMAKE_MATCH_4}")
     set(_base "${TTLANG_VERSION_MAJOR}.${TTLANG_VERSION_MINOR}.${TTLANG_VERSION_PATCH}")
 
-    # Get commit count since tag for dev builds
     execute_process(
       COMMAND ${GIT_EXECUTABLE} rev-list ${GIT_TAG}..HEAD --count
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
       OUTPUT_VARIABLE COMMITS_SINCE_TAG
       OUTPUT_STRIP_TRAILING_WHITESPACE
-      ERROR_QUIET
     )
 
     if(COMMITS_SINCE_TAG AND NOT COMMITS_SINCE_TAG EQUAL "0")
@@ -46,12 +48,26 @@ if(GIT_FOUND)
       set(TTLANG_VERSION "${_base}${_local}")
     endif()
   else()
-    # Fallback if no tags
-    set(TTLANG_VERSION "0.2.0.dev0")
+    message(WARNING
+      "tt-lang version detection: git describe found no v* tag reachable "
+      "from HEAD in ${CMAKE_SOURCE_DIR}. Using fallback "
+      "'${_TTLANG_VERSION_FALLBACK}'.\n"
+      "Likely causes and fixes:\n"
+      "  - Tags not fetched: run `git fetch --tags origin`.\n"
+      "  - Shallow clone with no tags in history: run "
+      "`git fetch --unshallow --tags origin`.\n"
+      "  - HEAD predates the first v* tag: rebase or merge a branch that "
+      "includes one (e.g. `git merge origin/main`).\n"
+      "git stderr: ${GIT_DESCRIBE_ERR}")
+    set(TTLANG_VERSION "${_TTLANG_VERSION_FALLBACK}")
   endif()
 else()
-  # No git, use default
-  set(TTLANG_VERSION "0.2.0.dev0")
+  message(WARNING
+    "tt-lang version detection: git executable not found. Using fallback "
+    "'${_TTLANG_VERSION_FALLBACK}'.\n"
+    "Install git (e.g. `apt-get install git`) and re-run cmake to embed an "
+    "accurate version.")
+  set(TTLANG_VERSION "${_TTLANG_VERSION_FALLBACK}")
 endif()
 
 message(STATUS "tt-lang version: ${TTLANG_VERSION}")
