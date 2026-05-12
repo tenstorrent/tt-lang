@@ -635,7 +635,7 @@ class TestSimStats:
     """Test ttlang-sim-stats post-processing tool."""
 
     _REPO = Path(__file__).parent.parent.parent
-    _ENV = {"PYTHONPATH": "python"}
+    _ENV = {"PYTHONPATH": "python", "TTLANG_SIM_ONLY": "1"}
 
     def _run_sim(self, *args: str, trace_path: Path) -> subprocess.CompletedProcess:
         return subprocess.run(

@@ -9,12 +9,18 @@ from ttl.version import __version__
 # `ttl._sim_only_marker` is shipped by the tt-lang-sim wheel and absent from
 # the tt-lang wheel. Detection is marker-based, not try/except, so a broken
 # hardware install still raises ImportError instead of silently degrading.
+# `TTLANG_SIM_ONLY=1` is the source-tree equivalent for environments that run
+# the simulator without installing the sim wheel (e.g. the test-sim CI job).
+# The env var is only read when the marker is absent; it has no effect on an
+# installed sim wheel.
 try:
     import ttl._sim_only_marker  # type: ignore[reportMissingImports] # noqa: F401
 
     _SIM_ONLY_INSTALL = True
 except ImportError:
-    _SIM_ONLY_INSTALL = False
+    import os as _os
+
+    _SIM_ONLY_INSTALL = _os.environ.get("TTLANG_SIM_ONLY", "0") == "1"
 
 if _SIM_ONLY_INSTALL:
     _elementwise_all: list[str] = []
