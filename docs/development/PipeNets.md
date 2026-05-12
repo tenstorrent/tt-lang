@@ -608,3 +608,4 @@ rejection contract; it `pytest.skip`s on the simulator runner.
   group mid-kernel is not a tt-metal-supported operation; data-
   dependent routing would be expressed as point-to-point unicast with
   runtime destination, not as a PipeNet.
+  
