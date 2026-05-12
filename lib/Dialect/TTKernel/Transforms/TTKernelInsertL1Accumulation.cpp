@@ -178,9 +178,6 @@ struct TTKernelInsertL1AccumulationPass
       if (!loop || !visitedLoops.insert(loop).second) {
         return;
       }
-      // Idempotent: skip if a PackReconfigL1AccOp sits immediately
-      // before the loop (pre-group reconfig) or inside the loop body
-      // (per-iteration enable).
       bool alreadyProcessed = false;
       if (auto *prev = loop->getPrevNode()) {
         alreadyProcessed = isa<ttk::PackReconfigL1AccOp>(prev);
@@ -194,7 +191,7 @@ struct TTKernelInsertL1AccumulationPass
       if (alreadyProcessed) {
         return;
       }
-      // Max reduce is not additive — L1 acc would corrupt the running max.
+      // L1 acc adds; max reduce would be corrupted by an additive store.
       bool hasMaxReduce = false;
       loop->walk([&](ttk::ReduceTileOp reduceOp) {
         if (reduceOp.getReduceType() == ttk::ReduceType::Max) {
@@ -206,10 +203,9 @@ struct TTKernelInsertL1AccumulationPass
       }
     });
 
-    // The enable guard goes after the last pack in the first iteration.
-    // Packs live inside tile_regs_acquire/release sections, which may be
-    // nested in subblock loops. The top-level ancestor of the last release
-    // in the loop body is the correct insertion point.
+    // Insertion point for the per-iteration enable: the top-level ancestor
+    // of the last tile_regs_release in the loop body, since packs may be
+    // nested in subblock loops.
     llvm::SmallDenseMap<Operation *, Operation *> l1AccEnablePoint;
     for (auto loop : l1AccLoops) {
       Operation *lastReleaseAncestor = nullptr;
@@ -253,23 +249,20 @@ struct TTKernelInsertL1AccumulationPass
           continue;
         }
 
-        // The root loop's per-iteration enable is redundant when the
-        // reconfig before the group already enabled L1 acc.
         if (idx == 0 && l1HasPriorValue) {
           continue;
         }
 
-        // Sibling loops (not the first in the group) need an
-        // unconditional enable immediately before the loop because the
-        // init ops between sibling loops reset packer state.
+        // Init ops between sibling loops reset packer state, so each
+        // non-first loop needs an unconditional enable.
         if (idx > 0) {
           builder.setInsertionPoint(loop);
           Value enableFlag = buildI32Const(builder, loop->getLoc(), 1);
           ttk::PackReconfigL1AccOp::create(builder, loop->getLoc(), enableFlag);
         }
 
-        // Per-iteration enable: fires once after the first iteration's
-        // last pack so subsequent iterations accumulate.
+        // Enable runs once after the first iteration's last pack so
+        // subsequent iterations accumulate.
         Operation *afterOp = iter->second;
         Location loc = afterOp->getLoc();
         builder.setInsertionPointAfter(afterOp);
@@ -282,9 +275,7 @@ struct TTKernelInsertL1AccumulationPass
         ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
       }
 
-      // Reconfig L1 acc to disabled immediately after the group's scope
-      // end (typically the cb_push_back). Reuse the before-group constant
-      // when it already holds 0; otherwise create a fresh 0 constant.
+      // Disable L1 acc after the group's scope end (typically cb_push_back).
       builder.setInsertionPointAfter(group.scopeEnd);
       Value afterGroupFlag = l1HasPriorValue
                                  ? buildI32Const(builder, disableLoc, 0)

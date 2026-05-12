@@ -234,8 +234,8 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                                 pass
                             case _:
                                 raise RuntimeError(
-                                    f"Template {tmpl} has invalid thread_type '{thread_type}'. "
-                                    f"Expected ThreadType enum (COMPUTE or DM)."
+                                    f"Template {tmpl} has invalid kernel role '{thread_type}'. "
+                                    f"Expected COMPUTE or DM."
                                 )
 
                         # Bind template to core context

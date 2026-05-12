@@ -18,11 +18,8 @@ namespace nb = nanobind;
 //===----------------------------------------------------------------------===//
 // Type/Attribute Class Helper Functions
 //===----------------------------------------------------------------------===//
-// These functions provide standardized Python bindings for MLIR types and
-// attributes, following the pattern used in tt-mlir.
 
-/// Helper function to create a nanobind class for MLIR attributes with
-/// automatic downcasting support.
+/// Create a nanobind class for an MLIR attribute with downcasting support.
 template <typename T>
 nb::class_<T> tt_attribute_class(nb::module_ &m, const char *class_name) {
   nb::class_<T> cls(m, class_name);
@@ -37,8 +34,7 @@ nb::class_<T> tt_attribute_class(nb::module_ &m, const char *class_name) {
   return cls;
 }
 
-/// Helper function to create a nanobind class for MLIR types with
-/// automatic downcasting support.
+/// Create a nanobind class for an MLIR type with downcasting support.
 template <typename T>
 nb::class_<T> tt_type_class(nb::module_ &m, const char *class_name) {
   nb::class_<T> cls(m, class_name);

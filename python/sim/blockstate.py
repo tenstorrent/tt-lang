@@ -10,7 +10,7 @@ transition table used by Block to validate correct usage patterns.
 """
 
 from enum import Enum, auto
-from typing import Dict, Set, Tuple
+from typing import Dict, Iterable, Optional, Set, Tuple
 
 
 class AccessState(Enum):
@@ -61,9 +61,230 @@ class ExpectedOp(Enum):
     DONE = auto()  # No more operations expected
 
 
+# ------------------------------------------------------------------
+# User-facing error message helpers
+# ------------------------------------------------------------------
+
+
+def _sorted_op_names(ops: Iterable[ExpectedOp]) -> str:
+    return ", ".join(op.name for op in sorted(ops, key=lambda x: x.name))
+
+
+# Short "next op" hints (per ExpectedOp), appended after "Next:" in mismatch errors.
+_EXPECTED_OP_GUIDANCE: Dict[ExpectedOp, str] = {
+    ExpectedOp.COPY_SRC: "copy(block, dest_tensor) with this block as the source",
+    ExpectedOp.COPY_DST: "copy(src, block) with this block as the destination",
+    ExpectedOp.TX_WAIT: "wait until the copy on this block completes",
+    ExpectedOp.PUSH: "push() when the reserve() buffer is written and the producer is done",
+    ExpectedOp.POP: "pop() when the wait() buffer is no longer needed",
+    ExpectedOp.STORE: "block.store(…) as destination (compute path)",
+    ExpectedOp.STORE_SRC: "out_block.store(this_block, …) with this block as the source operand",
+    ExpectedOp.DONE: "none (block finished)",
+}
+
+
+def _guidance_for_expected_ops(ops: Set[ExpectedOp]) -> str:
+    parts = [
+        _EXPECTED_OP_GUIDANCE[o]
+        for o in sorted(ops, key=lambda x: x.name)
+        if o in _EXPECTED_OP_GUIDANCE
+    ]
+    if not parts:
+        return "see dataflow block contract in docs"
+    if len(parts) == 1:
+        return parts[0]
+    return "; ".join(parts)
+
+
+def _validate_mismatch_hint(
+    attempted: ExpectedOp,
+    expected_ops: Set[ExpectedOp],
+    access: AccessState,
+    acquisition: BlockAcquisition,
+    thread: ThreadType,
+) -> Optional[str]:
+    """What the mistake usually means; None selects the generic secondary sentence."""
+    if attempted == ExpectedOp.PUSH and acquisition == BlockAcquisition.WAIT:
+        return "push() is for reserve() only; a wait() block is closed with pop()."
+    if attempted == ExpectedOp.POP and acquisition == BlockAcquisition.RESERVE:
+        return "pop() is for wait() only; a reserve() block is closed with push()."
+    if acquisition == BlockAcquisition.WAIT and access in (
+        AccessState.MR,
+        AccessState.RW,
+    ):
+        if thread == ThreadType.DM:
+            if attempted == ExpectedOp.COPY_DST and ExpectedOp.COPY_SRC in expected_ops:
+                return (
+                    "After wait(), data is already in the block: copy *from* it first, not into it (unless the "
+                    "state machine already allows a destination copy)."
+                )
+        if thread == ThreadType.COMPUTE:
+            if attempted == ExpectedOp.STORE and ExpectedOp.STORE_SRC in expected_ops:
+                return (
+                    "A wait() block is not written in place with store(...); pass this block as the source to "
+                    "another block's store (out_block.store(this_block, …))."
+                )
+    if access == AccessState.NAW:
+        return "A copy may still be in flight (NAW); wait for it to finish before other uses."
+    if access == AccessState.ROR and attempted in (
+        ExpectedOp.COPY_DST,
+        ExpectedOp.STORE,
+    ):
+        return (
+            "This block is a copy source while other copies may still read from it (ROR); "
+            "wait for those copies to finish before writing into it."
+        )
+    if access == AccessState.MW and acquisition == BlockAcquisition.RESERVE:
+        if attempted == ExpectedOp.COPY_SRC:
+            return "reserve() view is still empty: copy or store into it before using it as a copy source."
+    return None
+
+
+def format_validate_mismatch(
+    operation: str,
+    attempted: ExpectedOp,
+    expected_ops: Set[ExpectedOp],
+    access: AccessState,
+    acquisition: BlockAcquisition,
+    thread: ThreadType,
+    pending_copy_location: Optional[Tuple[str, int]] = None,
+) -> str:
+    expected_names = _sorted_op_names(expected_ops)
+    hint = _validate_mismatch_hint(attempted, expected_ops, access, acquisition, thread)
+    follow = _guidance_for_expected_ops(expected_ops)
+    body = [
+        f"Cannot perform {operation}: not a valid next dataflow step for this block.",
+    ]
+    if hint:
+        body.append(hint)
+    else:
+        body.append(
+            "Call does not match the next allowed op in the producer/consumer order."
+        )
+    if pending_copy_location is not None and access in (
+        AccessState.NAW,
+        AccessState.ROR,
+    ):
+        path, line = pending_copy_location
+        body.append(
+            f"Where: the copy involving this block was requested at {path}:{line}."
+        )
+    body.append(f"Next: {follow}.")
+    body.append(
+        f"Details: expected one of [{expected_names}], attempted {attempted.name}, "
+        f"acquisition={acquisition.name}, kernel={thread.name}, access={access.name}."
+    )
+    return "\n\n".join(body)
+
+
+def format_block_finished_error(operation: str, access: AccessState) -> str:
+    return (
+        f"Cannot perform {operation}: block is no longer active (push/pop already, or not initialized here).\n\n"
+        f"Next: new block from reserve() or wait(); do not reuse after push()/pop().\n\n"
+        f"Details: access={access.name}, expected-ops=empty (DONE)."
+    )
+
+
+def _read_lead(name: Optional[str]) -> str:
+    """Opening clause so the user always sees which buffer block the error is about (optional label)."""
+    if name and str(name).strip():
+        return f"Cannot read from this buffer block (name: {name!r})"
+    return "Cannot read from this buffer block"
+
+
+def _write_lead(name: Optional[str]) -> str:
+    if name and str(name).strip():
+        return f"Cannot write to this buffer block (name: {name!r})"
+    return "Cannot write to this buffer block"
+
+
+def _pending_copy_where_line(
+    access: AccessState,
+    pending_copy_location: Optional[Tuple[str, int]],
+) -> str:
+    """Extra line when NAW/ROR and we recorded the user callsite of copy(...) involving this block."""
+    if pending_copy_location is None:
+        return ""
+    path, line = pending_copy_location
+    if access == AccessState.NAW:
+        return f"\n\nWhere: copy into this block was requested at {path}:{line}."
+    if access == AccessState.ROR:
+        return f"\n\nWhere: copy from this block was requested at {path}:{line}."
+    return ""
+
+
+def format_cannot_read_block(
+    access: AccessState,
+    expected_ops: Set[ExpectedOp],
+    acquisition: BlockAcquisition,
+    block_name: Optional[str] = None,
+    pending_copy_location: Optional[Tuple[str, int]] = None,
+) -> str:
+    lead = _read_lead(block_name)
+    exp = _sorted_op_names(expected_ops) if expected_ops else "DONE"
+    if access == AccessState.MW:
+        return (
+            f"{lead}: MW (must-write) — not loaded yet; copy or store into this block first.\n\n"
+            f"Next: see allowed ops in Details.\n\n"
+            f"Details: state=MW, next allowed [{exp}], acquisition={acquisition.name}."
+        )
+    if access == AccessState.NAW:
+        where = _pending_copy_where_line(access, pending_copy_location)
+        return (
+            f"{lead}: NAW — a copy into this block may still be in flight; wait for that copy to complete before reading "
+            f"(same constraint as the copy-destination write lock for writes on this block)."
+            f"{where}\n\n"
+            f"Details: state=NAW, next allowed [{exp}]."
+        )
+    if access == AccessState.OS:
+        return (
+            f"{lead}: OS — out of scope (not readable after the block is returned with push() or pop()).\n\n"
+            f"Next: do not use this block handle again; get a new block for more work (reserve() or wait()) if needed."
+            f"\n\n"
+            f"Details: state=OS, next allowed [{exp}], acquisition={acquisition.name}."
+        )
+    return f"{lead}. Details: state={access.name}, next allowed [{exp}], acquisition={acquisition.name}."
+
+
+def format_cannot_write_block(
+    access: AccessState,
+    expected_ops: Set[ExpectedOp],
+    block_name: Optional[str] = None,
+    pending_copy_location: Optional[Tuple[str, int]] = None,
+) -> str:
+    lead = _write_lead(block_name)
+    exp = _sorted_op_names(expected_ops) if expected_ops else "DONE"
+    if access == AccessState.NAW:
+        where = _pending_copy_where_line(access, pending_copy_location)
+        return (
+            f"{lead}: NAW, copy-destination lock (copy lock error) — an in-flight copy is potentially still writing; "
+            f"wait for that copy to complete before the next use."
+            f"{where}\n\n"
+            f"Next: then follow the next allowed op in Details.\n\n"
+            f"Details: state=NAW, next allowed [{exp}]."
+        )
+    if access == AccessState.ROR:
+        where = _pending_copy_where_line(access, pending_copy_location)
+        return (
+            f"{lead}: in ROR with in-flight copy-source uses; no overwrite until each in-flight copy that reads from "
+            f"this block has completed (use the wait your copy API provides for each one)."
+            f"{where}\n\n"
+            f"Next: then follow the next allowed op in Details.\n\n"
+            f"Details: state=ROR, next allowed [{exp}]."
+        )
+    if access == AccessState.OS:
+        return (
+            f"{lead}: OS — not writable; the block is out of scope (returned after push or pop on this DFB path)."
+            f"\n\n"
+            f"Next: not applicable; use a new block from reserve() or wait().\n\n"
+            f"Details: state=OS, next allowed [{exp}]."
+        )
+    return f"{lead}. Details: state={access.name}, next allowed [{exp}]."
+
+
 # State machine transition table
 # Organized by (acquisition, thread_type) -> {(operation, access_state): (new_access_state, new_expected_ops)}
-# This structure makes it easy to see all transitions for a particular acquisition/thread combination
+# This structure makes it easy to see all transitions for a particular acquisition/kernel-role combination
 STATE_TRANSITIONS: Dict[
     Tuple[BlockAcquisition, ThreadType],
     Dict[
@@ -259,28 +480,34 @@ class BlockStateMachine:
     # Validation
     # ------------------------------------------------------------------
 
-    def validate(self, operation: str, expected_op: ExpectedOp) -> None:
+    def validate(
+        self,
+        operation: str,
+        expected_op: ExpectedOp,
+        pending_copy_location: Optional[Tuple[str, int]] = None,
+    ) -> None:
         """Raise RuntimeError if expected_op is not currently allowed.
 
         Args:
             operation: Human-readable operation name for error messages.
             expected_op: The operation being attempted.
+            pending_copy_location: User (file, line) of copy(...) involving this block while NAW/ROR, if known.
         """
         if not self._expected_ops:
             raise RuntimeError(
-                f"Cannot perform {operation}: Block is in DONE/uninitialized state. "
-                f"No more operations are expected on this block. "
-                f"Current state: {self._access_state.name}"
+                format_block_finished_error(operation, self._access_state)
             )
         if expected_op not in self._expected_ops:
-            expected_names = ", ".join(
-                op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
-            )
             raise RuntimeError(
-                f"Cannot perform {operation}: Expected one of [{expected_names}], "
-                f"but got {operation}. "
-                f"Current state: Acquisition={self._acquisition.name}, "
-                f"Thread={self._thread_type.name}, Access={self._access_state.name}"
+                format_validate_mismatch(
+                    operation,
+                    expected_op,
+                    self._expected_ops,
+                    self._access_state,
+                    self._acquisition,
+                    self._thread_type,
+                    pending_copy_location=pending_copy_location,
+                )
             )
 
     # ------------------------------------------------------------------
@@ -292,6 +519,7 @@ class BlockStateMachine:
         operation_key: str,
         operation_display: str,
         expected_op: ExpectedOp,
+        pending_copy_location: Optional[Tuple[str, int]] = None,
     ) -> None:
         """Execute a state-machine transition.
 
@@ -303,8 +531,9 @@ class BlockStateMachine:
             operation_key: Table lookup key (e.g. "copy_src", "tx_wait").
             operation_display: Human-readable name used in error messages.
             expected_op: The operation being attempted (for validation).
+            pending_copy_location: User callsite for copy involving this block (NAW/ROR), if known.
         """
-        self.validate(operation_display, expected_op)
+        self.validate(operation_display, expected_op, pending_copy_location)
 
         # ROR(N) in-state transitions: copy_src increments N; tx_wait
         # decrements N.  Only the final tx_wait (N == 1) falls through to the
@@ -324,9 +553,8 @@ class BlockStateMachine:
 
         if context_transitions is None:
             raise RuntimeError(
-                f"Impossible! No transitions defined for: "
-                f"Acquisition={self._acquisition.name}, "
-                f"Thread={self._thread_type.name}"
+                f"No state-machine table for this acquisition/kernel role (simulator bug).\n\n"
+                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}."
             )
 
         transition_key = (operation_key, self._access_state)
@@ -334,10 +562,10 @@ class BlockStateMachine:
 
         if transition is None:
             raise RuntimeError(
-                f"Impossible! Invalid state for {operation_display}: "
-                f"Acquisition={self._acquisition.name}, "
-                f"Thread={self._thread_type.name}, "
-                f"Access={self._access_state.name}"
+                f"Invalid transition: {operation_display!r} in access={self._access_state.name} for "
+                f"{self._acquisition.name}/{self._thread_type.name} (internal inconsistency: validate() should have "
+                f"failed first; file a repro).\n\n"
+                f"Details: operation_key={operation_key!r}, access={self._access_state.name}."
             )
 
         new_access_state, new_expected_ops = transition
@@ -346,19 +574,21 @@ class BlockStateMachine:
             self._ror_count = 1
         self._expected_ops = new_expected_ops
 
-    def transition_push(self) -> None:
+    def transition_push(
+        self,
+        pending_copy_location: Optional[Tuple[str, int]] = None,
+    ) -> None:
         """Validate and execute the push() transition (RESERVE blocks only).
 
         Raises:
             RuntimeError: If PUSH is not expected, or if this is not a RESERVE block.
         """
-        self.validate("push()", ExpectedOp.PUSH)
+        self.validate("push()", ExpectedOp.PUSH, pending_copy_location)
         if self._acquisition != BlockAcquisition.RESERVE:
             raise RuntimeError(
-                f"Cannot perform push(): push() is only valid for reserve() blocks, "
-                f"got {self._acquisition.name} block. "
-                f"Current state: Thread={self._thread_type.name}, "
-                f"Access={self._access_state.name}"
+                f"push() only for reserve() blocks; wait() blocks use pop() on the consumer.\n\n"
+                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}, "
+                f"access={self._access_state.name}."
             )
         self._access_state = AccessState.OS
         self._expected_ops = set()
@@ -372,9 +602,14 @@ class BlockStateMachine:
         must eventually reach a store() call, which is validated at program
         termination via DataflowBuffer.validate_no_pending_blocks().
         """
-        self.transition("assign_src", "assign_src", ExpectedOp.STORE_SRC)
+        self.transition(
+            "assign_src", "assign_src", ExpectedOp.STORE_SRC, pending_copy_location=None
+        )
 
-    def transition_pop(self) -> None:
+    def transition_pop(
+        self,
+        pending_copy_location: Optional[Tuple[str, int]] = None,
+    ) -> None:
         """Validate and execute the pop() transition (WAIT blocks only).
 
         The block must be in MR, RW, or A state.
@@ -383,18 +618,17 @@ class BlockStateMachine:
             RuntimeError: If POP is not expected, if this is not a WAIT block,
                 or if the current access state is not MR / RW / A.
         """
-        self.validate("pop()", ExpectedOp.POP)
+        self.validate("pop()", ExpectedOp.POP, pending_copy_location)
         if self._acquisition != BlockAcquisition.WAIT:
             raise RuntimeError(
-                f"Cannot perform pop(): pop() is only valid for wait() blocks, "
-                f"got {self._acquisition.name} block. "
-                f"Current state: Thread={self._thread_type.name}, "
-                f"Access={self._access_state.name}"
+                f"pop() only for wait() blocks; reserve() blocks use push() on the producer.\n\n"
+                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}, "
+                f"access={self._access_state.name}."
             )
         if self._access_state not in (AccessState.MR, AccessState.RW):
             raise RuntimeError(
-                f"Cannot perform pop(): Invalid access state {self._access_state.name}. "
-                f"Expected MR (never used) or RW (used as source)."
+                f"pop() only from MR or RW; current access is {self._access_state.name}.\n\n"
+                f"Details: need MR (unused as source) or RW (read at least once)."
             )
         self._access_state = AccessState.OS
         self._expected_ops = set()

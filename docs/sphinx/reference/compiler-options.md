@@ -13,10 +13,10 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
-| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from circular buffers. When disabled, binary ops use the SFPU path. |
+| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from dataflow buffers. When disabled, binary ops use the SFPU path. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
-| `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same CB with contiguous DST and CB indices into a single `pack_tile_block` call. |
+| `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs at fusion split points where an operation requires DFB-attached inputs (reduce, broadcast, matmul, transpose). When disabled, the compiler emits an error if any fused computation requires an intermediate DFB. |
 
@@ -85,7 +85,7 @@ and layout:
 | `indexing_maps` | `list[Callable]` | `None` | Lambda functions for tile indexing |
 | `iterator_types` | `list[str]` | `None` | `"parallel"` or `"reduction"` per dimension |
 | `num_outs` | `int` | `1` | Number of output tensor arguments |
-| `memory_space` | `str` | `"L1"` | Memory space for circular buffers: `"L1"` or `"DRAM"` |
+| `memory_space` | `str` | `"L1"` | Memory space for dataflow buffers: `"L1"` or `"DRAM"` |
 | `tiled` | `bool` | `True` | Use tiled tensor layout |
 
 ---
@@ -120,7 +120,7 @@ The pipeline runs these passes in order:
 
 - `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
 - `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
-- `ttl-insert-cb-sync` — insert CB wait/pop/reserve/push around compute regions
+- `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions
 - `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
 - `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
@@ -129,7 +129,7 @@ The pipeline runs these passes in order:
 - `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
 - `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
 - `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
-- `ttl-annotate-cb-associations` — annotate block args with CB indices
+- `ttl-annotate-cb-associations` — annotate block args with DFB indices
 - `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
 - `ttkernel-insert-inits` — insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
@@ -176,7 +176,7 @@ merging.
 |---|---|---|---|
 | `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): f32=8, f16/bf16=16. Double-buffering (default): f32=4, f16/bf16=8. |
 | `separate-output-region` | bool | `false` | Allocate outputs in a separate DST region (needed for reductions and some loop optimizations). |
-| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul when both operands come from CBs. When disabled, binary ops use the SFPU path. |
+| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul when both operands come from DFBs. When disabled, binary ops use the SFPU path. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16 enable-fpu-binary-ops=0})'
@@ -197,7 +197,7 @@ ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=t
 
 #### `ttl-dump-cb-flow-graph`
 
-Analyze circular buffer producer/consumer relationships and dump the flow graph.
+Analyze dataflow buffer producer/consumer relationships and dump the flow graph.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

@@ -58,8 +58,8 @@ static int64_t getInitAffinity(Operation *op) {
       src = extract.getTensor();
     }
     if (auto cb = getAttachedCB(src)) {
-      if (auto bindCb = cb.getDefiningOp<BindCBOp>()) {
-        return bindCb.getCbIndex().getSExtValue();
+      if (auto cbIndex = getCBIndex(cb)) {
+        return cbIndex.value();
       }
     }
   }
