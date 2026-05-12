@@ -13,7 +13,8 @@ PipeNet supports the spec's callback API:
     net.if_dst(lambda pipe: ttl.copy(pipe, blk))
 """
 
-from typing import Callable, List, Tuple, Union
+import inspect
+from typing import Callable, List, Optional, Tuple, Union
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -170,10 +171,12 @@ class PipeNet:
     for conditional execution based on core coordinates.
 
     Active set: the union of every pipe's source coordinate and destination
-    range across all PipeNets in the operation. Cores outside the active set
-    do not participate in pipe communication and skip every kernel-thread
-    body, so pipe coordinates should be sized from the operation's work
-    extent (not the launch extent given by @ttl.operation(grid=...)).
+    range. Cores outside the active set do not participate in pipe
+    communication; under grid="full" or any explicit launch wider than the
+    work extent, the user must guard pipe-coupled regions with
+    `if net.is_src()`, `if net.is_dst()`, or `if net.is_active()` so the
+    `ttl-verify-pipenet-guards` pass accepts the program. Pipe coordinates
+    should be sized from the operation's work extent, not the launch extent.
 
     A PipeNet's pipes must all be the same kind (all unicast or all
     multicast). The TTKernel lowering allocates one semaphore pair per
@@ -213,6 +216,16 @@ class PipeNet:
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self.pipes = pipes
+        # Capture the user's call site so `ttl.create_pipe` ops can carry
+        # the declaration location.
+        self._source_file: Optional[str] = None
+        self._source_line: Optional[int] = None
+        try:
+            frame = inspect.stack()[1]
+            self._source_file = frame.filename
+            self._source_line = frame.lineno
+        except (IndexError, AttributeError):
+            pass
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
@@ -255,5 +268,32 @@ class PipeNet:
         # which detects calls to this method and handles them specially.
         raise RuntimeError(
             "PipeNet.if_dst() should only be called inside a TTL kernel. "
+            "The compiler handles this method specially."
+        )
+
+    def is_src(self) -> bool:
+        """Boolean predicate: current node is a source of any pipe in this net.
+
+        Lowers to `ttl.is_src` and is recognized structurally by the
+        `ttl-verify-pipenet-guards` pass, so it can be used as the condition
+        of an `if` to gate pipe-coupled work."""
+        raise RuntimeError(
+            "PipeNet.is_src() should only be called inside a TTL kernel. "
+            "The compiler handles this method specially."
+        )
+
+    def is_dst(self) -> bool:
+        """Boolean predicate: current node is a destination of any pipe in
+        this net. Lowers to `ttl.is_dst`."""
+        raise RuntimeError(
+            "PipeNet.is_dst() should only be called inside a TTL kernel. "
+            "The compiler handles this method specially."
+        )
+
+    def is_active(self) -> bool:
+        """Boolean predicate: current node is either a source or a
+        destination of any pipe in this net. Lowers to `ttl.is_active`."""
+        raise RuntimeError(
+            "PipeNet.is_active() should only be called inside a TTL kernel. "
             "The compiler handles this method specially."
         )

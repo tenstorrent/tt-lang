@@ -2,14 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression for issue #541: nodes outside the PipeNet active set must skip
-every kernel function body even when grid="auto" launches a larger grid than
-the pipe-defined work extent.
+"""Regression for issue #541: a launch grid larger than the PipeNet work
+extent must produce correct results when the user wraps pipe-coupled work
+in `if net.is_active():`.
 
-The kernels here define pipes against the work extent (M_BLOCKS, N_BLOCKS),
-not the launch grid extent. Without the active-set guard, nodes outside the
-work rectangle execute the kernel body with out-of-bounds tensor indices and
-break the multicast handshake.
+The kernels here define pipes against the work extent (M_BLOCKS, N_BLOCKS).
+With `grid="full"` the launch covers the entire device compute grid; nodes
+outside the active set short-circuit through the explicit `is_active()`
+guard rather than executing the body with out-of-bounds tensor indices or
+breaking the multicast handshake.
 """
 
 # REQUIRES: ttnn
@@ -43,7 +44,7 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def small_mcast_matmul(a, w, out):
         a_pipes = [
             ttl.Pipe(src=(0, row), dst=(slice(0, N_BLOCKS), row))
@@ -64,57 +65,64 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.compute()
         def compute():
-            with out_cb.reserve() as out_blk:
-                a_blk = a_cb.wait()
-                b_blk = b_cb.wait()
-                out_blk.store(a_blk @ b_blk)
-                a_blk.pop()
-                b_blk.pop()
+            if mcast_a_net.is_active():
+                with out_cb.reserve() as out_blk:
+                    a_blk = a_cb.wait()
+                    b_blk = b_cb.wait()
+                    out_blk.store(a_blk @ b_blk)
+                    a_blk.pop()
+                    b_blk.pop()
 
         @ttl.datamovement()
         def dm_read():
-            node_n, node_m = ttl.node(dims=2)
-            mb = node_m
-            mr = mb * BLOCK_M
-            nb = node_n
-            nc = nb * BLOCK_N
-            for kb in range(K_BLOCKS):
-                kc = kb * BLOCK_K
-                with a_cb.reserve() as a_blk:
+            if mcast_a_net.is_active():
+                node_n, node_m = ttl.node(dims=2)
+                mb = node_m
+                mr = mb * BLOCK_M
+                nb = node_n
+                nc = nb * BLOCK_N
+                for kb in range(K_BLOCKS):
+                    kc = kb * BLOCK_K
+                    with a_cb.reserve() as a_blk:
 
-                    def read_a(pipe):
-                        ttl.copy(a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk).wait()
-                        ttl.copy(a_blk, pipe).wait()
+                        def read_a(pipe):
+                            ttl.copy(
+                                a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
+                            ).wait()
+                            ttl.copy(a_blk, pipe).wait()
 
-                    mcast_a_net.if_src(read_a)
+                        mcast_a_net.if_src(read_a)
 
-                    def recv_a(pipe):
-                        ttl.copy(pipe, a_blk).wait()
+                        def recv_a(pipe):
+                            ttl.copy(pipe, a_blk).wait()
 
-                    mcast_a_net.if_dst(recv_a)
+                        mcast_a_net.if_dst(recv_a)
 
-                with b_cb.reserve() as b_blk:
+                    with b_cb.reserve() as b_blk:
 
-                    def read_b(pipe):
-                        ttl.copy(w[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk).wait()
-                        ttl.copy(b_blk, pipe).wait()
+                        def read_b(pipe):
+                            ttl.copy(
+                                w[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
+                            ).wait()
+                            ttl.copy(b_blk, pipe).wait()
 
-                    mcast_b_net.if_src(read_b)
+                        mcast_b_net.if_src(read_b)
 
-                    def recv_b(pipe):
-                        ttl.copy(pipe, b_blk).wait()
+                        def recv_b(pipe):
+                            ttl.copy(pipe, b_blk).wait()
 
-                    mcast_b_net.if_dst(recv_b)
+                        mcast_b_net.if_dst(recv_b)
 
         @ttl.datamovement()
         def dm_write():
-            node_n, node_m = ttl.node(dims=2)
-            mb = node_m
-            mr = mb * BLOCK_M
-            nb = node_n
-            nc = nb * BLOCK_N
-            with out_cb.wait() as out_blk:
-                ttl.copy(out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]).wait()
+            if mcast_a_net.is_active():
+                node_n, node_m = ttl.node(dims=2)
+                mb = node_m
+                mr = mb * BLOCK_M
+                nb = node_n
+                nc = nb * BLOCK_N
+                with out_cb.wait() as out_blk:
+                    ttl.copy(out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]).wait()
 
     return small_mcast_matmul
 
@@ -127,7 +135,7 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
     ],
     ids=["4x3", "2x2"],
 )
-def test_pipenet_active_guard_under_auto_grid(shape, device):
+def test_pipenet_active_guard_under_full_grid(shape, device):
     M_BLOCKS, N_BLOCKS, K_BLOCKS = shape
     M = M_BLOCKS * BLOCK_SIZE
     N = N_BLOCKS * BLOCK_SIZE

@@ -3,31 +3,37 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# Frontend-pipeline regression check: catches a dropped
-# ttl-insert-pipenet-active-guards in the Python pipeline string.
+# Frontend-pipeline integration check for `ttl-verify-pipenet-guards`.
 # Compile-only via TTLANG_COMPILE_ONLY=1; tt-device REQUIRES because
 # `ttnn.from_torch(layout=TILE_LAYOUT)` triggers tt-metal cluster init
 # even without a device handle (sibling pattern: simple_add.py).
 #
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_FINAL_MLIR=%t.with_pipenet.mlir TTLANG_OP=with_pipenet %python %s
-# RUN: FileCheck %s --input-file=%t.with_pipenet.mlir --check-prefix=WITH-PIPENET
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.with_pipenet_initial.mlir TTLANG_FINAL_MLIR=%t.with_pipenet_final.mlir TTLANG_OP=with_pipenet %python %s
+# RUN: FileCheck %s --input-file=%t.with_pipenet_initial.mlir --check-prefix=INITIAL
+# RUN: FileCheck %s --input-file=%t.with_pipenet_final.mlir --check-prefix=FINAL
 #
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_FINAL_MLIR=%t.no_pipenet.mlir TTLANG_OP=no_pipenet %python %s
-# RUN: FileCheck %s --input-file=%t.no_pipenet.mlir --check-prefix=NO-PIPENET
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_FINAL_MLIR=%t.no_pipenet_final.mlir TTLANG_OP=no_pipenet %python %s
+# RUN: FileCheck %s --input-file=%t.no_pipenet_final.mlir --check-prefix=NO-PIPENET
 
-"""Frontend-pipeline integration check for the PipeNet active-set guard.
+"""Frontend-pipeline integration check for the PipeNet verifier.
 
-The `ttl.pipenet_active_guard` attribute does not survive scf-to-EmitC,
-but the structural footprint does: the guard becomes an `emitc.if`
-whose predicate is built from `emitc.cmp` and `emitc.bitwise_or`. A
-PipeNet operation must produce one; a straight-line operation must
-not.
+`net.is_active()` lowers to `ttl.is_active`, which the verifier
+recognizes structurally. After lowering the predicate becomes the
+same arith chain the runtime evaluates. A straight-line kernel
+without any PipeNet must not contain the predicate machinery.
 """
 
-# WITH-PIPENET: emitc.bitwise_or
-# WITH-PIPENET: emitc.if
+# Frontend emits the predicate op for `if net.is_active()`.
+# INITIAL: ttl.is_active
 
-# NO-PIPENET-NOT: emitc.if
+# After lowering, the user's guard survives as an emitc.if; the
+# predicate chain reduces to a bitwise_or over the per-pipe role
+# matches.
+# FINAL: emitc.bitwise_or
+# FINAL: emitc.if
+
+# A kernel without any PipeNet contains neither the emitc.if nor the
+# bitwise_or — there is no role predicate to evaluate.
 # NO-PIPENET-NOT: emitc.bitwise_or
 
 import os
@@ -48,7 +54,6 @@ def _host_ttnn(shape):
     )
 
 
-# Hardcoded grid: `grid="auto"` resolves via the active device.
 @ttl.operation(grid=(8, 7))
 def with_pipenet_op(inp, out):
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))])
@@ -58,29 +63,32 @@ def with_pipenet_op(inp, out):
 
     @ttl.compute()
     def compute():
-        with inp_cb.wait() as t, out_cb.reserve() as o:
-            o.store(ttl.math.abs(t))
+        if net.is_active():
+            with inp_cb.wait() as t, out_cb.reserve() as o:
+                o.store(ttl.math.abs(t))
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as blk:
+        if net.is_active():
+            with inp_cb.reserve() as blk:
 
-            def read_and_send(pipe):
-                ttl.copy(inp[0, 0], blk).wait()
-                ttl.copy(blk, pipe).wait()
+                def read_and_send(pipe):
+                    ttl.copy(inp[0, 0], blk).wait()
+                    ttl.copy(blk, pipe).wait()
 
-            net.if_src(read_and_send)
+                net.if_src(read_and_send)
 
-            def recv(pipe):
-                ttl.copy(pipe, blk).wait()
+                def recv(pipe):
+                    ttl.copy(pipe, blk).wait()
 
-            net.if_dst(recv)
+                net.if_dst(recv)
 
     @ttl.datamovement()
     def dm_write():
-        x, _ = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[0, x]).wait()
+        if net.is_active():
+            x, _ = ttl.node(dims=2)
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[0, x]).wait()
 
 
 @ttl.operation(grid=(1, 1))

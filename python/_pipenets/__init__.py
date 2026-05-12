@@ -9,7 +9,7 @@ without either depending on the other.
 The graph is the single source of truth for which PipeNets an operation
 uses. It is built from the operation's closure (captured PipeNets) plus
 its body (PipeNets constructed in-line). The compiler and the simulator
-both compute the active node set and run validation against this graph.
+both compute the PipeNet work extent and run validation against this graph.
 
 Multi-device readiness: NodeCoord is intra-chip. Inter-chip pipes would
 be a separate type wrapping NodeCoord plus a mesh coordinate, and
@@ -101,6 +101,42 @@ class OperationPipeNets:
                     active.add(_linearize(coord, grid))
         return active
 
+    def work_extent(self) -> Optional[Tuple[int, ...]]:
+        """Per-axis bounding box of every pipe coordinate in the graph.
+
+        For each axis, returns the smallest grid size that contains every
+        src and dst coordinate of every pipe. Source coordinates contribute
+        `coord + 1`; multicast destinations contribute `hi` (already an
+        exclusive upper bound). Returns None when the graph is empty.
+
+        The rank is the maximum coordinate rank seen across pipes; pipes
+        that omit higher axes contribute 1 there.
+        """
+        if not self.pipe_nets:
+            return None
+        rank = 0
+        for net in self.pipe_nets:
+            for pipe in net.pipes:
+                rank = max(rank, len(pipe.src.coords))
+                if isinstance(pipe.dst, NodeRange):
+                    rank = max(rank, len(pipe.dst.hi))
+                else:
+                    rank = max(rank, len(pipe.dst.coords))
+        if rank == 0:
+            return None
+        extent = [1] * rank
+        for net in self.pipe_nets:
+            for pipe in net.pipes:
+                for axis, c in enumerate(pipe.src.coords):
+                    extent[axis] = max(extent[axis], c + 1)
+                if isinstance(pipe.dst, NodeRange):
+                    for axis, hi in enumerate(pipe.dst.hi):
+                        extent[axis] = max(extent[axis], hi)
+                else:
+                    for axis, c in enumerate(pipe.dst.coords):
+                        extent[axis] = max(extent[axis], c + 1)
+        return tuple(extent)
+
     def validate(self) -> None:
         """Run cross-pipe validation: empty PipeNets, mixed pipe kinds."""
         for net in self.pipe_nets:
@@ -139,7 +175,6 @@ def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:
     # Spec: `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]])`. The shared
     # type variable means every pipe in a PipeNet has the same destination
     # type — all unicast or all multicast.
-    # https://github.com/tenstorrent/tt-lang/blob/<spec-commit>/docs/sphinx/specs/TTLangSpecification.md#L653
     has_unicast = any(isinstance(p.dst, NodeCoord) for p in pipes)
     has_multicast = any(isinstance(p.dst, NodeRange) for p in pipes)
     if has_unicast and has_multicast:

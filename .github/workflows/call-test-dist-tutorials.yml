@@ -12,7 +12,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 30
+        default: 60
       dist_docker_tag:
         description: 'Docker tag for the dist container'
         required: false
@@ -29,7 +29,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 30
+        default: 60
       dist_docker_tag:
         description: 'Docker tag for the dist container'
         required: false
@@ -45,7 +45,7 @@ jobs:
   test-dist-tutorials:
     name: "Dist Container Tutorials (${{ inputs.runs-on }})"
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
-    timeout-minutes: ${{ inputs.timeout }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
 
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:${{ inputs.dist_docker_tag }}

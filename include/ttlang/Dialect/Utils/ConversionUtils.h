@@ -67,22 +67,18 @@ inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
                                                 sourceType.getShape());
 }
 
-/// Convert a TTL CircularBufferType value to a TTKernel CBType value.
-/// If the value is already a TTKernel CB, returns it unchanged.
-/// Uses the TypeConverter to materialize the conversion when provided,
-/// otherwise creates an UnrealizedConversionCastOp directly.
+/// Convert a TTL CircularBufferType value to a TTKernel CBType, or return
+/// it unchanged if already converted.
 inline FailureOr<Value>
 convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
                        Location loc,
                        const TypeConverter *typeConverter = nullptr) {
   namespace ttk = mlir::tt::ttkernel;
 
-  // Already converted.
   if (mlir::isa<ttk::CBType>(cb.getType())) {
     return cb;
   }
 
-  // Convert TTL CB to TTKernel CB.
   auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType());
   if (!ttlCbTy) {
     return failure();
@@ -92,7 +88,6 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
       ttk::CBType::get(ttlCbTy.getContext(), ttlCbTy.getTotalElements(),
                        ttlCbTy.getElementType());
 
-  // Use type converter if provided, otherwise create cast directly.
   if (typeConverter) {
     Value result =
         typeConverter->materializeTargetConversion(rewriter, loc, ttkCbTy, cb);
@@ -106,10 +101,7 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
   return cast.getResult(0);
 }
 
-/// Runs applyPartialConversion while capturing the first diagnostic emitted
-/// during conversion. Returns true on failure and populates `capturedDiag`
-/// with either the captured diagnostic or a generic message that includes the
-/// pass name.
+/// Run applyPartialConversion, capturing the first diagnostic on failure.
 inline bool
 applyPartialConversionWithDiag(Operation *root, ConversionTarget &target,
                                const FrozenRewritePatternSet &patterns,

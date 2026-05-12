@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Run dist-container tutorials after `Build Docker Image` completes
+# successfully. Decoupled from that workflow so a tutorial regression
+# does not redden a release-tag image build (or block the manual
+# `Publish to PyPI` workflow that gates on the same tag).
+
+name: Build Docker Image -> Tutorial Tests
+
+on:
+  workflow_run:
+    workflows: ["Build Docker Image"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      dist_docker_tag:
+        description: "Docker tag to test (e.g. v1.0.2). Required."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+  checks: write
+
+jobs:
+  resolve-tag:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docker_tag: ${{ steps.compute.outputs.docker_tag }}
+    steps:
+      - name: Compute docker tag
+        id: compute
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            raw="${{ inputs.dist_docker_tag }}"
+          else
+            raw="${{ github.event.workflow_run.head_branch }}"
+          fi
+          # Match `.github/containers/get-version-tag.sh`: '+' is illegal in a
+          # docker tag and is replaced with '-'.
+          echo "docker_tag=${raw//+/-}" >> "$GITHUB_OUTPUT"
+
+  test-dist-tutorials:
+    needs: resolve-tag
+    uses: ./.github/workflows/call-test-dist-tutorials.yml
+    secrets: inherit
+    with:
+      runs-on: n150
+      dist_docker_tag: ${{ needs.resolve-tag.outputs.docker_tag }}

@@ -62,6 +62,8 @@ class TestActiveNodeSet:
         # Linearized on grid (4, 4): 0, 1, 4, 5.
         assert graph.active_node_set(grid=(4, 4)) == {0, 1, 4, 5}
 
+
+class TestPipeNetIds:
     def test_pipenet_id_is_operation_local(self):
         graph = OperationPipeNets()
         first = graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(1, 0))])
@@ -69,6 +71,37 @@ class TestActiveNodeSet:
         assert first.id == 0
         assert second.id == 1
         assert isinstance(first, PipeNetUse)
+
+
+class TestWorkExtent:
+    def test_empty_graph_returns_none(self):
+        assert OperationPipeNets().work_extent() is None
+
+    def test_unicast_pipe_uses_max_coord_plus_one(self):
+        graph = OperationPipeNets()
+        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(2, 3))])
+        # extent must contain coords (0,0) and (2,3): rank-2, (3, 4).
+        assert graph.work_extent() == (3, 4)
+
+    def test_multicast_pipe_uses_hi_directly(self):
+        graph = OperationPipeNets()
+        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng(lo=(1, 0), hi=(4, 1)))])
+        # NodeRange.hi is exclusive, so it doubles as the extent.
+        assert graph.work_extent() == (4, 1)
+
+    def test_union_across_multiple_pipenets(self):
+        graph = OperationPipeNets()
+        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(0, 5))])
+        graph.add_pipe_net([PipeUse(src=_coord(3, 0), dst=_coord(3, 0))])
+        assert graph.work_extent() == (4, 6)
+
+    def test_mixed_rank_pipes_pad_with_one(self):
+        graph = OperationPipeNets()
+        # First pipe is rank-1, second rank-2: extent should be rank-2 with
+        # the unspecified axis filled by 1.
+        graph.add_pipe_net([PipeUse(src=_coord(2), dst=_coord(0))])
+        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(0, 3))])
+        assert graph.work_extent() == (3, 4)
 
 
 class TestValidate:
@@ -82,9 +115,9 @@ class TestValidate:
         with pytest.raises(ValueError, match="at least one pipe"):
             graph.validate()
 
-    def test_overlapping_multicast_destinations(self):
-        # Issue #505: validator no longer rejects multicast pipes whose
-        # destination ranges share receivers within one PipeNet.
+    def test_overlapping_multicast_destinations_allowed(self):
+        # Overlapping multicast destinations are supported via per-PipeNet
+        # receiver counters; validation no longer rejects them.
         graph = OperationPipeNets()
         graph.add_pipe_net(
             [

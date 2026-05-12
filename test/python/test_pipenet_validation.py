@@ -25,8 +25,8 @@ def test_within_pipenet_overlapping_mcast_dst_allowed():
     single PipeNet are allowed.
 
     The two pipes both target column 1 rows 0..3, so the node at (1, 1)
-    receives from both. This was rejected at construction pre-#505; it is
-    accepted now.
+    receives from both. Per-PipeNet receiver counters disambiguate the
+    handshake.
     """
     ttl.PipeNet(
         [

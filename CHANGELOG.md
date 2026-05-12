@@ -91,3 +91,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Examples and documentation
 - Matmul tutorial
+
+## Version 1.0.1
+
+### Compiler
+
+- Fixed live-interval boundary computation (issue #536)
+- Fixed all-zero results for fp32 reductions (issue #533)
+
+### Examples and documentation
+
+- Moved `broadcast`, `transpose`, `where`, `mask`, `mask_posinf`, and `fill` into the language specification and improved spec examples.
+- Documented the PyPI publishing pipeline in `docs/sphinx/build.md`
+
+### Infrastructure
+
+- Made tt-lang installable with `pip install`; the wheel ships the bundled toolchain libraries with sanitized RUNPATHs (#495)

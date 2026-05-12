@@ -296,17 +296,17 @@
 func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)
     attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
   %c0 = arith.constant 0 : index
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
   // Copy A to CB0
   %slice_a = ttl.tensor_slice %a[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
-  %xf_a = ttl.copy %slice_a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+  %xf_a = ttl.copy %slice_a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %xf_a : !ttl.transfer_handle<read>
 
   // Copy B to CB1
   %slice_b = ttl.tensor_slice %b[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
-  %xf_b = ttl.copy %slice_b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+  %xf_b = ttl.copy %slice_b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %xf_b : !ttl.transfer_handle<read>
 
   func.return
@@ -356,14 +356,14 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 func.func @writer_unary(%out: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)
     attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
   %c0 = arith.constant 0 : index
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
   // Wait for data from compute thread (must match CB shape)
-  %cb2_view = ttl.cb_wait %cb2 : <[2, 2], f32, 2> -> tensor<2x2xf32>
+  %cb2_view = ttl.cb_wait %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // Copy from CB2 to output tensor
   %slice_out = ttl.tensor_slice %out[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
-  %xf_out = ttl.copy %cb2, %slice_out : (!ttl.cb<[2, 2], f32, 2>, tensor<2x2x!ttcore.tile<32x32, f32>, #layout>) -> !ttl.transfer_handle<write>
+  %xf_out = ttl.copy %cb2, %slice_out : (!ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>, tensor<2x2x!ttcore.tile<32x32, f32>, #layout>) -> !ttl.transfer_handle<write>
   ttl.wait %xf_out : !ttl.transfer_handle<write>
 
   func.return

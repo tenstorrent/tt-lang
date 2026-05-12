@@ -1,13 +1,13 @@
 TT-Lang Documentation
-=================
+=====================
 
 .. toctree::
    :maxdepth: 2
    :caption: User Guide
 
    overview
-   simulator
    getting-started
+   simulator
    tour/index
    elementwise-tutorial/index
    matmul-tutorial/index

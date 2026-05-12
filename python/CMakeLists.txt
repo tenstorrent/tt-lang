@@ -170,7 +170,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
-    circular_buffer.py
+    dataflow_buffer.py
     compiler_options.py
     constants.py
     diagnostics.py
@@ -280,6 +280,14 @@ add_mlir_python_modules(TTLangPythonModules
 
 # Ensure generated elementwise ops are created before Python modules are built
 add_dependencies(TTLangPythonModules TTLangGeneratedElementwise)
+
+# pykernel is a subpackage of ttl (ttl/__init__.py transitively imports
+# from ttl.pykernel._src.utils via ttl_api.py), so TTLangPythonModules is
+# functionally incomplete without it. Without this dependency, targets
+# that DEPEND on TTLangPythonModules (e.g. check-ttlang-python-bindings)
+# can run before pykernel files have been copied into python_packages/,
+# producing ModuleNotFoundError at test time.
+add_dependencies(TTLangPythonModules PykernelPythonModules)
 
 # Add include paths for the _ttmlir extension so wrapper .cpp files can find
 # TTMLIRMinimalModule.h and the upstream tt-mlir Python sources (TTModule.cpp,
