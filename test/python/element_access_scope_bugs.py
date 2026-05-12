@@ -38,6 +38,7 @@ import ttl
 # === B3: Outer variable updated inside loop ===
 # After fix, element_write should use a memref.load result (not %6).
 
+
 @ttl.operation(grid=(1, 1))
 def b3_outer_update_kernel(inp, out):
     """Update an outer-scope variable inside a for loop. After the loop,
