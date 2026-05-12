@@ -1199,15 +1199,19 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
 
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute when the wait spans
+    multiple coalesced blocks (see `ttl-coalesce-dfb-acquires`).
 
     Example:
     ```mlir
     %view = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %coalesced = ttl.cb_wait %cb {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1223,15 +1227,19 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
     This operation must be called after reading data acquired via `ttl.cb_wait`.
     It increments the CB's consumer pointer.
 
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute when the pop releases
+    multiple coalesced blocks (see `ttl-coalesce-dfb-acquires`).
 
     Example:
     ```mlir
     ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;

@@ -40,6 +40,15 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
+/// Walk through `tensor.extract_slice` ops and return the underlying
+/// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
+inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
+  while (auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    view = slice.getSource();
+  }
+  return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
+}
+
 /// Resolve the CB index attached to `cb` by tracing through unrealized
 /// conversion casts to its defining BindCBOp. Returns std::nullopt when the
 /// value does not trace to a BindCBOp.

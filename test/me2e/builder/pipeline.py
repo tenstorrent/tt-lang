@@ -42,7 +42,7 @@ def compile_ttl_to_ttkernel(
     func_passes = [
         "ttl-insert-intermediate-dfbs",
         "ttl-insert-copy-wait",
-        "ttl-insert-cb-sync",
+        "ttl-auto-sync",
         "convert-ttl-to-compute",
         assign_dst_pass,
     ]

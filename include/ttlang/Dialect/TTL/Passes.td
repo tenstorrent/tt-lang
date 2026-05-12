@@ -25,6 +25,86 @@ def TTLInsertCBSync
   let dependentDialects = [];
 }
 
+def TTLCoalesceDFBAcquires
+    : Pass<"ttl-coalesce-dfb-acquires", "::mlir::func::FuncOp"> {
+  let summary = "Coalesce consecutive same-DFB acquires into one multi-tile acquire";
+  let description = [{
+    Rewrites the source pattern
+
+    ```
+    t1 = cb.wait();  t2 = cb.wait();  t3 = cb.wait();
+    use(t1);         use(t2);         use(t3);
+    ```
+
+    into the canonical tt-metal "cumulative wait + indexed reads +
+    coalesced pop" pattern
+
+    ```
+    cb_wait_front(cb, 3*k);
+    copy_tile(cb, /*src_idx=*/0, dst);  // t1
+    copy_tile(cb, /*src_idx=*/k, dst);  // t2
+    copy_tile(cb, /*src_idx=*/2*k, dst);// t3
+    cb_pop_front(cb, 3*k);
+    ```
+
+    used in tt-metal compute kernels (`eltwise_binary.cpp`, `bcast_h.cpp`,
+    matmul kernels, etc.) when a consumer holds a fixed multi-tile window
+    before processing it.
+
+    Pre-coalesce, each `ttl.cb_wait` lowers to its own `cb_wait_front(k)`
+    and each `ttl.cb_pop` to `cb_pop_front(k)`. Because metal's
+    `cb_wait_front`/`cb_pop_front` are non-cumulative, this races: the
+    first pop advances the front before the producer has pushed enough
+    tiles to satisfy the next read.
+
+    At the IR level the rewrite is
+
+    ```mlir
+    // Before (post `ttl-insert-cb-sync`):
+    %t1 = ttl.cb_wait %cb : <[1,k],...,bc> -> tensor<1xkx...>
+    %t2 = ttl.cb_wait %cb : <[1,k],...,bc> -> tensor<1xkx...>
+    %t3 = ttl.cb_wait %cb : <[1,k],...,bc> -> tensor<1xkx...>
+    ... use %t1 ... ttl.cb_pop %cb
+    ... use %t2 ... ttl.cb_pop %cb
+    ... use %t3 ... ttl.cb_pop %cb
+
+    // After:
+    %g  = ttl.cb_wait %cb {num_tiles = 3*k} : ... -> tensor<1x(3k)x...>
+    %t1 = tensor.extract_slice %g [0, 0]    [1, k] [1, 1]
+    %t2 = tensor.extract_slice %g [0, k]    [1, k] [1, 1]
+    %t3 = tensor.extract_slice %g [0, 2*k]  [1, k] [1, 1]
+    ... use %t1 ... use %t2 ... use %t3 ...
+    ttl.cb_pop %cb {num_tiles = 3*k}
+    ```
+
+    `addSliceOffset` already folds each `extract_slice` offset into the
+    per-tile `src_idx` at lowering time, so no lowering changes are
+    required.
+
+    The producer side (`cb_reserve` / `cb_push`) is rewritten by the same
+    templated routine: a run of `N` consecutive `cb_reserve` ops on one
+    DFB collapses into one `cb_reserve {num_tiles = N*k}` plus per-block
+    `tensor.extract_slice` views routed into the downstream
+    `ttl.tile_store` / `ttl.store` ops, and the `N` matching `cb_push`
+    ops collapse into one `cb_push {num_tiles = N*k}`.
+
+    Detection: forward walk per block; an acquire group is a maximal run
+    of same-kind same-DFB acquires separated only by `ttl.attach_cb` or
+    `arith.constant` ops. Acquires already carrying a `num_tiles`
+    attribute (e.g. set by `ttl-subblock-compute-for-dst`) are not
+    coalesced and terminate the group. The pass is idempotent.
+
+    Result-type constraint: only acquires whose result tensor has shape
+    `<1, k>` are coalesced; the coalesced result is `<1, N*k>`. Other
+    ranks would require a convention for which axis to extend by `N`,
+    which is not specified, and are skipped.
+  }];
+
+  let dependentDialects = [
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
 def TTLInsertCopyWait
     : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
   let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
