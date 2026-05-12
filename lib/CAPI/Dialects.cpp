@@ -5,6 +5,7 @@
 #include "ttlang-c/Dialects.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Registration.h"
@@ -30,4 +31,7 @@ void ttlangRegisterTTLDialect(MlirDialectRegistry registry) {
   unwrap(registry)->insert<TTLDialect>();
 }
 
-void ttlangRegisterPasses() { mlir::tt::ttl::registerTTLPasses(); }
+void ttlangRegisterPasses() {
+  mlir::tt::ttl::registerTTLPasses();
+  mlir::tt::ttl::registerTTLPipelines();
+}

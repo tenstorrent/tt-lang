@@ -6,19 +6,13 @@
 // TTL Insert CB Sync
 //===----------------------------------------------------------------------===//
 //
-// Inserts missing cb_push / cb_pop for unmatched cb_reserve / cb_wait ops.
-//
-// Each acquire opens a DFB live interval. The pass finds owned uses from two
-// sources: SSA users of the acquire result, and direction-matched direct DFB
-// copy operands. Uses in descendant regions project to their ancestor in the
-// acquire block.
-//
-// Nested releases are erased and reinserted at the acquire block scope.
-// Same-level releases make the pass idempotent.
-//
-// Legality invariants:
-//   P1. cb_push follows reserve-side writes before write pointer reuse.
-//   P2. cb_pop follows wait-side reads before read pointer reuse.
+// Auto-inserts a cb_push / cb_pop after each cb_reserve / cb_wait whose
+// matching release is absent in the input IR, placing each release after
+// the last use of the acquired slot so the slot is not recycled before
+// the consumer is done with it. "Last use" classification handles two
+// different valid IR situations -- direct-CB uses and tensor-SSA uses --
+// under different rules; see `docs/development/DFBManagement.md` for the
+// rules and correctness argument.
 //
 //===----------------------------------------------------------------------===//
 
@@ -52,7 +46,6 @@ struct AcquireInterval {
   Operation *syncClassBoundary;
 };
 
-/// Return true if `a` is before `b` in their common block.
 static bool isBefore(Operation *a, Operation *b) {
   return a->isBeforeInBlock(b);
 }
@@ -106,7 +99,8 @@ static bool directDFBUseMatchesAcquire(AcquireInterval interval,
 }
 
 static bool projectToAcquireBlock(AcquireInterval interval, Operation *op,
-                                  Operation *&projected) {
+                                  Operation *&projected,
+                                  bool ignoreBoundary = false) {
   Block *block = interval.acquire->getBlock();
   projected = op->getBlock() == block ? op : block->findAncestorOpInBlock(*op);
   if (!projected) {
@@ -115,7 +109,7 @@ static bool projectToAcquireBlock(AcquireInterval interval, Operation *op,
   if (!isBefore(interval.acquire, projected)) {
     return false;
   }
-  if (interval.syncClassBoundary &&
+  if (!ignoreBoundary && interval.syncClassBoundary &&
       !isBefore(projected, interval.syncClassBoundary)) {
     return false;
   }
@@ -128,12 +122,20 @@ static void updateLatestUse(Operation *candidate, Operation *&latest) {
   }
 }
 
-/// Find releases owned by this acquire interval.
+/// Find releases owned by this acquire interval. When `lastOwnedUse` is
+/// non-null and falls past the next-acquire boundary, also accept releases
+/// in that extended range so the pass is idempotent on re-run.
 static ReleaseSearch findOwnedReleases(AcquireInterval interval,
+                                       Operation *lastOwnedUse,
                                        ArrayRef<Operation *> allReleases,
                                        const DenseSet<Operation *> &erased) {
   ReleaseSearch result;
   Block *block = interval.acquire->getBlock();
+
+  bool useExtendsPastBoundary =
+      lastOwnedUse && lastOwnedUse != interval.acquire &&
+      interval.syncClassBoundary &&
+      !isBefore(lastOwnedUse, interval.syncClassBoundary);
 
   for (Operation *release : allReleases) {
     if (erased.contains(release)) {
@@ -145,10 +147,18 @@ static ReleaseSearch findOwnedReleases(AcquireInterval interval,
 
     if (release->getBlock() == block) {
       Operation *projected = nullptr;
-      if (!projectToAcquireBlock(interval, release, projected)) {
+      if (projectToAcquireBlock(interval, release, projected)) {
+        result.hasSameLevelRelease = true;
         continue;
       }
-      result.hasSameLevelRelease = true;
+      // Re-check past the boundary: a release at or after the acquire's
+      // last owned use is one this pass would have inserted on a prior run.
+      if (useExtendsPastBoundary &&
+          projectToAcquireBlock(interval, release, projected,
+                                /*ignoreBoundary=*/true) &&
+          !isBefore(projected, lastOwnedUse)) {
+        result.hasSameLevelRelease = true;
+      }
       continue;
     }
 
@@ -186,9 +196,8 @@ static void updateBoundary(Value cb, Operation *acquire,
   }
 }
 
-/// Return the closest later acquire in the same DFB sync class, projected into
-/// `acquire`'s block. Producer intervals use `cb_reserve` boundaries; consumer
-/// intervals use `cb_wait` boundaries.
+/// Return the closest later acquire on `cb` in the same DFB sync class,
+/// projected into `acquire`'s block.
 static Operation *findNextSyncClassAcquire(Value cb, Operation *acquire,
                                            ArrayRef<Operation *> acquires) {
   Operation *boundary = nullptr;
@@ -196,18 +205,18 @@ static Operation *findNextSyncClassAcquire(Value cb, Operation *acquire,
   return boundary;
 }
 
-/// Return the last op in `acquire`'s block that consumes the acquired slot.
-/// Tensor uses follow the acquire result; direct DFB copies use direction.
-/// `boundary` stops the scan at the next `cb_reserve` for reserve intervals or
-/// the next `cb_wait` for wait intervals.
+/// Return the last op in `acquire`'s block that consumes the acquired
+/// slot. See `docs/development/DFBManagement.md` for the asymmetric
+/// classification of direct-DFB vs. tensor-SSA uses that this walk
+/// implements.
 static Operation *findLastOwnedUse(AcquireInterval interval) {
   Operation *last = interval.acquire;
   DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
-  auto extend = [&](Operation *user) {
+  auto extend = [&](Operation *user, bool ignoreBoundary) {
     Operation *projected = nullptr;
-    if (!projectToAcquireBlock(interval, user, projected)) {
+    if (!projectToAcquireBlock(interval, user, projected, ignoreBoundary)) {
       return false;
     }
     if (!visited.insert(user).second) {
@@ -220,6 +229,25 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
     return true;
   };
 
+  auto drainWorklist = [&](bool ignoreBoundary) {
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      for (OpOperand &use : value.getUses()) {
+        Operation *user = use.getOwner();
+        if (isa<CBPushOp, CBPopOp>(user)) {
+          continue;
+        }
+        extend(user, ignoreBoundary);
+      }
+    }
+  };
+
+  // Direct-DFB uses. The walk recurses through each user's SSA results
+  // because the *true* end of the use can be a downstream op (e.g.
+  // ttl.copy returns a transfer_handle whose ttl.wait marks the actual
+  // end of the transfer). The next-acquire boundary applies: two
+  // direct-DFB uses straddling that boundary belong to different
+  // intervals.
   for (OpOperand &use : interval.cb.getUses()) {
     Operation *user = use.getOwner();
     if (user == interval.acquire) {
@@ -231,22 +259,19 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
     if (!directDFBUseMatchesAcquire(interval, user)) {
       continue;
     }
-    extend(user);
+    extend(user, /*ignoreBoundary=*/false);
   }
+  drainWorklist(/*ignoreBoundary=*/false);
 
-  if (interval.acquire->getNumResults() > 0) {
-    worklist.push_back(interval.acquire->getResult(0));
-  }
-  while (!worklist.empty()) {
-    Value value = worklist.pop_back_val();
-    for (OpOperand &use : value.getUses()) {
-      Operation *user = use.getOwner();
-      if (isa<CBPushOp, CBPopOp>(user)) {
-        continue;
-      }
-      extend(user);
-    }
-  }
+  // Tensor-SSA uses. The next-acquire boundary does NOT apply: a tile
+  // produced by `cb_wait t1` may legitimately be consumed after
+  // `cb_wait t2`, since the consumer reads through the SSA value, not
+  // the slot's identity. Applying the boundary here was the root cause
+  // of the issue #536 follow-up miscompile.
+  assert(interval.acquire->getNumResults() == 1 &&
+         "DFB acquire ops produce exactly one tensor result");
+  worklist.push_back(interval.acquire->getResult(0));
+  drainWorklist(/*ignoreBoundary=*/true);
 
   return last;
 }
@@ -266,9 +291,21 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
                                   CreateReleaseFn createRelease) {
   for (Operation *acquire : acquires) {
     AcquireInterval interval = makeAcquireInterval(acquire, acquires);
-    ReleaseSearch releaseSearch = findOwnedReleases(interval, releases, erased);
+    // Cheap check first: any release inside the strict next-acquire range?
+    ReleaseSearch releaseSearch =
+        findOwnedReleases(interval, /*lastOwnedUse=*/nullptr, releases, erased);
     if (releaseSearch.hasSameLevelRelease) {
       continue;
+    }
+
+    // Compute the last owned use; it both bounds the idempotency recheck
+    // and pinpoints the insertion point.
+    Operation *last = findLastOwnedUse(interval);
+    if (last != interval.acquire) {
+      releaseSearch = findOwnedReleases(interval, last, releases, erased);
+      if (releaseSearch.hasSameLevelRelease) {
+        continue;
+      }
     }
 
     for (Operation *nestedRelease : releaseSearch.nestedReleases) {
@@ -276,7 +313,6 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
       nestedRelease->erase();
     }
 
-    Operation *last = findLastOwnedUse(interval);
     builder.setInsertionPointAfter(last);
     createRelease(builder, acquire->getLoc(), interval.cb);
   }
@@ -319,7 +355,8 @@ struct TTLInsertCBSyncPass
 
     insertMissingReleases(waits, pops, erased, builder,
                           [](OpBuilder &b, Location loc, Value cb) {
-                            CBPopOp::create(b, loc, cb);
+                            CBPopOp::create(b, loc, cb,
+                                            /*num_tiles=*/IntegerAttr{});
                           });
   }
 };
