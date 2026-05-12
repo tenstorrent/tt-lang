@@ -101,70 +101,75 @@ def minimal_matmul_kernel(a, b, out):
 
     @ttl.compute()
     def compute():
-        node_n, node_m = ttl.node(dims=2)
-        for local_mb in range(m_blocks_per_node):
-            for local_nb in range(n_blocks_per_node):
-                with out_cb.reserve() as out_blk:
-                    out_blk.store(ttl.math.fill(out_blk, 0))
-                    for _ in range(K_BLOCKS):
-                        a_blk = a_cb.wait()
-                        b_blk = b_cb.wait()
-                        out_blk += a_blk @ b_blk
-                        a_blk.pop()
-                        b_blk.pop()
+        if a_net.is_active():
+            node_n, node_m = ttl.node(dims=2)
+            for local_mb in range(m_blocks_per_node):
+                for local_nb in range(n_blocks_per_node):
+                    with out_cb.reserve() as out_blk:
+                        out_blk.store(ttl.math.fill(out_blk, 0))
+                        for _ in range(K_BLOCKS):
+                            a_blk = a_cb.wait()
+                            b_blk = b_cb.wait()
+                            out_blk += a_blk @ b_blk
+                            a_blk.pop()
+                            b_blk.pop()
 
     @ttl.datamovement()
     def dm_read():
-        node_n, node_m = ttl.node(dims=2)
-        for local_mb in range(m_blocks_per_node):
-            mb = node_m * m_blocks_per_node + local_mb
-            mr = mb * BLOCK_M
-            for local_nb in range(n_blocks_per_node):
-                for kb in range(K_BLOCKS):
-                    kc = kb * BLOCK_K
-                    with a_cb.reserve() as a_blk:
+        if a_net.is_active():
+            node_n, node_m = ttl.node(dims=2)
+            for local_mb in range(m_blocks_per_node):
+                mb = node_m * m_blocks_per_node + local_mb
+                mr = mb * BLOCK_M
+                for local_nb in range(n_blocks_per_node):
+                    for kb in range(K_BLOCKS):
+                        kc = kb * BLOCK_K
+                        with a_cb.reserve() as a_blk:
 
-                        def read_a(pipe):
-                            ttl.copy(
-                                a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
-                            ).wait()
-                            ttl.copy(a_blk, pipe).wait()
+                            def read_a(pipe):
+                                ttl.copy(
+                                    a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
+                                ).wait()
+                                ttl.copy(a_blk, pipe).wait()
 
-                        a_net.if_src(read_a)
+                            a_net.if_src(read_a)
 
-                        def recv_a(pipe):
-                            ttl.copy(pipe, a_blk).wait()
+                            def recv_a(pipe):
+                                ttl.copy(pipe, a_blk).wait()
 
-                        a_net.if_dst(recv_a)
+                            a_net.if_dst(recv_a)
 
     @ttl.datamovement()
     def dm_write():
-        node_n, node_m = ttl.node(dims=2)
-        for local_mb in range(m_blocks_per_node):
-            mb = node_m * m_blocks_per_node + local_mb
-            mr = mb * BLOCK_M
-            for local_nb in range(n_blocks_per_node):
-                nb = node_n * n_blocks_per_node + local_nb
-                nc = nb * BLOCK_N
-                for kb in range(K_BLOCKS):
-                    kc = kb * BLOCK_K
-                    with b_cb.reserve() as b_blk:
+        if b_net.is_active():
+            node_n, node_m = ttl.node(dims=2)
+            for local_mb in range(m_blocks_per_node):
+                mb = node_m * m_blocks_per_node + local_mb
+                mr = mb * BLOCK_M
+                for local_nb in range(n_blocks_per_node):
+                    nb = node_n * n_blocks_per_node + local_nb
+                    nc = nb * BLOCK_N
+                    for kb in range(K_BLOCKS):
+                        kc = kb * BLOCK_K
+                        with b_cb.reserve() as b_blk:
 
-                        def read_b(pipe):
-                            ttl.copy(
-                                b[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
-                            ).wait()
-                            ttl.copy(b_blk, pipe).wait()
+                            def read_b(pipe):
+                                ttl.copy(
+                                    b[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
+                                ).wait()
+                                ttl.copy(b_blk, pipe).wait()
 
-                        b_net.if_src(read_b)
+                            b_net.if_src(read_b)
 
-                        def recv_b(pipe):
-                            ttl.copy(pipe, b_blk).wait()
+                            def recv_b(pipe):
+                                ttl.copy(pipe, b_blk).wait()
 
-                        b_net.if_dst(recv_b)
+                            b_net.if_dst(recv_b)
 
-                with out_cb.wait() as out_blk:
-                    ttl.copy(out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]).wait()
+                    with out_cb.wait() as out_blk:
+                        ttl.copy(
+                            out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]
+                        ).wait()
 
 
 def test_minimal_matmul_pipes(device):
