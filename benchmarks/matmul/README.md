@@ -1,6 +1,6 @@
 # Matmul benchmark
 
-Sweeps a ksplit/SUMMA matmul against `ttnn.matmul` across shapes.
+Sweeps a ksplit/SUMMA matmul against `ttnn.matmul` across shapes. **All inputs and outputs are DRAM interleaved.**
 
 ![ratio plot](ksplit_sweep.png)
 
