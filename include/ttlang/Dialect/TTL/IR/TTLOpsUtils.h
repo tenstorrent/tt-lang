@@ -124,6 +124,35 @@ inline bool isCBInputOp(mlir::Operation *op) {
          op->hasAttr(kFPUBinaryAttrName);
 }
 
+/// Predicate for tile add/sub/mul ops that will be lowered to FPU binary
+/// kernels (reading from CB via SRCA/B). Matches the criteria applied by
+/// TTLAssignDST when it sets kFPUBinaryAttrName: both operands must be input
+/// block arguments of `computeOp` and the indexing maps of those operands
+/// must match. Returns false when `enableFPUBinaryOps` is false (binary ops
+/// then fall back to the SFPU path).
+inline bool isFpuBinaryEligible(mlir::Operation *op, ComputeOp computeOp,
+                                bool enableFPUBinaryOps) {
+  if (!enableFPUBinaryOps) {
+    return false;
+  }
+  if (!llvm::isa<AddTileOp, SubTileOp, MulTileOp>(op)) {
+    return false;
+  }
+  auto lhsArg = mlir::dyn_cast<mlir::BlockArgument>(op->getOperand(0));
+  auto rhsArg = mlir::dyn_cast<mlir::BlockArgument>(op->getOperand(1));
+  if (!lhsArg || !rhsArg) {
+    return false;
+  }
+  unsigned numInputs = computeOp.getNumInputs();
+  if (lhsArg.getArgNumber() >= numInputs ||
+      rhsArg.getArgNumber() >= numInputs) {
+    return false;
+  }
+  auto indexingMaps = computeOp.getIndexingMapsArray();
+  return indexingMaps[lhsArg.getArgNumber()] ==
+         indexingMaps[rhsArg.getArgNumber()];
+}
+
 /// Check if an operation is any elementwise tensor op (unary or binary).
 inline bool isElementwiseOp(mlir::Operation *op) {
   return isUnaryElementwiseOp(op) || isBinaryElementwiseOp(op);

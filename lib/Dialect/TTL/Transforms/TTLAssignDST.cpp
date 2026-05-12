@@ -579,33 +579,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // tile_add %arg0, %computed where one operand is already in DST.
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 0: FPU Binary Detection ===\n");
       if (enableFPUBinaryOps) {
-        unsigned numInputs = computeOp.getNumInputs();
-        auto indexingMaps = computeOp.getIndexingMapsArray();
         for (Operation &op : *body) {
-          if (!isa<AddTileOp, SubTileOp, MulTileOp>(&op)) {
-            continue;
-          }
-          Value lhs = op.getOperand(0);
-          Value rhs = op.getOperand(1);
-          auto lhsArg = dyn_cast<BlockArgument>(lhs);
-          auto rhsArg = dyn_cast<BlockArgument>(rhs);
-          if (lhsArg && rhsArg && lhsArg.getArgNumber() < numInputs &&
-              rhsArg.getArgNumber() < numInputs) {
-            // FPU binary ops use a single shared CB tile index for both
-            // operands, so the indexing maps must be identical. This is not
-            // an error — the op is still valid, it just falls back to the
-            // copy_tile + SFPU path which handles each operand independently.
-            AffineMap lhsMap = indexingMaps[lhsArg.getArgNumber()];
-            AffineMap rhsMap = indexingMaps[rhsArg.getArgNumber()];
-            if (lhsMap != rhsMap) {
-              LLVM_DEBUG({
-                llvm::dbgs()
-                    << "Phase 0: Skipping FPU binary (incompatible indexing "
-                       "maps): "
-                    << op.getName() << "\n";
-              });
-              continue;
-            }
+          if (isFpuBinaryEligible(&op, computeOp, enableFPUBinaryOps)) {
             op.setAttr(kFPUBinaryAttrName, builder.getUnitAttr());
             LLVM_DEBUG({
               llvm::dbgs() << "Phase 0: Marked FPU binary: " << op.getName()

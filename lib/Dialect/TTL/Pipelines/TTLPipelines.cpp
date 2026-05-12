@@ -30,6 +30,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
+    configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
     pm.addPass(createTTLSetComputeKernelConfig(configOpts));
   }
   {

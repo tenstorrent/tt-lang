@@ -226,7 +226,11 @@ def TTLSetComputeKernelConfig
            "Sets fp32_dest_acc_en on the kernel when any compute op contains reduce.">,
     Option<"matmulFullFp32", "matmul-full-fp32", "bool", "true",
            "Enable FP32 accumulation for matmul operations. "
-           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">
+           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">,
+    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
+           "Must match the value passed to TTLAssignDST. Used to predict "
+           "whether tile add/sub/mul ops will be lowered to FPU binaries so "
+           "that unpack_to_dest_fp32 is not enabled on their CB inputs.">
   ];
 
   let dependentDialects = [
