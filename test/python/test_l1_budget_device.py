@@ -23,7 +23,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
 from ttl.constants import DEFAULT_L1_CB_BUDGET_BYTES
-from ttl.kernel_runner import build_cb_descriptors, get_remaining_l1_for_core
+from ttl.kernel_runner import build_cb_descriptors, get_min_remaining_l1_for_device
 
 import sys, os
 
@@ -57,7 +57,7 @@ class TestReducedWorkerL1:
         device = ttnn.open_device(device_id=0, worker_l1_size=reduced_size)
         try:
             probe = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
-            remaining = get_remaining_l1_for_core(device)
+            remaining = get_min_remaining_l1_for_device(device)
 
             assert (
                 remaining < DEFAULT_L1_CB_BUDGET_BYTES
@@ -75,12 +75,12 @@ class TestL1TensorAllocation:
     def test_overflow(self):
         device = ttnn.open_device(device_id=0)
         try:
-            remaining_empty = get_remaining_l1_for_core(device)
+            remaining_empty = get_min_remaining_l1_for_device(device)
 
             # Height-sharded tensor on core (0,0) concentrates all L1 usage
             # on the target core.  512x512 bf16 = 256 tiles = 512 KiB.
             big = to_l1_sharded(torch.zeros(512, 512, dtype=torch.bfloat16), device)
-            remaining_after = get_remaining_l1_for_core(device)
+            remaining_after = get_min_remaining_l1_for_device(device)
 
             assert remaining_after < remaining_empty, (
                 f"Expected L1 tensor to reduce remaining: "
@@ -101,10 +101,10 @@ class TestBothReducedL1AndTensorAllocation:
         reduced_size = default_size - 800_000
         device = ttnn.open_device(device_id=0, worker_l1_size=reduced_size)
         try:
-            remaining_before_tensor = get_remaining_l1_for_core(device)
+            remaining_before_tensor = get_min_remaining_l1_for_device(device)
 
             big = to_l1_sharded(torch.zeros(256, 256, dtype=torch.bfloat16), device)
-            remaining = get_remaining_l1_for_core(device)
+            remaining = get_min_remaining_l1_for_device(device)
 
             assert remaining < remaining_before_tensor, (
                 f"Expected tensor to further reduce remaining: "

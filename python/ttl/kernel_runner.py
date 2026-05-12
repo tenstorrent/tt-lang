@@ -44,19 +44,15 @@ from .dtype_utils import (
 
 
 def get_min_remaining_l1_for_device(device):
-    """
-    Get the remaining L1 for a core.
-    handles reduced worker_l1_size devices and tensor L1 allocations
-    ex:
-    device = ttnn.open_device(device_id=0, worker_l1_size=reduced_l1_size)
-    tensor = ttnn.empty([1024, 1024], device=device, memory_config=ttnn.L1_MEMORY_CONFIG)
+    """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
-    this helper should return 1436032 bytes for core (0, 0)
+    Accounts for reduced ``worker_l1_size`` and L1 tensor allocations.
+    For each sub-device in the mesh, queries ``cb_limit`` (the hardware CB
+    budget) and subtracts the maximum per-core L1 buffer usage.
     """
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
-    # iterate over sub-meshes for individual devices as get_buffer_pages() does not let you do so directly
     rows, cols = device.shape
     if rows == 0 or cols == 0:
         raise RuntimeError("device shape not found")
@@ -70,18 +66,19 @@ def get_min_remaining_l1_for_device(device):
             info = ttnn._ttnn.reports.get_device_info(single_device)
             budget_bytes = info.cb_limit
 
-            core_pages = [[]]
+            bytes_per_core: dict[tuple[int, int], int] = {}
             for page in ttnn._ttnn.reports.get_buffer_pages(single_device):
                 if page.buffer_type == ttnn.BufferType.L1:
-                    core_pages[page.core_y][page.core_x] += page.page_size
-            device_max_core_bytes = max(max(row) for row in core_pages)
+                    key = (page.core_y, page.core_x)
+                    bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
 
-            device_remaining_bytes = max(0, budget_bytes - device_max_core_bytes)
+            max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
+            remaining = max(0, budget_bytes - max_core_bytes)
             if (
                 device_min_remaining_bytes == -1
-                or device_remaining_bytes < device_min_remaining_bytes
+                or remaining < device_min_remaining_bytes
             ):
-                device_min_remaining_bytes = device_remaining_bytes
+                device_min_remaining_bytes = remaining
     return device_min_remaining_bytes
 
 
