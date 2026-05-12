@@ -58,6 +58,14 @@ inline bool isWormholeB0Target(Operation *op) {
   return hasTargetArch(op, kWormholeB0ArchName);
 }
 
+/// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
+/// and by `pipenet_scope` declarations.
+enum class PipeRole : int64_t {
+  Source = 0,
+  Destination = 1,
+  Active = 2,
+};
+
 /// Binary ops that use the FPU engine (reading from CB) rather than SFPU.
 constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
 

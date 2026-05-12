@@ -11,7 +11,20 @@ This module provides:
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, List, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
+)
+
+from _pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
 
 from .corecontext import node, flatten_core_index, grid_size
 from .typedefs import CoreCoord, CoreRange
@@ -48,6 +61,12 @@ class Pipe(Generic[DstT]):
 
     src: CoreCoord
     dst: DstT
+
+    def __post_init__(self) -> None:
+        """Validate slice bounds in `dst` at construction time."""
+        if isinstance(self.dst, tuple):
+            for item, name in zip(self.dst, ("x", "y", "z")):
+                _validate_dst_slice(item, name)
 
     def __hash__(self) -> int:
         """Custom hash implementation to handle slices and nested tuples."""
@@ -250,6 +269,120 @@ def core_in_dst_range(
             return current_core_coords == dst_core_range
 
 
+def _coord_to_tuple(coord: CoreCoord) -> Tuple[int, ...]:
+    """Normalize a CoreCoord (int or tuple) to a tuple of ints."""
+    if isinstance(coord, int):
+        return (coord,)
+    return tuple(coord)
+
+
+def _axis_bounds(item: Any) -> Tuple[int, int]:
+    """Half-open `(lo, hi)` bounds for one axis of a destination tuple.
+
+    Slice bounds are assumed valid here — validated up front by
+    `Pipe.__post_init__` via `_validate_dst_slice`.
+    """
+    if isinstance(item, slice):
+        return (item.start, item.stop)
+    return (item, item + 1)
+
+
+def _validate_dst_slice(item: Any, name: str) -> None:
+    """Raise ValueError if `item` is a malformed slice; no-op for ints."""
+    if not isinstance(item, slice):
+        return
+    if item.start is None or item.stop is None:
+        raise ValueError(
+            f"dst {name} slice must have explicit start and stop, "
+            f"got slice({item.start}, {item.stop})"
+        )
+    if not isinstance(item.start, int) or not isinstance(item.stop, int):
+        raise ValueError(
+            f"dst {name} slice bounds must be integers, "
+            f"got slice({item.start}, {item.stop})"
+        )
+    if item.start >= item.stop:
+        raise ValueError(
+            f"dst {name} slice start must be < stop, "
+            f"got slice({item.start}, {item.stop})"
+        )
+
+
+def _normalize_dst_rect(dst: Any) -> Optional[Tuple[Tuple[int, int], ...]]:
+    """Half-open per-axis bounds for a multicast destination, or None if
+    `dst` is unicast (no slices)."""
+    if not isinstance(dst, tuple) or not any(isinstance(i, slice) for i in dst):
+        return None
+    return tuple(_axis_bounds(item) for item in dst)
+
+
+def _pipe_to_pipe_use(pipe: "Pipe") -> PipeUse:
+    """Convert a sim `Pipe` to a `PipeUse`.
+
+    Slice bounds were already validated by `Pipe.__post_init__`; multicast
+    rectangles are read directly from the `dst` slices without needing the
+    operation grid.
+    """
+    src = NodeCoord(coords=_coord_to_tuple(pipe.src))
+    rect = _normalize_dst_rect(pipe.dst)
+    if rect is None:
+        return PipeUse(src=src, dst=NodeCoord(coords=_coord_to_tuple(pipe.dst)))
+    return PipeUse(
+        src=src,
+        dst=NodeRange(
+            lo=tuple(lo for lo, _ in rect),
+            hi=tuple(hi for _, hi in rect),
+        ),
+    )
+
+
+def build_pipenets(pipe_nets: List["PipeNet"]) -> OperationPipeNets:
+    """Build an OperationPipeNets from a list of unique PipeNet objects.
+
+    Order is preserved: the first PipeNet in `pipe_nets` becomes id 0.
+    """
+    graph = OperationPipeNets()
+    for net in pipe_nets:
+        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net._pipes)
+    return graph
+
+
+def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
+    """Walk function closures and return unique PipeNet objects in encounter order.
+
+    PipeNets are deduplicated by `id()` so the same captured net referenced
+    from multiple threads contributes one entry.
+    """
+    seen: dict = {}
+    for func in funcs:
+        if func is None:
+            continue
+        for net in _iter_pipe_nets_in_func(func):
+            if id(net) not in seen:
+                seen[id(net)] = net
+    return list(seen.values())
+
+
+def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
+    # The Python module is an enclosing scope of an @ttl.operation
+    # function, so module-scope PipeNets satisfy the spec's "enclosing
+    # scope" rule and must be discovered. Walks closure cells and the
+    # function's globals; the compiler's _build_operation_pipenets does
+    # the same so validation and grid="auto" work extent agree.
+    closure = getattr(func, "__closure__", None) or ()
+    for cell in closure:
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        if isinstance(value, PipeNet):
+            yield value
+    fn_globals = getattr(func, "__globals__", None) or {}
+    for value in fn_globals.values():
+        if isinstance(value, PipeNet):
+            yield value
+
+
 class PipeNet(Generic[DstT]):
     """
     A network of pipes for organizing core-to-core communication patterns.
@@ -259,11 +392,15 @@ class PipeNet(Generic[DstT]):
     """
 
     def __init__(self, pipes: "List[Pipe[DstT]]"):
-        """Initialize pipe network with a list of pipes.
-
-        Args:
-            pipes: List of Pipe objects defining the communication pattern
-        """
+        # Validate at construction time by building a one-net graph and
+        # delegating to OperationPipeNets.validate(). Single source of
+        # truth for empty/overlap/mixed-kind rules; the same graph is
+        # rebuilt and re-validated at operation build time.
+        if not pipes:
+            raise ValueError("PipeNet requires at least one pipe")
+        graph = OperationPipeNets()
+        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in pipes)
+        graph.validate()
         self._pipes = pipes
 
     def is_active(self) -> bool:

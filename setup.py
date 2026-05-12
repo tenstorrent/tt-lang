@@ -12,6 +12,7 @@ import pathlib
 import platform
 import shutil
 import subprocess
+import sys
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
@@ -255,12 +256,19 @@ class CMakeBuild(build_ext):
 
 ttlang_c = TTLangExtension("ttl")
 
+sys.path.insert(0, str(REPO_ROOT / "packaging"))
+from rewrite_readme import absolutize_readme_images, ref_for_version  # noqa: E402
+
+_version = get_version_from_git()
+
 readme_path = REPO_ROOT / "README.md"
 with open(str(readme_path), "r", encoding="utf-8") as readme_file:
-    readme = readme_file.read()
+    readme = absolutize_readme_images(
+        readme_file.read(), ref_for_version(_version), REPO_ROOT
+    )
 
 setup(
-    version=get_version_from_git(),
+    version=_version,
     install_requires=_read_install_requires(),
     packages=[
         "ttl",

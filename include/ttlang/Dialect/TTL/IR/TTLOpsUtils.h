@@ -49,6 +49,17 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
 }
 
+/// Resolve the CB index attached to `cb` by tracing through unrealized
+/// conversion casts to its defining BindCBOp. Returns std::nullopt when the
+/// value does not trace to a BindCBOp.
+inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
+  cb = traceUnrealizedCasts(cb);
+  if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+    return bindOp.getCbIndex().getSExtValue();
+  }
+  return std::nullopt;
+}
+
 /// Return the element type for a ttcore::TileType.
 inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   if (auto tileType = mlir::dyn_cast<ttcore::TileType>(type)) {

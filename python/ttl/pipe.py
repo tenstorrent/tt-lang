@@ -13,7 +13,8 @@ PipeNet supports the spec's callback API:
     net.if_dst(lambda pipe: ttl.copy(pipe, blk))
 """
 
-from typing import Callable, List, Tuple, Union
+import inspect
+from typing import Callable, List, Optional, Tuple, Union
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -82,6 +83,8 @@ class Pipe:
 
         self.src = src
         self.dst = dst
+        # Operation-local id assigned by the OperationPipeNets builder
+        # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self._parse_dst()
 
@@ -145,12 +148,41 @@ class Pipe:
         return self._is_multicast
 
 
+def _pipe_to_pipe_use(pipe: Pipe):
+    """Convert a ttl.Pipe to a PipeUse for OperationPipeNets validation/build."""
+    from _pipenets import NodeCoord, NodeRange, PipeUse
+
+    src = NodeCoord(coords=tuple(pipe.src))
+    if pipe.is_unicast:
+        dst = NodeCoord(coords=tuple(pipe.dst_start))
+    else:
+        dst = NodeRange(
+            lo=(pipe.dst_start[0], pipe.dst_start[1]),
+            hi=(pipe.dst_end[0] + 1, pipe.dst_end[1] + 1),
+        )
+    return PipeUse(src=src, dst=dst)
+
+
 class PipeNet:
     """
     A network of pipes for multi-core communication patterns.
 
     PipeNet groups multiple pipes and provides if_src/if_dst methods
     for conditional execution based on core coordinates.
+
+    Active set: the union of every pipe's source coordinate and destination
+    range. Cores outside the active set do not participate in pipe
+    communication; under grid="full" or any explicit launch wider than the
+    work extent, the user must guard pipe-coupled regions with
+    `if net.is_src()`, `if net.is_dst()`, or `if net.is_active()` so the
+    `ttl-verify-pipenet-guards` pass accepts the program. Pipe coordinates
+    should be sized from the operation's work extent, not the launch extent.
+
+    A PipeNet's pipes must all be the same kind (all unicast or all
+    multicast). The TTKernel lowering allocates one semaphore pair per
+    PipeNet, and the unicast and multicast handshakes use the pair's
+    bits with incompatible semantics; mixing them in one PipeNet races
+    when the same node participates in both. Use separate PipeNets.
 
     Limitation: overlapping multicast destinations (a core receiving
     from multiple multicast sources) within a single PipeNet are not
@@ -162,11 +194,11 @@ class PipeNet:
         pipes: List of Pipe objects defining the network
 
     Example:
-        # Gather pattern: all cores send to (0, y)
+        # Gather pattern from work extent ROWS x COLS:
         net = ttl.PipeNet([
             ttl.Pipe(src=(x, y), dst=(0, y))
-            for x in range(1, grid_x)
-            for y in range(grid_y)
+            for x in range(1, COLS)
+            for y in range(ROWS)
         ])
 
         # In datamovement thread:
@@ -174,52 +206,32 @@ class PipeNet:
         net.if_dst(lambda pipe: ttl.copy(pipe, blk).wait())
     """
 
-    _next_id = 0
-
     def __init__(self, pipes: List[Pipe]):
+        # Validate at construction time by building a one-net graph and
+        # delegating to OperationPipeNets.validate(). Single source of
+        # truth for empty/overlap/mixed-kind rules; the same graph is
+        # rebuilt and re-validated at operation build time.
+        from _pipenets import OperationPipeNets
+
         if not pipes:
             raise ValueError("PipeNet requires at least one pipe")
-        self._validate_no_overlapping_destinations(pipes)
-        self.pipe_net_id = PipeNet._next_id
-        PipeNet._next_id += 1
+        graph = OperationPipeNets()
+        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in pipes)
+        graph.validate()
+        # Operation-local id assigned by the OperationPipeNets builder
+        # before AST emission (see _build_operation_pipenets).
+        self.pipe_net_id = 0
         self.pipes = pipes
-        for pipe in self.pipes:
-            pipe.pipe_net_id = self.pipe_net_id
-
-    @staticmethod
-    def _validate_no_overlapping_destinations(pipes: List[Pipe]):
-        """Check that no core is the destination of more than one multicast pipe.
-
-        All pipes in a PipeNet share a single semaphore pair. For multicast
-        pipes, the handshake protocol cannot handle a core receiving from
-        multiple sources. Use separate PipeNets for patterns where multicast
-        destinations overlap (e.g., scatter-gather/all-to-all).
-
-        Unicast gather (multiple unicast pipes to one destination) is allowed
-        because the receiver uses cumulative semaphore waits.
-        """
-        mcast_pipes = [(i, p) for i, p in enumerate(pipes) if p.is_multicast]
-        if len(mcast_pipes) < 2:
-            return
-        seen = {}  # (x, y) -> pipe index
-        for i, pipe in mcast_pipes:
-            sx, sy = pipe.dst_start
-            ex, ey = pipe.dst_end
-            min_x, max_x = min(sx, ex), max(sx, ex)
-            min_y, max_y = min(sy, ey), max(sy, ey)
-            for x in range(min_x, max_x + 1):
-                for y in range(min_y, max_y + 1):
-                    if (x, y) in seen:
-                        j = seen[(x, y)]
-                        raise ValueError(
-                            f"PipeNet has overlapping multicast destinations: "
-                            f"pipe {j} (src={pipes[j].src}) and "
-                            f"pipe {i} (src={pipe.src}) both target "
-                            f"core ({x}, {y}). Use separate PipeNets "
-                            f"for patterns where a core receives from "
-                            f"multiple multicast sources."
-                        )
-                    seen[(x, y)] = i
+        # Capture the user's call site so `ttl.create_pipe` ops can carry
+        # the declaration location.
+        self._source_file: Optional[str] = None
+        self._source_line: Optional[int] = None
+        try:
+            frame = inspect.stack()[1]
+            self._source_file = frame.filename
+            self._source_line = frame.lineno
+        except (IndexError, AttributeError):
+            pass
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
@@ -262,5 +274,32 @@ class PipeNet:
         # which detects calls to this method and handles them specially.
         raise RuntimeError(
             "PipeNet.if_dst() should only be called inside a TTL kernel. "
+            "The compiler handles this method specially."
+        )
+
+    def is_src(self) -> bool:
+        """Boolean predicate: current node is a source of any pipe in this net.
+
+        Lowers to `ttl.is_src` and is recognized structurally by the
+        `ttl-verify-pipenet-guards` pass, so it can be used as the condition
+        of an `if` to gate pipe-coupled work."""
+        raise RuntimeError(
+            "PipeNet.is_src() should only be called inside a TTL kernel. "
+            "The compiler handles this method specially."
+        )
+
+    def is_dst(self) -> bool:
+        """Boolean predicate: current node is a destination of any pipe in
+        this net. Lowers to `ttl.is_dst`."""
+        raise RuntimeError(
+            "PipeNet.is_dst() should only be called inside a TTL kernel. "
+            "The compiler handles this method specially."
+        )
+
+    def is_active(self) -> bool:
+        """Boolean predicate: current node is either a source or a
+        destination of any pipe in this net. Lowers to `ttl.is_active`."""
+        raise RuntimeError(
+            "PipeNet.is_active() should only be called inside a TTL kernel. "
             "The compiler handles this method specially."
         )
