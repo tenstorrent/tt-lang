@@ -1408,6 +1408,9 @@ def _compile_kernel(
         config_options.append(
             f"matmul-full-fp32={int(compiler_options.matmul_full_fp32)}"
         )
+        config_options.append(
+            f"enable-fpu-binary-ops={int(compiler_options.enable_fpu_binary_ops)}"
+        )
         if config_options:
             set_compute_config_pass = (
                 "func.func(ttl-set-compute-kernel-config{"
@@ -1417,8 +1420,7 @@ def _compile_kernel(
 
         # NOTE: Pipeline pass ordering is mirrored in
         # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
-        fpu_flag = int(compiler_options.enable_fpu_binary_ops)
-        assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
+        assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
