@@ -21,7 +21,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttl.circular_buffer import CompilerAllocatedDFBConfig
+from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
 from ttl.constants import DEFAULT_L1_CB_BUDGET_BYTES
 from ttl.kernel_runner import build_cb_descriptors, get_remaining_l1_for_core
 

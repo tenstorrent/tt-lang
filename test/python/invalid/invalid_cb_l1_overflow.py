@@ -14,7 +14,7 @@ Validation test: total CB descriptor size must not exceed per-core L1 CB budget.
 
 import ttnn
 
-from ttl.circular_buffer import CompilerAllocatedDFBConfig
+from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
 from ttl.kernel_runner import build_cb_descriptors
 
 # Single compiler-allocated CB: large enough to exceed DEFAULT_L1_CB_BUDGET_BYTES.

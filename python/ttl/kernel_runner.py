@@ -54,10 +54,10 @@ def get_min_remaining_l1_for_device(device):
     this helper should return 1436032 bytes for core (0, 0)
     """
     _ensure_ttnn()
-    if _ttnn is None:
+    if ttnn is None:
         raise RuntimeError("ttnn is not available")
     # iterate over sub-meshes for individual devices as get_buffer_pages() does not let you do so directly
-    (rows, cols) = device.shape()
+    rows, cols = device.shape
     if rows == 0 or cols == 0:
         raise RuntimeError("device shape not found")
     device_min_remaining_bytes = -1
@@ -71,7 +71,7 @@ def get_min_remaining_l1_for_device(device):
             budget_bytes = info.cb_limit
 
             core_pages = [[]]
-            for page in ttnn._ttnn.reports.get_buffer_pages(submesh):
+            for page in ttnn._ttnn.reports.get_buffer_pages(single_device):
                 if page.buffer_type == ttnn.BufferType.L1:
                     core_pages[page.core_y][page.core_x] += page.page_size
             device_max_core_bytes = max(max(row) for row in core_pages)
