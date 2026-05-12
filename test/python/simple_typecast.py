@@ -127,9 +127,7 @@ if __name__ == "__main__":
             # f32 representation, so the hardware result must match exactly.
             expected = inp_torch.to(torch.float32)
             max_diff = (result - expected).abs().max().item()
-            assert max_diff == 0.0, (
-                f"bf16->f32 typecast mismatch: max_diff={max_diff}"
-            )
+            assert max_diff == 0.0, f"bf16->f32 typecast mismatch: max_diff={max_diff}"
             print("PASSED: bf16->f32 typecast matches torch reference")
     finally:
         ttnn.close_device(device)
