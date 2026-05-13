@@ -27,8 +27,7 @@ TileOpCategory classifyTileOp(Operation *op) {
   }
   // TODO: add TileOpCategory::Transpose case when TTL transpose op is added.
 
-  // FPU binary: marked by kFPUBinaryAttrName attribute.
-  if (op->hasAttr(kFPUBinaryAttrName)) {
+  if (isFPUEligibleBinaryOp(op)) {
     return TileOpCategory::FPUBinary;
   }
   // SFPU unary: tile unary ops that operate in-place on DST.

@@ -841,11 +841,11 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
   let assemblyFormat = "$src_tile `into` `dst` `[` $dst_index `]` attr-dict `:` type($src_tile) `->` type($result)";
 }
 
-// Note: DSTInputsTrait is the default for binary ops. FPU-marked binaries
-// (ttl.fpu_binary) read from CB instead; use isCBInputOp() to check at runtime.
-class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
+// Common base for tile binary ops. Carries traits that hold unconditionally
+// (binary, writes to DST, all types match). Subclasses add the input-source
+// trait that reflects the op's actual hardware behavior.
+class TTL_TileBinaryOpBase<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileBinaryOpTrait,
-                                                 TTL_DSTInputsTrait,
                                                  TTL_DstResultOpTrait,
                                                  AllTypesMatch<["lhs", "rhs", "result"]>])> {
   let summary = "Binary tile operation";
@@ -853,6 +853,19 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
   let results = (outs TTL_TileType:$result);
   let assemblyFormat = "$lhs `,` $rhs `into` `dst` `[` $dst_index `]` attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
 }
+
+// Always-SFPU binary tile op: reads both operands from DST unconditionally.
+// Use for ops with no FPU equivalent (div, max, min).
+class TTL_TileSfpuBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileBinaryOpBase<mnemonic, !listconcat(traits, [TTL_DSTInputsTrait])>;
+
+// Strategy-dependent binary tile op: input source is determined by operand
+// provenance at lowering time. add/sub/mul live here; isFPUEligibleBinaryOp
+// resolves the choice from the current IR.
+class TTL_TileStrategyDepBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileBinaryOpBase<mnemonic,
+                           !listconcat(traits,
+                                       [TTL_StrategyDependentBinaryOpTrait])>;
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileUnaryOpTrait,
@@ -869,28 +882,40 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
 
-// Multiclass for defining paired tensor + tile binary ops
-multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp,
-                                     list<Trait> extraTraits = []> {
-  // Tensor-level op (operates on full tensors)
+// Multiclass for paired tensor + strategy-dependent tile binary ops.
+// Used by add/sub/mul, where the tile op may lower to either an FPU or
+// SFPU TTKernel form depending on operand provenance.
+multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
+                                                string kernelOp> {
   def Op : TTL_ElementWiseBinary<mnemonic> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
-  // Tile-level op (operates inside ttl.compute body)
-  def TileOp : TTL_TileBinaryOp<"tile_"#mnemonic, extraTraits> {
+  def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic> {
     let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
   }
 }
 
-// Define all binary elementwise ops using the multiclass
-defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles">;
-defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles">;
-defm TTL_Div : TTL_BinaryElementwisePair<"div", "div_binary_tile">;
-defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles",
-                                         [TTL_InPlaceOpTrait]>;
-defm TTL_Min : TTL_BinaryElementwisePair<"min", "binary_min_tile",
-                                         [TTL_InPlaceOpTrait]>;
+// Multiclass for paired tensor + always-SFPU tile binary ops.
+// Used by div/max/min, which have no FPU lowering today.
+multiclass TTL_BinarySfpuElementwisePair<string mnemonic, string kernelOp,
+                                         list<Trait> extraTraits = []> {
+  def Op : TTL_ElementWiseBinary<mnemonic> {
+    let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
+  }
+  def TileOp : TTL_TileSfpuBinaryOp<"tile_"#mnemonic, extraTraits> {
+    let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
+  }
+}
+
+// Define all binary elementwise ops using the multiclasses
+defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles">;
+defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles">;
+defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles">;
+defm TTL_Div : TTL_BinarySfpuElementwisePair<"div", "div_binary_tile">;
+defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
+                                             [TTL_InPlaceOpTrait]>;
+defm TTL_Min : TTL_BinarySfpuElementwisePair<"min", "binary_min_tile",
+                                             [TTL_InPlaceOpTrait]>;
 
 
 //===----------------------------------------------------------------------===//

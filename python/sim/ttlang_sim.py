@@ -9,7 +9,12 @@ without requiring any code changes to the kernel files.
 
 Usage:
     ttlang-sim examples/eltwise_add.py
-    ttlang-sim examples/single_node_matmul.py --show-stats --grid 4,4
+    ttlang-sim examples/single_node_matmul.py --trace /tmp/matmul.jsonl --grid 4,4
+    ttlang-sim-stats /tmp/matmul.jsonl
+
+The Python script must be the first argument (before any simulator options).
+``ttlang-sim --help``, ``ttlang-sim -h``, and ``ttlang-sim --version`` work with
+no script.
 """
 
 import sys
@@ -216,26 +221,24 @@ def _write_jsonl_trace(path: Path, events: list) -> None:
 
 
 def main() -> None:
+    argv = sys.argv[1:]
+
     parser = argparse.ArgumentParser(
         prog="ttlang-sim",
-        description="Run tt-lang kernels on the simulator backend",
+        usage=(
+            "%(prog)s [-h] [--version]\n       "
+            "%(prog)s SCRIPT.py [options] [-- SCRIPT_ARGS ...]"
+        ),
+        description=(
+            "Run tt-lang kernels on the simulator backend. "
+            "SCRIPT.py must be the first argument (before any options)."
+        ),
         epilog="Examples:\n"
         "  ttlang-sim examples/eltwise_add.py\n"
         "  ttlang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
         "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"ttlang-sim {_get_version()}",
-    )
-
-    parser.add_argument(
-        "target",
-        nargs="?",
-        help="Python file (.py) to run",
+        add_help=False,
     )
 
     parser.add_argument(
@@ -318,12 +321,30 @@ def main() -> None:
         ),
     )
 
-    args, script_args = parser.parse_known_intermixed_args()
-    args.script_args = script_args
-
-    if not args.target:
+    if not argv:
         parser.print_help()
         sys.exit(1)
+
+    first = argv[0]
+    if first in ("-h", "--help"):
+        parser.print_help()
+        sys.exit(0)
+    if first == "--version":
+        print(f"ttlang-sim {_get_version()}")
+        sys.exit(0)
+    if first.startswith("-"):
+        print(
+            "ttlang-sim: error: the Python script (.py) must be the first argument "
+            "(before any simulator options).\n"
+            "Example: ttlang-sim examples/eltwise_add.py --grid 4,4\n"
+            "For usage without a script: ttlang-sim --help",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    args, script_args = parser.parse_known_args(argv[1:])
+    args.target = first
+    args.script_args = script_args
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
