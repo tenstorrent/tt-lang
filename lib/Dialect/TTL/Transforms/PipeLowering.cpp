@@ -64,12 +64,15 @@ static int64_t getNocIndex(Operation *op) {
   return attr.getInt();
 }
 
+// Sender/receiver semaphore-index encoding is declared in PipeLowering.h
+// so kernel-side and host-side code share the same rule. Local wrappers
+// keep the call sites compact when the caller already has a PipeType.
 static int64_t getSenderSemIdx(PipeType pipeType) {
-  return pipeType.getPipeNetId() * 2;
+  return getSenderSemIdx(pipeType.getPipeNetId());
 }
 
 static int64_t getReceiverSemIdx(PipeType pipeType) {
-  return pipeType.getPipeNetId() * 2 + 1;
+  return getReceiverSemIdx(pipeType.getPipeNetId());
 }
 
 //===----------------------------------------------------------------------===//
@@ -508,6 +511,24 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
 
 namespace {
 
+// Replace `op` with an `scf.if(cond)` whose then-region is the original
+// body. The body's `ttl.yield` terminator is dropped — `scf.if`'s own
+// yield closes the region.
+template <typename Op>
+static void lowerToScfIf(Op op, Value cond,
+                         ConversionPatternRewriter &rewriter) {
+  auto ifOp = scf::IfOp::create(rewriter, op.getLoc(), cond,
+                                /*withElseRegion=*/false);
+  Block &srcBlock = op.getBody().front();
+  Block &thenBlock = ifOp.getThenRegion().front();
+  if (Operation *terminator = srcBlock.getTerminator();
+      terminator && isa<YieldOp>(terminator)) {
+    rewriter.eraseOp(terminator);
+  }
+  rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
+  rewriter.eraseOp(op);
+}
+
 struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -536,23 +557,7 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
                                         coreY, srcYConst);
     auto isSrc = arith::AndIOp::create(rewriter, loc, matchX, matchY);
 
-    // Create scf.if with empty body (the builder adds a yield for us).
-    auto ifOp =
-        scf::IfOp::create(rewriter, loc, isSrc, /*withElseRegion=*/false);
-
-    // Move ops from the original body into the then block (before the yield).
-    // Using inlineBlockBefore moves rather than clones, preserving SSA.
-    // The original body's `ttl.yield` terminator is dropped — the new
-    // scf.if's own yield is what closes the region.
-    Block &srcBlock = op.getBody().front();
-    Block &thenBlock = ifOp.getThenRegion().front();
-    if (Operation *terminator = srcBlock.getTerminator();
-        terminator && isa<YieldOp>(terminator)) {
-      rewriter.eraseOp(terminator);
-    }
-    rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
-
-    rewriter.eraseOp(op);
+    lowerToScfIf(op, isSrc, rewriter);
     return success();
   }
 };
@@ -598,23 +603,7 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
     auto inRangeY = arith::AndIOp::create(rewriter, loc, geMinY, leMaxY);
     auto isDst = arith::AndIOp::create(rewriter, loc, inRangeX, inRangeY);
 
-    // Create scf.if with empty body (the builder adds a yield for us).
-    auto ifOp =
-        scf::IfOp::create(rewriter, loc, isDst, /*withElseRegion=*/false);
-
-    // Move ops from the original body into the then block (before the yield).
-    // Using inlineBlockBefore moves rather than clones, preserving SSA.
-    // The original body's `ttl.yield` terminator is dropped — the new
-    // scf.if's own yield is what closes the region.
-    Block &srcBlock = op.getBody().front();
-    Block &thenBlock = ifOp.getThenRegion().front();
-    if (Operation *terminator = srcBlock.getTerminator();
-        terminator && isa<YieldOp>(terminator)) {
-      rewriter.eraseOp(terminator);
-    }
-    rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
-
-    rewriter.eraseOp(op);
+    lowerToScfIf(op, isDst, rewriter);
     return success();
   }
 };

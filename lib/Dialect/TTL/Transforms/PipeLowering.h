@@ -16,6 +16,16 @@
 
 namespace mlir::tt::ttl {
 
+/// Each PipeNet allocates two semaphores: one signaled by receivers (sender
+/// waits on it before multicasting) and one signaled by the sender (receivers
+/// wait on it for data arrival). They are laid out consecutively per net id,
+/// `sender` at `id * 2` and `receiver` at `id * 2 + 1`, so kernel-side code
+/// and host-side allocators agree without an extra side table.
+inline int64_t getSenderSemIdx(int64_t pipeNetId) { return pipeNetId * 2; }
+inline int64_t getReceiverSemIdx(int64_t pipeNetId) {
+  return pipeNetId * 2 + 1;
+}
+
 /// Per-function map: pipeNetId -> kernel-local i32 counter for the
 /// multicast cumulative wait_min protocol (issue #505).
 using PipeNetCounterMap =
