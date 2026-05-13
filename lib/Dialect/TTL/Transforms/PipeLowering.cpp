@@ -132,7 +132,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  auto pipeType = llvm::cast<PipeType>(pipe.getType());
+  auto pipeType = mlir::cast<PipeType>(pipe.getType());
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   if (failed(cbConverted)) {
@@ -222,7 +222,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     }
     if (senderCBIndex.has_value() &&
         senderCBIndex.value() != receiverInfo->cbIndex) {
-      auto srcCBType = llvm::dyn_cast<ttk::CBType>(cbConverted->getType());
+      auto srcCBType = mlir::cast<ttk::CBType>(cbConverted->getType());
       auto recvCB = ttk::GetCompileArgValOp::create(
           rewriter, loc, srcCBType,
           static_cast<int32_t>(receiverInfo->cbIndex));
@@ -381,7 +381,7 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
                             const PipeNetCounterMap *counters,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  auto pipeType = llvm::cast<PipeType>(pipe.getType());
+  auto pipeType = mlir::cast<PipeType>(pipe.getType());
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
 
