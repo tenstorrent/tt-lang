@@ -24,7 +24,7 @@ from typing import (
     Union,
 )
 
-from _pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
+from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
 
 from .corecontext import node, flatten_core_index, grid_size
 from .typedefs import CoreCoord, CoreRange

@@ -272,6 +272,7 @@ setup(
     install_requires=_read_install_requires(),
     packages=[
         "ttl",
+        "ttl._pipenets",
         "ttl._src",
         "ttl._setup",
         "ttl.pykernel",
@@ -282,9 +283,11 @@ setup(
         "ttl.tutorials.matmul",
         "ttl.tutorials.broadcast",
         "ttl.utils",
+        "sim_stats",
     ],
     package_dir={
         "ttl": "python/ttl",
+        "ttl._pipenets": "python/ttl/_pipenets",
         "ttl._src": "python/ttl/_src",
         "ttl._setup": "python/ttl/_setup",
         "ttl.pykernel": "python/pykernel",
@@ -295,6 +298,7 @@ setup(
         "ttl.tutorials.matmul": "examples/matmul-tutorial",
         "ttl.tutorials.broadcast": "examples/tutorial",
         "ttl.utils": "python/utils",
+        "sim_stats": "python/sim_stats",
     },
     ext_modules=[ttlang_c],
     cmdclass={"build_ext": CMakeBuild, "sdist": NoSdist},
