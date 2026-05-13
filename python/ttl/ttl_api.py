@@ -1448,6 +1448,7 @@ def _compile_kernel(
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-verify-pipenet-guards")
+        pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
