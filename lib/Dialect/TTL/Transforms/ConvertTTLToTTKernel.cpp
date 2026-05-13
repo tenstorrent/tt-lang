@@ -101,8 +101,8 @@ static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread")) {
     return a.getValue();
   }
-  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
-    op->removeAttr("ttl.kernel_thread");
+  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
+    op->removeAttr(kKernelThreadAttrName);
     op->setAttr("ttkernel.thread", a);
     return a.getValue();
   }
@@ -960,11 +960,12 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 
   LogicalResult matchAndRewrite(FuncOp op,
                                 PatternRewriter &rewriter) const override {
-    auto ttlAttr = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread");
+    auto ttlAttr =
+        op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName);
     if (!ttlAttr || ttlAttr.getValue() != ttk::ThreadType::Noc) {
       return failure();
     }
-    op->removeAttr("ttl.kernel_thread");
+    op->removeAttr(kKernelThreadAttrName);
     op->removeAttr("ttl.noc_index");
     op->setAttr("ttkernel.thread", ttlAttr);
 

@@ -1,7 +1,7 @@
 // Summary: copy_tile has TTLCBInputTileOpTrait so its input is excluded from
 // DST liveness (reads from CB, not DST). Verify no redundant copy insertion
 // and correct interval behavior when copy_tile coexists with compute ops.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -88,7 +88,7 @@ func.func @two_inputs_both_need_copy(
 // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary: reads from CB, no copy_tile needed.
 // CHECK-NOT:  ttl.copy_tile
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0] {ttl.fpu_binary}
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0]
 // CHECK:      ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT: ttl.yield
   %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>

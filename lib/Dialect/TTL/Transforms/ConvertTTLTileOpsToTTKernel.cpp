@@ -263,19 +263,17 @@ static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
 ///
 /// Source DST indices are resolved from the operand-defining ops' dst_index.
 /// The output index comes from this op's dst_index operand.
-/// Ops marked with kFPUBinaryAttrName are skipped (handled by FPU pattern).
+/// The FPU variant (TTLTileBinaryFPUToTTKernel) is registered with higher
+/// benefit so it is tried first; this SFPU pattern is the unconditional
+/// fallback.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
-  using OpConversionPattern<SourceOp>::OpConversionPattern;
+  TTLTileBinaryToTTKernel(MLIRContext *ctx)
+      : OpConversionPattern<SourceOp>(ctx, /*benefit=*/1) {}
 
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // FPU-marked ops are handled by TTLTileBinaryFPUToTTKernel.
-    if (op->hasAttr(kFPUBinaryAttrName)) {
-      return failure();
-    }
-
     Location loc = op.getLoc();
 
     auto src0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
@@ -330,17 +328,20 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
 /// FPU binary ops: read both operands from CBs, write result to DST.
 /// add_tiles(in0_cb, in1_cb, in0_tile_index, in1_tile_index, dst_index)
 ///
-/// Only matches ops marked with kFPUBinaryAttrName (set by TTLAssignDST).
+/// Only matches strategy-dependent binary ops (add/sub/mul) that are
+/// currently FPU-eligible per isFPUEligibleBinaryOp. Registered with higher
+/// benefit than the SFPU pattern so this predicate is tried first.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
-  using OpConversionPattern<SourceOp>::OpConversionPattern;
+  TTLTileBinaryFPUToTTKernel(const TypeConverter &typeConverter,
+                             MLIRContext *ctx)
+      : OpConversionPattern<SourceOp>(typeConverter, ctx, /*benefit=*/2) {}
 
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Only match FPU-marked ops.
-    if (!op->hasAttr(kFPUBinaryAttrName)) {
-      return failure();
+    if (!isFPUEligibleBinaryOp(op)) {
+      return rewriter.notifyMatchFailure(op, "not FPU-eligible");
     }
 
     Location loc = op.getLoc();
@@ -384,8 +385,8 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     }
 
     // CB tile index: both operands share the same index because
-    // TTLAssignDST only marks ops as FPU-eligible when both have
-    // identical indexing maps.
+    // isFPUEligibleBinaryOp only matches when the two tensor.extract ops use
+    // identical induction indices (the lowered form of matching maps).
     auto cbIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
     if (failed(cbIdx)) {
       return rewriter.notifyMatchFailure(

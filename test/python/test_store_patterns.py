@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for store patterns: passthrough, double store, multi-output, and
-store-then-forward (scratch DFB reuse within compute thread)."""
+store-then-forward (one producer fans out to two per-consumer DFBs)."""
 
 # REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
@@ -201,16 +201,27 @@ def fused_bcast_two_outputs_kernel(a, b, out1, out2):
 def store_then_forward_kernel(a, b, out_main, out_copy):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
-    main_dfb = ttl.make_dataflow_buffer_like(out_main, shape=(1, 1), block_count=2)
+    # SPSC split: compute reads main back for the copy_dfb computation, and
+    # dm_write also reads main to forward to out_main. Each consumer gets
+    # its own DFB so the ttl-verify-dfb-spsc pass accepts the kernel.
+    main_for_compute_dfb = ttl.make_dataflow_buffer_like(
+        out_main, shape=(1, 1), block_count=2
+    )
+    main_for_write_dfb = ttl.make_dataflow_buffer_like(
+        out_main, shape=(1, 1), block_count=2
+    )
     copy_dfb = ttl.make_dataflow_buffer_like(out_copy, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
         with a_dfb.wait() as av, b_dfb.wait() as bv:
-            with main_dfb.reserve() as m:
-                m.store(av + bv)
+            main_val = av + bv
+            with main_for_compute_dfb.reserve() as m:
+                m.store(main_val)
+            with main_for_write_dfb.reserve() as m:
+                m.store(main_val)
 
-        with main_dfb.wait() as mv:
+        with main_for_compute_dfb.wait() as mv:
             with copy_dfb.reserve() as c:
                 c.store(mv + mv)
 
@@ -225,7 +236,7 @@ def store_then_forward_kernel(a, b, out_main, out_copy):
 
     @ttl.datamovement()
     def dm_write():
-        with main_dfb.wait() as blk:
+        with main_for_write_dfb.wait() as blk:
             tx = ttl.copy(blk, out_main[0, 0])
             tx.wait()
         with copy_dfb.wait() as blk:

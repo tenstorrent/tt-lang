@@ -481,6 +481,28 @@ strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `matmul_1d_mcast` example uses them. The test pins the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
+## Lowering: sender/receiver DFB lockstep
+
+`PipeLowering.cpp::lowerCBToPipe` emits, around every sender-side
+`ttl.copy(cb, pipe)`, a `ttkernel.cb_reserve_back` before the NOC
+write and a `ttkernel.cb_push_back` after the barrier and semaphore
+signal, on the sender's local view of the destination DFB. This
+keeps the sender's `fifo_wr_ptr` advancing in lockstep with the
+receiver's per iteration: the destination address handed to
+`noc_async_write` is `cb_<recvIdx>.get_write_ptr()` on the sender,
+which is correct only while sender and receiver have issued the
+same number of reserves/pushes against that DFB. Without the
+bracket, multi-iteration kernels write to slot 0 every iteration
+while the receiver's `cb_<recvIdx>.fifo_wr_ptr` keeps advancing,
+and data lands in a slot the receiver never waits on (issue #574).
+
+Loopback exception: when the sender is also a destination of the
+pipe (`pipeType.srcInDstRange()`) and the destination DFB index
+coincides with the sender's source DFB index, the receive callback
+running on the sender core already issues `cb_reserve_back` /
+`cb_push_back` on that DFB; the lowering skips its sender-side
+pair to avoid double-advancing.
+
 ## Limitations
 
 * Work larger than launch: the verifier checks role containment but
