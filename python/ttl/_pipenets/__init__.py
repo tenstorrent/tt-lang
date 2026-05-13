@@ -107,7 +107,7 @@ class OperationPipeNets:
         for net in self.pipe_nets:
             if not net.pipes:
                 raise ValueError("PipeNet requires at least one pipe")
-            _validate_homogeneous_pipe_kinds(net.pipes)
+            _validate_no_mixed_kinds(net.pipes)
         _validate_consistent_coord_rank(self.pipe_nets)
 
 
@@ -157,7 +157,7 @@ def _validate_consistent_coord_rank(pipe_nets: List[PipeNetUse]) -> None:
         )
 
 
-def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:
+def _validate_no_mixed_kinds(pipes: Tuple[PipeUse, ...]) -> None:
     # Spec: `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]])`. The shared
     # type variable means every pipe in a PipeNet has the same destination
     # type — all unicast or all multicast.
