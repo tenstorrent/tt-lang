@@ -80,6 +80,7 @@ def stage() -> None:
     shutil.copytree(src_ttl / "_pipenets", ttl / "_pipenets")
     shutil.copytree(src_ttl / "_setup", ttl / "_setup")
     shutil.copytree(REPO_ROOT / "python" / "utils", ttl / "utils")
+    shutil.copytree(REPO_ROOT / "python" / "sim_stats", STAGE / "sim_stats")
 
     tutorials = ttl / "tutorials"
     tutorials.mkdir()
@@ -122,6 +123,7 @@ setup(
         "ttl.tutorials.matmul",
         "ttl.tutorials.broadcast",
         "ttl.utils",
+        "sim_stats",
     ],
     package_dir={"": str(STAGE.relative_to(PKG_ROOT))},
     long_description=readme,
