@@ -102,11 +102,13 @@ class OperationPipeNets:
         return active
 
     def validate(self) -> None:
-        """Run cross-pipe validation: empty PipeNets, mixed pipe kinds."""
+        """Run cross-pipe validation: empty PipeNets, mixed pipe kinds,
+        consistent coord rank across the graph."""
         for net in self.pipe_nets:
             if not net.pipes:
                 raise ValueError("PipeNet requires at least one pipe")
             _validate_homogeneous_pipe_kinds(net.pipes)
+        _validate_consistent_coord_rank(self.pipe_nets)
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
@@ -133,6 +135,26 @@ def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
         yield dst.coords
         return
     yield from itertools.product(*(range(lo, hi) for lo, hi in zip(dst.lo, dst.hi)))
+
+
+def _validate_consistent_coord_rank(pipe_nets: List[PipeNetUse]) -> None:
+    # _linearize treats a rank-1 coord as already-linear (matching sim's
+    # `flatten_core_index`), so mixing rank-1 and rank-2 srcs/dsts in one
+    # graph would alias distinct nodes in `active_node_set`. Force a
+    # single rank across the whole graph to make that aliasing impossible.
+    ranks: Set[int] = set()
+    for net in pipe_nets:
+        for pipe in net.pipes:
+            ranks.add(len(pipe.src.coords))
+            if isinstance(pipe.dst, NodeRange):
+                ranks.add(len(pipe.dst.lo))
+            else:
+                ranks.add(len(pipe.dst.coords))
+    if len(ranks) > 1:
+        raise ValueError(
+            f"pipe coordinate ranks must be consistent across the graph, "
+            f"got {sorted(ranks)}"
+        )
 
 
 def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:

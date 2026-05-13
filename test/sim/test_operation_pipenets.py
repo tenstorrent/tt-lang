@@ -115,3 +115,17 @@ class TestValidate:
             ]
         )
         graph.validate()  # no exception
+
+    def test_mixed_coord_ranks_rejected(self):
+        # _linearize treats rank-1 coords as already-linear, so a rank-1 (5,)
+        # and rank-2 (0, 5) on grid (8, 8) would alias to the same set element
+        # in active_node_set. Reject the mix at the graph level.
+        graph = OperationPipeNets()
+        graph.add_pipe_net(
+            [
+                PipeUse(src=_coord(0), dst=_coord(1)),
+                PipeUse(src=_coord(0, 0), dst=_coord(1, 0)),
+            ]
+        )
+        with pytest.raises(ValueError, match="coordinate ranks must be consistent"):
+            graph.validate()
