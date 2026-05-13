@@ -316,21 +316,28 @@ def test_forward_ring(device):
 
 
 # ---------------------------------------------------------------------------
-# Per-row forward rings: each row of the device grid forms an independent
-# ring. Every core (x, y) sends its tile to ((x+1) % grid_x, y) and adds
-# its predecessor's tile to its own. Uses grid="auto" to query the device
-# compute grid; the kernel reads grid dimensions via ttl.grid_size().
+# Per-row forward rings: a USE_Y x USE_X subgrid of the launched device grid
+# forms USE_Y independent rings. Every active core (x, y) sends its tile to
+# ((x+1) % USE_X, y) and adds its predecessor's tile to its own. The ring
+# extent is bounded so `if_src` / `if_dst` per-pipe expansions stay within
+# NCRISC code memory on small-code-region devices (e.g. Wormhole, 0x4000).
+# Nodes outside the active subgrid skip every body via `if net.is_active()`.
 # ---------------------------------------------------------------------------
 
+RING_X = 4
+RING_Y = 4
 
-@ttl.operation(grid="auto")
+
+@ttl.operation(grid="full")
 def row_rings_kernel(inp, out):
     grid_x, grid_y = ttl.grid_size(dims=2)
+    use_x = min(grid_x, RING_X)
+    use_y = min(grid_y, RING_Y)
     net = ttl.PipeNet(
         [
-            ttl.Pipe(src=(x, y), dst=((x + 1) % grid_x, y))
-            for y in range(grid_y)
-            for x in range(grid_x)
+            ttl.Pipe(src=(x, y), dst=((x + 1) % use_x, y))
+            for y in range(use_y)
+            for x in range(use_x)
         ]
     )
 
@@ -340,54 +347,60 @@ def row_rings_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with own_cb.wait() as own, nbr_cb.wait() as nbr, out_cb.reserve() as o:
-            o.store(own + nbr)
+        if net.is_active():
+            with own_cb.wait() as own, nbr_cb.wait() as nbr, out_cb.reserve() as o:
+                o.store(own + nbr)
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.node(dims=2)
-        with own_cb.reserve() as blk:
-            ttl.copy(inp[y, x], blk).wait()
+        if net.is_active():
+            x, y = ttl.node(dims=2)
+            with own_cb.reserve() as blk:
+                ttl.copy(inp[y, x], blk).wait()
 
-            def send(pipe):
-                ttl.copy(blk, pipe).wait()
+                def send(pipe):
+                    ttl.copy(blk, pipe).wait()
 
-            net.if_src(send)
+                net.if_src(send)
 
-        with nbr_cb.reserve() as blk:
+            with nbr_cb.reserve() as blk:
 
-            def recv(pipe):
-                ttl.copy(pipe, blk).wait()
+                def recv(pipe):
+                    ttl.copy(pipe, blk).wait()
 
-            net.if_dst(recv)
+                net.if_dst(recv)
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[y, x]).wait()
+        if net.is_active():
+            x, y = ttl.node(dims=2)
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[y, x]).wait()
 
 
 def test_row_rings_auto(device):
-    """N parallel forward rings on the full device grid where N = grid_y.
-    Each receiver computes out[y, x] = inp[y, x] + inp[y, (x-1) % grid_x]."""
+    """USE_Y parallel forward rings on a USE_Y x USE_X subgrid of the device
+    compute grid (USE_X = min(grid_x, RING_X), USE_Y = min(grid_y, RING_Y)).
+    Each active receiver computes
+    out[y, x] = inp[y, x] + inp[y, (x-1) % USE_X]."""
     grid = device.compute_with_storage_grid_size()
-    grid_x, grid_y = grid.x, grid.y
+    use_x = min(grid.x, RING_X)
+    use_y = min(grid.y, RING_Y)
 
-    inp_torch = torch.randn(grid_y * TILE, grid_x * TILE, dtype=torch.bfloat16)
+    inp_torch = torch.randn(use_y * TILE, use_x * TILE, dtype=torch.bfloat16)
     inp_tt = to_dram(inp_torch, device)
     out_tt = to_dram(
-        torch.zeros(grid_y * TILE, grid_x * TILE, dtype=torch.bfloat16), device
+        torch.zeros(use_y * TILE, use_x * TILE, dtype=torch.bfloat16), device
     )
 
     row_rings_kernel(inp_tt, out_tt)
 
     result = ttnn.to_torch(out_tt)
     expected = torch.zeros_like(inp_torch)
-    for y in range(grid_y):
-        for x in range(grid_x):
+    for y in range(use_y):
+        for x in range(use_x):
             own = inp_torch[y * TILE : (y + 1) * TILE, x * TILE : (x + 1) * TILE]
-            prev = (x - 1) % grid_x
+            prev = (x - 1) % use_x
             nbr = inp_torch[y * TILE : (y + 1) * TILE, prev * TILE : (prev + 1) * TILE]
             expected[y * TILE : (y + 1) * TILE, x * TILE : (x + 1) * TILE] = own + nbr
     assert_pcc(expected, result)

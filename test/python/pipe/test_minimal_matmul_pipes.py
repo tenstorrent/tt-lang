@@ -44,6 +44,7 @@ PipeNet shape here is the same; only the lowering primitive differs.
 import pytest
 import torch
 import ttl
+from ttl import ttl_api
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
@@ -175,6 +176,19 @@ def minimal_matmul_kernel(a, b, out):
 def test_minimal_matmul_pipes(device):
     """4096x4096x4096 matmul with row-broadcast A and column-broadcast B,
     matching the canonical tt-metal `minimal_matmul::test_linear` shape."""
+    # TODO(#585): re-enable on Wormhole once the dispatch-FW residue
+    # triggered by the 8-dest a-pipe multicast lowering is fixed. The test
+    # itself passes, but leaves ethernet dispatch core (x=25,y=17) in
+    # RUN_MSG_INIT (0x40) so the next OpenDevice times out waiting for
+    # physical cores. Same error signature as tt-metal#43511 (Galaxy logs
+    # 32 fatals and continues; single-device WH cannot recover).
+    arch = ttl_api._detect_device_arch(device)
+    if arch and "wormhole" in arch:
+        pytest.skip(
+            "WH dispatch hang from 8-dest a-pipe multicast (RUN_MSG_INIT "
+            "residue) — see #585"
+        )
+
     a_torch = torch.randn(M_DIM, K_DIM, dtype=torch.bfloat16) / K_BLOCKS
     b_torch = torch.randn(K_DIM, N_DIM, dtype=torch.bfloat16) / K_BLOCKS
 
