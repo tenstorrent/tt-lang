@@ -508,7 +508,7 @@ static CopyOperandKind classifyOperand(Value v) {
 }
 
 static Value makeZeroI8(Location loc, ConversionPatternRewriter &rewriter) {
-  return rewriter.create<arith::ConstantIntOp>(loc, 0, 8);
+  return arith::ConstantIntOp::create(rewriter, loc, 0, 8);
 }
 
 /// Emits NOC barrier: TRID-scoped (barrier_with_trid) when useTridBarriers and
@@ -521,19 +521,19 @@ static LogicalResult emitNocBarrier(ConversionPatternRewriter &rewriter,
   Value nocVal = makeZeroI8(loc, rewriter);
   if (useTridBarriers && tridVal) {
     if (kind == TransferKind::read) {
-      rewriter.create<ttk::NocAsyncReadBarrierWithTridOp>(loc, *tridVal,
-                                                          nocVal);
+      ttk::NocAsyncReadBarrierWithTridOp::create(rewriter, loc, *tridVal,
+                                                 nocVal);
     } else if (kind == TransferKind::write) {
-      rewriter.create<ttk::NocAsyncWriteBarrierWithTridOp>(loc, *tridVal,
-                                                           nocVal);
+      ttk::NocAsyncWriteBarrierWithTridOp::create(rewriter, loc, *tridVal,
+                                                  nocVal);
     } else {
       return failure();
     }
   } else {
     if (kind == TransferKind::read) {
-      rewriter.create<ttk::NocAsyncReadBarrierOp>(loc);
+      ttk::NocAsyncReadBarrierOp::create(rewriter, loc);
     } else if (kind == TransferKind::write) {
-      rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
+      ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
     } else {
       return failure();
     }
@@ -823,9 +823,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   if (useTridBarriers) {
     Value nocVal = makeZeroI8(loc, rewriter);
     if (isRead) {
-      rewriter.create<ttk::NocAsyncReadSetTridOp>(loc, tridVal, nocVal);
+      ttk::NocAsyncReadSetTridOp::create(rewriter, loc, tridVal, nocVal);
     } else {
-      rewriter.create<ttk::NocAsyncWriteSetTridOp>(loc, tridVal, nocVal);
+      ttk::NocAsyncWriteSetTridOp::create(rewriter, loc, tridVal, nocVal);
     }
   }
 
@@ -967,8 +967,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       // If this TRID was still outstanding, emit a barrier to drain the old
       // transfer before reusing the TRID.
       if (allocResult.evictDirection) {
-        Value evictTrid = rewriter.create<arith::ConstantIntOp>(
-            op.getLoc(), allocResult.trid, 32);
+        Value evictTrid = arith::ConstantIntOp::create(
+            rewriter, op.getLoc(), allocResult.trid, 32);
         if (failed(emitNocBarrier(rewriter, op.getLoc(),
                                   *allocResult.evictDirection,
                                   std::optional<Value>(evictTrid),
@@ -976,11 +976,12 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
           return rewriter.notifyMatchFailure(op, "unsupported evict direction");
         }
       }
-      tridVal = rewriter.create<arith::ConstantIntOp>(op.getLoc(),
-                                                      allocResult.trid, 32);
+      tridVal =
+          arith::ConstantIntOp::create(rewriter, op.getLoc(), allocResult.trid,
+                                       32);
     } else {
       // Global-barrier mode: no TRID tracking; handle is always constant 0.
-      tridVal = rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 32);
+      tridVal = arith::ConstantIntOp::create(rewriter, op.getLoc(), 0, 32);
     }
 
     // TensorSlice -> CB: read tiles from tensor into circular buffer.
