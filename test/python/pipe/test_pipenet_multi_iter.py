@@ -4,7 +4,7 @@
 
 """Multi-iteration PipeNet gather + multicast (issue #574).
 
-Two tests:
+Three tests:
 
 1. `test_gather_multi_iter` — minimal two-core gather over two stripes.
    Verifies the sender-side `cb_reserve_back` / `cb_push_back` lockstep
@@ -23,6 +23,16 @@ Two tests:
    user-facing DFBs whose consumers span multiple kernel threads. The
    shared compiler-allocated DFB helpers introduced by PR #540 would be
    a reasonable foundation but do not themselves perform the split.
+
+3. `test_cross_dfb_multicast_loopback` — four-core multicast where the
+   source core (0, 0) is inside the destination range (loopback) and
+   the source DFB index differs from the destination DFB index. The
+   IR-level loopback skip fix in this PR (`skipSenderReserve =
+   pipeType.srcInDstRange()`) is necessary for this pattern, but the
+   stripe-1 multicast write is not delivered: dm_write reads whatever
+   was already in the destination DFB's slot 1 at device init time
+   (zero if L1 was just cleared; otherwise stale data from a prior
+   run). Marked `xfail` pending #583.
 """
 
 import pytest
@@ -232,4 +242,72 @@ def test_gather_bcast_multi_iter(device):
     ttnn.synchronize_device(device)
     result = ttnn.to_torch(out_tt)
     expected = torch.full((st, st), 2.0, dtype=torch.bfloat16)
+    torch.testing.assert_close(result, expected)
+
+
+CROSS_DFB_COL_CORES = 4
+
+
+@ttl.operation(grid=(CROSS_DFB_COL_CORES, 1))
+def cross_dfb_multicast_loopback(out):
+    src_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    dst_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    # Source (0, 0) is inside the destination range slice(0, 4) — loopback.
+    bcast_net = ttl.PipeNet([ttl.Pipe((0, 0), (slice(0, CROSS_DFB_COL_CORES), 0))])
+
+    @ttl.compute()
+    def compute():
+        node_col, _node_row = ttl.node(dims=2)
+        for _ri in range(NUM_OF_STRIPES):
+            if node_col == 0:
+                with src_cb.reserve() as src_blk:
+                    src_blk.store(ttl.math.fill(src_blk, 7.0))
+
+    @ttl.datamovement()
+    def dm_read():
+        node_col, _node_row = ttl.node(dims=2)
+        for _ri in range(NUM_OF_STRIPES):
+            if node_col == 0:
+                blk = src_cb.wait()
+
+                def send(pipe):
+                    tx = ttl.copy(blk, pipe)
+                    tx.wait()
+
+                bcast_net.if_src(send)
+
+            def recv(pipe):
+                b = dst_cb.reserve()
+                tx = ttl.copy(pipe, b)
+                tx.wait()
+
+            bcast_net.if_dst(recv)
+
+    @ttl.datamovement()
+    def dm_write():
+        node_col, _node_row = ttl.node(dims=2)
+        for ri in range(NUM_OF_STRIPES):
+            out_blk = dst_cb.wait()
+            ttl.copy(out_blk, out[ri : ri + 1, node_col : node_col + 1]).wait()
+
+
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "Cross-DFB multicast loopback does not deliver the stripe-1 write to "
+        "the destination DFB. With L1 cleared at device init, dm_write reads "
+        "zero for stripe 1; with stale L1 from a prior run, it reads that "
+        "prior data. The IR-level loopback skip fix in this PR is necessary "
+        "but not sufficient. See #583."
+    ),
+)
+def test_cross_dfb_multicast_loopback(device):
+    rows = NUM_OF_STRIPES * TILE
+    cols = CROSS_DFB_COL_CORES * TILE
+    out_torch = torch.full((rows, cols), -42.0, dtype=torch.bfloat16)
+    out_tt = to_dram(out_torch, device)
+    cross_dfb_multicast_loopback(out_tt)
+    ttnn.synchronize_device(device)
+    result = ttnn.to_torch(out_tt)
+    expected = torch.full((rows, cols), 7.0, dtype=torch.bfloat16)
     torch.testing.assert_close(result, expected)
