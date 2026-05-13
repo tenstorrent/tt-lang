@@ -83,18 +83,19 @@ def scatter(inp, out):
 # C++ Output Checks (multicast pipe)
 # =============================================================================
 
-# Multicast sender: wait for receivers ready, write data, signal receivers
+# Multicast sender: wait for receivers ready, reset sem, write data, signal receivers
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: experimental::semaphore_wait(
+# CHECK-CPP: noc_semaphore_set(
 # CHECK-CPP: noc_async_write_multicast(
 # CHECK-CPP: noc_async_write_barrier();
-# CHECK-CPP: noc_semaphore_set_multicast(
+# CHECK-CPP: noc_semaphore_inc_multicast(
+# CHECK-CPP: noc_async_atomic_barrier();
 
-# Multicast receiver: reset sem, signal sender ready, wait for data
-# CHECK-CPP: noc_semaphore_set(
+# Multicast receiver: signal sender ready, wait for data
 # CHECK-CPP: noc_semaphore_inc(
-# CHECK-CPP: experimental::semaphore_wait(
+# CHECK-CPP: experimental::semaphore_wait_min(
 
 
 if __name__ == "__main__":
