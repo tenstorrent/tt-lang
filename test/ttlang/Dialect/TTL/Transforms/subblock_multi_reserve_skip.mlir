@@ -3,7 +3,7 @@
 // happen, but the original reserve/push ops must be preserved.
 //
 // RUN: ttlang-opt %s \
-// RUN:   --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4},ttl-subblock-compute-for-dst{subblock-sync=true}))' \
+// RUN:   --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=4},ttl-subblock-compute-for-dst{subblock-sync=true}))' \
 // RUN:   --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>

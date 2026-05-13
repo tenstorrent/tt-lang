@@ -4,21 +4,29 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1 dst-full-sync-en=1}))' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{matmul-full-fp32=0}))' --split-input-file | FileCheck %s --check-prefix=NO-MATMUL-FP32
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{reduce-full-fp32=0}))' --split-input-file | FileCheck %s --check-prefix=NO-REDUCE-FP32
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0}))' --split-input-file | FileCheck %s --check-prefix=FPUOFF
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=BLACKHOLE
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=WORMHOLE
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: f32 tile args enable fp32_dest_acc_en on the function.
+// ttl.enable_fpu_binary_ops is written from the pass option (default true,
+// override =0 via FPUOFF) regardless of dtype.
 // DEFAULT-LABEL: func.func @f32_auto_enable
 // DEFAULT-SAME: fp32_dest_acc_en = true
+// DEFAULT-SAME: ttl.enable_fpu_binary_ops = true
 // DEFAULT-NOT: dst_full_sync_en
 // OVERRIDE-LABEL: func.func @f32_auto_enable
 // OVERRIDE-SAME: dst_full_sync_en = true
 // OVERRIDE-SAME: fp32_dest_acc_en = true
+// OVERRIDE-SAME: ttl.enable_fpu_binary_ops = true
 // f32 tile args still trigger fp32 even with matmul-full-fp32=0.
 // NO-MATMUL-FP32-LABEL: func.func @f32_auto_enable
 // NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
+// NO-MATMUL-FP32-SAME: ttl.enable_fpu_binary_ops = true
+// FPUOFF-LABEL: func.func @f32_auto_enable
+// FPUOFF-SAME: ttl.enable_fpu_binary_ops = false
 func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                            %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -225,7 +233,7 @@ func.func @bf16_reduce_row_auto_fp32(
 // Purpose: Blackhole ROW reduce does not trigger fp32_dest_acc_en while issue
 // #533 remains open.
 // BLACKHOLE-LABEL: func.func @blackhole_bf16_reduce_row_no_auto_fp32
-// BLACKHOLE-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+// BLACKHOLE-SAME: ttl.kernel_thread = #ttkernel.thread<compute>
 module attributes {ttl.target_arch = "blackhole"} {
   func.func @blackhole_bf16_reduce_row_no_auto_fp32(
       %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -329,7 +337,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // reduce-full-fp32.
 // WORMHOLE-LABEL: func.func @wormhole_bf16_reduce_row_no_auto_fp32
 // WORMHOLE-NOT: fp32_dest_acc_en
-// WORMHOLE-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+// WORMHOLE-SAME: ttl.kernel_thread = #ttkernel.thread<compute>
 module attributes {ttl.target_arch = "wormhole_b0"} {
   func.func @wormhole_bf16_reduce_row_no_auto_fp32(
       %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,

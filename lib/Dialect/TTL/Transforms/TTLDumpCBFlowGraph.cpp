@@ -86,7 +86,7 @@ static std::string getKernelName(func::FuncOp func) {
 /// Get the thread type from a function's ttl.kernel_thread attribute.
 static std::string getThreadType(func::FuncOp func) {
   if (auto threadAttr = func->getAttrOfType<tt::ttkernel::ThreadTypeAttr>(
-          "ttl.kernel_thread")) {
+          kKernelThreadAttrName)) {
     auto thread = threadAttr.getValue();
     switch (thread) {
     case tt::ttkernel::ThreadType::Noc:

@@ -3,8 +3,8 @@
 // region when the leader value is not yielded, even though one of its merged partners
 // IS yielded. The fix ensures Phase 3 skips merged sets if ANY member is yielded.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{separate-output-region=1}))' -debug-only=ttl-assign-dst 2>&1 | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=IR
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{separate-output-region=1}))' -debug-only=ttl-assign-dst 2>&1 | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=IR
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -14,10 +14,6 @@
 // With the bug: Phase 3 sees %mul is not yielded, allocates the merged set to input region.
 // After fix: Phase 3 sees %abs (merged with %mul) is yielded, skips the merged set.
 //            Phase 4 allocates the entire merged set to output region.
-
-// Verify Phase 0 detects FPU binary
-// CHECK: === Phase 0: FPU Binary Detection ===
-// CHECK: Phase 0: Marked FPU binary: ttl.tile_mul
 
 // Verify Phase 2 merges tile_mul and tile_abs
 // CHECK: === Phase 2: Build Live Intervals ===
@@ -45,7 +41,7 @@
 // IR-LABEL: func.func @binary_unary_merged_output
 // IR-DAG: %[[C0:.*]] = arith.constant 0 : index
 // IR: ttl.compute
-// IR: ttl.tile_mul {{.*}} into dst[%[[C0]]] {ttl.fpu_binary}
+// IR: ttl.tile_mul {{.*}} into dst[%[[C0]]]
 // IR: ttl.tile_abs {{.*}} into dst[%[[C0]]]
 // IR: ttl.tile_store
 
