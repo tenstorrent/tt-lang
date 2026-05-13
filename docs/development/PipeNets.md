@@ -58,6 +58,29 @@ The verifier requires a `ttl.launch_grid` module attribute (an i64
 array of length 2 with positive entries). The frontend stamps this
 from the resolved grid; lit tests must declare it explicitly.
 
+## Within-PipeNet receiver semantics
+
+When two or more pipes in the same PipeNet target the same receiver
+node, the receiver observes every arrival cumulatively. The lowering
+allocates a per-PipeNet `i32` counter on each receiver kernel; senders
+increment that counter once per arrival, and the receiver advances its
+local expectation by 1 per expected arrival per iteration, blocking
+until the remote counter catches up.
+
+Consequences:
+
+- A receiver in `N` pipes' destination ranges observes `N` arrivals per
+  round, not 1.
+- The user's `if_dst` callback runs once per pipe whose destination
+  includes the current node; each callback advances the local counter
+  by 1.
+- `N` senders targeting one receiver do not coordinate with each other;
+  they only need to increment the receiver's counter independently.
+
+The full sender / receiver NoC protocol — `noc_semaphore_inc_multicast`,
+`noc_async_atomic_barrier`, `experimental::semaphore_wait_min`, and the
+multicast-loopback case — is documented in `PipeOptimizations.md` §2.
+
 ## Operation pipenets
 
 `OperationPipeNets` (defined in `python/_pipenets/__init__.py`)
@@ -68,10 +91,9 @@ both consume. It holds:
   (`0..N-1`, reset per invocation) and a tuple of `PipeUse` records
   (source `NodeCoord`, destination `NodeCoord` for unicast or
   `NodeRange` for multicast).
-- `validate()`: empty PipeNet, overlapping multicast destinations,
-  mixed unicast/multicast within one PipeNet.
-- `work_extent()`: per-axis bounding box of every pipe's source and
-  destination coordinates.
+- `validate()`: empty PipeNet, mixed unicast/multicast within one
+  PipeNet, mixed coordinate ranks across pipes, multicast `slice.step`
+  other than 1 (rejected at `ttl.Pipe` construction).
 
 The compiler and the simulator both discover PipeNets by walking the
 closure cells and module globals of the operation function and each
@@ -508,16 +530,6 @@ rejection contract; it `pytest.skip`s on the simulator runner.
 
 ## Future work
 
-* Issue #505: lift the within-PipeNet multicast destination overlap
-  restriction. Today a single PipeNet shares one semaphore pair across
-  all its pipes, so a node receiving from two multicast sources cannot
-  disambiguate the handshake. Per-source semaphore increments via
-  `noc_semaphore_inc_multicast` in TTKernel would let one PipeNet
-  describe true scatter-gather and all-to-all patterns. This is a
-  TTKernel dialect + tt-metal change; it is unrelated to PipeNet
-  guard verification, but unblocking it would let `test_scatter_gather` and a
-  single-PipeNet all-to-all version of `test_overlapping_pipenets` come
-  off `@pytest.mark.skip`.
 * Cross-chip (Galaxy / QuietBox / N300) PipeNets. tt-lang's
   `@ttl.operation` is a per-chip program by contract today; PipeNet
   coordinates are interpreted by the NoC, so they always refer to

@@ -54,8 +54,47 @@ makes overlapping multicast unrepresentable when more than 32 pipes
 target the same receiver: the tt-metal per-Tensix CB cap is 32
 (`NUM_CIRCULAR_BUFFERS` in
 [`tt_metal/llrt/hal.hpp:409-411`][hal-num-cb], enforced in tt-lang
-at `python/ttl/circular_buffer.py:67`), and the slot table requires
+at `python/ttl/dataflow_buffer.py:66`), and the slot table requires
 the count to equal the number of pipes.
+
+### Multicast handshake protocol
+
+The sender and receiver in each multicast pipe coordinate via a
+per-PipeNet receiver counter, allocated by
+`allocatePipeNetCountersForMulticast` as a kernel-local
+`memref<1xi32>`. The lowering in `lib/Dialect/TTL/Transforms/PipeLowering.cpp`
+emits the following sequence (some arguments elided for brevity):
+
+```
+                // one per (receiver, PipeNet); kernel-local memref<1xi32>
+                int32_t recv_counter[1] = {0};
+
+sender:    noc_async_write_multicast(data, recv_slot_addr, num_dests)
+           noc_async_write_barrier()
+           noc_semaphore_inc_multicast(recv_sem, +1, num_dests)
+           noc_async_atomic_barrier()                          // order: data, then inc
+receiver:  ++recv_counter[0]
+           experimental::semaphore_wait_min(recv_sem, recv_counter[0])
+           consume tile
+```
+
+`inc_multicast` adds to the remote semaphore, so `N` senders each
+calling `inc(+1)` once per round produce a monotonically increasing
+arrival count at every receiver. The receiver maintains a local
+expectation in `recv_counter[0]` (one entry per `(receiver, PipeNet)`
+pair) and waits with `experimental::semaphore_wait_min` until the
+remote semaphore reaches at least that count. Each sender writes its
+data to a distinct slot in the receiver's CB (slot assignment from
+`PipeGraph::assignGatherSlotIndices`), so the data writes themselves
+also do not collide.
+
+Loopback (`src` in `dst` range) skips the increment on the source
+core itself: the sender's `if_src` callback has already deposited the
+tile in the local CB, so the loopback receiver advances its counter
+expectation without waiting on the remote semaphore. The compiler
+emits `noc_async_write_multicast_loopback_src` for the data write to
+keep the multicast topology uniform across all receivers including
+the source core.
 
 ## 3. Optimization opportunities
 
