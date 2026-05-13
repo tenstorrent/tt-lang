@@ -37,10 +37,13 @@ dynamic = ["version", "readme", "dependencies"]
 # third-party/tt-metal-version, so the ttnn version only ever lives in one
 # place. ttnn installs automatically on Linux x86_64 / aarch64 (where ttnn
 # publishes wheels); on macOS / Windows the marker skips it and users
-# wanting a sim-only install should `pip install tt-lang-sim` instead.
+# wanting a sim-only install should `pip install tt-lang-sim` instead (that
+# wheel bundles `ttlang-sim` and `ttlang-sim-stats`; there is no separate stats
+# package).
 
 [project.scripts]
 ttlang-sim = "ttl.sim.ttlang_sim:main"
+ttlang-sim-stats = "sim_stats.__main__:main"
 tt-lang-setup = "ttl._setup.cli:main"
 tt-lang-setup-host = "ttl._setup.host:main"
 tt-lang-setup-tutorials = "ttl._setup.tutorials:main"

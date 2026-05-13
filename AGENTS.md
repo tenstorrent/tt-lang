@@ -93,6 +93,22 @@
 - **Code examples**: Include complete, runnable examples where appropriate
 - **References**: Follow LLVM documentation style: https://llvm.org/docs/
 
+## Python Packaging
+- **New Python packages must ship in the wheel.** When adding a new directory
+  with `__init__.py` under `python/`, register it in three places, or it will
+  build locally and fail in the wheel:
+  1. `python/CMakeLists.txt` -- add a `declare_mlir_python_sources(...)` group
+     listing every source file under the new directory.
+  2. `setup.py` -- add the dotted package name to `packages=[...]` and the
+     source path to `package_dir={...}`.
+  3. `packaging/sim/setup.py` -- if the package is consumed by the simulator
+     (`python/sim/...` or anything `ttl.sim` imports), add a `shutil.copytree`
+     in `stage()` and the dotted name to `packages=[...]`.
+- **Keep all runtime Python under the `ttl` namespace.** Do not introduce
+  top-level packages (siblings of `ttl`) -- they pollute the public namespace
+  and are easy to miss in wheel packaging. Place shared/backend-neutral code
+  under `ttl._<name>` (e.g., `ttl._pipenets`).
+
 ## Additional Notes
 - **Agent Design Principle**: Implement only the minimum necessary
   functionality; avoid feature creep and arbitrary expansions

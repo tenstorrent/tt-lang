@@ -189,14 +189,17 @@ tt-metal patterns documented for future implementation.
 | Transpose (CB) | | x | | | — |
 | Transpose (DST) | x | | x | | — |
 
-Notes on FPU binary: FPU binary ops share the same TTL op definitions
-as SFPU binary ops (`TTL_TileBinaryOp` with `DSTInputsTrait`). The
-distinction is made at runtime: `TTLAssignDST` Phase 0 marks eligible
-ops with the `ttl.fpu_binary` attribute when both operands are CB-backed
-block arguments. Operations marked `fpu_binary` bypass `copy_tile` and
-read directly from CBs, so their `DSTInputsTrait` is effectively
-overridden — the allocator checks `isCBInputOp()` at runtime rather
-than the static trait.
+Notes on FPU binary: `add`, `sub`, `mul` carry
+`TTLStrategyDependentBinaryOpTrait` instead of `DSTInputsTrait`. Whether
+they lower to the FPU or SFPU form is derived on demand from operand
+provenance by `isFPUEligibleBinaryOp` (TTLOpsUtils.h): both operands
+must trace to the same indexing source — input block args of one
+`ttl.compute` with matching indexing maps, or (post-lowering) `tensor.extract`
+with identical indices — and the func-level attribute
+`ttl.enable_fpu_binary_ops` must not be disabled. Eligible ops bypass
+`copy_tile` and read directly from CBs. `isCBInputOp` delegates to this
+helper for strategy-dependent ops, so the allocator's existing trait
+queries continue to work without modification.
 
 Notes on in-place binary (max, min): These binary ops carry both
 `DSTInputsTrait` (from the `TTL_TileBinaryOp` base class) and
@@ -250,32 +253,37 @@ Key observations:
 
 ## DST Allocation Algorithm
 
-The algorithm has five implemented phases: FPU binary detection
-(Phase 0), IR normalization via copy insertion (Phase 1), live interval
-construction with in-place merging (Phase 2), linear scan allocation
-for inputs and intermediates (Phase 3), and linear scan allocation for
-outputs (Phase 4). A register-pressure-aware scheduling pre-pass is
-described below but not yet implemented.
+The algorithm has four implemented phases: IR normalization via copy
+insertion (Phase 1), live interval construction with in-place merging
+(Phase 2), linear scan allocation for inputs and intermediates
+(Phase 3), and linear scan allocation for outputs (Phase 4). A
+register-pressure-aware scheduling pre-pass is described below but not
+yet implemented.
 
 References:
 - Christian Wimmer and Michael Franz. 2010. Linear scan register allocation on SSA form. In Proceedings of CGO '10. https://doi.org/10.1145/1772954.1772979
 - P. S. Rawat et al. 2019. Associative instruction reordering to alleviate register pressure. In Proceedings of SC '18. https://doi.org/10.1109/SC.2018.00049
 
-### Phase 0: FPU Binary Detection
+### FPU/SFPU eligibility (derived, no separate phase)
 
-[Source: TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L577-L626)
+FPU eligibility for `add`/`sub`/`mul` is derived on demand by
+`isFPUEligibleBinaryOp` (TTLOpsUtils.h). An op qualifies when both
+operands are input block arguments of the same `ttl.compute` with
+identical indexing maps (or, post-`ttl-lower-to-loops`,
+`tensor.extract` ops with identical indices). The check is gated by
+the func-level attribute `ttl.enable_fpu_binary_ops`, which
+`TTLSetComputeKernelConfig` sets from the `enable-fpu-binary-ops`
+pipeline option (default: true); when disabled, every strategy-dependent
+binary op uses the SFPU path.
 
-Identifies binary tile operations (`add`, `sub`, `mul`) eligible for
-FPU execution and marks them with the `ttl.fpu_binary` attribute. An
-op qualifies when both operands are input block arguments with identical
-indexing maps (ensuring both can be read from CBs via the SrcA/SrcB
-unpackers). This phase is gated by the `enable-fpu-binary-ops` pipeline
-option (default: true); when disabled, all binary ops use the SFPU path.
-
-FPU-marked ops bypass `copy_tile` during lowering and read operands
-directly from CBs, reducing per-iteration DST pressure from 3 slots
-(2 copies + 1 output) to 1 slot (output only). This feeds into the
-`unroll_factor` computation at the end of allocation.
+Eligible ops bypass `copy_tile` during lowering and read operands
+directly from CBs via the SrcA/SrcB unpackers, reducing per-iteration
+DST pressure from 3 slots (2 copies + 1 output) to 1 slot (output
+only). The allocator queries `isCBInputOp` in Phase 1 and Phase 2; that
+helper delegates to `isFPUEligibleBinaryOp` for strategy-dependent ops,
+so DST slot counting reflects the eventual lowering without a separate
+marker pass. The same predicate feeds the `unroll_factor` computation
+at the end of allocation.
 
 ### Future: Operation Scheduling for Register Pressure
 

@@ -25,9 +25,11 @@ classifiers = [
 
 dynamic = ["version", "readme", "dependencies"]
 
+# `ttlang-sim-stats` is not a separate PyPI package; it is bundled with this wheel.
 
 [project.scripts]
 ttlang-sim = "ttl.sim.ttlang_sim:main"
+ttlang-sim-stats = "sim_stats.__main__:main"
 tt-lang-setup = "ttl._setup.cli:main"
 tt-lang-setup-tutorials = "ttl._setup.tutorials:main"
 
