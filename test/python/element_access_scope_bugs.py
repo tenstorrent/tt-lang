@@ -22,7 +22,7 @@ Missing memref.load: Variables promoted to memref are never loaded back.
     value, silently discarding all loop updates.
 """
 
-# REQUIRES: ttnn
+# REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-B3 < %t.initial.mlir
 
