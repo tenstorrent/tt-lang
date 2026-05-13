@@ -370,18 +370,44 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     return default
 
 
+def _same_device(a, b) -> bool:
+    """Return True when *a* and *b* refer to the same TTNN device."""
+    if a is b:
+        return True
+    a_id = getattr(a, "id", None)
+    b_id = getattr(b, "id", None)
+    if callable(a_id) and callable(b_id):
+        return a_id() == b_id()
+    return False
+
+
 def _require_device(args):
     """Extract the device from tensor arguments, raising if none are on-device.
 
-    Returns the first non-None device found. Raises ValueError with
-    a message listing which arguments are host tensors and suggesting
-    ttnn.to_device().
+    Returns the first non-None device found after verifying that every
+    on-device tensor shares the same device.  Raises ValueError when no
+    tensor carries a device, or when tensors are on different devices.
     """
+    first_device = None
+    first_idx = None
     for i, arg in enumerate(args):
-        if is_ttnn_tensor(arg):
-            device = arg.device()
-            if device is not None:
-                return device
+        if not is_ttnn_tensor(arg):
+            continue
+        device = arg.device()
+        if device is None:
+            continue
+        if first_device is None:
+            first_device = device
+            first_idx = i
+        elif not _same_device(first_device, device):
+            raise ValueError(
+                f"Tensor arguments are on different devices: "
+                f"arg[{first_idx}] is on device {first_device}, "
+                f"but arg[{i}] is on device {device}. "
+                f"All on-device tensors must reside on the same device."
+            )
+    if first_device is not None:
+        return first_device
     host_args = [
         f"  arg[{i}]: {arg.shape}" for i, arg in enumerate(args) if is_ttnn_tensor(arg)
     ]

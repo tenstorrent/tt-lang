@@ -12,4 +12,5 @@ SUPPORTED_MEMORY_SPACES = frozenset(["L1", "DRAM"])
 # per tt-metal dev_mem_map. Matches ChipDesc usable L1 for those architectures
 # and ttl-validate-cb-budget fallback; with a device + system_desc, the compiler
 # uses ChipDescAttr::getUsableL1Size() instead.
+# keep in sync with sim.context_types.DEFAULT_MAX_L1_BYTES
 DEFAULT_L1_CB_BUDGET_BYTES: int = 1432 * 1024

@@ -55,9 +55,9 @@ def get_min_remaining_l1_for_device(device):
     device view that does not inherit buffer tracking from the parent.
     For mesh devices this reports allocations for the first physical
     device, which is representative because tt-lang distributes tensors
-    uniformly across the mesh. if it becomes needed to track individual
-    physical devices in the submesh, ttnn.reports.get_buffer_pages will
-    need to be changed to reflect allocations on the parent mesh.
+    uniformly across the mesh. If individual physical devices need tracking,
+    ttnn.reports.get_buffer_pages would have to report allocations on the
+    parent mesh instead of the first device within the mesh.
     """
     _ensure_ttnn()
     if ttnn is None:

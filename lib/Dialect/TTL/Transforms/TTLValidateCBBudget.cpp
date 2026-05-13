@@ -11,8 +11,8 @@
 // ttcore::TileType::getSizeBytes() when the CB already carries a tile type, and
 // ttcore::TileType::get(elemTy).getSizeBytes() for row-wise / scalar element
 // types (same rule as tt-mlir DeviceAttr::getMemrefCBPageSizeBytes). Python
-// uses ttl.dtype_utils.tile_bytes_from_dtype — if those ever diverge, align
-// them or share one implementation (see issue #511).
+// uses python/ttl/kernel_runner.py:build_cb_descriptors — if those ever
+// diverge, align them or share one implementation (see issue #511).
 //
 //===----------------------------------------------------------------------===//
 
