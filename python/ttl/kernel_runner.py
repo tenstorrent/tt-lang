@@ -63,14 +63,17 @@ def get_min_remaining_l1_for_device(device):
                 ttnn.MeshShape(1, 1),
                 ttnn.MeshCoordinate(r, c),
             )
-            info = ttnn._ttnn.reports.get_device_info(single_device)
-            budget_bytes = info.cb_limit
+            try:
+                info = ttnn._ttnn.reports.get_device_info(single_device)
+                budget_bytes = info.cb_limit
 
-            bytes_per_core: dict[tuple[int, int], int] = {}
-            for page in ttnn._ttnn.reports.get_buffer_pages(single_device):
-                if page.buffer_type == ttnn.BufferType.L1:
-                    key = (page.core_y, page.core_x)
-                    bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
+                bytes_per_core: dict[tuple[int, int], int] = {}
+                for page in ttnn._ttnn.reports.get_buffer_pages(single_device):
+                    if page.buffer_type == ttnn.BufferType.L1:
+                        key = (page.core_y, page.core_x)
+                        bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
+            finally:
+                  ttnn.close_mesh_device(single_device)  
 
             max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
             remaining = max(0, budget_bytes - max_core_bytes)
