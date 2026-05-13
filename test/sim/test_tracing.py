@@ -360,7 +360,7 @@ kernel(a, o)
         script = self._make_script()
         try:
             return subprocess.run(
-                [sys.executable, "-m", "sim.ttlang_sim", *extra_args, str(script)],
+                [sys.executable, "-m", "sim.ttlang_sim", str(script), *extra_args],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,

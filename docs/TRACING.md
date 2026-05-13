@@ -287,7 +287,10 @@ directory on exit. An explicit path can be given when a different location is ne
 ttlang-sim examples/matmul.py --trace /tmp/matmul_trace.jsonl
 ```
 
-This works in the same way that `--show-stats` enables statistics and prints them.
+Statistics tables (tensor / pipe / DFB summaries) are produced offline: run
+`ttlang-sim-stats` on the trace file after the simulation exits (see
+`docs/sphinx/simulator.md`, section **Simulator statistics**). That command is
+bundled with `tt-lang-sim` or full `tt-lang`, not as its own installable package.
 When no `--trace` flag is given, `trace()` is a no-op and adds no overhead.
 
 ### Filtering

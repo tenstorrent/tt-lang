@@ -60,19 +60,24 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # CHECK:          // compute
 # CHECK:          void kernel_main()
+# CHECK-DAG:          experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-DAG:          experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-DAG:          experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-DAG:          experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
+# CHECK-DAG:          experimental::CircularBuffer [[CB4:.*]](get_compile_time_arg_val(4));
 
 # CB waits and reserves wrapped in auto-profile scopes
 # CHECK-NOT:      DeviceZoneScopedN(
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait");
-# CHECK-NEXT:     cb_wait_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-NEXT:     [[CB0]].wait_front({{.*}});
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait");
-# CHECK-NEXT:     cb_wait_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-NEXT:     [[CB1]].wait_front({{.*}});
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve");
-# CHECK-NEXT:     cb_reserve_back(get_compile_time_arg_val(2), {{.*}});
+# CHECK-NEXT:     [[CB2]].reserve_back({{.*}});
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve");
-# CHECK-NEXT:     cb_reserve_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-NEXT:     [[CB3]].reserve_back({{.*}});
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve");
-# CHECK-NEXT:     cb_reserve_back(get_compile_time_arg_val(4), {{.*}});
+# CHECK-NEXT:     [[CB4]].reserve_back({{.*}});
 
 # Compute body with add and 3 pack_tiles (stores) in a single scope
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}");
@@ -87,15 +92,15 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # 3 cb_push_back and 2 cb_pop_front with auto-profile scopes
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push");
-# CHECK-NEXT:     cb_push_back(get_compile_time_arg_val(4), {{.*}});
+# CHECK-NEXT:     [[CB4]].push_back({{.*}});
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push");
-# CHECK-NEXT:     cb_push_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-NEXT:     [[CB3]].push_back({{.*}});
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push");
-# CHECK-NEXT:     cb_push_back(get_compile_time_arg_val(2), {{.*}});
+# CHECK-NEXT:     [[CB2]].push_back({{.*}});
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-NEXT:     cb_pop_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-NEXT:     [[CB1]].pop_front({{.*}});
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-NEXT:     cb_pop_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-NEXT:     [[CB0]].pop_front({{.*}});
 # CHECK-NOT:      DeviceZoneScopedN(
 
 # =============================================================================
@@ -105,16 +110,21 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # CHECK-FPU:          // compute
 # CHECK-FPU:          void kernel_main()
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB4:.*]](get_compile_time_arg_val(4));
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait");
-# CHECK-FPU-NEXT:     cb_wait_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-FPU-NEXT:     [[CB0]].wait_front({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait");
-# CHECK-FPU-NEXT:     cb_wait_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-FPU-NEXT:     [[CB1]].wait_front({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve");
-# CHECK-FPU-NEXT:     cb_reserve_back(get_compile_time_arg_val(2), {{.*}});
+# CHECK-FPU-NEXT:     [[CB2]].reserve_back({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve");
-# CHECK-FPU-NEXT:     cb_reserve_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-FPU-NEXT:     [[CB3]].reserve_back({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve");
-# CHECK-FPU-NEXT:     cb_reserve_back(get_compile_time_arg_val(4), {{.*}});
+# CHECK-FPU-NEXT:     [[CB4]].reserve_back({{.*}});
 
 # Compute body: FPU binary add with 3 pack_tiles
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}");
@@ -131,15 +141,15 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # 3 cb_push_back and 2 cb_pop_front with auto-profile scopes
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push");
-# CHECK-FPU-NEXT:     cb_push_back(get_compile_time_arg_val(4), {{.*}});
+# CHECK-FPU-NEXT:     [[CB4]].push_back({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push");
-# CHECK-FPU-NEXT:     cb_push_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-FPU-NEXT:     [[CB3]].push_back({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push");
-# CHECK-FPU-NEXT:     cb_push_back(get_compile_time_arg_val(2), {{.*}});
+# CHECK-FPU-NEXT:     [[CB2]].push_back({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-FPU-NEXT:     cb_pop_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-FPU-NEXT:     [[CB1]].pop_front({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-FPU-NEXT:     cb_pop_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-FPU-NEXT:     [[CB0]].pop_front({{.*}});
 # CHECK-FPU-NOT:      DeviceZoneScopedN(
 
 if __name__ == "__main__":

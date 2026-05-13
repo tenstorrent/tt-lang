@@ -90,6 +90,7 @@ if(TTLANG_SIM_ONLY)
   # Set variables needed by env/activate.in to harmless defaults
   set(TT_LANG_HOME "${CMAKE_CURRENT_LIST_DIR}")
   set(TTLANG_HAS_DEVICE_INT 0)
+  set(TTLANG_SIM_ONLY_INT 1)
   set(LLVM_INSTALL_DIR "")
   set(TT_METAL_HOME "")
   set(TT_METAL_PYTHON_PATH "")
@@ -155,6 +156,7 @@ if(TTLANG_HAS_DEVICE)
 else()
   set(TTLANG_HAS_DEVICE_INT 0)
 endif()
+set(TTLANG_SIM_ONLY_INT 0)
 
 configure_file(
   "${PROJECT_SOURCE_DIR}/include/ttlang/Config.h.in"

@@ -274,10 +274,7 @@ def TTLAssignDST
            "For single-buffering mode (dst_full_sync_en=true), use: "
            "f32=8, f16/bf16=16. For double-buffering (default): f32=4, f16/bf16=8.">,
     Option<"separateOutputRegion", "separate-output-region", "bool", "false",
-           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">,
-    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
-           "Use FPU for binary add/sub/mul when both operands come from CBs. "
-           "When disabled, binary ops use the SFPU path instead.">
+           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
   ];
 
   let dependentDialects = [
@@ -290,10 +287,10 @@ def TTLSetComputeKernelConfig
     : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
   let summary = "Set ttl.compute kernel configuration attributes";
   let description = [{
-    Sets fp32_dest_acc_en and dst_full_sync_en attributes on the enclosing
-    func.func when they are not already configured. These are per-kernel
-    compile-time settings; all compute ops in the function inherit them
-    via getKernelBoolAttr().
+    Sets fp32_dest_acc_en, dst_full_sync_en, and ttl.enable_fpu_binary_ops
+    attributes on the enclosing func.func when they are not already
+    configured. These are per-kernel compile-time settings; any op in the
+    function can read them via getKernelBoolAttr().
   }];
 
   let options = [
@@ -306,7 +303,11 @@ def TTLSetComputeKernelConfig
            "Sets fp32_dest_acc_en on the kernel when any compute op contains reduce.">,
     Option<"matmulFullFp32", "matmul-full-fp32", "bool", "true",
            "Enable FP32 accumulation for matmul operations. "
-           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">
+           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">,
+    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
+           "Allow lowering eligible tile add/sub/mul to FPU binary form. "
+           "Written as the ttl.enable_fpu_binary_ops attribute on the func and "
+           "consumed by isFPUEligibleBinaryOp(). Disable to force the SFPU path.">
   ];
 
   let dependentDialects = [

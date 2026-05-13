@@ -1,5 +1,5 @@
 // Summary: capacity overflow should emit a clear diagnostic.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=2}))' --split-input-file --verify-diagnostics
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=2}))' --split-input-file --verify-diagnostics
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

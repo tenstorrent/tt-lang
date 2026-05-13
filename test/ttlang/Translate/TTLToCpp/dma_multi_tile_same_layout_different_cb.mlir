@@ -24,13 +24,16 @@
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
 
+// CB wrappers declared at top of kernel
+// CHECK:   experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+// CHECK:   experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+
 // First copy: 64x64 (2x2 tiles) → CB [2,2]
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
 // CHECK:   auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
 // CHECK:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
-// CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // Cast CB ptr to size_t for index arithmetic
-// CHECK:   ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR1]];
+// CHECK:   ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR1_IDX:v[0-9]+]] = (size_t) [[CB_PTR1_PTRDIFF]];
 // Generated tile loops iterate over tensor grid (2x2)
 // CHECK:   for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[TILE_STEP]]) {
@@ -54,9 +57,8 @@
 // CHECK:   int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
 // CHECK:   auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
 // CHECK:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
-// CHECK:   int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // Cast CB ptr to size_t for index arithmetic
-// CHECK:   ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR2]];
+// CHECK:   ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR2_IDX:v[0-9]+]] = (size_t) [[CB_PTR2_PTRDIFF]];
 // Generated tile loops still iterate over tensor grid (2x2), not CB shape (4x1)
 // CHECK:   for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[TILE_STEP]]) {

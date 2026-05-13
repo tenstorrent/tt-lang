@@ -208,6 +208,13 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
     _src/tensor_registry.py
 )
 
+declare_mlir_python_sources(TTLangPythonCommon.PipeNets
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    _pipenets/__init__.py
+)
+
 declare_mlir_python_sources(TTLangPythonCommon.Utils
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
   ADD_TO_PARENT TTLangPythonCommon
@@ -311,16 +318,6 @@ add_custom_target(TTLangSimPackage ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/sim"
     "${TTLANG_PYTHON_PACKAGES_DIR}/ttl/sim"
   COMMENT "Symlinking sim package into ttl/sim/"
-)
-
-# Backend-neutral OperationPipeNets package. Imported by both ttl and sim
-# without either depending on the other; staged at the top of python_packages
-# so `import _pipenets` works the same as in the source tree.
-add_custom_target(TTLangPipeNetGraphPackage ALL
-  COMMAND ${CMAKE_COMMAND} -E create_symlink
-    "${CMAKE_CURRENT_SOURCE_DIR}/_pipenets"
-    "${TTLANG_PYTHON_PACKAGES_DIR}/_pipenets"
-  COMMENT "Symlinking _pipenets package"
 )
 
 # ###############################################################################
