@@ -41,6 +41,18 @@ Design constraints
   `SimulatorContext.injection_points_cache` by the caller.
 * `sys.monitoring` allows multiple independent tools (debugger, coverage,
   this module) to coexist without any chaining or mutual interference.
+
+Unsupported patterns
+--------------------
+* **Helper functions containing `ttl.copy()`** — both module-scope helpers
+  and nested `def` helpers defined inside the thread function body are not
+  analysed.  The AST walk is limited to the top-level thread function's own
+  body (nested `def`/`class` bodies are explicitly excluded by
+  `_all_stmts_flat`), and `install_copy_wait_hooks` only installs monitoring
+  callbacks for the thread function's own `__code__` object.  A `ttl.copy()`
+  call inside a helper will therefore never have `wait()` injected and the
+  copy will be silently un-awaited.  Inline the `ttl.copy()` call directly
+  inside the thread function to ensure correct behaviour.
 """
 
 from __future__ import annotations
@@ -241,6 +253,7 @@ def _violations_for_func_def(
                 allowed.add(id(call))
             elif (
                 isinstance(call.func, ast.Attribute)
+                and call.func.attr == "wait"
                 and isinstance(call.func.value, ast.Call)
                 and _is_ttl_copy_call(call.func.value)
             ):

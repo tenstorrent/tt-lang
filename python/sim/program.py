@@ -139,7 +139,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
 
-            # Run in cooperative mode
+            # Run in cooperative mode.
             self._run_cooperative(total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl)
 
         def _build_core_context(self, core: int) -> Dict[str, Any]:
@@ -313,14 +313,18 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             for core in range(total_cores):
                 trace("operation_start", node=core)
 
-            # Run scheduler
+            # Run scheduler; if any thread raises, the exception propagates
+            # immediately and the validation below is intentionally skipped.
+            # Reporting a "simulator bug" for unpushed blocks only makes sense
+            # when all threads completed normally (auto-push/pop should have fired).
             scheduler.run()
 
             # Emit operation_end for each node now that all kernels completed.
             for core in range(total_cores):
                 trace("operation_end", node=core)
 
-            # Validate all DataflowBuffers have no pending blocks
+            # Validate all DataflowBuffers have no pending blocks.
+            # Only reached on normal exit from the scheduler.
             self._validate_dataflow_buffers(all_core_contexts)
 
         def _validate_dataflow_buffers(

@@ -902,6 +902,28 @@ class TestValidateThreadFunction:
         violations = validate_thread_function(my_dm_thread)
         assert violations[0].func_name == "my_dm_thread"
 
+    def test_method_chain_wait_is_ok(self):
+        """ttl.copy(src, dst).wait() is a supported pattern; no violation."""
+
+        def dm():
+            ttl.copy(src, dst).wait()  # noqa: F821
+
+        assert validate_thread_function(dm) == []
+
+    def test_method_chain_non_wait_is_violation(self):
+        """ttl.copy(src, dst).foo() is not a supported pattern and must be flagged.
+
+        Only .wait() is a valid method chain on a copy result; any other
+        attribute call (e.g. .foo()) must produce a PatternViolation.
+        """
+
+        def dm():
+            ttl.copy(src, dst).foo()  # noqa: F821
+
+        violations = validate_thread_function(dm)
+        assert len(violations) == 1
+        assert "ttl.copy()" in violations[0].message
+
 
 # ---------------------------------------------------------------------------
 # Complex control-flow tests (issue #536 and related patterns)
