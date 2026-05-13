@@ -120,6 +120,8 @@ struct TTLSetComputeKernelConfigPass
       funcOp->setAttr(kDstFullSyncEnAttrName,
                       BoolAttr::get(funcOp.getContext(), true));
     }
+    funcOp->setAttr(kEnableFPUBinaryOpsAttrName,
+                    BoolAttr::get(funcOp.getContext(), enableFPUBinaryOps));
   }
 };
 

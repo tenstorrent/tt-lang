@@ -129,14 +129,18 @@ def fused_chain_kernel(a, b, c, out):
 
 # CHECK-CPP: // fused_compute
 # CHECK-CPP: void kernel_main()
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
 
 # Wait for input CBs
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
+# CHECK-CPP: [[CB0]].wait_front(
+# CHECK-CPP: [[CB1]].wait_front(
+# CHECK-CPP: [[CB2]].wait_front(
 
 # Reserve output DFB
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(3),
+# CHECK-CPP: [[CB3]].reserve_back(
 
 # DST register lifecycle
 # CHECK-CPP: tile_regs_acquire();
@@ -157,10 +161,10 @@ def fused_chain_kernel(a, b, c, out):
 # CHECK-CPP: pack_tile<true>(
 
 # Pop inputs, push output
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1),
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(2),
-# CHECK-CPP: cb_push_back(get_compile_time_arg_val(3),
+# CHECK-CPP: [[CB0]].pop_front(
+# CHECK-CPP: [[CB1]].pop_front(
+# CHECK-CPP: [[CB2]].pop_front(
+# CHECK-CPP: [[CB3]].push_back(
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 // Summary: Test unary operation interval merging - verify live intervals via LLVM_DEBUG.
-// RUN: ttlang-opt %s --ttl-assign-dst -debug-only=ttl-assign-dst --split-input-file 2>&1 | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst))' -debug-only=ttl-assign-dst --split-input-file 2>&1 | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -14,9 +14,8 @@
 // - Block arg and all unary results should have the same interval [0, 3]
 // - All values get allocated to the same DST register
 
-// Verify Phase 0 finds no FPU binary ops (only unary ops)
-// CHECK: === Phase 0: FPU Binary Detection ===
-// CHECK-NOT: Marked FPU binary
+// Phase 1 directly: copy insertion only (FPU eligibility is no longer
+// stamped as an attribute; isFPUEligibleBinaryOp resolves on demand).
 // CHECK: === Phase 1: Copy Insertion ===
 
 // Verify Phase 2 merging happens
@@ -92,9 +91,6 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // Expected: tile_mul and tile_abs share the same DST (merged interval [3, 5])
 // FPU binary: block args don't need DST registers
 
-// Verify Phase 0 detects FPU binary
-// CHECK: === Phase 0: FPU Binary Detection ===
-// CHECK: Phase 0: Marked FPU binary: ttl.tile_mul
 
 // Verify binary->unary merging
 // CHECK: === Phase 2: Build Live Intervals ===

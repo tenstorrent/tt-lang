@@ -31,9 +31,12 @@ import ttl
 # per-subblock), so pack_tile_block's contiguous-from-0 requirement is
 # not met for subblocks after the first.
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP: [[CB0]].wait_front(
+# CHECK-CPP: [[CB1]].wait_front(
+# CHECK-CPP: [[CB2]].reserve_back(
 # CHECK-CPP: mm_block_init(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   tile_regs_acquire();
