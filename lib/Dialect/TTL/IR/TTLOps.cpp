@@ -890,33 +890,46 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   return success();
 }
 
+// Verify a `num_tiles`-bearing acquire (cb_reserve / cb_wait): the result
+// tensor must agree with the CB's element type, the tile-count attribute,
+// and `num_tiles` must not exceed the CB's total tile capacity. The bound
+// is across blocks (elementsPerBlock * blockCount) so coalesced acquires
+// can span multiple CB blocks.
+static mlir::LogicalResult
+verifyCBAcquireWithNumTiles(mlir::Operation *op,
+                            mlir::tt::ttl::CircularBufferType cbTy,
+                            mlir::RankedTensorType resultTy, int64_t numTiles) {
+  auto cbElemTy = cbTy.getElementType();
+  if (cbElemTy != resultTy.getElementType()) {
+    return op->emitOpError()
+           << "result element type (" << resultTy.getElementType()
+           << ") must match DFB element type (" << cbElemTy << ")";
+  }
+  int64_t resultTiles = 1;
+  for (int64_t d : resultTy.getShape()) {
+    resultTiles *= d;
+  }
+  if (resultTiles != numTiles) {
+    return op->emitOpError()
+           << "result tensor has " << resultTiles
+           << " tiles but num_tiles attribute is " << numTiles;
+  }
+  int64_t cbCapacity = cbTy.getTotalElements();
+  if (numTiles > cbCapacity) {
+    return op->emitOpError() << "num_tiles (" << numTiles
+                             << ") exceeds DFB capacity (" << cbCapacity << ")";
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
 
   if (getNumTiles()) {
-    auto cbElemTy = cbTy.getElementType();
-    if (cbElemTy != resultTy.getElementType()) {
-      return emitOpError() << "result element type ("
-                           << resultTy.getElementType()
-                           << ") must match DFB element type (" << cbElemTy
-                           << ")";
-    }
-    int64_t resultTiles = 1;
-    for (int64_t d : resultTy.getShape()) {
-      resultTiles *= d;
-    }
-    if (resultTiles != static_cast<int64_t>(getNumTiles().value())) {
-      return emitOpError() << "result tensor has " << resultTiles
-                           << " tiles but num_tiles attribute is "
-                           << getNumTiles().value();
-    }
-    int64_t cbCapacity = cbTy.getElementsPerBlock();
-    if (resultTiles > cbCapacity) {
-      return emitOpError() << "num_tiles (" << resultTiles
-                           << ") exceeds DFB capacity (" << cbCapacity << ")";
-    }
-    return mlir::success();
+    return verifyCBAcquireWithNumTiles(
+        getOperation(), cbTy, resultTy,
+        static_cast<int64_t>(getNumTiles().value()));
   }
 
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
@@ -925,7 +938,7 @@ mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::CBPushOp::verify() {
   if (getNumTiles()) {
     auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
-    int64_t cbCapacity = cbTy.getElementsPerBlock();
+    int64_t cbCapacity = cbTy.getTotalElements();
     int64_t numTiles = static_cast<int64_t>(getNumTiles().value());
     if (numTiles > cbCapacity) {
       return emitOpError() << "num_tiles (" << numTiles
@@ -938,6 +951,13 @@ mlir::LogicalResult mlir::tt::ttl::CBPushOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (getNumTiles()) {
+    return verifyCBAcquireWithNumTiles(
+        getOperation(), cbTy, resultTy,
+        static_cast<int64_t>(getNumTiles().value()));
+  }
+
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
 }
 
@@ -946,8 +966,15 @@ mlir::Value mlir::tt::ttl::CBReserveOp::getViewSource() { return getCb(); }
 mlir::Value mlir::tt::ttl::CBWaitOp::getViewSource() { return getCb(); }
 
 mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
-  // cb_pop has no result to verify; the CB type is already enforced by
-  // tablegen constraints.
+  if (getNumTiles()) {
+    auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
+    int64_t cbCapacity = cbTy.getTotalElements();
+    int64_t numTiles = static_cast<int64_t>(getNumTiles().value());
+    if (numTiles > cbCapacity) {
+      return emitOpError() << "num_tiles (" << numTiles
+                           << ") exceeds DFB capacity (" << cbCapacity << ")";
+    }
+  }
   return success();
 }
 
@@ -976,7 +1003,9 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
   }
 
-  if (!getView().getDefiningOp<CBReserveOp>()) {
+  // The view must ultimately come from a `ttl.cb_reserve`, possibly
+  // through intervening `tensor.extract_slice` ops.
+  if (!findCBReserveForView(getView())) {
     return emitOpError() << "view must come from ttl.cb_reserve";
   }
 

@@ -169,9 +169,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--grid",
                     "4,6",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -208,9 +208,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--grid",
                     "invalid",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -232,9 +232,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--grid",
                     "0,4",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -256,9 +256,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--grid",
                     "a,b",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -275,7 +275,7 @@ if __name__ == "__main__":
         script = self.create_test_script((8, 8))
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "sim.ttlang_sim", "--grid", "4", str(script)],
+                [sys.executable, "-m", "sim.ttlang_sim", str(script), "--grid", "4"],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
@@ -296,9 +296,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--grid",
                     " 5 , 7 ",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -309,6 +309,65 @@ if __name__ == "__main__":
             assert "SUCCESS" in result.stdout
         finally:
             script.unlink()
+
+
+class TestScriptMustBeFirstArgument:
+    """The Python entry script must precede all ttlang-sim options."""
+
+    _REPO = Path(__file__).parent.parent.parent
+    _ENV = {**os.environ, "PYTHONPATH": "python"}
+
+    def test_option_before_script_errors(self):
+        """Putting --grid before the script fails with a clear message."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                "--grid",
+                "4,4",
+                str(self._REPO / "examples" / "broadcast_demo.py"),
+            ],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert "first argument" in result.stderr
+
+    def test_help_without_script(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "sim.ttlang_sim", "--help"],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "SCRIPT.py" in result.stdout
+
+    def test_short_help_without_script(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "sim.ttlang_sim", "-h"],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "SCRIPT.py" in result.stdout
+
+    def test_version_without_script(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "sim.ttlang_sim", "--version"],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "ttlang-sim" in result.stdout
 
 
 class TestMaxDfbsCommandLineOption:
@@ -376,9 +435,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--max-dfbs",
                     "2",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -403,9 +462,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--max-dfbs",
                     "3",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -428,9 +487,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--max-dfbs",
                     "10",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -471,9 +530,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--max-dfbs",
                     "-5",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -496,9 +555,9 @@ if __name__ == "__main__":
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
+                    str(script),
                     "--max-dfbs",
                     "0",
-                    str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
@@ -575,7 +634,7 @@ if __name__ == "__main__":
         script = self.create_test_script()
         try:
             return subprocess.run(
-                [sys.executable, "-m", "sim.ttlang_sim", *extra_args, str(script)],
+                [sys.executable, "-m", "sim.ttlang_sim", str(script), *extra_args],
                 cwd=Path(__file__).parent.parent.parent,
                 env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
@@ -638,14 +697,17 @@ class TestSimStats:
     _ENV = {"PYTHONPATH": "python"}
 
     def _run_sim(self, *args: str, trace_path: Path) -> subprocess.CompletedProcess:
+        script_arg = args[0]
+        tail = list(args[1:])
         return subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "sim.ttlang_sim",
+                script_arg,
                 "--trace",
                 str(trace_path),
-                *args,
+                *tail,
             ],
             cwd=self._REPO,
             env=self._ENV,
@@ -784,23 +846,29 @@ class TestSchedulerAlgorithmOption:
 
     def test_schedalg_option_invalid(self):
         """Test that invalid --scheduler value is rejected."""
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "sim.ttlang_sim",
-                "--scheduler",
-                "invalid",
-                "nonexistent.py",
-            ],
-            cwd=Path(__file__).parent.parent.parent,
-            env={**os.environ, "PYTHONPATH": "python"},
-            capture_output=True,
-            text=True,
-        )
-        # Should fail due to invalid choice
-        assert result.returncode != 0
-        assert "invalid choice" in result.stderr
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            script_path = Path(f.name)
+            f.write("print('ok')\n")
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    str(script_path),
+                    "--scheduler",
+                    "invalid",
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={**os.environ, "PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            # Should fail due to invalid choice
+            assert result.returncode != 0
+            assert "invalid choice" in result.stderr
+        finally:
+            script_path.unlink()
 
     def test_schedalg_default_is_fair(self):
         """Test that default scheduling algorithm is fair when not specified."""

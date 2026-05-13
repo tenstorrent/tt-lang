@@ -107,11 +107,12 @@ where $C$ is DST capacity, $D$ is `dstPerIteration`, and $N$ is the
 FPU-aware execution (component 8) reduces $D$ for FPU-eligible binary
 ops. An FPU binary uses 0 DST input slots (operands come from CBs), so
 `tile_add %a, %b` where both are block args costs 1 DST slot (output
-only) instead of 3 (2 copies + output). This is
-detected in Phase 0 of `TTLAssignDST` and marked with the
-`ttl.fpu_binary` attribute. Phase 0 is gated by the
-`enable-fpu-binary-ops` option (default true); when disabled, all binary
-ops use the SFPU path with `copy_tile`.
+only) instead of 3 (2 copies + output). Eligibility is derived on demand
+by `isFPUEligibleBinaryOp` (TTLOpsUtils.h) from operand provenance and
+the func-level attribute `ttl.enable_fpu_binary_ops` (set by
+`TTLSetComputeKernelConfig` from the `enable-fpu-binary-ops` option,
+default true). When the flag is disabled, every binary op uses the SFPU
+lowering with `copy_tile`.
 
 FPU/accumulating DST register reuse prevention: When multiple
 FPU binary ops or `tile_matmul_block` ops appear in the same compute
@@ -619,10 +620,10 @@ The full DST maximization pipeline is operational. The pipeline computes
 the correct subblock size (with FPU-aware DST pressure), partitions the
 iteration space via TilingInterface, emits unrolled subblock bodies with
 one sync region per subblock, groups operations by kind, and consolidates
-init ops. FPU binary detection (component 8) marks
-`tile_add`/`tile_sub`/`tile_mul` with both block-arg operands as
-`ttl.fpu_binary`, reducing per-iteration DST pressure (0 input slots
-instead of 2). The allocator prevents DST register reuse between FPU
+init ops. FPU binary detection (component 8) for
+`tile_add`/`tile_sub`/`tile_mul` with both block-arg operands is derived
+on demand by `isFPUEligibleBinaryOp`, reducing per-iteration DST
+pressure (0 input slots instead of 2). The allocator prevents DST register reuse between FPU
 binary ops via an interval extension (see component 1-2 details);
 hardware testing confirmed this is necessary — FPU ops accumulate
 within a single sync region despite the `acc_to_dest=false` default
@@ -736,11 +737,12 @@ operands are needed by all compute lowering.
 
 With `--no-ttl-fpu-binary-ops`:
 
-Phase 0 of `TTLAssignDST` is skipped. Binary add/sub/mul ops are not
-marked with `ttl.fpu_binary` and use the SFPU path (copy_tile for both
-operands, `add_binary_tile`/`sub_binary_tile`/`mul_binary_tile` instead
-of `add_tiles`/`sub_tiles`/`mul_tiles`). The consolidation pass emits
-`init_sfpu` instead of `binary_op_init_common`.
+`TTLSetComputeKernelConfig` writes `ttl.enable_fpu_binary_ops = false`
+on the func. `isFPUEligibleBinaryOp` then returns false for every
+strategy-dependent binary, so add/sub/mul take the SFPU path (copy_tile
+for both operands; `add_binary_tile`/`sub_binary_tile`/`mul_binary_tile`
+instead of `add_tiles`/`sub_tiles`/`mul_tiles`). The consolidation pass
+emits `init_sfpu` instead of `binary_op_init_common`.
 
 With `--no-ttl-block-matmul`:
 

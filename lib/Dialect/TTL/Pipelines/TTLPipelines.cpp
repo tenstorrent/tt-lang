@@ -24,19 +24,16 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
+    configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
     pm.addPass(createTTLSetComputeKernelConfig(configOpts));
   }
-  {
-    TTLAssignDSTOptions assignDstOpts;
-    assignDstOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addPass(createTTLAssignDST(assignDstOpts));
-  }
+  pm.addPass(createTTLAssignDST());
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.subblockSync;
@@ -77,12 +74,20 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
 }
 
+void buildTTLAutoSyncPipeline(OpPassManager &pm) {
+  pm.addPass(createTTLInsertCBSync());
+  pm.addPass(createTTLCoalesceDFBAcquires());
+}
+
 void registerTTLPipelines() {
   PassPipelineRegistration<TTLToTTKernelPipelineOptions>(
       "ttl-to-ttkernel-pipeline",
       "Lower TTL to TTKernel, run cleanup canonicalization/CSE, and optionally "
       "lower TTKernel to EmitC.",
       createTTLToTTKernelPipeline);
+  PassPipelineRegistration<>("ttl-auto-sync",
+                             "Insert auto pop/push and coalesce DFB acquires.",
+                             buildTTLAutoSyncPipeline);
 }
 
 } // namespace mlir::tt::ttl

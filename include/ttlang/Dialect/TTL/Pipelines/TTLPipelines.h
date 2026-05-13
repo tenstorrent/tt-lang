@@ -59,6 +59,8 @@ struct TTLToTTKernelPipelineOptions
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
+void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
+
 void registerTTLPipelines();
 
 } // namespace mlir::tt::ttl

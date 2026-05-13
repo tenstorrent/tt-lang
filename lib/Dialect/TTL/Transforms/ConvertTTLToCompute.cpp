@@ -51,7 +51,7 @@ static SmallVector<Value> collectOutputCBs(Operation *op) {
   DenseSet<Value> seen;
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-      auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>();
+      auto reserve = findCBReserveForView(storeOp.getView());
       if (!reserve) {
         return {};
       }
@@ -1175,7 +1175,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
                                 PatternRewriter &rewriter) const override {
     Value input = op.getTensor();
     Value reserveView = op.getView();
-    auto reserve = reserveView.getDefiningOp<CBReserveOp>();
+    auto reserve = findCBReserveForView(reserveView);
     if (!reserve) {
       return rewriter.notifyMatchFailure(op, "view not from ttl.cb_reserve");
     }

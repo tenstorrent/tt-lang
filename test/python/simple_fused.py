@@ -94,13 +94,16 @@ def fused_kernel(inp, bias, out):
 
 # CHECK-CPP: // fused_compute
 # CHECK-CPP: void kernel_main()
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 
 # Wait for input CBs
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
+# CHECK-CPP: [[CB0]].wait_front(
+# CHECK-CPP: [[CB1]].wait_front(
 
 # Reserve output DFB
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP: [[CB2]].reserve_back(
 
 # DST register lifecycle
 # CHECK-CPP: tile_regs_acquire();
@@ -133,9 +136,9 @@ def fused_kernel(inp, bias, out):
 # CHECK-CPP: tile_regs_release();
 
 # Pop inputs, push output
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1),
-# CHECK-CPP: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP: [[CB0]].pop_front(
+# CHECK-CPP: [[CB1]].pop_front(
+# CHECK-CPP: [[CB2]].push_back(
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
@@ -144,9 +147,12 @@ def fused_kernel(inp, bias, out):
 
 # CHECK-CPP-FPU: // fused_compute
 # CHECK-CPP-FPU: void kernel_main()
-# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(0),
-# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(1),
-# CHECK-CPP-FPU: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: [[CB0]].wait_front(
+# CHECK-CPP-FPU: [[CB1]].wait_front(
+# CHECK-CPP-FPU: [[CB2]].reserve_back(
 # CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 # CHECK-CPP-FPU: tile_regs_acquire();
 
@@ -167,9 +173,9 @@ def fused_kernel(inp, bias, out):
 # CHECK-CPP-FPU: tile_regs_wait();
 # CHECK-CPP-FPU: pack_tile<true>(
 # CHECK-CPP-FPU: tile_regs_release();
-# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(0),
-# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(1),
-# CHECK-CPP-FPU: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU: [[CB0]].pop_front(
+# CHECK-CPP-FPU: [[CB1]].pop_front(
+# CHECK-CPP-FPU: [[CB2]].push_back(
 
 
 if __name__ == "__main__":

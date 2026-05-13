@@ -1,6 +1,6 @@
 // Summary: Corner case tests for DST allocation edge cases not covered elsewhere.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -34,7 +34,7 @@
 // CHECK:      %[[SIG:.*]] = ttl.tile_sigmoid %[[ACOPY1]] into dst[%[[C0]]]
 // CHECK:           %{{.*}}, %[[ACOPY2:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[ACOPY2]] into dst[%[[C1]]]
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C2]]] {ttl.fpu_binary}
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C2]]]
 // CHECK:           ttl.tile_store %[[SIG]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
@@ -373,7 +373,7 @@ func.func @deep_unary_then_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary: both operands are the same block arg, no copy needed.
 // CHECK-NOT:       ttl.copy_tile
-// CHECK:           %[[SQ:.*]] = ttl.tile_mul %[[A]], %[[A]] into dst[%[[C0]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:           %[[SQ:.*]] = ttl.tile_mul %[[A]], %[[A]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[SQ]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 
@@ -431,7 +431,7 @@ func.func @square_pattern(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK:           %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // First add is FPU binary (no copies for A, B). C copied for SFPU mul.
-// CHECK:           %[[ADD0:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:           %[[ADD0:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           %{{.*}}, %[[CTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[ADD0]], %[[CTILE]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
@@ -513,8 +513,8 @@ func.func @intermediate_reuse_late(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK:           %{{.*}}, %[[XCOPY_ABS:.*]] = ttl.copy_tile %[[X]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[ABS:.*]] = ttl.tile_abs %[[XCOPY_ABS]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // Both add and mul are FPU binary (both operands are block args)
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[X]], %[[Y]] into dst[%[[C1]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[X]], %[[Y]] into dst[%[[C2]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[X]], %[[Y]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[X]], %[[Y]] into dst[%[[C2]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // Combine results (SFPU, operands from DST)
 // CHECK:      %[[TMP:.*]] = ttl.tile_add %[[ABS]], %[[ADD]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:      %[[RESULT:.*]] = ttl.tile_add %[[TMP]], %[[MUL]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>

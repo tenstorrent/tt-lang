@@ -15,7 +15,7 @@
 // | false     | true       | 16       | 16            |
 // | true      | true       | 8        | 8             |
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst))' --split-input-file \
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst))' --split-input-file \
 // RUN:   | FileCheck %s
 
 // bf16, double-buffered (default): capacity=8, unroll_factor=8.
