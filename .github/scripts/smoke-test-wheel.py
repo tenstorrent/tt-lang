@@ -15,6 +15,7 @@
 
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 
@@ -46,7 +47,8 @@ def main() -> int:
     import sim_stats  # noqa: F401
     from sim_stats.__main__ import main as _sim_stats_main  # noqa: F401
 
-    scripts_dir = Path(sys.executable).resolve().parent
+    # venv-aware; sys.executable may be a symlink out of the venv.
+    scripts_dir = Path(sysconfig.get_path("scripts"))
     stats_name = (
         "ttlang-sim-stats.exe" if sys.platform == "win32" else "ttlang-sim-stats"
     )

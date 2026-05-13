@@ -884,7 +884,7 @@ def _build_operation_pipenets(f: Callable, threads):
     captured PipeNet referenced from multiple threads contributes one
     entry.
     """
-    from _pipenets import OperationPipeNets
+    from ._pipenets import OperationPipeNets
     from .pipe import _pipe_to_pipe_use
 
     seen: Dict[int, PipeNet] = {}
@@ -1483,6 +1483,7 @@ def _compile_kernel(
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-verify-pipenet-guards")
+        pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:
             pipeline_passes.append(

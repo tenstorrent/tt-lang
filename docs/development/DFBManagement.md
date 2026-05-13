@@ -18,11 +18,14 @@ ttl-insert-cb-sync             (FuncOp)   Insert cb_push / cb_pop
   ... compute lowering, DST assignment, loop lowering ...
 ttl-finalize-dfb-indices       (Module)   Index reuse + limit check
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
+ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
 convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
 ttkernel-insert-inits          (Module)   Insert hardware init calls
 ```
 
 `ttl-finalize-dfb-indices` must precede `ttl-annotate-cb-associations` because annotation copies the `cb_index` attribute from `BindCBOp` onto tile operations (`bcast`, `reduce`, `transpose`). If annotation runs before finalization, the copied indices become stale after reuse rewrites them.
+
+`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every `bind_cb` carries its final `cb_index`. The pass asserts on unresolvable indices.
 
 ## DFB Lifecycle
 
@@ -44,6 +47,77 @@ bind_cb   cb_reserve                cb_wait              L1 buffer held
 For compiler-allocated DFBs, `InsertIntermediateDFBs` creates the full sequence from `bind_cb` through `attach_cb`. `InsertCBSync` adds `cb_push` (after the producer's last use) and `cb_pop` (after the consumer's last use).
 
 A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the interval used for index reuse.
+
+## Single-producer Single-consumer Semantics
+
+### Contract
+
+Each DFB has exactly one producer thread and exactly one consumer thread. A *thread* here is a `func.func` carrying the `ttl.kernel_thread` attribute (compute, noc, ethernet); ops in untagged functions are outside the contract.
+
+The rule is inherited from tt-metal: its CB protocol is not multi-writer safe on either side. Each CB has two shared counters in `dataflow_api.h`:
+
+- `pages_received`, incremented by `cb_push_back` (producer side),
+- `pages_acked`, incremented by `cb_pop_front` (consumer side).
+
+`cb_reserve_back` blocks until `pages_received - pages_acked < block_count`. `cb_wait_front` blocks until `pages_received > pages_acked`. The protocol is correct only when exactly one thread writes each counter; the counters are not atomic with respect to multiple writers and carry no per-thread identity.
+
+### Violation
+
+A two-consumer DFB inside a stripe loop:
+
+```python
+buf = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+@ttl.compute()
+def compute():
+    for _ in range(num_stripes):
+        with buf.reserve() as b:
+            b.store(...)
+        with buf.wait() as b:       # consumer A: compute
+            ...
+
+@ttl.datamovement()
+def dm_read():
+    for _ in range(num_stripes):
+        with buf.wait() as b:       # consumer B: dm_read
+            ...
+```
+
+Per iteration, the producer pushes once (`pages_received += 1`) and each consumer pops once (`pages_acked += 2`). After iteration 0, the producer's `cb_reserve_back` on iteration 1 sees two free slots when only one has actually been consumed; it writes slot 0 while the late consumer is still reading slot 0's old data. The symmetric failure occurs with two producers: each `cb_push_back` advances the shared write pointer, and a consumer reads a partially-written slot.
+
+A single-iteration test masks this — exactly one push and two over-pops do not corrupt data when the producer never refills — so the rule must be enforced statically rather than left to test coverage.
+
+### Correct form
+
+Allocate one DFB per consumer thread (and symmetrically per producer thread). The producer writes the value into each DFB; each consumer reads its own. The sketch below is illustrative (no `@ttl.operation` wrapper, no tensor shape); for a runnable example see `test/python/test_store_patterns.py::store_then_forward_kernel`:
+
+```python
+buf_for_compute = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+buf_for_dm     = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+@ttl.compute()
+def compute():
+    for _ in range(num_stripes):
+        val = ...
+        with buf_for_compute.reserve() as b: b.store(val)
+        with buf_for_dm.reserve()     as b: b.store(val)
+        with buf_for_compute.wait()   as b: ...
+
+@ttl.datamovement()
+def dm_read():
+    for _ in range(num_stripes):
+        with buf_for_dm.wait() as b: ...
+```
+
+Each `pages_received`/`pages_acked` pair is now driven by a single thread.
+
+### Verification
+
+The `ttl-verify-dfb-spsc` module-level pass runs after `ttl-annotate-cb-associations`. It walks every `cb_reserve` and `cb_wait` op, groups them by `cb_index` and enclosing `ttl.kernel_thread`-tagged `func.func`, and rejects any DFB whose producer or consumer set spans more than one thread. The diagnostic identifies the cb_index, the role (producer or consumer), each kernel thread site, and the originating `ttl.bind_cb`.
+
+See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` for the rejected patterns and `verify_dfb_spsc.mlir` for the accepted ones.
+
+The compiler does not currently auto-split multi-consumer DFBs; users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in [tenstorrent/tt-lang#581](https://github.com/tenstorrent/tt-lang/issues/581).
 
 ## Intermediate DFB Insertion
 

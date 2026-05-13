@@ -272,6 +272,7 @@ setup(
     install_requires=_read_install_requires(),
     packages=[
         "ttl",
+        "ttl._pipenets",
         "ttl._src",
         "ttl._setup",
         "ttl.pykernel",
@@ -286,6 +287,7 @@ setup(
     ],
     package_dir={
         "ttl": "python/ttl",
+        "ttl._pipenets": "python/ttl/_pipenets",
         "ttl._src": "python/ttl/_src",
         "ttl._setup": "python/ttl/_setup",
         "ttl.pykernel": "python/pykernel",

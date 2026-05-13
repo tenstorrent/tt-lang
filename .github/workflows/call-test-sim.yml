@@ -36,5 +36,6 @@ jobs:
       - name: Run Python simulation tests
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/python:${{ github.workspace }}/examples
+          TTLANG_SIM_ONLY: "1"
         run: |
           pytest test/sim/ -v -n auto

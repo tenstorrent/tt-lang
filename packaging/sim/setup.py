@@ -77,6 +77,7 @@ def stage() -> None:
     )
 
     shutil.copytree(REPO_ROOT / "python" / "sim", ttl / "sim")
+    shutil.copytree(src_ttl / "_pipenets", ttl / "_pipenets")
     shutil.copytree(src_ttl / "_setup", ttl / "_setup")
     shutil.copytree(REPO_ROOT / "python" / "utils", ttl / "utils")
     shutil.copytree(REPO_ROOT / "python" / "sim_stats", STAGE / "sim_stats")
@@ -114,6 +115,7 @@ setup(
     install_requires=read_runtime_requirements(),
     packages=[
         "ttl",
+        "ttl._pipenets",
         "ttl._setup",
         "ttl.sim",
         "ttl.tutorials",
