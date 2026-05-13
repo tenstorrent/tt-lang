@@ -47,10 +47,12 @@ template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
   using Key = mlir::tt::ttl::PipeKey;
   static Key getEmptyKey() {
-    return {DenseMapInfo<int64_t>::getEmptyKey(), 0, 0, 0, 0, 0, 0};
+    int64_t s = DenseMapInfo<int64_t>::getEmptyKey();
+    return {s, s, s, s, s, s, s};
   }
   static Key getTombstoneKey() {
-    return {DenseMapInfo<int64_t>::getTombstoneKey(), 0, 0, 0, 0, 0, 0};
+    int64_t s = DenseMapInfo<int64_t>::getTombstoneKey();
+    return {s, s, s, s, s, s, s};
   }
   static unsigned getHashValue(const Key &k) {
     return hash_combine(k.srcX, k.srcY, k.dstStartX, k.dstStartY, k.dstEndX,
@@ -127,10 +129,12 @@ public:
     };
     struct ReceiverKeyInfo {
       static ReceiverKey getEmptyKey() {
-        return {llvm::DenseMapInfo<int64_t>::getEmptyKey(), 0, 0};
+        int64_t s = llvm::DenseMapInfo<int64_t>::getEmptyKey();
+        return {s, s, s};
       }
       static ReceiverKey getTombstoneKey() {
-        return {llvm::DenseMapInfo<int64_t>::getTombstoneKey(), 0, 0};
+        int64_t s = llvm::DenseMapInfo<int64_t>::getTombstoneKey();
+        return {s, s, s};
       }
       static unsigned getHashValue(const ReceiverKey &k) {
         return llvm::hash_combine(k.recvX, k.recvY, k.cbIndex);
@@ -270,10 +274,12 @@ private:
   };
   struct GatherDstKeyInfo {
     static GatherDstKey getEmptyKey() {
-      return {llvm::DenseMapInfo<int64_t>::getEmptyKey(), 0, 0};
+      int64_t s = llvm::DenseMapInfo<int64_t>::getEmptyKey();
+      return {s, s, s};
     }
     static GatherDstKey getTombstoneKey() {
-      return {llvm::DenseMapInfo<int64_t>::getTombstoneKey(), 0, 0};
+      int64_t s = llvm::DenseMapInfo<int64_t>::getTombstoneKey();
+      return {s, s, s};
     }
     static unsigned getHashValue(const GatherDstKey &k) {
       return llvm::hash_combine(k.dstX, k.dstY, k.pipeNetId);

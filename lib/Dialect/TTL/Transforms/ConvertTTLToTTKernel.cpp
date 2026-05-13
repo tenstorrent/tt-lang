@@ -436,19 +436,20 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
       return;
     }
 
-    // Found Pipe->CB copy: this is the receiver side
+    // Found Pipe->CB copy: this is the receiver side.
     Value dstCB = copyOp.getDst();
     auto cbType = dyn_cast<CircularBufferType>(dstCB.getType());
     if (!cbType) {
-      copyOp.emitWarning("pipe copy destination is not a circular buffer");
+      copyOp.emitError("pipe copy destination is not a circular buffer");
+      walkResult = failure();
       return;
     }
 
-    // Trace to the BindCBOp to get the CB index
     Value cbVal = traceUnrealizedCasts(dstCB);
     auto bindOp = cbVal.getDefiningOp<BindCBOp>();
     if (!bindOp) {
-      copyOp.emitWarning("could not trace pipe receiver to a BindCBOp");
+      copyOp.emitError("could not trace pipe receiver to a BindCBOp");
+      walkResult = failure();
       return;
     }
 

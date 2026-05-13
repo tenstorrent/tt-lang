@@ -106,6 +106,11 @@ class Pipe:
                 f"dst {name} slice start must be < stop, "
                 f"got slice({s.start}, {s.stop})"
             )
+        if s.step is not None and s.step != 1:
+            raise ValueError(
+                f"dst {name} slice step must be 1 or None "
+                f"(strided multicast is not supported), got step={s.step}"
+            )
 
     def _parse_dst(self):
         """Parse destination into start/end coordinates."""

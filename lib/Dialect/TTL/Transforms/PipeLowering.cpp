@@ -426,9 +426,14 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
       }
     }
     if (!counter) {
-      return rewriter.notifyMatchFailure(
-          op, "multicast Pipe->CB CopyOp without per-PipeNet counter; "
-              "allocatePipeNetCountersForMulticast must run before lowering");
+      // Counter pre-allocation is a hard precondition. Surfacing this as
+      // notifyMatchFailure would let the partial-conversion driver report
+      // a generic "no legalization for ttl.copy" instead of the actual
+      // pipeline-ordering bug; emit a real error.
+      op.emitError("multicast Pipe->CB CopyOp without per-PipeNet counter; "
+                   "allocatePipeNetCountersForMulticast must run before "
+                   "convert-ttl-to-ttkernel");
+      return failure();
     }
 
     auto emitSignalSender = [&]() {

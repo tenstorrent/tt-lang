@@ -84,6 +84,17 @@ def test_pipe_dst_slice_start_must_be_less_than_stop():
         ttl.Pipe(src=(0, 0), dst=(slice(4, 0), 0))
 
 
+def test_pipe_dst_slice_step_must_be_one():
+    """Strided multicast is not supported; non-1 step is silently lost by
+    the inclusive-range lowering, so reject at construction."""
+    with pytest.raises(ValueError, match="step must be 1 or None"):
+        ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 2), 0))
+    with pytest.raises(ValueError, match="step must be 1 or None"):
+        ttl.Pipe(src=(0, 0), dst=(0, slice(0, 4, 2)))
+    # step == 1 is fine.
+    ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 1), 0))
+
+
 def test_mixed_unicast_multicast_in_one_pipenet_rejected():
     # Spec types `PipeNet[DstT](pipes: List[Pipe[DstT]])` so every pipe
     # shares one destination type; runtime validator pins the same rule.
