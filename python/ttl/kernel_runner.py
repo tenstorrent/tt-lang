@@ -71,9 +71,11 @@ def get_min_remaining_l1_for_device(device):
                 for page in ttnn._ttnn.reports.get_buffer_pages(single_device):
                     if page.buffer_type == ttnn.BufferType.L1:
                         key = (page.core_y, page.core_x)
-                        bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
+                        bytes_per_core[key] = (
+                            bytes_per_core.get(key, 0) + page.page_size
+                        )
             finally:
-                  ttnn.close_mesh_device(single_device)  
+                ttnn.close_mesh_device(single_device)
 
             max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
             remaining = max(0, budget_bytes - max_core_bytes)
