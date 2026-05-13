@@ -24,6 +24,16 @@
 
 namespace mlir::tt::ttl {
 
+/// Return the enclosing kernel-thread `func.func` (tagged with
+/// `ttl.kernel_thread`), or null if `op` is not inside one.
+inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
+  auto func = op->getParentOfType<mlir::func::FuncOp>();
+  if (func && func->hasAttr(kKernelThreadAttrName)) {
+    return func;
+  }
+  return nullptr;
+}
+
 /// Trace through unrealized conversion casts to the original value
 /// (cycle-safe).
 inline mlir::Value traceUnrealizedCasts(mlir::Value value) {

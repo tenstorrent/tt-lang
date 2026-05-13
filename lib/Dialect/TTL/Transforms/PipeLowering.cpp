@@ -154,19 +154,18 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   // index so the sender can advance its own fifo_wr_ptr.
   std::optional<int64_t> senderCBIndex = getCBIndex(srcCB);
   Value senderRecvCB = *cbConverted;
-  bool destDiffersFromSrc = false;
   if (receiverInfo && senderCBIndex.has_value() &&
       senderCBIndex.value() != receiverInfo->cbIndex) {
     auto srcCBType = mlir::cast<ttk::CBType>(cbConverted->getType());
     senderRecvCB = ttk::GetCompileArgValOp::create(
-        rewriter, loc, srcCBType,
-        static_cast<int32_t>(receiverInfo->cbIndex));
-    destDiffersFromSrc = true;
+        rewriter, loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
   }
 
-  // In loopback, the receive callback on this same core already issues
-  // reserve_back / push_back on the destination DFB; do not double-advance.
-  bool skipSenderReserve = pipeType.srcInDstRange() && !destDiffersFromSrc;
+  // In loopback the user's receive callback runs on the sender core and
+  // already issues reserve_back / push_back on the destination DFB; emitting
+  // the sender-side pair would double-advance regardless of whether the
+  // source and destination DFB indices coincide.
+  bool skipSenderReserve = pipeType.srcInDstRange();
 
   if (!skipSenderReserve) {
     ttk::CBReserveBackOp::create(rewriter, loc, senderRecvCB, numTilesI32);
@@ -185,8 +184,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
   } else {
-    auto srcWritePtr =
-        ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
+    auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
   }
 

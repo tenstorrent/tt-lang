@@ -9,15 +9,20 @@ Two tests:
 1. `test_gather_multi_iter` — minimal two-core gather over two stripes.
    Verifies the sender-side `cb_reserve_back` / `cb_push_back` lockstep
    fix in `PipeLowering.cpp` without depending on any other DFB
-   patterns. This is the focused regression test for #574.
+   patterns. Part of the regression test for #574.
 
-2. `test_gather_bcast_multi_iter` — mirrors issue 574 reproducer, the
-   pattern surfaced by rmsnorm-backward. Exercises gather + multicast
-   inside a stripe loop and depends on the same lockstep fix, but also
-   uses a multi-consumer `sum_cb` (compute consumes it locally AND
-   dm_read consumes it for the bcast send). The framework must emit
-   matching pushes for both consumers; see issue [multi-consumer DFB]
-   for the supporting framework change.
+2. `test_gather_bcast_multi_iter` — mirrors the rmsnorm-backward pattern
+   surfaced by issue #574. Exercises gather + multicast inside a stripe
+   loop and depends on the same lockstep fix. Each dataflow buffer is
+   structured as single-producer single-consumer: partial and sum each
+   have separate copies for the local-compute and pipe-send consumers,
+   so the `ttl-verify-dfb-spsc` pass accepts the kernel.
+
+   TODO(#581): replace the manual `partial_for_sum_cb` /
+   `partial_for_send_cb` duplication once a compiler pass auto-splits
+   user-facing DFBs whose consumers span multiple kernel threads. The
+   shared compiler-allocated DFB helpers introduced by PR #540 would be
+   a reasonable foundation but do not themselves perform the split.
 """
 
 import pytest
@@ -38,20 +43,16 @@ def gather_multi_iter(out):
     row_cores = 1
     row_shape = (1, 1)
 
-    partial_cb = ttl.make_dataflow_buffer_like(
-        out, shape=row_shape, block_count=2
+    partial_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=2)
+    gather_net = ttl.PipeNet(
+        [
+            ttl.Pipe((x, y), (0, y))
+            for x in range(1, col_cores)
+            for y in range(row_cores)
+        ]
     )
-    recv_cb = ttl.make_dataflow_buffer_like(
-        out, shape=row_shape, block_count=2
-    )
-    out_cb = ttl.make_dataflow_buffer_like(
-        out, shape=row_shape, block_count=2
-    )
-    gather_net = ttl.PipeNet([
-        ttl.Pipe((x, y), (0, y))
-        for x in range(1, col_cores)
-        for y in range(row_cores)
-    ])
 
     @ttl.compute()
     def compute():
@@ -64,9 +65,8 @@ def gather_multi_iter(out):
                 with out_cb.reserve() as out_blk:
                     out_blk.store(blk)
             else:
-                partial_blk = partial_cb.wait()
                 with out_cb.reserve() as out_blk:
-                    out_blk.store(partial_blk)
+                    out_blk.store(ttl.math.fill(out_blk, 1.0))
 
     @ttl.datamovement()
     def dm_read():
@@ -81,6 +81,7 @@ def gather_multi_iter(out):
 
                 gather_net.if_src(send)
             else:
+
                 def recv(pipe):
                     b = recv_cb.reserve()
                     tx = ttl.copy(pipe, b)
@@ -104,19 +105,32 @@ def gather_bcast_loop(out):
 
     rb = out_rows // NUM_OF_STRIPES
     row_shape = (rb, 1)
-    partial_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=2)
+    # SPSC split: each cb has at most one producer and one consumer thread.
+    # partial gets two copies (one for compute's local sum, one for the
+    # gather sender); sum gets two copies (one for compute's out write, one
+    # for the bcast sender).
+    partial_for_sum_cb = ttl.make_dataflow_buffer_like(
+        out, shape=row_shape, block_count=2
+    )
+    partial_for_send_cb = ttl.make_dataflow_buffer_like(
+        out, shape=row_shape, block_count=2
+    )
     recv_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=col_cores)
-    sum_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=2)
+    sum_for_out_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=2)
+    sum_for_bcast_cb = ttl.make_dataflow_buffer_like(
+        out, shape=row_shape, block_count=2
+    )
     bcast_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=2)
-    gather_net = ttl.PipeNet([
-        ttl.Pipe((x, y), (0, y))
-        for x in range(1, col_cores)
-        for y in range(row_cores)
-    ])
-    bcast_net = ttl.PipeNet([
-        ttl.Pipe((0, y), (slice(1, col_cores), y))
-        for y in range(row_cores)
-    ])
+    gather_net = ttl.PipeNet(
+        [
+            ttl.Pipe((x, y), (0, y))
+            for x in range(1, col_cores)
+            for y in range(row_cores)
+        ]
+    )
+    bcast_net = ttl.PipeNet(
+        [ttl.Pipe((0, y), (slice(1, col_cores), y)) for y in range(row_cores)]
+    )
 
     out_cb = ttl.make_dataflow_buffer_like(out, shape=row_shape, block_count=2)
 
@@ -124,17 +138,28 @@ def gather_bcast_loop(out):
     def compute():
         node_col, _node_row = ttl.node(dims=2)
         for _ri in range(NUM_OF_STRIPES):
-            with partial_cb.reserve() as partial_blk:
-                partial_blk.store(ttl.math.fill(partial_blk, 1.0))
             if node_col == 0:
-                partial_blk = partial_cb.wait()
+                # Produce the local partial only on the core that consumes
+                # it. An unconditional reserve here would over-push on
+                # col>0 (no matching wait) and deadlock past block_count
+                # iterations.
+                with partial_for_sum_cb.reserve() as p_sum_blk:
+                    p_sum_blk.store(ttl.math.fill(p_sum_blk, 1.0))
+                partial_blk = partial_for_sum_cb.wait()
                 blk = recv_cb.wait()
-                with sum_cb.reserve() as sum_blk:
-                    sum_blk.store(blk + partial_blk)
-                sum_blk = sum_cb.wait()
+                sum_val = blk + partial_blk
+                with sum_for_out_cb.reserve() as sum_out_blk:
+                    sum_out_blk.store(sum_val)
+                with sum_for_bcast_cb.reserve() as sum_bcast_blk:
+                    sum_bcast_blk.store(sum_val)
+                sum_out = sum_for_out_cb.wait()
                 with out_cb.reserve() as out_blk:
-                    out_blk.store(sum_blk)
+                    out_blk.store(sum_out)
             else:
+                # Produce the send-side partial only on the cores whose
+                # dm_read consumes it (col>0). Same rationale as above.
+                with partial_for_send_cb.reserve() as p_send_blk:
+                    p_send_blk.store(ttl.math.fill(p_send_blk, 1.0))
                 blk = bcast_cb.wait()
                 with out_cb.reserve() as out_blk:
                     out_blk.store(blk)
@@ -144,7 +169,7 @@ def gather_bcast_loop(out):
         node_col, _node_row = ttl.node(dims=2)
         for _ri in range(NUM_OF_STRIPES):
             if node_col > 0:
-                blk = partial_cb.wait()
+                blk = partial_for_send_cb.wait()
 
                 def send(pipe):
                     tx = ttl.copy(blk, pipe)
@@ -159,13 +184,14 @@ def gather_bcast_loop(out):
 
                 bcast_net.if_dst(recv)
             else:
+
                 def recv(pipe):
                     b = recv_cb.reserve()
                     tx = ttl.copy(pipe, b)
                     tx.wait()
 
                 gather_net.if_dst(recv)
-                blk = sum_cb.wait()
+                blk = sum_for_bcast_cb.wait()
 
                 def send(pipe):
                     tx = ttl.copy(blk, pipe)
@@ -198,12 +224,6 @@ def test_gather_multi_iter(device):
     torch.testing.assert_close(result, expected)
 
 
-@pytest.mark.xfail(
-    reason="Blocked on multi-consumer DFB bug: sum_cb has 1 producer push "
-    "and 2 consumer pops per iteration (compute + dm_read both consume), "
-    "racing on stripe 1's bcast destination tile. Follow-up PR will scale "
-    "the producer push count in ConvertTTLToTTKernel.cpp."
-)
 def test_gather_bcast_multi_iter(device):
     st = 64
     out_torch = torch.full((st, st), -42.0, dtype=torch.bfloat16)

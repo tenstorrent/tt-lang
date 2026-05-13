@@ -534,6 +534,34 @@ def TTLVerifyPipeNetGuards
   ];
 }
 
+def TTLVerifyDFBSPSC
+    : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
+  let summary = "Reject DFBs whose producer or consumer set spans more than one kernel thread";
+  let description = [{
+    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by `cb_index`
+    (resolved via `getCBIndex`) and enclosing `ttl.kernel_thread`-tagged
+    `func.func`, and emits an error for any DFB whose producer thread set or
+    consumer thread set has size greater than one. The diagnostic attaches a
+    note for each additional thread site and one note at the originating
+    `ttl.bind_cb`.
+
+    tt-metal circular buffers expose a counter pair (`pages_received`,
+    `pages_acked`) that is not multi-writer safe on either side, so the
+    structural single-producer single-consumer property is required for
+    correctness; see `docs/development/DFBManagement.md` for the runtime
+    contract.
+
+    Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
+    `bind_cb` carries a concrete `cb_index`. The pass asserts on
+    unresolvable indices.
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLErasePipeNetScopes
     : Pass<"ttl-erase-pipenet-scopes", "::mlir::ModuleOp"> {
   let summary = "Inline and erase `ttl.pipenet_scope` regions";
