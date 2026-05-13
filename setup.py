@@ -283,6 +283,7 @@ setup(
         "ttl.tutorials.matmul",
         "ttl.tutorials.broadcast",
         "ttl.utils",
+        "sim_stats",
     ],
     package_dir={
         "ttl": "python/ttl",
@@ -297,6 +298,7 @@ setup(
         "ttl.tutorials.matmul": "examples/matmul-tutorial",
         "ttl.tutorials.broadcast": "examples/tutorial",
         "ttl.utils": "python/utils",
+        "sim_stats": "python/sim_stats",
     },
     ext_modules=[ttlang_c],
     cmdclass={"build_ext": CMakeBuild, "sdist": NoSdist},
