@@ -31,6 +31,16 @@ inline int64_t getReceiverSemIdx(int64_t pipeNetId) {
 using PipeNetCounterMap =
     llvm::DenseMap<func::FuncOp, llvm::DenseMap<int64_t, Value>>;
 
+/// pipeNetId -> deduplicated list of pipe types in that net. Built once
+/// before lowering so is_src/is_dst/is_active patterns avoid walking the
+/// module per match.
+using PipeNetIndex = llvm::DenseMap<int64_t, SmallVector<PipeType>>;
+
+/// Walk `mod` once and group every PipeType result by its net id.
+/// Deduplicates by (src, dst start/end) so the same pipe appearing on
+/// multiple ops contributes one entry.
+void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
+
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a multicast Pipe->CB CopyOp.
 void allocatePipeNetCountersForMulticast(ModuleOp mod,
@@ -53,8 +63,11 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
                             ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.
+/// `pipeNetIndex` is borrowed and must outlive `patterns`; the is_src /
+/// is_dst / is_active lowerings use it for O(1) net-id lookup.
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,
-                                  const TypeConverter &typeConverter);
+                                  const TypeConverter &typeConverter,
+                                  const PipeNetIndex &pipeNetIndex);
 
 } // namespace mlir::tt::ttl
 

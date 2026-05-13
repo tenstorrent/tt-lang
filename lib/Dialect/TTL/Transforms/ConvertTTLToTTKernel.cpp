@@ -1010,13 +1010,18 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeNetCounterMap pipeNetCounters;
   allocatePipeNetCountersForMulticast(mod, pipeNetCounters);
 
+  // Per-net-id pipe list, shared by IsSrc/IsDst/IsActive lowerings so they
+  // don't walk the module per match.
+  PipeNetIndex pipeNetIndex;
+  buildPipeNetIndex(mod, pipeNetIndex);
+
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph, &pipeNetCounters);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
       typeConverter, &ctx);
-  populatePipeLoweringPatterns(patterns, typeConverter);
+  populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

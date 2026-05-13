@@ -608,30 +608,6 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
   }
 };
 
-// Collect every pipe type whose net id matches `netId`. Walks the parent
-// module so it works regardless of whether matching `ttl.create_pipe` ops
-// have already been replaced by their unrealized-conversion-cast stand-ins.
-static SmallVector<PipeType> collectPipesForNet(Operation *op, int64_t netId) {
-  SmallVector<PipeType> result;
-  using PipeKey =
-      std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
-  llvm::SmallSet<PipeKey, 4> seen;
-  op->getParentOfType<ModuleOp>().walk([&](Operation *o) {
-    for (Type t : o->getResultTypes()) {
-      auto pt = dyn_cast<PipeType>(t);
-      if (!pt || pt.getPipeNetId() != netId) {
-        continue;
-      }
-      PipeKey key{pt.getSrcX(),      pt.getSrcY(),    pt.getDstStartX(),
-                  pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
-      if (seen.insert(key).second) {
-        result.push_back(pt);
-      }
-    }
-  });
-  return result;
-}
-
 static Value buildSrcMatch(OpBuilder &b, Location loc, Value coreX, Value coreY,
                            PipeType pt) {
   auto sx = arith::ConstantIndexOp::create(b, loc, pt.getSrcX());
@@ -669,12 +645,13 @@ static Value buildDstMatch(OpBuilder &b, Location loc, Value coreX, Value coreY,
 template <typename Op>
 static LogicalResult lowerRolePredicate(
     Op op, ConversionPatternRewriter &rewriter,
+    const PipeNetIndex &pipeNetIndex,
     llvm::function_ref<Value(OpBuilder &, Location, Value, Value, PipeType)>
         roleBuilder) {
   auto loc = op.getLoc();
   int64_t netId = op.getPipeNetId();
-  auto pipes = collectPipesForNet(op, netId);
-  if (pipes.empty()) {
+  auto it = pipeNetIndex.find(netId);
+  if (it == pipeNetIndex.end() || it->second.empty()) {
     return op->emitError() << op->getName() << " references unknown PipeNet "
                            << netId;
   }
@@ -683,7 +660,7 @@ static LogicalResult lowerRolePredicate(
   auto coreY =
       ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
   Value result;
-  for (PipeType pt : pipes) {
+  for (PipeType pt : it->second) {
     Value match = roleBuilder(rewriter, loc, coreX, coreY, pt);
     result = result ? Value(arith::OrIOp::create(rewriter, loc, result, match))
                     : match;
@@ -692,31 +669,41 @@ static LogicalResult lowerRolePredicate(
   return success();
 }
 
-struct IsSrcLowering : OpConversionPattern<IsSrcOp> {
-  using OpConversionPattern::OpConversionPattern;
+// Base for IsSrc/IsDst/IsActive lowerings: holds the shared PipeNetIndex
+// borrowed pointer so the per-pattern matchAndRewrite stays compact.
+template <typename Op>
+struct IsRoleLoweringBase : OpConversionPattern<Op> {
+  IsRoleLoweringBase(const TypeConverter &tc, MLIRContext *ctx,
+                     const PipeNetIndex *index)
+      : OpConversionPattern<Op>(tc, ctx), pipeNetIndex(index) {}
+  const PipeNetIndex *pipeNetIndex;
+};
+
+struct IsSrcLowering : IsRoleLoweringBase<IsSrcOp> {
+  using IsRoleLoweringBase::IsRoleLoweringBase;
   LogicalResult
   matchAndRewrite(IsSrcOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerRolePredicate(op, rewriter, buildSrcMatch);
+    return lowerRolePredicate(op, rewriter, *pipeNetIndex, buildSrcMatch);
   }
 };
 
-struct IsDstLowering : OpConversionPattern<IsDstOp> {
-  using OpConversionPattern::OpConversionPattern;
+struct IsDstLowering : IsRoleLoweringBase<IsDstOp> {
+  using IsRoleLoweringBase::IsRoleLoweringBase;
   LogicalResult
   matchAndRewrite(IsDstOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerRolePredicate(op, rewriter, buildDstMatch);
+    return lowerRolePredicate(op, rewriter, *pipeNetIndex, buildDstMatch);
   }
 };
 
-struct IsActiveLowering : OpConversionPattern<IsActiveOp> {
-  using OpConversionPattern::OpConversionPattern;
+struct IsActiveLowering : IsRoleLoweringBase<IsActiveOp> {
+  using IsRoleLoweringBase::IsRoleLoweringBase;
   LogicalResult
   matchAndRewrite(IsActiveOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     return lowerRolePredicate(
-        op, rewriter,
+        op, rewriter, *pipeNetIndex,
         [](OpBuilder &b, Location loc, Value cx, Value cy, PipeType pt) {
           Value src = buildSrcMatch(b, loc, cx, cy, pt);
           Value dst = buildDstMatch(b, loc, cx, cy, pt);
@@ -745,11 +732,33 @@ struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
 
 } // namespace
 
+void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
+  using PipeKey =
+      std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
+  llvm::DenseMap<int64_t, llvm::SmallSet<PipeKey, 4>> seenPerNet;
+  mod.walk([&](Operation *o) {
+    for (Type t : o->getResultTypes()) {
+      auto pt = dyn_cast<PipeType>(t);
+      if (!pt) {
+        continue;
+      }
+      int64_t netId = pt.getPipeNetId();
+      PipeKey key{pt.getSrcX(),      pt.getSrcY(),    pt.getDstStartX(),
+                  pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
+      if (seenPerNet[netId].insert(key).second) {
+        index[netId].push_back(pt);
+      }
+    }
+  });
+}
+
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,
-                                  const TypeConverter &typeConverter) {
-  patterns.add<IfSrcLowering, IfDstLowering, IsSrcLowering, IsDstLowering,
-               IsActiveLowering, CreatePipeLowering>(typeConverter,
-                                                     patterns.getContext());
+                                  const TypeConverter &typeConverter,
+                                  const PipeNetIndex &pipeNetIndex) {
+  patterns.add<IfSrcLowering, IfDstLowering, CreatePipeLowering>(
+      typeConverter, patterns.getContext());
+  patterns.add<IsSrcLowering, IsDstLowering, IsActiveLowering>(
+      typeConverter, patterns.getContext(), &pipeNetIndex);
 }
 
 } // namespace mlir::tt::ttl
