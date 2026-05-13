@@ -18,11 +18,14 @@ ttl-insert-cb-sync             (FuncOp)   Insert cb_push / cb_pop
   ... compute lowering, DST assignment, loop lowering ...
 ttl-finalize-dfb-indices       (Module)   Index reuse + limit check
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
+ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
 convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
 ttkernel-insert-inits          (Module)   Insert hardware init calls
 ```
 
 `ttl-finalize-dfb-indices` must precede `ttl-annotate-cb-associations` because annotation copies the `cb_index` attribute from `BindCBOp` onto tile operations (`bcast`, `reduce`, `transpose`). If annotation runs before finalization, the copied indices become stale after reuse rewrites them.
+
+`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every `bind_cb` carries its final `cb_index`. The pass asserts on unresolvable indices.
 
 ## DFB Lifecycle
 
