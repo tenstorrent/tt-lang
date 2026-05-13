@@ -434,11 +434,19 @@ class GreenletScheduler:
                     if len(unique_cores) == 1:
                         cores_label = unique_cores[0]
                     else:
-                        core_numbers: list[int] = [
-                            int(core_id[4:]) for core_id in unique_cores
-                        ]
-                        cores_label = f"cores: {format_core_ranges(core_numbers)}"
-
+                        try:
+                            core_numbers: list[int] = [
+                                int(core_id[4:])
+                                for core_id in unique_cores
+                                if core_id.startswith("core") and core_id[4:].isdigit()
+                            ]
+                            cores_label = (
+                                f"cores: {format_core_ranges(core_numbers)}"
+                                if core_numbers
+                                else f"cores: {', '.join(unique_cores)}"
+                            )
+                        except (ValueError, IndexError):
+                            cores_label = f"cores: {', '.join(unique_cores)}"
                     raw_loc = blocked_raw_locs.get((op, obj_desc, location))
                     if raw_loc:
                         filename, lineno = raw_loc
