@@ -418,62 +418,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
 } // namespace
 
-//===----------------------------------------------------------------------===//
-// PipeGraph implementation
-//===----------------------------------------------------------------------===//
-
-FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
-  PipeGraph graph;
-
-  // Find all Pipe->CB copies (receiver side) and extract CB index
-  LogicalResult walkResult = success();
-  mod.walk([&](CopyOp copyOp) {
-    if (failed(walkResult)) {
-      return;
-    }
-    auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType());
-    if (!srcPipeType) {
-      return;
-    }
-
-    // Found Pipe->CB copy: this is the receiver side.
-    Value dstCB = copyOp.getDst();
-    auto cbType = dyn_cast<CircularBufferType>(dstCB.getType());
-    if (!cbType) {
-      copyOp.emitError("pipe copy destination is not a circular buffer");
-      walkResult = failure();
-      return;
-    }
-
-    Value cbVal = traceUnrealizedCasts(dstCB);
-    auto bindOp = cbVal.getDefiningOp<BindCBOp>();
-    if (!bindOp) {
-      copyOp.emitError("could not trace pipe receiver to a BindCBOp");
-      walkResult = failure();
-      return;
-    }
-
-    int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
-    walkResult = graph.addReceiverCB(
-        srcPipeType.getSrcX(), srcPipeType.getSrcY(),
-        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
-        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
-        srcPipeType.getPipeNetId(), cbIndex, cbType.getBlockCount(),
-        copyOp.getLoc(), copyOp);
-  });
-
-  if (failed(walkResult)) {
-    return failure();
-  }
-
-  graph.assignGatherSlotIndices();
-
-  if (failed(graph.verifyGatherBlockCounts())) {
-    return failure();
-  }
-
-  return graph;
-}
+// PipeGraph implementation lives in PipeGraph.cpp.
 
 namespace {
 
