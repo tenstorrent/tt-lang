@@ -34,12 +34,11 @@ static void emitVerbatim(Location loc, StringRef value, BuilderT &builder) {
 ///   - Direct BindCBOp result
 ///   - Block argument of ComputeOp (via ttl.cb_index.N annotation)
 static FailureOr<int64_t> resolveCBIndex(Value cbValue, Operation *dprintOp) {
-  cbValue = traceUnrealizedCasts(cbValue);
-
-  if (auto bindOp = cbValue.getDefiningOp<BindCBOp>()) {
-    return bindOp.getCbIndex().getSExtValue();
+  if (auto cbIndex = getCBIndex(cbValue)) {
+    return cbIndex.value();
   }
 
+  cbValue = traceUnrealizedCasts(cbValue);
   if (auto blockArg = dyn_cast<BlockArgument>(cbValue)) {
     auto *parentOp = blockArg.getOwner()->getParentOp();
     if (auto computeOp = dyn_cast<ComputeOp>(parentOp)) {

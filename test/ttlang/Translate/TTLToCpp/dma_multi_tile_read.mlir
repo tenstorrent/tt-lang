@@ -19,12 +19,12 @@
 // CHECK-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
+// CHECK:   experimental::CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
 // CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
 // CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
-// CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // Cast CB ptr to size_t for index arithmetic
-// CHECK:   ptrdiff_t [[CB_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR]];
+// CHECK:   ptrdiff_t [[CB_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR_IDX:v[0-9]+]] = (size_t) [[CB_PTR_PTRDIFF]];
 // CHECK:   for (size_t [[TILE_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[TILE_STEP]]) {
 // CHECK:     for (size_t [[TILE_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[TILE_STEP]]) {
@@ -47,9 +47,9 @@
 module {
   func.func @dma_multi_tile_read(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
     %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
-    %xf = ttl.copy %slice, %cb : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf = ttl.copy %slice, %cb : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }

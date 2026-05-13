@@ -111,22 +111,67 @@ module {
 
 // -----
 
-// cb_reserve with num_tiles exceeding CB capacity.
+// cb_reserve with num_tiles exceeding CB capacity (across all blocks).
+// Capacity = elementsPerBlock * blockCount = 9 * 2 = 18.
 module {
-  func.func @cb_reserve_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<5x3x!ttcore.tile<32x32, bf16>> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{num_tiles (15) exceeds DFB capacity (9)}}
-    %view = ttl.cb_reserve %cb {num_tiles = 15 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<5x3x!ttcore.tile<32x32, bf16>>
-    func.return %view : tensor<5x3x!ttcore.tile<32x32, bf16>>
+  func.func @cb_reserve_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<8x3x!ttcore.tile<32x32, bf16>> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{num_tiles (24) exceeds DFB capacity (18)}}
+    %view = ttl.cb_reserve %cb {num_tiles = 24 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<8x3x!ttcore.tile<32x32, bf16>>
+    func.return %view : tensor<8x3x!ttcore.tile<32x32, bf16>>
   }
 }
 
 // -----
 
-// cb_push with num_tiles exceeding CB capacity.
+// cb_push with num_tiles exceeding CB capacity (across all blocks).
 module {
   func.func @cb_push_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{'ttl.cb_push' op num_tiles (15) exceeds DFB capacity (9)}}
-    ttl.cb_push %cb {num_tiles = 15 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{'ttl.cb_push' op num_tiles (24) exceeds DFB capacity (18)}}
+    ttl.cb_push %cb {num_tiles = 24 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// cb_wait with num_tiles: element type mismatch.
+module {
+  func.func @cb_wait_num_tiles_element_mismatch(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x3x!ttcore.tile<32x32, f32>> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{result element type ('!ttcore.tile<32x32, f32>') must match DFB element type ('!ttcore.tile<32x32, bf16>')}}
+    %view = ttl.cb_wait %cb {num_tiles = 3 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x3x!ttcore.tile<32x32, f32>>
+    func.return %view : tensor<1x3x!ttcore.tile<32x32, f32>>
+  }
+}
+
+// -----
+
+// cb_wait with num_tiles: tile count mismatch between result shape and attribute.
+module {
+  func.func @cb_wait_num_tiles_mismatch(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x3x!ttcore.tile<32x32, bf16>> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{result tensor has 3 tiles but num_tiles attribute is 4}}
+    %view = ttl.cb_wait %cb {num_tiles = 4 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
+    func.return %view : tensor<1x3x!ttcore.tile<32x32, bf16>>
+  }
+}
+
+// -----
+
+// cb_wait with num_tiles exceeding CB capacity (across all blocks).
+module {
+  func.func @cb_wait_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<8x3x!ttcore.tile<32x32, bf16>> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{num_tiles (24) exceeds DFB capacity (18)}}
+    %view = ttl.cb_wait %cb {num_tiles = 24 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<8x3x!ttcore.tile<32x32, bf16>>
+    func.return %view : tensor<8x3x!ttcore.tile<32x32, bf16>>
+  }
+}
+
+// -----
+
+// cb_pop with num_tiles exceeding CB capacity (across all blocks).
+module {
+  func.func @cb_pop_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttl.cb_pop' op num_tiles (24) exceeds DFB capacity (18)}}
+    ttl.cb_pop %cb {num_tiles = 24 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 }

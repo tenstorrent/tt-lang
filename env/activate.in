@@ -29,6 +29,10 @@ fi
 export TT_LANG_HOME="@TT_LANG_HOME@"
 export TTLANG_HAS_DEVICE="@TTLANG_HAS_DEVICE_INT@"
 
+if [ "@TTLANG_SIM_ONLY_INT@" = "1" ]; then
+  export TTLANG_SIM_ONLY=1
+fi
+
 # LLVM/MLIR install prefix (built from submodule or pre-provided).
 export LLVM_INSTALL_DIR="@LLVM_INSTALL_DIR@"
 

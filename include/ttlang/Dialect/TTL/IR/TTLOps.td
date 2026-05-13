@@ -125,7 +125,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     encoding (transfers all tiles via loop).
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
-    ttkernel noc ops land in tt-mlir. Issue: #87.
+    ttkernel noc ops are available in tt-mlir. Issue: #87.
 
     Example:
 
@@ -164,7 +164,7 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     used.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
-    barriers land in ttkernel (tt-mlir). Issue: #87.
+    barriers are available in ttkernel (tt-mlir). Issue: #87.
 
     Example:
 
@@ -200,7 +200,8 @@ class TTL_ElementWiseBase<string mnemonic, list<Trait> traits>
 class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
     : TTL_ElementWiseBase<
           mnemonic,
-          !listconcat(traits, [Pure, TTL_BinaryElementwiseOpTrait])> {
+          !listconcat(traits,
+                      [Pure, SameTypeOperands, TTL_BinaryElementwiseOpTrait])> {
   let summary = "Binary elementwise operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let assemblyFormat =
@@ -316,10 +317,14 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 }
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
-    ParentOneOf<["ComputeOp", "DstSectionOp"]>]> {
-  let summary = "Terminate a ttl.compute or ttl.dst_section region";
+    ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
+                 "PipeNetScopeOp"]>]> {
+  let summary = "Terminate a TTL region body";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute` or `ttl.dst_section`.
+    `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
+    `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. It carries no
+    operands and produces no results; the trait
+    `SingleBlockImplicitTerminator` auto-inserts it.
   }];
   let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
@@ -371,7 +376,7 @@ def TTL_DstSectionOp : TTL_Op<"dst_section", [
 
 def TTL_InitSFPUOp : TTL_Op<"init_sfpu",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Initialize SFPU unpacker/packer for CB data formats.";
+  let summary = "Initialize SFPU unpacker/packer for CB data formats";
   let description = [{
     Configures the unpacker and packer hardware for SFPU operations based
     on the data formats of the input and output circular buffers. Must be
@@ -387,7 +392,7 @@ def TTL_InitSFPUOp : TTL_Op<"init_sfpu",
 
 def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Acquire the DST register lock.";
+  let summary = "Acquire the DST register lock";
   let description = [{
     Acquire an exclusive lock on the DST register before issuing tile
     computations that write to DST. This mirrors the TTKernel
@@ -401,7 +406,7 @@ def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
 
 def TTL_TileRegsCommitOp : TTL_Op<"tile_regs_commit",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Commit the DST register lock (MATH thread).";
+  let summary = "Commit the DST register lock (MATH thread)";
   let description = [{
     Release the DST register lock held by the MATH thread, mirroring
     `ttkernel.tile_regs_commit`. This is blocking and must be paired with a
@@ -412,7 +417,7 @@ def TTL_TileRegsCommitOp : TTL_Op<"tile_regs_commit",
 
 def TTL_TileRegsWaitOp : TTL_Op<"tile_regs_wait",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Wait for DST register availability (PACK thread).";
+  let summary = "Wait for DST register availability (PACK thread)";
   let description = [{
     Acquire the DST register lock for the PACK thread, blocking until the MATH
     thread commits. Mirrors `ttkernel.tile_regs_wait`.
@@ -422,7 +427,7 @@ def TTL_TileRegsWaitOp : TTL_Op<"tile_regs_wait",
 
 def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Release DST register lock (PACK thread).";
+  let summary = "Release DST register lock (PACK thread)";
   let description = [{
     Release the DST register lock held by the PACK thread, mirroring
     `ttkernel.tile_regs_release`. Must be paired with a preceding
@@ -498,7 +503,12 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$dstStartY,
     I64Attr:$dstEndX,
     I64Attr:$dstEndY,
-    I64Attr:$pipeNetId
+    I64Attr:$pipeNetId,
+    // Optional user-facing name for the owning PipeNet, used only to
+    // render diagnostics in source-level terms (e.g.
+    // `mcast_a_net.is_active()` instead of `net_<id>.is_active()`).
+    // No effect on op semantics.
+    OptionalAttr<StrAttr>:$pipeNetName
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
@@ -512,7 +522,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
                    "int64_t":$dstX, "int64_t":$dstY), [{
       build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);
     }]>,
-    // Builder with all coordinates
+    // Builder with all coordinates (no name)
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstStartX, "int64_t":$dstStartY,
                    "int64_t":$dstEndX, "int64_t":$dstEndY,
@@ -527,12 +537,15 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
             $_builder.getI64IntegerAttr(dstStartY),
             $_builder.getI64IntegerAttr(dstEndX),
             $_builder.getI64IntegerAttr(dstEndY),
-            $_builder.getI64IntegerAttr(pipeNetId));
+            $_builder.getI64IntegerAttr(pipeNetId),
+            /*pipeNetName=*/StringAttr());
     }]>
   ];
 }
 
-def TTL_IfSrcOp : TTL_Op<"if_src", [SingleBlock, NoTerminator]> {
+def TTL_IfSrcOp : TTL_Op<"if_src",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Execute region if current core is the source of a pipe";
   let description = [{
     Executes the body region if the current core's coordinates match the
@@ -558,7 +571,9 @@ def TTL_IfSrcOp : TTL_Op<"if_src", [SingleBlock, NoTerminator]> {
   }];
 }
 
-def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
+def TTL_IfDstOp : TTL_Op<"if_dst",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Execute region if current core is a destination of a pipe";
   let description = [{
     Executes the body region if the current core's coordinates fall within
@@ -582,6 +597,64 @@ def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
   let assemblyFormat = [{
     $pipe `:` type($pipe) $body attr-dict
   }];
+}
+
+def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Mark a DFB region that depends on PipeNet roles";
+  let description = [{
+    Marks a region whose dataflow-buffer acquire/release sequence must execute
+    only on nodes with specific PipeNet roles. The operation does not change
+    runtime behavior; it records the role contract for the enclosed region.
+
+    Role requirements are stored in attributes:
+
+    - `ttl.pipe_net_ids`: array of PipeNet ids.
+    - `ttl.pipe_net_roles`: array of role ids, where 0 is source and 1 is
+      destination.
+  }];
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
+
+def TTL_IsSrcOp : TTL_Op<"is_src",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
+  let summary = "Predicate: current node is a source of any pipe in the PipeNet";
+  let description = [{
+    Returns `true` on nodes that match the `src` of at least one pipe in the
+    named PipeNet, `false` elsewhere. The value-returning sibling of
+    `ttl.if_src`; used as the condition of an `scf.if` to guard pipe-coupled
+    work without entering a region.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_IsDstOp : TTL_Op<"is_dst",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
+  let summary = "Predicate: current node is a destination of any pipe in the PipeNet";
+  let description = [{
+    Returns `true` on nodes whose coordinate falls within the `dst` range of
+    at least one pipe in the named PipeNet, `false` elsewhere. The
+    value-returning sibling of `ttl.if_dst`.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_IsActiveOp : TTL_Op<"is_active",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
+  let summary = "Predicate: current node is a source or destination in the PipeNet";
+  let description = [{
+    Returns `true` on nodes that are either a source or a destination of at
+    least one pipe in the named PipeNet (the union of `is_src` and `is_dst`).
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
 }
 
 //===----------------------------------------------------------------------===//
@@ -768,11 +841,11 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
   let assemblyFormat = "$src_tile `into` `dst` `[` $dst_index `]` attr-dict `:` type($src_tile) `->` type($result)";
 }
 
-// Note: DSTInputsTrait is the default for binary ops. FPU-marked binaries
-// (ttl.fpu_binary) read from CB instead; use isCBInputOp() to check at runtime.
-class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
+// Common base for tile binary ops. Carries traits that hold unconditionally
+// (binary, writes to DST, all types match). Subclasses add the input-source
+// trait that reflects the op's actual hardware behavior.
+class TTL_TileBinaryOpBase<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileBinaryOpTrait,
-                                                 TTL_DSTInputsTrait,
                                                  TTL_DstResultOpTrait,
                                                  AllTypesMatch<["lhs", "rhs", "result"]>])> {
   let summary = "Binary tile operation";
@@ -780,6 +853,19 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
   let results = (outs TTL_TileType:$result);
   let assemblyFormat = "$lhs `,` $rhs `into` `dst` `[` $dst_index `]` attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
 }
+
+// Always-SFPU binary tile op: reads both operands from DST unconditionally.
+// Use for ops with no FPU equivalent (div, max, min).
+class TTL_TileSfpuBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileBinaryOpBase<mnemonic, !listconcat(traits, [TTL_DSTInputsTrait])>;
+
+// Strategy-dependent binary tile op: input source is determined by operand
+// provenance at lowering time. add/sub/mul live here; isFPUEligibleBinaryOp
+// resolves the choice from the current IR.
+class TTL_TileStrategyDepBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileBinaryOpBase<mnemonic,
+                           !listconcat(traits,
+                                       [TTL_StrategyDependentBinaryOpTrait])>;
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileUnaryOpTrait,
@@ -796,28 +882,40 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
 
-// Multiclass for defining paired tensor + tile binary ops
-multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp,
-                                     list<Trait> extraTraits = []> {
-  // Tensor-level op (operates on full tensors)
+// Multiclass for paired tensor + strategy-dependent tile binary ops.
+// Used by add/sub/mul, where the tile op may lower to either an FPU or
+// SFPU TTKernel form depending on operand provenance.
+multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
+                                                string kernelOp> {
   def Op : TTL_ElementWiseBinary<mnemonic> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
-  // Tile-level op (operates inside ttl.compute body)
-  def TileOp : TTL_TileBinaryOp<"tile_"#mnemonic, extraTraits> {
+  def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic> {
     let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
   }
 }
 
-// Define all binary elementwise ops using the multiclass
-defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles">;
-defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles">;
-defm TTL_Div : TTL_BinaryElementwisePair<"div", "div_binary_tile">;
-defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles",
-                                         [TTL_InPlaceOpTrait]>;
-defm TTL_Min : TTL_BinaryElementwisePair<"min", "binary_min_tile",
-                                         [TTL_InPlaceOpTrait]>;
+// Multiclass for paired tensor + always-SFPU tile binary ops.
+// Used by div/max/min, which have no FPU lowering today.
+multiclass TTL_BinarySfpuElementwisePair<string mnemonic, string kernelOp,
+                                         list<Trait> extraTraits = []> {
+  def Op : TTL_ElementWiseBinary<mnemonic> {
+    let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
+  }
+  def TileOp : TTL_TileSfpuBinaryOp<"tile_"#mnemonic, extraTraits> {
+    let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
+  }
+}
+
+// Define all binary elementwise ops using the multiclasses
+defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles">;
+defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles">;
+defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles">;
+defm TTL_Div : TTL_BinarySfpuElementwisePair<"div", "div_binary_tile">;
+defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
+                                             [TTL_InPlaceOpTrait]>;
+defm TTL_Min : TTL_BinarySfpuElementwisePair<"min", "binary_min_tile",
+                                             [TTL_InPlaceOpTrait]>;
 
 
 //===----------------------------------------------------------------------===//
@@ -1126,15 +1224,19 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
 
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute when the wait spans
+    multiple coalesced blocks (see `ttl-coalesce-dfb-acquires`).
 
     Example:
     ```mlir
     %view = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %coalesced = ttl.cb_wait %cb {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1150,15 +1252,19 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
     This operation must be called after reading data acquired via `ttl.cb_wait`.
     It increments the CB's consumer pointer.
 
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute when the pop releases
+    multiple coalesced blocks (see `ttl-coalesce-dfb-acquires`).
 
     Example:
     ```mlir
     ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;

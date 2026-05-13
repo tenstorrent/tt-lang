@@ -6,6 +6,10 @@
 sim package: simulation components for TT-Lang including dataflow buffers, tensors, and copy operations.
 """
 
+import os
+
+os.environ.setdefault("TTLANG_SIM_ONLY", "1")
+
 from typing import Any
 import types
 from . import ttnnsim as ttnn

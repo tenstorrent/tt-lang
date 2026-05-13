@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Circular buffer operations for inter-thread communication."""
+"""Dataflow buffer (DFB) operations for inter-thread communication."""
 
 from dataclasses import dataclass
 from typing import Any, Tuple
@@ -12,18 +12,18 @@ from ttl.ir import *
 from ._src.ttl_ast import syntax
 from ttl.dialects import ttl
 
-# Module-level counter for CB index assignment in creation order
+# Module-level counter for DFB index assignment in creation order
 _cb_index_counter = 0
 
 
 def _reset_cb_counter():
-    """Reset the CB index counter. Called at kernel start."""
+    """Reset the DFB index counter. Called at kernel start."""
     global _cb_index_counter
     _cb_index_counter = 0
 
 
 def _next_cb_index():
-    """Get next CB index and increment counter."""
+    """Get next DFB index and increment counter."""
     global _cb_index_counter
     idx = _cb_index_counter
     _cb_index_counter += 1
@@ -31,12 +31,12 @@ def _next_cb_index():
 
 
 def get_cb_count():
-    """Return number of CBs allocated so far."""
+    """Return number of DFBs allocated so far."""
     return _cb_index_counter
 
 
 def _get_cb_tensor_type(cb_val):
-    """Extract the tensor type from a TTL CB type."""
+    """Extract the tensor type from the MLIR DFB value type."""
     cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)
     if cb_type is None:
         raise ValueError(f"Expected CircularBufferType, got {cb_val.type}")
@@ -44,11 +44,11 @@ def _get_cb_tensor_type(cb_val):
 
 
 @syntax("!ttl.cb")
-class CircularBuffer:
+class DataflowBuffer:
     """
-    Circular buffer for inter-thread communication.
+    Dataflow buffer (DFB) for inter-thread communication.
 
-    Circular buffers provide producer-consumer synchronization between
+    Dataflow buffers provide producer-consumer synchronization between
     compute and data movement threads.
 
     Can be instantiated via make_dataflow_buffer_like() in kernel body,
@@ -62,7 +62,7 @@ class CircularBuffer:
         block_count: int,
     ):
         if len(shape) < 2:
-            raise ValueError(f"CB shape must have at least 2 dimensions, got {shape}")
+            raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
         if block_count < 1 or block_count > 32:
             raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
 
@@ -77,18 +77,18 @@ class CircularBuffer:
             return self.tensor.dtype
         raise ValueError("tensor has no dtype attribute")
 
-    def wait(ast_self: "CircularBuffer") -> "TensorBlock":
+    def wait(ast_self: "DataflowBuffer") -> "TensorBlock":
         """
-        Wait for data from the circular buffer (consumer acquire).
+        Wait for data from the dataflow buffer (consumer acquire).
 
         Use in consumer threads to acquire data. Must be followed by pop()
         to signal consumption is complete.
 
         Returns:
-            TensorBlock: The acquired data with CB association.
+            TensorBlock: The acquired data with DFB association.
 
         Example:
-            block = cb.wait()
+            block = dfb.wait()
             result = compute(block)
             block.pop()
         """
@@ -96,18 +96,18 @@ class CircularBuffer:
         tensor = ttl.cb_wait(tensor_type, ast_self)
         return ttl.attach_cb(tensor.type, tensor, ast_self)
 
-    def reserve(ast_self: "CircularBuffer") -> "TensorBlock":
+    def reserve(ast_self: "DataflowBuffer") -> "TensorBlock":
         """
-        Reserve space in the circular buffer (producer acquire).
+        Reserve space in the dataflow buffer (producer acquire).
 
         Use in producer threads to acquire space for writing. Must be followed
         by push() to signal data is ready.
 
         Returns:
-            TensorBlock: The reserved space with CB association.
+            TensorBlock: The reserved space with DFB association.
 
         Example:
-            block = cb.reserve()
+            block = dfb.reserve()
             copy(stream[idx], block).wait()
             block.push()
         """
@@ -116,13 +116,18 @@ class CircularBuffer:
         return ttl.attach_cb(tensor.type, tensor, ast_self)
 
 
+# Backward-compatible alias. Existing user code using `ttl.CircularBuffer`
+# continues to work; new code should prefer `DataflowBuffer`.
+CircularBuffer = DataflowBuffer
+
+
 @dataclass
 class CompilerAllocatedDFBConfig:
     """Configuration for a compiler-allocated dataflow buffer.
 
     Created by the Python runtime after reading the ttl.compiler_allocated_dfbs
     module attribute produced by the ttl-finalize-dfb-indices pass. Carries
-    the same information as a user-declared CircularBuffer but without a
+    the same information as a user-declared DataflowBuffer but without a
     backing tensor -- the data format comes directly from the MLIR attribute.
     """
 
@@ -136,16 +141,16 @@ def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, ...],
     block_count: int = 2,
-) -> CircularBuffer:
+) -> DataflowBuffer:
     """
-    Create a circular buffer with properties derived from a tensor.
+    Create a dataflow buffer with properties derived from a tensor.
 
     Args:
-        tensor: Tensor that determines the CB's data type
+        tensor: Tensor that determines the DFB's data type
         shape: Tile counts per dimension for wait/reserve operations
         block_count: Capacity multiplier (default 2 for double-buffering)
 
     Returns:
-        CircularBuffer for use in thread function closures
+        DataflowBuffer for use in thread function closures
     """
-    return CircularBuffer(tensor, shape, block_count)
+    return DataflowBuffer(tensor, shape, block_count)

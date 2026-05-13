@@ -170,7 +170,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
-    circular_buffer.py
+    dataflow_buffer.py
     compiler_options.py
     constants.py
     diagnostics.py
@@ -206,6 +206,13 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
     _src/signpost_profile.py
     _src/ttl_ast.py
     _src/tensor_registry.py
+)
+
+declare_mlir_python_sources(TTLangPythonCommon.PipeNets
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    _pipenets/__init__.py
 )
 
 declare_mlir_python_sources(TTLangPythonCommon.Utils
@@ -249,10 +256,10 @@ add_mlir_python_common_capi_library(TTLangPythonCAPI
     TTLangPythonExtensions
 )
 
-# Create pykernel as a separate top-level package
+# Create pykernel as a subpackage of ttl
 add_mlir_python_modules(PykernelPythonModules
-  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/pykernel"
-  INSTALL_PREFIX "python_packages/pykernel"
+  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttl/pykernel"
+  INSTALL_PREFIX "python_packages/ttl/pykernel"
   DECLARED_SOURCES
     PykernelPythonSources
 )
@@ -280,6 +287,15 @@ add_mlir_python_modules(TTLangPythonModules
 
 # Ensure generated elementwise ops are created before Python modules are built
 add_dependencies(TTLangPythonModules TTLangGeneratedElementwise)
+add_custom_target(pyext DEPENDS TTLangPythonModules)
+
+# pykernel is a subpackage of ttl (ttl/__init__.py transitively imports
+# from ttl.pykernel._src.utils via ttl_api.py), so TTLangPythonModules is
+# functionally incomplete without it. Without this dependency, targets
+# that DEPEND on TTLangPythonModules (e.g. check-ttlang-python-bindings)
+# can run before pykernel files have been copied into python_packages/,
+# producing ModuleNotFoundError at test time.
+add_dependencies(TTLangPythonModules PykernelPythonModules)
 
 # Add include paths for the _ttmlir extension so wrapper .cpp files can find
 # TTMLIRMinimalModule.h and the upstream tt-mlir Python sources (TTModule.cpp,
@@ -291,9 +307,32 @@ target_include_directories(TTLangPythonModules.extension._ttmlir.dso PRIVATE
 )
 
 # ###############################################################################
+# Sim package: build-tree symlink for live edits, install-tree real files.
+#
+# Build tree gets a symlink (ttl/sim -> python/sim) so devs see source edits
+# in `import ttl.sim` without rebuilding. Wheels and install trees get a real
+# copy via a dedicated install rule below; the bulk install rule that copies
+# python_packages/ excludes ttl/sim to avoid shipping the symlink.
+# ###############################################################################
+add_custom_target(TTLangSimPackage ALL
+  COMMAND ${CMAKE_COMMAND} -E create_symlink
+    "${CMAKE_CURRENT_SOURCE_DIR}/sim"
+    "${TTLANG_PYTHON_PACKAGES_DIR}/ttl/sim"
+  COMMENT "Symlinking sim package into ttl/sim/"
+)
+
+# ###############################################################################
 # Install
 # ###############################################################################
 install(DIRECTORY ${CMAKE_BINARY_DIR}/python_packages/
   DESTINATION .
   COMPONENT TTLangPythonWheel
-  EXCLUDE_FROM_ALL)
+  EXCLUDE_FROM_ALL
+  REGEX "ttl/sim($|/)" EXCLUDE)
+
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/sim/
+  DESTINATION ttl/sim
+  COMPONENT TTLangPythonWheel
+  EXCLUDE_FROM_ALL
+  FILES_MATCHING PATTERN "*.py"
+  PATTERN "__pycache__" EXCLUDE)

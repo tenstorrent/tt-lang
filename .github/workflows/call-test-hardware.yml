@@ -12,7 +12,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 60
+        default: 90
       docker_tag:
         description: 'Docker image tag for the ird container.'
         required: true
@@ -28,7 +28,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 60
+        default: 90
       docker_tag:
         description: 'Docker image tag for the ird container.'
         required: true
@@ -42,7 +42,7 @@ jobs:
   test-n150:
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
-    timeout-minutes: ${{ inputs.timeout }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
 
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${{ inputs.docker_tag }}
@@ -64,7 +64,7 @@ jobs:
 
     steps:
       - name: Checkout tt-lang
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -104,25 +104,25 @@ jobs:
           source build/env/activate
           python test/python/simple_add.py
 
+      - name: Simulator tests
+        run: |
+          source build/env/activate
+          python3 -m pytest test/sim -m requires_ttnn -v -n auto --tb=short --junitxml=build/test/sim-report.xml
+
       - name: Python lit tests
         run: |
           source build/env/activate
           cmake --build build --target check-ttlang-python-lit
-
-      - name: ME2E tests (MLIR input end-to-end tests)
-        run: |
-          source build/env/activate
-          python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
 
       - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
           python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
 
-      - name: Simulator tests
+      - name: ME2E tests (MLIR input end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
+          python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
 
       - name: Hardware compiler example scripts
         run: |
@@ -136,7 +136,7 @@ jobs:
           bash .github/scripts/run-tutorials.sh .
 
       - name: Upload test reports
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}

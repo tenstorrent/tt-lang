@@ -37,7 +37,7 @@ def _ensure_ttnn():
 
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
-from pykernel._src.utils import _cleanup_source_code
+from ttl.pykernel._src.utils import _cleanup_source_code
 from ttl.dialects import ttkernel
 from ttl.ir import *
 from ttl.passes import (
@@ -66,7 +66,12 @@ from ._src.tensor_registry import (
     register_tensor_source,
 )
 from ._src.ttl_ast import TTLGenericCompiler
-from .circular_buffer import CircularBuffer, CompilerAllocatedDFBConfig, get_cb_count
+from .dataflow_buffer import (
+    CircularBuffer,
+    CompilerAllocatedDFBConfig,
+    DataflowBuffer,
+    get_cb_count,
+)
 from .pipe import Pipe, PipeNet
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
@@ -126,6 +131,7 @@ def _make_cache_key(
     args: tuple,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
@@ -139,7 +145,14 @@ def _make_cache_key(
         if is_ttnn_tensor(arg) and _is_mesh_tensor(arg):
             mesh_key = tuple(arg.device().shape)
             break
-    return (tensor_key, mesh_key, fp32_dest_acc_en, dst_full_sync_en, compiler_options)
+    return (
+        tensor_key,
+        mesh_key,
+        fp32_dest_acc_en,
+        dst_full_sync_en,
+        target_arch,
+        compiler_options,
+    )
 
 
 def _should_execute() -> bool:
@@ -356,47 +369,6 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     return default
 
 
-def _has_float32_args(args) -> bool:
-    """
-    Check if any input tensor uses float32 dtype.
-
-    Inspects the tensor arguments to detect float32. This is used to
-    automatically enable fp32_dest_acc_en configuration for compute kernels.
-
-    Args:
-        args: List of tensor arguments (torch or ttnn)
-
-    Returns:
-        True if any tensor uses float32 dtype, False otherwise
-    """
-    try:
-        for tensor in args:
-            if tensor is None:
-                continue
-
-            # Check ttnn tensor
-            if is_ttnn_tensor(tensor):
-                tensor_dtype = tensor.dtype
-                # ttnn.float32
-                if (
-                    hasattr(tensor_dtype, "name")
-                    and "float32" in str(tensor_dtype.name).lower()
-                ):
-                    return True
-                if "float32" in str(tensor_dtype).lower():
-                    return True
-            # Check torch tensor
-            elif hasattr(tensor, "dtype"):
-                import torch
-
-                if tensor.dtype == torch.float32:
-                    return True
-    except (AttributeError, TypeError, ImportError):
-        pass
-
-    return False
-
-
 def _require_device(args):
     """Extract the device from tensor arguments, raising if none are on-device.
 
@@ -424,11 +396,54 @@ def _require_device(args):
     )
 
 
+def _detect_device_arch(device) -> Optional[str]:
+    """Return a normalized architecture string from a TTNN device if present."""
+    arch_attrs = (
+        "arch",
+        "architecture",
+        "chip_type",
+        "device_type",
+        "_arch",
+        "_architecture",
+    )
+    for attr in arch_attrs:
+        # Properties on device handles may raise for reasons other than
+        # AttributeError (e.g., closed handle); guard both attribute access
+        # and the optional method call.
+        try:
+            arch_value = getattr(device, attr)
+        except Exception:
+            continue
+        if callable(arch_value):
+            try:
+                arch_value = arch_value()
+            except Exception:
+                continue
+        return str(arch_value).lower().rsplit(".", maxsplit=1)[-1]
+    return None
+
+
+def _device_target_arch(args) -> Optional[str]:
+    """Return the first detected tensor device architecture, or None."""
+    for arg in args:
+        if not is_ttnn_tensor(arg) or not hasattr(arg, "device"):
+            continue
+        device = arg.device()
+        if device is None:
+            continue
+        arch = _detect_device_arch(device)
+        if arch is None:
+            continue
+        return arch
+    return None
+
+
 def _resolve_grid(grid, args, kwargs):
-    """Resolve grid, evaluating callable or 'auto' if needed."""
+    """Resolve the compile-time grid: callable is evaluated; both "auto"
+    and "full" expand to the device compute grid."""
     if callable(grid):
         return grid(*args, **kwargs)
-    if grid == "auto":
+    if grid in ("auto", "full"):
         device = _require_device(args)
         device_grid = device.compute_with_storage_grid_size()
         return (device_grid.x, device_grid.y)
@@ -597,6 +612,35 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
     return path
 
 
+def _lookup_kernel_func_op(module, kernel_name: str):
+    """Return the func.func operation for a kernel symbol."""
+    for op_view in module.body.operations:
+        operation = getattr(op_view, "operation", op_view)
+        if operation.name != "func.func":
+            continue
+        sym_name = operation.attributes.get("sym_name", None)
+        if sym_name is not None and str(sym_name).strip('"') == kernel_name:
+            return operation
+    raise RuntimeError(f"Could not find TTKernel function '{kernel_name}'")
+
+
+def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
+    """Read a boolean func.func attribute from a compiled kernel."""
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(attr_name, None)
+    if attr is None:
+        return False
+    attr_text = str(attr).strip()
+    if attr_text == "true":
+        return True
+    if attr_text == "false":
+        return False
+    raise ValueError(
+        f"Expected boolean attribute '{attr_name}' on kernel '{kernel_name}', "
+        f"got {attr_text!r}"
+    )
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -607,11 +651,11 @@ def _compile_ttnn_kernel(
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
-    compiler_options: CompilerOptions = CompilerOptions(),
     verbose=True,
     source_lines=None,
     all_source_lines=None,
     kernel_line_offsets=None,
+    num_pipe_nets: int = 0,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -699,9 +743,13 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     noc_kernel_idx = 0
-
-    # Check if input args use f32 to auto-configure compute kernels
-    has_f32 = _has_float32_args(args)
+    kernel_bool_attrs = {
+        name: {
+            "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
+            "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
+        }
+        for name, _ in kernel_info
+    }
 
     # Build thread-to-kernel mapping for profiling
     # Maps RISC thread names to kernel names
@@ -716,24 +764,12 @@ def _compile_ttnn_kernel(
             config = ttnn.ComputeConfigDescriptor()
             if fp32_dest_acc_en is not None:
                 config.fp32_dest_acc_en = fp32_dest_acc_en
+            elif kernel_bool_attrs[name]["fp32_dest_acc_en"]:
+                config.fp32_dest_acc_en = True
             if dst_full_sync_en is not None:
                 config.dst_full_sync_en = dst_full_sync_en
-            if fp32_dest_acc_en is None and has_f32:
-                config.fp32_dest_acc_en = True
-                if verbose:
-                    print(
-                        "  [fp32 detected] Enabling fp32_dest_acc_en for compute kernel"
-                    )
-            if fp32_dest_acc_en is None and compiler_options.reduce_full_fp32:
-                if "reduce_tile" in cpp_source:
-                    config.fp32_dest_acc_en = True
-            if fp32_dest_acc_en is None and compiler_options.matmul_full_fp32:
-                if "matmul_block" in cpp_source:
-                    # TODO(#454): Remove once tt-llk #1338 is fixed.
-                    # Suppress for any unary_bcast; f32 bcast kernels are
-                    # already covered by the has_f32 check above.
-                    if "unary_bcast" not in cpp_source:
-                        config.fp32_dest_acc_en = True
+            elif kernel_bool_attrs[name]["dst_full_sync_en"]:
+                config.dst_full_sync_en = True
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
@@ -771,7 +807,7 @@ def _compile_ttnn_kernel(
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
-        num_pipe_nets=PipeNet._next_id,
+        num_pipe_nets=num_pipe_nets,
     )
 
     if verbose:
@@ -810,9 +846,58 @@ def _compile_ttnn_kernel(
     return compiled_kernel
 
 
+def _build_operation_pipenets(f: Callable, threads):
+    """Discover PipeNets reachable from the operation and its threads, build
+    the OperationPipeNets, validate it, and assign each Pipe its
+    operation-local pipe-net id for AST emission.
+
+    Discovery walks the operation function's closure plus each thread
+    function's closure (matching the spec's "captured by the operation
+    function" wording). PipeNets are deduplicated by `id()`, so a
+    captured PipeNet referenced from multiple threads contributes one
+    entry.
+    """
+    from ._pipenets import OperationPipeNets
+    from .pipe import _pipe_to_pipe_use
+
+    seen: Dict[int, PipeNet] = {}
+
+    def visit(func):
+        if func is None:
+            return
+        closure = getattr(func, "__closure__", None) or ()
+        for cell in closure:
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(value, PipeNet) and id(value) not in seen:
+                seen[id(value)] = value
+        fn_globals = getattr(func, "__globals__", None) or {}
+        for value in fn_globals.values():
+            if isinstance(value, PipeNet) and id(value) not in seen:
+                seen[id(value)] = value
+
+    visit(f)
+    for thread in threads:
+        visit(getattr(thread, "__wrapped__", None))
+
+    graph = OperationPipeNets()
+    for net in seen.values():
+        net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
+        net.pipe_net_id = net_use.id
+        # Assign every Pipe in this net the operation-local id so the AST
+        # visitor's create_pipe emission uses the same id space.
+        for pipe in net.pipes:
+            pipe.pipe_net_id = net_use.id
+
+    graph.validate()
+    return graph
+
+
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, CircularBuffer, Pipe]]:
+) -> Dict[str, Union[int, DataflowBuffer, Pipe]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -833,7 +918,7 @@ def _collect_captures(
             return val
         elif is_ttnn_tensor(val):
             return val
-        elif isinstance(val, CircularBuffer):
+        elif isinstance(val, DataflowBuffer):
             return val
         elif isinstance(val, Pipe):
             return val
@@ -849,9 +934,9 @@ def _collect_captures(
 
 
 def _collect_cb_configs(threads):
-    """Extract CircularBuffer objects from thread closures, indexed by cb_index.
+    """Extract DataflowBuffer objects from thread closures, indexed by dfb index.
 
-    Returns a list of CircularBuffer objects indexed by cb_index. Each CB has
+    Returns a list of DataflowBuffer objects indexed by dfb index. Each DFB has
     shape, block_count, tensor (for dtype), and _cb_index attributes.
     """
     cb_configs_dict = {}
@@ -862,7 +947,7 @@ def _collect_cb_configs(threads):
             continue
         for cell in closure:
             val = cell.cell_contents
-            if isinstance(val, CircularBuffer):
+            if isinstance(val, DataflowBuffer):
                 cb_configs_dict[val._cb_index] = val
 
     if not cb_configs_dict:
@@ -1112,6 +1197,7 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> Optional[CompiledTTNNKernel]:
     """
@@ -1130,12 +1216,12 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
 
     Returns:
         CompiledTTNNKernel ready for execution
     """
-    PipeNet._next_id = 0
     f_params = inspect.signature(f).parameters
 
     # Get kernel source location for error reporting
@@ -1179,7 +1265,7 @@ def _compile_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
-    from .circular_buffer import _reset_cb_counter, CircularBuffer
+    from .dataflow_buffer import _reset_cb_counter
     from .operators import _set_current_grid
 
     _reset_cb_counter()
@@ -1194,6 +1280,10 @@ def _compile_kernel(
             "No threads found. Define at least one @ttl.compute() or "
             "@ttl.datamovement() function inside your kernel."
         )
+
+    pipenets = _build_operation_pipenets(f, threads)
+
+    launch_grid = grid
 
     cb_configs = _collect_cb_configs(threads)
 
@@ -1273,6 +1363,15 @@ def _compile_kernel(
                 kernel_line_offsets[ct.name] = ct.line_offset
 
         module = Module.create(loc)
+        module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
+            [
+                IntegerAttr.get(IntegerType.get_signless(64, ctx), dim)
+                for dim in launch_grid
+            ],
+            ctx,
+        )
+        if target_arch is not None:
+            module.operation.attributes["ttl.target_arch"] = StringAttr.get(target_arch)
 
         # Insert standalone thread functions directly into module
         with InsertionPoint(module.body):
@@ -1309,6 +1408,9 @@ def _compile_kernel(
         config_options.append(
             f"matmul-full-fp32={int(compiler_options.matmul_full_fp32)}"
         )
+        config_options.append(
+            f"enable-fpu-binary-ops={int(compiler_options.enable_fpu_binary_ops)}"
+        )
         if config_options:
             set_compute_config_pass = (
                 "func.func(ttl-set-compute-kernel-config{"
@@ -1318,15 +1420,14 @@ def _compile_kernel(
 
         # NOTE: Pipeline pass ordering is mirrored in
         # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
-        fpu_flag = int(compiler_options.enable_fpu_binary_ops)
-        assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
+        assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-insert-cb-sync)",
+            "func.func(ttl-auto-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
@@ -1347,6 +1448,9 @@ def _compile_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
+        pipeline_passes.append("ttl-verify-pipenet-guards")
+        pipeline_passes.append("ttl-verify-dfb-spsc")
+        pipeline_passes.append("ttl-erase-pipenet-scopes")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
@@ -1454,21 +1558,23 @@ def _compile_kernel(
         compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
 
-        # Compile to CompiledTTNNKernel for ttnn.generic_op
+        # Compile to CompiledTTNNKernel for ttnn.generic_op.
+        # `launch_grid` may be smaller than `grid` when grid="auto" reduces
+        # the launch to the PipeNet work extent; only core_ranges uses it.
         compiled_kernel = _compile_ttnn_kernel(
             module,
             args,
-            grid,
+            launch_grid,
             num_outs,
             thread_tensor_indices,
             cb_configs,
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
-            compiler_options=compiler_options,
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
+            num_pipe_nets=len(pipenets.pipe_nets),
         )
         return compiled_kernel
 
@@ -1560,6 +1666,7 @@ def pykernel_gen(
             base = CompilerOptions.from_string(opts_str)
             argv_overrides = CompilerOptions.from_argv()
             compiler_options = base.merge(argv_overrides)
+            target_arch = _device_target_arch(args)
 
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
@@ -1567,6 +1674,7 @@ def pykernel_gen(
                 # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,
+                target_arch=target_arch,
                 compiler_options=compiler_options,
             )
 
@@ -1591,6 +1699,7 @@ def pykernel_gen(
                     program_hash,
                     fp32_dest_acc_en=fp32_override,
                     dst_full_sync_en=dst_sync_override,
+                    target_arch=target_arch,
                     compiler_options=compiler_options,
                 )
 
@@ -1651,6 +1760,7 @@ __all__ = [
     "compute",
     "datamovement",
     "TensorBlock",
+    "DataflowBuffer",
     "CircularBuffer",
     "CopyTransferHandler",
     "copy",

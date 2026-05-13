@@ -24,13 +24,16 @@
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
 
+// CB wrappers declared at top of kernel
+// CHECK:   experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+// CHECK:   experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+
 // First copy: 64x64 (2x2 tiles) → CB [2,2]
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
 // CHECK:   auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
 // CHECK:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
-// CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // Cast CB ptr to size_t for index arithmetic
-// CHECK:   ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR1]];
+// CHECK:   ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR1_IDX:v[0-9]+]] = (size_t) [[CB_PTR1_PTRDIFF]];
 // Generated tile loops iterate over tensor grid (2x2)
 // CHECK:   for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[TILE_STEP]]) {
@@ -54,9 +57,8 @@
 // CHECK:   int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
 // CHECK:   auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
 // CHECK:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
-// CHECK:   int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // Cast CB ptr to size_t for index arithmetic
-// CHECK:   ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR2]];
+// CHECK:   ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR2_IDX:v[0-9]+]] = (size_t) [[CB_PTR2_PTRDIFF]];
 // Generated tile loops still iterate over tensor grid (2x2), not CB shape (4x1)
 // CHECK:   for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[TILE_STEP]]) {
@@ -82,17 +84,17 @@ module {
   func.func @same_layout_different_cb(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb1 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
-    %cb2 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
+    %cb1 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+    %cb2 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
     // First copy: 64x64 → CB [2,2]
     %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
-    %xf1 = ttl.copy %slice0, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf1 = ttl.copy %slice0, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf1 : !ttl.transfer_handle<read>
 
     // Second copy: 64x64 (same layout) → CB [2,2]
     %slice1 = ttl.tensor_slice %arg1[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
-    %xf2 = ttl.copy %slice1, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf2 = ttl.copy %slice1, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf2 : !ttl.transfer_handle<read>
 
     func.return

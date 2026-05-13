@@ -1,3 +1,4 @@
+core.*
 .local
 **/build
 third_party/tt-metal
@@ -14,6 +15,7 @@ cluster_descriptor.yaml
 .*.swp
 .docker-image-*
 **/generated
+*.whl
 
 # ttnn-dylib and ttnn-standalone artifacts
 tools/ttnn-standalone/ttnn-dylib.cpp

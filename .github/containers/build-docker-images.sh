@@ -108,8 +108,18 @@ echo "$BASE_IMAGE" > .docker-image-base
 echo "$DIST_IMAGE" > .docker-image-name
 echo "$IRD_IMAGE"  > .docker-image-ird
 
-# Extract tt-metal submodule SHA for Dockerfile.base build arg.
-TT_METAL_SHA=$(git ls-tree HEAD third-party/tt-metal 2>/dev/null | awk '{print $3}')
+# Read the canonical tt-metal tag from third-party/tt-metal-version and pass
+# it to the Dockerfile.base build via --build-arg. Single source of truth:
+# every tt-metal-derived value (submodule SHA, ttnn version,
+# install_dependencies.sh URL) comes from this tag and is verified by
+# check-tt-metal-version.sh.
+TT_METAL_VERSION_FILE="$(git rev-parse --show-toplevel)/third-party/tt-metal-version"
+if [[ ! -f "$TT_METAL_VERSION_FILE" ]]; then
+    echo "ERROR: missing $TT_METAL_VERSION_FILE" >&2
+    exit 1
+fi
+TT_METAL_TAG=$(tr -d '[:space:]' < "$TT_METAL_VERSION_FILE")
+[[ -n "$TT_METAL_TAG" ]] || { echo "ERROR: $TT_METAL_VERSION_FILE is empty" >&2; exit 1; }
 
 # Build function
 build_image() {
@@ -178,6 +188,7 @@ build_image() {
         $cache_arg \
         $target_arg \
         $base_image_arg \
+        --build-arg TT_METAL_TAG="$TT_METAL_TAG" \
         ${DOCKER_BUILD_EXTRA_ARGS:-} \
         "${tag_args[@]}" \
         -f "$dockerfile" .

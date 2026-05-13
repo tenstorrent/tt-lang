@@ -17,6 +17,7 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "llvm/ADT/SmallSet.h"
 
 namespace mlir::tt::ttl {
 
@@ -140,47 +141,51 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
   }
 
-  // Destination address: always use write_ptr. The receiver does
-  // cb_reserve_back, so the write pointer is the correct target.
-  // CB layout is uniform across cores, so the local write_ptr matches
-  // the remote core's write_ptr for the same CB index.
-  auto cbWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
-  auto cbWritePtrIdx =
+  SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
+  int64_t cbNumTiles = 1;
+  for (int64_t d : cbBounds) {
+    cbNumTiles *= d;
+  }
+  auto numTilesI32 = arith::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(cbNumTiles));
+
+  // Destination DFB on the sender's local view: same as the source when both
+  // endpoints share a DFB index, otherwise a fresh handle on the receiver's
+  // index so the sender can advance its own fifo_wr_ptr.
+  std::optional<int64_t> senderCBIndex = getCBIndex(srcCB);
+  Value senderRecvCB = *cbConverted;
+  if (receiverInfo && senderCBIndex.has_value() &&
+      senderCBIndex.value() != receiverInfo->cbIndex) {
+    auto srcCBType = mlir::cast<ttk::CBType>(cbConverted->getType());
+    senderRecvCB = ttk::GetCompileArgValOp::create(
+        rewriter, loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
+  }
+
+  // In loopback the user's receive callback runs on the sender core and
+  // already issues reserve_back / push_back on the destination DFB; emitting
+  // the sender-side pair would double-advance regardless of whether the
+  // source and destination DFB indices coincide.
+  bool skipSenderReserve = pipeType.srcInDstRange();
+
+  if (!skipSenderReserve) {
+    ttk::CBReserveBackOp::create(rewriter, loc, senderRecvCB, numTilesI32);
+  }
+
+  // Sender's local write_ptr is advanced in lockstep with the receiver via
+  // the surrounding reserve_back / push_back.
+  auto cbWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, senderRecvCB);
+  Value dstBaseIdx =
       arith::IndexCastOp::create(rewriter, loc, indexTy, cbWritePtr);
 
-  // Source address depends on CB access context:
-  //   Producer (cb_reserve/cb_push): data at write_ptr, before push.
-  //   Consumer (cb_wait/cb_pop):     data at read_ptr, after wait.
+  // Producer source address is at the source DFB's write_ptr (data is staged
+  // there before push_back); consumer source address is at its read_ptr.
   Value srcPtrIdx;
   if (isConsumerCB) {
     auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
   } else {
-    srcPtrIdx = cbWritePtrIdx;
-  }
-
-  Value dstBaseIdx = cbWritePtrIdx;
-  if (receiverInfo) {
-    // Determine sender CB index to check if it differs from receiver.
-    // The source CB may be pre- or post-conversion, so check both BindCBOp
-    // (pre-conversion) and GetCompileArgValOp (post-conversion).
-    int64_t senderCBIndex = -1;
-    Value tracedSrc = traceUnrealizedCasts(srcCB);
-    if (auto bindOp = tracedSrc.getDefiningOp<BindCBOp>()) {
-      senderCBIndex = bindOp.getCbIndex().getSExtValue();
-    } else if (auto argOp =
-                   tracedSrc.getDefiningOp<ttk::GetCompileArgValOp>()) {
-      senderCBIndex = argOp.getArgIndex();
-    }
-    if (senderCBIndex >= 0 && senderCBIndex != receiverInfo->cbIndex) {
-      auto srcCBType = llvm::dyn_cast<ttk::CBType>(cbConverted->getType());
-      auto recvCB = ttk::GetCompileArgValOp::create(
-          rewriter, loc, srcCBType,
-          static_cast<int32_t>(receiverInfo->cbIndex));
-      auto recvWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, recvCB);
-      dstBaseIdx =
-          arith::IndexCastOp::create(rewriter, loc, indexTy, recvWritePtr);
-    }
+    auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
+    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
   }
 
   // Destination coordinates for multicast - convert logical to virtual coords
@@ -204,16 +209,10 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto numDestsVal = arith::ConstantOp::create(
       rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
 
-  SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
-
   // For gather patterns (multiple sources to one destination), each source
   // writes to a different slot in the destination CB to avoid overwrites.
   // Slot indices are assigned by PipeGraph based on actual destination sharing.
   int64_t slotIdx = receiverInfo ? receiverInfo->gatherSlotIdx : 0;
-  int64_t cbNumTiles = 1;
-  for (int64_t d : cbBounds) {
-    cbNumTiles *= d;
-  }
   int64_t slotByteOffset = slotIdx * pageSizeBytes * cbNumTiles;
 
   // Transfer the entire block in a single NOC write. Tiles are contiguous in
@@ -270,7 +269,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
                                                    dstStartYVal, semAddr);
     ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr.getResult(),
-                                   incrVal, /*noc_id=*/Value());
+                                   incrVal, /*noc_id=*/Value(),
+                                   /*posted=*/BoolAttr());
   } else {
     // Multicast: signal all receivers by setting receiver_sem = VALID (1).
     auto recvSemIdx = arith::ConstantIndexOp::create(
@@ -293,6 +293,10 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
           rewriter, loc, recvSemAddr, recvSemMcastAddr.getResult(), numDestsVal,
           /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
     }
+  }
+
+  if (!skipSenderReserve) {
+    ttk::CBPushBackOp::create(rewriter, loc, senderRecvCB, numTilesI32);
   }
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
@@ -370,7 +374,8 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
       auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
       ttk::NocSemaphoreIncOp::create(rewriter, loc,
                                      senderSemNocAddr.getResult(), incrVal,
-                                     /*noc_id=*/Value());
+                                     /*noc_id=*/Value(),
+                                     /*posted=*/BoolAttr());
 
       // Wait for sender to set receiver_sem = VALID (1).
       auto validVal = arith::ConstantOp::create(rewriter, loc, i32Ty,
@@ -448,8 +453,14 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
+    // The original body's `ttl.yield` terminator is dropped — the new
+    // scf.if's own yield is what closes the region.
     Block &srcBlock = op.getBody().front();
     Block &thenBlock = ifOp.getThenRegion().front();
+    if (Operation *terminator = srcBlock.getTerminator();
+        terminator && isa<YieldOp>(terminator)) {
+      rewriter.eraseOp(terminator);
+    }
     rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
 
     rewriter.eraseOp(op);
@@ -504,12 +515,135 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
+    // The original body's `ttl.yield` terminator is dropped — the new
+    // scf.if's own yield is what closes the region.
     Block &srcBlock = op.getBody().front();
     Block &thenBlock = ifOp.getThenRegion().front();
+    if (Operation *terminator = srcBlock.getTerminator();
+        terminator && isa<YieldOp>(terminator)) {
+      rewriter.eraseOp(terminator);
+    }
     rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
 
     rewriter.eraseOp(op);
     return success();
+  }
+};
+
+// Collect every pipe type whose net id matches `netId`. Walks the parent
+// module so it works regardless of whether matching `ttl.create_pipe` ops
+// have already been replaced by their unrealized-conversion-cast stand-ins.
+static SmallVector<PipeType> collectPipesForNet(Operation *op, int64_t netId) {
+  SmallVector<PipeType> result;
+  using PipeKey =
+      std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
+  llvm::SmallSet<PipeKey, 4> seen;
+  op->getParentOfType<ModuleOp>().walk([&](Operation *o) {
+    for (Type t : o->getResultTypes()) {
+      auto pt = dyn_cast<PipeType>(t);
+      if (!pt || pt.getPipeNetId() != netId) {
+        continue;
+      }
+      PipeKey key{pt.getSrcX(),      pt.getSrcY(),    pt.getDstStartX(),
+                  pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
+      if (seen.insert(key).second) {
+        result.push_back(pt);
+      }
+    }
+  });
+  return result;
+}
+
+static Value buildSrcMatch(OpBuilder &b, Location loc, Value coreX, Value coreY,
+                           PipeType pt) {
+  auto sx = arith::ConstantIndexOp::create(b, loc, pt.getSrcX());
+  auto sy = arith::ConstantIndexOp::create(b, loc, pt.getSrcY());
+  auto eqX = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, coreX, sx);
+  auto eqY = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, coreY, sy);
+  return arith::AndIOp::create(b, loc, eqX, eqY);
+}
+
+static Value buildDstMatch(OpBuilder &b, Location loc, Value coreX, Value coreY,
+                           PipeType pt) {
+  int64_t minX = std::min(pt.getDstStartX(), pt.getDstEndX());
+  int64_t maxX = std::max(pt.getDstStartX(), pt.getDstEndX());
+  int64_t minY = std::min(pt.getDstStartY(), pt.getDstEndY());
+  int64_t maxY = std::max(pt.getDstStartY(), pt.getDstEndY());
+  auto cMinX = arith::ConstantIndexOp::create(b, loc, minX);
+  auto cMaxX = arith::ConstantIndexOp::create(b, loc, maxX);
+  auto cMinY = arith::ConstantIndexOp::create(b, loc, minY);
+  auto cMaxY = arith::ConstantIndexOp::create(b, loc, maxY);
+  auto geX =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreX, cMinX);
+  auto leX =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, coreX, cMaxX);
+  auto geY =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreY, cMinY);
+  auto leY =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, coreY, cMaxY);
+  auto inX = arith::AndIOp::create(b, loc, geX, leX);
+  auto inY = arith::AndIOp::create(b, loc, geY, leY);
+  return arith::AndIOp::create(b, loc, inX, inY);
+}
+
+// Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
+// named PipeNet. `roleBuilder` produces the i1 match for one pipe.
+template <typename Op>
+static LogicalResult lowerRolePredicate(
+    Op op, ConversionPatternRewriter &rewriter,
+    llvm::function_ref<Value(OpBuilder &, Location, Value, Value, PipeType)>
+        roleBuilder) {
+  auto loc = op.getLoc();
+  int64_t netId = op.getPipeNetId();
+  auto pipes = collectPipesForNet(op, netId);
+  if (pipes.empty()) {
+    return op->emitError() << op->getName() << " references unknown PipeNet "
+                           << netId;
+  }
+  auto coreX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  auto coreY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value result;
+  for (PipeType pt : pipes) {
+    Value match = roleBuilder(rewriter, loc, coreX, coreY, pt);
+    result = result ? Value(arith::OrIOp::create(rewriter, loc, result, match))
+                    : match;
+  }
+  rewriter.replaceOp(op, result);
+  return success();
+}
+
+struct IsSrcLowering : OpConversionPattern<IsSrcOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IsSrcOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerRolePredicate(op, rewriter, buildSrcMatch);
+  }
+};
+
+struct IsDstLowering : OpConversionPattern<IsDstOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IsDstOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerRolePredicate(op, rewriter, buildDstMatch);
+  }
+};
+
+struct IsActiveLowering : OpConversionPattern<IsActiveOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IsActiveOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerRolePredicate(
+        op, rewriter,
+        [](OpBuilder &b, Location loc, Value cx, Value cy, PipeType pt) {
+          Value src = buildSrcMatch(b, loc, cx, cy, pt);
+          Value dst = buildDstMatch(b, loc, cx, cy, pt);
+          return Value(arith::OrIOp::create(b, loc, src, dst));
+        });
   }
 };
 
@@ -519,13 +653,10 @@ struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
   LogicalResult
   matchAndRewrite(CreatePipeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // CreatePipeOp is a Pure op that just produces a pipe type value.
-    // The pipe type carries all the coordinate information as type parameters.
-    // At runtime, pipes don't need any materialization - the coordinates are
-    // baked into the generated code through if_src/if_dst lowering.
-    //
-    // Always replace with an unrealized cast to handle uses in nested regions
-    // (like if_src/if_dst bodies) that may be processed in a different order.
+    // CreatePipeOp produces a pipe type whose parameters carry the coordinate
+    // info; coordinates are encoded into generated code by if_src/if_dst.
+    // Replace with an unrealized cast so uses in nested regions (if_src /
+    // if_dst bodies) that may be processed in a different order still resolve.
     // The unrealized cast preserves the type for downstream patterns.
     auto cast = UnrealizedConversionCastOp::create(
         rewriter, op.getLoc(), op.getResult().getType(), ValueRange{});
@@ -538,8 +669,9 @@ struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
 
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,
                                   const TypeConverter &typeConverter) {
-  patterns.add<IfSrcLowering, IfDstLowering, CreatePipeLowering>(
-      typeConverter, patterns.getContext());
+  patterns.add<IfSrcLowering, IfDstLowering, IsSrcLowering, IsDstLowering,
+               IsActiveLowering, CreatePipeLowering>(typeConverter,
+                                                     patterns.getContext());
 }
 
 } // namespace mlir::tt::ttl

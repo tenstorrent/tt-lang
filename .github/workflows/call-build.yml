@@ -57,7 +57,7 @@ jobs:
 
         steps:
             - name: Checkout tt-lang
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   fetch-depth: 1
 
@@ -67,13 +67,20 @@ jobs:
             # Steps only needed when building from toolchain cache (uplift)
             - name: Setup Python 3.12
               if: inputs.build_toolchain
-              uses: actions/setup-python@v5
+              uses: actions/setup-python@v6
               with:
                   python-version: "3.12"
 
             - name: Install system dependencies
               if: inputs.build_toolchain
               run: |
+                  # Make apt resilient to slow/intermittent mirrors (launchpad.net).
+                  # Persisted in apt.conf.d so subsequent steps (e.g. llvm.sh) inherit it.
+                  sudo tee /etc/apt/apt.conf.d/99-retries-timeout > /dev/null <<'EOF'
+                  Acquire::Retries "5";
+                  Acquire::http::Timeout "240";
+                  Acquire::https::Timeout "240";
+                  EOF
                   sudo apt-get update
                   sudo apt-get install -y \
                       build-essential \
@@ -86,7 +93,7 @@ jobs:
             - name: Install Clang 18
               if: inputs.build_toolchain
               run: |
-                  wget https://apt.llvm.org/llvm.sh
+                  wget --tries=5 --timeout=120 --waitretry=10 https://apt.llvm.org/llvm.sh
                   chmod u+x llvm.sh
                   sudo ./llvm.sh 18
                   sudo apt-get install -y libc++-18-dev libc++abi-18-dev
@@ -157,7 +164,7 @@ jobs:
 
             - name: Upload documentation artifact
               if: inputs.build_docs
-              uses: actions/upload-pages-artifact@v4
+              uses: actions/upload-pages-artifact@v5
               with:
                   path: ./build/docs/sphinx/_build/html
 
@@ -166,5 +173,5 @@ jobs:
         secrets: inherit
         with:
             runs-on: n150
-            timeout: 60
+            timeout: 90
             docker_tag: ${{ inputs.docker_tag }}

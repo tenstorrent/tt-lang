@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0", "cmake", "nanobind", "wheel", "pip", "ninja"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ttl"
+name = "tt-lang"
 description = "Python Bindings and Package for TT-Lang Compiler Project"
 requires-python = ">=3.11"
 keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]
 license = "Apache-2.0"
-license-files = ["../LICENSE*"]
+license-files = ["LICENSE*"]
 authors = [
   {name = "Tenstorrent AI ULC"}
 ]
@@ -20,7 +20,6 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: Apache Software License",
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
@@ -31,18 +30,28 @@ classifiers = [
   "Topic :: Software Development :: Code Generators"
 ]
 
-# We will dynamically provide `version` and `dependencies` in setup.py
-dynamic = ["version", "dependencies", "readme"]
+dynamic = ["version", "readme", "dependencies"]
+
+# `dependencies` is dynamic: setup.py reads requirements-runtime.txt and
+# appends a platform-conditional `ttnn` requirement derived from
+# third-party/tt-metal-version, so the ttnn version only ever lives in one
+# place. ttnn installs automatically on Linux x86_64 / aarch64 (where ttnn
+# publishes wheels); on macOS / Windows the marker skips it and users
+# wanting a sim-only install should `pip install tt-lang-sim` instead (that
+# wheel bundles `ttlang-sim` and `ttlang-sim-stats`; there is no separate stats
+# package).
+
+[project.scripts]
+ttlang-sim = "ttl.sim.ttlang_sim:main"
+ttlang-sim-stats = "sim_stats.__main__:main"
+tt-lang-setup = "ttl._setup.cli:main"
+tt-lang-setup-host = "ttl._setup.host:main"
+tt-lang-setup-tutorials = "ttl._setup.tutorials:main"
 
 [project.urls]
 Homepage = "https://github.com/tenstorrent/tt-lang"
 Repository = "https://github.com/tenstorrent/tt-lang"
 Issues = "https://github.com/tenstorrent/tt-lang/issues"
-
-[tool.cibuildwheel]
-build = "cp311-manylinux_x86_64*"
-skip = "*-musllinux_*"
-build-verbosity = 2
 
 [tool.pyright]
 typeCheckingMode = "strict"
@@ -60,6 +69,7 @@ reportUnnecessaryIsInstance = "warning"
 
 [tool.pytest.ini_options]
 markers = [
+    "requires_ttnn: marks simulator tests that compare against real ttnn goldens or otherwise require ttnn",
     "matmul_tutorial_ttnn: marks matmul-tutorial tests requiring real ttnn, steps 0 and 7 (deselected by default; enable with --run-matmul-tutorial-ttnn)",
     "matmul_tutorial_no_ttnn: marks matmul-tutorial simulator tests, steps 2-6 (deselected by default; enable with --run-matmul-tutorial-no-ttnn)",
 ]

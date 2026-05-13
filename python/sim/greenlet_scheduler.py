@@ -5,7 +5,7 @@
 Greenlet-based cooperative scheduler for multi-core simulation.
 
 This module provides a cooperative scheduler using greenlets instead of
-yield transformations. Each thread (compute/DM) runs in its own greenlet,
+yield transformations. Each compute or datamovement kernel runs in its own greenlet,
 and blocking operations (wait/reserve) switch back to the scheduler.
 """
 
@@ -43,11 +43,11 @@ def get_scheduler_algorithm() -> str:
 
 class GreenletScheduler:
     """
-    Cooperative scheduler using greenlets for thread execution.
+    Cooperative scheduler using greenlets for per-core kernel execution.
 
-    The scheduler maintains a collection of greenlets (threads) and runs them
-    in round-robin fashion. When a thread blocks (e.g., on wait/reserve),
-    it switches back to the scheduler, which tries other threads.
+    The scheduler maintains a collection of greenlets (one per registered kernel)
+    and runs them in round-robin fashion. When a kernel blocks (e.g., on wait/reserve),
+    it switches back to the scheduler, which tries other kernels.
     """
 
     def __init__(self) -> None:
@@ -76,12 +76,12 @@ class GreenletScheduler:
         func: Callable[[], None],
         thread_type: ThreadType,
     ) -> None:
-        """Add a thread to the scheduler.
+        """Add a scheduled kernel (greenlet) to the scheduler.
 
         Args:
-            name: Thread identifier (e.g., "core0-compute")
-            func: Thread function to execute
-            thread_type: Thread type (COMPUTE or DM)
+            name: Kernel identifier (e.g., "core0-compute")
+            func: Kernel entry function to execute
+            thread_type: Kernel role (COMPUTE or DM)
         """
 
         # Create greenlet that wraps the function
@@ -101,7 +101,7 @@ class GreenletScheduler:
         self._has_made_progress[name] = False
 
     def block_current_thread(self, blocking_obj: Any, operation: str) -> None:
-        """Block the current thread on an operation.
+        """Block the current scheduled kernel on an operation.
 
         This is called by wait()/reserve() operations to yield control back
         to the scheduler.
@@ -112,7 +112,8 @@ class GreenletScheduler:
         """
         if self._current_name is None:
             raise RuntimeError(
-                "block_current_thread called outside of scheduler context"
+                "block_current_thread called outside of scheduler context "
+                "(no kernel is currently scheduled)"
             )
 
         # Capture location where blocking occurred
@@ -140,10 +141,10 @@ class GreenletScheduler:
         trace("kernel_unblock")
 
     def _mark_completed(self, name: str) -> None:
-        """Mark a thread as completed and remove from active set.
+        """Mark a kernel as completed and remove from active set.
 
         Args:
-            name: Thread identifier
+            name: Kernel identifier
         """
         if name in self._active:
             del self._active[name]
@@ -153,31 +154,31 @@ class GreenletScheduler:
             del self._last_run[name]
 
     def mark_thread_progress(self) -> None:
-        """Mark that the current thread has made progress.
+        """Mark that the current scheduled kernel has made progress.
 
-        This is called by block_if_needed when a thread successfully proceeds
+        This is called by block_if_needed when a kernel successfully proceeds
         past a blocking check without actually blocking.
 
         Raises:
-            RuntimeError: If no current thread is set or thread not found
+            RuntimeError: If no kernel is scheduled or the name is missing from progress tracking
         """
         if self._current_name is None:
             raise RuntimeError(
-                "mark_thread_progress called but no current thread is set. "
+                "mark_thread_progress called but no kernel is currently scheduled. "
                 "This indicates a bug in the scheduler."
             )
         if self._current_name not in self._has_made_progress:
             raise RuntimeError(
-                f"Thread {self._current_name} not found in progress tracking. "
+                f"Kernel {self._current_name!r} not found in progress tracking. "
                 "This indicates a bug in the scheduler."
             )
         self._has_made_progress[self._current_name] = True
 
     def get_current_thread_name(self) -> Optional[str]:
-        """Get the name of the currently executing thread.
+        """Get the name of the currently executing scheduled kernel.
 
         Returns:
-            Current thread name, or None if no thread is executing
+            Kernel name (e.g., core0-dm), or None if none is executing
         """
         return self._current_name
 
@@ -192,10 +193,10 @@ class GreenletScheduler:
         exception: Exception,
         include_traceback: bool = False,
     ) -> None:
-        """Format thread error with source location and re-raise.
+        """Format kernel runtime error with source location and re-raise.
 
         Args:
-            name: Thread name
+            name: Scheduled kernel name (e.g., core0-compute)
             exception: The exception that was raised
             include_traceback: Whether to include full traceback in fallback
 
@@ -233,7 +234,7 @@ class GreenletScheduler:
             source_col or 1,
         )
 
-        # Re-raise with thread name included
+        # Re-raise with kernel name included
         error_msg = f"{name}: {type(exception).__name__}: {exception}"
         raise RuntimeError(error_msg) from exception
 
@@ -254,7 +255,7 @@ class GreenletScheduler:
             # All threads should start unblocked in init phase
             if blocking_obj is not None:
                 raise RuntimeError(
-                    f"Thread {name} is already blocked at init phase start. "
+                    f"Kernel {name!r} is already blocked at init phase start. "
                     "This indicates a bug in the scheduler."
                 )
 
@@ -502,7 +503,7 @@ def set_scheduler(scheduler: Optional[GreenletScheduler]) -> None:
 
 
 def get_current_core_id() -> str:
-    """Get the current core ID from the active thread.
+    """Get the current core ID from the active scheduled kernel.
 
     Returns:
         Core ID like "core0".
@@ -516,13 +517,13 @@ def get_current_core_id() -> str:
 
 
 def block_if_needed(obj: Any, operation: str) -> None:
-    """Block current thread if operation cannot proceed, or yield for fair scheduling.
+    """Block the current kernel if the operation cannot proceed, or yield for fair scheduling.
 
     For greedy scheduler:
     - Only blocks if the operation cannot proceed (can_{operation}() returns False)
 
     For fair scheduler:
-    - Always yields at synchronization points to give other threads a chance
+    - Always yields at synchronization points to give other kernels a chance
     - Checks if operation can proceed and blocks if it can't
     - If it can proceed, yields anyway but will resume immediately when scheduled
 

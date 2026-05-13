@@ -16,6 +16,9 @@ from typing import Any, Optional, Tuple
 def lazy_import_diagnostics() -> Any:
     """Lazy import of ttl.diagnostics module to avoid circular dependency.
 
+    Uses file-based import rather than ``from ttl import diagnostics`` because
+    ttlang-sim shadows the ``ttl`` module with a simulator shim.
+
     Returns:
         The ttl.diagnostics module
 
@@ -26,9 +29,10 @@ def lazy_import_diagnostics() -> Any:
     import sys
     from pathlib import Path
 
-    # Direct import of diagnostics module without going through ttl package
-    # This avoids importing the full compiler infrastructure
-    diagnostics_path = Path(__file__).parent.parent / "ttl" / "diagnostics.py"
+    # Resolve the real path of this file (follows symlinks) to find the
+    # source tree, then locate diagnostics.py relative to it.
+    sim_dir = Path(__file__).resolve().parent  # python/sim/
+    diagnostics_path = sim_dir.parent / "ttl" / "diagnostics.py"
     spec = importlib.util.spec_from_file_location("ttl.diagnostics", diagnostics_path)
     if spec and spec.loader:
         diagnostics = importlib.util.module_from_spec(spec)
@@ -47,7 +51,11 @@ def is_simulator_frame(filename: str) -> bool:
     Returns:
         True if this is a simulator internal frame that should be skipped
     """
-    return "/python/sim/" in filename or "/greenlet/" in filename
+    return (
+        "/python/sim/" in filename
+        or "/ttl/sim/" in filename
+        or "/greenlet/" in filename
+    )
 
 
 def find_user_code_location() -> Tuple[str, int]:
@@ -123,13 +131,13 @@ def format_core_ranges(core_numbers: list[int]) -> str:
 
 
 def extract_core_id_from_thread_name(thread_name: Optional[str]) -> str:
-    """Extract core ID from a thread name.
+    """Extract core ID from a scheduled kernel name.
 
-    Thread names follow the pattern "coreN-type" where N is the core number
-    and type is the thread type (e.g., "dm", "compute").
+    Names follow the pattern "coreN-type" where N is the core number
+    and type is the kernel role (e.g., "dm", "compute").
 
     Args:
-        thread_name: Thread name like "core0-dm" or "core0-compute"
+        thread_name: Scheduled kernel name like "core0-dm" or "core0-compute"
 
     Returns:
         Core ID like "core0", or "unknown" if extraction fails
@@ -145,7 +153,7 @@ def extract_core_id_from_thread_name(thread_name: Optional[str]) -> str:
     if not thread_name:
         return "unknown"
 
-    # Extract core ID from thread name (e.g., "core0-dm" -> "core0")
+    # Extract core ID from scheduled kernel name (e.g., "core0-dm" -> "core0")
     if "-" in thread_name:
         return thread_name.split("-")[0]  # Take the part before first dash
 
@@ -198,7 +206,7 @@ def print_diagnostic_error(
     """Print an error with diagnostic formatting.
 
     Args:
-        name: Name/label for the error context (e.g., thread name)
+        name: Name/label for the error context (e.g., scheduled kernel name or "deadlock")
         message: Error message to display
         source_file: Path to source file where error occurred
         source_line: Line number in source file
@@ -212,7 +220,10 @@ def print_diagnostic_error(
         line=source_line,
         col=source_col,
     )
-    print(f"\n❌ Error in {name}:")
+    if name == "deadlock":
+        print("\n❌ Error during deadlock detection:")
+    else:
+        print(f"\n❌ Error in kernel {name}:")
     print(compile_error.format())
     print("-" * 50)
 

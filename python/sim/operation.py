@@ -51,7 +51,8 @@ def operation(
     unrecognised keyword argument raises TypeError to catch user errors early.
 
     Args:
-        grid: Grid specification. If 'auto', uses the default grid (configurable via set_default_grid())
+        grid: Grid specification. If 'auto' or 'full', uses the default grid
+            (configurable via set_default_grid()).
         fp32_dest_acc_en: Ignored; accepted for compiler compatibility.
         dst_full_sync_en: Ignored; accepted for compiler compatibility.
 
@@ -72,12 +73,14 @@ def operation(
         )
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        # Create a new function with grid in its closure
-        # This is achieved by modifying the function's globals to include this variable
-
-        # Set grid to default if 'auto'
+        # Set grid to default if 'auto' or 'full'
         actual_grid: Shape = cast(
-            Shape, get_context().config.default_auto_grid if grid == "auto" else grid
+            Shape,
+            (
+                get_context().config.default_auto_grid
+                if grid in ("auto", "full")
+                else grid
+            ),
         )
 
         # Create new globals dict that includes grid
@@ -97,6 +100,7 @@ def operation(
             # Import here to avoid circular dependency
             from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
+            from .pipe import build_pipenets, discover_pipe_nets_from_closures
 
             # Clear thread registry and resource counters before kernel execution
             clear_thread_registry()
@@ -110,10 +114,10 @@ def operation(
             # Get registered threads
             threads = get_registered_threads()
 
-            # All kernels must define exactly 3 threads: compute, dm0, dm1
+            # All device kernels must register compute, dm0, and dm1.
             if len(threads) != 3:
                 raise ValueError(
-                    f"Kernel must define exactly 3 threads (compute, dm0, dm1), got {len(threads)}"
+                    f"Kernel must define exactly 3 kernels (compute, dm0, dm1), got {len(threads)}"
                 )
 
             # Sort threads by type to ensure consistent ordering regardless of definition order
@@ -129,15 +133,21 @@ def operation(
 
             if len(compute_threads) != 1:
                 raise ValueError(
-                    f"Kernel must define exactly 1 compute thread, got {len(compute_threads)}"
+                    f"Kernel must define exactly 1 compute kernel, got {len(compute_threads)}"
                 )
             if len(dm_threads) != 2:
                 raise ValueError(
-                    f"Kernel must define exactly 2 datamovement threads, got {len(dm_threads)}"
+                    f"Kernel must define exactly 2 datamovement kernels, got {len(dm_threads)}"
                 )
 
             # Arrange in expected order: compute, dm0, dm1
             ordered_threads = [compute_threads[0], dm_threads[0], dm_threads[1]]
+
+            # Build the operation-level PipeNet graph for validation.
+            thread_funcs = [getattr(t, "__wrapped__", None) for t in ordered_threads]
+            pipe_nets = discover_pipe_nets_from_closures(modified_func, *thread_funcs)
+            pipenets = build_pipenets(pipe_nets)
+            pipenets.validate()
 
             # Execute the program with grid parameter
             program = Program(*ordered_threads, grid=actual_grid)

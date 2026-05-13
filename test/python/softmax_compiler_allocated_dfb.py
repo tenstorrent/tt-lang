@@ -77,21 +77,21 @@ def softmax_kernel(inp, scaler, out):
 # reduce_max -> pack to intermediate DFB, push, wait for bcast.
 # CHECK-CPP: reduce_tile<PoolType::MAX
 # CHECK-CPP: pack_tile
-# CHECK-CPP: cb_push_back
-# CHECK-CPP: cb_wait_front
+# CHECK-CPP: .push_back
+# CHECK-CPP: .wait_front
 
 # bcast(max) + sub + exp -> pack to intermediate DFB, push, wait for reduce_sum.
 # CHECK-CPP: unary_bcast
 # CHECK-CPP: exp_tile
 # CHECK-CPP: pack_tile
-# CHECK-CPP: cb_push_back
-# CHECK-CPP: cb_wait_front
+# CHECK-CPP: .push_back
+# CHECK-CPP: .wait_front
 
 # reduce_sum -> pack to intermediate DFB, push, wait for final bcast.
 # CHECK-CPP: reduce_tile<PoolType::SUM
 # CHECK-CPP: pack_tile
-# CHECK-CPP: cb_push_back
-# CHECK-CPP: cb_wait_front
+# CHECK-CPP: .push_back
+# CHECK-CPP: .wait_front
 
 # bcast(sum) + recip + mul -> pack to output.
 # CHECK-CPP: unary_bcast

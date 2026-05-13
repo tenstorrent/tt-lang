@@ -9,7 +9,12 @@ without requiring any code changes to the kernel files.
 
 Usage:
     ttlang-sim examples/eltwise_add.py
-    ttlang-sim examples/single_node_matmul.py --show-stats --grid 4,4
+    ttlang-sim examples/single_node_matmul.py --trace /tmp/matmul.jsonl --grid 4,4
+    ttlang-sim-stats /tmp/matmul.jsonl
+
+The Python script must be the first argument (before any simulator options).
+``ttlang-sim --help``, ``ttlang-sim -h``, and ``ttlang-sim --version`` work with
+no script.
 """
 
 import sys
@@ -105,14 +110,8 @@ def _execute_code(
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else int(bool(e.code))
     except RuntimeError as e:
-        # RuntimeError with __cause__ is from greenlet scheduler (including deadlocks)
+        # Inner failure was already reported (e.g. print_diagnostic_error); skip traceback.print_exception to avoid repeating simulator frames.
         if e.__cause__ is not None:
-            if error_output:
-                traceback.print_exception(
-                    type(e), e, e.__traceback__, file=error_output
-                )
-            else:
-                traceback.print_exception(type(e), e, e.__traceback__)
             return 1
         else:
             if error_output:
@@ -122,7 +121,7 @@ def _execute_code(
                 )
             else:
                 print(f"\nError executing {script_path.name}:", file=sys.stderr)
-                _print_filtered_traceback(e, script_path)
+                _print_filtered_traceback(e)
             return 1
     except Exception as e:
         if error_output:
@@ -153,14 +152,16 @@ def run_file(filepath: str, argv: list[str]) -> None:
         sys.exit(exit_code)
 
 
-def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
+def _print_filtered_traceback(exc: Exception) -> None:
     """Print traceback filtering out internal simulator frames.
 
-    Only shows frames from user code, omitting internal simulator implementation
-    details from python/sim/*.
+    Only shows frames from user code, omitting simulator implementation paths under
+    ``python/sim/`` (same rule as ``diagnostics.is_simulator_frame``).
     """
     import traceback
     from traceback import FrameSummary
+
+    from .diagnostics import is_simulator_frame
 
     # Extract traceback entries
     tb_entries = traceback.extract_tb(exc.__traceback__)
@@ -168,17 +169,8 @@ def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
     # Filter to only user code frames
     user_frames: list[FrameSummary] = []
     for frame in tb_entries:
-        # Skip internal simulator frames
-        if any(
-            pattern in frame.filename
-            for pattern in [
-                "/python/sim/ttlang_sim.py",
-                "/python/sim/kernel.py",
-                "/python/sim/program.py",
-                "/python/sim/greenlet_scheduler.py",
-                "<frozen runpy>",
-            ]
-        ):
+        fn = frame.filename
+        if is_simulator_frame(fn) or fn.startswith("<frozen "):
             continue
         user_frames.append(frame)
 
@@ -229,26 +221,24 @@ def _write_jsonl_trace(path: Path, events: list) -> None:
 
 
 def main() -> None:
+    argv = sys.argv[1:]
+
     parser = argparse.ArgumentParser(
         prog="ttlang-sim",
-        description="Run tt-lang kernels on the simulator backend",
+        usage=(
+            "%(prog)s [-h] [--version]\n       "
+            "%(prog)s SCRIPT.py [options] [-- SCRIPT_ARGS ...]"
+        ),
+        description=(
+            "Run tt-lang kernels on the simulator backend. "
+            "SCRIPT.py must be the first argument (before any options)."
+        ),
         epilog="Examples:\n"
         "  ttlang-sim examples/eltwise_add.py\n"
         "  ttlang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
         "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"ttlang-sim {_get_version()}",
-    )
-
-    parser.add_argument(
-        "target",
-        nargs="?",
-        help="Python file (.py) to run",
+        add_help=False,
     )
 
     parser.add_argument(
@@ -331,12 +321,30 @@ def main() -> None:
         ),
     )
 
-    args, script_args = parser.parse_known_intermixed_args()
-    args.script_args = script_args
-
-    if not args.target:
+    if not argv:
         parser.print_help()
         sys.exit(1)
+
+    first = argv[0]
+    if first in ("-h", "--help"):
+        parser.print_help()
+        sys.exit(0)
+    if first == "--version":
+        print(f"ttlang-sim {_get_version()}")
+        sys.exit(0)
+    if first.startswith("-"):
+        print(
+            "ttlang-sim: error: the Python script (.py) must be the first argument "
+            "(before any simulator options).\n"
+            "Example: ttlang-sim examples/eltwise_add.py --grid 4,4\n"
+            "For usage without a script: ttlang-sim --help",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    args, script_args = parser.parse_known_args(argv[1:])
+    args.target = first
+    args.script_args = script_args
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
