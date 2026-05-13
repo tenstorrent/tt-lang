@@ -47,44 +47,33 @@ def get_min_remaining_l1_for_device(device):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
     Accounts for reduced ``worker_l1_size`` and L1 tensor allocations.
-    For each sub-device in the mesh, queries ``cb_limit`` (the hardware CB
-    budget) and subtracts the maximum per-core L1 buffer usage.
+    Queries ``cb_limit`` (the hardware CB budget) and subtracts the maximum
+    per-core L1 buffer usage reported by the device.
+
+    ``get_buffer_pages`` is called on the original device rather than on
+    per-coordinate submeshes because ``create_submesh`` produces a new
+    device view that does not inherit buffer tracking from the parent.
+    For mesh devices this reports allocations for the first physical
+    device, which is representative because tt-lang distributes tensors
+    uniformly across the mesh. if it becomes needed to track individual 
+    physical devices in the submesh, ttnn.reports.get_buffer_pages will 
+    need to be changed to reflect allocations on the parent mesh.
     """
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
-    rows, cols = device.shape
-    if rows == 0 or cols == 0:
-        raise RuntimeError("device shape not found")
-    device_min_remaining_bytes = -1
-    for r in range(rows):
-        for c in range(cols):
-            single_device = device.create_submesh(
-                ttnn.MeshShape(1, 1),
-                ttnn.MeshCoordinate(r, c),
-            )
-            try:
-                info = ttnn._ttnn.reports.get_device_info(single_device)
-                budget_bytes = info.cb_limit
 
-                bytes_per_core: dict[tuple[int, int], int] = {}
-                for page in ttnn._ttnn.reports.get_buffer_pages(single_device):
-                    if page.buffer_type == ttnn.BufferType.L1:
-                        key = (page.core_y, page.core_x)
-                        bytes_per_core[key] = (
-                            bytes_per_core.get(key, 0) + page.page_size
-                        )
-            finally:
-                ttnn.close_mesh_device(single_device)
+    info = ttnn._ttnn.reports.get_device_info(device)
+    budget_bytes = info.cb_limit
 
-            max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
-            remaining = max(0, budget_bytes - max_core_bytes)
-            if (
-                device_min_remaining_bytes == -1
-                or remaining < device_min_remaining_bytes
-            ):
-                device_min_remaining_bytes = remaining
-    return device_min_remaining_bytes
+    bytes_per_core: dict[tuple[int, int], int] = {}
+    for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if page.buffer_type == ttnn.BufferType.L1:
+            key = (page.core_y, page.core_x)
+            bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
+
+    max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
+    return max(0, budget_bytes - max_core_bytes)
 
 
 @dataclass
