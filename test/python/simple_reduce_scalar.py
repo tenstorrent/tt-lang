@@ -29,12 +29,8 @@ def reduce_scalar_kernel(inp, scalar_out, col_out, row_out):
     scalar_out_dfb = ttl.make_dataflow_buffer_like(
         scalar_out, shape=(1, 1), block_count=2
     )
-    col_out_dfb = ttl.make_dataflow_buffer_like(
-        col_out, shape=(1, 2), block_count=2
-    )
-    row_out_dfb = ttl.make_dataflow_buffer_like(
-        row_out, shape=(2, 1), block_count=2
-    )
+    col_out_dfb = ttl.make_dataflow_buffer_like(col_out, shape=(1, 2), block_count=2)
+    row_out_dfb = ttl.make_dataflow_buffer_like(row_out, shape=(2, 1), block_count=2)
 
     @ttl.compute()
     def reduce_compute():
@@ -46,9 +42,7 @@ def reduce_scalar_kernel(inp, scalar_out, col_out, row_out):
             col_out_dfb.reserve() as col_out_block,
             row_out_dfb.reserve() as row_out_block,
         ):
-            scalar_out_block.store(
-                ttl.math.reduce_sum(scalar_block, 0.5, dims=[0, 1])
-            )
+            scalar_out_block.store(ttl.math.reduce_sum(scalar_block, 0.5, dims=[0, 1]))
             col_out_block.store(ttl.math.reduce_sum(col_block, 1.25, dims=[0]))
             row_out_block.store(ttl.math.reduce_sum(row_block, -0.25, dims=[1]))
 

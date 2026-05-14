@@ -588,7 +588,10 @@ def _materialize_reduce_scaler(input_type: RankedTensorType, scaler) -> TensorBl
 
 
 def _reduce_impl(
-    input: TensorBlock, scaler: Union[TensorBlock, int, float], dims: List[int], reduce_type: int
+    input: TensorBlock,
+    scaler: Union[TensorBlock, int, float],
+    dims: List[int],
+    reduce_type: int,
 ) -> TensorBlock:
     """Shared implementation for reduce_sum and reduce_max."""
     from ttl.ir import IntegerAttr, IntegerType, DenseI64ArrayAttr
