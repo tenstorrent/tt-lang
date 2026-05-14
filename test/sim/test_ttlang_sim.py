@@ -736,6 +736,8 @@ if __name__ == "__main__":
         try:
             return subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", str(script), *extra_args],
+                cwd=Path(__file__).parent.parent.parent,
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
