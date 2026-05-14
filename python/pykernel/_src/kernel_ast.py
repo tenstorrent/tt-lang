@@ -98,6 +98,15 @@ class _SelfRebindingLoopVarCollector(_ScopedCollector):
         if node.value is not None:
             self._add_if_self_rebinding(node.target, node.value)
 
+    def visit_AugAssign(self, node):
+        # `target op= value` reads `target` implicitly, so it is always a
+        # self-rebinding of `target`.
+        for name in _extract_target_names(node.target):
+            if name in self._seen:
+                continue
+            self.names.append(name)
+            self._seen.add(name)
+
 
 class _AssignedVariableCollector(_ScopedCollector):
     """Names assigned anywhere inside the visited body. Order of first
@@ -119,6 +128,9 @@ class _AssignedVariableCollector(_ScopedCollector):
             self._add_target(node.targets[0])
 
     def visit_AnnAssign(self, node):
+        self._add_target(node.target)
+
+    def visit_AugAssign(self, node):
         self._add_target(node.target)
 
 

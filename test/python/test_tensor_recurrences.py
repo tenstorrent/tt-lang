@@ -2,7 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression for #527: self-rebound tensor values must leave scf.for loops."""
+"""Tensor recurrences carried through control flow.
+
+Covers self-rebinding (`acc = acc + x`), `+=` rewrite, tuple targets,
+multi-accumulator and multi-tile recurrences, zero-trip loops, and
+conditional rebinds. The core regression is #527 (`acc = acc + recv.wait()`
+silently dropped its loop-carried value); the rest exercise the
+`ttl-materialize-loop-state` and L1-acc-multi-CB paths added alongside
+the fix.
+"""
 
 
 import pytest
@@ -107,6 +115,18 @@ _DTYPE_TOL = {
     torch.bfloat16: dict(rtol=5e-2, atol=1.0),
     torch.float32: dict(rtol=1e-3, atol=1e-3),
 }
+
+
+def _run_io_kernel(kernel, in_tensors, out_zeros, expected_list, dtype, device):
+    """Common test runner: move inputs and outputs to device, invoke the
+    kernel, then assert each output tensor matches its expected value."""
+    in_devs = [to_dram(t, device) for t in in_tensors]
+    out_devs = [to_dram(t, device) for t in out_zeros]
+    kernel(*in_devs, *out_devs)
+    ttnn.synchronize_device(device)
+    for out_dev, expected in zip(out_devs, expected_list):
+        result = ttnn.to_torch(out_dev).float()
+        assert_allclose(result, expected.float(), **_DTYPE_TOL[dtype])
 
 
 @pytest.mark.requires_device
@@ -357,6 +377,245 @@ def test_multi_tile_block_recurrence(device, dtype):
 
     result = ttnn.to_torch(out_dev).float()
     assert_allclose(result, expected.float(), **_DTYPE_TOL[dtype])
+
+
+def _make_aug_assign_non_block_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(a_seed, delta, out):
+        a_cb = ttl.make_dataflow_buffer_like(a_seed, shape=(1, 1), block_count=2)
+        # Need N_ITERS + 1 delta tiles: one for the pre-loop seed, then one
+        # per loop iteration.
+        delta_cb = ttl.make_dataflow_buffer_like(
+            delta, shape=(1, 1), block_count=N_ITERS + 1
+        )
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with a_cb.wait() as a, delta_cb.wait() as d_init:
+                # `acc` is the result of ttl.add, not an attach -> not a
+                # block. `acc += d` inside the loop must therefore rewrite
+                # to `acc = acc + d` (self-rebinding), not invoke __iadd__.
+                acc = a + d_init
+                for _ in range(N_ITERS):
+                    with delta_cb.wait() as d:
+                        acc += d
+                with out_cb.reserve() as o:
+                    o.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with a_cb.reserve() as blk:
+                ttl.copy(a_seed[0:1, 0:1], blk).wait()
+            for _ in range(N_ITERS + 1):
+                with delta_cb.reserve() as blk:
+                    ttl.copy(delta[0:1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_aug_assign_on_non_block_rewrites_to_self_rebind(device, dtype):
+    """`acc += d` on a plain tensor (not a reserve block) is rewritten by
+    the AST visitor to `acc = acc + d` so it lowers through
+    ttl-materialize-loop-state."""
+    kernel = _make_aug_assign_non_block_kernel()
+
+    a_seed = torch.full((TILE, TILE), 1.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 2.0, dtype=dtype)
+    out = torch.zeros((TILE, TILE), dtype=dtype)
+
+    # acc starts at a + delta = 3, then N_ITERS more deltas added.
+    expected = a_seed.float() + (N_ITERS + 1) * delta.float()
+
+    a_dev = to_dram(a_seed, device)
+    delta_dev = to_dram(delta, device)
+    out_dev = to_dram(out, device)
+
+    kernel(a_dev, delta_dev, out_dev)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out_dev).float()
+    assert_allclose(result, expected.float(), **_DTYPE_TOL[dtype])
+
+
+def _make_multi_target_aug_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(a_seed, b_seed, delta, out_a, out_b):
+        a_cb = ttl.make_dataflow_buffer_like(a_seed, shape=(1, 1), block_count=2)
+        b_cb = ttl.make_dataflow_buffer_like(b_seed, shape=(1, 1), block_count=2)
+        delta_cb = ttl.make_dataflow_buffer_like(
+            delta, shape=(1, 1), block_count=N_ITERS + 1
+        )
+        out_a_cb = ttl.make_dataflow_buffer_like(out_a, shape=(1, 1), block_count=2)
+        out_b_cb = ttl.make_dataflow_buffer_like(out_b, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with a_cb.wait() as a, b_cb.wait() as b, delta_cb.wait() as d0:
+                acc1 = a + d0
+                acc2 = b + d0
+                for _ in range(N_ITERS):
+                    with delta_cb.wait() as d:
+                        acc1 += d
+                        acc2 += d
+                with out_a_cb.reserve() as o:
+                    o.store(acc1)
+                with out_b_cb.reserve() as o:
+                    o.store(acc2)
+
+        @ttl.datamovement()
+        def reader():
+            with a_cb.reserve() as blk:
+                ttl.copy(a_seed[0:1, 0:1], blk).wait()
+            with b_cb.reserve() as blk:
+                ttl.copy(b_seed[0:1, 0:1], blk).wait()
+            for _ in range(N_ITERS + 1):
+                with delta_cb.reserve() as blk:
+                    ttl.copy(delta[0:1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_a_cb.wait() as blk:
+                ttl.copy(blk, out_a[0:1, 0:1]).wait()
+            with out_b_cb.wait() as blk:
+                ttl.copy(blk, out_b[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_aug_assign_multi_target_in_loop(device, dtype):
+    """Two plain-tensor accumulators each rebound with `+=` in the same
+    loop: exercises the AugAssign rewrite alongside multi-iter_arg
+    emission and the multi-CB L1-acc path."""
+    a_seed = torch.full((TILE, TILE), 1.0, dtype=dtype)
+    b_seed = torch.full((TILE, TILE), 10.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 1.0, dtype=dtype)
+    expected_a = a_seed.float() + (N_ITERS + 1) * delta.float()
+    expected_b = b_seed.float() + (N_ITERS + 1) * delta.float()
+    _run_io_kernel(
+        _make_multi_target_aug_kernel(),
+        in_tensors=[a_seed, b_seed, delta],
+        out_zeros=[
+            torch.zeros((TILE, TILE), dtype=dtype),
+            torch.zeros((TILE, TILE), dtype=dtype),
+        ],
+        expected_list=[expected_a, expected_b],
+        dtype=dtype,
+        device=device,
+    )
+
+
+def _make_aug_outside_loop_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(a_seed, delta, out):
+        a_cb = ttl.make_dataflow_buffer_like(a_seed, shape=(1, 1), block_count=2)
+        delta_cb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with a_cb.wait() as a, delta_cb.wait() as d:
+                acc = a + d
+                # `+=` outside any loop: the rewrite produces a plain
+                # `acc = acc + d` with no recurrence machinery involved.
+                acc += d
+                with out_cb.reserve() as o:
+                    o.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with a_cb.reserve() as blk:
+                ttl.copy(a_seed[0:1, 0:1], blk).wait()
+            with delta_cb.reserve() as blk:
+                ttl.copy(delta[0:1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_aug_assign_outside_loop(device, dtype):
+    """`acc += d` outside any loop must lower to a single ttl.add, not
+    accidentally synthesize a scf.for."""
+    a_seed = torch.full((TILE, TILE), 1.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 2.0, dtype=dtype)
+    expected = a_seed.float() + 2 * delta.float()
+    _run_io_kernel(
+        _make_aug_outside_loop_kernel(),
+        in_tensors=[a_seed, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+    )
+
+
+def _make_sub_aug_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(a_seed, delta, out):
+        a_cb = ttl.make_dataflow_buffer_like(a_seed, shape=(1, 1), block_count=2)
+        delta_cb = ttl.make_dataflow_buffer_like(
+            delta, shape=(1, 1), block_count=N_ITERS + 1
+        )
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with a_cb.wait() as a, delta_cb.wait() as d_init:
+                acc = a - d_init
+                for _ in range(N_ITERS):
+                    with delta_cb.wait() as d:
+                        acc -= d
+                with out_cb.reserve() as o:
+                    o.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with a_cb.reserve() as blk:
+                ttl.copy(a_seed[0:1, 0:1], blk).wait()
+            for _ in range(N_ITERS + 1):
+                with delta_cb.reserve() as blk:
+                    ttl.copy(delta[0:1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_aug_assign_sub_op(device, dtype):
+    """`-=` on a plain tensor is rewritten the same way as `+=`; it lowers
+    through ttl.sub without the L1-acc fast path (which is Add-only).
+    Final value: a - d_init - N_ITERS * d."""
+    a_seed = torch.full((TILE, TILE), 100.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 2.0, dtype=dtype)
+    expected = a_seed.float() - delta.float() - N_ITERS * delta.float()
+    _run_io_kernel(
+        _make_sub_aug_kernel(),
+        in_tensors=[a_seed, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+    )
 
 
 def _make_three_acc_multi_tile_kernel():

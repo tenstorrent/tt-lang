@@ -32,13 +32,23 @@ The compiler surface covers three accumulation sources:
 
 - User-written `out_blk += ...` loops lower to L1 accumulation. The
   `TTKernelInsertL1Accumulation` pass brackets each annotated loop
-  group with `pack_reconfig_l1_acc` calls.
+  group with `pack_reconfig_l1_acc` calls. `+=` on a plain (non-block)
+  tensor variable is rewritten by `visit_AugAssign` to `acc = acc + x`
+  and follows the self-rebind path below.
+
+- Self-rebinding additive recurrences inside an `scf.for` (`acc = acc
+  + x` or `acc = x + acc`, plain tensor target) are detected by
+  `TTLMaterializeLoopState` and lowered to a pre-loop initial store
+  plus an in-loop accumulating `ttl.store` against the final consumer's
+  CB, then bracketed by the same `pack_reconfig_l1_acc` calls.
 
 - The store-then-accumulate pattern (`out_blk.store(v); for K-1: out_blk
   += ...`) is lowered via L1 acc with a modified guard sequence: the
   pre-group reconfig enables L1 acc so iteration 0 accumulates onto the
   prior-pack value rather than overwriting it. `precededByNonAccumulatingPack`
-  detects the preceding non-accumulating pack.
+  detects the preceding non-accumulating pack and does not abort when a
+  closer pack already covers the CB, so loops accumulating into multiple
+  CBs correctly enable L1 acc before the loop.
 
 The rest of this document details each piece: `DstSectionOp` as the IR
 primitive that keeps DST live, the choice between DST and L1

@@ -334,21 +334,52 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(node, str(e))
 
     def visit_AugAssign(self, node):
-        """Handle += on tensor blocks via the registered __iadd__ method."""
+        """Handle augmented assignment on tensors.
+
+        - `+=` on a CB-attached block (`out_blk = cb.reserve()`): emit an
+          L1 accumulating `ttl.store` via the registered `__iadd__`
+          method. Guarantees L1 accumulation at lowering time.
+        - Any other case on a tensor target (non-block target, or
+          non-`Add` op on a block): rewrite `target op= value` to
+          `target = target op value` and visit, so the result flows
+          through `ttl.add` / `ttl.sub` / ... and (when inside a loop)
+          `ttl-materialize-loop-state`. L1 acc is then used
+          opportunistically when the surrounding pattern matches the
+          accumulator preconditions.
+        """
         with self._loc_for_node(node):
             target = self.visit(node.target)
-            if (
-                isinstance(node.op, ast.Add)
-                and hasattr(target, "type")
-                and isinstance(target.type, RankedTensorType)
-            ):
-                rhs = self.visit(node.value)
-                mlir_type = _get_type_str(target.type)
-                iadd_fn = self._fn_map.get(f"{mlir_type}.__iadd__")
-                if iadd_fn:
-                    result = iadd_fn(target, rhs)
-                    self._set_var(node.target.id, result)
-                    return
+            if hasattr(target, "type") and isinstance(target.type, RankedTensorType):
+                from ..operators import _is_block
+
+                if isinstance(node.op, ast.Add) and _is_block(target):
+                    rhs = self.visit(node.value)
+                    mlir_type = _get_type_str(target.type)
+                    iadd_fn = self._fn_map.get(f"{mlir_type}.__iadd__")
+                    if iadd_fn:
+                        result = iadd_fn(target, rhs)
+                        self._set_var(node.target.id, result)
+                        return
+                if isinstance(node.target, ast.Name):
+                    load_target = ast.copy_location(
+                        ast.Name(id=node.target.id, ctx=ast.Load()), node.target
+                    )
+                    store_target = ast.copy_location(
+                        ast.Name(id=node.target.id, ctx=ast.Store()), node.target
+                    )
+                    synthetic = ast.copy_location(
+                        ast.Assign(
+                            targets=[store_target],
+                            value=ast.copy_location(
+                                ast.BinOp(
+                                    left=load_target, op=node.op, right=node.value
+                                ),
+                                node.value,
+                            ),
+                        ),
+                        node,
+                    )
+                    return self.visit(synthetic)
             return super().visit_AugAssign(node)
 
     def _is_pipenet_callback_call(self, node):
