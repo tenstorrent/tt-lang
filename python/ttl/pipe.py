@@ -150,7 +150,7 @@ class Pipe:
 
 def _pipe_to_pipe_use(pipe: Pipe):
     """Convert a ttl.Pipe to a PipeUse for OperationPipeNets validation/build."""
-    from _pipenets import NodeCoord, NodeRange, PipeUse
+    from ._pipenets import NodeCoord, NodeRange, PipeUse
 
     src = NodeCoord(coords=tuple(pipe.src))
     if pipe.is_unicast:
@@ -211,7 +211,7 @@ class PipeNet:
         # delegating to OperationPipeNets.validate(). Single source of
         # truth for empty/overlap/mixed-kind rules; the same graph is
         # rebuilt and re-validated at operation build time.
-        from _pipenets import OperationPipeNets
+        from ._pipenets import OperationPipeNets
 
         if not pipes:
             raise ValueError("PipeNet requires at least one pipe")
