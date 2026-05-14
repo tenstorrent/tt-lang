@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tt-lang-sim"
-description = "Pure-Python functional simulator for tt-lang kernels (no Tenstorrent hardware required)"
+description = "Pure-Python functional simulator for TT-Lang kernels (no Tenstorrent hardware required)"
 requires-python = ">=3.11"
 keywords = ["tt-lang", "tenstorrent", "simulator", "dsl", "kernel"]
 license = "Apache-2.0"
