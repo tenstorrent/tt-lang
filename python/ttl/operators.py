@@ -643,23 +643,21 @@ def fill(output: TensorBlock, value) -> TensorBlock:
     return ttl.fill(output.type, value_attr)
 
 
-def _is_supported_typecast_dtype(dtype) -> bool:
-    dtype_name = str(dtype)
-    return (
-        "Float" in dtype_name or "BFloat" in dtype_name or "BFP" in dtype_name
-    ) and not any(token in dtype_name for token in ("Int", "UInt", "Bool"))
+def _is_supported_typecast_dtype(ttcore_dtype) -> bool:
+    from ttl.dialects import ttcore
+
+    return ttcore_dtype in {
+        ttcore.DataType.Float32,
+        ttcore.DataType.BFloat16,
+        ttcore.DataType.BFP_BFloat8,
+        ttcore.DataType.BFP_BFloat4,
+    }
 
 
 def _is_supported_typecast_tile_type(tile_type) -> bool:
-    tile_type_name = str(tile_type).lower()
-    return (
-        "f32" in tile_type_name
-        or "f16" in tile_type_name
-        or "bf16" in tile_type_name
-        or "bfp" in tile_type_name
-    ) and not any(
-        token in tile_type_name for token in ("i32", "ui32", "ui16", "ui8", "bool")
-    )
+    from ttl.dialects import ttcore
+
+    return _is_supported_typecast_dtype(ttcore.DataType(tile_type.data_type_as_int))
 
 
 @syntax("typecast")
