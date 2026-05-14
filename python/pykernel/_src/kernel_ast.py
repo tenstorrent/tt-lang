@@ -580,7 +580,9 @@ class TTCompilerBase(PyKernelAstBase):
     def visit_Call(self, node):
         def _load_func_arg(func_arg):
             if not func_arg:
-                raise ValueError(f"Function argument not found for {node.func.id}")
+                raise ValueError(
+                    f"Function argument not found for {ast.unparse(node.func)}"
+                )
             if hasattr(func_arg, "type") and isinstance(
                 func_arg.type, memref.MemRefType
             ):
