@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tt-lang"
 description = "Python Bindings and Package for TT-Lang Compiler Project"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]
 license = "Apache-2.0"
 license-files = ["LICENSE*"]
@@ -23,7 +23,7 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Programming Language :: C++",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Compilers",
@@ -68,6 +68,7 @@ reportImportCycles = "error"
 reportUnnecessaryIsInstance = "warning"
 
 [tool.pytest.ini_options]
+pythonpath = [".", "python"]
 markers = [
     "requires_ttnn: marks simulator tests that compare against real ttnn goldens or otherwise require ttnn",
     "matmul_tutorial_ttnn: marks matmul-tutorial tests requiring real ttnn, steps 0 and 7 (deselected by default; enable with --run-matmul-tutorial-ttnn)",

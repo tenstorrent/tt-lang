@@ -566,15 +566,16 @@ def test_block_cannot_read_mw_uses_friendly_read_message(
 def test_validate_no_pending_reserved_mentions_push_and_incomplete(
     dm_thread_context,
 ) -> None:  # noqa: ARG001
-    """A held reserve() without release should surface a numbered, actionable blurb."""
+    """A held DM reserve() without release should surface a simulator-bug blurb."""
     dfb = DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2)
     dfb.reserve(name="held_buf")
     with pytest.raises(RuntimeError) as err:
         dfb.validate_no_pending_blocks()
     msg = str(err.value)
     assert "incomplete or unconsumed" in msg
-    assert "reserve() acquired" in msg
-    assert "push" in msg.lower()
+    assert "simulator bug" in msg
+    assert "reserve()" in msg
+    assert "auto-push" in msg
     assert "1)" in msg
     assert "held_buf" in msg
     assert "block_name=" in msg
@@ -584,7 +585,7 @@ def test_validate_no_pending_reserved_mentions_push_and_incomplete(
 def test_validate_no_pending_wait_mentions_pop_and_incomplete(
     dm_thread_context,
 ) -> None:  # noqa: ARG001
-    """A held wait() without pop() should name pop() and the DFB header."""
+    """A held wait() without pop() should emit a simulator-bug blurb."""
     element = make_ones_tile()
     dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
     blk = dfb.reserve()
@@ -599,8 +600,9 @@ def test_validate_no_pending_wait_mentions_pop_and_incomplete(
             dfb.validate_no_pending_blocks()
         msg = str(err.value)
         assert "incomplete or unconsumed" in msg
-        assert "wait() acquired" in msg
-        assert "pop" in msg.lower()
+        assert "simulator bug" in msg
+        assert "wait()" in msg
+        assert "auto-pop" in msg
         assert "1)" in msg
         assert "consumer_view" in msg
         assert "block_name=" in msg

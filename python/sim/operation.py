@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional, Union, cast
 
 from .blockstate import ThreadType
 from .typedefs import Shape
-from .context import get_context
+from .context import get_context, cleanup_run_context
 
 
 def set_default_grid(grid: Shape) -> None:
@@ -149,9 +149,16 @@ def operation(
             pipenets = build_pipenets(pipe_nets)
             pipenets.validate()
 
-            # Execute the program with grid parameter
-            program = Program(*ordered_threads, grid=actual_grid)
-            program(*args, **kwargs)
+            # Execute the program with grid parameter.  After the run,
+            # clean up execution-specific state so subsequent runs start
+            # from a clean slate.  This is the outermost session boundary:
+            # thread_registry was already consumed by get_registered_threads()
+            # above, so clearing it here is safe.
+            try:
+                program = Program(*ordered_threads, grid=actual_grid)
+                program(*args, **kwargs)
+            finally:
+                cleanup_run_context()
 
         # Store the decorator parameters for later access
         setattr(wrapper, "__pykernel_config__", {"grid": grid})
