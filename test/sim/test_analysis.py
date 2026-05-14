@@ -22,6 +22,7 @@ from sim.analysis import (
     PatternViolation,
     ThreadAnalysis,
     analyze_thread_function,
+    collect_reachable_analyses,
     validate_thread_function,
 )
 from sim.context import get_context, reset_context
@@ -714,6 +715,99 @@ class TestCopyWaitRuntime:
         result = ttnn.to_torch(out).float()
         assert torch.allclose(result, torch.ones(32, 32).float())
 
+    def test_multiline_bare_copy_auto_waited(self, reset_simulator_context):
+        """A bare ttl.copy() call spanning multiple lines is correctly auto-waited.
+
+        The AST records stmt.lineno as the first line of the call expression
+        (the 'ttl.copy(' line).  copy.py reads frame.f_lineno from the calling
+        frame, which Python also sets to the first line of the call expression.
+        If these diverge the auto-wait does not fire and the kernel deadlocks.
+        """
+        import torch
+
+        inp = ttnn.from_torch(torch.ones(32, 32))
+        out = ttnn.from_torch(torch.zeros(32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                blk = inp_dfb.wait()
+                o = out_dfb.reserve()
+                o.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                blk = inp_dfb.reserve()
+                ttl.copy(  # multi-line bare call — auto-waited on the first line
+                    inp[0, 0],
+                    blk,
+                )
+
+            @ttl.datamovement()
+            def dm_write():
+                blk = out_dfb.wait()
+                ttl.copy(blk, out[0, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())
+
+    def test_thread_exit_cleanup_does_not_push_other_threads_block(
+        self, reset_simulator_context
+    ):
+        """dm_write's exit cleanup must not push blocks reserved by dm_read.
+
+        All three threads share core_context and therefore share inp_dfb.
+        When dm_write's _tagged wrapper runs its cleanup loop it calls
+        DataflowBuffer.auto_push_block() on inp_dfb.  The greenlet-identity
+        guard in auto_push_block() (dfb.py) must detect that the pending
+        block was reserved by dm_read's greenlet and skip the push.
+
+        If the guard were absent, dm_write's cleanup would push dm_read's
+        block before dm_read's bare copy has been waited, corrupting the
+        data seen by compute.
+        """
+        import torch
+
+        ITERS = 2
+        inp = ttnn.rand((ITERS * 32, 32))
+        out = ttnn.empty((ITERS * 32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                for i in range(ITERS):
+                    blk = inp_dfb.wait()
+                    ob = out_dfb.reserve()
+                    ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                # Bare copy — auto-wait must fire before compute sees the block.
+                # dm_write also holds a reference to inp_dfb via core_context and
+                # its cleanup must not push this thread's pending reserved block.
+                for i in range(ITERS):
+                    blk = inp_dfb.reserve()
+                    ttl.copy(inp[i, 0], blk)  # bare, no explicit wait
+
+            @ttl.datamovement()
+            def dm_write():
+                for i in range(ITERS):
+                    blk = out_dfb.wait()
+                    ttl.copy(blk, out[i, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(
+            ttnn.to_torch(inp).float(), ttnn.to_torch(out).float(), atol=1e-2
+        )
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: AST analysis — inline DFB acquires
@@ -1185,3 +1279,394 @@ class TestComplexControlFlow:
         assert torch.allclose(
             ttnn.to_torch(inp).float(), ttnn.to_torch(out).float(), atol=1e-2
         )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: collect_reachable_analyses (nested defs + module-scope helpers)
+# ---------------------------------------------------------------------------
+
+
+def _module_scope_copy_helper(src, dst):  # noqa: F821
+    """Module-scope helper containing a bare ttl.copy() call."""
+    ttl.copy(src, dst)  # noqa: F821
+
+
+def _module_scope_assigned_copy_helper(src, dst):  # noqa: F821
+    """Module-scope helper with an assigned ttl.copy() (no explicit wait)."""
+    tx = ttl.copy(src, dst)  # noqa: F821
+    _ = tx  # noqa: F841
+
+
+def _transitive_h1(src, dst):  # noqa: F821
+    """Calls _transitive_h2; no direct ttl.copy()."""
+    _transitive_h2(src, dst)  # noqa: F821
+
+
+def _transitive_h2(src, dst):  # noqa: F821
+    """Leaf helper with a bare ttl.copy(); discovered transitively via _transitive_h1."""
+    ttl.copy(src, dst)  # noqa: F821
+
+
+def _recursive_a(src, dst):  # noqa: F821
+    """Part of a mutually-recursive pair; calls _recursive_b."""
+    _recursive_b(src, dst)  # noqa: F821
+
+
+def _recursive_b(src, dst):  # noqa: F821
+    """Part of a mutually-recursive pair; calls _recursive_a back."""
+    _recursive_a(src, dst)  # noqa: F821
+    ttl.copy(src, dst)  # noqa: F821
+
+
+class TestCollectReachableAnalyses:
+    """collect_reachable_analyses discovers and analyses helper functions.
+
+    Tests verify that bare / assigned ttl.copy() calls inside nested defs
+    and module-scope helpers are picked up by the recursive analysis so that
+    their code objects receive injection hooks.
+    """
+
+    def test_top_level_function_included(self):
+        """The thread function itself is always present in the result."""
+
+        def dm():
+            ttl.copy(src, dst)  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        assert dm.__code__ in result
+
+    def test_nested_def_bare_copy_detected(self):
+        """A bare ttl.copy() inside a nested def gets an injection entry."""
+
+        def dm():
+            def helper():
+                ttl.copy(src, dst)  # noqa: F821
+
+            helper()  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        nested_codes = [code for code in result if code.co_name == "helper"]
+        assert len(nested_codes) == 1
+        assert len(result[nested_codes[0]].bare_copy_linenos) == 1
+
+    def test_nested_def_assigned_copy_detected(self):
+        """An assigned tx = ttl.copy() inside a nested def gets an InjectionPoint."""
+
+        def dm():
+            def pipe_src(blk):
+                tx = ttl.copy(src, blk)  # noqa: F821
+                blk.push()  # noqa: F821
+
+            pipe_src(blk)  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        nested_codes = [code for code in result if code.co_name == "pipe_src"]
+        assert len(nested_codes) == 1
+        nested_analysis = result[nested_codes[0]]
+        assert len(nested_analysis.injection_points) == 1
+        assert nested_analysis.injection_points[0].var_name == "tx"
+
+    def test_module_scope_helper_detected(self):
+        """A bare ttl.copy() in a module-scope helper called by name is detected."""
+
+        def dm():
+            _module_scope_copy_helper(src, dst)  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        helper_codes = [
+            code for code in result if code.co_name == "_module_scope_copy_helper"
+        ]
+        assert len(helper_codes) == 1
+        assert len(result[helper_codes[0]].bare_copy_linenos) == 1
+
+    def test_shared_visited_prevents_duplicate_analysis(self):
+        """Passing a shared visited set skips functions already analysed."""
+
+        def dm():
+            _module_scope_copy_helper(src, dst)  # noqa: F821
+
+        visited: set[int] = set()
+        first = collect_reachable_analyses(dm, visited)
+        assert _module_scope_copy_helper.__code__ in first
+
+        second = collect_reachable_analyses(dm, visited)
+        assert second == {}
+
+    def test_explicit_wait_in_nested_def_suppresses_injection(self):
+        """A nested def with tx.wait() must not generate an injection point."""
+
+        def dm():
+            def helper():
+                tx = ttl.copy(src, dst)  # noqa: F821
+                tx.wait()  # noqa: F821
+
+            helper()  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        nested_codes = [code for code in result if code.co_name == "helper"]
+        assert len(nested_codes) == 1
+        assert len(result[nested_codes[0]].injection_points) == 0
+
+    def test_deeply_nested_def_detected(self):
+        """A bare ttl.copy() two levels deep (def inside def) is discovered."""
+
+        def dm():
+            def outer():
+                def inner():
+                    ttl.copy(src, dst)  # noqa: F821
+
+                inner()  # noqa: F821
+
+            outer()  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        inner_codes = [code for code in result if code.co_name == "inner"]
+        assert len(inner_codes) == 1
+        assert len(result[inner_codes[0]].bare_copy_linenos) == 1
+
+    def test_if_src_if_dst_both_detected(self):
+        """Both pipe_src and pipe_dst nested defs are discovered and analysed.
+
+        Mirrors the real-world if_src/if_dst pipe pattern where two nested
+        functions each contain a ttl.copy() call.
+        """
+
+        def dm():
+            def pipe_src(pipe_id):
+                ttl.copy(src, pipe_id)  # noqa: F821
+
+            def pipe_dst(pipe_id):
+                ttl.copy(pipe_id, dst)  # noqa: F821
+
+            pipe_src(x)  # noqa: F821
+            pipe_dst(x)  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        src_codes = [code for code in result if code.co_name == "pipe_src"]
+        dst_codes = [code for code in result if code.co_name == "pipe_dst"]
+        assert len(src_codes) == 1
+        assert len(dst_codes) == 1
+        assert len(result[src_codes[0]].bare_copy_linenos) == 1
+        assert len(result[dst_codes[0]].bare_copy_linenos) == 1
+
+    def test_transitive_module_scope_discovered(self):
+        """A helper called by a helper (two hops) is discovered transitively."""
+
+        def dm():
+            _transitive_h1(src, dst)  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        h2_codes = [code for code in result if code.co_name == "_transitive_h2"]
+        assert len(h2_codes) == 1
+        assert len(result[h2_codes[0]].bare_copy_linenos) == 1
+
+    def test_module_scope_assigned_copy_detected(self):
+        """An assigned tx = ttl.copy() in a module-scope helper gets an InjectionPoint."""
+
+        def dm():
+            _module_scope_assigned_copy_helper(src, dst)  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        helper_codes = [
+            code
+            for code in result
+            if code.co_name == "_module_scope_assigned_copy_helper"
+        ]
+        assert len(helper_codes) == 1
+        assert len(result[helper_codes[0]].injection_points) == 1
+        assert result[helper_codes[0]].injection_points[0].var_name == "tx"
+
+    def test_mutually_recursive_helpers_terminate(self):
+        """Mutually recursive module-scope helpers do not cause infinite recursion."""
+
+        def dm():
+            _recursive_a(src, dst)  # noqa: F821
+
+        result = collect_reachable_analyses(dm)
+        names = {code.co_name for code in result}
+        assert "_recursive_a" in names
+        assert "_recursive_b" in names
+
+
+# ---------------------------------------------------------------------------
+# Runtime tests: nested defs and module-scope helpers
+# ---------------------------------------------------------------------------
+
+
+class TestNestedDefCopyWaitRuntime:
+    """End-to-end tests for copy-wait injection into nested def helpers."""
+
+    def test_nested_def_bare_copy_runs_without_explicit_wait(
+        self, reset_simulator_context
+    ):
+        """A bare ttl.copy() inside a nested def is auto-waited at runtime."""
+        import torch
+
+        inp = ttnn.from_torch(torch.ones(32, 32))
+        out = ttnn.from_torch(torch.zeros(32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                blk = inp_dfb.wait()
+                ob = out_dfb.reserve()
+                ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                def do_copy(src_tile, dst_block):
+                    ttl.copy(src_tile, dst_block)  # bare, no wait
+
+                blk = inp_dfb.reserve()
+                do_copy(inp[0, 0], blk)
+
+            @ttl.datamovement()
+            def dm_write():
+                blk = out_dfb.wait()
+                ttl.copy(blk, out[0, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())
+
+    def test_module_scope_helper_bare_copy_runs_without_explicit_wait(
+        self, reset_simulator_context
+    ):
+        """A bare ttl.copy() in a module-scope helper is auto-waited at runtime."""
+        import torch
+
+        inp = ttnn.from_torch(torch.ones(32, 32))
+        out = ttnn.from_torch(torch.zeros(32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                blk = inp_dfb.wait()
+                ob = out_dfb.reserve()
+                ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                blk = inp_dfb.reserve()
+                _module_scope_copy_helper(inp[0, 0], blk)
+
+            @ttl.datamovement()
+            def dm_write():
+                blk = out_dfb.wait()
+                ttl.copy(blk, out[0, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())
+
+    def test_two_nested_defs_both_auto_waited(self, reset_simulator_context):
+        """Two nested defs (if_src / if_dst style) each with a bare ttl.copy() run correctly.
+
+        Both code objects must receive injection hooks; if either is missed the
+        copy would not be waited and the kernel would deadlock or corrupt data.
+        """
+        import torch
+
+        inp = ttnn.from_torch(torch.ones(32, 32))
+        out = ttnn.from_torch(torch.zeros(32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                blk = inp_dfb.wait()
+                ob = out_dfb.reserve()
+                ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                def do_reserve(target):
+                    ttl.copy(inp[0, 0], target)  # bare — auto-waited
+
+                def do_nothing():
+                    pass  # second nested def with no copy; exercises multi-def discovery
+
+                blk = inp_dfb.reserve()
+                do_reserve(blk)
+                do_nothing()
+
+            @ttl.datamovement()
+            def dm_write():
+                blk = out_dfb.wait()
+                ttl.copy(blk, out[0, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())
+
+    def test_transitive_module_scope_helper_runtime(self, reset_simulator_context):
+        """A bare ttl.copy() two hops away (dm -> h1 -> h2) is auto-waited at runtime."""
+        import torch
+
+        inp = ttnn.from_torch(torch.ones(32, 32))
+        out = ttnn.from_torch(torch.zeros(32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                blk = inp_dfb.wait()
+                ob = out_dfb.reserve()
+                ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                blk = inp_dfb.reserve()
+                _transitive_h1(inp[0, 0], blk)
+
+            @ttl.datamovement()
+            def dm_write():
+                blk = out_dfb.wait()
+                ttl.copy(blk, out[0, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())
+
+    def test_shared_module_scope_helper_used_by_both_dm_threads(
+        self, reset_simulator_context
+    ):
+        """A module-scope helper shared by dm0 and dm1 is installed once and runs correctly."""
+        import torch
+
+        inp = ttnn.from_torch(torch.ones(32, 32))
+        out = ttnn.from_torch(torch.zeros(32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                blk = inp_dfb.wait()
+                ob = out_dfb.reserve()
+                ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                blk = inp_dfb.reserve()
+                _module_scope_copy_helper(inp[0, 0], blk)
+
+            @ttl.datamovement()
+            def dm_write():
+                blk = out_dfb.wait()
+                _module_scope_copy_helper(blk, out[0, 0])
+
+        op(inp, out)
+        assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())

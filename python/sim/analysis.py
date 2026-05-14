@@ -23,15 +23,30 @@ directly inside `DataflowBuffer` at runtime, not here:
 
 The analysis approach:
 
-1. **AST analysis** (`analyze_thread_function`) — parse the source of the
-   thread function, walk it as an ordered statement list, and for each
-   unwaited `tx = ttl.copy(...)` compute an *injection point*: the first
-   line the runtime should execute after the copy call.
+1. **AST analysis** (`collect_reachable_analyses`) — parse the source of
+   each thread function, recursively discover nested `def` helpers and
+   module-scope callees referenced by simple name, and for each unwaited
+   `tx = ttl.copy(...)` compute an *injection point*: the first line the
+   runtime should execute after the copy call.
 
 2. **Runtime interception** (`install_copy_wait_hooks`) — register
    `sys.monitoring` callbacks (Python 3.12+) that fire `tx.wait()` at
-   the computed injection point.  The original source is never modified;
-   debuggers see unaltered line numbers.
+   the computed injection point for every discovered code object.  The
+   original source is never modified; debuggers see unaltered line numbers.
+
+Helper discovery
+----------------
+`collect_reachable_analyses` walks the AST of each thread function and
+recurses into:
+
+* **Nested `def`s** — functions defined inline inside the thread function
+  body.  Their code objects are matched via `func.__code__.co_consts`.
+* **Module-scope callees** — functions referenced by a bare name in the
+  thread body and resolved via `func.__globals__`.  Only plain Python
+  functions (those with `__code__` and `__globals__`) are followed.
+
+A shared visited set prevents duplicate analysis when the same helper is
+called from multiple thread functions.
 
 Design constraints
 ------------------
@@ -44,15 +59,9 @@ Design constraints
 
 Unsupported patterns
 --------------------
-* **Helper functions containing `ttl.copy()`** — both module-scope helpers
-  and nested `def` helpers defined inside the thread function body are not
-  analysed.  The AST walk is limited to the top-level thread function's own
-  body (nested `def`/`class` bodies are explicitly excluded by
-  `_all_stmts_flat`), and `install_copy_wait_hooks` only installs monitoring
-  callbacks for the thread function's own `__code__` object.  A `ttl.copy()`
-  call inside a helper will therefore never have `wait()` injected and the
-  copy will be silently un-awaited.  Inline the `ttl.copy()` call directly
-  inside the thread function to ensure correct behaviour.
+* **Callees referenced via attribute access** (`obj.method()`) or
+  **through a container** are not followed; only simple name calls can be
+  resolved statically via `__globals__`.
 """
 
 from __future__ import annotations
@@ -350,30 +359,24 @@ def _all_stmts_flat(tree: ast.FunctionDef) -> list[ast.stmt]:
 # ---------------------------------------------------------------------------
 
 
-def analyze_thread_function(func: types.FunctionType) -> ThreadAnalysis:
-    """Analyse ``func`` and return injection points for missing ``tx.wait()`` calls.
+def _analyze_func_def_node(
+    func_def: ast.FunctionDef,
+    file_start_line: int,
+) -> ThreadAnalysis:
+    """Return injection points for a single ``FunctionDef`` AST node.
 
-    The result is cached per function object so repeated calls (e.g. in a
-    loop over cores) pay only the first analysis cost.
-
-    Returns an empty ``ThreadAnalysis`` if:
-    * The source is unavailable (built-in, dynamically generated, etc.).
-    * All ``ttl.copy()`` calls already have explicit ``tx.wait()`` calls.
-    * No ``ttl.copy()`` calls are found.
+    ``file_start_line`` is the absolute line number of the first line of the
+    *outermost parsed source*, matching the convention used by
+    ``_find_copy_records``.  All AST line numbers are relative to that origin,
+    so the same ``file_start_line`` applies to nested defs at any depth.
+    Violations are not computed here; callers that need them should use
+    ``_make_analysis_with_violations`` instead.
     """
-    _empty = ThreadAnalysis(injection_points=(), bare_copy_linenos=frozenset())
-
-    parsed = _parse_func_def(func)
-    if parsed is None:
-        return _empty
-    func_def, file_start_line, source_file = parsed
-
     stmts = _all_stmts_flat(func_def)
     if not stmts:
-        return _empty
+        return ThreadAnalysis(injection_points=(), bare_copy_linenos=frozenset())
 
     assigned_no_wait, bare_linenos = _find_copy_records(stmts, file_start_line)
-
     abs_linenos = [file_start_line + s.lineno - 1 for s in stmts]
     injection_points = tuple(
         InjectionPoint(
@@ -385,15 +388,159 @@ def analyze_thread_function(func: types.FunctionType) -> ThreadAnalysis:
         )
         for var_name, copy_lineno in assigned_no_wait
     )
-
     return ThreadAnalysis(
         injection_points=injection_points,
         bare_copy_linenos=frozenset(bare_linenos),
+    )
+
+
+def _collect_all_nested_codes(
+    code: types.CodeType,
+) -> dict[tuple[str, int], types.CodeType]:
+    """Return all code objects nested inside ``code`` at any depth.
+
+    Recursively walks ``co_consts`` so that defs nested inside other defs are
+    included, not just immediately enclosed ones.
+
+    Keys are ``(co_name, co_firstlineno)`` pairs where ``co_firstlineno`` is
+    an absolute file line number, matching ``file_start_line + node.lineno - 1``
+    for the corresponding ``ast.FunctionDef`` node.
+    """
+    result: dict[tuple[str, int], types.CodeType] = {}
+    for c in code.co_consts:
+        if isinstance(c, types.CodeType):
+            result[(c.co_name, c.co_firstlineno)] = c
+            result.update(_collect_all_nested_codes(c))
+    return result
+
+
+def _make_analysis_with_violations(
+    func_def: ast.FunctionDef,
+    file_start_line: int,
+    source_file: str,
+    func_name: str,
+) -> ThreadAnalysis:
+    """Analyse ``func_def`` and attach pattern violations.
+
+    Combines ``_analyze_func_def_node`` (injection points) with
+    ``_violations_for_func_def`` (unsupported pattern checks) into a single
+    ``ThreadAnalysis``.
+    """
+    base = _analyze_func_def_node(func_def, file_start_line)
+    return ThreadAnalysis(
+        injection_points=base.injection_points,
+        bare_copy_linenos=base.bare_copy_linenos,
         violations=tuple(
-            _violations_for_func_def(
-                func_def, file_start_line, source_file, func.__name__
-            )
+            _violations_for_func_def(func_def, file_start_line, source_file, func_name)
         ),
+    )
+
+
+def _collect_reachable_from_parsed(
+    func: types.FunctionType,
+    func_def: ast.FunctionDef,
+    file_start_line: int,
+    source_file: str,
+    _visited: set[int],
+) -> dict[types.CodeType, ThreadAnalysis]:
+    """Collect analyses for ``func`` and all reachable callees.
+
+    Called by ``collect_reachable_analyses`` with an already-parsed AST so
+    that ``_parse_func_def`` is invoked exactly once per function.
+
+    Discovers nested defs at any depth (via ``_collect_all_nested_codes``) and
+    module-scope callees referenced by simple name (via ``func.__globals__``).
+    """
+    code = func.__code__
+    result: dict[types.CodeType, ThreadAnalysis] = {}
+
+    result[code] = _make_analysis_with_violations(
+        func_def, file_start_line, source_file, func.__name__
+    )
+
+    # Build a lookup of ALL descendant code objects (any nesting depth).
+    all_nested = _collect_all_nested_codes(code)
+
+    for node in ast.walk(func_def):
+        if isinstance(node, ast.FunctionDef) and node is not func_def:
+            # Nested def: locate its code object and analyse its body.
+            abs_lineno = file_start_line + node.lineno - 1
+            nested_code = all_nested.get((node.name, abs_lineno))
+            if nested_code is not None and id(nested_code) not in _visited:
+                _visited.add(id(nested_code))
+                result[nested_code] = _analyze_func_def_node(node, file_start_line)
+
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            # Name call: resolve the callee via __globals__ and recurse.
+            callee = func.__globals__.get(node.func.id)
+            if (
+                callable(callee)
+                and hasattr(callee, "__code__")
+                and hasattr(callee, "__globals__")
+            ):
+                result.update(collect_reachable_analyses(callee, _visited))
+
+    return result
+
+
+def analyze_thread_function(func: types.FunctionType) -> ThreadAnalysis:
+    """Analyse ``func`` and return injection points for missing ``tx.wait()`` calls.
+
+    Returns an empty ``ThreadAnalysis`` if:
+    * The source is unavailable (built-in, dynamically generated, etc.).
+    * All ``ttl.copy()`` calls already have explicit ``tx.wait()`` calls.
+    * No ``ttl.copy()`` calls are found.
+    """
+    parsed = _parse_func_def(func)
+    if parsed is None:
+        return ThreadAnalysis(injection_points=(), bare_copy_linenos=frozenset())
+    func_def, file_start_line, source_file = parsed
+
+    return _make_analysis_with_violations(
+        func_def, file_start_line, source_file, func.__name__
+    )
+
+
+def collect_reachable_analyses(
+    func: types.FunctionType,
+    _visited: set[int] | None = None,
+) -> dict[types.CodeType, ThreadAnalysis]:
+    """Return ``ThreadAnalysis`` for ``func`` and all reachable callees.
+
+    Discovers and analyses:
+
+    * ``func`` itself (the top-level thread function, including violations).
+    * Nested ``def``s at any depth inside ``func``'s body — code objects are
+      located via a full recursive walk of ``func.__code__.co_consts``.
+    * Module-scope callees referenced by a simple name anywhere in the body —
+      resolved via ``func.__globals__`` and recursed into.  Only plain Python
+      functions (those with ``__code__`` and ``__globals__``) are followed;
+      built-ins, classes, and other callables are skipped silently.
+
+    Mutual recursion between helpers is safe: ``_visited`` tracks processed
+    code objects by ``id`` and short-circuits on the second encounter.
+
+    ``_visited`` is a set of ``id(code)`` values already processed, used to
+    prevent infinite recursion through mutually-recursive helpers.  Omit it
+    when calling for a single function.  Pass a shared set across multiple
+    top-level calls (e.g. across the three thread functions) so that a callee
+    shared by more than one thread is analysed only once.
+    """
+    if _visited is None:
+        _visited = set()
+
+    code = func.__code__
+    if id(code) in _visited:
+        return {}
+    _visited.add(id(code))
+
+    parsed = _parse_func_def(func)
+    if parsed is None:
+        return {}
+    func_def, file_start_line, source_file = parsed
+
+    return _collect_reachable_from_parsed(
+        func, func_def, file_start_line, source_file, _visited
     )
 
 

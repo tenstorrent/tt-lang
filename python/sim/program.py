@@ -23,9 +23,10 @@ from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
 from .analysis import (
-    analyze_thread_function,
+    collect_reachable_analyses,
     install_copy_wait_hooks,
     PatternViolation,
+    ThreadAnalysis,
 )
 from .diagnostics import print_diagnostic_error
 from .debug_print import ttlang_print
@@ -222,22 +223,24 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             scheduler = GreenletScheduler()
             set_scheduler(scheduler)
 
-            # Analyse all three thread functions once before iterating over
-            # cores. Results are stored in the simulation context so they
-            # are available for inspection and are not recomputed per core.
+            # Analyse all three thread functions (and any reachable helpers)
+            # once before iterating over cores.  A shared visited set prevents
+            # duplicate analysis when helpers are called by more than one thread.
             ctx = get_context()
-            for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
-                ctx.injection_points_cache[tmpl.__wrapped__] = analyze_thread_function(
-                    tmpl.__wrapped__
-                )
-
-            # Report any unsupported DFB / copy patterns before running the
-            # kernel.  All violations across all three thread functions are
-            # collected first so the user sees every problem at once.
+            _empty = ThreadAnalysis(injection_points=(), bare_copy_linenos=frozenset())
+            _visited: set[int] = set()
+            injection_map: dict[types.CodeType, ThreadAnalysis] = {}
             all_violations: List[PatternViolation] = []
+
             for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
-                analysis = ctx.injection_points_cache[tmpl.__wrapped__]
-                all_violations.extend(analysis.violations)
+                analyses = collect_reachable_analyses(tmpl.__wrapped__, _visited)
+                injection_map.update(analyses)
+                top = analyses.get(tmpl.__wrapped__.__code__, _empty)
+                ctx.injection_points_cache[tmpl.__wrapped__] = top
+                all_violations.extend(top.violations)
+
+            # Report any unsupported copy patterns before running the kernel.
+            # All violations are collected first so the user sees every problem.
             if all_violations:
                 for v in all_violations:
                     print_diagnostic_error(
@@ -299,14 +302,8 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     thread_name = f"core{core}-{tmpl.__name__}"
                     scheduler.add_thread(thread_name, _tagged, thread_type)
 
-            # Install injection hooks in the current context's active_hooks.
-            # The global tracer (_global_tracer in analysis.py) is
-            # installed once per session and reads active_hooks dynamically,
-            # so no sys.settrace bookkeeping is needed here.
-            injection_map = {
-                tmpl.__wrapped__.__code__: ctx.injection_points_cache[tmpl.__wrapped__]
-                for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]
-            }
+            # Install injection hooks for all discovered code objects (thread
+            # functions, nested defs, and module-scope helpers).
             install_copy_wait_hooks(injection_map)
 
             # Emit operation_start for each node before the scheduler runs.
