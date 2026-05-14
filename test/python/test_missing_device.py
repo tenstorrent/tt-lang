@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 import torch
 import ttl
+from ttl.ttl_api import _require_device
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
@@ -126,7 +127,6 @@ def test_auto_grid_multiple_host_tensors():
 
 def test_auto_grid_mixed_host_and_device(device):
     """_require_device succeeds when at least one tensor is on-device."""
-    from ttl.ttl_api import _require_device
 
     a_host = ttnn.from_torch(
         torch.zeros(32, 32, dtype=torch.bfloat16),
@@ -207,7 +207,6 @@ class _FakeTensor:
 
 def test_require_device_different_devices_raises():
     """Two tensors on different devices must raise ValueError."""
-    from ttl.ttl_api import _require_device
 
     dev0 = _FakeDevice(0)
     dev1 = _FakeDevice(1)
@@ -219,7 +218,6 @@ def test_require_device_different_devices_raises():
 
 def test_require_device_same_device_ok():
     """Two tensors on the same device should return that device."""
-    from ttl.ttl_api import _require_device
 
     dev = _FakeDevice(0)
 
@@ -230,7 +228,6 @@ def test_require_device_same_device_ok():
 
 def test_require_device_same_id_different_objects():
     """Distinct device objects with equal .id() should be accepted."""
-    from ttl.ttl_api import _require_device
 
     with patch("ttl.ttl_api.is_ttnn_tensor", return_value=True):
         result = _require_device(
@@ -241,7 +238,6 @@ def test_require_device_same_id_different_objects():
 
 def test_require_device_three_tensors_mismatch_at_third():
     """Mismatch detected on arg[2] when arg[0] and arg[1] agree."""
-    from ttl.ttl_api import _require_device
 
     dev_a = _FakeDevice(0)
     dev_b = _FakeDevice(1)
@@ -260,7 +256,6 @@ def test_require_device_three_tensors_mismatch_at_third():
 
 def test_require_device_two_tensors_same_device(device):
     """Two real TTNN tensors on the same device should pass."""
-    from ttl.ttl_api import _require_device
 
     a = ttnn.from_torch(
         torch.zeros(32, 32, dtype=torch.bfloat16),

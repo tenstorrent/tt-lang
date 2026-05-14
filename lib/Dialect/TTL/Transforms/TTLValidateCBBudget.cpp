@@ -127,15 +127,10 @@ struct TTLValidateCBBudgetPass
     llvm::DenseMap<int64_t, uint64_t> maxBytesByIndex;
     llvm::DenseMap<int64_t, BindCBOp> bindForIndex;
 
-    bool hadFailure = false;
-    moduleOp.walk([&](BindCBOp bindOp) {
-      if (hadFailure) {
-        return;
-      }
+    auto walkResult = moduleOp.walk([&](BindCBOp bindOp) -> WalkResult {
       FailureOr<uint64_t> bytes = cbBytesForBind(bindOp);
       if (failed(bytes)) {
-        hadFailure = true;
-        return;
+        return WalkResult::interrupt();
       }
       int64_t idx = bindOp.getCbIndex().getSExtValue();
       auto it = maxBytesByIndex.find(idx);
@@ -143,9 +138,10 @@ struct TTLValidateCBBudgetPass
         maxBytesByIndex[idx] = *bytes;
         bindForIndex[idx] = bindOp;
       }
+      return WalkResult::advance();
     });
 
-    if (hadFailure) {
+    if (walkResult.wasInterrupted()) {
       signalPassFailure();
       return;
     }
