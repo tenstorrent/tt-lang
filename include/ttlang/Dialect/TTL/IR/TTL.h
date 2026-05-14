@@ -71,6 +71,10 @@ enum class PipeRole : int64_t {
 constexpr llvm::StringLiteral
     kEnableFPUBinaryOpsAttrName("ttl.enable_fpu_binary_ops");
 
+/// Func-level: tags a func.func as a kernel thread (compute / dataflow);
+/// the attribute value is a `ttkernel.thread` enum.
+constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
+
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 

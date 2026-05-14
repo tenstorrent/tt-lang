@@ -287,6 +287,7 @@ add_mlir_python_modules(TTLangPythonModules
 
 # Ensure generated elementwise ops are created before Python modules are built
 add_dependencies(TTLangPythonModules TTLangGeneratedElementwise)
+add_custom_target(pyext DEPENDS TTLangPythonModules)
 
 # pykernel is a subpackage of ttl (ttl/__init__.py transitively imports
 # from ttl.pykernel._src.utils via ttl_api.py), so TTLangPythonModules is
