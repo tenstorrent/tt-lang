@@ -52,6 +52,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLFinalizeDFBIndices());
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyPipeNetGuards());
+  pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;

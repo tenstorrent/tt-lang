@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -22,6 +23,16 @@
 #include <optional>
 
 namespace mlir::tt::ttl {
+
+/// Return the enclosing kernel-thread `func.func` (tagged with
+/// `ttl.kernel_thread`), or null if `op` is not inside one.
+inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
+  auto func = op->getParentOfType<mlir::func::FuncOp>();
+  if (func && func->hasAttr(kKernelThreadAttrName)) {
+    return func;
+  }
+  return nullptr;
+}
 
 /// Trace through unrealized conversion casts to the original value
 /// (cycle-safe).
@@ -49,13 +60,15 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
 }
 
-/// Resolve the CB index attached to `cb` by tracing through unrealized
-/// conversion casts to its defining BindCBOp. Returns std::nullopt when the
-/// value does not trace to a BindCBOp.
+/// Resolve the CB index attached to `cb`, accepting either the pre-conversion
+/// BindCBOp or the post-conversion GetCompileArgValOp.
 inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   cb = traceUnrealizedCasts(cb);
   if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
     return bindOp.getCbIndex().getSExtValue();
+  }
+  if (auto argOp = cb.getDefiningOp<mlir::tt::ttkernel::GetCompileArgValOp>()) {
+    return argOp.getArgIndex();
   }
   return std::nullopt;
 }

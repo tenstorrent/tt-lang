@@ -26,7 +26,7 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def add_loop_kernel(lhs, rhs, out):
-    """Add kernel with loop in compute to accumulate results."""
+    """Add kernel with loop in compute to accumulate results via `+=`."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -34,14 +34,11 @@ def add_loop_kernel(lhs, rhs, out):
     @ttl.compute()
     def add_compute():
         with lhs_dfb.wait() as l, rhs_dfb.wait() as r:
-            # Initial: store l into output DFB
-            with out_dfb.reserve() as o:
-                o.store(l)
-
-            # Loop: read back, add r, store again (accumulate pattern)
+            out_blk = out_dfb.reserve()
+            out_blk.store(l)
             for i in range(4):
-                with out_dfb.wait() as accum, out_dfb.reserve() as o:
-                    o.store(accum + r)
+                out_blk += r
+            out_blk.push()
 
     @ttl.datamovement()
     def dm_read():
@@ -61,36 +58,23 @@ def add_loop_kernel(lhs, rhs, out):
 
 
 # =============================================================================
-# Initial IR Checks - Verify scf.for loop is generated in compute
+# Initial IR Checks
 # =============================================================================
 
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
-
-# DFB binding (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
-# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
-
-# Initial: wait for inputs, reserve output, store, push
-# CHECK: ttl.cb_wait %[[CB0]]
-# CHECK: ttl.cb_wait %[[CB1]]
-# CHECK: ttl.cb_reserve %[[CB2]]
+# CHECK: %[[LHS:.+]] = ttl.bind_cb{cb_index = 0
+# CHECK: %[[OUT:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[RHS:.+]] = ttl.bind_cb{cb_index = 1
+# CHECK: ttl.cb_wait %[[LHS]]
+# CHECK: ttl.cb_wait %[[RHS]]
+# CHECK: ttl.cb_reserve %[[OUT]]
 # CHECK: ttl.store
-# CHECK: ttl.cb_push %[[CB2]]
-
-# For loop in compute (accumulate pattern)
 # CHECK: scf.for
-# CHECK: ttl.cb_wait %[[CB2]]
-# CHECK: ttl.cb_reserve %[[CB2]]
-# CHECK: ttl.add
-# CHECK: ttl.store
-# CHECK: ttl.cb_push %[[CB2]]
-# CHECK: ttl.cb_pop %[[CB2]]
-
-# Finalize: pop inputs (reverse order from with-statement LIFO)
-# CHECK: ttl.cb_pop %[[CB1]]
-# CHECK: ttl.cb_pop %[[CB0]]
+# CHECK: ttl.store {{.*}} {accumulate}
+# CHECK: ttl.cb_push %[[OUT]]
+# CHECK: ttl.cb_pop %[[RHS]]
+# CHECK: ttl.cb_pop %[[LHS]]
 
 # =============================================================================
 # C++ Kernel Checks - Verify for loop in generated compute code
@@ -98,65 +82,73 @@ def add_loop_kernel(lhs, rhs, out):
 
 # CHECK-CPP: // add_compute
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
-
-# Initial: wait for inputs, reserve and push output
-# CHECK-CPP: [[CB0]].wait_front(
-# CHECK-CPP: [[CB1]].wait_front(
-# CHECK-CPP: [[CB2]].reserve_back(
-# CHECK-CPP: [[CB2]].push_back(
-
-# For loop with accumulate pattern
+# CHECK-CPP-DAG: int32_t [[ZERO:v[0-9]+]] = 0;
+# CHECK-CPP-DAG: int32_t [[ONE:v[0-9]+]] = 1;
+# CHECK-CPP-DAG: experimental::CircularBuffer [[LHS:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[RHS:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[OUT:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP: [[LHS]].wait_front(
+# CHECK-CPP: [[RHS]].wait_front(
+# CHECK-CPP: [[OUT]].reserve_back(
+# CHECK-CPP: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+# CHECK-CPP: tile_regs_acquire();
+# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(0),
+# CHECK-CPP: tile_regs_commit();
+# CHECK-CPP: tile_regs_wait();
+# CHECK-CPP: pack_tile<true>({{.*}}, get_compile_time_arg_val(2),
+# CHECK-CPP: tile_regs_release();
+# CHECK-CPP: init_sfpu(get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP: llk_pack_reconfig_l1_acc([[ONE]])
 # CHECK-CPP: for (size_t {{.*}} < {{.*}};
-# CHECK-CPP: [[CB2]].wait_front(
-# CHECK-CPP: [[CB2]].reserve_back(
-# CHECK-CPP: add_binary_tile_init();
-# CHECK-CPP: add_binary_tile(
-# CHECK-CPP: [[CB2]].push_back(
-# CHECK-CPP: [[CB2]].pop_front(
-
-# Finalize: pop inputs (reverse order from with-statement LIFO)
-# CHECK-CPP: [[CB1]].pop_front(
-# CHECK-CPP: [[CB0]].pop_front(
+# CHECK-CPP: tile_regs_acquire();
+# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1),
+# CHECK-CPP: tile_regs_commit();
+# CHECK-CPP: tile_regs_wait();
+# CHECK-CPP: pack_tile<true>({{.*}}, get_compile_time_arg_val(2),
+# CHECK-CPP: tile_regs_release();
+# CHECK-CPP: [[OUT]].push_back(
+# CHECK-CPP: llk_pack_reconfig_l1_acc([[ZERO]])
+# CHECK-CPP: [[RHS]].pop_front(
+# CHECK-CPP: [[LHS]].pop_front(
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
-# Initial store uses copy_tile (SFPU), loop add uses FPU add_tiles
 # =============================================================================
 
 # CHECK-CPP-FPU: // add_compute
 # CHECK-CPP-FPU: void kernel_main()
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
-# CHECK-CPP-FPU: [[CB0]].wait_front(
-# CHECK-CPP-FPU: [[CB1]].wait_front(
-# CHECK-CPP-FPU: [[CB2]].reserve_back(
-
-# Initial store: copy lhs to output (SFPU path)
+# CHECK-CPP-FPU-DAG: int32_t [[ZERO:v[0-9]+]] = 0;
+# CHECK-CPP-FPU-DAG: int32_t [[ONE:v[0-9]+]] = 1;
+# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[LHS:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[RHS:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[OUT:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: [[LHS]].wait_front(
+# CHECK-CPP-FPU: [[RHS]].wait_front(
+# CHECK-CPP-FPU: [[OUT]].reserve_back(
 # CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 # CHECK-CPP-FPU: tile_regs_acquire();
 # CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(0));
 # CHECK-CPP-FPU: copy_tile(get_compile_time_arg_val(0),
 # CHECK-CPP-FPU: tile_regs_commit();
 # CHECK-CPP-FPU: tile_regs_wait();
-# CHECK-CPP-FPU: pack_tile<true>(
+# CHECK-CPP-FPU: pack_tile<true>({{.*}}, get_compile_time_arg_val(2),
 # CHECK-CPP-FPU: tile_regs_release();
-# CHECK-CPP-FPU: [[CB2]].push_back(
-
-# Loop: accumulate with FPU add_tiles (both inputs from CBs)
+# CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: llk_pack_reconfig_l1_acc([[ONE]])
 # CHECK-CPP-FPU: for (size_t {{.*}} < {{.*}};
-# CHECK-CPP-FPU: [[CB2]].wait_front(
-# CHECK-CPP-FPU: [[CB2]].reserve_back(
-# CHECK-CPP-FPU: binary_op_init_common(get_compile_time_arg_val(2), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
-# CHECK-CPP-FPU: add_tiles_init(get_compile_time_arg_val(2), get_compile_time_arg_val(1));
-# CHECK-CPP-FPU: add_tiles(get_compile_time_arg_val(2), get_compile_time_arg_val(1),
-
-# Finalize
-# CHECK-CPP-FPU: [[CB1]].pop_front(
-# CHECK-CPP-FPU: [[CB0]].pop_front(
+# CHECK-CPP-FPU: tile_regs_acquire();
+# CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(1));
+# CHECK-CPP-FPU: copy_tile(get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: tile_regs_commit();
+# CHECK-CPP-FPU: tile_regs_wait();
+# CHECK-CPP-FPU: pack_tile<true>({{.*}}, get_compile_time_arg_val(2),
+# CHECK-CPP-FPU: tile_regs_release();
+# CHECK-CPP-FPU: [[OUT]].push_back(
+# CHECK-CPP-FPU: llk_pack_reconfig_l1_acc([[ZERO]])
+# CHECK-CPP-FPU: [[RHS]].pop_front(
+# CHECK-CPP-FPU: [[LHS]].pop_front(
 
 
 if __name__ == "__main__":
