@@ -113,10 +113,44 @@ func.func @binary_recurrence(
   func.return
 }
 // CHECK: ttl.compiler_allocated
-// CHECK: scf.for
+// CHECK: %[[INPUT_WAIT:.*]] = ttl.cb_wait
+// CHECK-NEXT: %[[INPUT:.*]] = ttl.attach_cb %[[INPUT_WAIT]]
+// CHECK: scf.for {{.*}} {
 // CHECK-NOT: iter_args
-// CHECK: %[[CURRENT:.*]] = ttl.attach_cb
-// CHECK: ttl.mul %[[CURRENT]]
+// CHECK-NEXT: %[[WAIT:.*]] = ttl.cb_wait
+// CHECK-NEXT: %[[CURRENT:.*]] = ttl.attach_cb %[[WAIT]]
+// CHECK-NEXT: %[[NEXT:.*]] = ttl.mul %[[CURRENT]], %[[INPUT]]
+// CHECK-NEXT: %[[RES:.*]] = ttl.cb_reserve
+// CHECK-NEXT: ttl.store %[[NEXT]], %[[RES]]
+// CHECK-NEXT: }
+
+// -----
+
+// Add result used in body (beyond just the yield) falls back to general
+// DFB state because the accumulator match requires the add to have a
+// single use.
+// CHECK-LABEL: func.func @add_with_in_body_use
+func.func @add_with_in_body_use(
+    %init: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %loop = scf.for %iter = %c0 to %c1 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %contribution = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %sum = ttl.add %acc, %contribution : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %sink_reserve = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %sum, %sink_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+// CHECK: ttl.compiler_allocated
+// CHECK: ttl.add
+// CHECK-NOT: {accumulate}
 
 // -----
 

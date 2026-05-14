@@ -14,6 +14,11 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
                                     OpBuilder &builder) {
   MLIRContext *ctx = builder.getContext();
 
+  // Smallest size that lets the producer and consumer use different
+  // slots concurrently; one slot would serialize them. Larger counts
+  // work but waste L1, and no current caller has more than one in-flight
+  // value (intermediate DFB at a fusion split; loop state with a pre-loop
+  // store and per-iter consume/produce).
   SmallVector<int64_t> shape(tensorType.getShape());
   Type elementType = tensorType.getElementType();
   int64_t blockCount = 2;
@@ -21,8 +26,11 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
 
+  // BindCBOp lives at function entry: cb_index is function-scoped and
+  // finalize-dfb-indices requires that placement. Reserve/store/wait/attach
+  // stay at the def site to preserve per-invocation accounting inside
+  // loops and conditional branches.
   Block &body = funcOp.getBody().front();
-
   Operation *insertAfter = nullptr;
   for (Operation &op : body) {
     if (isa<BindCBOp>(&op)) {
@@ -60,8 +68,8 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                                  OpBuilder &builder) {
+Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
+                       OpBuilder &builder) {
   auto tensorType = cast<RankedTensorType>(intermediate.getType());
   Location loc = intermediate.getLoc();
 
@@ -79,7 +87,6 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
 
   auto attach =
       createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
-
   return attach.getResult();
 }
 

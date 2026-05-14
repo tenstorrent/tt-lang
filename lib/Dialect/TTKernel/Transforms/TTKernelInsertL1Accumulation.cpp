@@ -81,13 +81,16 @@ precededByNonAccumulatingPack(scf::ForOp rootLoop,
       continue;
     }
     if (auto reserve = dyn_cast<ttk::CBReserveBackOp>(op)) {
-      if (packCBs.contains(reserve.getCb())) {
+      // Uncovered CB: the loop's first pack lands in a fresh slot.
+      if (packCBs.contains(reserve.getCb()) &&
+          !covered.contains(reserve.getCb())) {
         return false;
       }
       continue;
     }
     if (auto push = dyn_cast<ttk::CBPushBackOp>(op)) {
-      if (packCBs.contains(push.getCb())) {
+      // Uncovered CB: the slot is released before the loop reaches it.
+      if (packCBs.contains(push.getCb()) && !covered.contains(push.getCb())) {
         return false;
       }
       continue;

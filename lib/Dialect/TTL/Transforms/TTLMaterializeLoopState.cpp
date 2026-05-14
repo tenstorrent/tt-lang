@@ -59,6 +59,12 @@ static bool isTensorLoopState(scf::ForOp loop, unsigned resultIndex) {
   return isa<RankedTensorType>(loop.getInitArgs()[resultIndex].getType());
 }
 
+// Matches a recurrence `acc = add(acc, x)` whose loop result is consumed by
+// a single non-accumulate store to a user-declared CB. Preconditions:
+// the add has a single use (the yield); the iter_arg is read only by the
+// add; the contribution side is not the iter_arg itself; the reserve fed
+// to the store has no live attach users; reserve and store sit in the
+// loop's parent block.
 static std::optional<AccumulatorState> matchAccumulator(scf::ForOp loop,
                                                         unsigned resultIndex) {
   auto loopResult = loop.getResult(resultIndex);
@@ -235,6 +241,11 @@ static void mapLoopCarriedValues(scf::ForOp loop, scf::ForOp newLoop,
   }
 }
 
+// For each non-accumulator state, emits a `cb_reserve`+`store` of the next
+// iteration value immediately after the op that produced it: at body entry
+// when the value enters from outside the loop body, inline when it is
+// produced by a cloned body op, and at body end as a fallback. Accumulator
+// states emit an in-place accumulate `store` at the `add` site instead.
 static void cloneBodyAndMaterializeNextState(scf::ForOp loop,
                                              scf::ForOp newLoop,
                                              ArrayRef<TensorLoopState> states,
@@ -357,23 +368,15 @@ struct MaterializeLoopState : OpRewritePattern<scf::ForOp> {
 
   LogicalResult matchAndRewrite(scf::ForOp loop,
                                 PatternRewriter &rewriter) const override {
-    auto yield = dyn_cast<scf::YieldOp>(loop.getBody()->getTerminator());
-    if (!yield || yield.getNumOperands() != loop.getNumResults()) {
-      return rewriter.notifyMatchFailure(loop,
-                                         "loop terminator is not scf.yield");
-    }
-
     SmallVector<TensorLoopState> states = collectTensorLoopStates(loop);
     if (states.empty()) {
       return rewriter.notifyMatchFailure(loop, "loop has no tensor iter_args");
     }
 
-    auto moduleOp = loop->getParentOfType<ModuleOp>();
     auto funcOp = loop->getParentOfType<func::FuncOp>();
-    if (!moduleOp || !funcOp) {
-      return rewriter.notifyMatchFailure(
-          loop, "loop is not nested in a module function");
-    }
+    assert(funcOp && "pass runs on func.func");
+    auto moduleOp = funcOp->getParentOfType<ModuleOp>();
+    assert(moduleOp && "func.func must be nested in a module");
 
     for (TensorLoopState &state : states) {
       if (state.accumulator) {

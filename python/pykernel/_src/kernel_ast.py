@@ -16,13 +16,22 @@ from .kernel_types import ClassRegistry
 from .utils import _cast, _get_type_str
 
 
-class _ReadVariableCollector(ast.NodeVisitor):
-    def __init__(self):
-        self.names = set()
+def _extract_target_names(target):
+    """Names bound by a single assignment target, supporting nested tuples
+    and starred unpacking. Subscript/Attribute targets bind storage, not
+    variables, and are skipped."""
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            yield from _extract_target_names(elt)
+    elif isinstance(target, ast.Starred):
+        yield from _extract_target_names(target.value)
 
-    def visit_Name(self, node):
-        if isinstance(node.ctx, ast.Load):
-            self.names.add(node.id)
+
+class _ScopedCollector(ast.NodeVisitor):
+    """Base for collectors that walk a statement body without descending
+    into nested function or lambda definitions."""
 
     def visit_FunctionDef(self, node):
         return
@@ -33,6 +42,29 @@ class _ReadVariableCollector(ast.NodeVisitor):
     def visit_Lambda(self, node):
         return
 
+    def visit_For(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_With(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_If(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+        for stmt in node.orelse:
+            self.visit(stmt)
+
+
+class _ReadVariableCollector(_ScopedCollector):
+    def __init__(self):
+        self.names = set()
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Load):
+            self.names.add(node.id)
+
 
 def _collect_read_variable_names(node):
     collector = _ReadVariableCollector()
@@ -40,19 +72,22 @@ def _collect_read_variable_names(node):
     return collector.names
 
 
-class _SelfRebindingLoopVarCollector(ast.NodeVisitor):
+class _SelfRebindingLoopVarCollector(_ScopedCollector):
+    """Names that are assigned in a loop body to an expression that reads
+    them (`acc = acc + x`, `a, b = a + 1, b * 2`). Order of first
+    appearance is preserved."""
+
     def __init__(self):
         self.names = []
         self._seen = set()
 
     def _add_if_self_rebinding(self, target, value):
-        if not isinstance(target, ast.Name):
-            return
         read_variable_names = _collect_read_variable_names(value)
-        if target.id not in read_variable_names or target.id in self._seen:
-            return
-        self.names.append(target.id)
-        self._seen.add(target.id)
+        for name in _extract_target_names(target):
+            if name not in read_variable_names or name in self._seen:
+                continue
+            self.names.append(name)
+            self._seen.add(name)
 
     def visit_Assign(self, node):
         if len(node.targets) != 1:
@@ -63,82 +98,44 @@ class _SelfRebindingLoopVarCollector(ast.NodeVisitor):
         if node.value is not None:
             self._add_if_self_rebinding(node.target, node.value)
 
-    def visit_For(self, node):
-        for stmt in node.body:
-            self.visit(stmt)
 
-    def visit_With(self, node):
-        for stmt in node.body:
-            self.visit(stmt)
+class _AssignedVariableCollector(_ScopedCollector):
+    """Names assigned anywhere inside the visited body. Order of first
+    appearance is preserved."""
 
-    def visit_If(self, node):
-        for stmt in node.body:
-            self.visit(stmt)
-        for stmt in node.orelse:
-            self.visit(stmt)
-
-    def visit_FunctionDef(self, node):
-        return
-
-    def visit_AsyncFunctionDef(self, node):
-        return
-
-    def visit_Lambda(self, node):
-        return
-
-
-class _AssignedVariableCollector(ast.NodeVisitor):
     def __init__(self):
         self.names = []
         self._seen = set()
 
-    def _add_if_name(self, target):
-        if not isinstance(target, ast.Name):
-            return
-        if target.id in self._seen:
-            return
-        self.names.append(target.id)
-        self._seen.add(target.id)
+    def _add_target(self, target):
+        for name in _extract_target_names(target):
+            if name in self._seen:
+                continue
+            self.names.append(name)
+            self._seen.add(name)
 
     def visit_Assign(self, node):
         if len(node.targets) == 1:
-            self._add_if_name(node.targets[0])
+            self._add_target(node.targets[0])
 
     def visit_AnnAssign(self, node):
-        self._add_if_name(node.target)
-
-    def visit_For(self, node):
-        for stmt in node.body:
-            self.visit(stmt)
-
-    def visit_With(self, node):
-        for stmt in node.body:
-            self.visit(stmt)
-
-    def visit_If(self, node):
-        for stmt in node.body:
-            self.visit(stmt)
-        for stmt in node.orelse:
-            self.visit(stmt)
-
-    def visit_FunctionDef(self, node):
-        return
-
-    def visit_AsyncFunctionDef(self, node):
-        return
-
-    def visit_Lambda(self, node):
-        return
+        self._add_target(node.target)
 
 
 def _get_single_result(value):
     if isinstance(value, OpView):
         if len(value.results) != 1:
-            raise ValueError("Expected operation with exactly one result")
+            raise ValueError(
+                f"Expected operation with exactly one result, got "
+                f"{len(value.results)} from {value.operation.name}"
+            )
         return value.result
     if isinstance(value, Operation):
         if len(value.results) != 1:
-            raise ValueError("Expected operation with exactly one result")
+            raise ValueError(
+                f"Expected operation with exactly one result, got "
+                f"{len(value.results)} from {value.name}"
+            )
         return value.results[0]
     return value
 
@@ -409,15 +406,15 @@ class TTCompilerBase(PyKernelAstBase):
         for stmt in node.body:
             collector.visit(stmt)
 
+        # A name is carried only if it already exists outside the loop;
+        # otherwise it is loop-local and rebinding it does not need an
+        # iter_arg. Type is not constrained: scf.for accepts any iter_arg
+        # type, so tensor and scalar recurrences are both materialized.
         carried_var_names = []
         for var_name in collector.names:
             if var_name == node.target.id:
                 continue
-            var_table = self._var_exists(var_name)
-            if not var_table:
-                continue
-            var_type = _get_value_type(var_table[var_name])
-            if not isinstance(var_type, RankedTensorType):
+            if not self._var_exists(var_name):
                 continue
             carried_var_names.append(var_name)
         return carried_var_names
@@ -429,13 +426,11 @@ class TTCompilerBase(PyKernelAstBase):
         for stmt in node.orelse:
             collector.visit(stmt)
 
+        # Only names that exist outside the if are carried; fresh names
+        # bound inside a branch stay branch-local.
         carried_var_names = []
         for var_name in collector.names:
-            var_table = self._var_exists(var_name)
-            if not var_table:
-                continue
-            var_type = _get_value_type(var_table[var_name])
-            if not isinstance(var_type, RankedTensorType):
+            if not self._var_exists(var_name):
                 continue
             carried_var_names.append(var_name)
         return carried_var_names

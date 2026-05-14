@@ -100,18 +100,14 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        auto replacement = materializeToDFB(operand, moduleOp, builder);
-        if (failed(replacement)) {
-          signalPassFailure();
-          return;
-        }
+        Value replacement = materializeToDFB(operand, moduleOp, builder);
 
         // Replace only this specific operand. Elementwise consumers of
         // the same value retain the original SSA value and fuse with
         // the producer in a single compute block.
-        op->setOperand(idx, *replacement);
+        op->setOperand(idx, replacement);
 
-        materialized[operand] = *replacement;
+        materialized[operand] = replacement;
       }
     }
   }
