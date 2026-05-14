@@ -65,6 +65,7 @@ def compile_ttl_to_ttkernel(
         f"ttl-verify-pipenet-guards,"
         f"ttl-verify-dfb-spsc,"
         f"ttl-erase-pipenet-scopes,"
+        f"ttl-validate-cb-budget,"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
         f"canonicalize,"
