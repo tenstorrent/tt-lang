@@ -64,9 +64,40 @@ def reset_context() -> None:
     """Reset context for current greenlet to defaults.
 
     Creates a fresh context, discarding any previous state.
+    Also frees the sys.monitoring tool slot used for copy-wait injection so
+    the next simulation run can re-register its callbacks from a clean state.
     Primarily useful for test cleanup.
     """
+    import sys
+
+    if sys.monitoring.get_tool(sys.monitoring.OPTIMIZER_ID) is not None:
+        sys.monitoring.free_tool_id(sys.monitoring.OPTIMIZER_ID)
     getcurrent()._sim_context = SimulatorContext()  # type: ignore
+
+
+def cleanup_run_context() -> None:
+    """Clean up execution-specific state after a single Program run.
+
+    Clears scheduler, monitoring hooks, and per-run caches so that a
+    subsequent operation starts cleanly.  Unlike ``reset_context()``, this
+    preserves persistent session state such as ``trace_events`` and ``config``
+    so that callers can read trace output after the run completes.
+
+    Called by the ``@ttl.operation`` wrapper after each ``Program`` run.
+    """
+    import sys
+
+    ctx = get_context()
+    ctx.scheduler = None
+    ctx.current_thread_type = None
+    ctx.thread_registry.clear()
+    ctx.kernel_dfb_count = 0
+    ctx.kernel_l1_bytes = 0
+    ctx.active_hooks.clear()
+    ctx.injection_points_cache.clear()
+    ctx.auto_wait_copy_lines.clear()
+    if sys.monitoring.get_tool(sys.monitoring.OPTIMIZER_ID) is not None:
+        sys.monitoring.free_tool_id(sys.monitoring.OPTIMIZER_ID)
 
 
 def get_current_thread_type() -> ThreadType:
