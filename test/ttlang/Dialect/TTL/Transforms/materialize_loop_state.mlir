@@ -34,6 +34,38 @@ func.func @carried_add(
 
 // -----
 
+// Additive recurrence whose contribution is defined outside the loop
+// body: the wait+attach are emitted once before the loop and the
+// accumulator path reuses the outer SSA value on every iteration.
+// CHECK-LABEL: func.func @carried_add_outer_contribution
+// CHECK-SAME: (%[[INIT:[^:]+]]: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+func.func @carried_add_outer_contribution(
+    %init: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %contribution_wait = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %contribution = ttl.attach_cb %contribution_wait, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %loop = scf.for %iter = %c0 to %c1 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %sum = ttl.add %acc, %contribution : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  %reserve = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+// CHECK: %[[WAIT:.*]] = ttl.cb_wait
+// CHECK-NEXT: %[[CONTRIB:.*]] = ttl.attach_cb %[[WAIT]]
+// CHECK: %[[RESERVE:.*]] = ttl.cb_reserve
+// CHECK-NEXT: ttl.store %[[INIT]], %[[RESERVE]]
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: ttl.store %[[CONTRIB]], %[[RESERVE]] {accumulate}
+// CHECK-NEXT: }
+// CHECK-NOT: ttl.add
+
+// -----
+
 // Commuted additive recurrence lowers to the same accumulate store form.
 // CHECK-LABEL: func.func @commuted_carried_add
 // CHECK-SAME: (%[[INIT:[^:]+]]: tensor<1x1x!ttcore.tile<32x32, bf16>>)

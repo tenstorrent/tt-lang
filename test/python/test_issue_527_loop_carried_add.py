@@ -359,6 +359,119 @@ def test_multi_tile_block_recurrence(device, dtype):
     assert_allclose(result, expected.float(), **_DTYPE_TOL[dtype])
 
 
+def _make_three_acc_multi_tile_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(a_seed, b_seed, c_seed, delta, out_a, out_b, out_c):
+        a_cb = ttl.make_dataflow_buffer_like(
+            a_seed, shape=MULTI_TILE_SHAPE, block_count=2
+        )
+        b_cb = ttl.make_dataflow_buffer_like(
+            b_seed, shape=MULTI_TILE_SHAPE, block_count=2
+        )
+        c_cb = ttl.make_dataflow_buffer_like(
+            c_seed, shape=MULTI_TILE_SHAPE, block_count=2
+        )
+        delta_cb = ttl.make_dataflow_buffer_like(
+            delta, shape=MULTI_TILE_SHAPE, block_count=N_ITERS
+        )
+        out_a_cb = ttl.make_dataflow_buffer_like(
+            out_a, shape=MULTI_TILE_SHAPE, block_count=2
+        )
+        out_b_cb = ttl.make_dataflow_buffer_like(
+            out_b, shape=MULTI_TILE_SHAPE, block_count=2
+        )
+        out_c_cb = ttl.make_dataflow_buffer_like(
+            out_c, shape=MULTI_TILE_SHAPE, block_count=2
+        )
+
+        @ttl.compute()
+        def compute():
+            with a_cb.wait() as a, b_cb.wait() as b, c_cb.wait() as c:
+                for _ in range(N_ITERS):
+                    with delta_cb.wait() as d:
+                        a, b, c = a + d, b + d, c + d
+                with out_a_cb.reserve() as oa:
+                    oa.store(a)
+                with out_b_cb.reserve() as ob:
+                    ob.store(b)
+                with out_c_cb.reserve() as oc:
+                    oc.store(c)
+
+        @ttl.datamovement()
+        def reader():
+            with a_cb.reserve() as blk:
+                ttl.copy(
+                    a_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                ).wait()
+            with b_cb.reserve() as blk:
+                ttl.copy(
+                    b_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                ).wait()
+            with c_cb.reserve() as blk:
+                ttl.copy(
+                    c_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                ).wait()
+            for _ in range(N_ITERS):
+                with delta_cb.reserve() as blk:
+                    ttl.copy(
+                        delta[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    ).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_a_cb.wait() as blk:
+                ttl.copy(
+                    blk, out_a[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                ).wait()
+            with out_b_cb.wait() as blk:
+                ttl.copy(
+                    blk, out_b[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                ).wait()
+            with out_c_cb.wait() as blk:
+                ttl.copy(
+                    blk, out_c[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                ).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_three_accumulators_multi_tile_block(device, dtype):
+    """Closes the matrix: three accumulators and multi-tile blocks together."""
+    kernel = _make_three_acc_multi_tile_kernel()
+
+    a_seed = torch.full((MULTI_TILE_ROWS, MULTI_TILE_COLS), 1.0, dtype=dtype)
+    b_seed = torch.full((MULTI_TILE_ROWS, MULTI_TILE_COLS), 10.0, dtype=dtype)
+    c_seed = torch.full((MULTI_TILE_ROWS, MULTI_TILE_COLS), 100.0, dtype=dtype)
+    delta = torch.full((MULTI_TILE_ROWS, MULTI_TILE_COLS), 1.0, dtype=dtype)
+    out_a = torch.zeros((MULTI_TILE_ROWS, MULTI_TILE_COLS), dtype=dtype)
+    out_b = torch.zeros((MULTI_TILE_ROWS, MULTI_TILE_COLS), dtype=dtype)
+    out_c = torch.zeros((MULTI_TILE_ROWS, MULTI_TILE_COLS), dtype=dtype)
+
+    expected_a = a_seed.float() + N_ITERS * delta.float()
+    expected_b = b_seed.float() + N_ITERS * delta.float()
+    expected_c = c_seed.float() + N_ITERS * delta.float()
+
+    a_dev = to_dram(a_seed, device)
+    b_dev = to_dram(b_seed, device)
+    c_dev = to_dram(c_seed, device)
+    delta_dev = to_dram(delta, device)
+    out_a_dev = to_dram(out_a, device)
+    out_b_dev = to_dram(out_b, device)
+    out_c_dev = to_dram(out_c, device)
+
+    kernel(a_dev, b_dev, c_dev, delta_dev, out_a_dev, out_b_dev, out_c_dev)
+    ttnn.synchronize_device(device)
+
+    result_a = ttnn.to_torch(out_a_dev).float()
+    result_b = ttnn.to_torch(out_b_dev).float()
+    result_c = ttnn.to_torch(out_c_dev).float()
+    assert_allclose(result_a, expected_a.float(), **_DTYPE_TOL[dtype])
+    assert_allclose(result_b, expected_b.float(), **_DTYPE_TOL[dtype])
+    assert_allclose(result_c, expected_c.float(), **_DTYPE_TOL[dtype])
+
+
 def _make_zero_trip_kernel():
     @ttl.operation(grid=(1, 1))
     def kernel(initial, out):
