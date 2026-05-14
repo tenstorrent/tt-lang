@@ -758,55 +758,77 @@ class TestCopyWaitRuntime:
     def test_thread_exit_cleanup_does_not_push_other_threads_block(
         self, reset_simulator_context
     ):
-        """dm_write's exit cleanup must not push blocks reserved by dm_read.
+        """dm_write's exit cleanup must not push a block that dm_read reserved.
 
-        All three threads share core_context and therefore share inp_dfb.
-        When dm_write's _tagged wrapper runs its cleanup loop it calls
-        DataflowBuffer.auto_push_block() on inp_dfb.  The greenlet-identity
-        guard in auto_push_block() (dfb.py) must detect that the pending
-        block was reserved by dm_read's greenlet and skip the push.
+        The scenario that exercises the greenlet-identity guard in
+        DataflowBuffer.auto_push_block() (dfb.py line ~1335):
 
-        If the guard were absent, dm_write's cleanup would push dm_read's
-        block before dm_read's bare copy has been waited, corrupting the
-        data seen by compute.
+        1. dm_read reserves a block from inp_dfb (pending on dm_read's greenlet).
+        2. dm_read yields by blocking on sync_dfb.wait() — dm_read holds the
+           pending block while suspended.
+        3. dm_write runs, produces a sync token to sync_dfb, and exits.
+        4. dm_write's _tagged cleanup calls inp_dfb.auto_push_block().
+           The guard ``if self._pending_reserved_greenlet is not getcurrent()``
+           must detect the mismatch and skip the push.
+        5. dm_read unblocks, fills the block, and pushes it explicitly.
+
+        Without the guard, step 4 would push an unfilled block to compute,
+        producing zeroes instead of the expected ones in the output.
         """
         import torch
 
-        ITERS = 2
-        inp = ttnn.rand((ITERS * 32, 32))
-        out = ttnn.empty((ITERS * 32, 32))
+        inp = ttnn.from_torch(torch.ones(32, 32))
+        out = ttnn.from_torch(torch.zeros(32, 32))
+        # Scratch tensor absorbs the dummy sync copy; its final value is irrelevant.
+        scratch = ttnn.from_torch(torch.zeros(32, 32))
 
         @ttl.operation(grid=(1, 1))
-        def op(inp, out):
+        def op(inp, out, scratch):
             inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            # sync_dfb carries one token from dm_write to dm_read, forcing
+            # dm_read to yield while its inp_dfb block is still pending.
+            sync_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
             out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
             @ttl.compute()
             def compute():
-                for i in range(ITERS):
-                    blk = inp_dfb.wait()
-                    ob = out_dfb.reserve()
-                    ob.store(blk)
+                blk = inp_dfb.wait()
+                ob = out_dfb.reserve()
+                ob.store(blk)
 
             @ttl.datamovement()
             def dm_read():
-                # Bare copy — auto-wait must fire before compute sees the block.
-                # dm_write also holds a reference to inp_dfb via core_context and
-                # its cleanup must not push this thread's pending reserved block.
-                for i in range(ITERS):
-                    blk = inp_dfb.reserve()
-                    ttl.copy(inp[i, 0], blk)  # bare, no explicit wait
+                blk = inp_dfb.reserve()  # pending on dm_read's greenlet
+
+                # Yield here — dm_write runs and EXITS while blk is still pending.
+                # dm_write's cleanup calls inp_dfb.auto_push_block(); the greenlet
+                # guard must prevent it from pushing blk.
+                sig = sync_dfb.wait()
+
+                # The block state machine requires copy-out before auto-pop; write the
+                # token value to scratch (the content is irrelevant for this test).
+                ttl.copy(sig, scratch[0, 0]).wait()
+
+                # Fill and push blk now that the sync signal has been received.
+                ttl.copy(inp[0, 0], blk).wait()
+                blk.push()
+
+                # Read compute's output so the pipeline drains cleanly.
+                ob = out_dfb.wait()
+                ttl.copy(ob, out[0, 0]).wait()
 
             @ttl.datamovement()
             def dm_write():
-                for i in range(ITERS):
-                    blk = out_dfb.wait()
-                    ttl.copy(blk, out[i, 0]).wait()
+                # Produce a sync token to unblock dm_read, then exit immediately.
+                # auto-push fires for the sync block at dm_write's return.
+                #
+                # The _tagged cleanup then calls inp_dfb.auto_push_block() while
+                # dm_read's block is still pending — exactly the scenario under test.
+                s = sync_dfb.reserve()
+                ttl.copy(inp[0, 0], s).wait()
 
-        op(inp, out)
-        assert torch.allclose(
-            ttnn.to_torch(inp).float(), ttnn.to_torch(out).float(), atol=1e-2
-        )
+        op(inp, out, scratch)
+        assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())
 
 
 # ---------------------------------------------------------------------------
