@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 import torch
 import ttl
-from ttl.ttl_api import _require_device
+from ttl.ttl_api import _require_device, _same_device
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
@@ -162,27 +162,23 @@ class _FakeDevice:
 
 
 def test_same_device_identity():
-    from ttl.ttl_api import _same_device
 
     d = _FakeDevice(0)
     assert _same_device(d, d) is True
 
 
 def test_same_device_equal_ids():
-    from ttl.ttl_api import _same_device
 
     assert _same_device(_FakeDevice(5), _FakeDevice(5)) is True
 
 
 def test_same_device_different_ids():
-    from ttl.ttl_api import _same_device
 
     assert _same_device(_FakeDevice(0), _FakeDevice(1)) is False
 
 
 def test_same_device_no_id_method():
     """Objects without .id() are only equal by identity."""
-    from ttl.ttl_api import _same_device
 
     a, b = object(), object()
     assert _same_device(a, a) is True
