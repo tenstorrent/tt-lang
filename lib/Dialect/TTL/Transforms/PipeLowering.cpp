@@ -141,47 +141,51 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
   }
 
-  // Destination address: always use write_ptr. The receiver does
-  // cb_reserve_back, so the write pointer is the correct target.
-  // CB layout is uniform across cores, so the local write_ptr matches
-  // the remote core's write_ptr for the same CB index.
-  auto cbWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
-  auto cbWritePtrIdx =
+  SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
+  int64_t cbNumTiles = 1;
+  for (int64_t d : cbBounds) {
+    cbNumTiles *= d;
+  }
+  auto numTilesI32 = arith::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(cbNumTiles));
+
+  // Destination DFB on the sender's local view: same as the source when both
+  // endpoints share a DFB index, otherwise a fresh handle on the receiver's
+  // index so the sender can advance its own fifo_wr_ptr.
+  std::optional<int64_t> senderCBIndex = getCBIndex(srcCB);
+  Value senderRecvCB = *cbConverted;
+  if (receiverInfo && senderCBIndex.has_value() &&
+      senderCBIndex.value() != receiverInfo->cbIndex) {
+    auto srcCBType = mlir::cast<ttk::CBType>(cbConverted->getType());
+    senderRecvCB = ttk::GetCompileArgValOp::create(
+        rewriter, loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
+  }
+
+  // In loopback the user's receive callback runs on the sender core and
+  // already issues reserve_back / push_back on the destination DFB; emitting
+  // the sender-side pair would double-advance regardless of whether the
+  // source and destination DFB indices coincide.
+  bool skipSenderReserve = pipeType.srcInDstRange();
+
+  if (!skipSenderReserve) {
+    ttk::CBReserveBackOp::create(rewriter, loc, senderRecvCB, numTilesI32);
+  }
+
+  // Sender's local write_ptr is advanced in lockstep with the receiver via
+  // the surrounding reserve_back / push_back.
+  auto cbWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, senderRecvCB);
+  Value dstBaseIdx =
       arith::IndexCastOp::create(rewriter, loc, indexTy, cbWritePtr);
 
-  // Source address depends on CB access context:
-  //   Producer (cb_reserve/cb_push): data at write_ptr, before push.
-  //   Consumer (cb_wait/cb_pop):     data at read_ptr, after wait.
+  // Producer source address is at the source DFB's write_ptr (data is staged
+  // there before push_back); consumer source address is at its read_ptr.
   Value srcPtrIdx;
   if (isConsumerCB) {
     auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
   } else {
-    srcPtrIdx = cbWritePtrIdx;
-  }
-
-  Value dstBaseIdx = cbWritePtrIdx;
-  if (receiverInfo) {
-    // Determine sender CB index to check if it differs from receiver.
-    // The source CB may be pre- or post-conversion, so check both BindCBOp
-    // (pre-conversion) and GetCompileArgValOp (post-conversion).
-    std::optional<int64_t> senderCBIndex = getCBIndex(srcCB);
-    if (!senderCBIndex.has_value()) {
-      Value tracedSrc = traceUnrealizedCasts(srcCB);
-      if (auto argOp = tracedSrc.getDefiningOp<ttk::GetCompileArgValOp>()) {
-        senderCBIndex = argOp.getArgIndex();
-      }
-    }
-    if (senderCBIndex.has_value() &&
-        senderCBIndex.value() != receiverInfo->cbIndex) {
-      auto srcCBType = llvm::dyn_cast<ttk::CBType>(cbConverted->getType());
-      auto recvCB = ttk::GetCompileArgValOp::create(
-          rewriter, loc, srcCBType,
-          static_cast<int32_t>(receiverInfo->cbIndex));
-      auto recvWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, recvCB);
-      dstBaseIdx =
-          arith::IndexCastOp::create(rewriter, loc, indexTy, recvWritePtr);
-    }
+    auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
+    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
   }
 
   // Destination coordinates for multicast - convert logical to virtual coords
@@ -205,16 +209,10 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto numDestsVal = arith::ConstantOp::create(
       rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
 
-  SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
-
   // For gather patterns (multiple sources to one destination), each source
   // writes to a different slot in the destination CB to avoid overwrites.
   // Slot indices are assigned by PipeGraph based on actual destination sharing.
   int64_t slotIdx = receiverInfo ? receiverInfo->gatherSlotIdx : 0;
-  int64_t cbNumTiles = 1;
-  for (int64_t d : cbBounds) {
-    cbNumTiles *= d;
-  }
   int64_t slotByteOffset = slotIdx * pageSizeBytes * cbNumTiles;
 
   // Transfer the entire block in a single NOC write. Tiles are contiguous in
@@ -295,6 +293,10 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
           rewriter, loc, recvSemAddr, recvSemMcastAddr.getResult(), numDestsVal,
           /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
     }
+  }
+
+  if (!skipSenderReserve) {
+    ttk::CBPushBackOp::create(rewriter, loc, senderRecvCB, numTilesI32);
   }
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
