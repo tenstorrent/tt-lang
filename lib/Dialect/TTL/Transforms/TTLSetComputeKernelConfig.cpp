@@ -51,15 +51,18 @@ static bool isF32CB0InputBlockArgument(Value value, ComputeOp computeOp) {
   if (argNumber >= computeOp.getNumInputs()) {
     return false;
   }
-  Value cb = getAttachedCB(computeOp.getInputs()[argNumber]);
-  if (!cb || getCBIndex(cb) != 0) {
+  std::optional<mlir::Type> elementType = getTileElementType(arg.getType());
+  if (!elementType || !elementType->isF32()) {
     return false;
   }
-  std::optional<mlir::Type> elementType = getTileElementType(arg.getType());
-  return elementType && elementType->isF32();
+  Value cb = getAttachedCB(computeOp.getInputs()[argNumber]);
+  return cb && getCBIndex(cb) == 0;
 }
 
-static bool isSFPUTileStrategyOp(Operation *op) {
+// TODO: Add TTLFPUOp and TTLSFPUOp traits to distinguish FPU and SFPU tile ops.
+// Then stop relying on the list of ops in "if (isa<TileReduceOp,
+// TileMatmulBlockOp>(op), ...) "
+static bool isDstInputTileComputeOp(Operation *op) {
   if (!isTileComputeOp(op)) {
     return false;
   }
@@ -79,7 +82,7 @@ static bool isSFPUTileStrategyOp(Operation *op) {
 static bool needsUnpackToDestFp32(ComputeOp computeOp) {
   Block &body = computeOp.getRegion().front();
   return llvm::any_of(body.without_terminator(), [&](Operation &op) {
-    if (!isSFPUTileStrategyOp(&op)) {
+    if (!isDstInputTileComputeOp(&op)) {
       return false;
     }
     return llvm::any_of(op.getOperands(), [&](Value operand) {
@@ -176,9 +179,6 @@ struct TTLSetComputeKernelConfigPass
 
     bool needsUnpackFp32 = false;
     funcOp->walk([&](ComputeOp computeOp) {
-      if (needsUnpackFp32) {
-        return WalkResult::interrupt();
-      }
       if (needsUnpackToDestFp32(computeOp)) {
         needsUnpackFp32 = true;
         return WalkResult::interrupt();

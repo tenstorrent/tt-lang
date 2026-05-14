@@ -689,8 +689,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 /// Build a ttl.compute from pre-validated inputs. Handles output CB collection,
 /// init tensor creation, ComputeOp + body construction, and tile store
 /// emission. inputMaps are the indexing maps for the input operands; outputMap
-/// is replicated once per output CB. The emitTileOp callback receives (builder,
-/// loc, tileType, body) and returns the tile result value.
+/// is replicated once per output CB. Block argument tile types are derived from
+/// the corresponding input and output tensor element types. The emitTileOp
+/// callback receives (builder, loc, outputTileType, body) and returns the tile
+/// result value.
 static LogicalResult buildComputeFromInputs(
     Operation *op, PatternRewriter &rewriter, ValueRange inputs,
     RankedTensorType outputType, ArrayRef<Attribute> inputMaps,
@@ -705,6 +707,16 @@ static LogicalResult buildComputeFromInputs(
   }
 
   Location loc = op->getLoc();
+
+  SmallVector<Type> inputTileTypes;
+  for (Value input : inputs) {
+    auto inputType = getTensorType(input);
+    if (!inputType) {
+      return rewriter.notifyMatchFailure(op, "input is not a ranked tensor");
+    }
+    inputTileTypes.push_back(ttcore::TileType::get(inputType.getElementType()));
+  }
+  Type outputTileType = ttcore::TileType::get(outputType.getElementType());
 
   SmallVector<Attribute> maps(inputMaps);
   for (size_t i = 0; i < outCbs.size(); ++i) {
@@ -729,16 +741,15 @@ static LogicalResult buildComputeFromInputs(
                                      rewriter.getArrayAttr(iterTypes));
 
   Block *body = rewriter.createBlock(&computeOp.getBody());
-  Type tileType = ttcore::TileType::get(outputType.getElementType());
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    body->addArgument(tileType, loc);
+  for (Type inputTileType : inputTileTypes) {
+    body->addArgument(inputTileType, loc);
   }
   for (size_t i = 0; i < outCbs.size(); ++i) {
-    body->addArgument(tileType, loc);
+    body->addArgument(outputTileType, loc);
   }
 
   rewriter.setInsertionPointToStart(body);
-  Value result = emitTileOp(rewriter, loc, tileType, body);
+  Value result = emitTileOp(rewriter, loc, outputTileType, body);
   emitTileStores(rewriter, loc, result, op);
   YieldOp::create(rewriter, loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
@@ -1439,17 +1450,13 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
 //===----------------------------------------------------------------------===//
 
 /// Lowers ttl.typecast to ttl.compute with ttl.tile_typecast in the body.
-/// Cannot reuse buildComputeFromInputs because the input and output tile
-/// element types differ; that helper assumes a single tile element type for
-/// all block arguments.
 struct LowerTypecastToCompute : OpRewritePattern<TypecastOp> {
   using OpRewritePattern<TypecastOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(TypecastOp op,
                                 PatternRewriter &rewriter) const override {
-    auto inputType = getTensorType(op.getInput());
     auto resultType = getTensorType(op.getResult());
-    if (!inputType || !resultType) {
+    if (!resultType) {
       return failure();
     }
 
@@ -1457,59 +1464,20 @@ struct LowerTypecastToCompute : OpRewritePattern<TypecastOp> {
       return tryFusion(op, rewriter);
     }
 
-    SmallVector<Value> outCbs = collectOutputCBs(op);
-    if (outCbs.empty()) {
-      return rewriter.notifyMatchFailure(
-          op, "no output CB found (missing ttl.store or view not from "
-              "ttl.cb_reserve)");
-    }
-
-    Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
-
     AffineMap identityMap =
         AffineMap::getMultiDimIdentityMap(resultType.getRank(), ctx);
-    SmallVector<Attribute> maps;
-    maps.push_back(AffineMapAttr::get(identityMap));
-    for (size_t i = 0; i < outCbs.size(); ++i) {
-      maps.push_back(AffineMapAttr::get(identityMap));
-    }
+    SmallVector<Attribute> inputMaps(1, AffineMapAttr::get(identityMap));
     SmallVector<Attribute> iterTypes(resultType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
-    insertAtLastStore(rewriter, op);
-
-    SmallVector<Value> allInitAttached;
-    SmallVector<Type> resultTypes;
-    Value input = op.getInput();
-    for (Value outCb : outCbs) {
-      Value init = buildInitTensor(rewriter, loc, resultType, input);
-      Value initAttached =
-          AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
-      allInitAttached.push_back(initAttached);
-      resultTypes.push_back(resultType);
-    }
-
-    auto computeOp = ComputeOp::create(
-        rewriter, loc, TypeRange(resultTypes), ValueRange{input},
-        ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
-
-    Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type inputTileType = ttcore::TileType::get(inputType.getElementType());
-    Type outputTileType = ttcore::TileType::get(resultType.getElementType());
-    body->addArgument(inputTileType, loc);
-    for (size_t i = 0; i < outCbs.size(); ++i) {
-      body->addArgument(outputTileType, loc);
-    }
-
-    rewriter.setInsertionPointToStart(body);
-    Value tileResult = createTileOpWithPlaceholderDstIndex<TileTypecastOp>(
-        rewriter, loc, outputTileType, body->getArgument(0));
-    emitTileStores(rewriter, loc, tileResult, op);
-    YieldOp::create(rewriter, loc);
-    rewriter.replaceOp(op, computeOp.getResult(0));
-    return success();
+    return buildComputeFromInputs(
+        op, rewriter, ValueRange{op.getInput()}, resultType, inputMaps,
+        identityMap, iterTypes,
+        [](OpBuilder &b, Location loc, Type outputTileType, Block *body) {
+          return createTileOpWithPlaceholderDstIndex<TileTypecastOp>(
+              b, loc, outputTileType, body->getArgument(0));
+        });
   }
 };
 

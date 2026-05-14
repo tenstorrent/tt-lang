@@ -435,6 +435,22 @@ inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
   return capacity;
 }
 
+inline bool isConsumedByTileTypecast(Value value) {
+  for (Operation *user : value.getUsers()) {
+    if (isa<TileTypecastOp>(user)) {
+      return true;
+    }
+    if (auto copy = dyn_cast<CopyTileOp>(user)) {
+      for (Operation *copyUser : copy.getDstTile().getUsers()) {
+        if (isa<TileTypecastOp>(copyUser)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /// Compute DST capacity for a compute op. Fails for mixed f32/non-f32 args.
 inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   bool fullSyncEn = getKernelBoolAttr(computeOp, kDstFullSyncEnAttrName);
@@ -459,20 +475,18 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (sawF32 && sawNonF32) {
-    // Mixed dtypes are intentional when the body performs an explicit dtype
-    // conversion (ttl.tile_typecast); fall through to f32 capacity, which is
-    // conservative and safe for that pattern. Otherwise, reject the mix
-    // because the kernel may have been authored assuming bf16 capacity.
-    bool hasIntentionalDtypeConversion = false;
-    computeOp.getRegion().walk([&](TileTypecastOp) {
-      hasIntentionalDtypeConversion = true;
-      return WalkResult::interrupt();
-    });
-    if (!hasIntentionalDtypeConversion) {
-      return computeOp.emitOpError(
-          "mixed f32 and non-f32 tile arguments; "
-          "DST capacity uses f32 limits (4 tiles) which may produce "
-          "incorrect results");
+    for (BlockArgument arg : body.getArguments()) {
+      if (arg.getArgNumber() >= computeOp.getNumInputs()) {
+        continue;
+      }
+      if (!getTileElementType(arg.getType())) {
+        continue;
+      }
+      if (!isConsumedByTileTypecast(arg)) {
+        return computeOp.emitOpError(
+            "mixed f32 and non-f32 tile arguments; DST capacity uses f32 "
+            "limits (4 tiles) which may produce incorrect results");
+      }
     }
   }
 
