@@ -25,6 +25,86 @@ def TTLInsertCBSync
   let dependentDialects = [];
 }
 
+def TTLCoalesceDFBAcquires
+    : Pass<"ttl-coalesce-dfb-acquires", "::mlir::func::FuncOp"> {
+  let summary = "Coalesce consecutive same-DFB acquires into one multi-tile acquire";
+  let description = [{
+    Rewrites the source pattern
+
+    ```
+    t1 = cb.wait();  t2 = cb.wait();  t3 = cb.wait();
+    use(t1);         use(t2);         use(t3);
+    ```
+
+    into the canonical tt-metal "cumulative wait + indexed reads +
+    coalesced pop" pattern
+
+    ```
+    cb_wait_front(cb, 3*k);
+    copy_tile(cb, /*src_idx=*/0, dst);  // t1
+    copy_tile(cb, /*src_idx=*/k, dst);  // t2
+    copy_tile(cb, /*src_idx=*/2*k, dst);// t3
+    cb_pop_front(cb, 3*k);
+    ```
+
+    used in tt-metal compute kernels (`eltwise_binary.cpp`, `bcast_h.cpp`,
+    matmul kernels, etc.) when a consumer holds a fixed multi-tile window
+    before processing it.
+
+    Pre-coalesce, each `ttl.cb_wait` lowers to its own `cb_wait_front(k)`
+    and each `ttl.cb_pop` to `cb_pop_front(k)`. Because metal's
+    `cb_wait_front`/`cb_pop_front` are non-cumulative, this races: the
+    first pop advances the front before the producer has pushed enough
+    tiles to satisfy the next read.
+
+    At the IR level the rewrite is
+
+    ```mlir
+    // Before (post `ttl-insert-cb-sync`):
+    %t1 = ttl.cb_wait %cb : <[1,k],...,bc> -> tensor<1xkx...>
+    %t2 = ttl.cb_wait %cb : <[1,k],...,bc> -> tensor<1xkx...>
+    %t3 = ttl.cb_wait %cb : <[1,k],...,bc> -> tensor<1xkx...>
+    ... use %t1 ... ttl.cb_pop %cb
+    ... use %t2 ... ttl.cb_pop %cb
+    ... use %t3 ... ttl.cb_pop %cb
+
+    // After:
+    %g  = ttl.cb_wait %cb {num_tiles = 3*k} : ... -> tensor<1x(3k)x...>
+    %t1 = tensor.extract_slice %g [0, 0]    [1, k] [1, 1]
+    %t2 = tensor.extract_slice %g [0, k]    [1, k] [1, 1]
+    %t3 = tensor.extract_slice %g [0, 2*k]  [1, k] [1, 1]
+    ... use %t1 ... use %t2 ... use %t3 ...
+    ttl.cb_pop %cb {num_tiles = 3*k}
+    ```
+
+    `addSliceOffset` already folds each `extract_slice` offset into the
+    per-tile `src_idx` at lowering time, so no lowering changes are
+    required.
+
+    The producer side (`cb_reserve` / `cb_push`) is rewritten by the same
+    templated routine: a run of `N` consecutive `cb_reserve` ops on one
+    DFB collapses into one `cb_reserve {num_tiles = N*k}` plus per-block
+    `tensor.extract_slice` views routed into the downstream
+    `ttl.tile_store` / `ttl.store` ops, and the `N` matching `cb_push`
+    ops collapse into one `cb_push {num_tiles = N*k}`.
+
+    Detection: forward walk per block; an acquire group is a maximal run
+    of same-kind same-DFB acquires separated only by `ttl.attach_cb` or
+    `arith.constant` ops. Acquires already carrying a `num_tiles`
+    attribute (e.g. set by `ttl-subblock-compute-for-dst`) are not
+    coalesced and terminate the group. The pass is idempotent.
+
+    Result-type constraint: only acquires whose result tensor has shape
+    `<1, k>` are coalesced; the coalesced result is `<1, N*k>`. Other
+    ranks would require a convention for which axis to extend by `N`,
+    which is not specified, and are skipped.
+  }];
+
+  let dependentDialects = [
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
 def TTLInsertCopyWait
     : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
   let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
@@ -194,10 +274,7 @@ def TTLAssignDST
            "For single-buffering mode (dst_full_sync_en=true), use: "
            "f32=8, f16/bf16=16. For double-buffering (default): f32=4, f16/bf16=8.">,
     Option<"separateOutputRegion", "separate-output-region", "bool", "false",
-           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">,
-    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
-           "Use FPU for binary add/sub/mul when both operands come from CBs. "
-           "When disabled, binary ops use the SFPU path instead.">
+           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
   ];
 
   let dependentDialects = [
@@ -210,10 +287,10 @@ def TTLSetComputeKernelConfig
     : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
   let summary = "Set ttl.compute kernel configuration attributes";
   let description = [{
-    Sets fp32_dest_acc_en and dst_full_sync_en attributes on the enclosing
-    func.func when they are not already configured. These are per-kernel
-    compile-time settings; all compute ops in the function inherit them
-    via getKernelBoolAttr().
+    Sets fp32_dest_acc_en, dst_full_sync_en, and ttl.enable_fpu_binary_ops
+    attributes on the enclosing func.func when they are not already
+    configured. These are per-kernel compile-time settings; any op in the
+    function can read them via getKernelBoolAttr().
   }];
 
   let options = [
@@ -226,7 +303,11 @@ def TTLSetComputeKernelConfig
            "Sets fp32_dest_acc_en on the kernel when any compute op contains reduce.">,
     Option<"matmulFullFp32", "matmul-full-fp32", "bool", "true",
            "Enable FP32 accumulation for matmul operations. "
-           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">
+           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">,
+    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
+           "Allow lowering eligible tile add/sub/mul to FPU binary form. "
+           "Written as the ttl.enable_fpu_binary_ops attribute on the func and "
+           "consumed by isFPUEligibleBinaryOp(). Disable to force the SFPU path.">
   ];
 
   let dependentDialects = [
@@ -453,6 +534,34 @@ def TTLVerifyPipeNetGuards
   ];
 }
 
+def TTLVerifyDFBSPSC
+    : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
+  let summary = "Reject DFBs whose producer or consumer set spans more than one kernel thread";
+  let description = [{
+    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by `cb_index`
+    (resolved via `getCBIndex`) and enclosing `ttl.kernel_thread`-tagged
+    `func.func`, and emits an error for any DFB whose producer thread set or
+    consumer thread set has size greater than one. The diagnostic attaches a
+    note for each additional thread site and one note at the originating
+    `ttl.bind_cb`.
+
+    tt-metal circular buffers expose a counter pair (`pages_received`,
+    `pages_acked`) that is not multi-writer safe on either side, so the
+    structural single-producer single-consumer property is required for
+    correctness; see `docs/development/DFBManagement.md` for the runtime
+    contract.
+
+    Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
+    `bind_cb` carries a concrete `cb_index`. The pass asserts on
+    unresolvable indices.
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLErasePipeNetScopes
     : Pass<"ttl-erase-pipenet-scopes", "::mlir::ModuleOp"> {
   let summary = "Inline and erase `ttl.pipenet_scope` regions";
@@ -531,6 +640,42 @@ def TTLFinalizeDFBIndices
     function, and builds the ttl.compiler_allocated_dfbs module
     attribute for the Python runtime.
   }];
+}
+
+def TTLValidateCBBudget
+    : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
+  let summary = "Validate total CB allocation fits within per-core L1 budget";
+  let description = [{
+    Module-level pass that runs after `ttl-finalize-dfb-indices`, before
+    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every
+    circular buffer declared in the module and compares against a per-core
+    L1 budget.
+
+    For each `BindCBOp`, the pass computes:
+      cb_bytes = total_elements * tile_size_bytes
+
+    When the same `cb_index` appears in multiple functions (e.g. compute
+    and data-movement kernels sharing a CB slot), only the largest
+    allocation for that index is counted.
+
+    On overflow the pass emits an error with a per-CB breakdown and a
+    hint to reduce block shapes or block counts.
+
+    L1 budget is taken from the module's TTCore system descriptor and
+    default device when present (`ChipDescAttr::getUsableL1Size()` for the
+    selected chip). When the module has no system descriptor, the pass uses
+    the same static per-core CB region limit as Wormhole and Blackhole
+    (total L1 minus reserved kernel space).
+
+    This is a static "CB region vs budget" check. It does not model
+    other L1 consumers (kernel binaries, stack, runtime buffers).
+  }];
+
+  let options = [
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override L1 CB budget (bytes). 0 means auto-detect from "
+           "device attributes or use architecture default.">
+  ];
 }
 
 def TTLDumpCBFlowGraph

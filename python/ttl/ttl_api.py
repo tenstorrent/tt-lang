@@ -87,6 +87,7 @@ from .dtype_utils import (
 )
 from .kernel_runner import (
     KernelSpec,
+    get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
 )
@@ -369,18 +370,44 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     return default
 
 
+def _same_device(a, b) -> bool:
+    """Return True when *a* and *b* refer to the same TTNN device."""
+    if a is b:
+        return True
+    a_id = getattr(a, "id", None)
+    b_id = getattr(b, "id", None)
+    if callable(a_id) and callable(b_id):
+        return a_id() == b_id()
+    return False
+
+
 def _require_device(args):
     """Extract the device from tensor arguments, raising if none are on-device.
 
-    Returns the first non-None device found. Raises ValueError with
-    a message listing which arguments are host tensors and suggesting
-    ttnn.to_device().
+    Returns the first non-None device found after verifying that every
+    on-device tensor shares the same device.  Raises ValueError when no
+    tensor carries a device, or when tensors are on different devices.
     """
+    first_device = None
+    first_idx = None
     for i, arg in enumerate(args):
-        if is_ttnn_tensor(arg):
-            device = arg.device()
-            if device is not None:
-                return device
+        if not is_ttnn_tensor(arg):
+            continue
+        device = arg.device()
+        if device is None:
+            continue
+        if first_device is None:
+            first_device = device
+            first_idx = i
+        elif not _same_device(first_device, device):
+            raise ValueError(
+                f"Tensor arguments are on different devices: "
+                f"arg[{first_idx}] is on device {first_device}, "
+                f"but arg[{i}] is on device {device}. "
+                f"All on-device tensors must reside on the same device."
+            )
+    if first_device is not None:
+        return first_device
     host_args = [
         f"  arg[{i}]: {arg.shape}" for i, arg in enumerate(args) if is_ttnn_tensor(arg)
     ]
@@ -857,7 +884,7 @@ def _build_operation_pipenets(f: Callable, threads):
     captured PipeNet referenced from multiple threads contributes one
     entry.
     """
-    from _pipenets import OperationPipeNets
+    from ._pipenets import OperationPipeNets
     from .pipe import _pipe_to_pipe_use
 
     seen: Dict[int, PipeNet] = {}
@@ -1250,6 +1277,14 @@ def _compile_kernel(
             )
             print(f"[TTNN interop] Detected {memory_space} memory space")
 
+    l1_budget_override = compiler_options.l1_budget
+    if l1_budget_override == 0 and has_ttnn_tensors:
+        try:
+            device = _require_device(args)
+            l1_budget_override = get_min_remaining_l1_for_device(device)
+        except ValueError:
+            pass
+
     for idx, (param_name, arg) in enumerate(zip(f_params, compile_args)):
         register_tensor_name(arg, param_name, index=idx)
 
@@ -1408,6 +1443,9 @@ def _compile_kernel(
         config_options.append(
             f"matmul-full-fp32={int(compiler_options.matmul_full_fp32)}"
         )
+        config_options.append(
+            f"enable-fpu-binary-ops={int(compiler_options.enable_fpu_binary_ops)}"
+        )
         if config_options:
             set_compute_config_pass = (
                 "func.func(ttl-set-compute-kernel-config{"
@@ -1417,14 +1455,13 @@ def _compile_kernel(
 
         # NOTE: Pipeline pass ordering is mirrored in
         # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
-        fpu_flag = int(compiler_options.enable_fpu_binary_ops)
-        assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
+        assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-insert-cb-sync)",
+            "func.func(ttl-auto-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
@@ -1446,8 +1483,14 @@ def _compile_kernel(
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-verify-pipenet-guards")
+        pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
-
+        if l1_budget_override > 0:
+            pipeline_passes.append(
+                f"ttl-validate-cb-budget{{l1-budget-override={l1_budget_override}}}"
+            )
+        else:
+            pipeline_passes.append("ttl-validate-cb-budget")
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
         if perf_dump:

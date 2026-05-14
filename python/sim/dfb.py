@@ -1112,6 +1112,10 @@ class DataflowBuffer:
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
         self._pending_confirmations: set[Block] = set()
+        # Greenlet that owns the current pending reserved/waited block.
+        # Prevents a different kernel function's cleanup from touching this block.
+        self._pending_reserved_greenlet: object = None
+        self._pending_waited_greenlet: object = None
 
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
@@ -1146,11 +1150,7 @@ class DataflowBuffer:
             RuntimeError: If called again before pop()
         """
         if self._pending_waited_block is not None:
-            raise RuntimeError(
-                "Cannot call wait() again before pop(): "
-                "DataflowBuffer already has a pending waited block. "
-                "You must call pop() before calling wait() again."
-            )
+            self.auto_pop_block()
 
         from .greenlet_scheduler import block_if_needed
 
@@ -1174,6 +1174,9 @@ class DataflowBuffer:
         )
         block.dfb = self
         self._pending_waited_block = block
+        from greenlet import getcurrent
+
+        self._pending_waited_greenlet = getcurrent()
 
         tiles = math.prod(state.shape)
         trace(
@@ -1220,11 +1223,7 @@ class DataflowBuffer:
             RuntimeError: If called again before push()
         """
         if self._pending_reserved_block is not None:
-            raise RuntimeError(
-                "Cannot call reserve() again before push(): "
-                "DataflowBuffer already has a pending reserved block. "
-                "You must call push() before calling reserve() again."
-            )
+            self.auto_push_block()
 
         from .greenlet_scheduler import block_if_needed
 
@@ -1258,6 +1257,9 @@ class DataflowBuffer:
         block.dfb_slot_idx = slot_idx
 
         self._pending_reserved_block = block
+        from greenlet import getcurrent
+
+        self._pending_reserved_greenlet = getcurrent()
 
         tiles = math.prod(state.shape)
         trace(
@@ -1288,6 +1290,7 @@ class DataflowBuffer:
         if self._pending_reserved_block is not None:
             self._pending_reserved_block.mark_push_complete()
             self._pending_reserved_block = None
+            self._pending_reserved_greenlet = None
 
         state = self._state
         if state.reserved < 1:
@@ -1308,6 +1311,7 @@ class DataflowBuffer:
         if self._pending_waited_block is not None:
             self._pending_waited_block.mark_pop_complete()
             self._pending_waited_block = None
+            self._pending_waited_greenlet = None
 
         state = self._state
         if state.visible < 1:
@@ -1317,6 +1321,34 @@ class DataflowBuffer:
         state.visible -= 1
 
         trace("dfb_pop", dfb=get_dfb_name(self), occupied=state.visible)
+
+    def auto_push_block(self) -> None:
+        """Push the reserved block if one is pending for the current greenlet.
+
+        No-op when no block is pending or when the pending block belongs to
+        a different greenlet (i.e., a different thread function).
+        """
+        if self._pending_reserved_block is None:
+            return
+        from greenlet import getcurrent
+
+        if self._pending_reserved_greenlet is not getcurrent():
+            return
+        self.push_block()
+
+    def auto_pop_block(self) -> None:
+        """Pop the waited block if one is pending for the current greenlet.
+
+        No-op when no block is pending or when the pending block belongs to
+        a different greenlet (i.e., a different thread function).
+        """
+        if self._pending_waited_block is None:
+            return
+        from greenlet import getcurrent
+
+        if self._pending_waited_greenlet is not getcurrent():
+            return
+        self.pop_block()
 
     @property
     def shape(self) -> Shape:
@@ -1394,7 +1426,9 @@ class DataflowBuffer:
             nxt = [op.name for op in block.expected_ops]
             nm = _name_phrase_for_error(block)
             errors.append(
-                f"Block{nm} is reserve() acquired at kernel exit; producer kernel needs to push() before exit.\n\n"
+                f"Block{nm} from reserve() was not pushed before kernel exit. "
+                f"This is a simulator bug — auto-push injection should have fired. "
+                f"Please file a bug report with a reproducer.\n\n"
                 f"Details: block_name={block.name!r}, acquisition=RESERVE, kernel={block.thread_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
@@ -1404,7 +1438,9 @@ class DataflowBuffer:
             nxt = [op.name for op in block.expected_ops]
             nm = _name_phrase_for_error(block)
             errors.append(
-                f"Block{nm} is wait() acquired at kernel exit; consumer kernel needs to pop() before exit.\n\n"
+                f"Block{nm} from wait() was not popped before kernel exit. "
+                f"This is a simulator bug — auto-pop injection should have fired. "
+                f"Please file a bug report with a reproducer.\n\n"
                 f"Details: block_name={block.name!r}, acquisition=WAIT, kernel={block.thread_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )

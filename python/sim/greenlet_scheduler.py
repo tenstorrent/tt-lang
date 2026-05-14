@@ -542,7 +542,6 @@ def block_if_needed(obj: Any, operation: str) -> None:
         scheduler.block_current_thread(obj, operation)
         # When we resume, check again if we can proceed (in case state changed)
         if not can_method():
-            # Still can't proceed after resuming, block again
             scheduler.block_current_thread(obj, operation)
     else:
         # Greedy scheduler: only block if we can't proceed

@@ -900,11 +900,11 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
   let assemblyFormat = "$src_tile `into` `dst` `[` $dst_index `]` attr-dict `:` type($src_tile) `->` type($result)";
 }
 
-// Note: DSTInputsTrait is the default for binary ops. FPU-marked binaries
-// (ttl.fpu_binary) read from CB instead; use isCBInputOp() to check at runtime.
-class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
+// Common base for tile binary ops. Carries traits that hold unconditionally
+// (binary, writes to DST, all types match). Subclasses add the input-source
+// trait that reflects the op's actual hardware behavior.
+class TTL_TileBinaryOpBase<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileBinaryOpTrait,
-                                                 TTL_DSTInputsTrait,
                                                  TTL_DstResultOpTrait,
                                                  AllTypesMatch<["lhs", "rhs", "result"]>])> {
   let summary = "Binary tile operation";
@@ -912,6 +912,19 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
   let results = (outs TTL_TileType:$result);
   let assemblyFormat = "$lhs `,` $rhs `into` `dst` `[` $dst_index `]` attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
 }
+
+// Always-SFPU binary tile op: reads both operands from DST unconditionally.
+// Use for ops with no FPU equivalent (div, max, min).
+class TTL_TileSfpuBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileBinaryOpBase<mnemonic, !listconcat(traits, [TTL_DSTInputsTrait])>;
+
+// Strategy-dependent binary tile op: input source is determined by operand
+// provenance at lowering time. add/sub/mul live here; isFPUEligibleBinaryOp
+// resolves the choice from the current IR.
+class TTL_TileStrategyDepBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileBinaryOpBase<mnemonic,
+                           !listconcat(traits,
+                                       [TTL_StrategyDependentBinaryOpTrait])>;
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileUnaryOpTrait,
@@ -928,28 +941,40 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
 
-// Multiclass for defining paired tensor + tile binary ops
-multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp,
-                                     list<Trait> extraTraits = []> {
-  // Tensor-level op (operates on full tensors)
+// Multiclass for paired tensor + strategy-dependent tile binary ops.
+// Used by add/sub/mul, where the tile op may lower to either an FPU or
+// SFPU TTKernel form depending on operand provenance.
+multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
+                                                string kernelOp> {
   def Op : TTL_ElementWiseBinary<mnemonic> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
-  // Tile-level op (operates inside ttl.compute body)
-  def TileOp : TTL_TileBinaryOp<"tile_"#mnemonic, extraTraits> {
+  def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic> {
     let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
   }
 }
 
-// Define all binary elementwise ops using the multiclass
-defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles">;
-defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles">;
-defm TTL_Div : TTL_BinaryElementwisePair<"div", "div_binary_tile">;
-defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles",
-                                         [TTL_InPlaceOpTrait]>;
-defm TTL_Min : TTL_BinaryElementwisePair<"min", "binary_min_tile",
-                                         [TTL_InPlaceOpTrait]>;
+// Multiclass for paired tensor + always-SFPU tile binary ops.
+// Used by div/max/min, which have no FPU lowering today.
+multiclass TTL_BinarySfpuElementwisePair<string mnemonic, string kernelOp,
+                                         list<Trait> extraTraits = []> {
+  def Op : TTL_ElementWiseBinary<mnemonic> {
+    let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
+  }
+  def TileOp : TTL_TileSfpuBinaryOp<"tile_"#mnemonic, extraTraits> {
+    let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
+  }
+}
+
+// Define all binary elementwise ops using the multiclasses
+defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles">;
+defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles">;
+defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles">;
+defm TTL_Div : TTL_BinarySfpuElementwisePair<"div", "div_binary_tile">;
+defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
+                                             [TTL_InPlaceOpTrait]>;
+defm TTL_Min : TTL_BinarySfpuElementwisePair<"min", "binary_min_tile",
+                                             [TTL_InPlaceOpTrait]>;
 
 
 //===----------------------------------------------------------------------===//
@@ -1258,15 +1283,19 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
 
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute when the wait spans
+    multiple coalesced blocks (see `ttl-coalesce-dfb-acquires`).
 
     Example:
     ```mlir
     %view = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %coalesced = ttl.cb_wait %cb {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1282,15 +1311,19 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
     This operation must be called after reading data acquired via `ttl.cb_wait`.
     It increments the CB's consumer pointer.
 
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute when the pop releases
+    multiple coalesced blocks (see `ttl-coalesce-dfb-acquires`).
 
     Example:
     ```mlir
     ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;

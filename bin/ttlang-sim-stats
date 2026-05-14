@@ -2,11 +2,11 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# TT-Lang trace statistics tool (ttlang-trace-stats)
+# TT-Lang trace statistics tool (ttlang-sim-stats)
 #
 # Derives simulator statistics from a JSON Lines trace file produced by
-# ttlang-sim --trace.  Prints the same tables as ttlang-sim --show-stats.
-# Usage: ttlang-trace-stats trace.jsonl
+# ttlang-sim --trace (tensor / pipe / DFB summary tables).
+# Usage: ttlang-sim-stats trace.jsonl
 
 PYTHON="${PYTHON:-python}"
 

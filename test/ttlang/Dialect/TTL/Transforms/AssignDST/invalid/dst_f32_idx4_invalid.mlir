@@ -1,5 +1,5 @@
 // Summary: f32 capacity overflow should fail before allocating dst_idx 4 (default with double buffering).
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-assign-dst))' --verify-diagnostics
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst))' --verify-diagnostics
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

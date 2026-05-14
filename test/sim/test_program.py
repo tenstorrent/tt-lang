@@ -440,7 +440,13 @@ class TestBlockCompletion:
     """
 
     def test_missing_push_detected(self) -> None:
-        """Test that missing push() is detected at end of execution."""
+        """Test that a missing push() is handled automatically by auto push/pop.
+
+        With the simulator's AST-based auto push/pop insertion, a thread that
+        omits block.push() after a reserve() no longer produces an error.  The
+        push is inserted automatically before the next reserve on the same DFB
+        or at function return.
+        """
 
         @ttl.operation(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
@@ -450,12 +456,12 @@ class TestBlockCompletion:
 
             @ttl.datamovement()
             def dm0():
-                # Reserve a block but forget to push it
+                # Reserve a block without explicit push — auto push/pop handles it.
                 block = in_dfb.reserve()
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block)
                 tx.wait()
-                # Missing: block.push()
+                # Omitted: block.push()  -> inserted automatically on return
 
             @ttl.datamovement()
             def dm1():
@@ -467,12 +473,8 @@ class TestBlockCompletion:
 
         input_tensor = ttnn.rand((32, 32))
 
-        # Should raise RuntimeError about incomplete DataflowBuffer operations
-        with pytest.raises(
-            RuntimeError,
-            match="Kernel execution completed with incomplete DataflowBuffer operations",
-        ):
-            test_kernel(input_tensor)
+        # Should NOT raise: auto push/pop inserts push() on function return.
+        test_kernel(input_tensor)
 
     def test_missing_pop_detected(self) -> None:
         """Test that missing pop() is detected at end of execution."""
@@ -556,7 +558,7 @@ class TestBlockCompletion:
         test_kernel(input_tensor, output_tensor)
 
     def test_multiple_dfbs_with_errors(self) -> None:
-        """Test that errors from multiple DFBs are all reported."""
+        """Test that multiple DFBs with missing pushes are all handled by auto push/pop."""
 
         @ttl.operation(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
@@ -569,17 +571,17 @@ class TestBlockCompletion:
 
             @ttl.datamovement()
             def dm0():
-                # Both DFBs have incomplete operations
+                # Both DFBs omit push — auto push/pop inserts them both.
                 block1 = dfb1.reserve()
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block1)
                 tx.wait()
-                # Missing: block1.push()
+                # Omitted: block1.push()
 
                 block2 = dfb2.reserve()
                 tx = copy(slice_data, block2)
                 tx.wait()
-                # Missing: block2.push()
+                # Omitted: block2.push()
 
             @ttl.datamovement()
             def dm1():
@@ -591,12 +593,8 @@ class TestBlockCompletion:
 
         input_tensor = ttnn.rand((32, 32))
 
-        # Should raise RuntimeError mentioning multiple DFBs
-        with pytest.raises(
-            RuntimeError,
-            match="Kernel execution completed with incomplete DataflowBuffer operations",
-        ):
-            test_kernel(input_tensor)
+        # Should NOT raise: auto push/pop inserts push() for both blocks.
+        test_kernel(input_tensor)
 
 
 class TestRebindFunc:
