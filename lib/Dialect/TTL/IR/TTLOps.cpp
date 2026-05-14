@@ -295,6 +295,18 @@ mlir::LogicalResult mlir::tt::ttl::TileTypecastOp::verify() {
            << inputTy << ", result: " << resultTy;
   }
 
+  ttcore::DataType inputDtype = inputTy.getDataType();
+  ttcore::DataType resultDtype = resultTy.getDataType();
+  if (inputDtype == resultDtype) {
+    return emitOpError() << "input and result tile data types must differ";
+  }
+
+  if (!ttcore::isFloat(inputDtype) || !ttcore::isFloat(resultDtype)) {
+    return emitOpError()
+           << "only supports floating-point tile data types, but got input: "
+           << inputTy << ", result: " << resultTy;
+  }
+
   return success();
 }
 

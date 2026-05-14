@@ -643,6 +643,25 @@ def fill(output: TensorBlock, value) -> TensorBlock:
     return ttl.fill(output.type, value_attr)
 
 
+def _is_supported_typecast_dtype(dtype) -> bool:
+    dtype_name = str(dtype)
+    return (
+        "Float" in dtype_name or "BFloat" in dtype_name or "BFP" in dtype_name
+    ) and not any(token in dtype_name for token in ("Int", "UInt", "Bool"))
+
+
+def _is_supported_typecast_tile_type(tile_type) -> bool:
+    tile_type_name = str(tile_type).lower()
+    return (
+        "f32" in tile_type_name
+        or "f16" in tile_type_name
+        or "bf16" in tile_type_name
+        or "bfp" in tile_type_name
+    ) and not any(
+        token in tile_type_name for token in ("i32", "ui32", "ui16", "ui8", "bool")
+    )
+
+
 @syntax("typecast")
 def typecast(input: TensorBlock, dtype) -> TensorBlock:
     """
@@ -664,6 +683,10 @@ def typecast(input: TensorBlock, dtype) -> TensorBlock:
         ttcore_dtype = dtype
     else:
         ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
+    if not _is_supported_typecast_dtype(ttcore_dtype):
+        raise ValueError(
+            f"typecast only supports floating-point destination dtypes, got {dtype}"
+        )
 
     input_type = input.type
     if not isinstance(input_type, RankedTensorType):
@@ -674,6 +697,11 @@ def typecast(input: TensorBlock, dtype) -> TensorBlock:
     if input_tile is None:
         raise ValueError(
             f"typecast expects tile-typed elements, got {input_type.element_type}"
+        )
+    if not _is_supported_typecast_tile_type(input_tile):
+        raise ValueError(
+            "typecast only supports floating-point input tile dtypes, got "
+            f"{input_tile}"
         )
 
     out_tile_type = ttcore.ir.TileType.get(
