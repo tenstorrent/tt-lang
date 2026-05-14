@@ -56,6 +56,17 @@ TILE_LAYOUT = IndexType.TILE
 ROW_MAJOR_LAYOUT = IndexType.ROW_MAJOR
 
 
+def _is_dry_run() -> bool:
+    """Return True when the simulator is in dry-run mode.
+
+    Uses a lazy import to avoid a circular dependency
+    (context_types imports Tensor from this module).
+    """
+    from .context import get_context  # noqa: PLC0415 (lazy import intentional)
+
+    return get_context().config.dry_run
+
+
 class ShardingStrategy(Enum):
     """Tensor memory layout sharding strategy."""
 
@@ -1406,14 +1417,42 @@ class Tensor:
         """Public accessor for the underlying torch tensor."""
         return self._tensor
 
+    # ---- Dry-run helpers ----
+
+    def _zeros_like(self) -> "Tensor":
+        """Return a zero tensor with the same shape, dtype, and layout."""
+        return Tensor(torch.zeros_like(self._tensor), self._layout, dtype=self._dtype)
+
+    def _zeros_broadcast(self, other: "Tensor") -> "Tensor":
+        """Return zeros shaped by broadcasting self and other."""
+        out_shape = torch.broadcast_shapes(self._tensor.shape, other._tensor.shape)
+        return Tensor(
+            torch.zeros(out_shape, dtype=self._tensor.dtype),
+            self._layout,
+            dtype=self._dtype,
+        )
+
+    def _zeros_matmul(self, other: "Tensor") -> "Tensor":
+        """Return zeros shaped by the matmul output of self @ other."""
+        out_shape = (*self._tensor.shape[:-1], other._tensor.shape[-1])
+        return Tensor(
+            torch.zeros(out_shape, dtype=self._tensor.dtype),
+            self._layout,
+            dtype=self._dtype,
+        )
+
     # ---- Binary operations (element-wise) ----
 
     def __add__(self, other: TensorOrScalar) -> "Tensor":
         """Element-wise addition."""
         match other:
             case Tensor():
+                if _is_dry_run():
+                    return self._zeros_broadcast(other)
                 return Tensor(self._tensor + other._tensor, self._layout)
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(self._tensor + other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1422,8 +1461,12 @@ class Tensor:
         """Element-wise subtraction."""
         match other:
             case Tensor():
+                if _is_dry_run():
+                    return self._zeros_broadcast(other)
                 return Tensor(self._tensor - other._tensor, self._layout)
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(self._tensor - other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1432,8 +1475,12 @@ class Tensor:
         """Element-wise multiplication."""
         match other:
             case Tensor():
+                if _is_dry_run():
+                    return self._zeros_broadcast(other)
                 return Tensor(self._tensor * other._tensor, self._layout)
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(self._tensor * other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1442,8 +1489,12 @@ class Tensor:
         """Element-wise true division."""
         match other:
             case Tensor():
+                if _is_dry_run():
+                    return self._zeros_broadcast(other)
                 return Tensor(self._tensor / other._tensor, self._layout)
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(self._tensor / other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1452,8 +1503,12 @@ class Tensor:
         """Element-wise floor division."""
         match other:
             case Tensor():
+                if _is_dry_run():
+                    return self._zeros_broadcast(other)
                 return Tensor(self._tensor // other._tensor, self._layout)
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(self._tensor // other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1462,8 +1517,12 @@ class Tensor:
         """Element-wise modulo."""
         match other:
             case Tensor():
+                if _is_dry_run():
+                    return self._zeros_broadcast(other)
                 return Tensor(self._tensor % other._tensor, self._layout)
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(self._tensor % other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1472,8 +1531,12 @@ class Tensor:
         """Element-wise exponentiation."""
         match other:
             case Tensor():
+                if _is_dry_run():
+                    return self._zeros_broadcast(other)
                 return Tensor(self._tensor**other._tensor, self._layout)
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(self._tensor**other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1482,16 +1545,22 @@ class Tensor:
         """Matrix multiplication."""
         match other:
             case Tensor():
+                if _is_dry_run():
+                    return self._zeros_matmul(other)
                 return Tensor(self._tensor @ other._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
     def __neg__(self) -> "Tensor":
         """Unary negation."""
+        if _is_dry_run():
+            return self._zeros_like()
         return Tensor(-self._tensor, self._layout)
 
     def __abs__(self) -> "Tensor":
         """Absolute value."""
+        if _is_dry_run():
+            return self._zeros_like()
         return Tensor(torch.abs(self._tensor), self._layout)
 
     # ---- Reverse binary operations ----
@@ -1500,6 +1569,8 @@ class Tensor:
         """Reverse element-wise addition."""
         match other:
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(other + self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1508,6 +1579,8 @@ class Tensor:
         """Reverse element-wise subtraction."""
         match other:
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(other - self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1516,6 +1589,8 @@ class Tensor:
         """Reverse element-wise multiplication."""
         match other:
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(other * self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1524,6 +1599,8 @@ class Tensor:
         """Reverse element-wise true division."""
         match other:
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(other / self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1532,6 +1609,8 @@ class Tensor:
         """Reverse element-wise floor division."""
         match other:
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(other // self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1540,6 +1619,8 @@ class Tensor:
         """Reverse element-wise modulo."""
         match other:
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(other % self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1548,6 +1629,8 @@ class Tensor:
         """Reverse element-wise exponentiation."""
         match other:
             case float() | int():
+                if _is_dry_run():
+                    return self._zeros_like()
                 return Tensor(other**self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
@@ -1782,16 +1865,22 @@ def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
 
 def multiply(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise multiply (simulator shim for ttnn.multiply)."""
+    if _is_dry_run():
+        return a._zeros_broadcast(b)
     return Tensor(a.to_torch() * b.to_torch())
 
 
 def matmul(a: Tensor, b: Tensor) -> Tensor:
     """Matrix multiply (simulator shim for ttnn.matmul)."""
+    if _is_dry_run():
+        return a._zeros_matmul(b)
     return Tensor(a.to_torch() @ b.to_torch())
 
 
 def relu(a: Tensor) -> Tensor:
     """Element-wise ReLU (simulator shim for ttnn.relu)."""
+    if _is_dry_run():
+        return a._zeros_like()
     return Tensor(torch.relu(a.to_torch()))
 
 

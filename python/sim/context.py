@@ -100,6 +100,24 @@ def cleanup_run_context() -> None:
         sys.monitoring.free_tool_id(sys.monitoring.OPTIMIZER_ID)
 
 
+def set_dry_run(enabled: bool) -> None:
+    """Enable or disable dry-run mode for the current simulator context.
+
+    In dry-run mode the simulator skips all actual data movement and numerical
+    computation (tensor ops, block transfers, copy payloads) while still
+    running the full DFB sequencing, block state machine, deadlock detection,
+    and copy-wait injection.  This makes it safe to validate kernel structure
+    without needing meaningful input data.
+
+    Assumes that computation results do not affect Python control flow (no
+    data-dependent branches or loop bounds derived from computed tile values).
+
+    Args:
+        enabled: True to enable dry-run, False to disable.
+    """
+    get_context().config.dry_run = enabled
+
+
 def get_current_thread_type() -> ThreadType:
     """Get the current kernel role (compute vs datamovement).
 

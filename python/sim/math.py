@@ -25,9 +25,36 @@ from .greenlet_scheduler import get_current_core_id
 from .dfb import Block, track_source_blocks, matmul
 from .blockstate import BlockAcquisition, ThreadType
 from .ttnnsim import Tensor
-from .typedefs import PositiveInt
+from .typedefs import PositiveInt, Shape
 
 _ = matmul
+
+
+def _is_dry_run() -> bool:
+    return get_context().config.dry_run
+
+
+# Shared sentinel: a single zero-element Tensor used for all dry-run result blocks in
+# this module. Avoids any per-operation tensor allocation; content is irrelevant.
+_DRY_RUN_SENTINEL = Tensor(torch.empty(0))
+
+
+def _dry_run_result(shape: Shape, *sources: Block) -> Block:
+    """Return a temporary block backed by the shared sentinel tensor without any computation.
+
+    Only safe in dry-run mode: tensor content and element dimensions are meaningless.
+    The tile-grid shape is set correctly so downstream structural checks see the right
+    grid, and no memory is allocated beyond a single Block object.
+    """
+    result_block = Block(
+        tensor=_DRY_RUN_SENTINEL,
+        shape=shape,
+        acquisition=BlockAcquisition.RESERVE,
+        thread_type=ThreadType.COMPUTE,
+        is_temporary=True,
+    )
+    track_source_blocks(result_block, *sources)
+    return result_block
 
 
 def _warn_1d_broadcast_unsupported() -> None:
@@ -128,12 +155,14 @@ def broadcast(
                 f"but source block has {len(block_shape)} dimensions"
             )
 
+        if _is_dry_run():
+            return _dry_run_result(target_shape, block)
+
         # Use PyTorch broadcasting to expand the tensor
         src_tensor = block._buf.to_torch()  # type: ignore[attr-defined]
         expanded_tensor = src_tensor.expand(*target_element_shape)
 
         # Create a new materialized block directly with the target shape
-        # Use Block constructor to create a temporary block
         result_block = Block(
             tensor=Tensor(expanded_tensor.contiguous()),
             shape=target_shape,
@@ -164,6 +193,8 @@ def _create_unary_op_wrapper(
     """
 
     def wrapper(block: Block) -> Block:
+        if _is_dry_run():
+            return _dry_run_result(block.shape, block)
         # Apply the operation to each tensor in the block
         layout = block.layout
         result_torch: List[torch.Tensor] = [
@@ -265,6 +296,8 @@ def _apply_binary_op(
         raise ValueError(
             f"Shape mismatch in binary op: a has shape {a_shape}, b has shape {b_shape}"
         )
+    if _is_dry_run():
+        return _dry_run_result(a_shape, a, b)
     layout = a.layout
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
@@ -308,6 +341,8 @@ def _apply_ternary_op(
             f"Shape mismatch in ternary op: a has shape {a_shape}, "
             f"b has shape {b_shape}, c has shape {c_shape}"
         )
+    if _is_dry_run():
+        return _dry_run_result(a_shape, a, b, c)
     layout = a.layout
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
@@ -335,6 +370,8 @@ def _apply_unary_with_params(
     Returns:
         Block with operation applied element-wise
     """
+    if _is_dry_run():
+        return _dry_run_result(block.shape, block)
     layout = block.layout
     result_torch: List[torch.Tensor] = [op(t.to_torch()) for t in block.to_list()]
     result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
@@ -699,13 +736,16 @@ def _reduce_impl(
     # indexing: d % ndim maps both positive and negative dims correctly.
     internal_dims_set = {d % ndim for d in dims_set}
 
-    # Get the scaler
-    scaler_tile = scaler.to_list()[0].to_torch()
-
     # Compute result grid shape
     result_shape = tuple(
         1 if i in internal_dims_set else block_shape[i] for i in range(ndim)
     )
+
+    if _is_dry_run():
+        return _dry_run_result(result_shape, block, scaler)
+
+    # Get the scaler
+    scaler_tile = scaler.to_list()[0].to_torch()
 
     # Stack input tiles to reshape for reduction
     # Each output grid position gets contributions from multiple input positions
@@ -828,12 +868,16 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
             f"transpose requires a 2-D block grid, got shape {block._shape}"  # type: ignore[attr-defined]
         )
 
+    M, N = block._shape  # type: ignore[attr-defined]
+
+    if _is_dry_run():
+        return _dry_run_result((N, M), block)
+
     # Transpose each tile (swap rows/columns within tiles)
     layout = block.layout
     transposed_tiles = [Tensor(t.to_torch().T, layout) for t in block.to_list()]
 
     # Also swap the tile grid dimensions: (M, N) -> (N, M)
-    M, N = block._shape  # type: ignore[attr-defined]
 
     # Reorder tiles to match transposed grid: tile[i,j] -> tile[j,i]
     reordered_tiles: List[Tensor] = []

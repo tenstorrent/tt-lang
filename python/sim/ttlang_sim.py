@@ -25,6 +25,7 @@ from typing import Any
 
 from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
+from .context import set_dry_run
 
 
 def setup_simulator_imports() -> None:
@@ -321,6 +322,18 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help=(
+            "Skip all data movement and numerical computation. "
+            "DFB sequencing, deadlock detection, and block state "
+            "machine checks still run. Assumes computation results "
+            "do not affect control flow."
+        ),
+    )
+
     if not argv:
         parser.print_help()
         sys.exit(1)
@@ -383,6 +396,10 @@ def main() -> None:
     if args.scheduler:
 
         set_scheduler_algorithm(args.scheduler)
+
+    # Enable dry-run mode if requested
+    if args.dry_run:
+        set_dry_run(True)
 
     # Enable bfloat16-to-float32 promotion if requested
     if args.promote_bf16:

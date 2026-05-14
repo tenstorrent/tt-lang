@@ -38,7 +38,7 @@ from .blockstate import (
     format_cannot_read_block,
     format_cannot_write_block,
 )
-from .context import get_current_thread_type
+from .context import get_context, get_current_thread_type
 from .diagnostics import find_user_code_location
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
@@ -52,6 +52,16 @@ from .ttnnsim import (
 )
 from .trace import get_dfb_name, trace
 from .typedefs import Index, IndexType, PositiveInt, Shape, Size
+
+
+def _is_dry_run() -> bool:
+    return get_context().config.dry_run
+
+
+# A single zero-element Tensor shared across all dry-run result blocks.
+# Using a sentinel avoids any per-operation tensor allocation in dry-run mode;
+# its content and element shape are irrelevant since all consumers are also guarded.
+_DRY_RUN_SENTINEL = Tensor(torch.empty(0))
 
 
 def _name_phrase_for_error(block: "Block") -> str:
@@ -725,17 +735,14 @@ class Block:
                 or blk._store_confirmation_pending
             )
 
-        # Check if source has broadcast metadata - if so, expand it
+        # Validate shape / resolve broadcast before touching any payloads.
         src_shape = items._shape
         dst_shape = self._shape
 
-        if hasattr(items, "_broadcast_dims") and items._broadcast_dims is not None:
-            # Source came from broadcast() - expand using metadata
-            src_tensor = self._expand_broadcast_dims(
-                items, dst_shape, self._element_shape, items._broadcast_dims
-            )
-        else:
-            # No broadcast metadata - validate tile counts match (allows different dimensionality)
+        has_broadcast = (
+            hasattr(items, "_broadcast_dims") and items._broadcast_dims is not None
+        )
+        if not has_broadcast:
             src_tiles = math.prod(src_shape)
             dst_tiles = math.prod(dst_shape)
             if src_tiles != dst_tiles:
@@ -751,6 +758,17 @@ class Block:
             source_block.mark_store_read_complete()
 
         self.mark_store_complete()
+
+        if _is_dry_run():
+            # Skip payload copy; state machine transition above still fires.
+            return
+
+        if has_broadcast:
+            # Source came from broadcast() - expand using metadata
+            assert items._broadcast_dims is not None  # checked by has_broadcast
+            src_tensor = self._expand_broadcast_dims(
+                items, dst_shape, self._element_shape, items._broadcast_dims
+            )
 
         if src_tensor.shape == self._buf.shape:
             # Fast path: same element shape — copy in-place
@@ -815,6 +833,11 @@ class Block:
         self._track_sources_for_result(result_block, self, *additional_sources)
         return result_block
 
+    def _unary_op(self, op: "Callable[[Tensor], Tensor]") -> "Block":
+        """Apply a unary op, skipping computation and reusing the sentinel in dry-run."""
+        buf = _DRY_RUN_SENTINEL if _is_dry_run() else op(self._buf)
+        return self._create_temporary_result(buf, self._shape)
+
     def _binary_op(
         self,
         other: "Block",
@@ -844,36 +867,39 @@ class Block:
                 f"Materialize one operand first by storing it."
             )
 
-        # Expand operand with broadcast metadata to match the other
-        left_buf = self._buf
-        right_buf = other._buf
-        result_shape = left_shape
-
+        # Derive result_shape (needed even in dry-run for the tile-grid shape).
         if left_has_broadcast:
-            # Expand left to match right shape
-            assert self._broadcast_dims is not None  # Checked by left_has_broadcast
-            left_buf = self._expand_broadcast_dims(
-                self, right_shape, other._element_shape, self._broadcast_dims
-            )
             result_shape = right_shape
         elif right_has_broadcast:
-            # Expand right to match left shape
-            assert other._broadcast_dims is not None  # Checked by right_has_broadcast
-            right_buf = self._expand_broadcast_dims(
-                other, left_shape, self._element_shape, other._broadcast_dims
-            )
             result_shape = left_shape
         elif left_shape != right_shape:
-            # No broadcast metadata and shapes don't match - error
             raise ValueError(
                 f"Shape mismatch in binary operation: left shape {left_shape} does not match "
                 f"right shape {right_shape}. Use broadcast() to expand operands."
             )
+        else:
+            result_shape = left_shape
 
-        # Perform operation
-        return self._create_temporary_result(
-            op(left_buf, right_buf), result_shape, other
-        )
+        if _is_dry_run():
+            return self._create_temporary_result(_DRY_RUN_SENTINEL, result_shape, other)
+
+        # Expand operand with broadcast metadata to match the other (non-dry-run only).
+        left_buf = self._buf
+        right_buf = other._buf
+
+        if left_has_broadcast:
+            assert self._broadcast_dims is not None  # Checked by left_has_broadcast
+            left_buf = self._expand_broadcast_dims(
+                self, right_shape, other._element_shape, self._broadcast_dims
+            )
+        elif right_has_broadcast:
+            assert other._broadcast_dims is not None  # Checked by right_has_broadcast
+            right_buf = self._expand_broadcast_dims(
+                other, left_shape, self._element_shape, other._broadcast_dims
+            )
+
+        result_buf = op(left_buf, right_buf)
+        return self._create_temporary_result(result_buf, result_shape, other)
 
     # ---- forward operators ----
 
@@ -902,17 +928,17 @@ class Block:
         """
         match other:
             case int():
-                return self._create_temporary_result(self._buf**other, self._shape)
+                return self._unary_op(lambda b: b**other)
             case _:
                 return self._binary_op(other, _op.pow)
 
     def __neg__(self) -> "Block":
         """Unary negation (-block)."""
-        return self._create_temporary_result(-self._buf, self._shape)
+        return self._unary_op(lambda b: -b)
 
     def __abs__(self) -> "Block":
         """Absolute value (abs(block))."""
-        return self._create_temporary_result(abs(self._buf), self._shape)
+        return self._unary_op(abs)
 
     def __matmul__(self, other: "Block") -> "Block":
         # Matrix multiplication is not a broadcasting operation.
@@ -945,10 +971,9 @@ class Block:
 
     def __radd__(self, other: "Union[int, float]") -> "Block":
         """Scalar + Block: fill(v) + blk creates a temporary block with v added."""
-        result_tensor = Tensor(
-            torch.tensor(other, dtype=self._buf.dtype) + self._buf.to_torch()
+        return self._unary_op(
+            lambda b: Tensor(torch.tensor(other, dtype=b.dtype) + b.to_torch())
         )
-        return self._create_temporary_result(result_tensor, self._shape)
 
     @property
     def acquisition(self) -> BlockAcquisition:
@@ -1509,8 +1534,6 @@ def make_dataflow_buffer_like(
         x = ttnn.zeros((64, 64), dtype=ttnn.float32)
         x_dfb = make_dataflow_buffer_like(x, shape=(2, 2), block_count=2)
     """
-    from .context import get_context
-
     dfb = DataflowBuffer(
         likeness_tensor=likeness_tensor, shape=shape, block_count=block_count
     )
@@ -1604,8 +1627,11 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     Returns:
         Block whose tile shape corresponds to the matmul output shape.
     """
-    result_tensor = a.to_tensor() @ b.to_tensor()
     result_shape = _matmul_tile_shape(a.shape, b.shape)
+    if _is_dry_run():
+        result_tensor = _DRY_RUN_SENTINEL
+    else:
+        result_tensor = a.to_tensor() @ b.to_tensor()
     result_block = Block(
         tensor=result_tensor,
         shape=result_shape,

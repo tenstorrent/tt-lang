@@ -34,6 +34,11 @@ class SimulatorConfig:
     # Set of event categories to record. Empty means tracing is disabled.
     # Use trace.ALL_CATEGORIES to enable all categories.
     trace_set: FrozenSet[str] = field(default_factory=frozenset)
+    # When True, all actual data movement and numerical computation is skipped.
+    # The simulator still exercises DFB sequencing, block state machines,
+    # deadlock detection, and copy-wait injection — only the payload bytes are
+    # not transferred.  Assumes computation results do not affect control flow.
+    dry_run: bool = False
 
 
 @dataclass

@@ -156,11 +156,16 @@ class CopyTransaction:
 
         # Block if copy cannot proceed
         from .greenlet_scheduler import block_if_needed
+        from .context import get_context
 
         block_if_needed(self, "wait")
 
-        # Transfer - let exceptions propagate to scheduler for context
-        self._handler.transfer(self._src, self._dst)
+        # Transfer - let exceptions propagate to scheduler for context.
+        # In dry-run mode the payload bytes are not moved; only the block
+        # state transitions below still fire so that structural checks
+        # (state machine, deadlock) remain fully exercised.
+        if not get_context().config.dry_run:
+            self._handler.transfer(self._src, self._dst)
         self._completed = True
 
         # Mark tx.wait() complete in state machine - this transitions blocks back to accessible states
