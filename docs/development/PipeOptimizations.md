@@ -40,7 +40,7 @@ primitive based on the Pipe shape. The mapping is:
 | Pipe shape | Primitive | Receiver dataflow buffer |
 | --- | --- | --- |
 | `Pipe(src=p, dst=p')` (point) | `noc_async_write` + `noc_semaphore_inc` | `block_count = 2` |
-| `Pipe(src=p, dst=slice(...))` (rectangular multicast) | `noc_async_write_multicast` + `noc_semaphore_inc_multicast` (after issue #505) | `block_count = max gather slot + 1` |
+| `Pipe(src=p, dst=slice(...))` (rectangular multicast) | `noc_async_write_multicast` + `noc_semaphore_inc_multicast` | `block_count = max gather slot + 1` |
 | Loopback multicast (`src` in dst range) | `noc_async_write_multicast_loopback_src` + remote `inc_multicast` + local `noc_semaphore_inc` | same as above |
 
 When several pipes target the same receiver and share its dataflow
@@ -156,7 +156,7 @@ moves the policy choice from compiler-internal to library-author.
 around `block_count >= N` by sequentially decomposing the wide
 PipeNet. A simpler alternative is a protocol change: receivers track
 multi-iteration arrivals via the cumulative `wait_min` already in
-place (issue #505), and senders write to `(iteration_id mod
+place, and senders write to `(iteration_id mod
 block_count)` slots — `block_count` becomes the in-flight pipeline
 depth, not the sender count. Each sender knows its global
 `iteration_id` from the static PipeGraph. Trade-off: replaces a
@@ -230,10 +230,11 @@ Other PipeNet shapes already in tt-lang's test corpus are not
 addressed here and fall through to the existing per-Pipe-shape
 lowering:
 
-- N→N all-to-all (`test/python/pipe/test_pipe_patterns.py::test_scatter_gather`,
+- N→N all-to-all (`test/python/pipe/test_pipe_patterns.py::test_scatter_gather_1d`,
   `test/python/pipe/test_pipenet_overlap.py`) — overlapping multicast
-  with a reduction at every receiver. After issue #505 these run
-  correctly but invoke 3.2.6 (waves) only when `N > 32`.
+  with a reduction at every receiver. These lower correctly under the
+  existing per-Pipe lowering and only invoke 3.2.6 (waves) when
+  `N > 32`.
 - Ring forward without reduction (`test_pipe_patterns.py::test_forward_ring`,
   `test_pipe_patterns.py::test_row_rings_auto`) — `N` parallel
   unicast pipes with `block_count = 2`, no convergence at any
@@ -497,7 +498,7 @@ shows the tt-metal-side convention that pairs RISC and NOC:
 small-input DM on `RISCV_1` / `NOC_1`, large-input DM on `RISCV_0`
 / `NOC_0`, with grid transpose to keep the assignment symmetric for
 non-square outputs. The deadlock condition the rewrite eliminates
-is documented in the comment block of `scatter_gather_kernel` in
+is documented in the comment block of `scatter_gather_1d_kernel` in
 `test/python/pipe/test_pipe_patterns.py`.
 
 #### 3.2.5 Receiver-DFB sharing with the next data-movement kernel
@@ -734,7 +735,7 @@ compute.
 The mechanism tt-lang uses today is host-side `CreateSemaphore` /
 `Buffer` with the address passed as a kernel runtime argument.
 The existing PipeNet protocol already uses this for the
-`senderSem` / `recvSem` pair (see issue #505 and the lowering in
+`senderSem` / `recvSem` pair (lowered in
 `lib/Dialect/TTL/Transforms/PipeLowering.cpp`). The host-side
 `CreateSemaphore(program, core_grid, init_value)` returns a 4-byte
 L1 word usable from any core in `core_grid`; the address is wired
@@ -764,9 +765,8 @@ should grow its own TTL-side allocator targeting the same
 underlying tt-metal `Buffer` mechanism but driven from PipeGraph
 liveness rather than D2M's.
 
-Distinction from the existing memref counter from issue #505: the
-runtime per-PipeNet counter introduced for issue #505 is a
-`memref<1xi32>` with no memory-space attribute. The standard
+Distinction from the existing per-PipeNet receiver counter: that
+counter is a `memref<1xi32>` with no memory-space attribute. The standard
 MemRefToEmitC patterns lower it to a stack-allocated `int32_t
 counter[1]` inside the kernel function — not L1-allocated. This is
 sufficient for that counter (each kernel invocation needs a fresh
@@ -901,10 +901,11 @@ The rewrites are independent but ordering reduces risk:
 1. 3.2.3 pre-push-before-forward peephole. Pure TTKernel-level
    rewrite. No PipeNet semantics change.
 2. 3.2.4 data-movement kernel-thread assignment from the dataflow
-   graph. Removes a class of user-visible deadlocks
-   (`test_scatter_gather` had to be authored with the `if_src` and
-   `if_dst` work split across two `@ttl.datamovement()` functions
-   manually). Independent of the other rewrites.
+   graph. Removes a class of user-visible deadlocks: when `if_src` and
+   `if_dst` for the same PipeNet share a NOC thread, every core blocks
+   on its own sender handshake before any `if_dst` block can signal
+   ready. The rewrite assigns the two roles to distinct NOC threads
+   automatically. Independent of the other rewrites.
 3. 3.2.1 forwarding-chain lowering for 1→K rectangular broadcast.
    Depends on (1) for the pre-push idiom.
 4. 3.2.5 receiver-DFB sharing with the next data-movement kernel.
