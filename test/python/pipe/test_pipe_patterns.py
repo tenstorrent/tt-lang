@@ -131,15 +131,16 @@ def scatter_kernel(inp, out):
 
 
 # ---------------------------------------------------------------------------
-# Scatter-gather: each core multicasts to all cores (all-to-all).
+# Scatter-gather (1D): single row, each core multicasts to all cores
+# (all-to-all along x).
 # ---------------------------------------------------------------------------
 
 N_SG = 4
 
 
 @ttl.operation(grid=(N_SG, 1))
-def scatter_gather_kernel(inp, out):
-    # All-to-all: each core multicasts to all (loopback included).
+def scatter_gather_1d_kernel(inp, out):
+    # All-to-all on one row: each core multicasts to all (loopback included).
     net = ttl.PipeNet(
         [ttl.Pipe(src=(x, 0), dst=(slice(0, N_SG), 0)) for x in range(N_SG)]
     )
@@ -152,13 +153,17 @@ def scatter_gather_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with recv_cb.wait() as t, acc_cb.reserve() as a:
-            a.store(t)
+        with recv_cb.wait() as recv_blk, acc_cb.reserve() as acc_blk:
+            acc_blk.store(recv_blk)
         for _ in range(N_SG - 1):
-            with recv_cb.wait() as t, acc_cb.wait() as prev, acc_cb.reserve() as a:
-                a.store(prev + t)
-        with acc_cb.wait() as a, out_cb.reserve() as o:
-            o.store(a)
+            with (
+                recv_cb.wait() as recv_blk,
+                acc_cb.wait() as prev_blk,
+                acc_cb.reserve() as acc_blk,
+            ):
+                acc_blk.store(prev_blk + recv_blk)
+        with acc_cb.wait() as acc_blk, out_cb.reserve() as out_blk:
+            out_blk.store(acc_blk)
 
     # Sender and receiver run on separate NOC threads. Combining them on
     # one thread deadlocks: every core blocks on its own sender handshake
@@ -167,11 +172,11 @@ def scatter_gather_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         x, _ = ttl.node(dims=2)
-        with send_cb.reserve() as blk:
-            ttl.copy(inp[0, x], blk).wait()
+        with send_cb.reserve() as send_blk:
+            ttl.copy(inp[0, x], send_blk).wait()
 
             def send(pipe):
-                ttl.copy(blk, pipe).wait()
+                ttl.copy(send_blk, pipe).wait()
 
             net.if_src(send)
 
@@ -180,13 +185,78 @@ def scatter_gather_kernel(inp, out):
         x, _ = ttl.node(dims=2)
 
         def recv(pipe):
-            with recv_cb.reserve() as blk:
-                ttl.copy(pipe, blk).wait()
+            with recv_cb.reserve() as recv_blk:
+                ttl.copy(pipe, recv_blk).wait()
 
         net.if_dst(recv)
 
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[0, x]).wait()
+        with out_cb.wait() as out_blk:
+            ttl.copy(out_blk, out[0, x]).wait()
+
+
+# ---------------------------------------------------------------------------
+# Scatter-gather (2D): per-column all-to-all (matches TTLangSpecification.md
+# scatter-gather example). Each column x independently performs an
+# all-to-all across its SY_SG rows; loopback included via slice(0, SY_SG).
+# ---------------------------------------------------------------------------
+
+SX_SG = 2
+SY_SG = 3
+
+
+@ttl.operation(grid=(SX_SG, SY_SG))
+def scatter_gather_2d_kernel(inp, out):
+    net = ttl.PipeNet(
+        [
+            ttl.Pipe(src=(x, y), dst=(x, slice(0, SY_SG)))
+            for x in range(SX_SG)
+            for y in range(SY_SG)
+        ]
+    )
+
+    send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    # block_count == SY_SG so each sender on a column lands in a distinct block.
+    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=SY_SG)
+    acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with recv_cb.wait() as recv_blk, acc_cb.reserve() as acc_blk:
+            acc_blk.store(recv_blk)
+        for _ in range(SY_SG - 1):
+            with (
+                recv_cb.wait() as recv_blk,
+                acc_cb.wait() as prev_blk,
+                acc_cb.reserve() as acc_blk,
+            ):
+                acc_blk.store(prev_blk + recv_blk)
+        with acc_cb.wait() as acc_blk, out_cb.reserve() as out_blk:
+            out_blk.store(acc_blk)
+
+    @ttl.datamovement()
+    def dm_read():
+        x, y = ttl.node(dims=2)
+        with send_cb.reserve() as send_blk:
+            ttl.copy(inp[y, x], send_blk).wait()
+
+            def send(pipe):
+                ttl.copy(send_blk, pipe).wait()
+
+            net.if_src(send)
+
+    @ttl.datamovement()
+    def dm_write():
+        x, y = ttl.node(dims=2)
+
+        def recv(pipe):
+            with recv_cb.reserve() as recv_blk:
+                ttl.copy(pipe, recv_blk).wait()
+
+        net.if_dst(recv)
+
+        with out_cb.wait() as out_blk:
+            ttl.copy(out_blk, out[y, x]).wait()
 
 
 # ---------------------------------------------------------------------------
@@ -277,15 +347,15 @@ def test_scatter(device):
     assert_pcc(expected, result)
 
 
-def test_scatter_gather(device):
-    """All-to-all (issue #505): each core multicasts its tile to all cores
+def test_scatter_gather_1d(device):
+    """1D all-to-all (issue #505): each core multicasts its tile to all cores
     via one PipeNet; each receiver sums the N_SG tiles."""
     inp_torch = torch.randn(TILE, N_SG * TILE, dtype=torch.bfloat16) * 0.1
 
     inp_tt = to_dram(inp_torch, device)
     out_tt = to_dram(torch.zeros(TILE, N_SG * TILE, dtype=torch.bfloat16), device)
 
-    scatter_gather_kernel(inp_tt, out_tt)
+    scatter_gather_1d_kernel(inp_tt, out_tt)
 
     result = ttnn.to_torch(out_tt)
     # Each core receives all 4 tiles and sums them
@@ -293,6 +363,32 @@ def test_scatter_gather(device):
         inp_torch[:, x * TILE : (x + 1) * TILE].float() for x in range(N_SG)
     ).to(torch.bfloat16)
     expected = total.repeat(1, N_SG)
+    assert_pcc(expected, result)
+
+
+def test_scatter_gather_2d(device):
+    """2D per-column all-to-all matching the spec scatter-gather example.
+    Column x performs an independent all-to-all across its SY_SG rows; each
+    core (x, y) sums the SY_SG tiles in column x and writes the sum back to
+    (x, y). Output rows of the same column are identical."""
+    inp_torch = torch.randn(SY_SG * TILE, SX_SG * TILE, dtype=torch.bfloat16) * 0.1
+    inp_tt = to_dram(inp_torch, device)
+    out_tt = to_dram(
+        torch.zeros(SY_SG * TILE, SX_SG * TILE, dtype=torch.bfloat16), device
+    )
+
+    scatter_gather_2d_kernel(inp_tt, out_tt)
+
+    result = ttnn.to_torch(out_tt)
+    col_sums = [
+        sum(
+            inp_torch[y * TILE : (y + 1) * TILE, x * TILE : (x + 1) * TILE].float()
+            for y in range(SY_SG)
+        ).to(torch.bfloat16)
+        for x in range(SX_SG)
+    ]
+    expected_row = torch.cat(col_sums, dim=1)
+    expected = expected_row.repeat(SY_SG, 1)
     assert_pcc(expected, result)
 
 
