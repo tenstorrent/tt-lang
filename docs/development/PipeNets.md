@@ -521,8 +521,8 @@ runtime-observable.
 | #  | Behavior under test                                       | Dev | Sim | Lit |
 |----|-----------------------------------------------------------|:---:|:---:|:---:|
 |  1 | Empty PipeNet rejected at construction                    |  X  |  X  |     |
-|  2 | Within-PipeNet mcast dst overlap rejected (full)          |  X  |  X  |     |
-|  3 | Within-PipeNet mcast dst overlap rejected (partial)       |  X  |  X  |     |
+|  2 | Within-PipeNet mcast dst overlap allowed (full)           |  X  |  X  |     |
+|  3 | Within-PipeNet mcast dst overlap allowed (partial)        |  X  |  X  |     |
 |  4 | Unicast gather to same dst allowed                        |  X  |  X  |     |
 |  5 | Nonoverlapping mcast pipes in one PipeNet allowed         |  X  |  X  |     |
 |  6 | Pipe rejects open-bounded slices                          |  X  |  X  |     |
@@ -531,7 +531,11 @@ runtime-observable.
 |  9 | All-unicast PipeNet allowed                               |  X  |  X  |     |
 | 10 | All-multicast PipeNet allowed                             |  X  |  X  |     |
 | 11 | Pipe.src strict 2-tuple rejection                         |  X  | (2) |     |
+| 11a| Pipe.dst slice rejects non-1 step (strided mcast unsupported) | X | X |     |
+| 11b| Overlapping mcast end-to-end: two senders share dst range (issue #505 base) | X | X |     |
+| 11c| Overlapping mcast end-to-end: multi-tile blocks, partial overlap | X | X |     |
 | 12 | Scatter on subgrid (work < launch, single mcast)          |  X  |  X  |     |
+| 12a| Scatter under grid="auto" (spec scatter example)          |  X  |  X  |     |
 | 13 | Per-row scatter (multi-pipe disjoint dst, 2D active set)  |  X  |  X  |     |
 | 14 | Cross-PipeNet destination overlap permitted               |  X  |  X  |     |
 | 15 | Loopback mcast (src in dst range)                         |  X  |  X  |     |
@@ -539,18 +543,20 @@ runtime-observable.
 | 17 | Captured (closure) PipeNet works                          |  X  |  X  |     |
 | 18 | Module-scope PipeNet works                                |  X  |  X  |     |
 | 19 | Mixed scope: module-scope + body-local PipeNets in one op |  X  |  X  |     |
-| 20 | 1D scatter (existing pattern)                             |  X  |  X  |     |
-| 21 | 1D gather (existing pattern)                              |  X  |  X  |     |
-| 22 | 1D gather, multiple tiles per source (existing)           |  X  |  X  |     |
-| 23 | Ring forward (1D unicast +1, existing)                    |  X  |  X  |     |
-| 24 | 2D broadcast (existing)                                   |  X  |  X  |     |
-| 25 | Pipe chain / conv multi-stage (existing)                  |  X  |  X  |     |
-| 26 | 1D mcast matmul auto-grid baseline (existing)             |  X  |  X  |     |
+| 20 | 1D scatter                                                |  X  |  X  |     |
+| 20a| All-to-all 1D via overlapping mcast (scatter-gather)      |  X  |  X  |     |
+| 20b| All-to-all 2D per-column overlapping mcast (scatter-gather, spec) | X | X |     |
+| 21 | 1D gather                                                 |  X  |  X  |     |
+| 22 | 1D gather, multiple tiles per source                      |  X  |  X  |     |
+| 23 | Ring forward (1D unicast +1)                              |  X  |  X  |     |
+| 24 | 2D broadcast                                              |  X  |  X  |     |
+| 25 | Pipe chain / conv multi-stage                             |  X  |  X  |     |
+| 26 | 1D mcast matmul auto-grid baseline                        |  X  |  X  |     |
 | 27 | Issue #541 regression: 4x3 work extent under grid="full"  |  X  |  X  |     |
 | 28 | Issue #541 regression: 2x2 work extent under grid="full"  |  X  |  X  |     |
-| 29 | 2D mcast matmul (work < launch via `_even_split`) [fixed] |  X  | (1) |     |
-| 30 | Balanced 2D matmul (A on dm_read, B on dm_write) [fixed]  |  X  | (1) |     |
-| 31 | Balanced 2D matmul + fused relu [fixed]                   |  X  |  X  |     |
+| 29 | 2D mcast matmul (work < launch via `_even_split`)         |  X  | (1) |     |
+| 30 | Balanced 2D matmul (A on dm_read, B on dm_write)          |  X  | (1) |     |
+| 31 | Balanced 2D matmul + fused relu                           |  X  |  X  |     |
 | 32 | OperationPipeNets: src coord + dst range (mcast unit)     |     |  X  |     |
 | 33 | OperationPipeNets: union across PipeNets                  |     |  X  |     |
 | 34 | OperationPipeNets: unicast pipe single dst                |     |  X  |     |
@@ -558,7 +564,7 @@ runtime-observable.
 | 36 | OperationPipeNets: validate empty PipeNet                 |     |  X  |     |
 | 37 | OperationPipeNets: validate overlapping mcast             |     |  X  |     |
 | 38 | OperationPipeNets: operation-local id allocation          |     |  X  |     |
-| 39 | sim pipe deadlock detection (existing)                    |     |  X  |     |
+| 39 | sim pipe deadlock detection                               |     |  X  |     |
 | 40 | Verifier accepts `if net.is_src/is_dst/is_active()` guards |    |     |  X  |
 | 41 | Verifier accepts coordinate-compare guards over `core_x`/`core_y` |     |     |  X  |
 | 42 | Verifier accepts `affine.if` guards via IntegerSet eval   |     |     |  X  |
