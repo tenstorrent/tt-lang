@@ -34,8 +34,8 @@ destination (unicast) or a contiguous coordinate range (multicast). When
 the launch grid is larger than the union of all pipe sources and
 destinations, the extra nodes have no role in the communication. If the
 user fails to guard pipe-coupled work from those nodes, the kernel reads
-out-of-bounds tensor regions and corrupts the multicast handshake
-(issue #541).
+out-of-bounds tensor regions and corrupts the multicast handshake; this
+failure mode is the one the verifier guards against (see issue #541).
 
 The compiler verifies user-written guards: each pipe-coupled operation
 must be reachable only from the nodes permitted by its role
@@ -61,13 +61,42 @@ from the resolved grid; lit tests must declare it explicitly.
 ## Within-PipeNet receiver semantics
 
 When two or more pipes in the same PipeNet target the same receiver
-node, the receiver observes every arrival cumulatively. The lowering
-allocates a per-PipeNet `i32` counter on each receiver kernel; senders
-increment that counter once per arrival, and the receiver advances its
-local expectation by 1 per expected arrival per iteration, blocking
-until the remote counter catches up.
+node, the receiver observes every arrival cumulatively and each
+sender's data lands in its own slot of the receiver's dataflow buffer.
 
-Consequences:
+### Data layout: slot per sender
+
+`PipeGraph::assignGatherSlotIndices` walks the pipes in a stable order
+(sorted by `(srcX, srcY, dstStartX, dstStartY, pipeNetId)`) and assigns
+each pipe the lowest slot index not yet taken at any of its receivers.
+For a receiver that lies in the destination range of `N` pipes within
+one PipeNet, those pipes get slot indices `0..N-1`. Two pipes whose
+destination ranges intersect on even one node get distinct slots; pipes
+whose ranges are disjoint may reuse slot 0.
+
+The sender lowering (`PipeLowering.cpp`) writes to
+`base + slot_idx * page_size * cb_num_tiles` in the receiver's CB, so
+each sender's payload lands at its own offset and overlapping
+multicasts never overwrite each other.
+
+This is the same mechanism unicast gather uses (N unicast pipes to one
+destination get slot indices `0..N-1`); the only difference is that
+multicast overlap also handshakes through `noc_semaphore_inc_multicast`
+(see `PipeOptimizations.md` §2) rather than per-destination
+`noc_semaphore_inc`. The `block_count` requirement is identical and
+checked by the same code: `PipeGraph::verifyGatherBlockCounts` errors
+at compile time if any receiver CB's `block_count` is less than
+`max(gatherSlotIdx) + 1` for its pipes, with diagnostic prefix
+`"multicast overlap"` (vs `"gather"` for unicast). There is no
+synchronous serialization between senders: they run concurrently and
+land in distinct slots.
+
+### Arrival counter
+
+The handshake uses a per-PipeNet `i32` counter on each receiver kernel;
+senders increment that counter once per arrival, and the receiver
+advances its local expectation by 1 per expected arrival per iteration,
+blocking until the remote counter catches up. Consequences:
 
 - A receiver in `N` pipes' destination ranges observes `N` arrivals per
   round, not 1.
@@ -80,6 +109,69 @@ Consequences:
 The full sender / receiver NoC protocol — `noc_semaphore_inc_multicast`,
 `noc_async_atomic_barrier`, `experimental::semaphore_wait_min`, and the
 multicast-loopback case — is documented in `PipeOptimizations.md` §2.
+
+### Sender concurrency
+
+Slot-per-sender preserves every parallelism property of a non-overlapping
+multicast. The proof tracks four points in the lowered IR:
+
+1. Slot assignment is static. `assignGatherSlotIndices`
+   (`PipeGraph.cpp:32-102`) runs at compile time, assigns each pipe a
+   slot index `0..N-1`, and bakes the offset into the lowered IR as a
+   constant `slotByteOffset = slotIdx * pageSize * cbNumTiles`
+   (`PipeLowering.cpp:265`). No runtime slot-allocation or contention.
+2. No inter-sender wait. Each sender's emitted sequence
+   (`PipeLowering.cpp:218-310`) is:
+   - `cb_reserve_back` on its local view of the destination DFB
+   - `noc_async_write_multicast` to `base + slot_offset`
+   - `noc_async_write_barrier` — waits for this sender's own writes
+     to complete on its NoC, nothing else
+   - `noc_semaphore_inc_multicast` — atomic counter bump at every
+     receiver
+   - `cb_push_back`
+
+   No sender ever reads a semaphore signaled by another sender. The
+   `senderSem` the sender waits on at the top is its own local L1 word
+   that receivers increment (ready/valid flow control between sender
+   and its own receivers — independent of any other sender in the
+   PipeNet).
+3. Sender/receiver semaphores are per-PipeNet, not per-pipe.
+   `PipeLowering.h:24-26` encodes `senderSem = pipeNetId * 2` and
+   `recvSem = pipeNetId * 2 + 1`. Two distinct pipes within one PipeNet
+   share index numbers, but each core has its own L1 word at that
+   index — no cross-core wait gets routed through them.
+4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
+   for a count of total arrivals, not for specific senders. Senders
+   bump the counter in any order; the receiver only cares about the
+   cumulative total reaching its expected value.
+
+The only places execution can stall are:
+
+- A sender waiting for its own receivers' ready signal (ready/valid
+  handshake — same as the unicast case).
+- A receiver waiting for the cumulative arrival count to reach its
+  expected value.
+- Hardware NoC bandwidth contention (physical, not compiler-inserted).
+
+Sender of pipe A and sender of pipe B (on different cores) never share
+a synchronization point. They write concurrently to distinct slots,
+and the receivers' cumulative counter handles ordering-agnostic
+accumulation. The cost comparison:
+
+| Pattern | Data writes | Signal ops |
+|---|---|---|
+| N senders × M receivers, slot-per-sender mcast | N mcast | N inc_mcast |
+| N senders × M receivers, naive unicast emulation | N × M unicast | N × M inc |
+
+A hypothetical "merged" multicast that combines payloads from N
+different sender cores into one NoC operation is not a hardware
+primitive, so slot-per-sender is the optimal layering: each sender
+still pays one multicast NoC op for its data plus one for its signal,
+exactly like a non-overlapping multicast. The only resource the slot
+mechanism trades for overlap is receiver DFB capacity
+(`N * page_size * cb_num_tiles` of receiver SRAM instead of one block),
+which the compile-time `verifyGatherBlockCounts` makes the user
+acknowledge by sizing `block_count >= N`.
 
 ## Operation pipenets
 
@@ -258,7 +350,7 @@ note: suggested guard: `net_0.is_src()`
 
 | Diagnostic primary message | Triggered when | Suggested fix in message |
 |---|---|---|
-| this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union (the issue #541 case: launch grid larger than work extent). | wrap the surrounding work in `if net_<N>.is_active(): ...` |
+| this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union. | wrap the surrounding work in `if net_<N>.is_active(): ...` |
 | this `ttl.copy(buffer, pipe)` sends data on PipeNet \<N\> from a node that is not a source of any pipe in that net | A DFB-to-pipe copy is reachable from a node that isn't the pipe's source coordinate. | wrap the copy in `net_<N>.if_src(...)` or guard with `if net_<N>.is_src(): ...` |
 | this `ttl.copy(pipe, buffer)` receives data from PipeNet \<N\> on a node that is not a destination of any pipe in that net | A pipe-to-DFB copy is reachable from a node outside the pipe's destination range. | wrap the copy in `net_<N>.if_dst(...)` or guard with `if net_<N>.is_dst(): ...` |
 | this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
