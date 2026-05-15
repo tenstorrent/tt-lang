@@ -34,7 +34,8 @@ func.func @sender_reserves_dest_dfb_unicast() attributes { "ttl.kernel_thread" =
 // CHECK: ttkernel.experimental::get_noc_multicast_addr({{.*}}, %[[WP]])
 // CHECK-NEXT: ttkernel.noc_async_write_multicast(
 // CHECK-NEXT: ttkernel.noc_async_write_barrier
-// CHECK: ttkernel.noc_semaphore_set_multicast
+// CHECK: ttkernel.noc_semaphore_inc_multicast
+// CHECK: ttkernel.noc_async_atomic_barrier
 // CHECK: ttkernel.cb_push_back(%[[DFB]], %[[N]])
 func.func @sender_reserves_dest_dfb_multicast() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>

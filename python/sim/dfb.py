@@ -1236,10 +1236,17 @@ class DataflowBuffer:
             "block_if_needed() should have been called first."
         )
         slot_idx = state.back_slot()
-        # Create tensor with the DFB's element shape and layout
+        # Create a slot tensor that mirrors the likeness tensor's dtype properties:
+        # - backing storage uses underlying_dtype (e.g. float32 when promoted) so
+        #   copy and comparison operations stay type-consistent with other tensors;
+        # - declared _dtype is propagated so element_size and size_in_bytes report
+        #   the correct hardware byte count for L1 accounting.
         slot = Tensor(
-            torch.zeros(self._element_shape, dtype=self.likeness_tensor.dtype),
+            torch.zeros(
+                self._element_shape, dtype=self.likeness_tensor.underlying_dtype
+            ),
             self.likeness_tensor.layout,
+            dtype=self.likeness_tensor.dtype,
         )
         state.buf[slot_idx] = slot
         state.reserved += 1
