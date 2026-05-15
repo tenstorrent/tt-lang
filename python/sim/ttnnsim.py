@@ -25,6 +25,7 @@ from enum import Enum, auto
 from typing import (
     Any,
     Callable,
+    Dict,
     FrozenSet,
     Iterable,
     List,

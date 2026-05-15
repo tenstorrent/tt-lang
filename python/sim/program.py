@@ -9,7 +9,6 @@ functions across multiple cores with proper context binding and error handling.
 """
 
 import copy
-import inspect
 import types
 import warnings
 from typing import Any, Callable, Dict, List
@@ -107,12 +106,6 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             self.context: Dict[str, Any] = {"grid": grid}
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:
-            frame = inspect.currentframe()
-            if frame and frame.f_back:
-                # Capture caller's locals for any remaining context variables
-                # Don't reset context - grid was already set in __init__
-                self.context.update(frame.f_back.f_locals)
-
             # Extract closure variables from thread functions and add to context
             # This ensures variables like DFBs that were defined in the kernel function
             # are available for per-core copying
