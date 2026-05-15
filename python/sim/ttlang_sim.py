@@ -327,10 +327,12 @@ def main() -> None:
         action="store_true",
         dest="dry_run",
         help=(
-            "Skip all data movement and numerical computation. "
-            "DFB sequencing, deadlock detection, and block state "
-            "machine checks still run. Assumes computation results "
-            "do not affect control flow."
+            "Skip the computational payload of simulator-managed objects "
+            "(Tensor arithmetic, block math, copy transfers) while still "
+            "running DFB sequencing, deadlock detection, and block state "
+            "machine checks. Plain Python code outside the simulator APIs "
+            "executes normally. Assumes computation results do not affect "
+            "control flow."
         ),
     )
 

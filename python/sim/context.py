@@ -103,14 +103,22 @@ def cleanup_run_context() -> None:
 def set_dry_run(enabled: bool) -> None:
     """Enable or disable dry-run mode for the current simulator context.
 
-    In dry-run mode the simulator skips all actual data movement and numerical
-    computation (tensor ops, block transfers, copy payloads) while still
-    running the full DFB sequencing, block state machine, deadlock detection,
-    and copy-wait injection.  This makes it safe to validate kernel structure
-    without needing meaningful input data.
+    In dry-run mode the simulator skips the computational payload of
+    simulator-managed objects: ``ttnn.Tensor`` arithmetic operators return
+    zero tensors of the correct shape, ``ttl.math`` block operations return
+    dummy blocks, and ``ttl.copy()`` transfers complete without moving any
+    bytes.  The full DFB sequencing, block state machine, deadlock detection,
+    and copy-wait injection still run unchanged.  This makes it safe to
+    validate kernel structure without needing meaningful input data.
 
-    Assumes that computation results do not affect Python control flow (no
-    data-dependent branches or loop bounds derived from computed tile values).
+    **Scope:** dry-run only intercepts calls that go through the simulator
+    APIs listed above.  All other Python code — plain arithmetic on scalars,
+    standard-library calls, user-defined data structures, and any control
+    flow that does not branch on a simulated tensor value — executes
+    normally.  Kernels that derive loop bounds or branch conditions from
+    computed tile values will therefore not be structurally validated by
+    dry-run (the simulator assumes computation results do not affect control
+    flow).
 
     Args:
         enabled: True to enable dry-run, False to disable.
