@@ -462,7 +462,7 @@ two roles across two kernel functions gives them separate concurrent
 issue contexts on the two data-movement RISCs.
 
 tt-lang's current model pairs RISC and NOC: each
-`@ttl.datamovement()` function is pinned to one RISC (`BRISC` /
+`@ttl.datamovement()` function is assigned to one RISC (`BRISC` /
 `NCRISC`, surfaced in tt-metal as
 `DataMovementProcessor::RISCV_0` / `RISCV_1`) and one NOC channel
 (`NOC_0` / `NOC_1`) together, distinguished by the `ttl.noc_index`
@@ -841,7 +841,7 @@ the [`LoopHintAttr` handler in `clang/lib/Sema/SemaStmtAttr.cpp:74`][clang-loop-
 A `--ttl-pipe-rewrite-remarks` `PassOption` emits one diagnostic
 per `ttl.create_pipe` op listing the attempted rewrite, the
 applied/skipped result, the reason (cost-model term values,
-threshold comparison, user pin), and the resulting primitive.
+threshold comparison, user override), and the resulting primitive.
 LLVM precedent: `-Rpass=loop-vectorize` via
 [`OptimizationRemarkEmitter`][llvm-ore]
 (`llvm/include/llvm/Analysis/OptimizationRemarkEmitter.h:33`).
@@ -956,7 +956,7 @@ functions.
 
 ## 11. References
 
-LLVM / MLIR upstream (pinned at `llvm-project` SHA `705cdc3a9d0adb4c0667aa840a1f23165eca297b`):
+LLVM / MLIR upstream (at `llvm-project` SHA `705cdc3a9d0adb4c0667aa840a1f23165eca297b`):
 
 - [`TargetTransformInfo` class declaration](https://github.com/llvm/llvm-project/blob/705cdc3a9d0adb4c0667aa840a1f23165eca297b/llvm/include/llvm/Analysis/TargetTransformInfo.h#L271)
 - [`TargetTransformInfo::getInstructionCost`](https://github.com/llvm/llvm-project/blob/705cdc3a9d0adb4c0667aa840a1f23165eca297b/llvm/include/llvm/Analysis/TargetTransformInfo.h#L483)
@@ -989,7 +989,7 @@ Autotuning frameworks:
 - [`useOrderedReductions` (LLVM LoopVectorize ordered FP reduction check)](https://github.com/llvm/llvm-project/blob/705cdc3a9d0adb4c0667aa840a1f23165eca297b/llvm/lib/Transforms/Vectorize/LoopVectorize.cpp#L948)
 - [`--force-ordered-reductions` CLI flag](https://github.com/llvm/llvm-project/blob/705cdc3a9d0adb4c0667aa840a1f23165eca297b/llvm/lib/Transforms/Vectorize/LoopVectorize.cpp#L344)
 
-tt-metal (pinned at SHA `c296ef469fe6aab65ab0d359e164b14b62d92bfc`):
+tt-metal (at SHA `c296ef469fe6aab65ab0d359e164b14b62d92bfc`):
 
 - [`minimal_matmul/device/kernels/dm_in0_sender.cpp:287-315`](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/kernels/dm_in0_sender.cpp#L287-L315) — forwarding-chain pattern (in0 sender)
 - [`minimal_matmul/device/kernels/dm_in1_sender_out.cpp`](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/kernels/dm_in1_sender_out.cpp) — in1 sibling

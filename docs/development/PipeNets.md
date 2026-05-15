@@ -173,9 +173,43 @@ mechanism trades for overlap is receiver DFB capacity
 which the compile-time `verifyGatherBlockCounts` makes the user
 acknowledge by sizing `block_count >= N`.
 
+#### Example timeline
+
+Two senders share a destination range:
+
+```
+PipeNet([
+  Pipe B: src=(1, 0)  dst=(slice(2, 4), 0),
+  Pipe A: src=(0, 0)  dst=(slice(2, 4), 0),
+])
+
+Compile-time slot assignment (sorted by (srcX, srcY)):
+  Pipe A -> slot 0     (src (0, 0) sorts before (1, 0))
+  Pipe B -> slot 1
+  => block_count(recv_cb) must be >= 2
+
+State at each receiver (R2 and R3 identical; recv_sem starts at 0):
+
+  time   recv_cb           recv_sem   counter   action
+  ----   ---------------   --------   -------   ----------------------
+  t0     [  .  |  .  ]          0         0    initial
+  t1     [  A  |  .  ]          1         0    S0 wrote slot 0, inc
+  t2     [  A  |  B  ]          2         0    S1 wrote slot 1, inc
+  t3     [  A  |  B  ]          2         1    compute: ++counter,
+                                                wait_min(sem, 1) -> ok,
+                                                consume slot 0
+  t4     [  A  |  B  ]          2         2    compute: ++counter,
+                                                wait_min(sem, 2) -> ok,
+                                                consume slot 1
+```
+
+t1 and t2 may swap (the two senders are independent). The end state at
+t2 is unchanged because writes target different slots and
+`inc_multicast` is atomic.
+
 ## Operation pipenets
 
-`OperationPipeNets` (defined in `python/_pipenets/__init__.py`)
+`OperationPipeNets` (defined in `python/ttl/_pipenets/__init__.py`)
 is the per-operation data structure the compiler and the simulator
 both consume. It holds:
 
@@ -210,7 +244,9 @@ malformed PipeNets error at the construction source line.
 ... -> ttl-finalize-dfb-indices
     -> ttl-annotate-cb-associations
     -> ttl-verify-pipenet-guards                 (read-only analysis)
+    -> ttl-verify-dfb-spsc                       (read-only analysis)
     -> ttl-erase-pipenet-scopes                  (transform)
+    -> ttl-validate-cb-budget                    (read-only analysis)
     -> convert-ttl-to-ttkernel
     -> ttkernel-insert-inits
     ...
@@ -301,7 +337,7 @@ each region according to the parent op:
 For `scf.if`, the condition's domain is determined structurally:
 
 - `PipeNetPredicateOpInterface` (i.e. `ttl.is_src` / `ttl.is_dst` /
-  `ttl.is_active`) → that PipeNet's role domain via the interface
+  `ttl.is_active`) -> that PipeNet's role domain via the interface
   methods `getReferencedPipeNetId` / `getReferencedRole`.
 - `arith.andi` / `arith.ori` decompose: each operand contributes its
   own domain (intersection or union). A coord-independent operand
@@ -370,7 +406,7 @@ ops described in [Predicate recognition](#predicate-recognition)). It
 exists only between frontend emission and verifier teardown so the
 verifier can recognize user code that performs PipeNet role traffic
 without re-deriving the role declarations from each pipe-coupled op
-individually; it never reaches TTL→TTKernel lowering.
+individually; it never reaches TTL -> TTKernel lowering.
 
 The frontend emits this region op around DFB-context blocks
 (`with cb.reserve()`) whose body contains pipe role work. It carries
@@ -586,6 +622,11 @@ runtime-observable.
 | 56 | Verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
 | 57 | Verifier rejects malformed `pipenet_scope`: missing attrs, length mismatch, role out of {0, 1} |  |  |  X  |
 | 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
+| 59 | Lowering: overlapping mcast senders get distinct slot offsets in IR |  |  |  X  |
+| 60 | Lowering: slot assignment is order-independent under user pipe reordering |  |  |  X  |
+| 61 | Lowering: two receives at one core share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
+| 62 | Lowering: loopback mcast (sender in dst range) uses `noc_async_write_multicast_loopback_src` + local recvSem inc |  |  |  X  |
+| 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"multicast overlap"` (and `"gather"` for unicast) |  |  |  X  |
 
 (1) Device-only due to a pre-existing simulator divergence orthogonal
 to PipeNet verification: the simulator's block-state machine accepts
@@ -598,7 +639,7 @@ kernels in these tests use `out_blk += a @ b` after an initial
 (2) Hardware-only by design. The hardware-side `ttl.Pipe.src` is
 strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `Pipe.src` accepts 1D coordinates because the existing
-`matmul_1d_mcast` example uses them. The test pins the hardware-side
+`matmul_1d_mcast` example uses them. The test asserts the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
 ## Lowering: sender/receiver DFB lockstep
