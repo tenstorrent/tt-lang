@@ -31,6 +31,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
@@ -40,6 +41,15 @@ namespace mlir::tt::ttl {
 namespace ttk = mlir::tt::ttkernel;
 
 namespace {
+
+/// Materializes a float attribute as an i32 carrying its IEEE 754 bits. Scalar
+/// SFPU tile APIs take i32 params even for float scalars.
+static Value floatAttrToI32Bits(OpBuilder &rewriter, Location loc,
+                                FloatAttr attr) {
+  auto f32Val = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getF32FloatAttr(attr.getValueAsDouble()));
+  return arith::BitcastOp::create(rewriter, loc, rewriter.getI32Type(), f32Val);
+}
 
 /// Look up a CB for a copy_tile source.
 /// After loop lowering, src is typically a tensor.extract result.
@@ -239,6 +249,38 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
 
     Value dstIdxVal = adaptor.getDstIndex();
     TTKernelComputeOp::create(rewriter, loc, dstIdxVal);
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+/// Lower ttl.tile_typecast to ttkernel.typecast_tile. Cannot reuse the unary
+/// SFPU template because typecast_tile takes in_dtype and out_dtype attributes
+/// derived from the input and result tile element types respectively.
+struct TTLTileTypecastToTTKernel : OpConversionPattern<TileTypecastOp> {
+  using OpConversionPattern<TileTypecastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTypecastOp op, TileTypecastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto inputTileTy =
+        mlir::dyn_cast<tt::ttcore::TileType>(op.getInput().getType());
+    auto resultTileTy =
+        mlir::dyn_cast<tt::ttcore::TileType>(op.getResult().getType());
+    if (!inputTileTy || !resultTileTy) {
+      return rewriter.notifyMatchFailure(op,
+                                         "input or result is not a tile type");
+    }
+    auto inDtypeAttr = tt::ttcore::DataTypeAttr::get(rewriter.getContext(),
+                                                     inputTileTy.getDataType());
+    auto outDtypeAttr = tt::ttcore::DataTypeAttr::get(
+        rewriter.getContext(), resultTileTy.getDataType());
+
+    Value dstIdxVal = adaptor.getDstIndex();
+    ttk::TypecastTileOp::create(rewriter, loc, dstIdxVal, inDtypeAttr,
+                                outDtypeAttr);
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }
@@ -673,7 +715,6 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
     }
 
     // Scaler tile index is always 0.
-    // TODO: Support scalar constants via fill in a follow-up PR.
     Value scalerIdx = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
 
     // TTL and TTKernel ReduceType share the same underlying values.
@@ -690,6 +731,17 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
         ttk::ReduceTypeAttr::get(op.getContext(), ttkReduceType),
         ttk::ReduceDimAttr::get(op.getContext(), op.getReduceDim()));
 
+    if (auto scalarMultiplier =
+            op->getAttrOfType<FloatAttr>(kReduceScalarMultiplierAttrName)) {
+      if (scalarMultiplier.getValueAsDouble() != 1.0) {
+        ttk::BinopWithScalarTileInitOp::create(rewriter, op.getLoc());
+        Value scalarParam =
+            floatAttrToI32Bits(rewriter, op.getLoc(), scalarMultiplier);
+        ttk::MulUnaryTileOp::create(rewriter, op.getLoc(), setup->dstIdx,
+                                    scalarParam);
+      }
+    }
+
     bool useFullFp32 = shouldUseFullFp32Reduce(op, fullFp32);
     if (fullFp32 && isBlackholeTarget(op) &&
         op.getReduceDim() == ttk::ReduceDim::Row) {
@@ -697,7 +749,7 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
           << "full-fp32 row reduce is disabled on Blackhole because of issue "
              "#533; using non-full-fp32 reduce lowering";
     }
-    if (useFullFp32) {
+    if (useFullFp32 && getKernelBoolAttr(op, kFp32DestAccEnAttrName)) {
       reduceOp->setAttr("full_fp32", rewriter.getUnitAttr());
     }
 
@@ -982,6 +1034,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // DST-based ops (no type converter needed).
   patterns.add<TTLTileFillToTTKernel>(ctx);
+  patterns.add<TTLTileTypecastToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

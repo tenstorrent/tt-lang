@@ -34,8 +34,8 @@ destination (unicast) or a contiguous coordinate range (multicast). When
 the launch grid is larger than the union of all pipe sources and
 destinations, the extra nodes have no role in the communication. If the
 user fails to guard pipe-coupled work from those nodes, the kernel reads
-out-of-bounds tensor regions and corrupts the multicast handshake
-(issue #541).
+out-of-bounds tensor regions and corrupts the multicast handshake; this
+failure mode is the one the verifier guards against (see issue #541).
 
 The compiler verifies user-written guards: each pipe-coupled operation
 must be reachable only from the nodes permitted by its role
@@ -58,9 +58,158 @@ The verifier requires a `ttl.launch_grid` module attribute (an i64
 array of length 2 with positive entries). The frontend stamps this
 from the resolved grid; lit tests must declare it explicitly.
 
+## Within-PipeNet receiver semantics
+
+When two or more pipes in the same PipeNet target the same receiver
+node, the receiver observes every arrival cumulatively and each
+sender's data lands in its own slot of the receiver's dataflow buffer.
+
+### Data layout: slot per sender
+
+`PipeGraph::assignGatherSlotIndices` walks the pipes in a stable order
+(sorted by `(srcX, srcY, dstStartX, dstStartY, pipeNetId)`) and assigns
+each pipe the lowest slot index not yet taken at any of its receivers.
+For a receiver that lies in the destination range of `N` pipes within
+one PipeNet, those pipes get slot indices `0..N-1`. Two pipes whose
+destination ranges intersect on even one node get distinct slots; pipes
+whose ranges are disjoint may reuse slot 0.
+
+The sender lowering (`PipeLowering.cpp`) writes to
+`base + slot_idx * page_size * cb_num_tiles` in the receiver's CB, so
+each sender's payload lands at its own offset and overlapping
+multicasts never overwrite each other.
+
+This is the same mechanism unicast gather uses (N unicast pipes to one
+destination get slot indices `0..N-1`); the only difference is that
+multicast overlap also handshakes through `noc_semaphore_inc_multicast`
+(see `PipeOptimizations.md` §2) rather than per-destination
+`noc_semaphore_inc`. The `block_count` requirement is identical and
+checked by the same code: `PipeGraph::verifyGatherBlockCounts` errors
+at compile time if any receiver CB's `block_count` is less than
+`max(gatherSlotIdx) + 1` for its pipes, with diagnostic prefix
+`"multicast overlap"` (vs `"gather"` for unicast). There is no
+synchronous serialization between senders: they run concurrently and
+land in distinct slots.
+
+### Arrival counter
+
+The handshake uses a per-PipeNet `i32` counter on each receiver kernel;
+senders increment that counter once per arrival, and the receiver
+advances its local expectation by 1 per expected arrival per iteration,
+blocking until the remote counter catches up. Consequences:
+
+- A receiver in `N` pipes' destination ranges observes `N` arrivals per
+  round, not 1.
+- The user's `if_dst` callback runs once per pipe whose destination
+  includes the current node; each callback advances the local counter
+  by 1.
+- `N` senders targeting one receiver do not coordinate with each other;
+  they only need to increment the receiver's counter independently.
+
+The full sender / receiver NoC protocol — `noc_semaphore_inc_multicast`,
+`noc_async_atomic_barrier`, `experimental::semaphore_wait_min`, and the
+multicast-loopback case — is documented in `PipeOptimizations.md` §2.
+
+### Sender concurrency
+
+Slot-per-sender preserves every parallelism property of a non-overlapping
+multicast. The proof tracks four points in the lowered IR:
+
+1. Slot assignment is static. `assignGatherSlotIndices`
+   (`PipeGraph.cpp:32-102`) runs at compile time, assigns each pipe a
+   slot index `0..N-1`, and bakes the offset into the lowered IR as a
+   constant `slotByteOffset = slotIdx * pageSize * cbNumTiles`
+   (`PipeLowering.cpp:265`). No runtime slot-allocation or contention.
+2. No inter-sender wait. Each sender's emitted sequence
+   (`PipeLowering.cpp:218-310`) is:
+   - `cb_reserve_back` on its local view of the destination DFB
+   - `noc_async_write_multicast` to `base + slot_offset`
+   - `noc_async_write_barrier` — waits for this sender's own writes
+     to complete on its NoC, nothing else
+   - `noc_semaphore_inc_multicast` — atomic counter bump at every
+     receiver
+   - `cb_push_back`
+
+   No sender ever reads a semaphore signaled by another sender. The
+   `senderSem` the sender waits on at the top is its own local L1 word
+   that receivers increment (ready/valid flow control between sender
+   and its own receivers — independent of any other sender in the
+   PipeNet).
+3. Sender/receiver semaphores are per-PipeNet, not per-pipe.
+   `PipeLowering.h:24-26` encodes `senderSem = pipeNetId * 2` and
+   `recvSem = pipeNetId * 2 + 1`. Two distinct pipes within one PipeNet
+   share index numbers, but each core has its own L1 word at that
+   index — no cross-core wait gets routed through them.
+4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
+   for a count of total arrivals, not for specific senders. Senders
+   bump the counter in any order; the receiver only cares about the
+   cumulative total reaching its expected value.
+
+The only places execution can stall are:
+
+- A sender waiting for its own receivers' ready signal (ready/valid
+  handshake — same as the unicast case).
+- A receiver waiting for the cumulative arrival count to reach its
+  expected value.
+- Hardware NoC bandwidth contention (physical, not compiler-inserted).
+
+Sender of pipe A and sender of pipe B (on different cores) never share
+a synchronization point. They write concurrently to distinct slots,
+and the receivers' cumulative counter handles ordering-agnostic
+accumulation. The cost comparison:
+
+| Pattern | Data writes | Signal ops |
+|---|---|---|
+| N senders × M receivers, slot-per-sender mcast | N mcast | N inc_mcast |
+| N senders × M receivers, naive unicast emulation | N × M unicast | N × M inc |
+
+A hypothetical "merged" multicast that combines payloads from N
+different sender cores into one NoC operation is not a hardware
+primitive, so slot-per-sender is the optimal layering: each sender
+still pays one multicast NoC op for its data plus one for its signal,
+exactly like a non-overlapping multicast. The only resource the slot
+mechanism trades for overlap is receiver DFB capacity
+(`N * page_size * cb_num_tiles` of receiver SRAM instead of one block),
+which the compile-time `verifyGatherBlockCounts` makes the user
+acknowledge by sizing `block_count >= N`.
+
+#### Example timeline
+
+Two senders share a destination range:
+
+```
+PipeNet([
+  Pipe B: src=(1, 0)  dst=(slice(2, 4), 0),
+  Pipe A: src=(0, 0)  dst=(slice(2, 4), 0),
+])
+
+Compile-time slot assignment (sorted by (srcX, srcY)):
+  Pipe A -> slot 0     (src (0, 0) sorts before (1, 0))
+  Pipe B -> slot 1
+  => block_count(recv_cb) must be >= 2
+
+State at each receiver (R2 and R3 identical; recv_sem starts at 0):
+
+  time   recv_cb           recv_sem   counter   action
+  ----   ---------------   --------   -------   ----------------------
+  t0     [  .  |  .  ]          0         0    initial
+  t1     [  A  |  .  ]          1         0    S0 wrote slot 0, inc
+  t2     [  A  |  B  ]          2         0    S1 wrote slot 1, inc
+  t3     [  A  |  B  ]          2         1    compute: ++counter,
+                                                wait_min(sem, 1) -> ok,
+                                                consume slot 0
+  t4     [  A  |  B  ]          2         2    compute: ++counter,
+                                                wait_min(sem, 2) -> ok,
+                                                consume slot 1
+```
+
+t1 and t2 may swap (the two senders are independent). The end state at
+t2 is unchanged because writes target different slots and
+`inc_multicast` is atomic.
+
 ## Operation pipenets
 
-`OperationPipeNets` (defined in `python/_pipenets/__init__.py`)
+`OperationPipeNets` (defined in `python/ttl/_pipenets/__init__.py`)
 is the per-operation data structure the compiler and the simulator
 both consume. It holds:
 
@@ -68,10 +217,9 @@ both consume. It holds:
   (`0..N-1`, reset per invocation) and a tuple of `PipeUse` records
   (source `NodeCoord`, destination `NodeCoord` for unicast or
   `NodeRange` for multicast).
-- `validate()`: empty PipeNet, overlapping multicast destinations,
-  mixed unicast/multicast within one PipeNet.
-- `work_extent()`: per-axis bounding box of every pipe's source and
-  destination coordinates.
+- `validate()`: empty PipeNet, mixed unicast/multicast within one
+  PipeNet, mixed coordinate ranks across pipes, multicast `slice.step`
+  other than 1 (rejected at `ttl.Pipe` construction).
 
 The compiler and the simulator both discover PipeNets by walking the
 closure cells and module globals of the operation function and each
@@ -96,7 +244,9 @@ malformed PipeNets error at the construction source line.
 ... -> ttl-finalize-dfb-indices
     -> ttl-annotate-cb-associations
     -> ttl-verify-pipenet-guards                 (read-only analysis)
+    -> ttl-verify-dfb-spsc                       (read-only analysis)
     -> ttl-erase-pipenet-scopes                  (transform)
+    -> ttl-validate-cb-budget                    (read-only analysis)
     -> convert-ttl-to-ttkernel
     -> ttkernel-insert-inits
     ...
@@ -187,7 +337,7 @@ each region according to the parent op:
 For `scf.if`, the condition's domain is determined structurally:
 
 - `PipeNetPredicateOpInterface` (i.e. `ttl.is_src` / `ttl.is_dst` /
-  `ttl.is_active`) → that PipeNet's role domain via the interface
+  `ttl.is_active`) -> that PipeNet's role domain via the interface
   methods `getReferencedPipeNetId` / `getReferencedRole`.
 - `arith.andi` / `arith.ori` decompose: each operand contributes its
   own domain (intersection or union). A coord-independent operand
@@ -236,7 +386,7 @@ note: suggested guard: `net_0.is_src()`
 
 | Diagnostic primary message | Triggered when | Suggested fix in message |
 |---|---|---|
-| this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union (the issue #541 case: launch grid larger than work extent). | wrap the surrounding work in `if net_<N>.is_active(): ...` |
+| this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union. | wrap the surrounding work in `if net_<N>.is_active(): ...` |
 | this `ttl.copy(buffer, pipe)` sends data on PipeNet \<N\> from a node that is not a source of any pipe in that net | A DFB-to-pipe copy is reachable from a node that isn't the pipe's source coordinate. | wrap the copy in `net_<N>.if_src(...)` or guard with `if net_<N>.is_src(): ...` |
 | this `ttl.copy(pipe, buffer)` receives data from PipeNet \<N\> on a node that is not a destination of any pipe in that net | A pipe-to-DFB copy is reachable from a node outside the pipe's destination range. | wrap the copy in `net_<N>.if_dst(...)` or guard with `if net_<N>.is_dst(): ...` |
 | this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
@@ -256,7 +406,7 @@ ops described in [Predicate recognition](#predicate-recognition)). It
 exists only between frontend emission and verifier teardown so the
 verifier can recognize user code that performs PipeNet role traffic
 without re-deriving the role declarations from each pipe-coupled op
-individually; it never reaches TTL→TTKernel lowering.
+individually; it never reaches TTL -> TTKernel lowering.
 
 The frontend emits this region op around DFB-context blocks
 (`with cb.reserve()`) whose body contains pipe role work. It carries
@@ -407,8 +557,8 @@ runtime-observable.
 | #  | Behavior under test                                       | Dev | Sim | Lit |
 |----|-----------------------------------------------------------|:---:|:---:|:---:|
 |  1 | Empty PipeNet rejected at construction                    |  X  |  X  |     |
-|  2 | Within-PipeNet mcast dst overlap rejected (full)          |  X  |  X  |     |
-|  3 | Within-PipeNet mcast dst overlap rejected (partial)       |  X  |  X  |     |
+|  2 | Within-PipeNet mcast dst overlap allowed (full)           |  X  |  X  |     |
+|  3 | Within-PipeNet mcast dst overlap allowed (partial)        |  X  |  X  |     |
 |  4 | Unicast gather to same dst allowed                        |  X  |  X  |     |
 |  5 | Nonoverlapping mcast pipes in one PipeNet allowed         |  X  |  X  |     |
 |  6 | Pipe rejects open-bounded slices                          |  X  |  X  |     |
@@ -417,7 +567,11 @@ runtime-observable.
 |  9 | All-unicast PipeNet allowed                               |  X  |  X  |     |
 | 10 | All-multicast PipeNet allowed                             |  X  |  X  |     |
 | 11 | Pipe.src strict 2-tuple rejection                         |  X  | (2) |     |
+| 11a| Pipe.dst slice rejects non-1 step (strided mcast unsupported) | X | X |     |
+| 11b| Overlapping mcast end-to-end: two senders share dst range (issue #505 base) | X | X |     |
+| 11c| Overlapping mcast end-to-end: multi-tile blocks, partial overlap | X | X |     |
 | 12 | Scatter on subgrid (work < launch, single mcast)          |  X  |  X  |     |
+| 12a| Scatter under grid="auto" (spec scatter example)          |  X  |  X  |     |
 | 13 | Per-row scatter (multi-pipe disjoint dst, 2D active set)  |  X  |  X  |     |
 | 14 | Cross-PipeNet destination overlap permitted               |  X  |  X  |     |
 | 15 | Loopback mcast (src in dst range)                         |  X  |  X  |     |
@@ -425,18 +579,20 @@ runtime-observable.
 | 17 | Captured (closure) PipeNet works                          |  X  |  X  |     |
 | 18 | Module-scope PipeNet works                                |  X  |  X  |     |
 | 19 | Mixed scope: module-scope + body-local PipeNets in one op |  X  |  X  |     |
-| 20 | 1D scatter (existing pattern)                             |  X  |  X  |     |
-| 21 | 1D gather (existing pattern)                              |  X  |  X  |     |
-| 22 | 1D gather, multiple tiles per source (existing)           |  X  |  X  |     |
-| 23 | Ring forward (1D unicast +1, existing)                    |  X  |  X  |     |
-| 24 | 2D broadcast (existing)                                   |  X  |  X  |     |
-| 25 | Pipe chain / conv multi-stage (existing)                  |  X  |  X  |     |
-| 26 | 1D mcast matmul auto-grid baseline (existing)             |  X  |  X  |     |
+| 20 | 1D scatter                                                |  X  |  X  |     |
+| 20a| All-to-all 1D via overlapping mcast (scatter-gather)      |  X  |  X  |     |
+| 20b| All-to-all 2D per-column overlapping mcast (scatter-gather, spec) | X | X |     |
+| 21 | 1D gather                                                 |  X  |  X  |     |
+| 22 | 1D gather, multiple tiles per source                      |  X  |  X  |     |
+| 23 | Ring forward (1D unicast +1)                              |  X  |  X  |     |
+| 24 | 2D broadcast                                              |  X  |  X  |     |
+| 25 | Pipe chain / conv multi-stage                             |  X  |  X  |     |
+| 26 | 1D mcast matmul auto-grid baseline                        |  X  |  X  |     |
 | 27 | Issue #541 regression: 4x3 work extent under grid="full"  |  X  |  X  |     |
 | 28 | Issue #541 regression: 2x2 work extent under grid="full"  |  X  |  X  |     |
-| 29 | 2D mcast matmul (work < launch via `_even_split`) [fixed] |  X  | (1) |     |
-| 30 | Balanced 2D matmul (A on dm_read, B on dm_write) [fixed]  |  X  | (1) |     |
-| 31 | Balanced 2D matmul + fused relu [fixed]                   |  X  |  X  |     |
+| 29 | 2D mcast matmul (work < launch via `_even_split`)         |  X  | (1) |     |
+| 30 | Balanced 2D matmul (A on dm_read, B on dm_write)          |  X  | (1) |     |
+| 31 | Balanced 2D matmul + fused relu                           |  X  |  X  |     |
 | 32 | OperationPipeNets: src coord + dst range (mcast unit)     |     |  X  |     |
 | 33 | OperationPipeNets: union across PipeNets                  |     |  X  |     |
 | 34 | OperationPipeNets: unicast pipe single dst                |     |  X  |     |
@@ -444,7 +600,7 @@ runtime-observable.
 | 36 | OperationPipeNets: validate empty PipeNet                 |     |  X  |     |
 | 37 | OperationPipeNets: validate overlapping mcast             |     |  X  |     |
 | 38 | OperationPipeNets: operation-local id allocation          |     |  X  |     |
-| 39 | sim pipe deadlock detection (existing)                    |     |  X  |     |
+| 39 | sim pipe deadlock detection                               |     |  X  |     |
 | 40 | Verifier accepts `if net.is_src/is_dst/is_active()` guards |    |     |  X  |
 | 41 | Verifier accepts coordinate-compare guards over `core_x`/`core_y` |     |     |  X  |
 | 42 | Verifier accepts `affine.if` guards via IntegerSet eval   |     |     |  X  |
@@ -466,6 +622,11 @@ runtime-observable.
 | 56 | Verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
 | 57 | Verifier rejects malformed `pipenet_scope`: missing attrs, length mismatch, role out of {0, 1} |  |  |  X  |
 | 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
+| 59 | Lowering: overlapping mcast senders get distinct slot offsets in IR |  |  |  X  |
+| 60 | Lowering: slot assignment is order-independent under user pipe reordering |  |  |  X  |
+| 61 | Lowering: two receives at one core share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
+| 62 | Lowering: loopback mcast (sender in dst range) uses `noc_async_write_multicast_loopback_src` + local recvSem inc |  |  |  X  |
+| 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"multicast overlap"` (and `"gather"` for unicast) |  |  |  X  |
 
 (1) Device-only due to a pre-existing simulator divergence orthogonal
 to PipeNet verification: the simulator's block-state machine accepts
@@ -478,7 +639,7 @@ kernels in these tests use `out_blk += a @ b` after an initial
 (2) Hardware-only by design. The hardware-side `ttl.Pipe.src` is
 strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `Pipe.src` accepts 1D coordinates because the existing
-`matmul_1d_mcast` example uses them. The test pins the hardware-side
+`matmul_1d_mcast` example uses them. The test asserts the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
 ## Lowering: sender/receiver DFB lockstep
@@ -530,16 +691,6 @@ pair to avoid double-advancing.
 
 ## Future work
 
-* Issue #505: lift the within-PipeNet multicast destination overlap
-  restriction. Today a single PipeNet shares one semaphore pair across
-  all its pipes, so a node receiving from two multicast sources cannot
-  disambiguate the handshake. Per-source semaphore increments via
-  `noc_semaphore_inc_multicast` in TTKernel would let one PipeNet
-  describe true scatter-gather and all-to-all patterns. This is a
-  TTKernel dialect + tt-metal change; it is unrelated to PipeNet
-  guard verification, but unblocking it would let `test_scatter_gather` and a
-  single-PipeNet all-to-all version of `test_overlapping_pipenets` come
-  off `@pytest.mark.skip`.
 * Cross-chip (Galaxy / QuietBox / N300) PipeNets. tt-lang's
   `@ttl.operation` is a per-chip program by contract today; PipeNet
   coordinates are interpreted by the NoC, so they always refer to

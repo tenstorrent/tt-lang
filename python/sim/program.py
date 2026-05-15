@@ -89,12 +89,14 @@ def get_max_l1_bytes() -> int:
     return get_context().config.max_l1_bytes
 
 
-def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
+def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
     """Program class that combines compute and data movement functions.
 
     Args:
         *funcs: Compute and data movement function templates
         grid: Grid size tuple
+        pipenets: Optional OperationPipeNets used to compute the active
+            set of nodes. When None, every node participates.
     """
 
     class ProgramImpl:
@@ -104,6 +106,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
         ):
             self.functions = functions
             self.context: Dict[str, Any] = {"grid": grid}
+            self.pipenets = pipenets
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             # Extract closure variables from thread functions and add to context
@@ -208,7 +211,9 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             if total_l1_bytes > max_l1:
                 warnings.warn(
                     f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
-                    f"exceeds the L1 memory limit of {max_l1} bytes.",
+                    f"exceeds the L1 memory limit of {max_l1} bytes. "
+                    f"Memory is accounted using declared dtypes, so this reflects "
+                    f"the on-hardware footprint of the kernel.",
                     stacklevel=2,
                 )
 
@@ -249,73 +254,98 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     "function(s). See errors above for details."
                 )
 
-            # Track all per-core contexts for validation
-            all_core_contexts: List[Dict[str, Any]] = []
+            # Compute the PipeNet active set: linear node indices that
+            # participate in any pipe as source or destination. Inactive nodes
+            # skip every kernel thread, mirroring the compiler's scf.if guard.
+            grid = self.context.get("grid", (1, 1))
+            active_nodes = (
+                self.pipenets.active_node_set(tuple(grid))
+                if self.pipenets is not None
+                else None
+            )
 
-            for core in range(total_cores):
-                # Build per-core context
-                core_context = self._build_core_context(core)
-                all_core_contexts.append(core_context)
+            def _is_active(node: int) -> bool:
+                return active_nodes is None or node in active_nodes
 
-                # Add threads to scheduler
-                for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
-                    # Get ThreadType directly from template's thread_type attribute
-                    thread_type = getattr(tmpl, "thread_type", None)
-                    match thread_type:
-                        case ThreadType.COMPUTE | ThreadType.DM:
-                            pass
-                        case _:
-                            raise RuntimeError(
-                                f"Template {tmpl} has invalid thread_type '{thread_type}'. "
-                                f"Expected ThreadType enum (COMPUTE or DM)."
-                            )
+            try:
+                # Track all per-core contexts for validation
+                all_core_contexts: List[Dict[str, Any]] = []
 
-                    # Bind template to core context
-                    bound_func = tmpl.bind(core_context)
+                for core in range(total_cores):
+                    # Skip cores that are not in any PipeNet's active set.
+                    if not _is_active(core):
+                        continue
 
-                    # Wrap to tag the greenlet with its linear core index so
-                    # locality analysis in copy.py can read it via getcurrent().
-                    def _tagged(
-                        fn: Callable[[], Any] = bound_func,
-                        c: int = core,
-                        core_ctx: Dict[str, Any] = core_context,
-                    ) -> None:
-                        getcurrent()._sim_core = c  # type: ignore[attr-defined]
-                        fn()
-                        # Auto-push/pop any blocks still pending when the thread
-                        # function returns normally (final-iteration cleanup).
-                        # This must not run during exception propagation, so it
-                        # is placed after fn() rather than in a finally block.
-                        for _val in core_ctx.values():
-                            if isinstance(_val, DataflowBuffer):
-                                _val.auto_push_block()
-                                _val.auto_pop_block()
+                    # Build per-core context
+                    core_context = self._build_core_context(core)
+                    all_core_contexts.append(core_context)
 
-                    # Add to scheduler
-                    thread_name = f"core{core}-{tmpl.__name__}"
-                    scheduler.add_thread(thread_name, _tagged, thread_type)
+                    # Add threads to scheduler
+                    for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
+                        # Get ThreadType directly from template's thread_type attribute
+                        thread_type = getattr(tmpl, "thread_type", None)
+                        match thread_type:
+                            case ThreadType.COMPUTE | ThreadType.DM:
+                                pass
+                            case _:
+                                raise RuntimeError(
+                                    f"Template {tmpl} has invalid thread_type '{thread_type}'. "
+                                    f"Expected ThreadType enum (COMPUTE or DM)."
+                                )
 
-            # Install injection hooks for all discovered code objects (thread
-            # functions, nested defs, and module-scope helpers).
-            install_copy_wait_hooks(injection_map)
+                        # Bind template to core context
+                        bound_func = tmpl.bind(core_context)
 
-            # Emit operation_start for each node before the scheduler runs.
-            for core in range(total_cores):
-                trace("operation_start", node=core)
+                        # Wrap to tag the greenlet with its linear core index so
+                        # locality analysis in copy.py can read it via getcurrent().
+                        def _tagged(
+                            fn: Callable[[], Any] = bound_func,
+                            c: int = core,
+                            core_ctx: Dict[str, Any] = core_context,
+                        ) -> None:
+                            getcurrent()._sim_core = c  # type: ignore[attr-defined]
+                            fn()
+                            # Auto-push/pop any blocks still pending when the thread
+                            # function returns normally (final-iteration cleanup).
+                            # This must not run during exception propagation, so it
+                            # is placed after fn() rather than in a finally block.
+                            for _val in core_ctx.values():
+                                if isinstance(_val, DataflowBuffer):
+                                    _val.auto_push_block()
+                                    _val.auto_pop_block()
 
-            # Run scheduler; if any thread raises, the exception propagates
-            # immediately and the validation below is intentionally skipped.
-            # Reporting a "simulator bug" for unpushed blocks only makes sense
-            # when all threads completed normally (auto-push/pop should have fired).
-            scheduler.run()
+                        # Add to scheduler
+                        thread_name = f"core{core}-{tmpl.__name__}"
+                        scheduler.add_thread(thread_name, _tagged, thread_type)
 
-            # Emit operation_end for each node now that all kernels completed.
-            for core in range(total_cores):
-                trace("operation_end", node=core)
+                # Install injection hooks for all discovered code objects (thread
+                # functions, nested defs, and module-scope helpers).
+                install_copy_wait_hooks(injection_map)
 
-            # Validate all DataflowBuffers have no pending blocks.
-            # Only reached on normal exit from the scheduler.
-            self._validate_dataflow_buffers(all_core_contexts)
+                # Iterator over the cores that actually run threads.
+                # Inactive cores (filtered above) are not traced.
+                active_cores = [c for c in range(total_cores) if _is_active(c)]
+
+                # Emit operation_start for each node before the scheduler runs.
+                for core in active_cores:
+                    trace("operation_start", node=core)
+
+                # Run scheduler; if any thread raises, the exception propagates
+                # immediately and the validation below is intentionally skipped.
+                # Reporting a "simulator bug" for unpushed blocks only makes sense
+                # when all threads completed normally (auto-push/pop should have fired).
+                scheduler.run()
+
+                # Emit operation_end for each node now that all kernels completed.
+                for core in active_cores:
+                    trace("operation_end", node=core)
+
+                # Validate all DataflowBuffers have no pending blocks.
+                # Only reached on normal exit from the scheduler.
+                self._validate_dataflow_buffers(all_core_contexts)
+            finally:
+                # Clear scheduler
+                set_scheduler(None)
 
         def _validate_dataflow_buffers(
             self, all_core_contexts: List[Dict[str, Any]]
