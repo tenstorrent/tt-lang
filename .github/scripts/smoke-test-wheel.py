@@ -10,8 +10,8 @@
 #   pip install dist/*.whl
 #   python .github/scripts/smoke-test-wheel.py
 #
-# Also checks that `sim_stats` and the `ttlang-sim-stats` console script were
-# installed with the wheel (bundled entry point, not a separate package).
+# Also checks that `sim_stats` and the `ttlang-sim` / `ttlang-sim-stats` console
+# scripts were installed with the wheel (bundled entry points, not separate packages).
 
 import subprocess
 import sys
@@ -49,29 +49,28 @@ def main() -> int:
 
     # venv-aware; sys.executable may be a symlink out of the venv.
     scripts_dir = Path(sysconfig.get_path("scripts"))
-    stats_name = (
-        "ttlang-sim-stats.exe" if sys.platform == "win32" else "ttlang-sim-stats"
-    )
-    stats_path = scripts_dir / stats_name
-    if not stats_path.is_file():
-        print(
-            f"missing console script (expected next to this Python): {stats_path}",
-            file=sys.stderr,
-        )
-        return 1
+    exe_suffix = ".exe" if sys.platform == "win32" else ""
 
-    r = subprocess.run(
-        [str(stats_path), "--help"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if r.returncode != 0:
-        print(
-            f"ttlang-sim-stats --help failed (exit {r.returncode}):\n{r.stderr}",
-            file=sys.stderr,
+    for script in ("ttlang-sim", "ttlang-sim-stats"):
+        script_path = scripts_dir / f"{script}{exe_suffix}"
+        if not script_path.is_file():
+            print(
+                f"missing console script (expected next to this Python): {script_path}",
+                file=sys.stderr,
+            )
+            return 1
+        r = subprocess.run(
+            [str(script_path), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
-        return 1
+        if r.returncode != 0:
+            print(
+                f"{script} --help failed (exit {r.returncode}):\n{r.stderr}",
+                file=sys.stderr,
+            )
+            return 1
 
     r2 = subprocess.run(
         [sys.executable, "-m", "sim_stats", "--help"],

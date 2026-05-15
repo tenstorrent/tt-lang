@@ -10,4 +10,18 @@
 
 PYTHON="${PYTHON:-python}"
 
+# Resolve the repo/toolchain root from the script's own location so this works
+# when invoked as ./bin/ttlang-sim-stats or from an arbitrary working directory.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
+
+# Two supported layouts:
+#   - source tree:        ${_REPO_ROOT}/python/sim_stats/
+#   - installed toolchain: ${_REPO_ROOT}/python_packages/sim_stats/
+if [ -d "${_REPO_ROOT}/python/sim_stats" ]; then
+    export PYTHONPATH="${_REPO_ROOT}/python${PYTHONPATH:+:${PYTHONPATH}}"
+elif [ -d "${_REPO_ROOT}/python_packages/sim_stats" ]; then
+    export PYTHONPATH="${_REPO_ROOT}/python_packages${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
 exec "$PYTHON" -m sim_stats "$@"

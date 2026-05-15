@@ -59,7 +59,7 @@ jobs:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
-      docker_tag: "v1.0.3"
+      docker_tag: "v1.1.0"
       build_toolchain: ${{ needs.detect-uplift.outputs.uplift == 'true' }}
 
   test-sim:

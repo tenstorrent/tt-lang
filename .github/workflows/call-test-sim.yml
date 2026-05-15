@@ -44,3 +44,10 @@ jobs:
         run: |
           python test/scripts/ttlang-sim-pytest test/python/test_elementwise_ops.py -v
           python test/scripts/ttlang-sim-pytest test/python/test_elementwise_shapes.py -v
+
+      - name: Test source-tree launchers (bin/ttlang-sim, bin/ttlang-sim-stats)
+        env:
+          TTLANG_SIM_ONLY: "1"
+        run: |
+          bin/ttlang-sim --help
+          bin/ttlang-sim-stats --help
