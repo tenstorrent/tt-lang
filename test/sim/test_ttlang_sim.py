@@ -575,7 +575,9 @@ if __name__ == "__main__":
 class TestMaxL1CommandLineOption:
     """Test --max-l1 command-line option in ttlang-sim.
 
-    Each CB uses shape=(1,1), block_count=2, bfloat16:
+    Each CB uses shape=(1,1), block_count=2.  ttnn.bfloat16 is promoted to
+    float32 for computation, but memory accounting uses the declared dtype
+    (bfloat16 = 2 bytes/element):
       capacity_bytes = 2 (slots) * 32*32 (elements/slot) * 2 (bytes/element) = 4096
     Three CBs total: 3 * 4096 = 12288 bytes.
 
@@ -688,6 +690,73 @@ if __name__ == "__main__":
         ), f"Expected success under default L1 limit, got stderr: {result.stderr}"
         assert "SUCCESS" in result.stdout
         assert "exceeds the L1 memory limit" not in result.stderr
+
+
+class TestNoFloat32Promotion:
+    """Test --no-float32-promotion flag."""
+
+    @staticmethod
+    def create_test_script() -> Path:
+        """Create a script that reports the underlying dtype of a bfloat16 tensor."""
+        content = """
+import ttl
+import ttnn
+import torch
+
+@ttl.operation(grid=(1, 1))
+def noop(a: ttnn.Tensor):
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm0():
+        pass
+
+    @ttl.datamovement()
+    def dm1():
+        pass
+
+if __name__ == "__main__":
+    device = ttnn.open_device(device_id=0)
+    t = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    # When promotion is active the backing is float32; when disabled it is bfloat16.
+    print(f"underlying_dtype={t.underlying_dtype}")
+    print(f"declared_dtype={t.dtype}")
+    ttnn.close_device(device)
+    print("SUCCESS")
+"""
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+        tmp.write(content)
+        tmp.close()
+        return Path(tmp.name)
+
+    def _run(self, *extra_args: str) -> subprocess.CompletedProcess:
+        script = self.create_test_script()
+        try:
+            return subprocess.run(
+                [sys.executable, "-m", "sim.ttlang_sim", str(script), *extra_args],
+                cwd=Path(__file__).parent.parent.parent,
+                env={**os.environ, "PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            script.unlink()
+
+    def test_promotion_on_by_default(self):
+        """By default, bfloat16 tensors are backed by float32."""
+        result = self._run()
+        assert result.returncode == 0, result.stderr
+        assert "underlying_dtype=torch.float32" in result.stdout
+        assert "declared_dtype=torch.bfloat16" in result.stdout
+
+    def test_no_float32_promotion_flag(self):
+        """--no-float32-promotion makes bfloat16 tensors use native bfloat16 backing."""
+        result = self._run("--no-float32-promotion")
+        assert result.returncode == 0, result.stderr
+        assert "underlying_dtype=torch.bfloat16" in result.stdout
+        assert "declared_dtype=torch.bfloat16" in result.stdout
 
 
 class TestSimStats:
