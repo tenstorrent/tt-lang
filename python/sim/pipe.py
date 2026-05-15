@@ -306,6 +306,11 @@ def _validate_dst_slice(item: Any, name: str) -> None:
             f"dst {name} slice start must be < stop, "
             f"got slice({item.start}, {item.stop})"
         )
+    if item.step is not None and item.step != 1:
+        raise ValueError(
+            f"dst {name} slice step must be 1 or None "
+            f"(strided multicast is not supported), got step={item.step}"
+        )
 
 
 def _normalize_dst_rect(dst: Any) -> Optional[Tuple[Tuple[int, int], ...]]:

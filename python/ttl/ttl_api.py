@@ -87,6 +87,7 @@ from .dtype_utils import (
 )
 from .kernel_runner import (
     KernelSpec,
+    get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
 )
@@ -369,18 +370,44 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     return default
 
 
+def _same_device(a, b) -> bool:
+    """Return True when *a* and *b* refer to the same TTNN device."""
+    if a is b:
+        return True
+    a_id = getattr(a, "id", None)
+    b_id = getattr(b, "id", None)
+    if callable(a_id) and callable(b_id):
+        return a_id() == b_id()
+    return False
+
+
 def _require_device(args):
     """Extract the device from tensor arguments, raising if none are on-device.
 
-    Returns the first non-None device found. Raises ValueError with
-    a message listing which arguments are host tensors and suggesting
-    ttnn.to_device().
+    Returns the first non-None device found after verifying that every
+    on-device tensor shares the same device.  Raises ValueError when no
+    tensor carries a device, or when tensors are on different devices.
     """
+    first_device = None
+    first_idx = None
     for i, arg in enumerate(args):
-        if is_ttnn_tensor(arg):
-            device = arg.device()
-            if device is not None:
-                return device
+        if not is_ttnn_tensor(arg):
+            continue
+        device = arg.device()
+        if device is None:
+            continue
+        if first_device is None:
+            first_device = device
+            first_idx = i
+        elif not _same_device(first_device, device):
+            raise ValueError(
+                f"Tensor arguments are on different devices: "
+                f"arg[{first_idx}] is on device {first_device}, "
+                f"but arg[{i}] is on device {device}. "
+                f"All on-device tensors must reside on the same device."
+            )
+    if first_device is not None:
+        return first_device
     host_args = [
         f"  arg[{i}]: {arg.shape}" for i, arg in enumerate(args) if is_ttnn_tensor(arg)
     ]
@@ -624,6 +651,18 @@ def _lookup_kernel_func_op(module, kernel_name: str):
     raise RuntimeError(f"Could not find TTKernel function '{kernel_name}'")
 
 
+def _set_unpack_to_dest_fp32(config, ttnn_mod) -> None:
+    """Configure UnpackToDestFp32 for the primary input CB (index 0)."""
+    unpack_mode = ttnn_mod.UnpackToDestMode
+    # The jit_build layer requires the vector size to be >= the number of CBs
+    # for the target architecture (32 for WH B0, 64 for Blackhole). Use 64 to
+    # cover both.
+    num_cbs = 64
+    modes = config.unpack_to_dest_mode
+    for i in range(num_cbs):
+        modes.append(unpack_mode.UnpackToDestFp32 if i == 0 else unpack_mode.Default)
+
+
 def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
     """Read a boolean func.func attribute from a compiled kernel."""
     operation = _lookup_kernel_func_op(module, kernel_name)
@@ -747,6 +786,9 @@ def _compile_ttnn_kernel(
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
             "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
+            "unpack_to_dest_fp32": _get_kernel_bool_attr(
+                module, name, "ttl.unpack_to_dest_fp32"
+            ),
         }
         for name, _ in kernel_info
     }
@@ -770,6 +812,8 @@ def _compile_ttnn_kernel(
                 config.dst_full_sync_en = dst_full_sync_en
             elif kernel_bool_attrs[name]["dst_full_sync_en"]:
                 config.dst_full_sync_en = True
+            if kernel_bool_attrs[name]["unpack_to_dest_fp32"]:
+                _set_unpack_to_dest_fp32(config, ttnn)
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
@@ -1250,6 +1294,14 @@ def _compile_kernel(
             )
             print(f"[TTNN interop] Detected {memory_space} memory space")
 
+    l1_budget_override = compiler_options.l1_budget
+    if l1_budget_override == 0 and has_ttnn_tensors:
+        try:
+            device = _require_device(args)
+            l1_budget_override = get_min_remaining_l1_for_device(device)
+        except ValueError:
+            pass
+
     for idx, (param_name, arg) in enumerate(zip(f_params, compile_args)):
         register_tensor_name(arg, param_name, index=idx)
 
@@ -1448,8 +1500,14 @@ def _compile_kernel(
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-verify-pipenet-guards")
+        pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
-
+        if l1_budget_override > 0:
+            pipeline_passes.append(
+                f"ttl-validate-cb-budget{{l1-budget-override={l1_budget_override}}}"
+            )
+        else:
+            pipeline_passes.append("ttl-validate-cb-budget")
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
         if perf_dump:

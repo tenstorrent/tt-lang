@@ -67,7 +67,7 @@ def bad_gather(inp, out):
                 ttl.copy(blk, out[0, 0]).wait()
 
 
-# CHECK: gather pipe receiver CB has block_count=1 but 2 senders target it
+# CHECK: gather pipe receiver CB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2
 
 device = ttnn.open_device(device_id=0)
 try:

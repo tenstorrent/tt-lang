@@ -57,7 +57,7 @@
 // NOFP32: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_col>)
 // NOFP32-NOT: full_fp32
 // NOFP32: ttkernel.reduce_uninit
-func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
   %c1 = arith.constant 1 : index
   %c0 = arith.constant 0 : index
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -104,7 +104,7 @@ func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // NOFP32: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_row>)
 // NOFP32-NOT: full_fp32
 // NOFP32: ttkernel.reduce_uninit
-func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
   %c1 = arith.constant 1 : index
   %c0 = arith.constant 0 : index
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -150,7 +150,7 @@ func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // BLACKHOLE: ttkernel.reduce_uninit()
 // BLACKHOLE-NOT: full_fp32
 module attributes {ttl.target_arch = "blackhole"} {
-  func.func @blackhole_reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  func.func @blackhole_reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
     %c1 = arith.constant 1 : index
     %c0 = arith.constant 0 : index
     %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -193,7 +193,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // BLACKHOLE: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_col>) {full_fp32
 // BLACKHOLE: ttkernel.reduce_uninit() {full_fp32}
 module attributes {ttl.target_arch = "blackhole"} {
-  func.func @blackhole_reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  func.func @blackhole_reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
     %c1 = arith.constant 1 : index
     %c0 = arith.constant 0 : index
     %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -233,7 +233,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // WORMHOLE-LABEL: func.func @wormhole_reduce_sum_dim0_1x1
 // WORMHOLE: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_col>) {ttl.reduce_output_cb_index
 module attributes {ttl.target_arch = "wormhole_b0"} {
-  func.func @wormhole_reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  func.func @wormhole_reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
     %c0 = arith.constant 0 : index
     %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -259,7 +259,7 @@ module attributes {ttl.target_arch = "wormhole_b0"} {
 // WORMHOLE-LABEL: func.func @wormhole_reduce_sum_dim1_1x1
 // WORMHOLE: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_row>) {ttl.reduce_output_cb_index
 module attributes {ttl.target_arch = "wormhole_b0"} {
-  func.func @wormhole_reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  func.func @wormhole_reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
     %c0 = arith.constant 0 : index
     %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -307,7 +307,7 @@ module attributes {ttl.target_arch = "wormhole_b0"} {
 // FP32: } {ttl.reduction_loop
 // Disable L1 accumulation after reduction loop.
 // FP32: ttkernel.pack_reconfig_l1_acc(%[[C0I]])
-func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
   %c2 = arith.constant 2 : index
   %c1 = arith.constant 1 : index
   %c0 = arith.constant 0 : index

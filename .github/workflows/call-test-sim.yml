@@ -25,7 +25,7 @@ jobs:
       - name: Setup Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.10"
 
       - name: Install test dependencies
         run: |
@@ -39,3 +39,8 @@ jobs:
           TTLANG_SIM_ONLY: "1"
         run: |
           pytest test/sim/ -v -n auto
+
+      - name: Run Python API tests under simulator
+        run: |
+          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_ops.py -v
+          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_shapes.py -v

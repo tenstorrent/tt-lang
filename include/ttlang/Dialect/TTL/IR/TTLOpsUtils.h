@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -22,6 +23,16 @@
 #include <optional>
 
 namespace mlir::tt::ttl {
+
+/// Return the enclosing kernel-thread `func.func` (tagged with
+/// `ttl.kernel_thread`), or null if `op` is not inside one.
+inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
+  auto func = op->getParentOfType<mlir::func::FuncOp>();
+  if (func && func->hasAttr(kKernelThreadAttrName)) {
+    return func;
+  }
+  return nullptr;
+}
 
 /// Trace through unrealized conversion casts to the original value
 /// (cycle-safe).
@@ -49,13 +60,15 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
 }
 
-/// Resolve the CB index attached to `cb` by tracing through unrealized
-/// conversion casts to its defining BindCBOp. Returns std::nullopt when the
-/// value does not trace to a BindCBOp.
+/// Resolve the CB index attached to `cb`, accepting either the pre-conversion
+/// BindCBOp or the post-conversion GetCompileArgValOp.
 inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   cb = traceUnrealizedCasts(cb);
   if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
     return bindOp.getCbIndex().getSExtValue();
+  }
+  if (auto argOp = cb.getDefiningOp<mlir::tt::ttkernel::GetCompileArgValOp>()) {
+    return argOp.getArgIndex();
   }
   return std::nullopt;
 }
@@ -435,6 +448,22 @@ inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
   return capacity;
 }
 
+inline bool isConsumedByTileTypecast(Value value) {
+  for (Operation *user : value.getUsers()) {
+    if (isa<TileTypecastOp>(user)) {
+      return true;
+    }
+    if (auto copy = dyn_cast<CopyTileOp>(user)) {
+      for (Operation *copyUser : copy.getDstTile().getUsers()) {
+        if (isa<TileTypecastOp>(copyUser)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /// Compute DST capacity for a compute op. Fails for mixed f32/non-f32 args.
 inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   bool fullSyncEn = getKernelBoolAttr(computeOp, kDstFullSyncEnAttrName);
@@ -459,10 +488,19 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (sawF32 && sawNonF32) {
-    return computeOp.emitOpError(
-        "mixed f32 and non-f32 tile arguments; "
-        "DST capacity uses f32 limits (4 tiles) which may produce "
-        "incorrect results");
+    for (BlockArgument arg : body.getArguments()) {
+      if (arg.getArgNumber() >= computeOp.getNumInputs()) {
+        continue;
+      }
+      if (!getTileElementType(arg.getType())) {
+        continue;
+      }
+      if (!isConsumedByTileTypecast(arg)) {
+        return computeOp.emitOpError(
+            "mixed f32 and non-f32 tile arguments; DST capacity uses f32 "
+            "limits (4 tiles) which may produce incorrect results");
+      }
+    }
   }
 
   bool isFloat32 = sawF32 || fp32DestAccEn;

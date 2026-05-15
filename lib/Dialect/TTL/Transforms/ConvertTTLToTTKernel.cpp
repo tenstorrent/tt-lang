@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -101,8 +102,8 @@ static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread")) {
     return a.getValue();
   }
-  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
-    op->removeAttr("ttl.kernel_thread");
+  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
+    op->removeAttr(kKernelThreadAttrName);
     op->setAttr("ttkernel.thread", a);
     return a.getValue();
   }
@@ -417,61 +418,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
 } // namespace
 
-//===----------------------------------------------------------------------===//
-// PipeGraph implementation
-//===----------------------------------------------------------------------===//
-
-FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
-  PipeGraph graph;
-
-  // Find all Pipe->CB copies (receiver side) and extract CB index
-  LogicalResult walkResult = success();
-  mod.walk([&](CopyOp copyOp) {
-    if (failed(walkResult)) {
-      return;
-    }
-    auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType());
-    if (!srcPipeType) {
-      return;
-    }
-
-    // Found Pipe->CB copy: this is the receiver side
-    Value dstCB = copyOp.getDst();
-    auto cbType = dyn_cast<CircularBufferType>(dstCB.getType());
-    if (!cbType) {
-      copyOp.emitWarning("pipe copy destination is not a circular buffer");
-      return;
-    }
-
-    // Trace to the BindCBOp to get the CB index
-    Value cbVal = traceUnrealizedCasts(dstCB);
-    auto bindOp = cbVal.getDefiningOp<BindCBOp>();
-    if (!bindOp) {
-      copyOp.emitWarning("could not trace pipe receiver to a BindCBOp");
-      return;
-    }
-
-    int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
-    walkResult = graph.addReceiverCB(
-        srcPipeType.getSrcX(), srcPipeType.getSrcY(),
-        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
-        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
-        srcPipeType.getPipeNetId(), cbIndex, cbType.getBlockCount(),
-        copyOp.getLoc(), copyOp);
-  });
-
-  if (failed(walkResult)) {
-    return failure();
-  }
-
-  graph.assignGatherSlotIndices();
-
-  if (failed(graph.verifyGatherBlockCounts())) {
-    return failure();
-  }
-
-  return graph;
-}
+// PipeGraph implementation lives in PipeGraph.cpp.
 
 namespace {
 
@@ -786,8 +733,10 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
   CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
-               const PipeGraph *pipeGraph)
-      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph) {}
+               const PipeGraph *pipeGraph,
+               const PipeNetCounterMap *pipeNetCounters)
+      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph),
+        pipeNetCounters(pipeNetCounters) {}
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -837,7 +786,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     if (srcIsPipe && dstIsCB) {
       // Pipe -> CB: destination receives data via multicast from source
       return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), pipeGraph,
-                           rewriter);
+                           pipeNetCounters, rewriter);
     }
     if (srcIsPipe || dstIsPipe) {
       return rewriter.notifyMatchFailure(
@@ -876,6 +825,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 
 private:
   const PipeGraph *pipeGraph;
+  const PipeNetCounterMap *pipeNetCounters;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
@@ -960,11 +910,12 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 
   LogicalResult matchAndRewrite(FuncOp op,
                                 PatternRewriter &rewriter) const override {
-    auto ttlAttr = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread");
+    auto ttlAttr =
+        op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName);
     if (!ttlAttr || ttlAttr.getValue() != ttk::ThreadType::Noc) {
       return failure();
     }
-    op->removeAttr("ttl.kernel_thread");
+    op->removeAttr(kKernelThreadAttrName);
     op->removeAttr("ttl.noc_index");
     op->setAttr("ttkernel.thread", ttlAttr);
 
@@ -1013,8 +964,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
-                         BuiltinDialect, scf::SCFDialect, func::FuncDialect,
-                         tensor::TensorDialect, ttkernel::TTKernelDialect>();
+                         BuiltinDialect, memref::MemRefDialect, scf::SCFDialect,
+                         func::FuncDialect, tensor::TensorDialect,
+                         ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
   target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
@@ -1046,22 +998,31 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
-  // Build pipe graph to track receiver CB addresses for gather patterns.
-  // This must happen before lowering so we can look up receiver info.
+  // Build the pipe graph to track receiver CB addresses for gather
+  // patterns. This must happen before lowering so we can look up receiver
+  // info.
   auto pipeGraphOrErr = PipeGraph::build(mod);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }
   PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
 
+  // Per-PipeNet runtime counters for multicast cumulative wait_min.
+  PipeNetCounterMap pipeNetCounters;
+  allocatePipeNetCountersForMulticast(mod, pipeNetCounters);
+
+  // Per-net-id pipe list, shared by IsSrc/IsDst/IsActive lowerings so they
+  // don't walk the module per match.
+  PipeNetIndex pipeNetIndex;
+  buildPipeNetIndex(mod, pipeNetIndex);
+
   RewritePatternSet patterns(&ctx);
-  // CopyLowering needs the pipe graph for gather pattern receiver CB lookup
-  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph);
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph, &pipeNetCounters);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
       typeConverter, &ctx);
-  populatePipeLoweringPatterns(patterns, typeConverter);
+  populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

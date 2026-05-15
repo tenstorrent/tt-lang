@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional, Union, cast
 
 from .blockstate import ThreadType
 from .typedefs import Shape
-from .context import get_context
+from .context import get_context, cleanup_run_context
 
 
 def set_default_grid(grid: Shape) -> None:
@@ -102,7 +102,6 @@ def operation(
             from .program import Program
             from .pipe import build_pipenets, discover_pipe_nets_from_closures
 
-            # Clear thread registry and resource counters before kernel execution
             clear_thread_registry()
             get_context().kernel_dfb_count = 0
             get_context().kernel_l1_bytes = 0
@@ -143,15 +142,25 @@ def operation(
             # Arrange in expected order: compute, dm0, dm1
             ordered_threads = [compute_threads[0], dm_threads[0], dm_threads[1]]
 
-            # Build the operation-level PipeNet graph for validation.
+            # Build the operation-level PipeNet graph. PipeNets are discovered
+            # by walking closures of the operation function and each thread's
+            # body, so captured PipeNets show up identically to body-local
+            # ones. Validation runs against the assembled graph.
             thread_funcs = [getattr(t, "__wrapped__", None) for t in ordered_threads]
             pipe_nets = discover_pipe_nets_from_closures(modified_func, *thread_funcs)
             pipenets = build_pipenets(pipe_nets)
             pipenets.validate()
 
-            # Execute the program with grid parameter
-            program = Program(*ordered_threads, grid=actual_grid)
-            program(*args, **kwargs)
+            # Execute the program with grid parameter.  After the run,
+            # clean up execution-specific state so subsequent runs start
+            # from a clean slate.  This is the outermost session boundary:
+            # thread_registry was already consumed by get_registered_threads()
+            # above, so clearing it here is safe.
+            try:
+                program = Program(*ordered_threads, grid=actual_grid, pipenets=pipenets)
+                program(*args, **kwargs)
+            finally:
+                cleanup_run_context()
 
         # Store the decorator parameters for later access
         setattr(wrapper, "__pykernel_config__", {"grid": grid})

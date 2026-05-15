@@ -35,6 +35,8 @@ constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
+constexpr llvm::StringLiteral
+    kUnpackToDestFp32AttrName("ttl.unpack_to_dest_fp32");
 
 /// Canonical target_arch values. Mirrored in python/ttl/ttl_api.py.
 constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
@@ -70,6 +72,10 @@ enum class PipeRole : int64_t {
 /// Set by TTLSetComputeKernelConfig, read via getKernelBoolAttr.
 constexpr llvm::StringLiteral
     kEnableFPUBinaryOpsAttrName("ttl.enable_fpu_binary_ops");
+
+/// Func-level: tags a func.func as a kernel thread (compute / dataflow);
+/// the attribute value is a `ttkernel.thread` enum.
+constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");

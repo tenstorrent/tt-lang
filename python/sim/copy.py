@@ -277,4 +277,23 @@ def copy(
         tx = copy(dfb_block, tensor_slice)
         tx.wait()
     """
-    return CopyTransaction(src, dst)
+    handle = CopyTransaction(src, dst)
+
+    # Case A: bare ttl.copy(...) with no assignment — auto-wait immediately.
+    # The AST analysis in analyze_thread_function identifies these call sites
+    # and registers their (caller_code, abs_lineno) in context.auto_wait_copy_lines.
+    # Using equality-based set lookup so that code objects from different files
+    # with identical bodies are still matched correctly.
+    import sys
+
+    frame = sys._getframe(1)
+    from .context import get_context
+
+    ctx = get_context()
+    if (
+        ctx.auto_wait_copy_lines
+        and (frame.f_code, frame.f_lineno) in ctx.auto_wait_copy_lines
+    ):
+        handle.wait()
+
+    return handle
