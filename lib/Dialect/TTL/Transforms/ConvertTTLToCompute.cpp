@@ -689,8 +689,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 /// Build a ttl.compute from pre-validated inputs. Handles output CB collection,
 /// init tensor creation, ComputeOp + body construction, and tile store
 /// emission. inputMaps are the indexing maps for the input operands; outputMap
-/// is replicated once per output CB. The emitTileOp callback receives (builder,
-/// loc, tileType, body) and returns the tile result value.
+/// is replicated once per output CB. Block argument tile types are derived from
+/// the corresponding input and output tensor element types. The emitTileOp
+/// callback receives (builder, loc, outputTileType, body) and returns the tile
+/// result value.
 static LogicalResult buildComputeFromInputs(
     Operation *op, PatternRewriter &rewriter, ValueRange inputs,
     RankedTensorType outputType, ArrayRef<Attribute> inputMaps,
@@ -705,6 +707,16 @@ static LogicalResult buildComputeFromInputs(
   }
 
   Location loc = op->getLoc();
+
+  SmallVector<Type> inputTileTypes;
+  for (Value input : inputs) {
+    auto inputType = getTensorType(input);
+    if (!inputType) {
+      return rewriter.notifyMatchFailure(op, "input is not a ranked tensor");
+    }
+    inputTileTypes.push_back(ttcore::TileType::get(inputType.getElementType()));
+  }
+  Type outputTileType = ttcore::TileType::get(outputType.getElementType());
 
   SmallVector<Attribute> maps(inputMaps);
   for (size_t i = 0; i < outCbs.size(); ++i) {
@@ -729,16 +741,15 @@ static LogicalResult buildComputeFromInputs(
                                      rewriter.getArrayAttr(iterTypes));
 
   Block *body = rewriter.createBlock(&computeOp.getBody());
-  Type tileType = ttcore::TileType::get(outputType.getElementType());
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    body->addArgument(tileType, loc);
+  for (Type inputTileType : inputTileTypes) {
+    body->addArgument(inputTileType, loc);
   }
   for (size_t i = 0; i < outCbs.size(); ++i) {
-    body->addArgument(tileType, loc);
+    body->addArgument(outputTileType, loc);
   }
 
   rewriter.setInsertionPointToStart(body);
-  Value result = emitTileOp(rewriter, loc, tileType, body);
+  Value result = emitTileOp(rewriter, loc, outputTileType, body);
   emitTileStores(rewriter, loc, result, op);
   YieldOp::create(rewriter, loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
@@ -1435,6 +1446,42 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Typecast Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lowers ttl.typecast to ttl.compute with ttl.tile_typecast in the body.
+struct LowerTypecastToCompute : OpRewritePattern<TypecastOp> {
+  using OpRewritePattern<TypecastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TypecastOp op,
+                                PatternRewriter &rewriter) const override {
+    auto resultType = getTensorType(op.getResult());
+    if (!resultType) {
+      return failure();
+    }
+
+    if (!getAttachedCB(op.getInput())) {
+      return tryFusion(op, rewriter);
+    }
+
+    MLIRContext *ctx = rewriter.getContext();
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(resultType.getRank(), ctx);
+    SmallVector<Attribute> inputMaps(1, AffineMapAttr::get(identityMap));
+    SmallVector<Attribute> iterTypes(resultType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    return buildComputeFromInputs(
+        op, rewriter, ValueRange{op.getInput()}, resultType, inputMaps,
+        identityMap, iterTypes,
+        [](OpBuilder &b, Location loc, Type outputTileType, Block *body) {
+          return createTileOpWithPlaceholderDstIndex<TileTypecastOp>(
+              b, loc, outputTileType, body->getArgument(0));
+        });
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Transpose Lowering
 //===----------------------------------------------------------------------===//
 
@@ -1546,6 +1593,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
+  patterns.add<LowerTypecastToCompute>(ctx);
   patterns.add<LowerFillToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
 }

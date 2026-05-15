@@ -643,6 +643,74 @@ def fill(output: TensorBlock, value) -> TensorBlock:
     return ttl.fill(output.type, value_attr)
 
 
+def _is_supported_typecast_dtype(ttcore_dtype) -> bool:
+    from ttl.dialects import ttcore
+
+    return ttcore_dtype in {
+        ttcore.DataType.Float32,
+        ttcore.DataType.BFloat16,
+        ttcore.DataType.BFP_BFloat8,
+        ttcore.DataType.BFP_BFloat4,
+    }
+
+
+def _is_supported_typecast_tile_type(tile_type) -> bool:
+    from ttl.dialects import ttcore
+
+    return _is_supported_typecast_dtype(ttcore.DataType(tile_type.data_type_as_int))
+
+
+@syntax("typecast")
+def typecast(input: TensorBlock, dtype) -> TensorBlock:
+    """
+    Elementwise typecast: convert each element of ``input`` to ``dtype``.
+
+    Args:
+        input: Input tensor (CB-attached). Each element is a tile.
+        dtype: Target data type. Accepts a ``ttcore.DataType`` enum value
+            or a torch/ttnn dtype convertible via ``dtype_utils``.
+
+    Returns:
+        Result tensor with the same shape as ``input`` but with the element
+        type derived from ``dtype``.
+    """
+    from ttl.dialects import ttcore
+    from .dtype_utils import tensor_dtype_to_ttcore_datatype
+
+    if isinstance(dtype, ttcore.DataType):
+        ttcore_dtype = dtype
+    else:
+        ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
+    if not _is_supported_typecast_dtype(ttcore_dtype):
+        raise ValueError(
+            f"typecast only supports floating-point destination dtypes, got {dtype}"
+        )
+
+    input_type = input.type
+    if not isinstance(input_type, RankedTensorType):
+        raise ValueError(f"typecast expects a RankedTensorType input, got {input_type}")
+
+    ctx = input_type.context
+    input_tile = ttcore.ir.TileType.maybe_downcast(input_type.element_type)
+    if input_tile is None:
+        raise ValueError(
+            f"typecast expects tile-typed elements, got {input_type.element_type}"
+        )
+    if not _is_supported_typecast_tile_type(input_tile):
+        raise ValueError(
+            "typecast only supports floating-point input tile dtypes, got "
+            f"{input_tile}"
+        )
+
+    out_tile_type = ttcore.ir.TileType.get(
+        ctx, input_tile.shape[0], input_tile.shape[1], ttcore_dtype
+    )
+    result_type = RankedTensorType.get(
+        input_type.shape, out_tile_type, input_type.encoding
+    )
+    return ttl.typecast(result_type, input)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -651,5 +719,6 @@ __all__ = [
     "grid_size",
     "signpost",
     "fill",
+    "typecast",
     *_generated_all,
 ]

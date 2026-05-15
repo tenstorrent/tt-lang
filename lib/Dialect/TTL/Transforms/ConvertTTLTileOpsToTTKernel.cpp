@@ -31,6 +31,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
@@ -239,6 +240,38 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
 
     Value dstIdxVal = adaptor.getDstIndex();
     TTKernelComputeOp::create(rewriter, loc, dstIdxVal);
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+/// Lower ttl.tile_typecast to ttkernel.typecast_tile. Cannot reuse the unary
+/// SFPU template because typecast_tile takes in_dtype and out_dtype attributes
+/// derived from the input and result tile element types respectively.
+struct TTLTileTypecastToTTKernel : OpConversionPattern<TileTypecastOp> {
+  using OpConversionPattern<TileTypecastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTypecastOp op, TileTypecastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto inputTileTy =
+        mlir::dyn_cast<tt::ttcore::TileType>(op.getInput().getType());
+    auto resultTileTy =
+        mlir::dyn_cast<tt::ttcore::TileType>(op.getResult().getType());
+    if (!inputTileTy || !resultTileTy) {
+      return rewriter.notifyMatchFailure(op,
+                                         "input or result is not a tile type");
+    }
+    auto inDtypeAttr = tt::ttcore::DataTypeAttr::get(rewriter.getContext(),
+                                                     inputTileTy.getDataType());
+    auto outDtypeAttr = tt::ttcore::DataTypeAttr::get(
+        rewriter.getContext(), resultTileTy.getDataType());
+
+    Value dstIdxVal = adaptor.getDstIndex();
+    ttk::TypecastTileOp::create(rewriter, loc, dstIdxVal, inDtypeAttr,
+                                outDtypeAttr);
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }
@@ -982,6 +1015,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // DST-based ops (no type converter needed).
   patterns.add<TTLTileFillToTTKernel>(ctx);
+  patterns.add<TTLTileTypecastToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

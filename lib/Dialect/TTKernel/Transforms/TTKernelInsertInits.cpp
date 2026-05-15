@@ -155,6 +155,17 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
         ttk::FillTileInitOp::create(b, l);
       }};
 
+  // TypecastTile: init takes the same in_dtype and out_dtype attributes
+  // as the compute op so the SFPU is configured for the correct
+  // source/destination data formats.
+  map[mlir::TypeID::get<ttk::TypecastTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto typecastOp = cast<ttk::TypecastTileOp>(computeOp);
+        ttk::TypecastTileInitOp::create(b, l, typecastOp.getInDtypeAttr(),
+                                        typecastOp.getOutDtypeAttr());
+      }};
+
+  // Transpose: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
         auto transposeOp = cast<ttk::TransposeTileOp>(computeOp);
@@ -215,6 +226,15 @@ static InitKey computeInitKey(Operation *op) {
 
   if (auto transpose = dyn_cast<ttk::TransposeTileOp>(op)) {
     return {typeId, {transpose.getIcb()}};
+  }
+
+  // For TypecastTile: key includes in_dtype and out_dtype because the init
+  // op configures the SFPU per dtype pair. Distinct dtype combinations must
+  // not share an init.
+  if (auto typecast = dyn_cast<ttk::TypecastTileOp>(op)) {
+    int64_t disc = (static_cast<int64_t>(typecast.getInDtype()) << 16) |
+                   static_cast<int64_t>(typecast.getOutDtype());
+    return {typeId, {}, disc};
   }
 
   // For all other ops (SFPU unary/binary, CopyDst): key is just the TypeID.
