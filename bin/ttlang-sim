@@ -9,5 +9,12 @@
 
 PYTHON="${PYTHON:-python}"
 
+# Ensure the sim package is importable regardless of whether env/activate was
+# sourced.  Resolve the repo root from the script's own location so this works
+# when invoked as ./bin/ttlang-sim or from an arbitrary working directory.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
+export PYTHONPATH="${_REPO_ROOT}/python${PYTHONPATH:+:${PYTHONPATH}}"
+
 # Run as module to avoid relative import issues with sim.copy shadowing stdlib copy
 exec "$PYTHON" -m sim.ttlang_sim "$@"

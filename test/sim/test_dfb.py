@@ -313,7 +313,12 @@ def test_copy_in_dm_thread_context() -> None:
 
 
 def test_single_pending_reserve_constraint() -> None:
-    """Test that only one reserve() is allowed before push()."""
+    """Test that reserve() before push() auto-pushes and fails with a state error.
+
+    Calling reserve() when a block is already pending triggers an implicit
+    push(); if the block has not been through a copy first the block state
+    machine rejects the push with a diagnostic.
+    """
 
     set_current_thread_type(ThreadType.DM)
 
@@ -328,10 +333,9 @@ def test_single_pending_reserve_constraint() -> None:
         block1 = dfb.reserve()
         assert block1 is not None
 
-        # Second reserve() before push() should fail
-        with pytest.raises(
-            RuntimeError, match="Cannot call reserve\\(\\) again before push\\(\\)"
-        ):
+        # Second reserve() triggers auto-push of block1, but block1 has not been
+        # through a copy yet so the state machine rejects the push.
+        with pytest.raises(RuntimeError, match="Cannot perform push\\(\\)"):
             dfb.reserve()
 
         # Complete the copy operation and push to get to PUSH state
@@ -353,7 +357,12 @@ def test_single_pending_reserve_constraint() -> None:
 
 
 def test_single_pending_wait_constraint() -> None:
-    """Test that only one wait() is allowed before pop()."""
+    """Test that wait() before pop() auto-pops and fails with a state error.
+
+    Calling wait() when a block is already pending triggers an implicit pop();
+    if the block has not been through a store first the block state machine
+    rejects the pop with a diagnostic.
+    """
 
     set_current_thread_type(ThreadType.COMPUTE)
 
@@ -376,10 +385,9 @@ def test_single_pending_wait_constraint() -> None:
         data1 = dfb.wait()
         assert data1 is not None
 
-        # Second wait() before pop() should fail
-        with pytest.raises(
-            RuntimeError, match="Cannot call wait\\(\\) again before pop\\(\\)"
-        ):
+        # Second wait() triggers auto-pop of data1, but data1 has not been
+        # through a store yet so the state machine rejects the pop.
+        with pytest.raises(RuntimeError, match="Cannot perform pop\\(\\)"):
             dfb.wait()
 
         out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)

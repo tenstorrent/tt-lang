@@ -601,6 +601,21 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Handle chained method calls: expr().method()
                 if isinstance(node.value, ast.Call):
                     return self._resolve_chained_method_call(node, func_args, kwargs)
+                # When `torch.float32` (or similar module attribute) appears as
+                # an argument value rather than as a call target, parent
+                # visit_Call dispatches here with empty func_args/kwargs.
+                # In that case, return the underlying Python object so
+                # downstream syntax handlers receive the real dtype rather
+                # than triggering the parent's "expression does not produce
+                # a value" diagnostic.
+                if (
+                    not func_args
+                    and not kwargs
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in self.fn_globals
+                    and hasattr(self.fn_globals[node.value.id], node.attr)
+                ):
+                    return getattr(self.fn_globals[node.value.id], node.attr)
                 return super().visit_Attribute(node, func_args, kwargs)
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
