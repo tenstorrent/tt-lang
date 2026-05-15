@@ -730,7 +730,7 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
           << "full-fp32 row reduce is disabled on Blackhole because of issue "
              "#533; using non-full-fp32 reduce lowering";
     }
-    if (useFullFp32) {
+    if (useFullFp32 && getKernelBoolAttr(op, kFp32DestAccEnAttrName)) {
       reduceOp->setAttr("full_fp32", rewriter.getUnitAttr());
     }
 

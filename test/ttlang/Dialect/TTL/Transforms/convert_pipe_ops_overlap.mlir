@@ -90,6 +90,43 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
 // -----
 
 //===----------------------------------------------------------------------===//
+// Slot assignment is order-independent: declaring src(2,0) before src(0,0)
+// in program order must produce the same slot map (src(0,0) -> slot 0,
+// src(2,0) -> slot 1) because `assignGatherSlotIndices` sorts pipes by
+// (srcX, srcY, ...) before assigning. Program order only controls which
+// multicast IR appears first; the slot offset still tracks the sorted
+// assignment. So the first multicast in the output (the src(2,0) copy)
+// carries the slot-1 offset (addi c4096) and the second has no offset.
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: func.func @overlap_distinct_slots_reversed_order
+// First multicast: slot 1, uses addi with c4096.
+// CHECK: arith.addi %{{.*}}, %c4096 : index
+// CHECK: ttkernel.noc_async_write_multicast
+// Second multicast: slot 0, no addi with c4096 between get_write_ptr and mcast.
+// CHECK: ttkernel.get_write_ptr
+// CHECK-NOT: arith.addi %{{.*}}, %c4096 : index
+// CHECK: ttkernel.noc_async_write_multicast
+func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
+  %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
+  // Reverse program order: p2's send comes first.
+  %xf2 = ttl.copy %cb, %p2 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %xf2 : !ttl.transfer_handle<write>
+  %xf1 = ttl.copy %cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %xf1 : !ttl.transfer_handle<write>
+  // Receivers needed so PipeGraph sees both pipes.
+  %xf3 = ttl.copy %p2, %cb : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle
+  ttl.wait %xf3 : !ttl.transfer_handle
+  %xf4 = ttl.copy %p1, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle
+  ttl.wait %xf4 : !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+//===----------------------------------------------------------------------===//
 // Loopback sender: data path uses noc_async_write_multicast_loopback_src
 // (sender included). The signal path is split: noc_semaphore_inc_multicast
 // to remote receivers + local noc_semaphore_inc on the sender's own
