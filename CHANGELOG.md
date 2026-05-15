@@ -9,13 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compiler
 
-- Fix for live-interval boundary computation (issue #536)
-- Fix for all-zero results in FP32 reductions (issue #533)
-- Fix for inferred `pop` and `push` (issues #536, #554)
-- Fix for write pointer tracking on pipe sender accross iterations (issue #578)
+- Fix for live-interval boundary computation (issue [#536](../../issues/536))
+- Fix for all-zero results in FP32 reductions (issue # [#533](../../issues/533))
+- Fix for inferred `pop` and `push` (issues [#536](../../issues/536), [#554](../../issues/554))
+- Fix for write pointer tracking on pipe sender accross iterations (issue [#578](../../issues/578))
 - Fix to report data type mismatch error
-- Fix to report DFB over allocation error (issue #511)
-- Support for pipenet predicates `is_src`, `is_dst` and `is_active` (issue #541)
+- Fix to report DFB over allocation error (issue [#511](../../issues/511))
+- Support for pipenet predicates `is_src`, `is_dst` and `is_active` (issue [#541](../../issues/541))
 - Support for `ttl.math.typecast`
 
 ### Simulator
