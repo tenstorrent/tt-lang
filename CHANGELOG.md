@@ -5,21 +5,32 @@ All notable changes to TT-Lang will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Version 1.0.1
+## Version 1.1.0
 
 ### Compiler
 
-- Fixed live-interval boundary computation (issue #536)
-- Fixed all-zero results for fp32 reductions (issue #533)
+- Fix for live-interval boundary computation (issue #536)
+- Fix for all-zero results in FP32 reductions (issue #533)
+- Fix for inferred `pop` and `push` (issues #536, #554)
+- Fix for write pointer tracking on pipe sender accross iterations (issue #578)
+- Fix to report data type mismatch error
+- Fix to report DFB over allocation error (issue #511)
+- Support for pipenet predicates `is_src`, `is_dst` and `is_active` (issue #541)
+- Support for `ttl.math.typecast`
 
-### Examples and documentation
+### Simulator
 
-- Moved `broadcast`, `transpose`, `where`, `mask`, `mask_posinf`, and `fill` into the language specification and improved spec examples.
-- Documented the PyPI publishing pipeline in `docs/sphinx/build.md`
+- Support for inferred `pop`, `push` and `copy`'s transfer handle `wait`
+- Support for pipenet predicates `is_src`, `is_dst` and `is_active`
+- Support `all_gather`
+- Support `bfloat8_b`
+- Improved/actionable error messages
+- Improved performance by simulating math in FP32
 
 ### Infrastructure
 
-- Made TT-Lang installable with `pip install`; the wheel ships the bundled toolchain libraries with sanitized RUNPATHs (#495)
+- TT-Lang installable with `pip install tt-lang` for full installation and `pip install tt-lang-sim` for simulator only
+- [Matmul benchmarks](benchmarks/matmul/README.md)
 
 ## Version 1.0.0
 
