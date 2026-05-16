@@ -138,7 +138,7 @@ jobs:
 
   build:
     needs: [resolve-docker-tag, build-docker]
-    if: ${{ always() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
@@ -146,7 +146,7 @@ jobs:
 
   build-wheels:
     needs: [resolve-docker-tag, build-docker]
-    if: ${{ always() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
     permissions:
       contents: read
       packages: read
@@ -173,7 +173,7 @@ jobs:
     # Run when EITHER the PR touches wheel/container-relevant paths, OR the
     # container was actually rebuilt (uplift PR: new toolchain may regress
     # tutorials in ways the path filter alone cannot detect).
-    if: ${{ (needs.changes.outputs.wheel_or_container == 'true' || needs.build-docker.result == 'success') && always() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    if: ${{ (needs.changes.outputs.wheel_or_container == 'true' || needs.build-docker.result == 'success') && !cancelled() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
     permissions:
       contents: read
       packages: read
