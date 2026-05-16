@@ -148,6 +148,13 @@ jobs:
   test-scripts:
     uses: ./.github/workflows/call-test-scripts.yml
 
+  cancel-on-failure:
+    needs: [pre-commit, build-wheels, test-scripts, test-sim]
+    if: ${{ failure() }}
+    permissions:
+      actions: write
+    uses: ./.github/workflows/call-cancel-on-failure.yml
+
   test-dist-tutorials:
     needs: [resolve-docker-tag, build-docker, changes]
     # Run when EITHER the push touches wheel/container-relevant paths, OR the
@@ -189,10 +196,11 @@ jobs:
       - test-sim
       - test-scripts
       - test-dist-tutorials
+      - cancel-on-failure
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
-          allowed-skips: build-docker, test-dist-tutorials
+          allowed-skips: build-docker, test-dist-tutorials, cancel-on-failure
           jobs: ${{ toJSON(needs) }}

@@ -286,7 +286,17 @@ pointer changes together:
 git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
         third-party/tt-metal-version pyproject.toml
 git commit -m "Uplift submodules"
+git push
 ```
+
+No edits to `on-pr.yml`, `on-push.yml`, or any other workflow file are
+needed. On push, `resolve-docker-tag` (see [Auto-resolved tag in PR /
+push workflows](#auto-resolved-tag-in-pr--push-workflows)) sees the
+uplift-relevant paths changed since the nearest version tag and emits
+`vX.Y.Z-uplift-<hash>`; if the corresponding image is missing in GHCR,
+the `build-docker` job builds and pushes it before any other downstream
+job consumes it. Subsequent pushes of the same submodule SHA set reuse
+the cached image.
 
 ### CI: toolchain cache and Docker images
 
