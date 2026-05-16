@@ -40,7 +40,7 @@ def test_constants_and_dtypes():
     assert isinstance(ttnn.TILE_SIZE, int)
     assert ttnn.TILE_SIZE > 0
     assert hasattr(ttnn, "TILE_LAYOUT")
-    assert ttnn.bfloat16 == torch.bfloat16
+    assert torch.tensor([], dtype=ttnn.bfloat16).element_size() == 2
     assert ttnn.float32 == torch.float32
     assert hasattr(ttnn, "bfloat8_b")
     assert ttnn.bfloat8_b == ttnn.bfloat8_b
@@ -49,54 +49,94 @@ def test_constants_and_dtypes():
     assert ttnn.bfloat8_b.element_size == 1
     t_bf8 = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
     assert t_bf8.dtype == ttnn.bfloat8_b
-    assert t_bf8.underlying_dtype == torch.bfloat16
+    assert t_bf8.underlying_dtype == torch.float32
 
 
 def test_bfloat8_b_capacity_bytes_statistics():
     """capacity_bytes for bfloat8_b accounts for the BFP8B shared-exponent overhead.
 
     BFP8B encodes n elements as n mantissa bytes plus one exponent byte per
-    group of 16 elements: size_in_bytes(n) = n + n // 16.
+    group of 16 elements: size_in_bytes(n) = n + ceil(n / 16).
 
     For a buffer with BLOCK_COUNT blocks of one 32x32 tile each:
       total_elements = BLOCK_COUNT * 32 * 32 = 4096
-      bfloat16: 4096 * 2            = 8192 bytes
-      bfloat8_b: 4096 + 4096 // 16 = 4352 bytes  (4096 mantissa + 256 exponent)
+      float32:   4096 * 4                 = 16384 bytes
+      bfloat8_b: 4096 + ceil(4096 / 16)  = 4352 bytes  (4096 mantissa + 256 exponent)
     """
+    import math as _math
     from python.sim.dfb import DataflowBuffer
 
     BLOCK_COUNT = 4
     TILE_SHAPE = (1, 1)
     TOTAL_ELEMENTS = BLOCK_COUNT * 32 * 32  # 4096
 
-    bf16_tensor = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    f32_tensor = ttnn.rand((32, 32), dtype=ttnn.float32)
     bf8_tensor = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
 
-    assert bf16_tensor.element_size == 2
+    assert f32_tensor.element_size == 4
     assert bf8_tensor.element_size == 1  # mantissa only; exponent overhead is per-group
 
-    bf16_dfb = DataflowBuffer(
-        likeness_tensor=bf16_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
+    f32_dfb = DataflowBuffer(
+        likeness_tensor=f32_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
     )
     bf8_dfb = DataflowBuffer(
         likeness_tensor=bf8_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
     )
 
-    expected_bf16 = TOTAL_ELEMENTS * 2  # 8192
-    expected_bf8 = TOTAL_ELEMENTS + TOTAL_ELEMENTS // 16  # 4352
+    expected_f32 = TOTAL_ELEMENTS * 4  # 16384
+    expected_bf8 = TOTAL_ELEMENTS + _math.ceil(TOTAL_ELEMENTS / 16)  # 4352
 
-    assert bf16_dfb.capacity_bytes == expected_bf16
+    assert f32_dfb.capacity_bytes == expected_f32
     assert bf8_dfb.capacity_bytes == expected_bf8
 
     # Also verify size_in_bytes is accessible directly on the tensor
     assert bf8_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf8
-    assert bf16_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf16
+    assert f32_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_f32
 
     # Partial groups: 15 elements still require 1 exponent byte (ceiling division).
     # Floor division would wrongly return 15 + 0 = 15.
     assert ttnn.bfloat8_b.size_in_bytes(15) == 15 + 1
     assert ttnn.bfloat8_b.size_in_bytes(16) == 16 + 1
     assert ttnn.bfloat8_b.size_in_bytes(17) == 17 + 2
+
+
+def test_bfloat8_b_promoted_to_float32_by_default():
+    """bfloat8_b tensors use float32 backing when float32 promotion is active."""
+    t_rand = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+    t_empty = ttnn.empty((32, 32), dtype=ttnn.bfloat8_b)
+    t_from = ttnn.from_torch(torch.zeros(32, 32), dtype=ttnn.bfloat8_b)
+
+    for t in (t_rand, t_empty, t_from):
+        assert t.dtype == ttnn.bfloat8_b, "declared dtype must remain bfloat8_b"
+        assert (
+            t.underlying_dtype == torch.float32
+        ), "backing dtype must be float32 when promotion is active"
+
+
+def test_bfloat8_b_no_promotion_uses_bfloat16_backing():
+    """bfloat8_b tensors use bfloat16 backing when float32 promotion is disabled."""
+    ttnn.set_disable_float32_promotion(True)
+    try:
+        t_rand = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+        t_empty = ttnn.empty((32, 32), dtype=ttnn.bfloat8_b)
+        t_from = ttnn.from_torch(torch.zeros(32, 32), dtype=ttnn.bfloat8_b)
+
+        for t in (t_rand, t_empty, t_from):
+            assert t.dtype == ttnn.bfloat8_b, "declared dtype must remain bfloat8_b"
+            assert (
+                t.underlying_dtype == ttnn.bfloat16
+            ), "backing dtype must be bfloat16 when promotion is disabled"
+    finally:
+        ttnn.set_disable_float32_promotion(False)
+
+
+def test_bfloat8_b_promotion_restored_after_reenable():
+    """Re-enabling float32 promotion restores float32 backing for bfloat8_b."""
+    ttnn.set_disable_float32_promotion(True)
+    ttnn.set_disable_float32_promotion(False)
+
+    t = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+    assert t.underlying_dtype == torch.float32
 
 
 def test_device_open_close():
@@ -128,7 +168,7 @@ def test_tensor_rand_and_empty_and_to_torch():
     t2 = ttnn.empty(shape, dtype=ttnn.bfloat16)
     assert isinstance(t2, ttnn.Tensor)
     assert t2.shape == shape
-    assert t2.dtype == torch.bfloat16
+    assert t2.dtype == ttnn.bfloat16
 
     # to_torch accepts both wrapper and raw torch tensors
     tt = ttnn.to_torch(t1)
@@ -737,7 +777,7 @@ def test_from_torch_dtype_conversion():
     t = torch.randn((32, 32), dtype=torch.float32)
     tensor = ttnn.from_torch(t, dtype=ttnn.bfloat16)
 
-    assert tensor.dtype == torch.bfloat16
+    assert tensor.dtype == ttnn.bfloat16
     assert tensor.shape == (32, 32)
 
 
@@ -801,7 +841,7 @@ def test_from_torch_all_parameters():
     )
 
     assert tensor.shape == (128, 128)
-    assert tensor.dtype == torch.bfloat16
+    assert tensor.dtype == ttnn.bfloat16
     ttnn.close_device(device)
 
 

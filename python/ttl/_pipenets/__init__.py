@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Tuple, Union
+from typing import Any, Iterable, List, Optional, Set, Tuple, Union
 
 
 @dataclass(frozen=True)
@@ -85,53 +85,79 @@ class OperationPipeNets:
         self.pipe_nets.append(use)
         return use
 
-    def work_extent(self) -> Optional[Tuple[int, ...]]:
-        """Per-axis bounding box of every pipe coordinate in the graph.
+    def active_node_set(self, grid: Tuple[int, ...]) -> Optional[Set[int]]:
+        """Linearized active node set across every PipeNet in the graph.
 
-        For each axis, returns the smallest grid size that contains every
-        src and dst coordinate of every pipe. Source coordinates contribute
-        `coord + 1`; multicast destinations contribute `hi` (already an
-        exclusive upper bound). Returns None when the graph is empty.
-
-        The rank is the maximum coordinate rank seen across pipes; pipes
-        that omit higher axes contribute 1 there.
+        Returns None when the graph is empty, signaling that no active-set
+        filtering should be applied (every node participates).
         """
         if not self.pipe_nets:
             return None
-        rank = 0
+        active: Set[int] = set()
         for net in self.pipe_nets:
             for pipe in net.pipes:
-                rank = max(rank, len(pipe.src.coords))
-                if isinstance(pipe.dst, NodeRange):
-                    rank = max(rank, len(pipe.dst.hi))
-                else:
-                    rank = max(rank, len(pipe.dst.coords))
-        if rank == 0:
-            return None
-        extent = [1] * rank
-        for net in self.pipe_nets:
-            for pipe in net.pipes:
-                for axis, c in enumerate(pipe.src.coords):
-                    extent[axis] = max(extent[axis], c + 1)
-                if isinstance(pipe.dst, NodeRange):
-                    for axis, hi in enumerate(pipe.dst.hi):
-                        extent[axis] = max(extent[axis], hi)
-                else:
-                    for axis, c in enumerate(pipe.dst.coords):
-                        extent[axis] = max(extent[axis], c + 1)
-        return tuple(extent)
+                active.add(_linearize(pipe.src.coords, grid))
+                for coord in _expand_dst(pipe.dst):
+                    active.add(_linearize(coord, grid))
+        return active
 
     def validate(self) -> None:
         """Run cross-pipe validation: empty PipeNets, mixed pipe kinds,
-        multicast destination overlap."""
+        consistent coord rank across the graph."""
         for net in self.pipe_nets:
             if not net.pipes:
                 raise ValueError("PipeNet requires at least one pipe")
-            _validate_homogeneous_pipe_kinds(net.pipes)
-            _validate_no_overlapping_destinations(net.pipes)
+            _validate_no_mixed_kinds(net.pipes)
+        _validate_consistent_coord_rank(self.pipe_nets)
 
 
-def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:
+def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
+    """Row-major linearization matching sim's flatten_core_index.
+
+    A 1D coord on a 2D grid is treated as an already-linear node index
+    (see `flatten_core_index`): the loop body uses `grid[i]` only for the
+    dims the coord actually has.
+    """
+    if len(coords) > len(grid):
+        raise ValueError(
+            f"coord rank {len(coords)} exceeds grid rank {len(grid)}: "
+            f"coords={coords}, grid={grid}"
+        )
+    linear = coords[0]
+    for i in range(1, len(coords)):
+        linear = linear * grid[i] + coords[i]
+    return linear
+
+
+def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
+    """Yield each node coordinate covered by a unicast or multicast destination."""
+    if isinstance(dst, NodeCoord):
+        yield dst.coords
+        return
+    yield from itertools.product(*(range(lo, hi) for lo, hi in zip(dst.lo, dst.hi)))
+
+
+def _validate_consistent_coord_rank(pipe_nets: List[PipeNetUse]) -> None:
+    # _linearize treats a rank-1 coord as already-linear (matching sim's
+    # `flatten_core_index`), so mixing rank-1 and rank-2 srcs/dsts in one
+    # graph would alias distinct nodes in `active_node_set`. Force a
+    # single rank across the whole graph to make that aliasing impossible.
+    ranks: Set[int] = set()
+    for net in pipe_nets:
+        for pipe in net.pipes:
+            ranks.add(len(pipe.src.coords))
+            if isinstance(pipe.dst, NodeRange):
+                ranks.add(len(pipe.dst.lo))
+            else:
+                ranks.add(len(pipe.dst.coords))
+    if len(ranks) > 1:
+        raise ValueError(
+            f"pipe coordinate ranks must be consistent across the graph, "
+            f"got {sorted(ranks)}"
+        )
+
+
+def _validate_no_mixed_kinds(pipes: Tuple[PipeUse, ...]) -> None:
     # Spec: `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]])`. The shared
     # type variable means every pipe in a PipeNet has the same destination
     # type — all unicast or all multicast.
@@ -143,41 +169,6 @@ def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:
             "(spec: PipeNet[DstT] requires all pipes to share DstT); "
             "use separate PipeNets."
         )
-
-
-def _validate_no_overlapping_destinations(pipes: Tuple[PipeUse, ...]) -> None:
-    """Reject two multicast pipes within one PipeNet that share any destination.
-
-    All pipes in a PipeNet share a single semaphore pair, so a node that
-    receives from multiple multicast sources cannot disambiguate the
-    handshake. Unicast gather (multiple unicast pipes to the same dst) is
-    allowed because the receiver uses cumulative semaphore waits.
-
-    TODO[spec]: the spec does not constrain within-PipeNet multicast
-    destination overlap; this rejection is an implementation constraint
-    tied to issue #505. Can be lifted once the lowering switches to
-    `noc_semaphore_inc_multicast`.
-    """
-    mcast = [(i, p) for i, p in enumerate(pipes) if isinstance(p.dst, NodeRange)]
-    if len(mcast) < 2:
-        return
-    seen: dict = {}
-    for i, pipe in mcast:
-        rng: NodeRange = pipe.dst  # type: ignore[assignment]
-        for coord in itertools.product(
-            *(range(lo, hi) for lo, hi in zip(rng.lo, rng.hi))
-        ):
-            if coord in seen:
-                j = seen[coord]
-                raise ValueError(
-                    f"PipeNet has overlapping multicast destinations: "
-                    f"pipe {j} (src={pipes[j].src.coords}) and "
-                    f"pipe {i} (src={pipe.src.coords}) both target "
-                    f"node {coord}. Use separate PipeNets for patterns "
-                    f"where a node receives from multiple multicast "
-                    f"sources."
-                )
-            seen[coord] = i
 
 
 __all__ = [

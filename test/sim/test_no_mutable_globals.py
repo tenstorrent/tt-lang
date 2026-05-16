@@ -123,6 +123,10 @@ def test_no_mutable_module_globals():
             "python.sim.ttnnsim",
             "bfloat8_b",
         ),  # Immutable singleton dtype sentinel (no native torch equivalent)
+        (
+            "python.sim.ttnnsim",
+            "_float32_promotion_enabled",
+        ),  # Mutable flag toggled by set_disable_float32_promotion()
     }
 
     for module_name in simulator_modules:

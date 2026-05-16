@@ -37,6 +37,11 @@ def _get_constant_float(val):
     raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
 
 
+def _is_ranked_tensor_value(val) -> bool:
+    """Return true for DSL values that can be passed as ranked tensor operands."""
+    return hasattr(val, "type") and isinstance(val.type, RankedTensorType)
+
+
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
 IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
@@ -568,8 +573,25 @@ def broadcast(
     return ttl.bcast(output.type, input, output, bcast_attr)
 
 
+def _materialize_reduce_scaler(input_type: RankedTensorType, scaler) -> TensorBlock:
+    """Materialize a numeric reduce scaler as a 1x1 fill tensor."""
+    if _is_ranked_tensor_value(scaler):
+        return scaler
+
+    fill_val = _get_constant_float(scaler)
+    ctx = input_type.context
+    scaler_type = RankedTensorType.get(
+        [1, 1], input_type.element_type, input_type.encoding
+    )
+    value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
+    return ttl.fill(scaler_type, value_attr)
+
+
 def _reduce_impl(
-    input: TensorBlock, scaler: TensorBlock, dims: List[int], reduce_type: int
+    input: TensorBlock,
+    scaler: Union[TensorBlock, int, float],
+    dims: List[int],
+    reduce_type: int,
 ) -> TensorBlock:
     """Shared implementation for reduce_sum and reduce_max."""
     from ttl.ir import IntegerAttr, IntegerType, DenseI64ArrayAttr
@@ -599,22 +621,31 @@ def _reduce_impl(
     i32_type = IntegerType.get_signless(32, ctx)
     reduce_type_attr = IntegerAttr.get(i32_type, reduce_type)
     dims_attr = DenseI64ArrayAttr.get(dims, ctx)
-    return ttl.reduce(result_type, input, scaler, reduce_type_attr, dims_attr)
+    scaler_value = _materialize_reduce_scaler(input_type, scaler)
+    return ttl.reduce(result_type, input, scaler_value, reduce_type_attr, dims_attr)
 
 
 @syntax("reduce_sum")
 def reduce_sum(
-    input: TensorBlock, scaler: TensorBlock, *, dims: List[int]
+    input: TensorBlock, scaler: Union[TensorBlock, int, float], *, dims: List[int]
 ) -> TensorBlock:
-    """Scaled sum reduction over specified dimensions."""
+    """Scaled sum reduction over specified dimensions.
+
+    The scaler may be a 1x1 tensor block or a numeric constant. Numeric
+    constants are materialized as a 1x1 fill tensor before lowering.
+    """
     return _reduce_impl(input, scaler, dims, reduce_type=0)
 
 
 @syntax("reduce_max")
 def reduce_max(
-    input: TensorBlock, scaler: TensorBlock, *, dims: List[int]
+    input: TensorBlock, scaler: Union[TensorBlock, int, float], *, dims: List[int]
 ) -> TensorBlock:
-    """Scaled max reduction over specified dimensions."""
+    """Scaled max reduction over specified dimensions.
+
+    The scaler may be a 1x1 tensor block or a numeric constant. Numeric
+    constants are materialized as a 1x1 fill tensor before lowering.
+    """
     return _reduce_impl(input, scaler, dims, reduce_type=1)
 
 
@@ -643,6 +674,74 @@ def fill(output: TensorBlock, value) -> TensorBlock:
     return ttl.fill(output.type, value_attr)
 
 
+def _is_supported_typecast_dtype(ttcore_dtype) -> bool:
+    from ttl.dialects import ttcore
+
+    return ttcore_dtype in {
+        ttcore.DataType.Float32,
+        ttcore.DataType.BFloat16,
+        ttcore.DataType.BFP_BFloat8,
+        ttcore.DataType.BFP_BFloat4,
+    }
+
+
+def _is_supported_typecast_tile_type(tile_type) -> bool:
+    from ttl.dialects import ttcore
+
+    return _is_supported_typecast_dtype(ttcore.DataType(tile_type.data_type_as_int))
+
+
+@syntax("typecast")
+def typecast(input: TensorBlock, dtype) -> TensorBlock:
+    """
+    Elementwise typecast: convert each element of ``input`` to ``dtype``.
+
+    Args:
+        input: Input tensor (CB-attached). Each element is a tile.
+        dtype: Target data type. Accepts a ``ttcore.DataType`` enum value
+            or a torch/ttnn dtype convertible via ``dtype_utils``.
+
+    Returns:
+        Result tensor with the same shape as ``input`` but with the element
+        type derived from ``dtype``.
+    """
+    from ttl.dialects import ttcore
+    from .dtype_utils import tensor_dtype_to_ttcore_datatype
+
+    if isinstance(dtype, ttcore.DataType):
+        ttcore_dtype = dtype
+    else:
+        ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
+    if not _is_supported_typecast_dtype(ttcore_dtype):
+        raise ValueError(
+            f"typecast only supports floating-point destination dtypes, got {dtype}"
+        )
+
+    input_type = input.type
+    if not isinstance(input_type, RankedTensorType):
+        raise ValueError(f"typecast expects a RankedTensorType input, got {input_type}")
+
+    ctx = input_type.context
+    input_tile = ttcore.ir.TileType.maybe_downcast(input_type.element_type)
+    if input_tile is None:
+        raise ValueError(
+            f"typecast expects tile-typed elements, got {input_type.element_type}"
+        )
+    if not _is_supported_typecast_tile_type(input_tile):
+        raise ValueError(
+            "typecast only supports floating-point input tile dtypes, got "
+            f"{input_tile}"
+        )
+
+    out_tile_type = ttcore.ir.TileType.get(
+        ctx, input_tile.shape[0], input_tile.shape[1], ttcore_dtype
+    )
+    result_type = RankedTensorType.get(
+        input_type.shape, out_tile_type, input_type.encoding
+    )
+    return ttl.typecast(result_type, input)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -651,5 +750,6 @@ __all__ = [
     "grid_size",
     "signpost",
     "fill",
+    "typecast",
     *_generated_all,
 ]

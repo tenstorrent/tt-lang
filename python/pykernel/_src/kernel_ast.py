@@ -363,9 +363,19 @@ class TTCompilerBase(PyKernelAstBase):
 
     # Function calls
     def visit_Call(self, node):
-        def _load_func_arg(func_arg):
-            if not func_arg:
-                raise ValueError(f"Function argument not found for {node.func.id}")
+        def _format_expr(expr):
+            try:
+                return ast.unparse(expr)
+            except Exception:
+                return type(expr).__name__
+
+        def _load_func_arg(func_arg, arg_node):
+            if func_arg is None:
+                raise ValueError(
+                    f"unable to resolve argument '{_format_expr(arg_node)}' "
+                    f"while compiling call '{_format_expr(node.func)}'; "
+                    "check that the value is defined in this scope"
+                )
             if hasattr(func_arg, "type") and isinstance(
                 func_arg.type, memref.MemRefType
             ):
@@ -391,20 +401,20 @@ class TTCompilerBase(PyKernelAstBase):
             assert len(node.args) == len(args_as_attr)
             for arg, as_attr in zip(node.args, args_as_attr):
                 arg._ttkernel_as_attr = as_attr
-                func_arg = _load_func_arg(self.visit(arg))
+                func_arg = _load_func_arg(self.visit(arg), arg)
                 func_args.append(func_arg)
             kwargs = {}
             for kw in node.keywords:
-                kwargs[kw.arg] = _load_func_arg(self.visit(kw.value))
+                kwargs[kw.arg] = _load_func_arg(self.visit(kw.value), kw.value)
             return func(*func_args, **kwargs)  # type checking will occur downstream
         else:
             func_args = []
             for arg in node.args:
-                func_arg = _load_func_arg(self.visit(arg))
+                func_arg = _load_func_arg(self.visit(arg), arg)
                 func_args.append(func_arg)
             kwargs = {}
             for kw in node.keywords:
-                kwargs[kw.arg] = _load_func_arg(self.visit(kw.value))
+                kwargs[kw.arg] = _load_func_arg(self.visit(kw.value), kw.value)
             return self.visit(
                 node.func, func_args=func_args, kwargs=kwargs
             )  # visit_Attribute
