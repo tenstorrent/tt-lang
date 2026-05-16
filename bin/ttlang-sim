@@ -9,12 +9,23 @@
 
 PYTHON="${PYTHON:-python}"
 
-# Ensure the sim package is importable regardless of whether env/activate was
-# sourced.  Resolve the repo root from the script's own location so this works
+# Resolve the repo/toolchain root from the script's own location so this works
 # when invoked as ./bin/ttlang-sim or from an arbitrary working directory.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
-export PYTHONPATH="${_REPO_ROOT}/python${PYTHONPATH:+:${PYTHONPATH}}"
 
-# Run as module to avoid relative import issues with sim.copy shadowing stdlib copy
-exec "$PYTHON" -m sim.ttlang_sim "$@"
+# Sources: python/sim; installed ttlang: python_packages/ttl/sim.
+if [ -f "${_REPO_ROOT}/python/sim/ttlang_sim.py" ]; then
+    export PYTHONPATH="${_REPO_ROOT}/python${PYTHONPATH:+:${PYTHONPATH}}"
+    exec "$PYTHON" -m sim.ttlang_sim "$@"
+fi
+
+if [ -f "${_REPO_ROOT}/python_packages/ttl/sim/ttlang_sim.py" ]; then
+    export PYTHONPATH="${_REPO_ROOT}/python_packages${PYTHONPATH:+:${PYTHONPATH}}"
+    exec "$PYTHON" -m ttl.sim.ttlang_sim "$@"
+fi
+
+echo "ttlang-sim: cannot locate the sim package." >&2
+echo "  checked: ${_REPO_ROOT}/python/sim/ttlang_sim.py (source tree)" >&2
+echo "  checked: ${_REPO_ROOT}/python_packages/ttl/sim/ttlang_sim.py (installed)" >&2
+exit 1
