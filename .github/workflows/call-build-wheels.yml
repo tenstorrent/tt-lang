@@ -29,10 +29,6 @@ jobs:
         shell: bash
 
     steps:
-      # TEMP: force failure to test cancel-on-failure watchdog. REVERT before merging.
-      - name: TEMP force failure
-        run: exit 1
-
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:

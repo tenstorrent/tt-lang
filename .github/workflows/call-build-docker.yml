@@ -234,6 +234,13 @@ jobs:
           REGISTRY="${{ steps.build-dist.outputs.docker-image }}"
           docker tag "$LOCAL" "$REGISTRY"
           docker push "$REGISTRY"
+
+      - name: Push dist image to GHCR as :latest
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          set -e
+          LOCAL="${{ steps.build-dist.outputs.local-image }}"
+          REGISTRY="${{ steps.build-dist.outputs.docker-image }}"
           LATEST="${REGISTRY%:*}:latest"
           docker tag "$LOCAL" "$LATEST"
           docker push "$LATEST"
@@ -284,6 +291,13 @@ jobs:
           REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
           docker tag "$LOCAL" "$REGISTRY"
           docker push "$REGISTRY"
+
+      - name: Push ird image to GHCR as :latest
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          set -e
+          LOCAL="${{ steps.build-ird.outputs.local-image }}"
+          REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
           LATEST="${REGISTRY%:*}:latest"
           docker tag "$LOCAL" "$LATEST"
           docker push "$LATEST"
