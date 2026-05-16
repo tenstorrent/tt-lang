@@ -277,14 +277,14 @@ Several things to observe:
 Tracing is controlled by a `--trace` flag on `ttlang-sim`:
 
 ```
-ttlang-sim examples/matmul.py --trace
+ttlang-sim examples/single_node_matmul.py --trace
 ```
 
 This enables tracing and writes the collected events to `trace.jsonl` in the current
 directory on exit. An explicit path can be given when a different location is needed:
 
 ```
-ttlang-sim examples/matmul.py --trace /tmp/matmul_trace.jsonl
+ttlang-sim examples/single_node_matmul.py --trace /tmp/matmul_trace.jsonl
 ```
 
 Statistics tables (tensor / pipe / DFB summaries) are produced offline: run
@@ -301,13 +301,13 @@ which categories are written to the output file.
 **Inclusive filter** -- collect only the listed categories:
 
 ```
-ttlang-sim examples/matmul.py --trace trace.jsonl --trace-events dfb,copy
+ttlang-sim examples/single_node_matmul.py --trace trace.jsonl --trace-events dfb,copy
 ```
 
 **Exclusive filter** -- collect everything except the listed categories:
 
 ```
-ttlang-sim examples/matmul.py --trace trace.jsonl --no-trace-events dfb
+ttlang-sim examples/single_node_matmul.py --trace trace.jsonl --no-trace-events dfb
 ```
 
 Specifying both `--trace-events` and `--no-trace-events` in the same invocation is
