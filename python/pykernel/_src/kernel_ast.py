@@ -72,40 +72,56 @@ def _collect_read_variable_names(node):
     return collector.names
 
 
-class _SelfRebindingLoopVarCollector(_ScopedCollector):
-    """Names that are assigned in a loop body to an expression that reads
-    them (`acc = acc + x`, `a, b = a + 1, b * 2`). Order of first
-    appearance is preserved."""
+class _LoopCarriedVarCollector(_ScopedCollector):
+    """Names assigned in a loop body to an expression that reads them
+    (`acc = acc + x`, `a, b = a + 1, b * 2`, `acc += x`) — i.e. the
+    targets of a loop-carried recurrence. Order of first appearance is
+    preserved. AugAssign targets are tracked separately because
+    `out_blk += x` on a CB-attached block target lowers via __iadd__
+    to an in-place L1-acc store and is NOT an scf.for iter_arg
+    candidate, whereas `acc = acc + x` (Assign) always produces a new
+    SSA value that must be carried."""
 
     def __init__(self):
         self.names = []
         self._seen = set()
+        # Names whose only recurrence form is AugAssign. If the same
+        # name also appears in a plain Assign (`acc = acc + d`), it is
+        # removed from this set; the Assign produces a new SSA value
+        # that must be carried regardless of the AugAssign's lowering.
+        self.augassign_only_names = set()
 
-    def _add_if_self_rebinding(self, target, value):
-        read_variable_names = _collect_read_variable_names(value)
-        for name in _extract_target_names(target):
-            if name not in read_variable_names or name in self._seen:
-                continue
+    def _add(self, name, *, from_augassign):
+        if name not in self._seen:
             self.names.append(name)
             self._seen.add(name)
+            if from_augassign:
+                self.augassign_only_names.add(name)
+            return
+        if not from_augassign:
+            self.augassign_only_names.discard(name)
+
+    def _add_if_loop_carried(self, target, value):
+        read_variable_names = _collect_read_variable_names(value)
+        for name in _extract_target_names(target):
+            if name in read_variable_names:
+                self._add(name, from_augassign=False)
 
     def visit_Assign(self, node):
         if len(node.targets) != 1:
             return
-        self._add_if_self_rebinding(node.targets[0], node.value)
+        self._add_if_loop_carried(node.targets[0], node.value)
 
     def visit_AnnAssign(self, node):
         if node.value is not None:
-            self._add_if_self_rebinding(node.target, node.value)
+            self._add_if_loop_carried(node.target, node.value)
 
     def visit_AugAssign(self, node):
-        # `target op= value` reads `target` implicitly, so it is always a
-        # self-rebinding of `target`.
+        # `target op= value` reads `target` implicitly. For block targets
+        # the __iadd__ path lowers in place, so AugAssign-only entries
+        # are filtered out by `_get_loop_carried_var_names`.
         for name in _extract_target_names(node.target):
-            if name in self._seen:
-                continue
-            self.names.append(name)
-            self._seen.add(name)
+            self._add(name, from_augassign=True)
 
 
 class _AssignedVariableCollector(_ScopedCollector):
@@ -150,6 +166,17 @@ def _get_single_result(value):
             )
         return value.results[0]
     return value
+
+
+def _is_attach_cb_block(value):
+    """Block targets (`out_blk = cb.reserve()` / `cb.wait()`) wrap the
+    result of `ttl.attach_cb` and lower `+=` via __iadd__ to an L1 acc
+    store. They are not scf.for iter_arg / scf.if result candidates."""
+    inner = _get_single_result(value)
+    owner = getattr(inner, "owner", None)
+    if owner is None or not hasattr(owner, "name"):
+        return False
+    return owner.name == "ttl.attach_cb"
 
 
 def _get_value_type(value):
@@ -414,7 +441,7 @@ class TTCompilerBase(PyKernelAstBase):
             self._set_var(var_name, result)
 
     def _get_loop_carried_var_names(self, node):
-        collector = _SelfRebindingLoopVarCollector()
+        collector = _LoopCarriedVarCollector()
         for stmt in node.body:
             collector.visit(stmt)
 
@@ -422,12 +449,22 @@ class TTCompilerBase(PyKernelAstBase):
         # otherwise it is loop-local and rebinding it does not need an
         # iter_arg. Type is not constrained: scf.for accepts any iter_arg
         # type, so tensor and scalar recurrences are both materialized.
+        # An AugAssign-only entry on a CB-attached block target
+        # (`out_blk = cb.reserve(); out_blk += x`) is dropped because
+        # __iadd__ lowers it to an in-place L1-acc store rather than a
+        # new SSA value to carry. If the same name also appears in a
+        # plain Assign (`acc = acc + d`), it stays carried — the Assign
+        # produces a fresh value that scf.for must thread.
         carried_var_names = []
         for var_name in collector.names:
             if var_name == node.target.id:
                 continue
             if not self._var_exists(var_name):
                 continue
+            if var_name in collector.augassign_only_names:
+                value = self._var_exists(var_name)[var_name]
+                if _is_attach_cb_block(value):
+                    continue
             carried_var_names.append(var_name)
         return carried_var_names
 

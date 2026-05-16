@@ -34,10 +34,10 @@ The compiler surface covers three accumulation sources:
   `TTKernelInsertL1Accumulation` pass brackets each annotated loop
   group with `pack_reconfig_l1_acc` calls. `+=` on a plain (non-block)
   tensor variable is rewritten by `visit_AugAssign` to `acc = acc + x`
-  and follows the self-rebind path below.
+  and follows the loop-carried path below.
 
-- Self-rebinding additive recurrences inside an `scf.for` (`acc = acc
-  + x` or `acc = x + acc`, plain tensor target) are detected by
+- Loop-carried additive recurrences inside an `scf.for` (`acc = acc +
+  x` or `acc = x + acc`, plain tensor target) are detected by
   `TTLMaterializeLoopState` and lowered to a pre-loop initial store
   plus an in-loop accumulating `ttl.store` against the final consumer's
   CB, then bracketed by the same `pack_reconfig_l1_acc` calls.

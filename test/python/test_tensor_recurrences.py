@@ -4,12 +4,12 @@
 
 """Tensor recurrences carried through control flow.
 
-Covers self-rebinding (`acc = acc + x`), `+=` rewrite, tuple targets,
-multi-accumulator and multi-tile recurrences, zero-trip loops, and
-conditional rebinds. The core regression is #527 (`acc = acc + recv.wait()`
-silently dropped its loop-carried value); the rest exercise the
-`ttl-materialize-loop-state` and L1-acc-multi-CB paths added alongside
-the fix.
+Covers loop-carried recurrences (`acc = acc + x`), `+=` rewrite, tuple
+targets, multi-accumulator and multi-tile recurrences, zero-trip loops,
+and conditional rebinds. The core regression is #527 (`acc = acc +
+recv.wait()` silently dropped its loop-carried value); the rest
+exercise the `ttl-materialize-loop-state` and L1-acc-multi-CB paths
+added alongside the fix.
 """
 
 
@@ -395,7 +395,8 @@ def _make_aug_assign_non_block_kernel():
             with a_cb.wait() as a, delta_cb.wait() as d_init:
                 # `acc` is the result of ttl.add, not an attach -> not a
                 # block. `acc += d` inside the loop must therefore rewrite
-                # to `acc = acc + d` (self-rebinding), not invoke __iadd__.
+                # to `acc = acc + d` (loop-carried recurrence), not invoke
+                # __iadd__.
                 acc = a + d_init
                 for _ in range(N_ITERS):
                     with delta_cb.wait() as d:
@@ -421,7 +422,7 @@ def _make_aug_assign_non_block_kernel():
 
 @pytest.mark.requires_device
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
-def test_aug_assign_on_non_block_rewrites_to_self_rebind(device, dtype):
+def test_aug_assign_on_non_block_rewrites_to_loop_carried(device, dtype):
     """`acc += d` on a plain tensor (not a reserve block) is rewritten by
     the AST visitor to `acc = acc + d` so it lowers through
     ttl-materialize-loop-state."""
@@ -612,6 +613,62 @@ def test_aug_assign_sub_op(device, dtype):
         _make_sub_aug_kernel(),
         in_tensors=[a_seed, delta],
         out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+    )
+
+
+def _make_block_aug_in_loop_kernel():
+    """Smallest reproducer for the iter-arg-shadows-block regression:
+    `out_blk += x` on a reserve block whose `with:` scope encloses an
+    `scf.for` loop. The collector must NOT register `out_blk` as a
+    loop-carried iter_arg; if it does, the block target is shadowed to
+    an scf.for BlockArgument and `+=` falls into the plain-tensor
+    rewrite path (`ttl.add` producing an SSA value) instead of the
+    block `__iadd__` L1-acc store, leaving the CB at its initial fill."""
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(x, out):
+        x_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=N_ITERS)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with out_cb.reserve() as out_blk:
+                out_blk.store(ttl.math.fill(out_blk, 0))
+                for _ in range(N_ITERS):
+                    with x_cb.wait() as xj:
+                        out_blk += xj
+
+        @ttl.datamovement()
+        def reader():
+            for _ in range(N_ITERS):
+                with x_cb.reserve() as blk:
+                    ttl.copy(x[0:1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_block_aug_assign_in_loop_uses_l1_acc(device, dtype):
+    """Regression for #540 review: `out_blk += x` inside a for loop on a
+    reserve block carried over from an enclosing `with:` scope must
+    continue to lower via __iadd__ (L1 acc store), not be wrongly added
+    as an scf.for iter_arg by the new loop-carried collector."""
+    x = torch.full((TILE, TILE), 1.0, dtype=dtype)
+    out = torch.zeros((TILE, TILE), dtype=dtype)
+    expected = N_ITERS * x.float()
+    _run_io_kernel(
+        _make_block_aug_in_loop_kernel(),
+        in_tensors=[x],
+        out_zeros=[out],
         expected_list=[expected],
         dtype=dtype,
         device=device,
@@ -851,7 +908,7 @@ def test_conditional_rebind_inside_loop_carries_through_scf_if(device, dtype):
 
 @pytest.mark.requires_device
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
-def test_tuple_target_self_rebind_carries_both(device, dtype):
+def test_tuple_target_loop_carried_recurrence(device, dtype):
     kernel = _make_tuple_target_kernel()
 
     a_seed = torch.full((TILE, TILE), 1.0, dtype=dtype)
