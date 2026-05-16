@@ -15,7 +15,7 @@ are implemented manually.
 
 import math as _math
 from itertools import product as _iter_product
-from typing import Callable, List, Optional, Set
+from typing import Callable, List, Optional, Set, Union
 
 import torch
 
@@ -662,7 +662,7 @@ def where(condition: Block, true_value: Block, false_value: Block) -> Block:
 
 def _reduce_impl(
     block: Block,
-    scaler: Block,
+    scaler: Union[Block, int, float],
     dims: List[int],
     op: str,  # 'sum' or 'max'
 ) -> Block:
@@ -678,7 +678,8 @@ def _reduce_impl(
 
     Args:
         block: Input block.
-        scaler: Scaler block; its first tile is multiplied into every result tile.
+        scaler: Scaler block or numeric constant multiplied into every result
+            tile.
         dims: Grid dimensions to reduce over (standard Python indexing).
         op: 'sum' or 'max'.
 
@@ -699,9 +700,6 @@ def _reduce_impl(
     # indexing: d % ndim maps both positive and negative dims correctly.
     internal_dims_set = {d % ndim for d in dims_set}
 
-    # Get the scaler
-    scaler_tile = scaler.to_list()[0].to_torch()
-
     # Compute result grid shape
     result_shape = tuple(
         1 if i in internal_dims_set else block_shape[i] for i in range(ndim)
@@ -710,6 +708,14 @@ def _reduce_impl(
     # Stack input tiles to reshape for reduction
     # Each output grid position gets contributions from multiple input positions
     input_tensors = [t.to_torch() for t in block.to_list()]
+
+    # Get the scaler. Numeric constants match compiler lowering, which
+    # materializes them as a 1x1 fill tile before reduce.
+    if isinstance(scaler, Block):
+        scaler_tile = scaler.to_list()[0].to_torch()
+    else:
+        scaler_tile = torch.full_like(input_tensors[0], float(scaler))
+
     result_tensors: List[Tensor] = []
 
     for out_idx in _iter_product(*[range(s) for s in result_shape]):
@@ -746,13 +752,16 @@ def _reduce_impl(
         result_tensors.append(Tensor(result_tile * scaler_tile, block.layout))
 
     result_block = Block.from_list(result_tensors, shape=result_shape)
-    track_source_blocks(result_block, block, scaler)
+    if isinstance(scaler, Block):
+        track_source_blocks(result_block, block, scaler)
+    else:
+        track_source_blocks(result_block, block)
     return result_block
 
 
 def reduce_max(
     block: Block,
-    scaler: Block,
+    scaler: Union[Block, int, float],
     _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
@@ -763,7 +772,8 @@ def reduce_max(
 
     Args:
         block: Input block.
-        scaler: Scaler block; its first tile is multiplied into every result tile.
+        scaler: Scaler block or numeric constant multiplied into every result
+            tile.
         _output_hint: Unused output block hint (kept for API compatibility).
         dims: Grid dimensions to reduce over (standard Python indexing).
 
@@ -777,7 +787,7 @@ def reduce_max(
 
 def reduce_sum(
     block: Block,
-    scaler: Block,
+    scaler: Union[Block, int, float],
     _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
@@ -788,7 +798,8 @@ def reduce_sum(
 
     Args:
         block: Input block.
-        scaler: Scaler block; its first tile is multiplied into every result tile.
+        scaler: Scaler block or numeric constant multiplied into every result
+            tile.
         _output_hint: Unused output block hint (kept for API compatibility).
         dims: Grid dimensions to reduce over (standard Python indexing).
 

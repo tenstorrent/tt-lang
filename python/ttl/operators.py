@@ -37,6 +37,11 @@ def _get_constant_float(val):
     raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
 
 
+def _is_ranked_tensor_value(val) -> bool:
+    """Return true for DSL values that can be passed as ranked tensor operands."""
+    return hasattr(val, "type") and isinstance(val.type, RankedTensorType)
+
+
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
 IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
@@ -568,8 +573,25 @@ def broadcast(
     return ttl.bcast(output.type, input, output, bcast_attr)
 
 
+def _materialize_reduce_scaler(input_type: RankedTensorType, scaler) -> TensorBlock:
+    """Materialize a numeric reduce scaler as a 1x1 fill tensor."""
+    if _is_ranked_tensor_value(scaler):
+        return scaler
+
+    fill_val = _get_constant_float(scaler)
+    ctx = input_type.context
+    scaler_type = RankedTensorType.get(
+        [1, 1], input_type.element_type, input_type.encoding
+    )
+    value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
+    return ttl.fill(scaler_type, value_attr)
+
+
 def _reduce_impl(
-    input: TensorBlock, scaler: TensorBlock, dims: List[int], reduce_type: int
+    input: TensorBlock,
+    scaler: Union[TensorBlock, int, float],
+    dims: List[int],
+    reduce_type: int,
 ) -> TensorBlock:
     """Shared implementation for reduce_sum and reduce_max."""
     from ttl.ir import IntegerAttr, IntegerType, DenseI64ArrayAttr
@@ -599,22 +621,31 @@ def _reduce_impl(
     i32_type = IntegerType.get_signless(32, ctx)
     reduce_type_attr = IntegerAttr.get(i32_type, reduce_type)
     dims_attr = DenseI64ArrayAttr.get(dims, ctx)
-    return ttl.reduce(result_type, input, scaler, reduce_type_attr, dims_attr)
+    scaler_value = _materialize_reduce_scaler(input_type, scaler)
+    return ttl.reduce(result_type, input, scaler_value, reduce_type_attr, dims_attr)
 
 
 @syntax("reduce_sum")
 def reduce_sum(
-    input: TensorBlock, scaler: TensorBlock, *, dims: List[int]
+    input: TensorBlock, scaler: Union[TensorBlock, int, float], *, dims: List[int]
 ) -> TensorBlock:
-    """Scaled sum reduction over specified dimensions."""
+    """Scaled sum reduction over specified dimensions.
+
+    The scaler may be a 1x1 tensor block or a numeric constant. Numeric
+    constants are materialized as a 1x1 fill tensor before lowering.
+    """
     return _reduce_impl(input, scaler, dims, reduce_type=0)
 
 
 @syntax("reduce_max")
 def reduce_max(
-    input: TensorBlock, scaler: TensorBlock, *, dims: List[int]
+    input: TensorBlock, scaler: Union[TensorBlock, int, float], *, dims: List[int]
 ) -> TensorBlock:
-    """Scaled max reduction over specified dimensions."""
+    """Scaled max reduction over specified dimensions.
+
+    The scaler may be a 1x1 tensor block or a numeric constant. Numeric
+    constants are materialized as a 1x1 fill tensor before lowering.
+    """
     return _reduce_impl(input, scaler, dims, reduce_type=1)
 
 
