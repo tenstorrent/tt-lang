@@ -14,7 +14,7 @@ PYTHON="${PYTHON:-python}"
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 
-# Dispatch by layout: source tree ships sim/, installed toolchain ships ttl/sim/.
+# Sources: python/sim; installed ttlang: python_packages/ttl/sim.
 if [ -f "${_REPO_ROOT}/python/sim/ttlang_sim.py" ]; then
     export PYTHONPATH="${_REPO_ROOT}/python${PYTHONPATH:+:${PYTHONPATH}}"
     exec "$PYTHON" -m sim.ttlang_sim "$@"
@@ -25,5 +25,7 @@ if [ -f "${_REPO_ROOT}/python_packages/ttl/sim/ttlang_sim.py" ]; then
     exec "$PYTHON" -m ttl.sim.ttlang_sim "$@"
 fi
 
-# Last resort: assume the venv already has ttl on sys.path.
-exec "$PYTHON" -m ttl.sim.ttlang_sim "$@"
+echo "ttlang-sim: cannot locate the sim package." >&2
+echo "  checked: ${_REPO_ROOT}/python/sim/ttlang_sim.py (source tree)" >&2
+echo "  checked: ${_REPO_ROOT}/python_packages/ttl/sim/ttlang_sim.py (installed)" >&2
+exit 1

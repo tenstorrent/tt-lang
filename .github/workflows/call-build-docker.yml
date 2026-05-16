@@ -194,7 +194,7 @@ jobs:
           docker builder prune -af || true
           df -h
 
-      - name: Build dist Docker image
+      - name: Build dist Docker image (local only)
         id: build-dist
         env:
           DOCKER_BUILDKIT: 1
@@ -203,17 +203,40 @@ jobs:
         run: |
           set -o pipefail
           set -x
-          .github/containers/build-docker-images.sh --image-type dist | tee docker.log
+          .github/containers/build-docker-images.sh --image-type dist --no-push | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          DOCKER_IMAGE=$(cat .docker-image-name)
-          echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
-          echo "Dist image built successfully: $DOCKER_IMAGE"
+          LOCAL_IMAGE=$(cat .docker-image-name)
+          REGISTRY_IMAGE="ghcr.io/tenstorrent/tt-lang/${LOCAL_IMAGE}"
+          echo "local-image=$LOCAL_IMAGE" >> $GITHUB_OUTPUT
+          echo "docker-image=$REGISTRY_IMAGE" >> $GITHUB_OUTPUT
+          echo "Dist image built locally: $LOCAL_IMAGE"
           df -h
+
+      - name: Smoke-test dist image
+        run: |
+          set -e
+          docker run --rm "${{ steps.build-dist.outputs.local-image }}" bash -c '
+            set -e
+            export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
+            ttlang-sim --help >/dev/null
+            ttlang-sim-stats --help >/dev/null
+          '
+
+      - name: Push dist image to GHCR
+        run: |
+          set -e
+          LOCAL="${{ steps.build-dist.outputs.local-image }}"
+          REGISTRY="${{ steps.build-dist.outputs.docker-image }}"
+          docker tag "$LOCAL" "$REGISTRY"
+          docker push "$REGISTRY"
+          LATEST="${REGISTRY%:*}:latest"
+          docker tag "$LOCAL" "$LATEST"
+          docker push "$LATEST"
 
       - name: Remove dist toolchain to free space
         run: sudo rm -rf /opt/ttlang-toolchain
@@ -221,7 +244,8 @@ jobs:
       # dist-toolchain points to ird-toolchain here because dist toolchain was
       # already deleted to save space. BuildKit doesn't read dist-toolchain when
       # targeting ird, but it must be a valid path to avoid build errors.
-      - name: Build ird Docker image
+      - name: Build ird Docker image (local only)
+        id: build-ird
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
@@ -229,15 +253,40 @@ jobs:
         run: |
           set -o pipefail
           set -x
-          .github/containers/build-docker-images.sh --image-type ird | tee docker-ird.log
+          .github/containers/build-docker-images.sh --image-type ird --no-push | tee docker-ird.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          echo "IRD image built successfully"
+          LOCAL_IMAGE=$(cat .docker-image-ird)
+          REGISTRY_IMAGE="ghcr.io/tenstorrent/tt-lang/${LOCAL_IMAGE}"
+          echo "local-image=$LOCAL_IMAGE" >> $GITHUB_OUTPUT
+          echo "docker-image=$REGISTRY_IMAGE" >> $GITHUB_OUTPUT
+          echo "IRD image built locally: $LOCAL_IMAGE"
           df -h
+
+      - name: Smoke-test ird image
+        run: |
+          set -e
+          docker run --rm "${{ steps.build-ird.outputs.local-image }}" bash -c '
+            set -e
+            export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
+            ttlang-sim --help >/dev/null
+            ttlang-sim-stats --help >/dev/null
+          '
+
+      - name: Push ird image to GHCR
+        run: |
+          set -e
+          LOCAL="${{ steps.build-ird.outputs.local-image }}"
+          REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
+          docker tag "$LOCAL" "$REGISTRY"
+          docker push "$REGISTRY"
+          LATEST="${REGISTRY%:*}:latest"
+          docker tag "$LOCAL" "$LATEST"
+          docker push "$LATEST"
 
       - name: Clean up Docker after build
         if: always()

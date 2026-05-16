@@ -12,17 +12,9 @@ set -euo pipefail
 BASE=${1:?missing base sha}
 HEAD=${2:?missing head sha}
 
-PATHS=(
-    third-party/tt-metal-version
-    third-party/llvm-project
-    third-party/tt-mlir
-    third-party/tt-metal
-    .github/containers/Dockerfile.base
-    pyproject.toml
-    requirements-runtime.txt
-)
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/uplift-paths.sh"
 
-CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- "${PATHS[@]}")
+CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- "${UPLIFT_PATHS[@]}")
 
 if [[ -n "$CHANGED" ]]; then
     echo "uplift=true" >> "$GITHUB_OUTPUT"

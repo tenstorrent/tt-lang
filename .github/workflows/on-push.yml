@@ -8,7 +8,7 @@ on:
 permissions:
   checks: write
   contents: read
-  packages: read
+  packages: write
   pages: write
   id-token: write
 
@@ -31,37 +31,135 @@ jobs:
           submodules: false
       - run: .github/scripts/check-tt-metal-version.sh
 
-  detect-uplift:
-    name: Detect submodule / base-image changes
+  resolve-docker-tag:
+    name: Resolve docker tag for this branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      uplift: ${{ steps.detect.outputs.uplift }}
+      docker_tag: ${{ steps.resolve.outputs.docker_tag }}
+      needs_rebuild: ${{ steps.probe.outputs.needs_rebuild }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: false
+      - name: Compute tag
+        id: resolve
+        run: |
+          TAG=$(.github/containers/get-version-tag.sh)
+          echo "docker_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved docker tag: $TAG"
+          # No fork-PR guard here: push events only fire on the org repo's main branch.
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+      - name: Probe GHCR for image
+        id: probe
+        run: |
+          TAG="${{ steps.resolve.outputs.docker_tag }}"
+          IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${TAG}"
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "needs_rebuild=false" >> "$GITHUB_OUTPUT"
+            echo "Image exists: $IMAGE"
+          else
+            echo "needs_rebuild=true" >> "$GITHUB_OUTPUT"
+            echo "Image missing: $IMAGE (will rebuild)"
+          fi
+
+  build-docker:
+    needs: resolve-docker-tag
+    if: ${{ needs.resolve-docker-tag.outputs.needs_rebuild == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+
+  changes:
+    name: Detect wheel/container-affecting changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      wheel_or_container: ${{ steps.diff.outputs.wheel_or_container }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           submodules: false
-      - id: detect
+      - id: diff
         run: |
           BASE="${{ github.event.before }}"
+          HEAD="${{ github.event.after }}"
           if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]]; then
+            HEAD=$(git rev-parse HEAD)
             BASE=$(git rev-parse HEAD~1)
           fi
-          .github/scripts/detect-uplift.sh "$BASE" "${{ github.event.after }}"
+          PATHS=(
+            ".github/containers/Dockerfile"
+            ".github/containers/Dockerfile.base"
+            ".github/scripts/run-tutorials.sh"
+            ".github/scripts/smoke-test-wheel.py"
+            "bin"
+            "CMakeLists.txt"
+            "examples"
+            "packaging"
+            "pyproject.toml"
+            "python/CMakeLists.txt"
+            "python/setup.py"
+          )
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- "${PATHS[@]}")
+          if [[ -n "$CHANGED" ]]; then
+            echo "wheel_or_container=true" >> "$GITHUB_OUTPUT"
+            echo "Wheel/container-relevant changes:"
+            printf '  %s\n' $CHANGED
+          else
+            echo "wheel_or_container=false" >> "$GITHUB_OUTPUT"
+            echo "No wheel/container-relevant changes."
+          fi
 
   build:
-    needs: detect-uplift
+    needs: [resolve-docker-tag, build-docker]
+    if: ${{ always() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
       build_docs: ${{ github.ref == 'refs/heads/main' }}
-      docker_tag: "v1.1.0"
-      build_toolchain: ${{ needs.detect-uplift.outputs.uplift == 'true' }}
+      docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
+
+  build-wheels:
+    needs: [resolve-docker-tag, build-docker]
+    if: ${{ always() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/call-build-wheels.yml
+    with:
+      docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
+
+  test-scripts:
+    uses: ./.github/workflows/call-test-scripts.yml
+
+  test-dist-tutorials:
+    needs: [resolve-docker-tag, build-docker, changes]
+    if: ${{ needs.changes.outputs.wheel_or_container == 'true' && always() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    uses: ./.github/workflows/call-test-dist-tutorials.yml
+    secrets: inherit
+    with:
+      runs-on: n150
+      dist_docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
 
   deploy-docs:
     if: github.ref == 'refs/heads/main'
@@ -80,12 +178,18 @@ jobs:
     needs:
       - pre-commit
       - check-tt-metal-version
-      - detect-uplift
+      - resolve-docker-tag
+      - build-docker
+      - changes
       - build
+      - build-wheels
       - test-sim
+      - test-scripts
+      - test-dist-tutorials
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
+          allowed-skips: build-docker, test-dist-tutorials
           jobs: ${{ toJSON(needs) }}

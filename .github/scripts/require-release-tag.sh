@@ -19,7 +19,18 @@ if [[ ! "$ref" =~ ^refs/tags/v[0-9] ]]; then
     exit 1
 fi
 
-tag_version="${ref#refs/tags/v}"
+tag_version_raw="${ref#refs/tags/v}"
+
+# Normalize to the PEP 440 canonical form so it matches what setuptools writes
+# into the wheel filename (tag 'v1.2.0-dev20260515' -> wheel version
+# '1.2.0.dev20260515'; tag 'v1.2.0-rc1' -> '1.2.0rc1'; tag 'v1.2.0+local'
+# unchanged). verify-wheel-version.sh compares the wheel filename's version
+# field to this output, so both must use the canonical form.
+tag_version=$(python3 -c '
+import sys
+from packaging.version import Version
+print(str(Version(sys.argv[1])))
+' "$tag_version_raw")
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "tag_version=${tag_version}" >> "$GITHUB_OUTPUT"
