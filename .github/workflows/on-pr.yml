@@ -70,16 +70,7 @@ jobs:
           password: ${{ github.token }}
       - name: Probe GHCR for image
         id: probe
-        run: |
-          TAG="${{ steps.resolve.outputs.docker_tag }}"
-          IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${TAG}"
-          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
-            echo "needs_rebuild=false" >> "$GITHUB_OUTPUT"
-            echo "Image exists: $IMAGE"
-          else
-            echo "needs_rebuild=true" >> "$GITHUB_OUTPUT"
-            echo "Image missing: $IMAGE (will rebuild)"
-          fi
+        run: .github/scripts/probe-docker-image.sh "${{ steps.resolve.outputs.docker_tag }}"
 
   build-docker:
     needs: resolve-docker-tag

@@ -311,12 +311,17 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
 
 2. **Docker images** -- `ird` and `dist` container images at GHCR, tagged by
    `.github/containers/get-version-tag.sh` (see [Docker tag scheme](#docker-tag-scheme)).
-   Rebuilds overwrite the same tag. A `latest` tag is also pushed alongside
-   each versioned tag. `call-build-docker.yml` builds the image with
-   `--no-push`, smoke-tests it inside `docker run` (`ttlang-sim --help`,
-   `ttlang-sim-stats --help`, `python -c "import ttl"`), then pushes only on
-   success. Tutorial verification in the dist container runs separately as a
-   pre-publish gate; see [Publishing to PyPI](#publishing-to-pypi).
+   Uplift-hashed tags (`vX.Y.Z-uplift-<hash>`) include a hash of the
+   submodule SHAs and Dockerfile/requirements contents, so the same toolchain
+   state always resolves to the same tag and a re-push under that tag carries
+   the same image; these tags may be pushed from any context. The bare
+   release tag (`vX.Y.Z`) is only pushed by `publish-pypi.yml` on a release
+   tag push, and `:latest` is only updated from `on-push.yml` on `main`.
+   `call-build-docker.yml` builds the image with `--no-push`, smoke-tests it
+   inside `docker run` (`ttlang-sim --help`, `ttlang-sim-stats --help`,
+   `python -c "import ttl"`), then pushes only on success. Tutorial
+   verification in the dist container runs separately as a pre-publish gate;
+   see [Publishing to PyPI](#publishing-to-pypi).
 
 (docker-tag-scheme)=
 #### Docker tag scheme
@@ -337,13 +342,17 @@ the current checkout:
 #### Auto-resolved tag in PR / push workflows
 
 `on-pr.yml` and `on-push.yml` start with a `resolve-docker-tag` job that runs
-`get-version-tag.sh` and probes GHCR with `docker manifest inspect`. If the
-image is missing, a `build-docker` job runs (calling `call-build-docker.yml`)
-and pushes the rebuilt image to GHCR; downstream jobs (`build`,
-`build-wheels`, `test-hardware`, `test-dist-tutorials`) wait for it and
-consume the resolved tag. If the image is already present, `build-docker` is
-skipped and downstream jobs proceed immediately. No `docker_tag` constant
-needs to be edited when uplifting.
+`get-version-tag.sh` and then calls `.github/scripts/probe-docker-image.sh`
+to query GHCR. If the image is present, `build-docker` is skipped and
+downstream jobs proceed immediately. If the image is missing and the
+resolved tag is the uplift form, `build-docker` runs (calling
+`call-build-docker.yml`) and pushes the rebuilt image; downstream jobs
+(`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) consume
+the resolved tag. If the image is missing and the resolved tag is the bare
+release form (e.g. `v1.2.0`), the probe step fails the job with an error
+directing the maintainer to re-publish the release via `publish-pypi.yml`;
+rebuilding the release tag from a PR or main commit would push newer
+content under the release tag and overwrite the released image.
 
 `call-build.yml` retains its `build_toolchain` input as a manual
 `workflow_dispatch` escape hatch, but the automated workflows no longer set
