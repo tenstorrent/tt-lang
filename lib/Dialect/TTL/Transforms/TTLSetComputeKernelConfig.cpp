@@ -13,6 +13,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -41,6 +42,55 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
   });
 }
 
+static bool isF32CB0InputBlockArgument(Value value, ComputeOp computeOp) {
+  auto arg = dyn_cast<BlockArgument>(value);
+  if (!arg || arg.getOwner() != &computeOp.getRegion().front()) {
+    return false;
+  }
+  unsigned argNumber = arg.getArgNumber();
+  if (argNumber >= computeOp.getNumInputs()) {
+    return false;
+  }
+  std::optional<mlir::Type> elementType = getTileElementType(arg.getType());
+  if (!elementType || !elementType->isF32()) {
+    return false;
+  }
+  Value cb = getAttachedCB(computeOp.getInputs()[argNumber]);
+  return cb && getCBIndex(cb) == 0;
+}
+
+// TODO: Add TTLFPUOp and TTLSFPUOp traits to distinguish FPU and SFPU tile ops.
+// Then stop relying on the list of ops in "if (isa<TileReduceOp,
+// TileMatmulBlockOp>(op), ...) "
+static bool isDstInputTileComputeOp(Operation *op) {
+  if (!isTileComputeOp(op)) {
+    return false;
+  }
+  if (isa<TileReduceOp, TileMatmulBlockOp>(op)) {
+    return false;
+  }
+  if (isFPUEligibleBinaryOp(op)) {
+    return false;
+  }
+  return op->hasTrait<TTLDSTInputsTrait>() ||
+         isa<TileBcastOp, TileTransposeOp>(op);
+}
+
+/// True when a compute body contains an SFPU-strategy tile op that must unpack
+/// an f32 input tile from CB0 into DST. FPU consumers (reduce, matmul, and
+/// FPU-eligible add/sub/mul) read via SRCA/SRCB and must not enable this mode.
+static bool needsUnpackToDestFp32(ComputeOp computeOp) {
+  Block &body = computeOp.getRegion().front();
+  return llvm::any_of(body.without_terminator(), [&](Operation &op) {
+    if (!isDstInputTileComputeOp(&op)) {
+      return false;
+    }
+    return llvm::any_of(op.getOperands(), [&](Value operand) {
+      return isF32CB0InputBlockArgument(operand, computeOp);
+    });
+  });
+}
+
 struct TTLSetComputeKernelConfigPass
     : public impl::TTLSetComputeKernelConfigBase<
           TTLSetComputeKernelConfigPass> {
@@ -56,6 +106,7 @@ struct TTLSetComputeKernelConfigPass
     // same value via getKernelBoolAttr().
     bool needsFp32 = fp32DestAccEn;
     bool fp32FromMatmul = false;
+    bool fp32FromReduce = false;
     if (!needsFp32) {
       funcOp->walk([&](ComputeOp computeOp) {
         if (needsFp32) {
@@ -76,6 +127,7 @@ struct TTLSetComputeKernelConfigPass
           });
           if (hasFullFp32Reduce) {
             needsFp32 = true;
+            fp32FromReduce = true;
             return WalkResult::interrupt();
           }
         }
@@ -96,8 +148,10 @@ struct TTLSetComputeKernelConfigPass
     }
 
     // TODO(#454): Remove once tt-llk #1338 is fixed. unary_bcast produces
-    // incorrect results with fp32_dest_acc_en and bf16 CBs.
-    if (fp32FromMatmul) {
+    // incorrect results with fp32_dest_acc_en and bf16 CBs. The same failure
+    // mode appears when full-fp32 reduce enables fp32_dest_acc_en and the
+    // fused body still feeds a bf16 unary_bcast (e.g. reduce then broadcast).
+    if (fp32FromMatmul || fp32FromReduce) {
       bool hasBf16Bcast = false;
       funcOp->walk([&](TileBcastOp bcastOp) -> WalkResult {
         auto elemType = getTileElementType(bcastOp.getInput().getType());
@@ -122,6 +176,20 @@ struct TTLSetComputeKernelConfigPass
     }
     funcOp->setAttr(kEnableFPUBinaryOpsAttrName,
                     BoolAttr::get(funcOp.getContext(), enableFPUBinaryOps));
+
+    bool needsUnpackFp32 = false;
+    funcOp->walk([&](ComputeOp computeOp) {
+      if (needsUnpackToDestFp32(computeOp)) {
+        needsUnpackFp32 = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (needsUnpackFp32 && !funcOp->hasAttr(kUnpackToDestFp32AttrName)) {
+      funcOp->setAttr(kUnpackToDestFp32AttrName,
+                      BoolAttr::get(funcOp.getContext(), true));
+    }
   }
 };
 

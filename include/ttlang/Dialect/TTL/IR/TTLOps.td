@@ -966,6 +966,48 @@ defm TTL_Frac : TTL_UnaryElementwisePair<"frac", "frac_tile">;
 defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 
 //===----------------------------------------------------------------------===//
+// Typecast Operations (Tensor + Tile)
+//===----------------------------------------------------------------------===//
+//
+// `ttl.typecast` is a unary elementwise op that converts the data type of
+// every element. It does not fit the standard unary elementwise multiclass
+// because input and result element types differ; the multiclass requires
+// AllTypesMatch on input and result. The destination dtype is encoded in the
+// result type and is threaded to ttkernel.typecast_tile and its init op
+// during lowering by reading it from the result tile element type.
+
+def TTL_TypecastOp : TTL_Op<"typecast",
+    [Pure, TTL_UnaryElementwiseOpTrait]> {
+  let summary = "Elementwise typecast on tensors";
+  let description = [{
+    Convert each element of `input` to the result element type. The result
+    tensor has the same shape as the input but with a different element type.
+    Lowered to `ttl.compute` containing a `ttl.tile_typecast` operation.
+  }];
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$result);
+  let assemblyFormat =
+      "$input attr-dict `:` functional-type(operands, results)";
+}
+
+def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
+    [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_DstResultOpTrait]> {
+  let summary = "Tile-level typecast operation";
+  let description = [{
+    Convert the data type of a tile in DST. Maps to ttkernel.typecast_tile.
+    Operates in-place on the DST register at `dst_index`; the destination
+    dtype is encoded in the result tile element type.
+  }];
+  let arguments = (ins TTL_TileType:$input, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat =
+      "$input `into` `dst` `[` $dst_index `]` attr-dict `:` "
+      "type($input) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 

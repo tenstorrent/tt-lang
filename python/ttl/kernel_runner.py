@@ -35,11 +35,45 @@ def _ensure_ttnn():
 
 
 from .dataflow_buffer import CompilerAllocatedDFBConfig
+from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import (
     format_name_to_ttnn_dtype,
     tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
+
+
+def get_min_remaining_l1_for_device(device):
+    """Return the minimum remaining L1 CB budget (bytes) across all cores.
+
+    Accounts for reduced ``worker_l1_size`` and L1 tensor allocations.
+    Queries ``cb_limit`` (the hardware CB budget) and subtracts the maximum
+    per-core L1 buffer usage reported by the device.
+
+    ``get_buffer_pages`` is called on the original device rather than on
+    per-coordinate submeshes because ``create_submesh`` produces a new
+    device view that does not inherit buffer tracking from the parent.
+    For mesh devices this reports allocations for the first physical
+    device, which is representative because tt-lang distributes tensors
+    uniformly across the mesh. If individual physical devices need tracking,
+    ttnn.reports.get_buffer_pages would have to report allocations on the
+    parent mesh instead of the first device within the mesh.
+    """
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    info = ttnn._ttnn.reports.get_device_info(device)
+    budget_bytes = info.cb_limit
+
+    bytes_per_core: dict[tuple[int, int], int] = {}
+    for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if page.buffer_type == ttnn.BufferType.L1:
+            key = (page.core_y, page.core_x)
+            bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
+
+    max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
+    return max(0, budget_bytes - max_core_bytes)
 
 
 @dataclass
@@ -167,7 +201,9 @@ def build_cb_descriptors(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    cb_descriptors = []
+    # Compute sizes first so we fail before allocating ttnn descriptors on overflow.
+    rows = []
+    total_cb_bytes = 0
     for i, cb in enumerate(cb_configs):
         if cb is None:
             raise ValueError(
@@ -176,12 +212,19 @@ def build_cb_descriptors(
             )
 
         if isinstance(cb, CompilerAllocatedDFBConfig):
-            # Compiler-allocated DFB: dtype from attribute string.
             data_format = format_name_to_ttnn_dtype(cb.data_format)
             page_size = tile_bytes_from_dtype(data_format)
             total_size = cb.num_tiles * cb.block_count * page_size
+            rows.append(
+                (
+                    data_format,
+                    page_size,
+                    total_size,
+                    f"  CB[{i}]: compiler-allocated num_tiles={cb.num_tiles} "
+                    f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes",
+                )
+            )
         else:
-            # User-declared DFB: dtype from reference tensor.
             ref_tensor = cb.tensor
             if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
                 data_format = ref_tensor.dtype
@@ -191,7 +234,40 @@ def build_cb_descriptors(
             page_size = tile_bytes_from_dtype(data_format)
             num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
             total_size = num_tiles * page_size
+            rows.append(
+                (
+                    data_format,
+                    page_size,
+                    total_size,
+                    f"  CB[{i}]: shape={cb.shape} block_count={cb.block_count} -> {total_size} bytes",
+                )
+            )
 
+        total_cb_bytes += total_size
+
+    remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
+    for tensor in tensors:
+        if tensor is not None and hasattr(tensor, "device"):
+            device = tensor.device()
+            if device is None:
+                continue
+            remaining_bytes = get_min_remaining_l1_for_device(device)
+            break
+
+    # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
+    # tile_bytes_from_dtype; see issue #511.
+    if total_cb_bytes > remaining_bytes:
+        breakdown = "\n".join(r[3] for r in rows)
+        raise ValueError(
+            "Total circular buffer allocation ("
+            f"{total_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
+            "This checks static CB backing store only (not all L1 on core).\n"
+            + breakdown
+            + "\n  hint: reduce DFB shapes or block_count."
+        )
+
+    cb_descriptors = []
+    for i, (data_format, page_size, total_size, _) in enumerate(rows):
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,
             data_format=data_format,

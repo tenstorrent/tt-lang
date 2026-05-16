@@ -27,7 +27,7 @@ from pathlib import Path
 os.environ["TT_METAL_SIMULATOR"] = "1"
 
 # Ensure the simulator package is importable.
-_repo_root = Path(__file__).resolve().parent.parent
+_repo_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_repo_root / "python"))
 # Add test/ so that ttlang_test_utils is importable.
 sys.path.insert(0, str(_repo_root / "test"))
@@ -53,6 +53,22 @@ _dtype_utils_stub.torch_dtype_to_ttnn_datatype = _torch_dtype_to_ttnn_datatype  
 sys.modules["ttl.dtype_utils"] = _dtype_utils_stub
 
 # -----------------------------------------------------------------------
+# Register ttl.utils.correctness so that tests importing
+# ``from ttl.utils.correctness import assert_with_ulp`` work under the
+# simulator.  The real implementation lives in python/utils/correctness.py
+# (already on sys.path via the path setup above); we simply expose it
+# under the ttl.utils.* namespace that main merged into.
+# -----------------------------------------------------------------------
+import importlib as _importlib  # noqa: E402
+
+_correctness_mod = _importlib.import_module("utils.correctness")
+_correctness_mod.__name__ = "ttl.utils.correctness"
+_utils_ns = types.ModuleType("ttl.utils")
+_utils_ns.correctness = _correctness_mod  # type: ignore[attr-defined]
+sys.modules["ttl.utils"] = _utils_ns
+sys.modules["ttl.utils.correctness"] = _correctness_mod
+
+# -----------------------------------------------------------------------
 # Patch ttl/ttnn in sys.modules with simulator versions.
 # -----------------------------------------------------------------------
 from sim.ttlang_sim import setup_simulator_imports  # noqa: E402
@@ -61,4 +77,10 @@ setup_simulator_imports()
 
 import pytest  # noqa: E402
 
+# TODO: pytest-xdist (-n auto) does not work with this script because xdist
+# spawns worker processes as fresh Python interpreters that do not inherit the
+# sys.modules patches applied above (setup_simulator_imports() and the stubs).
+# Workers therefore import the real ttl/ttnn modules, fail, and collect 0 items.
+# Fix: replicate the patching logic in test/python/conftest.py so it runs in
+# every worker process via pytest_configure.
 sys.exit(pytest.main(sys.argv[1:]))

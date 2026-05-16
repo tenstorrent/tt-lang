@@ -482,6 +482,7 @@ def _reduce_impl(
     # Stack input tiles to reshape for reduction
     # Each output grid position gets contributions from multiple input positions
     input_tensors = [t.to_torch() for t in block.to_list()]
+
     result_tensors: List[Tensor] = []
 
     for out_idx in _iter_product(*[range(s) for s in result_shape]):

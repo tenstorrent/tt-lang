@@ -20,32 +20,30 @@ def test_empty_pipenet_rejected():
         ttl.PipeNet([])
 
 
-def test_within_pipenet_overlapping_mcast_dst_rejected():
+def test_within_pipenet_overlapping_mcast_dst_allowed():
     """Two multicast pipes whose destination rectangles intersect inside a
-    single PipeNet must be rejected at construction time.
+    single PipeNet are allowed.
 
     The two pipes both target column 1 rows 0..3, so the node at (1, 1)
-    would receive from both. PipeNet's single shared semaphore pair
-    cannot disambiguate, so this is rejected (issue #505).
+    receives from both. Per-PipeNet receiver counters disambiguate the
+    handshake.
     """
-    with pytest.raises(ValueError, match="overlapping multicast destinations"):
-        ttl.PipeNet(
-            [
-                ttl.Pipe(src=(0, 0), dst=(1, slice(0, 4))),
-                ttl.Pipe(src=(2, 0), dst=(1, slice(0, 4))),
-            ]
-        )
+    ttl.PipeNet(
+        [
+            ttl.Pipe(src=(0, 0), dst=(1, slice(0, 4))),
+            ttl.Pipe(src=(2, 0), dst=(1, slice(0, 4))),
+        ]
+    )
 
 
-def test_within_pipenet_partially_overlapping_mcast_dst_rejected():
-    """Multicast destinations that overlap on even one node are rejected."""
-    with pytest.raises(ValueError, match="overlapping multicast destinations"):
-        ttl.PipeNet(
-            [
-                ttl.Pipe(src=(0, 0), dst=(slice(0, 3), 0)),  # nodes 0..2 row 0
-                ttl.Pipe(src=(3, 0), dst=(slice(2, 5), 0)),  # nodes 2..4 row 0
-            ]
-        )
+def test_within_pipenet_partially_overlapping_mcast_dst_allowed():
+    """Multicast destinations that overlap on even one node are allowed."""
+    ttl.PipeNet(
+        [
+            ttl.Pipe(src=(0, 0), dst=(slice(0, 3), 0)),  # nodes 0..2 row 0
+            ttl.Pipe(src=(3, 0), dst=(slice(2, 5), 0)),  # nodes 2..4 row 0
+        ]
+    )
 
 
 def test_unicast_gather_to_same_dst_allowed():
@@ -84,6 +82,17 @@ def test_pipe_dst_slice_start_must_be_less_than_stop():
         ttl.Pipe(src=(0, 0), dst=(slice(4, 4), 0))
     with pytest.raises(ValueError, match="start must be < stop"):
         ttl.Pipe(src=(0, 0), dst=(slice(4, 0), 0))
+
+
+def test_pipe_dst_slice_step_must_be_one():
+    """Strided multicast is not supported; non-1 step is silently lost by
+    the inclusive-range lowering, so reject at construction."""
+    with pytest.raises(ValueError, match="step must be 1 or None"):
+        ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 2), 0))
+    with pytest.raises(ValueError, match="step must be 1 or None"):
+        ttl.Pipe(src=(0, 0), dst=(0, slice(0, 4, 2)))
+    # step == 1 is fine.
+    ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 1), 0))
 
 
 def test_mixed_unicast_multicast_in_one_pipenet_rejected():

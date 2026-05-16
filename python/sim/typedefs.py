@@ -53,6 +53,7 @@ class BindableTemplate(Protocol):
     """Protocol for templates that can be bound to a specific execution context."""
 
     __name__: str
+    __wrapped__: Callable[[], Any]  # original user-defined function
 
     def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
         """Bind the template to a specific execution context."""

@@ -56,6 +56,62 @@ include them (the hardware CI always does; the GitHub-hosted sim CI does not):
 python -m pytest test/sim/ --run-slow
 ```
 
+## Float32 Promotion
+
+By default the simulator promotes all floating-point dtypes narrower than
+float32 to float32 before any computation:
+
+| Declared dtype | Simulator dtype |
+|---|---|
+| `ttnn.bfloat16` | `torch.float32` |
+| `ttnn.float16` | `torch.float32` |
+| `ttnn.bfloat8_b` | backed by `torch.float32` |
+| `ttnn.float32` | `torch.float32` (unchanged) |
+
+This makes the simulator work correctly on host architectures that lack native
+support for narrow float types (e.g. Apple Silicon has no hardware bfloat16 or
+float16 support, so using those types natively would be slow or incorrect).
+
+### Disabling promotion
+
+Pass `--no-float32-promotion` to `ttlang-sim` to run with the dtypes declared
+in the source file:
+
+```bash
+ttlang-sim --no-float32-promotion examples/matmul_1d.py
+```
+
+### When to disable promotion
+
+**Correctness checks calibrated for the original dtype.** Examples that use
+ULP-based assertions (`assert_with_ulp`) with tolerances chosen for bfloat16
+precision will fail when run in float32, because the same absolute numerical
+difference corresponds to more ULPs in float32 (which has a smaller ULP than
+bfloat16). Run these with `--no-float32-promotion`:
+
+- `examples/matmul_1d.py`
+- `examples/matmul_1d_mcast.py`
+- `examples/metal_examples/single_node_matmul/ttlang/single_node_matmul.py`
+- `examples/metal_examples/multinode_matmul/ttlang/multinode_matmul.py`
+
+**L1 memory budget.** The simulator uses the declared dtype for all
+`DataflowBuffer` capacity accounting so the reported footprint always matches
+what the hardware would allocate, regardless of whether float32 promotion is
+active. If the total buffer capacity for a core exceeds the L1 limit, the
+simulator issues a warning:
+
+```
+UserWarning: Total DataflowBuffer capacity per core (N bytes) exceeds the L1 memory limit of M bytes.
+Memory is accounted using declared dtypes, so this reflects the on-hardware footprint of the kernel.
+```
+
+This warning does not abort execution, but it indicates that the kernel would
+not fit in hardware L1.
+
+**Dtype-specific behavior.** If a kernel explicitly tests dtype identity,
+overflow behavior, or precision characteristics of a specific narrow type,
+disable promotion so the script runs with the declared dtype.
+
 ## Simulator statistics (`ttlang-sim-stats`)
 
 Tensor, pipe, and dataflow-buffer statistics are **not** printed by `ttlang-sim`
@@ -96,7 +152,6 @@ repository). For full CLI details:
 ```bash
 ./bin/ttlang-sim-stats --help
 ```
-
 ## Debugging
 
 The simulator runs as standard Python code, so any Python debugger works with it.
