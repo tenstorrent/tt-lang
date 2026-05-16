@@ -46,6 +46,10 @@ jobs:
           echo "allow_branch_publish=${{ inputs.allow_branch_publish }}"
           echo "docker_tag=${{ inputs.docker_tag }}"
 
+      - name: Install packaging (for PEP 440 normalization in require-release-tag.sh)
+        if: ${{ github.event_name == 'push' || (inputs.dry_run != true && inputs.allow_branch_publish != true) }}
+        run: python3 -m pip install --user packaging
+
       - name: Require release tag
         id: parse
         if: ${{ github.event_name == 'push' || (inputs.dry_run != true && inputs.allow_branch_publish != true) }}

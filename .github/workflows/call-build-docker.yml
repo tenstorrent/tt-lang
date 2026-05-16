@@ -223,8 +223,8 @@ jobs:
           docker run --rm "${{ steps.build-dist.outputs.local-image }}" bash -c '
             set -e
             export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
-            ttlang-sim --help >/dev/null
-            ttlang-sim-stats --help >/dev/null
+            ttlang-sim --help
+            ttlang-sim-stats --help
           '
 
       - name: Push dist image to GHCR
@@ -273,8 +273,8 @@ jobs:
           docker run --rm "${{ steps.build-ird.outputs.local-image }}" bash -c '
             set -e
             export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
-            ttlang-sim --help >/dev/null
-            ttlang-sim-stats --help >/dev/null
+            ttlang-sim --help
+            ttlang-sim-stats --help
           '
 
       - name: Push ird image to GHCR

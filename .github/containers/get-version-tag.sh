@@ -26,6 +26,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../scripts/uplift-paths.sh
 source "${SCRIPT_DIR}/../scripts/uplift-paths.sh"
 
+if [[ ${#UPLIFT_PATHS[@]} -eq 0 ]]; then
+    echo "ERROR: UPLIFT_PATHS is empty (defined in ${SCRIPT_DIR}/../scripts/uplift-paths.sh)." >&2
+    echo "  Without a path list, git diff and git ls-tree would scan the whole tree," >&2
+    echo "  producing the uplift form for every commit." >&2
+    exit 1
+fi
+
 # Run from the repo root so UPLIFT_PATHS (relative to repo root) resolves
 # consistently regardless of the caller's CWD.
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)

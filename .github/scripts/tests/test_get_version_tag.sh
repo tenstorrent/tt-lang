@@ -267,4 +267,57 @@ done
     trap - EXIT
 }
 
+# === Case: hash is invariant under UPLIFT_PATHS reordering ===
+# Pins the invariant that `git ls-tree HEAD -- A B` outputs in tree-position
+# order (alphabetical by name within tree), NOT argument order. Anyone editing
+# uplift-paths.sh to add or reorder entries must not accidentally change the
+# hash for an unchanged source state.
+{
+    start_case "hash invariant under UPLIFT_PATHS reordering"
+    repo=$(fresh_tagged_repo)
+    trap 'rm -rf "$repo"' EXIT
+    # Apply an uplift change in multiple paths.
+    echo "new-version" > "$repo/third-party/tt-metal-version"
+    echo "new-llvm" >> "$repo/third-party/llvm-project/sentinel"
+    echo "new-dep" >> "$repo/requirements-runtime.txt"
+    (cd "$repo" && git add -A && git commit -q -m "multi-uplift")
+    tag_forward=$(get_tag "$repo")
+    # Overwrite uplift-paths.sh with the same entries in reverse order.
+    cat > "$repo/.github/scripts/uplift-paths.sh" <<'EOF'
+#!/bin/bash
+UPLIFT_PATHS=(
+    requirements-runtime.txt
+    pyproject.toml
+    .github/containers/Dockerfile.base
+    third-party/tt-metal
+    third-party/tt-mlir
+    third-party/llvm-project
+    third-party/tt-metal-version
+)
+EOF
+    tag_reversed=$(get_tag "$repo")
+    assert_eq "$tag_forward" "$tag_reversed" "reordered array yields the same tag"
+    rm -rf "$repo"
+    trap - EXIT
+}
+
+# === Case: empty UPLIFT_PATHS array fails noisily ===
+{
+    start_case "empty UPLIFT_PATHS array fails noisily"
+    repo=$(fresh_tagged_repo)
+    trap 'rm -rf "$repo"' EXIT
+    cat > "$repo/.github/scripts/uplift-paths.sh" <<'EOF'
+#!/bin/bash
+UPLIFT_PATHS=()
+EOF
+    set +e
+    out=$(cd "$repo" && .github/containers/get-version-tag.sh 2>&1)
+    rc=$?
+    set -e
+    assert_eq "$rc" "1" "empty array: exit 1"
+    assert_matches "$out" "UPLIFT_PATHS is empty" "empty array: error message names the cause"
+    rm -rf "$repo"
+    trap - EXIT
+}
+
 finish_tests

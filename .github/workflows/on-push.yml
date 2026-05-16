@@ -150,7 +150,10 @@ jobs:
 
   test-dist-tutorials:
     needs: [resolve-docker-tag, build-docker, changes]
-    if: ${{ needs.changes.outputs.wheel_or_container == 'true' && always() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    # Run when EITHER the push touches wheel/container-relevant paths, OR the
+    # container was actually rebuilt (uplift: new toolchain may regress
+    # tutorials in ways the path filter alone cannot detect).
+    if: ${{ (needs.changes.outputs.wheel_or_container == 'true' || needs.build-docker.result == 'success') && always() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
     permissions:
       contents: read
       packages: read

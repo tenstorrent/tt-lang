@@ -97,4 +97,22 @@ rc=$(run_verify "1.2.0.post1" \
     "tt_lang-1.2.0.post1-cp312-cp312-linux_x86_64.whl")
 assert_eq "$rc" "0" "post1"
 
+# PEP 427 wheel filenames may carry an optional build-number field between
+# the version and the python tag: {name}-{version}-{build}-{python}-{abi}-{plat}.whl.
+# The verifier extracts field 2 (version); field 3 (build number) must not
+# be mistaken for the version.
+start_case "PEP 427 build-number suffix: version still extracted from field 2"
+rc=$(run_verify "1.2.0" "tt_lang-1.2.0-1-cp312-cp312-linux_x86_64.whl")
+assert_eq "$rc" "0" "build-number wheel matches expected version"
+
+start_case "PEP 427 build-number suffix: mismatch on version (not build-number) still fails"
+rc=$(run_verify "1.2.0" "tt_lang-1.1.0-1-cp312-cp312-linux_x86_64.whl")
+assert_eq "$rc" "1" "version 1.1.0 with build 1 must not satisfy expected 1.2.0"
+
+start_case "PEP 427 build-number suffix: expected version must not match the build-number field"
+# If the verifier mistakenly compared field 3, this wheel's '7' would match
+# expected '7'. Field 2 is the real version (1.2.0), so this must NOT match.
+rc=$(run_verify "7" "tt_lang-1.2.0-7-cp312-cp312-linux_x86_64.whl")
+assert_eq "$rc" "1" "expected '7' must not match the build-number field"
+
 finish_tests

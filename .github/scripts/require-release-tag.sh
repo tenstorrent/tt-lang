@@ -26,11 +26,24 @@ tag_version_raw="${ref#refs/tags/v}"
 # '1.2.0.dev20260515'; tag 'v1.2.0-rc1' -> '1.2.0rc1'; tag 'v1.2.0+local'
 # unchanged). verify-wheel-version.sh compares the wheel filename's version
 # field to this output, so both must use the canonical form.
-tag_version=$(python3 -c '
+set +e
+tag_version=$(python3 - "$tag_version_raw" <<'PY'
 import sys
-from packaging.version import Version
-print(str(Version(sys.argv[1])))
-' "$tag_version_raw")
+from packaging.version import Version, InvalidVersion
+try:
+    print(str(Version(sys.argv[1])))
+except InvalidVersion:
+    sys.exit(2)
+PY
+)
+rc=$?
+set -e
+
+if [[ $rc -ne 0 ]]; then
+    echo "Tag '${ref#refs/tags/}' is not a valid PEP 440 version." >&2
+    echo "  Use forms like vX.Y.Z, vX.Y.Z-rcN, vX.Y.Z-devYYYYMMDD, or vX.Y.Z+local." >&2
+    exit 1
+fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "tag_version=${tag_version}" >> "$GITHUB_OUTPUT"
