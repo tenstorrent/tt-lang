@@ -93,7 +93,8 @@ finish_tests() {
 }
 
 # Build a synthetic git repo. Creates a temp dir, inits a repo, commits a
-# minimal initial set of files (the seven uplift paths + a non-uplift sentinel).
+# minimal initial set of files (the five uplift paths + a non-uplift sentinel
+# under python/sim/ used by tests that need a non-uplift change).
 # Echos the path to the repo. Caller is responsible for cleanup (use `trap`).
 #
 # Usage:
@@ -107,18 +108,13 @@ mkrepo() {
         git init -q -b main
         git config user.email t@t
         git config user.name t
-        mkdir -p third-party/llvm-project third-party/tt-mlir third-party/tt-metal .github/containers python/sim
+        mkdir -p third-party/llvm-project third-party/tt-metal .github/containers python/sim
         echo v0.69.0 > third-party/tt-metal-version
         echo "llvm-content-v1" > third-party/llvm-project/sentinel
-        echo "tt-mlir-content-v1" > third-party/tt-mlir/sentinel
         echo "tt-metal-content-v1" > third-party/tt-metal/sentinel
         cat > .github/containers/Dockerfile.base <<'EOF'
 FROM ubuntu:22.04
 RUN echo "base v1"
-EOF
-        cat > pyproject.toml <<'EOF'
-[build-system]
-requires = ["setuptools>=61.0"]
 EOF
         echo "greenlet>=3.0.0" > requirements-runtime.txt
         echo "// kernel placeholder" > python/sim/example.py

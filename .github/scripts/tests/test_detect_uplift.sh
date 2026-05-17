@@ -74,6 +74,36 @@ assert_eq "$(run_detect "$repo" "$base" "$head")" "false" "lib/ change"
 rm -rf "$repo"
 trap - EXIT
 
+# --- Regression: tt-mlir is NOT uplift (built fresh by call-build.yml) ---
+# Guards against a future "is tt-mlir uplift?" mistake re-adding it to
+# UPLIFT_PATHS.
+start_case "diff in third-party/tt-mlir alone -> uplift=false"
+repo=$(mkrepo)
+trap 'rm -rf "$repo"' EXIT
+install_scripts_in_repo "$repo"
+base=$(cd "$repo" && git rev-parse HEAD)
+mkdir -p "$repo/third-party/tt-mlir"
+echo "tt-mlir bump" > "$repo/third-party/tt-mlir/sentinel"
+(cd "$repo" && git add -A && git commit -q -m "tt-mlir-only")
+head=$(cd "$repo" && git rev-parse HEAD)
+assert_eq "$(run_detect "$repo" "$base" "$head")" "false" "tt-mlir-only change"
+rm -rf "$repo"
+trap - EXIT
+
+# --- Regression: pyproject.toml is NOT uplift (covered by wheel filter,
+# not container content) ---
+start_case "diff in pyproject.toml alone -> uplift=false"
+repo=$(mkrepo)
+trap 'rm -rf "$repo"' EXIT
+install_scripts_in_repo "$repo"
+base=$(cd "$repo" && git rev-parse HEAD)
+echo "[project]" > "$repo/pyproject.toml"
+(cd "$repo" && git add -A && git commit -q -m "pyproject-only")
+head=$(cd "$repo" && git rev-parse HEAD)
+assert_eq "$(run_detect "$repo" "$base" "$head")" "false" "pyproject-only change"
+rm -rf "$repo"
+trap - EXIT
+
 # --- Mixed: uplift path + non-uplift path -> uplift=true ---
 start_case "diff in both uplift and non-uplift paths -> uplift=true"
 repo=$(mkrepo)

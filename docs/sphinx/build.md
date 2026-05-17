@@ -311,11 +311,13 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
 2. **Docker images** -- `ird` and `dist` container images at GHCR, tagged by
    `.github/containers/get-version-tag.sh` (see [Docker tag scheme](#docker-tag-scheme)).
    Uplift-hashed tags (`vX.Y.Z-uplift-<hash>`) include a hash of the content
-   baked into the image (tt-metal submodule + version pin, LLVM submodule,
+   installed into the image (tt-metal submodule + version pin, LLVM submodule,
    `Dockerfile.base`, `requirements-runtime.txt`), so the same toolchain
    state always resolves to the same tag. The bare release tag (`vX.Y.Z`) is
    only pushed by `publish-pypi.yml` on a release tag push, and `:latest` is
-   only updated from `on-push.yml` on `main`. `call-build-docker.yml` takes
+   only updated from `on-push.yml` on `main`, and only when `build-docker`
+   actually runs there (i.e. an uplift commit whose image is not already in
+   GHCR). `call-build-docker.yml` takes
    a `push` input (default `false`); it builds the image, smoke-tests it
    inside `docker run` (`ttlang-sim --help`, `ttlang-sim-stats --help`,
    `python -c "import ttl"`), and pushes to GHCR only when `push: true`.

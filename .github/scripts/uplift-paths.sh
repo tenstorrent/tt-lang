@@ -7,7 +7,7 @@
 # detect-uplift.sh (drift signal) and get-version-tag.sh (deterministic
 # docker-tag suffix).
 #
-# What lives in the container:
+# Container contents:
 #   - System packages + SFPI/firmware (driven by tt-metal-version)
 #   - Pre-built LLVM artifacts        (driven by third-party/llvm-project)
 #   - Pre-built tt-metal artifacts    (driven by third-party/tt-metal)
