@@ -7,10 +7,14 @@ on:
         description: "tt-lang SHA/branch override (optional, defaults to current commit)"
         type: string
         required: false
+      push:
+        description: "Push built images to GHCR. Leave false to build and smoke-test locally only."
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       push:
-        description: "Push built images to GHCR. Default false so accidental invocations (PR builds, workflow_dispatch tests) don't upload. Only on-push (main) and publish-pypi (release tag) should set this true."
+        description: "Push built images to GHCR. Default false so accidental invocations don't upload. Only on-push (main) and publish-pypi (release tag) should set this true."
         type: boolean
         default: false
     outputs:
@@ -60,11 +64,15 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
-          NO_PUSH_FLAG: ${{ inputs.push && '' || '--no-push' }}
+          PUSH: ${{ inputs.push }}
         run: |
           set -o pipefail
           set -x
-          .github/containers/build-docker-images.sh --image-type base $NO_PUSH_FLAG | tee docker.log
+          FLAGS=()
+          if [ "$PUSH" != "true" ]; then
+              FLAGS+=(--no-push)
+          fi
+          .github/containers/build-docker-images.sh --image-type base "${FLAGS[@]}" | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
