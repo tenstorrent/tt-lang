@@ -17,7 +17,7 @@ on:
         type: string
         required: true
       dry_run:
-        description: "Skip tag enforcement and the PyPI upload (for pipeline testing)."
+        description: "Skip tag enforcement and the PyPI upload (for pipeline testing). build-wheels and test-dist-tutorials still run; pass an existing docker_tag so build-docker is skipped."
         type: boolean
         default: false
       allow_branch_publish:
@@ -79,7 +79,7 @@ jobs:
 
   test-dist-tutorials:
     needs: [preflight, build-docker, build-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && needs.build-wheels.result == 'success' && (github.event_name == 'push' || inputs.dry_run != true) }}
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && needs.build-wheels.result == 'success' }}
     permissions:
       contents: read
       packages: read
