@@ -319,8 +319,7 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    actually runs there (i.e. an uplift commit whose image is not already in
    GHCR). `call-build-docker.yml` takes
    a `push` input (default `false`); it builds the image, smoke-tests it
-   inside `docker run` (`ttlang-sim --help`, `ttlang-sim-stats --help`,
-   `python -c "import ttl"`), and pushes to GHCR only when `push: true`.
+   inside `docker run`, and pushes to GHCR only when `push: true`.
    Tutorial verification in the dist container runs separately as a
    pre-publish check; see [Publishing to PyPI](#publishing-to-pypi).
 
@@ -363,15 +362,22 @@ touches container-relevant files (Dockerfile, `bin/`, `packaging/`,
 `CMakeLists.txt`, `examples/`, `pyproject.toml`, etc.) but the uplift
 `build-docker` is not already running. It calls `call-build-docker.yml`
 with `push: false`: the dist and ird images are built locally on the
-runner and the in-container smoke test (`ttlang-sim --help`,
-`ttlang-sim-stats --help`) runs, but nothing is uploaded to GHCR. This
-catches container-build regressions at PR time without uploading a separate
-container image for every PR.
+runner and the in-container smoke tests run, but nothing is uploaded to
+GHCR. This catches container-build regressions at PR time without
+uploading a separate container image for every PR.
 
 `call-build.yml` retains its `build_toolchain` input for manual
 `workflow_dispatch` runs, but the automated workflows no longer set it:
 the correct toolchain is always available inside the container at the
 resolved tag.
+
+#### Hardware test timeouts
+
+`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
+`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
+test exits within ~60 seconds instead of holding the single `n150` runner
+until the 90-minute job timeout. Tests that legitimately need longer should
+set their own `@pytest.mark.timeout(...)` override.
 
 #### Rebuilding Docker images
 

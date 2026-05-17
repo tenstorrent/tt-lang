@@ -220,6 +220,15 @@ Pytest tests (parametric DSL tests):
 pytest test/python/
 ```
 
+### Pytest timeouts in CI
+
+`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
+`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
+test exits within ~60 seconds instead of holding the single `n150` runner
+until the 90-minute job timeout. Tests that legitimately need longer should
+set their own `@pytest.mark.timeout(...)` override. Local runs use the
+default (no timeout) unless you pass `--timeout` yourself.
+
 Middle end-to-end tests (requires ttnn and a TT device or simulator):
 ```bash
 pytest -v test/me2e/
