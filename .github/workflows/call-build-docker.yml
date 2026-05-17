@@ -301,8 +301,9 @@ jobs:
           docker run --rm "${{ steps.build-ird.outputs.local-image }}" bash -c '
             set -e
             export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
-            ttlang-sim --help
-            ttlang-sim-stats --help
+            mlir-opt --version
+            FileCheck --version
+            python3 --version
           '
 
       - name: Push ird image to GHCR
