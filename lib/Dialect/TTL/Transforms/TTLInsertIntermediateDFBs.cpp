@@ -143,6 +143,19 @@ struct TTLInsertIntermediateDFBsPass
             continue;
           }
 
+          // Targeted diagnostic for the scalar-constant reduce path. The DSL
+          // for `ttl.math.reduce_{sum,max}(x, <number>, ...)` synthesizes a
+          // FillOp scaler that depends on compiler-allocated DFBs.
+          if (auto reduceOp = dyn_cast<ReduceOp>(op);
+              reduceOp && idx == 1 && operand.getDefiningOp<FillOp>()) {
+            reduceOp->emitOpError(
+                "numeric scalar reduce scaler requires compiler-allocated "
+                "DFBs; pass a 1x1 user-DFB-attached scaler tile instead, or "
+                "enable compiler DFBs (drop --no-ttl-compiler-dfbs)");
+            signalPassFailure();
+            return;
+          }
+
           op->emitOpError("operand #")
               << idx
               << " requires a DFB-attached value but compiler-allocated DFBs "
