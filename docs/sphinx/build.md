@@ -310,17 +310,17 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
 
 2. **Docker images** -- `ird` and `dist` container images at GHCR, tagged by
    `.github/containers/get-version-tag.sh` (see [Docker tag scheme](#docker-tag-scheme)).
-   Uplift-hashed tags (`vX.Y.Z-uplift-<hash>`) include a hash of the
-   submodule SHAs and Dockerfile/requirements contents, so the same toolchain
-   state always resolves to the same tag and a re-push under that tag carries
-   the same image; these tags may be pushed from any context. The bare
-   release tag (`vX.Y.Z`) is only pushed by `publish-pypi.yml` on a release
-   tag push, and `:latest` is only updated from `on-push.yml` on `main`.
-   `call-build-docker.yml` builds the image with `--no-push`, smoke-tests it
+   Uplift-hashed tags (`vX.Y.Z-uplift-<hash>`) include a hash of the content
+   baked into the image (tt-metal submodule + version pin, LLVM submodule,
+   `Dockerfile.base`, `requirements-runtime.txt`), so the same toolchain
+   state always resolves to the same tag. The bare release tag (`vX.Y.Z`) is
+   only pushed by `publish-pypi.yml` on a release tag push, and `:latest` is
+   only updated from `on-push.yml` on `main`. `call-build-docker.yml` takes
+   a `push` input (default `false`); it builds the image, smoke-tests it
    inside `docker run` (`ttlang-sim --help`, `ttlang-sim-stats --help`,
-   `python -c "import ttl"`), then pushes only on success. Tutorial
-   verification in the dist container runs separately as a pre-publish gate;
-   see [Publishing to PyPI](#publishing-to-pypi).
+   `python -c "import ttl"`), and pushes to GHCR only when `push: true`.
+   Tutorial verification in the dist container runs separately as a
+   pre-publish check; see [Publishing to PyPI](#publishing-to-pypi).
 
 (docker-tag-scheme)=
 #### Docker tag scheme
@@ -328,15 +328,18 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
 `get-version-tag.sh` returns one of two forms, derived deterministically from
 the current checkout:
 
-- **Clean release state** (`vX.Y.Z`): the uplift-relevant paths
-  (`.github/scripts/uplift-paths.sh`) match the nearest version tag commit.
+- **Clean release state** (`vX.Y.Z`): the files in
+  `.github/scripts/uplift-paths.sh` match the nearest version tag commit.
   The script returns the tag name itself, with `+` translated to `-` because
   Docker tags allow only `[A-Za-z0-9_.-]`.
-- **Uplift state** (`vX.Y.Z-uplift-<8char>`): one or more uplift-relevant
-  paths differ from the nearest version tag. The hash is
-  `git ls-tree HEAD -- <uplift-paths> | sha256sum | cut -c1-8`, so two
+- **Uplift state** (`vX.Y.Z-uplift-<8char>`): one or more of those files
+  differ from the nearest version tag. The hash is
+  `git ls-tree HEAD -- <uplift-files> | sha256sum | cut -c1-8`, so two
   branches with identical submodule SHAs and Dockerfile/requirements content
-  resolve to the same tag and share the rebuilt image.
+  resolve to the same tag and share the rebuilt image. "Uplift" here means
+  the dist/ird image content changed — tt-mlir and tt-lang itself are built
+  fresh by `call-build.yml` against the pre-built LLVM inside the container,
+  so they are not uplift files.
 
 #### Auto-resolved tag in PR / push workflows
 
@@ -344,14 +347,24 @@ the current checkout:
 `get-version-tag.sh` and then calls `.github/scripts/probe-docker-image.sh`
 to query GHCR. If the image is present, `build-docker` is skipped and
 downstream jobs proceed immediately. If the image is missing and the
-resolved tag is the uplift form, `build-docker` runs (calling
-`call-build-docker.yml`) and pushes the rebuilt image; downstream jobs
-(`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) consume
-the resolved tag. If the image is missing and the resolved tag is the bare
-release form (e.g. `vX.Y.Z`), the probe step fails the job with an error
-directing the maintainer to re-publish the release via `publish-pypi.yml`;
-rebuilding the release tag from a PR or main commit would push newer
-content under the release tag and overwrite the released image.
+resolved tag is the uplift form, `build-docker` runs `call-build-docker.yml`
+with `push: true` and uploads the rebuilt image so downstream jobs
+(`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) can pull
+it. If the image is missing and the resolved tag is the bare release form
+(e.g. `vX.Y.Z`), the probe step fails the job with an error directing the
+maintainer to re-publish the release via `publish-pypi.yml`; rebuilding the
+release tag from a PR or main commit would push newer content under the
+release tag and overwrite the released image.
+
+`on-pr.yml` also has a `build-docker-dryrun` job that runs when the PR
+touches container-relevant files (Dockerfile, `bin/`, `packaging/`,
+`CMakeLists.txt`, `examples/`, `pyproject.toml`, etc.) but the uplift
+`build-docker` is not already running. It calls `call-build-docker.yml`
+with `push: false`: the dist and ird images are built locally on the
+runner and the in-container smoke test (`ttlang-sim --help`,
+`ttlang-sim-stats --help`) runs, but nothing is uploaded to GHCR. This
+catches container-build regressions at PR time without uploading a separate
+container image for every PR.
 
 `call-build.yml` retains its `build_toolchain` input for manual
 `workflow_dispatch` runs, but the automated workflows no longer set it:
@@ -360,20 +373,21 @@ resolved tag.
 
 #### Rebuilding Docker images
 
-Docker images are built by `call-build-docker.yml`, which is invoked from any
-of three places:
+Docker images are built by `call-build-docker.yml`. The workflow takes a
+`push` input (default `false`); the image is tagged with whatever
+`get-version-tag.sh` returns and smoke-tested with `docker run` before any
+push step. A failing smoke test aborts before any tag would be published.
 
-1. `on-pr.yml` / `on-push.yml`: automatically when `resolve-docker-tag`
-   detects a missing image (uplift PRs).
-2. `publish-pypi.yml`: first step of a release tag push, before
-   `build-wheels` and `publish`.
-3. `workflow_dispatch`: manual rebuild.
+Push policy across events:
 
-In all three cases the rebuilt image is tagged with whatever
-`get-version-tag.sh` returns for the checkout (clean release tag or
-`-uplift-<hash>` form). The image is built locally with `--no-push`,
-smoke-tested, and only then pushed to GHCR; a failing smoke test aborts
-before any tag is published.
+| Event                                  | Pushes `vX.Y.Z`?     | Pushes `vX.Y.Z-uplift-<hash>`? | Updates `:latest`?           |
+|----------------------------------------|----------------------|--------------------------------|------------------------------|
+| PR (uplift)                            | refused by probe     | yes                            | no                           |
+| PR (non-uplift, container content)     | no (dryrun)          | n/a                            | no                           |
+| Main push (uplift)                     | refused by probe     | yes                            | yes                          |
+| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | no (`build-docker` skipped)  |
+| Tag push (release, via publish-pypi)   | yes                  | n/a                            | no                           |
+| `workflow_dispatch`                    | only if `push: true` | only if `push: true`           | only if `push: true` on main |
 
 For a final release:
 

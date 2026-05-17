@@ -70,6 +70,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/call-build-docker.yml
     secrets: inherit
+    with:
+      push: true
 
   changes:
     name: Detect wheel/container-affecting changes

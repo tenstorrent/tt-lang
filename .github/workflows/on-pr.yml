@@ -81,6 +81,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/call-build-docker.yml
     secrets: inherit
+    with:
+      push: true
 
   changes:
     name: Detect wheel/container-affecting changes
@@ -126,6 +128,21 @@ jobs:
             echo "wheel_or_container=false" >> "$GITHUB_OUTPUT"
             echo "No wheel/container-relevant changes."
           fi
+
+  # Non-uplift PR that touches container content (Dockerfile, bin/,
+  # packaging/, ...): build + smoke-test the dist/ird images with push:false.
+  # Skipped when build-docker (uplift) already runs the same build.
+  build-docker-dryrun:
+    needs: [resolve-docker-tag, changes]
+    if: ${{ needs.changes.outputs.wheel_or_container == 'true' && needs.resolve-docker-tag.outputs.needs_rebuild != 'true' }}
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+    with:
+      push: false
 
   build:
     needs: [resolve-docker-tag, build-docker]
@@ -175,6 +192,7 @@ jobs:
       - check-tt-metal-version
       - resolve-docker-tag
       - build-docker
+      - build-docker-dryrun
       - changes
       - build
       - build-wheels
@@ -186,5 +204,5 @@ jobs:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
-          allowed-skips: build-docker, test-dist-tutorials
+          allowed-skips: build-docker, build-docker-dryrun, test-dist-tutorials
           jobs: ${{ toJSON(needs) }}

@@ -2,16 +2,23 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Paths whose change between two commits indicates a toolchain or base-image
-# uplift. Sourced by detect-uplift.sh (drift signal) and get-version-tag.sh
-# (deterministic docker-tag suffix).
+# Paths whose change between two commits indicates the dist/ird container
+# content would differ — i.e. a new image must be built. Sourced by
+# detect-uplift.sh (drift signal) and get-version-tag.sh (deterministic
+# docker-tag suffix).
+#
+# What lives in the container:
+#   - System packages + SFPI/firmware (driven by tt-metal-version)
+#   - Pre-built LLVM artifacts        (driven by third-party/llvm-project)
+#   - Pre-built tt-metal artifacts    (driven by third-party/tt-metal)
+#   - Python runtime deps             (requirements-runtime.txt)
+# tt-mlir and tt-lang are built fresh by call-build.yml against the
+# pre-built LLVM inside the container, so they are NOT in this list.
 
 UPLIFT_PATHS=(
     third-party/tt-metal-version
     third-party/llvm-project
-    third-party/tt-mlir
     third-party/tt-metal
     .github/containers/Dockerfile.base
-    pyproject.toml
     requirements-runtime.txt
 )

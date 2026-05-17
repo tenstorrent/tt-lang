@@ -8,6 +8,11 @@ on:
         type: string
         required: false
   workflow_call:
+    inputs:
+      push:
+        description: "Push built images to GHCR. Default false so accidental invocations (PR builds, workflow_dispatch tests) don't upload. Only on-push (main) and publish-pypi (release tag) should set this true."
+        type: boolean
+        default: false
     outputs:
       docker-image:
         description: "Built Docker image name with tag"
@@ -55,10 +60,11 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
+          NO_PUSH_FLAG: ${{ inputs.push && '' || '--no-push' }}
         run: |
           set -o pipefail
           set -x
-          .github/containers/build-docker-images.sh --image-type base | tee docker.log
+          .github/containers/build-docker-images.sh --image-type base $NO_PUSH_FLAG | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
@@ -228,6 +234,7 @@ jobs:
           '
 
       - name: Push dist image to GHCR
+        if: ${{ inputs.push }}
         run: |
           set -e
           LOCAL="${{ steps.build-dist.outputs.local-image }}"
@@ -236,7 +243,7 @@ jobs:
           docker push "$REGISTRY"
 
       - name: Push dist image to GHCR as :latest
-        if: ${{ github.ref == 'refs/heads/main' }}
+        if: ${{ inputs.push && github.ref == 'refs/heads/main' }}
         run: |
           set -e
           LOCAL="${{ steps.build-dist.outputs.local-image }}"
@@ -285,6 +292,7 @@ jobs:
           '
 
       - name: Push ird image to GHCR
+        if: ${{ inputs.push }}
         run: |
           set -e
           LOCAL="${{ steps.build-ird.outputs.local-image }}"
@@ -293,7 +301,7 @@ jobs:
           docker push "$REGISTRY"
 
       - name: Push ird image to GHCR as :latest
-        if: ${{ github.ref == 'refs/heads/main' }}
+        if: ${{ inputs.push && github.ref == 'refs/heads/main' }}
         run: |
           set -e
           LOCAL="${{ steps.build-ird.outputs.local-image }}"

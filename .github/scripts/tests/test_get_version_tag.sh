@@ -80,14 +80,12 @@ fresh_tagged_repo() {
     trap - EXIT
 }
 
-# === Case: uplift in each of the 7 paths separately ===
+# === Case: uplift in each path separately ===
 for path_to_change in \
     "third-party/tt-metal-version" \
     "third-party/llvm-project/sentinel" \
-    "third-party/tt-mlir/sentinel" \
     "third-party/tt-metal/sentinel" \
     ".github/containers/Dockerfile.base" \
-    "pyproject.toml" \
     "requirements-runtime.txt"; do
     start_case "uplift in $path_to_change produces -uplift-<hash> form"
     repo=$(fresh_tagged_repo)
@@ -301,10 +299,8 @@ fi
 #!/bin/bash
 UPLIFT_PATHS=(
     requirements-runtime.txt
-    pyproject.toml
     .github/containers/Dockerfile.base
     third-party/tt-metal
-    third-party/tt-mlir
     third-party/llvm-project
     third-party/tt-metal-version
 )

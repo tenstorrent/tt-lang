@@ -34,10 +34,8 @@ run_detect() {
 for path_to_change in \
     "third-party/tt-metal-version" \
     "third-party/llvm-project/sentinel" \
-    "third-party/tt-mlir/sentinel" \
     "third-party/tt-metal/sentinel" \
     ".github/containers/Dockerfile.base" \
-    "pyproject.toml" \
     "requirements-runtime.txt"; do
     start_case "diff in $path_to_change marks uplift=true"
     repo=$(mkrepo)
