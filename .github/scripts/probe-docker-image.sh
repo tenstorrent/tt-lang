@@ -1,4 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+#
 # Probe GHCR for the ird container image at the given docker tag.
 #
 # Writes needs_rebuild=true|false to $GITHUB_OUTPUT.
@@ -10,7 +13,7 @@
 #
 # Usage: probe-docker-image.sh <tag>
 
-set -e
+set -euo pipefail
 
 TAG="${1:?usage: probe-docker-image.sh <tag>}"
 IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${TAG}"

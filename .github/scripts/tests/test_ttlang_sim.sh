@@ -137,6 +137,24 @@ assert_eq "$rc" "0" "PYTHON override used (not the PATH shim that would exit 99)
 rm -rf "$root"
 trap - EXIT
 
+# --- Case: child python exit code is propagated ---
+start_case "child python exit code is propagated"
+root=$(mktemp -d)
+trap 'rm -rf "$root"' EXIT
+make_layout "$root" installed
+cat > "$root/mock_python" <<'EOF'
+#!/usr/bin/env bash
+exit 7
+EOF
+chmod +x "$root/mock_python"
+set +e
+PYTHON="$root/mock_python" PYTHONPATH="" "$root/bin/ttlang-sim" >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "7" "child exit 7 propagates"
+rm -rf "$root"
+trap - EXIT
+
 # --- Case: arguments with spaces / special chars pass through unmangled ---
 start_case "arguments with spaces pass through"
 root=$(mktemp -d)

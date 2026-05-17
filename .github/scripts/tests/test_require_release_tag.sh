@@ -16,11 +16,12 @@ SCRIPT="$SCRIPTS_DIR/require-release-tag.sh"
 # Echos "<rc>|<stdout>|<stderr>" delimited by '|'.
 run_ref() {
     local ref="$1"
-    local out err rc
-    out=$(GITHUB_REF="$ref" GITHUB_OUTPUT=/dev/null "$SCRIPT" 2>/tmp/rrt_stderr)
+    local out err rc errfile
+    errfile=$(mktemp)
+    out=$(GITHUB_REF="$ref" GITHUB_OUTPUT=/dev/null "$SCRIPT" 2>"$errfile")
     rc=$?
-    err=$(cat /tmp/rrt_stderr)
-    rm -f /tmp/rrt_stderr
+    err=$(cat "$errfile")
+    rm -f "$errfile"
     printf '%s|%s|%s' "$rc" "$out" "$err"
 }
 

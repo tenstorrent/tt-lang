@@ -91,6 +91,27 @@ assert_eq "$(run_detect "$repo" "$base" "$head")" "true" "mixed change"
 rm -rf "$repo"
 trap - EXIT
 
+# --- Subdir-CWD regression: same result from a subdirectory ---
+# Without `cd $(git rev-parse --show-toplevel)`, `git diff -- <paths>` from a
+# subdir interprets the paths relative to the subdir and silently produces an
+# empty result.
+start_case "uplift detection is CWD-invariant (subdir regression)"
+repo=$(mkrepo)
+trap 'rm -rf "$repo"' EXIT
+install_scripts_in_repo "$repo"
+base=$(cd "$repo" && git rev-parse HEAD)
+echo "new tt-metal" > "$repo/third-party/tt-metal-version"
+(cd "$repo" && git add -A && git commit -q -m "uplift")
+head=$(cd "$repo" && git rev-parse HEAD)
+mkdir -p "$repo/lib/subdir"
+gh_out=$(mktemp)
+(cd "$repo/lib/subdir" && GITHUB_OUTPUT="$gh_out" "$repo/.github/scripts/detect-uplift.sh" "$base" "$head") >/dev/null 2>&1
+val=$(grep '^uplift=' "$gh_out" | sed 's/^uplift=//' || echo "ERR")
+rm -f "$gh_out"
+assert_eq "$val" "true" "subdir CWD still detects uplift"
+rm -rf "$repo"
+trap - EXIT
+
 # --- Missing arguments are rejected ---
 start_case "missing base sha errors out"
 repo=$(mkrepo)

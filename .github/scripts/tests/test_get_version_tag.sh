@@ -211,18 +211,24 @@ done
 }
 
 # === Case: locale invariance — POSIX vs UTF-8 ===
-{
-    start_case "tag is locale-invariant"
-    repo=$(fresh_tagged_repo)
-    trap 'rm -rf "$repo"' EXIT
-    echo "uplift" > "$repo/third-party/tt-metal-version"
-    commit_all "$repo" "uplift"
-    c_tag=$(LC_ALL=C get_tag "$repo")
-    en_tag=$(LC_ALL=en_US.UTF-8 get_tag "$repo" 2>/dev/null || echo "$c_tag")
-    assert_eq "$c_tag" "$en_tag" "C vs en_US.UTF-8"
-    rm -rf "$repo"
-    trap - EXIT
-}
+# Skipped on systems without en_US.UTF-8 installed; a silent fallback would
+# make the assertion vacuous.
+if locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
+    {
+        start_case "tag is locale-invariant"
+        repo=$(fresh_tagged_repo)
+        trap 'rm -rf "$repo"' EXIT
+        echo "uplift" > "$repo/third-party/tt-metal-version"
+        commit_all "$repo" "uplift"
+        c_tag=$(LC_ALL=C get_tag "$repo")
+        en_tag=$(LC_ALL=en_US.UTF-8 get_tag "$repo")
+        assert_eq "$c_tag" "$en_tag" "C vs en_US.UTF-8"
+        rm -rf "$repo"
+        trap - EXIT
+    }
+else
+    echo "  SKIP: locale invariance (en_US.UTF-8 not available)"
+fi
 
 # === Case: change in a non-uplift path doesn't toggle uplift form ===
 {

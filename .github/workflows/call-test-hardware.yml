@@ -141,7 +141,6 @@ jobs:
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}
           path: |
-            build/test/python-lit-report.xml
             build/test/me2e-report.xml
             build/test/pytest-report.xml
             build/test/sim-report.xml

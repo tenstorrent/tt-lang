@@ -289,8 +289,7 @@ git commit -m "Uplift submodules"
 git push
 ```
 
-No edits to `on-pr.yml`, `on-push.yml`, or any other workflow file are
-needed. On push, `resolve-docker-tag` (see [Auto-resolved tag in PR /
+On push, `resolve-docker-tag` (see [Auto-resolved tag in PR /
 push workflows](#auto-resolved-tag-in-pr--push-workflows)) sees the
 uplift-relevant paths changed since the nearest version tag and emits
 `vX.Y.Z-uplift-<hash>`; if the corresponding image is missing in GHCR,
@@ -354,9 +353,9 @@ directing the maintainer to re-publish the release via `publish-pypi.yml`;
 rebuilding the release tag from a PR or main commit would push newer
 content under the release tag and overwrite the released image.
 
-`call-build.yml` retains its `build_toolchain` input as a manual
-`workflow_dispatch` escape hatch, but the automated workflows no longer set
-it: the correct toolchain is always available inside the container at the
+`call-build.yml` retains its `build_toolchain` input for manual
+`workflow_dispatch` runs, but the automated workflows no longer set it:
+the correct toolchain is always available inside the container at the
 resolved tag.
 
 #### Rebuilding Docker images

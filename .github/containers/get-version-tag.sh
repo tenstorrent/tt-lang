@@ -47,6 +47,7 @@ cd "$REPO_ROOT"
 NEAREST_TAG_RAW=$(git describe --tags --match "v[0-9]*" --abbrev=0 2>/dev/null || true)
 if [ -z "$NEAREST_TAG_RAW" ]; then
     echo "ERROR: Could not determine version tag from git tags." >&2
+    echo "  Ensure the CI checkout uses fetch-depth: 0 and fetch-tags: true." >&2
     exit 1
 fi
 NEAREST_TAG=$(printf '%s' "$NEAREST_TAG_RAW" | sed 's#[/:+]#-#g')

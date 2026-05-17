@@ -103,6 +103,24 @@ assert_eq "$(echo "$out" | grep '^PYTHONPATH=' | head -1)" "PYTHONPATH=$root/pyt
 rm -rf "$root"
 trap - EXIT
 
+# --- Child python exit code is propagated ---
+start_case "child python exit code is propagated"
+root=$(mktemp -d)
+trap 'rm -rf "$root"' EXIT
+make_layout "$root" installed
+cat > "$root/mock_python" <<'EOF'
+#!/usr/bin/env bash
+exit 7
+EOF
+chmod +x "$root/mock_python"
+set +e
+PYTHON="$root/mock_python" PYTHONPATH="" "$root/bin/ttlang-sim-stats" >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "7" "child exit 7 propagates"
+rm -rf "$root"
+trap - EXIT
+
 # --- Arguments pass through ---
 start_case "arguments pass through to the module"
 root=$(mktemp -d)
