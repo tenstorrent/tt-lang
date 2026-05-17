@@ -5,9 +5,9 @@
 # Print the Docker version tag for the current branch state.
 #
 # Clean state (no uplift-relevant changes since the nearest version tag):
-# the tag name itself, e.g. `v1.0.0`. Git tags may carry SemVer build
-# metadata after `+` (e.g. v1.0.0+rc1); since Docker tags allow only
-# [A-Za-z0-9_.-], `+` is translated to `-` (`v1.0.0-rc1`).
+# the tag name itself, e.g. `vX.Y.Z`. Git tags may carry SemVer build
+# metadata after `+` (e.g. vX.Y.Z+rcN); since Docker tags allow only
+# [A-Za-z0-9_.-], `+` is translated to `-` (`vX.Y.Z-rcN`).
 #
 # Uplift state (uplift-relevant paths differ from the nearest tag): append
 # `-uplift-<8char>` where the hash is derived from

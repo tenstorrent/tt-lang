@@ -9,6 +9,14 @@ set -uo pipefail
 # shellcheck source=./_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 
+# Synthetic base version tag used by `fresh_tagged_repo`. Chosen well outside
+# any real release range so the literals can never be confused with an actual
+# production tag. Most cases mutate from this initial state and assert
+# against `$BASE_TAG`.
+BASE_TAG="v99.99.99"
+# A later "newer" tag for the multiple-tags / nearest-tag case.
+NEWER_TAG="v99.99.100"
+
 # Run the script under test inside a given repo. Echoes the script's stdout;
 # stderr is preserved so failures surface in CI logs.
 get_tag() {
@@ -41,12 +49,12 @@ commit_all() {
 }
 
 # Helper for the remaining cases: spin up a repo and tag the initial commit
-# v1.0.0. Each case mutates from there.
+# with $BASE_TAG. Each case mutates from there.
 fresh_tagged_repo() {
     local repo
     repo=$(mkrepo)
     install_scripts_in_repo "$repo"
-    (cd "$repo" && git tag v1.0.0)
+    (cd "$repo" && git tag "$BASE_TAG")
     echo "$repo"
 }
 
@@ -55,7 +63,7 @@ fresh_tagged_repo() {
     start_case "clean release tag returns the tag name"
     repo=$(fresh_tagged_repo)
     trap 'rm -rf "$repo"' EXIT
-    assert_eq "$(get_tag "$repo")" "v1.0.0" "clean: v1.0.0"
+    assert_eq "$(get_tag "$repo")" "$BASE_TAG" "clean: $BASE_TAG"
     rm -rf "$repo"
     trap - EXIT
 }
@@ -67,7 +75,7 @@ fresh_tagged_repo() {
     trap 'rm -rf "$repo"' EXIT
     echo "kernel fix" >> "$repo/python/sim/example.py"
     commit_all "$repo" "kernel fix"
-    assert_eq "$(get_tag "$repo")" "v1.0.0" "kernel-only diff: clean tag"
+    assert_eq "$(get_tag "$repo")" "$BASE_TAG" "kernel-only diff: clean tag"
     rm -rf "$repo"
     trap - EXIT
 }
@@ -87,7 +95,7 @@ for path_to_change in \
     echo "modified" >> "$repo/$path_to_change"
     commit_all "$repo" "uplift $path_to_change"
     tag=$(get_tag "$repo")
-    assert_matches "$tag" '^v1\.0\.0-uplift-[a-f0-9]{8}$' "$path_to_change: matches uplift form"
+    assert_matches "$tag" '^v99\.99\.99-uplift-[a-f0-9]{8}$' "$path_to_change: matches uplift form"
     rm -rf "$repo"
     trap - EXIT
 done
@@ -123,7 +131,7 @@ done
     echo "uplift-state" > "$repo/third-party/tt-metal-version"
     commit_all "$repo" "re-uplift"
     second_tag=$(get_tag "$repo")
-    assert_eq "$revert_tag" "v1.0.0" "revert restores clean tag"
+    assert_eq "$revert_tag" "$BASE_TAG" "revert restores clean tag"
     assert_eq "$first_tag" "$second_tag" "re-apply matches first hash"
     rm -rf "$repo"
     trap - EXIT
@@ -152,8 +160,8 @@ done
     repo=$(mkrepo)
     trap 'rm -rf "$repo"' EXIT
     install_scripts_in_repo "$repo"
-    (cd "$repo" && git tag "v1.0.0+local1")
-    assert_eq "$(get_tag "$repo")" "v1.0.0-local1" "+ -> -"
+    (cd "$repo" && git tag "${BASE_TAG}+local1")
+    assert_eq "$(get_tag "$repo")" "${BASE_TAG}-local1" "+ -> -"
     rm -rf "$repo"
     trap - EXIT
 }
@@ -164,8 +172,8 @@ done
     repo=$(mkrepo)
     trap 'rm -rf "$repo"' EXIT
     install_scripts_in_repo "$repo"
-    (cd "$repo" && git tag "v1.0.0-rc1")
-    assert_eq "$(get_tag "$repo")" "v1.0.0-rc1" "rc1 unchanged"
+    (cd "$repo" && git tag "${BASE_TAG}-rc1")
+    assert_eq "$(get_tag "$repo")" "${BASE_TAG}-rc1" "rc1 unchanged"
     rm -rf "$repo"
     trap - EXIT
 }
@@ -175,8 +183,8 @@ done
     repo=$(mkrepo)
     trap 'rm -rf "$repo"' EXIT
     install_scripts_in_repo "$repo"
-    (cd "$repo" && git tag "v1.0.0-dev20260515")
-    assert_eq "$(get_tag "$repo")" "v1.0.0-dev20260515" "dev20260515 unchanged"
+    (cd "$repo" && git tag "${BASE_TAG}-dev20260515")
+    assert_eq "$(get_tag "$repo")" "${BASE_TAG}-dev20260515" "dev20260515 unchanged"
     rm -rf "$repo"
     trap - EXIT
 }
@@ -187,11 +195,11 @@ done
     repo=$(mkrepo)
     trap 'rm -rf "$repo"' EXIT
     install_scripts_in_repo "$repo"
-    (cd "$repo" && git tag v1.0.0)
+    (cd "$repo" && git tag "$BASE_TAG")
     echo "advance" >> "$repo/python/sim/example.py"
     commit_all "$repo" "advance"
-    (cd "$repo" && git tag v1.1.0)
-    assert_eq "$(get_tag "$repo")" "v1.1.0" "nearest tag returned"
+    (cd "$repo" && git tag "$NEWER_TAG")
+    assert_eq "$(get_tag "$repo")" "$NEWER_TAG" "nearest tag returned"
     rm -rf "$repo"
     trap - EXIT
 }
@@ -238,7 +246,7 @@ fi
     mkdir -p "$repo/lib"
     echo "non-uplift file" > "$repo/lib/something.cpp"
     commit_all "$repo" "non-uplift change"
-    assert_eq "$(get_tag "$repo")" "v1.0.0" "lib/ change: clean tag"
+    assert_eq "$(get_tag "$repo")" "$BASE_TAG" "lib/ change: clean tag"
     rm -rf "$repo"
     trap - EXIT
 }
@@ -253,7 +261,7 @@ fi
     echo "new-dep" >> "$repo/requirements-runtime.txt"
     commit_all "$repo" "multi-uplift"
     tag=$(get_tag "$repo")
-    assert_matches "$tag" '^v1\.0\.0-uplift-[a-f0-9]{8}$' "multi-uplift: single tag form"
+    assert_matches "$tag" '^v99\.99\.99-uplift-[a-f0-9]{8}$' "multi-uplift: single tag form"
     rm -rf "$repo"
     trap - EXIT
 }

@@ -328,11 +328,11 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
 `get-version-tag.sh` returns one of two forms, derived deterministically from
 the current checkout:
 
-- **Clean release state** (`v1.2.0`): the uplift-relevant paths
+- **Clean release state** (`vX.Y.Z`): the uplift-relevant paths
   (`.github/scripts/uplift-paths.sh`) match the nearest version tag commit.
   The script returns the tag name itself, with `+` translated to `-` because
   Docker tags allow only `[A-Za-z0-9_.-]`.
-- **Uplift state** (`v1.2.0-uplift-<8char>`): one or more uplift-relevant
+- **Uplift state** (`vX.Y.Z-uplift-<8char>`): one or more uplift-relevant
   paths differ from the nearest version tag. The hash is
   `git ls-tree HEAD -- <uplift-paths> | sha256sum | cut -c1-8`, so two
   branches with identical submodule SHAs and Dockerfile/requirements content
@@ -348,7 +348,7 @@ resolved tag is the uplift form, `build-docker` runs (calling
 `call-build-docker.yml`) and pushes the rebuilt image; downstream jobs
 (`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) consume
 the resolved tag. If the image is missing and the resolved tag is the bare
-release form (e.g. `v1.2.0`), the probe step fails the job with an error
+release form (e.g. `vX.Y.Z`), the probe step fails the job with an error
 directing the maintainer to re-publish the release via `publish-pypi.yml`;
 rebuilding the release tag from a PR or main commit would push newer
 content under the release tag and overwrite the released image.

@@ -12,6 +12,13 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 
 SCRIPT="$SCRIPTS_DIR/require-release-tag.sh"
 
+# Synthetic base version under test. Chosen well outside any real release
+# range so the literals can never be confused with an actual production tag.
+# Each row below appends a distinct PEP 440 suffix to exercise a specific
+# normalization rule.
+BASE="99.99.99"
+REF="refs/tags/v${BASE}"
+
 # Run the script with a given GITHUB_REF and capture stdout, stderr, and exit.
 # Echos "<rc>|<stdout>|<stderr>" delimited by '|'.
 run_ref() {
@@ -65,79 +72,79 @@ start_case "rejects tag without leading v"
 assert_rejects "refs/tags/1.0.0" "no leading v"
 
 start_case "rejects malformed PEP 440 segment with a clean message"
-result=$(run_ref "refs/tags/v1.2.0-foobar")
+result=$(run_ref "${REF}-foobar")
 rc="${result%%|*}"
 rest="${result#*|}"
 err="${rest#*|}"
-assert_neq "$rc" "0" "v1.2.0-foobar: non-zero exit"
-assert_matches "$err" "not a valid PEP 440 version" "v1.2.0-foobar: clean error message"
+assert_neq "$rc" "0" "${BASE}-foobar: non-zero exit"
+assert_matches "$err" "not a valid PEP 440 version" "${BASE}-foobar: clean error message"
 # Confirm we did NOT emit a Python traceback.
 case "$err" in
-    *"Traceback"*) echo "  FAIL: v1.2.0-foobar: stderr contains a Python traceback"; TEST_FAILURES=$((TEST_FAILURES + 1)) ;;
-    *)             echo "  PASS: v1.2.0-foobar: no Python traceback in stderr"; TEST_PASSES=$((TEST_PASSES + 1)) ;;
+    *"Traceback"*) echo "  FAIL: ${BASE}-foobar: stderr contains a Python traceback"; TEST_FAILURES=$((TEST_FAILURES + 1)) ;;
+    *)             echo "  PASS: ${BASE}-foobar: no Python traceback in stderr"; TEST_PASSES=$((TEST_PASSES + 1)) ;;
 esac
 
 # --- PEP 440 normalization cases ---
 
 start_case "final release"
-assert_accepts "refs/tags/v1.2.0" "1.2.0" "final"
+assert_accepts "$REF" "$BASE" "final"
 
 start_case "patch release"
-assert_accepts "refs/tags/v1.2.3" "1.2.3" "patch"
+assert_accepts "refs/tags/v99.99.3" "99.99.3" "patch"
 
 start_case "dev pre-release (tt-metal style)"
-assert_accepts "refs/tags/v1.2.0-dev20260515" "1.2.0.dev20260515" "dev YYYYMMDD"
+assert_accepts "${REF}-dev20260515" "${BASE}.dev20260515" "dev YYYYMMDD"
 
 start_case "rc pre-release"
-assert_accepts "refs/tags/v1.2.0-rc1" "1.2.0rc1" "rc1"
+assert_accepts "${REF}-rc1" "${BASE}rc1" "rc1"
 
 start_case "alpha pre-release"
-assert_accepts "refs/tags/v1.2.0-alpha3" "1.2.0a3" "alpha3"
+assert_accepts "${REF}-alpha3" "${BASE}a3" "alpha3"
 
 start_case "beta pre-release"
-assert_accepts "refs/tags/v1.2.0-beta2" "1.2.0b2" "beta2"
+assert_accepts "${REF}-beta2" "${BASE}b2" "beta2"
 
 start_case "post release"
-assert_accepts "refs/tags/v1.2.0-post1" "1.2.0.post1" "post1"
+assert_accepts "${REF}-post1" "${BASE}.post1" "post1"
 
 start_case "local version label"
-assert_accepts "refs/tags/v1.2.0+uplift" "1.2.0+uplift" "+uplift"
+assert_accepts "${REF}+uplift" "${BASE}+uplift" "+uplift"
 
 start_case "dev + local combined"
-assert_accepts "refs/tags/v1.2.0-dev20260515+ci123" "1.2.0.dev20260515+ci123" "dev + local"
+assert_accepts "${REF}-dev20260515+ci123" "${BASE}.dev20260515+ci123" "dev + local"
 
 # PEP 440 specifies that pre-release segment markers are case-insensitive and
 # normalize to lowercase. Pin this so a future change that swaps `packaging`
 # for a hand-rolled regex doesn't silently regress case folding.
 start_case "case-folded RC normalizes to lowercase rc"
-assert_accepts "refs/tags/v1.2.0-RC1" "1.2.0rc1" "RC1 -> rc1"
+assert_accepts "${REF}-RC1" "${BASE}rc1" "RC1 -> rc1"
 
 start_case "case-folded DEV normalizes to lowercase dev"
-assert_accepts "refs/tags/v1.2.0-DEV20260515" "1.2.0.dev20260515" "DEV -> dev"
+assert_accepts "${REF}-DEV20260515" "${BASE}.dev20260515" "DEV -> dev"
 
 start_case "case-folded Alpha normalizes to a"
-assert_accepts "refs/tags/v1.2.0-Alpha3" "1.2.0a3" "Alpha -> a"
+assert_accepts "${REF}-Alpha3" "${BASE}a3" "Alpha -> a"
 
 start_case "case-folded BETA normalizes to b"
-assert_accepts "refs/tags/v1.2.0-BETA2" "1.2.0b2" "BETA -> b"
+assert_accepts "${REF}-BETA2" "${BASE}b2" "BETA -> b"
 
 start_case "case-folded POST normalizes to post"
-assert_accepts "refs/tags/v1.2.0-POST1" "1.2.0.post1" "POST -> post"
+assert_accepts "${REF}-POST1" "${BASE}.post1" "POST -> post"
 
 # --- GITHUB_OUTPUT writes ---
 
 start_case "writes tag_version to GITHUB_OUTPUT when set"
 gh_out=$(mktemp)
 trap 'rm -f "$gh_out"' EXIT
-GITHUB_REF="refs/tags/v1.2.0-rc1" GITHUB_OUTPUT="$gh_out" "$SCRIPT" >/dev/null
-assert_eq "$(cat "$gh_out")" "tag_version=1.2.0rc1" "GITHUB_OUTPUT contents"
+GITHUB_REF="${REF}-rc1" GITHUB_OUTPUT="$gh_out" "$SCRIPT" >/dev/null
+assert_eq "$(cat "$gh_out")" "tag_version=${BASE}rc1" "GITHUB_OUTPUT contents"
 rm -f "$gh_out"
 trap - EXIT
 
 start_case "stdout matches GITHUB_OUTPUT line"
 gh_out=$(mktemp)
 trap 'rm -f "$gh_out"' EXIT
-stdout=$(GITHUB_REF="refs/tags/v1.2.0-dev20260515" GITHUB_OUTPUT="$gh_out" "$SCRIPT")
+stdout=$(GITHUB_REF="${REF}-dev20260515" GITHUB_OUTPUT="$gh_out" "$SCRIPT")
 out_line=$(grep '^tag_version=' "$gh_out" | sed 's/^tag_version=//')
 assert_eq "$stdout" "$out_line" "stdout matches output file"
 rm -f "$gh_out"

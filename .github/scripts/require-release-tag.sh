@@ -15,15 +15,15 @@ set -euo pipefail
 ref="${GITHUB_REF:-}"
 if [[ ! "$ref" =~ ^refs/tags/v[0-9] ]]; then
     echo "This workflow must be dispatched from a v* tag (got '$ref')." >&2
-    echo "Create and push a tag like 'v1.1.2', then dispatch from that tag." >&2
+    echo "Create and push a tag like 'vX.Y.Z', then dispatch from that tag." >&2
     exit 1
 fi
 
 tag_version_raw="${ref#refs/tags/v}"
 
 # Normalize to the PEP 440 canonical form so it matches what setuptools writes
-# into the wheel filename (tag 'v1.2.0-dev20260515' -> wheel version
-# '1.2.0.dev20260515'; tag 'v1.2.0-rc1' -> '1.2.0rc1'; tag 'v1.2.0+local'
+# into the wheel filename (tag 'vX.Y.Z-devYYYYMMDD' -> wheel version
+# 'X.Y.Z.devYYYYMMDD'; tag 'vX.Y.Z-rcN' -> 'X.Y.ZrcN'; tag 'vX.Y.Z+local'
 # unchanged). verify-wheel-version.sh compares the wheel filename's version
 # field to this output, so both must use the canonical form.
 set +e

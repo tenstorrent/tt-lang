@@ -11,17 +11,19 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 
 SCRIPT="$SCRIPTS_DIR/probe-docker-image.sh"
 
-# Synthetic tags exercising the three forms the script must classify:
+# Synthetic tags exercising the three forms the script must classify. Versions
+# are chosen well outside any real release range so the literals can never be
+# confused with a production tag.
 #   BARE_TAG    -> release form (must refuse rebuild when image missing)
 #   UPLIFT_TAG  -> uplift form  (must allow rebuild when image missing)
 #   RC_TAG      -> release pre-release form (also bare-release class)
 #   DEV_TAG     -> release dev form         (also bare-release class)
 # The ird image reference used by the script under test:
 IRD_IMAGE_BASE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04"
-BARE_TAG="v1.2.0"
-UPLIFT_TAG="v1.2.0-uplift-abcd1234"
-RC_TAG="v1.2.0-rc1"
-DEV_TAG="v1.2.0-dev20260515"
+BARE_TAG="v99.99.99"
+UPLIFT_TAG="v99.99.99-uplift-abcd1234"
+RC_TAG="v99.99.99-rc1"
+DEV_TAG="v99.99.99-dev20260515"
 
 # Install a fake `docker` on PATH whose `manifest inspect` exit status is
 # controlled by $FAKE_DOCKER_MISSING (1 -> exit 1, else exit 0). Records the
