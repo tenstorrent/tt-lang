@@ -42,6 +42,15 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+/// Materializes a float attribute as an i32 carrying its IEEE 754 bits. Scalar
+/// SFPU tile APIs take i32 params even for float scalars.
+static Value floatAttrToI32Bits(OpBuilder &rewriter, Location loc,
+                                FloatAttr attr) {
+  auto f32Val = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getF32FloatAttr(attr.getValueAsDouble()));
+  return arith::BitcastOp::create(rewriter, loc, rewriter.getI32Type(), f32Val);
+}
+
 /// Look up a CB for a copy_tile source.
 /// After loop lowering, src is typically a tensor.extract result.
 /// We trace back to find the tensor, then use getAttachedCB to find the CB.
@@ -706,7 +715,6 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
     }
 
     // Scaler tile index is always 0.
-    // TODO: Support scalar constants via fill in a follow-up PR.
     Value scalerIdx = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
 
     // TTL and TTKernel ReduceType share the same underlying values.
@@ -722,6 +730,17 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
         scalerIdx, setup->dstIdx,
         ttk::ReduceTypeAttr::get(op.getContext(), ttkReduceType),
         ttk::ReduceDimAttr::get(op.getContext(), op.getReduceDim()));
+
+    if (auto scalarMultiplier =
+            op->getAttrOfType<FloatAttr>(kReduceScalarMultiplierAttrName)) {
+      if (scalarMultiplier.getValueAsDouble() != 1.0) {
+        ttk::BinopWithScalarTileInitOp::create(rewriter, op.getLoc());
+        Value scalarParam =
+            floatAttrToI32Bits(rewriter, op.getLoc(), scalarMultiplier);
+        ttk::MulUnaryTileOp::create(rewriter, op.getLoc(), setup->dstIdx,
+                                    scalarParam);
+      }
+    }
 
     bool useFullFp32 = shouldUseFullFp32Reduce(op, fullFp32);
     if (fullFp32 && isBlackholeTarget(op) &&

@@ -1365,14 +1365,21 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
                                         AffineMapAttr::get(outputMap)};
 
     auto reduceType = op.getReduceType();
+    auto scalarMultiplier =
+        op->getAttrOfType<FloatAttr>(kReduceScalarMultiplierAttrName);
     return buildComputeFromInputs(
         op, rewriter, ValueRange{op.getInput(), op.getScaler()}, resultType,
         inputMaps, outputMap, iterTypes,
-        [reduceType, reduceDim](OpBuilder &b, Location loc, Type tileType,
-                                Block *body) {
-          return createTileOpWithPlaceholderDstIndex<TileReduceOp>(
+        [reduceType, reduceDim, scalarMultiplier](OpBuilder &b, Location loc,
+                                                  Type tileType, Block *body) {
+          auto tileReduce = createTileOpWithPlaceholderDstIndex<TileReduceOp>(
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               body->getArgument(2), reduceType, reduceDim);
+          if (scalarMultiplier) {
+            tileReduce->setAttr(kReduceScalarMultiplierAttrName,
+                                scalarMultiplier);
+          }
+          return tileReduce;
         });
   }
 };
