@@ -813,39 +813,90 @@ class TensorSpec:
         )
 
 
-# Dtype aliases
-bfloat16: torch.dtype = torch.bfloat16
+# Save the native dtypes before any rebinding.  These are the "declared"
+# hardware dtypes — they carry the correct element_size (e.g. 2 for bfloat16)
+# and are stored in Tensor._dtype for hardware-accurate L1 accounting.
+# Maps torch attribute name -> original (pre-rebinding) dtype for every
+# narrow floating-point type that has a native torch representation and should
+# be promoted to float32 by default.  To add a new promotable type, add it
+# here; the rebinding loop, set_disable_float32_promotion, and _promote_dtype
+# all derive from this single definition.
+#
+# bfloat8_b is not in this dict because PyTorch has no native bfloat8_b dtype
+# and no torch.bfloat8_b attribute to rebind.  _promote_dtype handles it
+# directly by mapping it to bfloat16 and then applying the normal logic.
+_PROMOTABLE_FLOAT_DTYPES: dict[str, torch.dtype] = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+}
+
+# Rebind every promotable dtype to float32 so that all native PyTorch code
+# (e.g. torch.randn(dtype=torch.bfloat16)) transparently uses float32.
+# This keeps host operations fast on platforms like Apple Silicon that lack
+# hardware bfloat16/float16 support.
+for _attr in _PROMOTABLE_FLOAT_DTYPES:
+    setattr(torch, _attr, torch.float32)  # type: ignore[assignment]
+del _attr  # avoid leaking the loop variable into the module namespace
+
+# ttnn dtype aliases preserve the original (pre-rebinding) torch dtypes so
+# that element_size returns the correct hardware byte count and _promote_dtype
+# can compare against them.
+bfloat16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["bfloat16"]
+float16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["float16"]
 float32: torch.dtype = torch.float32
 
-# Original value saved so set_matmul_promote_bf16 can restore it.
-_original_bfloat16: torch.dtype = torch.bfloat16
+# When True (the default), tensor creation functions promote bfloat16 and
+# float16 backing to float32 for accurate computation on all host architectures.
+# The declared dtype is always preserved in Tensor._dtype for L1 accounting.
+# Toggle with set_disable_float32_promotion().
+_float32_promotion_enabled: bool = True
 
 
-def set_matmul_promote_bf16(value: bool) -> None:
-    """Redirect bfloat16 to float32 for the entire process when the flag is active.
+def _promote_dtype(dtype: "DType") -> torch.dtype:
+    """Return the backing torch dtype to use when creating a tensor.
 
-    When enabled, both ``torch.bfloat16`` and the module-level ``bfloat16``
-    alias are rebound to ``torch.float32``.  Any subsequent use of
-    ``dtype=torch.bfloat16`` or ``dtype=ttnn.bfloat16`` in the user script
-    therefore creates float32 tensors natively, with no dispatch overhead or
-    casting.  Note: this doubles tensor memory usage; avoid for very large
-    examples on memory-constrained machines.  When disabled the originals are
-    restored.
+    All narrow floating-point types are promoted to float32 when promotion is
+    active (the default), so the simulator runs at full precision on every host.
+
+    Custom types (e.g. bfloat8_b) that have no native PyTorch representation are
+    resolved to their native equivalent via _CUSTOM_DTYPE_BACKING, then the same
+    promotion logic applies as for native narrow floats.
+
+    The declared dtype is always preserved separately in Tensor._dtype.
     """
-    global bfloat16
-    if value:
-        torch.bfloat16 = torch.float32
-        bfloat16 = torch.float32
-    else:
-        torch.bfloat16 = _original_bfloat16
-        bfloat16 = _original_bfloat16
+    native: torch.dtype = _CUSTOM_DTYPE_BACKING.get(type(dtype), dtype)  # type: ignore[arg-type]
+    if _float32_promotion_enabled and native in _PROMOTABLE_FLOAT_DTYPES.values():
+        return torch.float32
+    return native
+
+
+def set_disable_float32_promotion(value: bool) -> None:
+    """Disable or re-enable the default float32 promotion of floating-point dtypes.
+
+    When promotion is active (the default), all narrow floating-point types are
+    backed by float32 for accurate computation on all host architectures:
+
+    - bfloat16 and float16: the corresponding torch.* attributes are rebound to
+      float32 so that native PyTorch code also uses float32.
+    - bfloat8_b: _promote_dtype maps it to bfloat16 and then promotes that to
+      float32; no torch attribute rebinding is needed.
+
+    Passing True restores native dtypes throughout (bfloat16/float16 tensors use
+    their declared dtype as backing, bfloat8_b is backed by bfloat16).
+    Passing False re-enables the default float32 promotion.
+    """
+    global _float32_promotion_enabled
+    _float32_promotion_enabled = not value
+    for attr, original in _PROMOTABLE_FLOAT_DTYPES.items():
+        setattr(torch, attr, original if value else torch.float32)  # type: ignore[assignment]
 
 
 class _BFloat8BDtype:
     """Sentinel class for the bfloat8_b block-floating-point dtype.
 
     PyTorch has no native bfloat8_b type.  The simulator backs bfloat8_b
-    tensors with bfloat16 for computation.
+    tensors with float32 (when float32 promotion is active, the default) or
+    bfloat16 (when promotion is disabled) for computation.
 
     BFP8B encoding: each element is stored as a 1-byte mantissa; every group
     of 16 elements shares a 1-byte exponent.  Storage cost is therefore
@@ -885,6 +936,19 @@ class _BFloat8BDtype:
 
 
 bfloat8_b: _BFloat8BDtype = _BFloat8BDtype()
+
+# Type alias for any value that can be passed as a dtype to ttnn tensor
+# creation functions: either a standard torch dtype or the bfloat8_b sentinel.
+DType = Union[torch.dtype, _BFloat8BDtype]
+
+# Maps custom dtype classes (those with no native torch representation) to the
+# torch.dtype that serves as their native backing before promotion is applied.
+# _promote_dtype looks up a dtype's class here so that custom types are handled
+# with the same logic as native narrow floats, without requiring a match branch
+# for each one.  To add a new custom dtype, add it here.
+_CUSTOM_DTYPE_BACKING: dict[type, torch.dtype] = {
+    _BFloat8BDtype: _PROMOTABLE_FLOAT_DTYPES["bfloat16"],
+}
 
 
 class Device:
@@ -1144,6 +1208,11 @@ def _maybe_resolve_nd_shard_spec_for_tensor(
     )
 
 
+def _dtype_element_size(dtype: torch.dtype) -> int:
+    """Return the element size in bytes for a torch dtype."""
+    return torch.tensor([], dtype=dtype).element_size()
+
+
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 
@@ -1183,8 +1252,10 @@ class Tensor:
     def underlying_dtype(self) -> torch.dtype:
         """PyTorch dtype used for storage and computation.
 
-        For standard types this equals dtype.  For custom types such as bfloat8_b
-        this is the native torch dtype that backs the tensor (e.g. torch.bfloat16).
+        May differ from dtype when float32 promotion is active: bfloat16 and
+        float16 tensors are backed by float32, so underlying_dtype returns
+        torch.float32 while dtype returns the declared type.  For bfloat8_b
+        this is torch.float32 (promotion on) or torch.bfloat16 (off).
         """
         return self._tensor.dtype
 
@@ -1196,28 +1267,33 @@ class Tensor:
     def element_size(self) -> int:
         """Number of bytes per element for this tensor's declared dtype.
 
-        For dtypes with a shared exponent (e.g. bfloat8_b) this returns only
-        the mantissa byte and does not include exponent overhead.  Use
-        size_in_bytes(n) for accurate multi-element capacity accounting.
+        Always reflects the declared (hardware) dtype, not the backing
+        storage dtype.  For example, a bfloat16 tensor promoted to float32
+        backing still returns 2 here.  For dtypes with a shared exponent
+        (e.g. bfloat8_b) this returns only the mantissa byte and does not
+        include exponent overhead.  Use size_in_bytes(n) for accurate
+        multi-element capacity accounting.
         """
         match self._dtype:
             case _BFloat8BDtype():
                 return 1
             case _:
-                return self._tensor.element_size()
+                return _dtype_element_size(self._dtype)
 
     def size_in_bytes(self, n_elements: int) -> int:
-        """Total bytes required to store n_elements of this tensor's dtype.
+        """Total bytes required to store n_elements of this tensor's declared dtype.
 
-        For standard torch dtypes this is n_elements * element_size.
-        For dtypes with shared exponents (e.g. bfloat8_b) this includes the
-        exponent overhead; use this method for correct capacity accounting.
+        Always uses the declared (hardware) dtype for byte accounting so that
+        L1 capacity checks reflect on-hardware footprint regardless of whether
+        float32 promotion is active.  For standard torch dtypes this is
+        n_elements * element_size.  For dtypes with shared exponents
+        (e.g. bfloat8_b) this includes the exponent overhead.
         """
         match self._dtype:
             case _BFloat8BDtype():
                 return self._dtype.size_in_bytes(n_elements)
             case _:
-                return n_elements * self._tensor.element_size()
+                return n_elements * _dtype_element_size(self._dtype)
 
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
@@ -1403,7 +1479,14 @@ class Tensor:
         return f"Tensor(shape={tuple(self._tensor.shape)}{layout_str}, data={repr(self._tensor)})"
 
     def to_torch(self) -> torch.Tensor:
-        """Public accessor for the underlying torch tensor."""
+        """Return the raw backing torch tensor.
+
+        Returns the underlying storage tensor directly so that callers can
+        perform in-place operations.  The backing dtype may differ from the
+        declared dtype when float32 promotion is active.  Use the module-level
+        ttnn.to_torch() function when the result needs to match the declared
+        dtype (e.g. for comparison with native torch tensors).
+        """
         return self._tensor
 
     # ---- Binary operations (element-wise) ----
@@ -1555,40 +1638,24 @@ class Tensor:
 
 def rand(
     shape: Shape,
-    dtype: Any = bfloat16,
+    dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
     memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
-    match dtype:
-        case _BFloat8BDtype():
-            return Tensor(
-                torch.rand(shape, dtype=torch.float32).to(torch.bfloat16),
-                layout,
-                dtype=bfloat8_b,
-            )
-        case _:
-            t = torch.rand(shape, dtype=torch.float32)
-            t = t.to(dtype)
-            return Tensor(t, layout)
+    return Tensor(torch.rand(shape, dtype=_promote_dtype(dtype)), layout, dtype=dtype)
 
 
 def empty(
     shape: Shape,
-    dtype: Any = bfloat16,
+    dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
     memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
-    match dtype:
-        case _BFloat8BDtype():
-            return Tensor(
-                torch.empty(shape, dtype=torch.bfloat16), layout, dtype=bfloat8_b
-            )
-        case _:
-            return Tensor(torch.empty(shape, dtype=dtype), layout)
+    return Tensor(torch.empty(shape, dtype=_promote_dtype(dtype)), layout, dtype=dtype)
 
 
 def to_torch(
@@ -1597,12 +1664,18 @@ def to_torch(
 ) -> torch.Tensor:
     """Convert a simulator Tensor or torch.Tensor to torch.Tensor.
 
+    Returns the raw backing tensor.  When float32 promotion is active the
+    backing dtype is float32 regardless of the declared dtype; external torch
+    code also uses float32 (torch.bfloat16 is rebound to torch.float32 at
+    module load time), so comparison with natively created tensors works
+    without an additional cast.
+
     Args:
         t: Tensor to convert.
         mesh_composer: Ignored in the simulator; accepted for API compatibility.
 
     Returns:
-        Plain torch.Tensor.
+        Plain torch.Tensor (backing dtype, not necessarily the declared dtype).
     """
     match t:
         case Tensor() as tw:
@@ -1615,7 +1688,7 @@ def to_torch(
 
 def from_torch(
     tensor: torch.Tensor,
-    dtype: Optional[torch.dtype] = None,
+    dtype: Optional[DType] = None,
     layout: IndexType = TILE_LAYOUT,
     device: Optional[Union[Device, MeshDevice]] = None,
     memory_config: Optional[MemoryConfig] = None,
@@ -1663,12 +1736,10 @@ def from_torch(
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
 
     match eff_dtype:
-        case _BFloat8BDtype():
-            result = Tensor(
-                tensor.to(torch.bfloat16), layout, memory_config=eff_mc, dtype=bfloat8_b
-            )
-        case _ if eff_dtype is not None and tensor.dtype != eff_dtype:
-            result = Tensor(tensor.to(eff_dtype), layout, memory_config=eff_mc)
+        case _ if eff_dtype is not None:
+            backing = _promote_dtype(eff_dtype)
+            converted = tensor if tensor.dtype == backing else tensor.to(backing)
+            result = Tensor(converted, layout, memory_config=eff_mc, dtype=eff_dtype)
         case _:
             result = Tensor(tensor, layout, memory_config=eff_mc)
 

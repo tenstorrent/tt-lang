@@ -26,13 +26,10 @@ Three tests:
 
 3. `test_cross_dfb_multicast_loopback` — four-core multicast where the
    source core (0, 0) is inside the destination range (loopback) and
-   the source DFB index differs from the destination DFB index. The
-   IR-level loopback skip fix in this PR (`skipSenderReserve =
-   pipeType.srcInDstRange()`) is necessary for this pattern, but the
-   stripe-1 multicast write is not delivered: dm_write reads whatever
-   was already in the destination DFB's slot 1 at device init time
-   (zero if L1 was just cleared; otherwise stale data from a prior
-   run). Marked `xfail` pending #583.
+   the source DFB index differs from the destination DFB index. Combines
+   the IR-level loopback skip (`skipSenderReserve =
+   pipeType.srcInDstRange()`) with the cumulative-counter semaphore
+   lowering so every stripe is delivered. Regression test for #583.
 """
 
 import pytest
@@ -291,16 +288,6 @@ def cross_dfb_multicast_loopback(out):
             ttl.copy(out_blk, out[ri : ri + 1, node_col : node_col + 1]).wait()
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "Cross-DFB multicast loopback does not deliver the stripe-1 write to "
-        "the destination DFB. With L1 cleared at device init, dm_write reads "
-        "zero for stripe 1; with stale L1 from a prior run, it reads that "
-        "prior data. The IR-level loopback skip fix in this PR is necessary "
-        "but not sufficient. See #583."
-    ),
-)
 def test_cross_dfb_multicast_loopback(device):
     rows = NUM_OF_STRIPES * TILE
     cols = CROSS_DFB_COL_CORES * TILE

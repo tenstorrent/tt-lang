@@ -283,10 +283,10 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "--promote-bf16",
+        "--no-float32-promotion",
         action="store_true",
-        dest="promote_bf16",
-        help="Redirect bfloat16 to float32 for faster computation on hardware without native bfloat16 support (e.g. Apple Silicon). Doubles tensor memory usage.",
+        dest="no_float32_promotion",
+        help="Disable the default float32 promotion of reduced-precision dtypes (bfloat16, bfloat8_b). Use when native dtype precision is required.",
     )
 
     parser.add_argument(
@@ -384,11 +384,11 @@ def main() -> None:
 
         set_scheduler_algorithm(args.scheduler)
 
-    # Enable bfloat16-to-float32 promotion if requested
-    if args.promote_bf16:
-        from .ttnnsim import set_matmul_promote_bf16
+    # Disable float32 promotion if requested.
+    if args.no_float32_promotion:
+        from .ttnnsim import set_disable_float32_promotion
 
-        set_matmul_promote_bf16(True)
+        set_disable_float32_promotion(True)
 
     # Enable tensor statistics collection if requested
     # Configure default grid if specified

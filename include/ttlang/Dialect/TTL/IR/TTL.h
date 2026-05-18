@@ -35,6 +35,8 @@ constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
+constexpr llvm::StringLiteral
+    kUnpackToDestFp32AttrName("ttl.unpack_to_dest_fp32");
 
 /// Canonical target_arch values. Mirrored in python/ttl/ttl_api.py.
 constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
@@ -108,6 +110,12 @@ constexpr llvm::StringLiteral
     kReduceOutputCBIndexAttrName("ttl.reduce_output_cb_index");
 constexpr llvm::StringLiteral
     kTransposeOutputCBIndexAttrName("ttl.transpose_output_cb_index");
+
+/// Original numeric scalar for ttl.reduce scalers that were materialized from
+/// ttl.fill. The scaler DFB stores a neutral 1.0 tile and this attribute tells
+/// tile lowering to apply the requested scale after reduce_tile.
+constexpr llvm::StringLiteral
+    kReduceScalarMultiplierAttrName("ttl.reduce_scalar_multiplier");
 
 /// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from test_utils import make_zeros_tensor
 
 from sim import ttl, ttnn
@@ -141,3 +143,16 @@ class TestPipeNetPredicates:
 
         x = make_zeros_tensor(4, 4)
         op(x, x)
+
+
+class TestPipeDstSliceValidation:
+    """Construction-time validation of `dst` slices in sim ttl.Pipe.
+    Must stay in lockstep with compiler-side validation in python/ttl/pipe.py."""
+
+    def test_step_must_be_one_or_none(self) -> None:
+        with pytest.raises(ValueError, match="step must be 1 or None"):
+            ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 2), 0))
+        with pytest.raises(ValueError, match="step must be 1 or None"):
+            ttl.Pipe(src=(0, 0), dst=(0, slice(0, 4, 2)))
+        ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 1), 0))
+        ttl.Pipe(src=(0, 0), dst=(slice(0, 4), 0))
