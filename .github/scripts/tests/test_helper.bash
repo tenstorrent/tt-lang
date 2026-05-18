@@ -23,7 +23,9 @@ BIN_DIR="$(dirname "$SCRIPTS_DIR")/../bin"
 # tests that need a non-uplift file to modify. Echoes the repo path.
 mkrepo() {
     local tmpdir
-    tmpdir=$(mktemp -d -p "${BATS_TEST_TMPDIR:-/tmp}")
+    # `mktemp -d <template>` is portable across Linux and BSD/macOS;
+    # `-p <dir>` is Linux-only (BSD `-p` is a prefix template).
+    tmpdir=$(mktemp -d "${BATS_TEST_TMPDIR:-/tmp}/repo.XXXXXX")
     (
         cd "$tmpdir"
         git init -q -b main

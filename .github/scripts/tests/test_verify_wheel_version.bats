@@ -19,7 +19,7 @@ whl_build() { printf 'tt_lang-%s-%s-%s.whl' "$1" "$2" "$PYTAG"; }  # <ver> <buil
 # Create a temp dir containing zero or more empty wheel files. Echoes the dir.
 make_wheel_dir() {
     local dir
-    dir=$(mktemp -d -p "$BATS_TEST_TMPDIR")
+    dir=$(mktemp -d "$BATS_TEST_TMPDIR/wheels.XXXXXX")
     for name in "$@"; do
         : > "$dir/$name"
     done

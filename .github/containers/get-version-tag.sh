@@ -50,7 +50,7 @@ if [ -z "$NEAREST_TAG_RAW" ]; then
     echo "  Ensure the CI checkout uses fetch-depth: 0 and fetch-tags: true." >&2
     exit 1
 fi
-NEAREST_TAG=$(printf '%s' "$NEAREST_TAG_RAW" | sed 's#[/:+]#-#g')
+NEAREST_TAG=$(printf '%s' "$NEAREST_TAG_RAW" | tr '+' '-')
 
 if git diff --quiet "$NEAREST_TAG_RAW..HEAD" -- "${UPLIFT_PATHS[@]}"; then
     echo "$NEAREST_TAG"

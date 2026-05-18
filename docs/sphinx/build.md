@@ -358,7 +358,7 @@ maintainer to re-publish the release via `publish-pypi.yml`; rebuilding the
 release tag from a PR or main commit would push newer content under the
 release tag and overwrite the released image.
 
-`ci.yml` also has a `build-docker-dryrun` job that runs only on
+`ci.yml` also has a `dryrun-docker` job that runs only on
 pull_request events when the PR touches container-relevant files
 (Dockerfile, `bin/`, `packaging/`, `CMakeLists.txt`, `examples/`,
 `pyproject.toml`, etc.) but the uplift `build-docker` is not already

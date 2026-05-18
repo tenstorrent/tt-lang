@@ -113,7 +113,7 @@ jobs:
           esac
           .github/scripts/wheel-or-container-changed.sh "$BASE" "$HEAD"
 
-  build-docker-dryrun:
+  dryrun-docker:
     needs: [resolve-docker-tag, changes]
     if: ${{ needs.changes.outputs.wheel_or_container == 'true' && needs.resolve-docker-tag.outputs.needs_rebuild != 'true' }}
     permissions:
@@ -131,7 +131,10 @@ jobs:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
-      build_docs: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      # Build docs on any main-branch run (push, schedule, workflow_dispatch)
+      # to catch sphinx-build regressions outside of merge events. Only the
+      # push event deploys (see deploy-docs).
+      build_docs: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
 
   build-wheels:
@@ -190,7 +193,7 @@ jobs:
       - check-tt-metal-version
       - resolve-docker-tag
       - build-docker
-      - build-docker-dryrun
+      - dryrun-docker
       - changes
       - build
       - build-wheels
@@ -202,5 +205,5 @@ jobs:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
-          allowed-skips: build-docker, build-docker-dryrun, test-dist-tutorials
+          allowed-skips: build-docker, dryrun-docker, test-dist-tutorials
           jobs: ${{ toJSON(needs) }}
