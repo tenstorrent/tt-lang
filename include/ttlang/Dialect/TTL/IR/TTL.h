@@ -126,8 +126,8 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
 /// Verify that an op is not inside a compute kernel function. Defined in
-/// TTLOps.cpp to avoid header dependency on TTKernel. Used by element_read
-/// and element_write verifiers.
+/// TTLOps.cpp to avoid header dependency on TTKernel. Used by
+/// unsafe_element_read and unsafe_element_write verifiers.
 mlir::LogicalResult verifyDataMovementOnlyOp(mlir::Operation *op);
 
 /// Trait for data movement operations (copy_tile, copy_dst). Used as a

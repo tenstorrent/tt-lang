@@ -212,7 +212,7 @@ class TTLGenericCompiler(TTCompilerBase):
             best_idx = 0xFFFFFFFF
             for tid in range(chunk):
                 best_idx = new_val    # updates outer-scope memref
-            ttl.element_write(blk, 0, 0, best_idx)  # reads memref
+            ttl.unsafe_element_write(blk, 0, 0, best_idx)  # reads memref
         """
         if not isinstance(node.targets[0], ast.Tuple):
             if isinstance(node.targets[0], ast.Name) and self._in_nested_scope():
@@ -235,7 +235,7 @@ class TTLGenericCompiler(TTCompilerBase):
                         self._store_to_memref(mr, value)
                     return
 
-                # For NEW variables inside loops, only i32 (from element_read)
+                # For NEW variables inside loops, only i32 (from unsafe_element_read)
                 # gets memref treatment.  Index-typed loop variables (idx, m, n)
                 # stay as plain SSA to avoid breaking tensor subscript indexing.
                 if outer_table is None and self._is_i32_scalar(value):
@@ -283,7 +283,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     @staticmethod
     def _is_i32_scalar(value):
-        """Check if an MLIR value is specifically i32 (from element_read).
+        """Check if an MLIR value is specifically i32 (from unsafe_element_read).
 
         Narrower check used for NEW variables inside loops — only i32
         values get automatic memref allocation.  Prevents index-typed
@@ -317,7 +317,7 @@ class TTLGenericCompiler(TTCompilerBase):
         dominates all uses (including after loops and if-blocks).  The initial
         store is emitted at the current insertion point because ``init_value``
         may be an SSA value defined after the entry block (e.g., result of
-        element_read inside a with-block), and must not be used before it
+        unsafe_element_read inside a with-block), and must not be used before it
         dominates.
 
         Returns the alloca result (Value with MemRefType).
@@ -720,16 +720,30 @@ class TTLGenericCompiler(TTCompilerBase):
             and node.value.attr == "math"
         )
 
+    def _is_ttl_unsafe_access(self, node):
+        """Check if node is ttl.unsafe.XXX access pattern."""
+        return (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "ttl"
+            and node.value.attr == "unsafe"
+        )
+
     def _resolve_ttl_function(self, node, func_args, kwargs):
-        """Resolve and call a ttl.XXX or ttl.math.XXX function."""
+        """Resolve and call a ttl.XXX, ttl.math.XXX, or ttl.unsafe.XXX function."""
         if self._is_ttl_module_access(node):
             namespace = "ttl"
+            fn_key = node.attr
         elif self._is_ttl_math_access(node):
             namespace = "ttl.math"
+            fn_key = node.attr
+        elif self._is_ttl_unsafe_access(node):
+            namespace = "ttl.unsafe"
+            fn_key = f"unsafe_{node.attr}"
         else:
             return None
 
-        fn = self._fn_map.get(node.attr)
+        fn = self._fn_map.get(fn_key)
         if fn is None:
             self._raise_error(node, f"Unknown function: {namespace}.{node.attr}")
         return fn(*func_args, **kwargs)
@@ -750,8 +764,12 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
             try:
-                # Handle ttl.XXX and ttl.math.XXX attribute access
-                if self._is_ttl_module_access(node) or self._is_ttl_math_access(node):
+                # Handle ttl.XXX, ttl.math.XXX, and ttl.unsafe.XXX access
+                if (
+                    self._is_ttl_module_access(node)
+                    or self._is_ttl_math_access(node)
+                    or self._is_ttl_unsafe_access(node)
+                ):
                     return self._resolve_ttl_function(node, func_args, kwargs)
                 # Handle chained method calls: expr().method()
                 if isinstance(node.value, ast.Call):

@@ -682,12 +682,25 @@ def fill(output: TensorBlock, value) -> TensorBlock:
     return ttl.fill(output.type, value_attr)
 
 
-@syntax("element_read")
-def element_read(block, row, col):
+def _check_f32_tile(block, op_name):
+    """Verify the block contains f32 tiles. Raises ValueError otherwise."""
+    block_type = RankedTensorType(block.type)
+    tile_elem_type = block_type.element_type
+    if hasattr(tile_elem_type, "element_type"):
+        inner = tile_elem_type.element_type
+        if not F32Type.isinstance(inner):
+            raise ValueError(
+                f"{op_name} currently supports f32 tiles only, "
+                f"got tile element type {inner}"
+            )
+
+
+@syntax("unsafe_element_read")
+def unsafe_element_read(block, row, col):
     """Read a single element from a CB block at tile coordinates (row, col).
 
-    Returns the raw element bits as i32 (bf16 zero-extended, f32 bit-cast).
-    Only valid in datamovement threads.
+    Returns the raw element bits as i32 (f32 bit-cast).
+    Only f32 tiles are supported. Only valid in datamovement threads.
 
     Args:
         block: CB-attached tensor from cb.wait() or cb.reserve()
@@ -698,18 +711,21 @@ def element_read(block, row, col):
         i32 value containing the raw element bits
     """
     if not _is_block(block):
-        raise ValueError("element_read requires a block from cb.wait() or cb.reserve()")
+        raise ValueError(
+            "unsafe_element_read requires a block from cb.wait() or cb.reserve()"
+        )
+    _check_f32_tile(block, "unsafe_element_read")
     row = _to_index(row)
     col = _to_index(col)
-    return ttl.element_read(block, row, col)
+    return ttl.unsafe_element_read(block, row, col)
 
 
-@syntax("element_write")
-def element_write(block, row, col, value):
+@syntax("unsafe_element_write")
+def unsafe_element_write(block, row, col, value):
     """Write a single element to a CB block at tile coordinates (row, col).
 
-    The value should be i32 containing raw element bits (bf16 zero-extended,
-    f32 bit-cast). Only valid in datamovement threads.
+    The value should be i32 containing raw element bits (f32 bit-cast).
+    Only f32 tiles are supported. Only valid in datamovement threads.
 
     Args:
         block: CB-attached tensor from cb.reserve()
@@ -718,16 +734,25 @@ def element_write(block, row, col, value):
         value: i32 value containing the raw element bits
     """
     if not _is_block(block):
-        raise ValueError("element_write requires a block from cb.reserve()")
+        raise ValueError("unsafe_element_write requires a block from cb.reserve()")
     if not _is_write_block(block):
         raise ValueError(
-            "element_write requires a writable block from cb.reserve(), "
+            "unsafe_element_write requires a writable block from cb.reserve(), "
             "got a read-only block from cb.wait()"
         )
+    _check_f32_tile(block, "unsafe_element_write")
     row = _to_index(row)
     col = _to_index(col)
     value = _to_i32(value)
-    ttl.element_write(block, row, col, value)
+    ttl.unsafe_element_write(block, row, col, value)
+
+
+class _UnsafeNamespace:
+    element_read = staticmethod(unsafe_element_read)
+    element_write = staticmethod(unsafe_element_write)
+
+
+unsafe = _UnsafeNamespace()
 
 
 __all__ = [
@@ -740,7 +765,8 @@ __all__ = [
     "fill",
     "reduce_sum",
     "reduce_max",
-    "element_read",
-    "element_write",
+    "unsafe_element_read",
+    "unsafe_element_write",
+    "unsafe",
     *_generated_all,
 ]

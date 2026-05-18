@@ -1270,12 +1270,12 @@ mlir::LogicalResult mlir::tt::ttl::TransposeOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// ElementReadOp / ElementWriteOp
+// UnsafeElementReadOp / UnsafeElementWriteOp
 //===----------------------------------------------------------------------===//
 
-/// Shared verifier logic for element_read and element_write. Checks that the
-/// block tensor is a single-tile tensor (W3) and that statically known row/col
-/// indices are within the tile bounds (W2).
+/// Shared verifier logic for unsafe_element_read and unsafe_element_write.
+/// Checks f32-only restriction, single-tile block (W3), and static row/col
+/// bounds (W2).
 static mlir::LogicalResult verifyElementAccessOp(mlir::Operation *op,
                                                  mlir::Value block,
                                                  mlir::Value row,
@@ -1299,6 +1299,11 @@ static mlir::LogicalResult verifyElementAccessOp(mlir::Operation *op,
   if (!tileType) {
     return op->emitOpError() << "block element type must be !ttcore.tile, got "
                              << tensorTy.getElementType();
+  }
+
+  if (!tileType.getElementType().isF32()) {
+    return op->emitOpError()
+           << "unsafe element access currently supports f32 tiles only";
   }
 
   // W2: When row/col are statically known constants, verify they are within
@@ -1331,14 +1336,14 @@ static mlir::LogicalResult verifyElementAccessOp(mlir::Operation *op,
   return mlir::success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::ElementReadOp::verify() {
+mlir::LogicalResult mlir::tt::ttl::UnsafeElementReadOp::verify() {
   if (failed(verifyDataMovementOnlyOp(getOperation()))) {
     return mlir::failure();
   }
   return verifyElementAccessOp(getOperation(), getBlock(), getRow(), getCol());
 }
 
-mlir::LogicalResult mlir::tt::ttl::ElementWriteOp::verify() {
+mlir::LogicalResult mlir::tt::ttl::UnsafeElementWriteOp::verify() {
   if (failed(verifyDataMovementOnlyOp(getOperation()))) {
     return mlir::failure();
   }

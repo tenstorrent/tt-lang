@@ -714,16 +714,16 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
 // Element-Level Access Operations (for use in datamovement threads)
 //===----------------------------------------------------------------------===//
 
-def TTL_ElementReadOp : TTL_Op<"element_read", [MemoryEffects<[MemRead]>,
-    TTL_DataMovementOpTrait]> {
+def TTL_UnsafeElementReadOp : TTL_Op<"unsafe_element_read",
+    [MemoryEffects<[MemRead]>, TTL_DataMovementOpTrait]> {
   let summary = "Read a single element from a CB block at tile coordinates";
   let description = [{
-    Reads a single bf16/f32 element from a circular buffer block at the given
+    Reads a single f32 element from a circular buffer block at the given
     tile coordinates (row, col). The block must be a CB-attached tensor from
-    cb.wait() or cb.reserve(). Returns the raw element bits as i32 (bf16 is
-    zero-extended, f32 is bit-cast).
+    cb.wait() or cb.reserve(). Returns the raw element bits as i32 (bit-cast).
 
-    Handles the face-based tile layout internally:
+    Only f32 tiles are supported. The operation handles the face-based tile
+    layout internally:
     - Face 0: rows 0-15, cols 0-15
     - Face 1: rows 0-15, cols 16-31
     - Face 2: rows 16-31, cols 0-15
@@ -733,7 +733,7 @@ def TTL_ElementReadOp : TTL_Op<"element_read", [MemoryEffects<[MemRead]>,
 
     Example:
     ```mlir
-    %val = ttl.element_read %block[%row, %col] : tensor<1x1x!ttcore.tile<32x32, bf16>> -> i32
+    %val = ttl.unsafe_element_read %block[%row, %col] : tensor<1x1x!ttcore.tile<32x32, f32>> -> i32
     ```
   }];
 
@@ -744,22 +744,22 @@ def TTL_ElementReadOp : TTL_Op<"element_read", [MemoryEffects<[MemRead]>,
   let hasVerifier = 1;
 }
 
-def TTL_ElementWriteOp : TTL_Op<"element_write", [MemoryEffects<[MemWrite]>,
-    TTL_DataMovementOpTrait]> {
+def TTL_UnsafeElementWriteOp : TTL_Op<"unsafe_element_write",
+    [MemoryEffects<[MemWrite]>, TTL_DataMovementOpTrait]> {
   let summary = "Write a single element to a CB block at tile coordinates";
   let description = [{
     Writes a single element to a circular buffer block at the given tile
     coordinates (row, col). The block must be a CB-attached tensor from
-    cb.reserve(). The value is an i32 containing raw element bits (bf16
-    zero-extended, f32 bit-cast).
+    cb.reserve(). The value is an i32 containing raw element bits (bit-cast).
 
-    Handles the face-based tile layout internally (same as element_read).
+    Only f32 tiles are supported. The operation handles the face-based tile
+    layout internally (same as unsafe_element_read).
 
     This operation is only valid in datamovement threads (NCRISC/BRISC).
 
     Example:
     ```mlir
-    ttl.element_write %block[%row, %col], %value : tensor<1x1x!ttcore.tile<32x32, bf16>>, i32
+    ttl.unsafe_element_write %block[%row, %col], %value : tensor<1x1x!ttcore.tile<32x32, f32>>, i32
     ```
   }];
 

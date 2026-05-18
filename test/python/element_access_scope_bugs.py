@@ -36,7 +36,7 @@ import ttl
 
 
 # === B3: Outer variable updated inside loop ===
-# After fix, element_write should use a memref.load result (not %6).
+# After fix, unsafe_element_write should use a memref.load result (not %6).
 
 
 @ttl.operation(grid=(1, 1))
@@ -48,10 +48,7 @@ def b3_outer_update_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with inp_dfb.wait() as blk:
-            pass
-        with out_dfb.reserve() as oblk:
-            pass
+        pass
 
     @ttl.datamovement()
     def dm_read():
@@ -63,12 +60,12 @@ def b3_outer_update_kernel(inp, out):
     @ttl.datamovement()
     def dm_write():
         with inp_dfb.wait() as rblk:
-            best = ttl.element_read(rblk, 0, 0)
+            best = ttl.unsafe.element_read(rblk, 0, 0)
             with out_dfb.reserve() as wblk:
                 for c in range(16):
-                    val = ttl.element_read(rblk, 0, c)
+                    val = ttl.unsafe.element_read(rblk, 0, c)
                     best = val
-                ttl.element_write(wblk, 0, 0, best)
+                ttl.unsafe.element_write(wblk, 0, 0, best)
                 tx = ttl.copy(wblk, out[0, 0])
                 tx.wait()
                 wblk.pop()
@@ -77,26 +74,26 @@ def b3_outer_update_kernel(inp, out):
 
 # Verify dm_write has proper memref-based cross-scope variable handling.
 # The alloca is at function entry; memref.load must appear after the scf.for
-# so element_write uses the loop-updated value (not the stale original SSA).
+# so unsafe_element_write uses the loop-updated value (not the stale original SSA).
 #
 # CHECK-B3-LABEL: func.func @dm_write
 # CHECK-B3: memref.alloca
-# CHECK-B3: ttl.element_read
+# CHECK-B3: ttl.unsafe_element_read
 # CHECK-B3: scf.for
 # CHECK-B3: memref.store
 # CHECK-B3: }
 # CHECK-B3: memref.load
-# CHECK-B3: ttl.element_write
+# CHECK-B3: ttl.unsafe_element_write
 
 
 inp = ttnn.from_torch(
-    torch.randn(32, 32, dtype=torch.bfloat16),
-    dtype=ttnn.bfloat16,
+    torch.randn(32, 32, dtype=torch.float32),
+    dtype=ttnn.float32,
     layout=ttnn.TILE_LAYOUT,
 )
 out = ttnn.from_torch(
-    torch.zeros(32, 32, dtype=torch.bfloat16),
-    dtype=ttnn.bfloat16,
+    torch.zeros(32, 32, dtype=torch.float32),
+    dtype=ttnn.float32,
     layout=ttnn.TILE_LAYOUT,
 )
 

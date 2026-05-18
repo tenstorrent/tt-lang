@@ -8,7 +8,8 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Element access kernel - verifies element_read and element_write lower correctly.
+Element access kernel - verifies unsafe_element_read and unsafe_element_write
+lower correctly.
 
 Tests reading a single element from a CB block and writing it to another CB block
 in a datamovement thread.
@@ -30,11 +31,7 @@ def element_copy_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with inp_dfb.wait() as blk:
-            pass
-        for _ in range(1):
-            with out_dfb.reserve() as oblk:
-                pass
+        pass
 
     @ttl.datamovement()
     def dm_read():
@@ -45,9 +42,9 @@ def element_copy_kernel(inp, out):
     @ttl.datamovement()
     def dm_write():
         with inp_dfb.wait() as rblk:
-            val = ttl.element_read(rblk, 0, 5)
+            val = ttl.unsafe.element_read(rblk, 0, 5)
             with out_dfb.reserve() as wblk:
-                ttl.element_write(wblk, 0, 0, val)
+                ttl.unsafe.element_write(wblk, 0, 0, val)
                 tx = ttl.copy(wblk, out[0, 0])
                 tx.wait()
 
@@ -57,19 +54,19 @@ def element_copy_kernel(inp, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK: ttl.element_read
-# CHECK: ttl.element_write
+# CHECK: ttl.unsafe_element_read
+# CHECK: ttl.unsafe_element_write
 
 # =============================================================================
-# C++ Kernel Checks - Verify generated C++ contains helper functions
+# C++ Kernel Checks - Verify generated C++ contains TTKernel lowering output
 # =============================================================================
 
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 
-# Helper functions should be emitted
-# CHECK-CPP: _ttl_elem_read_bf16
-# CHECK-CPP: _ttl_elem_write_bf16
+# Lowering should produce get_read_ptr/get_write_ptr and load/store
+# CHECK-CPP: get_read_ptr
+# CHECK-CPP: get_write_ptr
 
 
 # =============================================================================
@@ -78,9 +75,9 @@ def element_copy_kernel(inp, out):
 # This test validates compile-time lowering only (TTLANG_COMPILE_ONLY=1).
 # It does NOT test numerical correctness on hardware.
 #
-# WARNING: element_read returns raw element bits as i32. Equality (==) on
+# WARNING: unsafe_element_read returns raw element bits as i32. Equality (==) on
 # these bit patterns is correct, but magnitude comparisons (>, <) on raw i32
-# are NOT correct for bf16 because bf16 uses sign-magnitude representation.
+# are NOT correct for f32 because f32 uses sign-magnitude representation.
 # A runtime argmax using this pattern would produce wrong results for inputs
 # containing negative or mixed-sign values.
 # See https://github.com/tenstorrent/tt-lang/issues/572
@@ -92,18 +89,15 @@ def element_scan_kernel(inp, out):
     """Scan a tile column-by-column, compare elements, write computed index.
 
     Compile-only test: verifies the lowering of loop variables, if-blocks,
-    and scalar arithmetic with element_read/element_write. Does not validate
-    numerical correctness. See issue #572 for bf16 comparison limitations.
+    and scalar arithmetic with unsafe_element_read/unsafe_element_write. Does not
+    validate numerical correctness. See issue #572 for f32 comparison limitations.
     """
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
-        with inp_dfb.wait() as blk:
-            pass
-        with out_dfb.reserve() as oblk:
-            pass
+        pass
 
     @ttl.datamovement()
     def dm_read():
@@ -114,21 +108,19 @@ def element_scan_kernel(inp, out):
     @ttl.datamovement()
     def dm_write():
         with inp_dfb.wait() as rblk:
-            max_val = ttl.element_read(rblk, 0, 0)
+            max_val = ttl.unsafe.element_read(rblk, 0, 0)
             with out_dfb.reserve() as wblk:
                 for c in range(32):
-                    val = ttl.element_read(rblk, 0, c)
+                    val = ttl.unsafe.element_read(rblk, 0, c)
                     if val == max_val:
-                        ttl.element_write(wblk, 0, 0, c * 32 + 1)
+                        ttl.unsafe.element_write(wblk, 0, 0, c * 32 + 1)
                 tx = ttl.copy(wblk, out[0, 0])
                 tx.wait()
 
 
 # Second kernel C++ checks: loop var, if, scalar arithmetic
 # CHECK-CPP: // dm_write
-# CHECK-CPP: _ttl_elem_read_bf16
 # CHECK-CPP: if
-# CHECK-CPP: _ttl_elem_write_bf16
 
 
 if __name__ == "__main__":
@@ -141,19 +133,19 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        inp_torch = torch.randn(32, 32, dtype=torch.bfloat16)
-        out_torch = torch.zeros(32, 32, dtype=torch.bfloat16)
+        inp_torch = torch.randn(32, 32, dtype=torch.float32)
+        out_torch = torch.zeros(32, 32, dtype=torch.float32)
 
         inp = ttnn.from_torch(
             inp_torch,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.float32,
             layout=ttnn.TILE_LAYOUT,
             device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         out = ttnn.from_torch(
             out_torch,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.float32,
             layout=ttnn.TILE_LAYOUT,
             device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,

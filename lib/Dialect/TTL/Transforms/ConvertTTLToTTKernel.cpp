@@ -230,6 +230,208 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Unsafe element access lowering patterns
+//===----------------------------------------------------------------------===//
+
+/// Resolve the CB index from a CB value. Returns failure without emitting
+/// diagnostics; callers inside pattern rewriters must use
+/// notifyMatchFailure to report the error.
+static FailureOr<int64_t> resolveCBIndex(Value cbValue) {
+  cbValue = traceUnrealizedCasts(cbValue);
+
+  if (auto bindOp = cbValue.getDefiningOp<BindCBOp>()) {
+    return bindOp.getCbIndex().getSExtValue();
+  }
+
+  if (auto blockArg = dyn_cast<BlockArgument>(cbValue)) {
+    auto *parentOp = blockArg.getOwner()->getParentOp();
+    if (auto computeOp = dyn_cast<ComputeOp>(parentOp)) {
+      unsigned argIdx = blockArg.getArgNumber();
+      auto cbIdx = getCBIndexAttr(computeOp, argIdx);
+      if (cbIdx) {
+        return *cbIdx;
+      }
+      return failure();
+    }
+  }
+
+  return failure();
+}
+
+/// Determine whether a block tensor originates from cb_wait (read) or
+/// cb_reserve (write). Returns "read" or "write", or failure without
+/// emitting diagnostics.
+static FailureOr<std::string> resolveBlockDirection(Value block) {
+  Value traced = traceUnrealizedCasts(block);
+
+  if (auto attach = traced.getDefiningOp<AttachCBOp>()) {
+    Value tensor = traceUnrealizedCasts(attach.getTensor());
+    if (tensor.getDefiningOp<CBWaitOp>()) {
+      return std::string("read");
+    }
+    if (tensor.getDefiningOp<CBReserveOp>()) {
+      return std::string("write");
+    }
+  }
+
+  if (auto viewLike = traced.getDefiningOp<ViewLikeOpInterface>()) {
+    if (isa<CBWaitOp>(viewLike.getOperation())) {
+      return std::string("read");
+    }
+    if (isa<CBReserveOp>(viewLike.getOperation())) {
+      return std::string("write");
+    }
+  }
+
+  return failure();
+}
+
+/// Emit the face-based tile layout offset computation as arith ops.
+/// Returns the final i32 offset value.
+static Value emitFaceLayoutOffset(Location loc, Value row, Value col,
+                                  OpBuilder &builder) {
+  auto i32Ty = builder.getI32Type();
+
+  // Cast Index -> i32.
+  Value rowI32 = arith::IndexCastOp::create(builder, loc, i32Ty, row);
+  Value colI32 = arith::IndexCastOp::create(builder, loc, i32Ty, col);
+
+  // Face-based tile layout for 32x32 tiles:
+  //   face   = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0)
+  //   offset = face * 256 + (row % 16) * 16 + (col % 16)
+  Value c0 = arith::ConstantOp::create(builder, loc, i32Ty,
+                                       builder.getI32IntegerAttr(0));
+  Value c1 = arith::ConstantOp::create(builder, loc, i32Ty,
+                                       builder.getI32IntegerAttr(1));
+  Value c2 = arith::ConstantOp::create(builder, loc, i32Ty,
+                                       builder.getI32IntegerAttr(2));
+  Value c16 = arith::ConstantOp::create(builder, loc, i32Ty,
+                                        builder.getI32IntegerAttr(16));
+  Value c256 = arith::ConstantOp::create(builder, loc, i32Ty,
+                                         builder.getI32IntegerAttr(256));
+
+  Value rowHi = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::uge,
+                                      rowI32, c16);
+  Value fr = arith::SelectOp::create(builder, loc, rowHi, c2, c0);
+  Value colHi = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::uge,
+                                      colI32, c16);
+  Value fc = arith::SelectOp::create(builder, loc, colHi, c1, c0);
+  Value face = arith::AddIOp::create(builder, loc, fr, fc);
+  Value fo = arith::MulIOp::create(builder, loc, face, c256);
+  Value rm = arith::RemUIOp::create(builder, loc, rowI32, c16);
+  Value rc = arith::MulIOp::create(builder, loc, rm, c16);
+  Value cm = arith::RemUIOp::create(builder, loc, colI32, c16);
+  Value o1 = arith::AddIOp::create(builder, loc, fo, rc);
+  Value offset = arith::AddIOp::create(builder, loc, o1, cm);
+
+  return offset;
+}
+
+struct UnsafeElementReadLowering : OpConversionPattern<UnsafeElementReadOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(UnsafeElementReadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value block = op.getBlock();
+
+    Value cb = getAttachedCB(block);
+    if (!cb) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for unsafe_element_read block");
+    }
+    auto cbIdx = resolveCBIndex(cb);
+    if (failed(cbIdx)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot resolve CB index: value must trace to ttl.bind_cb "
+              "or be a compute block argument with CB annotation");
+    }
+
+    auto dir = resolveBlockDirection(block);
+    if (failed(dir)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine block direction: block must trace "
+              "to cb_wait (read) or cb_reserve (write)");
+    }
+
+    auto cbConverted =
+        utils::convertTTLCBToTTKernel(cb, rewriter, loc, getTypeConverter());
+    if (failed(cbConverted)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    }
+
+    Value cbPtr = (*dir == "write")
+                      ? ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted)
+                            .getResult()
+                      : ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted)
+                            .getResult();
+
+    Value l1Ptr = ttk::CastToL1PtrOp::create(rewriter, loc, cbPtr);
+
+    Value offset =
+        emitFaceLayoutOffset(loc, op.getRow(), op.getCol(), rewriter);
+
+    Value result = ttk::LoadFromL1Op::create(rewriter, loc, l1Ptr, offset);
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+struct UnsafeElementWriteLowering : OpConversionPattern<UnsafeElementWriteOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(UnsafeElementWriteOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value block = op.getBlock();
+
+    Value cb = getAttachedCB(block);
+    if (!cb) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for unsafe_element_write block");
+    }
+    auto cbIdx = resolveCBIndex(cb);
+    if (failed(cbIdx)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot resolve CB index: value must trace to ttl.bind_cb "
+              "or be a compute block argument with CB annotation");
+    }
+
+    auto dir = resolveBlockDirection(block);
+    if (failed(dir)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine block direction: block must trace "
+              "to cb_wait (read) or cb_reserve (write)");
+    }
+
+    auto cbConverted =
+        utils::convertTTLCBToTTKernel(cb, rewriter, loc, getTypeConverter());
+    if (failed(cbConverted)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    }
+
+    Value cbPtr = (*dir == "write")
+                      ? ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted)
+                            .getResult()
+                      : ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted)
+                            .getResult();
+
+    Value l1Ptr = ttk::CastToL1PtrOp::create(rewriter, loc, cbPtr);
+
+    Value offset =
+        emitFaceLayoutOffset(loc, op.getRow(), op.getCol(), rewriter);
+
+    ttk::StoreToL1Op::create(rewriter, loc, op.getValue(), l1Ptr, offset);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // CB synchronization operation lowering patterns
 //===----------------------------------------------------------------------===//
 
@@ -1029,11 +1231,15 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addLegalOp<SignpostOp, DPrintOp>();
 
   // Tile compute ops and data movement ops (copy_tile, copy_dst) remain legal
-  // until the tile ops lowering phase.
+  // until the tile ops lowering phase.  Unsafe element access ops carry the
+  // data movement trait but are lowered here in Phase 1 (they need bind_cb,
+  // cb_wait, and cb_reserve to still be present for CB index and direction
+  // resolution).
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
     return tt::ttl::isTileComputeOp(op) ||
            op->hasTrait<TTLDataMovementOpTrait>();
   });
+  target.addIllegalOp<UnsafeElementReadOp, UnsafeElementWriteOp>();
 
   // TensorSliceOp is legal while it has users (CopyLowering will consume them).
   // Once users are gone, TensorSliceLowering erases the op.
@@ -1060,7 +1266,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
+               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
+               UnsafeElementReadLowering, UnsafeElementWriteLowering>(
       typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter);
   populateFunctionOpInterfaceTypeConversionPattern(
