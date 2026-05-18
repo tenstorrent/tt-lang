@@ -47,6 +47,7 @@ def execute_script_with_simulator(
     script_path: Path,
     capture_output: bool = False,
     argv: list[str] | None = None,
+    optimize: bool = False,
 ) -> tuple[int, str]:
     """
     Execute a script with simulator backend.
@@ -55,6 +56,9 @@ def execute_script_with_simulator(
         script_path: Path to the Python file to execute
         capture_output: If True, capture and return stdout/stderr; if False, print directly
         argv: Command-line arguments to pass to the script (for sys.argv)
+        optimize: If True, compile with optimize=1 (strips assert statements, equivalent
+            to Python's -O flag). Useful for dry-run mode where correctness assertions
+            are meaningless because math operations are skipped.
 
     Returns:
         (exit_code, output) tuple where exit_code is 0 on success, 1 on error,
@@ -78,7 +82,12 @@ def execute_script_with_simulator(
     }
 
     try:
-        code = compile(script_path.read_text(), str(script_path), "exec")
+        code = compile(
+            script_path.read_text(),
+            str(script_path),
+            "exec",
+            optimize=1 if optimize else -1,
+        )
 
         if capture_output:
             assert output_capture is not None  # Guaranteed by capture_output=True

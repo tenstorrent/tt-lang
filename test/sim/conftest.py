@@ -9,37 +9,24 @@ import pytest
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
-        "--run-matmul-tutorial-ttnn",
+        "--run-matmul-tutorial-dry",
         action="store_true",
         default=False,
-        help="Run matmul-tutorial tests that require real ttnn (steps 0 and 7); skipped by default.",
-    )
-    parser.addoption(
-        "--run-matmul-tutorial-no-ttnn",
-        action="store_true",
-        default=False,
-        help="Run matmul-tutorial simulator tests that do not require ttnn (steps 2-6); skipped by default.",
+        help="Run matmul-tutorial simulator tests in dry-run mode (steps 0 and 2-7; step 1 excluded as too slow); skipped by default.",
     )
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    skip_ttnn = pytest.mark.skip(
-        reason="matmul-tutorial test requiring ttnn; pass --run-matmul-tutorial-ttnn to enable"
-    )
-    skip_no_ttnn = pytest.mark.skip(
-        reason="matmul-tutorial simulator test; pass --run-matmul-tutorial-no-ttnn to enable"
+    skip_matmul_tutorial = pytest.mark.skip(
+        reason="matmul-tutorial simulator test; pass --run-matmul-tutorial-dry to enable"
     )
     for item in items:
-        if item.get_closest_marker("matmul_tutorial_ttnn") and not config.getoption(
-            "--run-matmul-tutorial-ttnn"
+        if item.get_closest_marker("matmul_tutorial") and not config.getoption(
+            "--run-matmul-tutorial-dry"
         ):
-            item.add_marker(skip_ttnn)
-        if item.get_closest_marker("matmul_tutorial_no_ttnn") and not config.getoption(
-            "--run-matmul-tutorial-no-ttnn"
-        ):
-            item.add_marker(skip_no_ttnn)
+            item.add_marker(skip_matmul_tutorial)
 
 
 from greenlet import greenlet

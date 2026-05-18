@@ -1935,6 +1935,13 @@ def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
     return result
 
 
+def add(a: Tensor, b: Tensor) -> Tensor:
+    """Element-wise add (simulator shim for ttnn.add)."""
+    if _is_dry_run():
+        return a._zeros_broadcast(b)
+    return Tensor(a.to_torch() + b.to_torch())
+
+
 def multiply(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise multiply (simulator shim for ttnn.multiply)."""
     if _is_dry_run():
