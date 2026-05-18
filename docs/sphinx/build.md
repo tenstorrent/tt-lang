@@ -315,7 +315,7 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    `Dockerfile.base`, `requirements-runtime.txt`), so the same toolchain
    state always resolves to the same tag. The bare release tag (`vX.Y.Z`) is
    only pushed by `publish-pypi.yml` on a release tag push, and `:latest` is
-   only updated from `on-push.yml` on `main`, and only when `build-docker`
+   only updated from `ci.yml` on push to `main`, and only when `build-docker`
    actually runs there (i.e. an uplift commit whose image is not already in
    GHCR). `call-build-docker.yml` takes
    a `push` input (default `false`); it builds the image, smoke-tests it
@@ -342,10 +342,11 @@ the current checkout:
   fresh by `call-build.yml` against the pre-built LLVM inside the container,
   so they are not uplift files.
 
-#### Auto-resolved tag in PR / push workflows
+#### Auto-resolved tag in `ci.yml`
 
-`on-pr.yml` and `on-push.yml` start with a `resolve-docker-tag` job that runs
-`get-version-tag.sh` and then calls `.github/scripts/probe-docker-image.sh`
+`ci.yml` (one workflow triggered by pull_request, push to main, scheduled
+runs, and workflow_dispatch) starts with a `resolve-docker-tag` job that
+runs `get-version-tag.sh` and then calls `.github/scripts/probe-docker-image.sh`
 to query GHCR. If the image is present, `build-docker` is skipped and
 downstream jobs proceed immediately. If the image is missing and the
 resolved tag is the uplift form, `build-docker` runs `call-build-docker.yml`
@@ -357,14 +358,17 @@ maintainer to re-publish the release via `publish-pypi.yml`; rebuilding the
 release tag from a PR or main commit would push newer content under the
 release tag and overwrite the released image.
 
-`on-pr.yml` also has a `build-docker-dryrun` job that runs when the PR
-touches container-relevant files (Dockerfile, `bin/`, `packaging/`,
-`CMakeLists.txt`, `examples/`, `pyproject.toml`, etc.) but the uplift
-`build-docker` is not already running. It calls `call-build-docker.yml`
-with `push: false`: the dist and ird images are built locally on the
-runner and the in-container smoke tests run, but nothing is uploaded to
-GHCR. This catches container-build regressions at PR time without
-uploading a separate container image for every PR.
+`ci.yml` also has a `build-docker-dryrun` job that runs only on
+pull_request events when the PR touches container-relevant files
+(Dockerfile, `bin/`, `packaging/`, `CMakeLists.txt`, `examples/`,
+`pyproject.toml`, etc.) but the uplift `build-docker` is not already
+running. It calls `call-build-docker.yml` with `push: false`: the dist and
+ird images are built locally on the runner and the in-container smoke
+tests run, but nothing is uploaded to GHCR. This catches container-build
+regressions at PR time without uploading a separate container image for
+every PR. The path-change detection is in
+`.github/scripts/wheel-or-container-changed.sh` (path list in
+`wheel-or-container-paths.sh`).
 
 `call-build.yml` retains its `build_toolchain` input for manual
 `workflow_dispatch` runs, but the automated workflows no longer set it:

@@ -18,10 +18,9 @@ SCRIPTS_DIR="$(dirname "$TESTS_DIR")"
 CONTAINERS_DIR="$(dirname "$SCRIPTS_DIR")/containers"
 BIN_DIR="$(dirname "$SCRIPTS_DIR")/../bin"
 
-# Build a synthetic git repo inside the bats per-test tmpdir (auto-cleaned).
-# Commits a minimal initial set of files (the five uplift paths + a non-uplift
-# sentinel under python/sim/ used by tests that need a non-uplift change).
-# Echoes the repo path. Multiple calls within one @test get distinct subdirs.
+# Build a synthetic git repo in $BATS_TEST_TMPDIR (auto-cleaned). Initialized
+# with one file at each UPLIFT_PATHS location, plus python/sim/example.py for
+# tests that need a non-uplift file to modify. Echoes the repo path.
 mkrepo() {
     local tmpdir
     tmpdir=$(mktemp -d -p "${BATS_TEST_TMPDIR:-/tmp}")
@@ -46,20 +45,22 @@ EOF
     echo "$tmpdir"
 }
 
-# Copy the scripts under test (and their dependencies) into the repo so they
-# resolve their own paths correctly. The synthetic repo must look like a
-# tt-lang checkout to the scripts.
+# Copy .github/scripts/ (except tests/) and .github/containers/ from the
+# real tt-lang checkout into the synthetic repo so the scripts under test
+# find their own dependencies via the usual relative paths, then commit.
+# Commit is required because the real .github/containers/Dockerfile.base
+# overwrites the placeholder mkrepo wrote; without committing here, that
+# overwrite would appear in every later test's diff and break uplift checks.
 install_scripts_in_repo() {
     local repo="$1"
     mkdir -p "$repo/.github/scripts" "$repo/.github/containers"
-    cp "$SCRIPTS_DIR/uplift-paths.sh"          "$repo/.github/scripts/"
-    cp "$SCRIPTS_DIR/detect-uplift.sh"         "$repo/.github/scripts/"
-    cp "$SCRIPTS_DIR/require-release-tag.sh"   "$repo/.github/scripts/"
-    cp "$SCRIPTS_DIR/verify-wheel-version.sh"  "$repo/.github/scripts/"
-    cp "$CONTAINERS_DIR/get-version-tag.sh"    "$repo/.github/containers/"
+    find "$SCRIPTS_DIR" -maxdepth 1 -mindepth 1 -not -name tests \
+        -exec cp -r {} "$repo/.github/scripts/" \;
+    find "$CONTAINERS_DIR" -maxdepth 1 -mindepth 1 \
+        -exec cp -r {} "$repo/.github/containers/" \;
+    (cd "$repo" && git add -A && git commit -q -m "install scripts under test")
 }
 
-# Stage all changes and commit with a message.
 commit_all() {
     local repo="$1"
     local msg="$2"
