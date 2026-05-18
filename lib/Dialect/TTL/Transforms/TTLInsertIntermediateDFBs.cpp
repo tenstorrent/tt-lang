@@ -41,8 +41,7 @@ namespace {
 /// cb_reserve, store, cb_wait, attach_cb. Returns the CB-attached result,
 /// or failure if the maximum CB count would be exceeded.
 FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                                  OpBuilder &builder,
-                                  FloatAttr fillOverride = nullptr) {
+                                  OpBuilder &builder) {
   auto tensorType = mlir::cast<RankedTensorType>(intermediate.getType());
   Location loc = intermediate.getLoc();
   MLIRContext *ctx = builder.getContext();
@@ -92,17 +91,10 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
   // Remaining ops bind to the intermediate's def site.
   builder.setInsertionPointAfter(defOp);
 
-  Value storedValue = intermediate;
-  if (fillOverride) {
-    auto fillOp = FillOp::create(builder, loc, tensorType, fillOverride);
-    storedValue = fillOp.getResult();
-    builder.setInsertionPointAfter(fillOp);
-  }
-
   auto reserve =
       CBReserveOp::create(builder, loc, tensorType, bindCB.getResult());
 
-  StoreOp::create(builder, loc, storedValue, reserve.getResult(),
+  StoreOp::create(builder, loc, intermediate, reserve.getResult(),
                   /*accumulate=*/nullptr);
 
   // cb_push is inserted by ttl-insert-cb-sync which runs after this pass.
@@ -113,6 +105,31 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
                                        wait.getResult(), bindCB.getResult());
 
   return attachWait.getResult();
+}
+
+/// Rewrite a ReduceOp's numeric-scalar FillOp scaler into a neutral
+/// constant fill plus an attribute on the reduce. The DSL for
+/// `ttl.math.reduce_{sum,max}(x, <number>, ...)` emits a FillOp scaler;
+/// the tile lowering can't store a non-neutral scaler into a compiler-
+/// allocated DFB directly, so we move the original value onto a
+/// ttl.reduce_scalar_multiplier attribute (consumed by the tile lowering
+/// as a post-reduce mul_unary) and replace the scaler with a fresh
+/// FillOp(1.0). One neutral fill is cached per source FillOp so multiple
+/// reduces sharing the same scaler converge on the same SSA value and
+/// the standard DFB-materialization cache deduplicates the DFB.
+Value getOrCreateNeutralScalerFill(
+    FillOp sourceFill, ReduceOp reduceOp, OpBuilder &builder,
+    llvm::DenseMap<FillOp, Value> &neutralFillFor) {
+  reduceOp->setAttr(kReduceScalarMultiplierAttrName, sourceFill.getValueAttr());
+  auto [iter, inserted] = neutralFillFor.try_emplace(sourceFill, Value{});
+  if (inserted) {
+    builder.setInsertionPointAfter(sourceFill);
+    auto neutral = FillOp::create(builder, sourceFill.getLoc(),
+                                  sourceFill.getType(),
+                                  builder.getF32FloatAttr(1.0));
+    iter->second = neutral.getResult();
+  }
+  return iter->second;
 }
 
 struct TTLInsertIntermediateDFBsPass
@@ -169,9 +186,8 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
-    // Track values already materialized to avoid duplicate DFBs when
-    // multiple DFBInputOpInterface ops consume the same intermediate.
     llvm::DenseMap<Value, Value> materialized;
+    llvm::DenseMap<FillOp, Value> neutralFillFor;
     OpBuilder builder(funcOp.getContext());
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
@@ -185,26 +201,25 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        FloatAttr fillOverride;
+        // Numeric-scalar reduce path: rewrite the FillOp scaler to a
+        // neutral 1.0 fill (cached per source FillOp) and move the
+        // original scaler value onto a ttl.reduce_scalar_multiplier
+        // attribute. Subsequent materialization sees the canonical
+        // neutral fill and dedups normally.
         if (auto reduceOp = dyn_cast<ReduceOp>(op); reduceOp && idx == 1) {
-          if (auto fillOp = operand.getDefiningOp<FillOp>()) {
-            reduceOp->setAttr(kReduceScalarMultiplierAttrName,
-                              fillOp.getValueAttr());
-            fillOverride = builder.getF32FloatAttr(1.0);
+          if (auto sourceFill = operand.getDefiningOp<FillOp>()) {
+            operand = getOrCreateNeutralScalerFill(sourceFill, reduceOp,
+                                                   builder, neutralFillFor);
+            op->setOperand(idx, operand);
           }
         }
 
-        // Reuse an existing materialization for a different consumer.
-        if (!fillOverride) {
-          if (auto iter = materialized.find(operand);
-              iter != materialized.end()) {
-            op->setOperand(idx, iter->second);
-            continue;
-          }
+        if (auto iter = materialized.find(operand); iter != materialized.end()) {
+          op->setOperand(idx, iter->second);
+          continue;
         }
 
-        auto replacement =
-            materializeToDFB(operand, moduleOp, builder, fillOverride);
+        auto replacement = materializeToDFB(operand, moduleOp, builder);
         if (failed(replacement)) {
           signalPassFailure();
           return;
@@ -215,11 +230,17 @@ struct TTLInsertIntermediateDFBsPass
         // the producer in a single compute block.
         op->setOperand(idx, *replacement);
 
-        if (!fillOverride) {
-          materialized[operand] = *replacement;
-        }
+        materialized[operand] = *replacement;
       }
     }
+
+    // Sweep FillOps left dead by scaler rewrites. Non-reduce consumers of
+    // a rewritten fill (e.g., a user-declared DFB store) keep it alive.
+    funcOp.walk([](FillOp fillOp) {
+      if (fillOp->use_empty()) {
+        fillOp.erase();
+      }
+    });
   }
 };
 
