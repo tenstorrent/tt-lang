@@ -23,5 +23,14 @@ jobs:
       - name: Install packaging (for PEP 440 normalization in require-release-tag.sh)
         run: python3 -m pip install --user packaging
 
-      - name: Run all script tests
-        run: .github/scripts/tests/run-all.sh
+      - name: Install bats and helper libraries
+        uses: bats-core/bats-action@2.0.0
+        with:
+          bats-version: 1.11.0
+          support-install: true
+          assert-install: true
+          detik-install: false
+          file-install: false
+
+      - name: Run bats suite
+        run: bats --print-output-on-failure .github/scripts/tests/
