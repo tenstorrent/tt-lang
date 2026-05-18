@@ -33,4 +33,6 @@ jobs:
           file-install: false
 
       - name: Run bats suite
+        env:
+          BATS_LIB_PATH: /usr/lib
         run: bats --print-output-on-failure .github/scripts/tests/

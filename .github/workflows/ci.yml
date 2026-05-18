@@ -118,7 +118,7 @@ jobs:
     if: ${{ needs.changes.outputs.wheel_or_container == 'true' && needs.resolve-docker-tag.outputs.needs_rebuild != 'true' }}
     permissions:
       contents: read
-      packages: read
+      packages: write
       checks: write
     uses: ./.github/workflows/call-build-docker.yml
     secrets: inherit
