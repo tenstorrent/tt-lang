@@ -7,7 +7,16 @@ on:
         description: "tt-lang SHA/branch override (optional, defaults to current commit)"
         type: string
         required: false
+      push:
+        description: "Push built images to GHCR. Leave false to build and smoke-test locally only."
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      push:
+        description: "Push built images to GHCR. Default false so accidental invocations don't upload. Only on-push (main) and publish-pypi (release tag) should set this true."
+        type: boolean
+        default: false
     outputs:
       docker-image:
         description: "Built Docker image name with tag"
@@ -30,6 +39,7 @@ jobs:
 
   # Builds the base image (system deps, Python, Clang)
   build-image-base:
+    if: ${{ inputs.push }}
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
@@ -55,10 +65,15 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
+          PUSH: ${{ inputs.push }}
         run: |
           set -o pipefail
           set -x
-          .github/containers/build-docker-images.sh --image-type base | tee docker.log
+          FLAGS=()
+          if [ "$PUSH" != "true" ]; then
+              FLAGS+=(--no-push)
+          fi
+          .github/containers/build-docker-images.sh --image-type base "${FLAGS[@]}" | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
@@ -73,6 +88,7 @@ jobs:
   # then packages dist and ird Docker images.
   build-images:
     needs: [build-image-base, configure-deps]
+    if: ${{ !cancelled() && needs.configure-deps.result == 'success' && (needs.build-image-base.result == 'success' || needs.build-image-base.result == 'skipped') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 360
 
@@ -123,7 +139,11 @@ jobs:
 
       - name: Pull base image
         run: |
-          BASE_IMAGE="${{ needs.build-image-base.outputs.docker-image-base }}"
+          # When push: true, build-image-base just pushed at this tag.
+          # When push: false, we pull the existing base image at the same
+          # tag (released images already exist at clean tags; dryrun only
+          # runs on non-uplift PRs so the tag is a release tag).
+          BASE_IMAGE="ghcr.io/${{ github.repository }}/tt-lang-base-ubuntu-22-04:${{ steps.docker-tag.outputs.docker-tag }}"
           docker pull "$BASE_IMAGE"
           echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
 
@@ -194,7 +214,7 @@ jobs:
           docker builder prune -af || true
           df -h
 
-      - name: Build dist Docker image
+      - name: Build dist Docker image (local only)
         id: build-dist
         env:
           DOCKER_BUILDKIT: 1
@@ -203,17 +223,48 @@ jobs:
         run: |
           set -o pipefail
           set -x
-          .github/containers/build-docker-images.sh --image-type dist | tee docker.log
+          .github/containers/build-docker-images.sh --image-type dist --no-push | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          DOCKER_IMAGE=$(cat .docker-image-name)
-          echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
-          echo "Dist image built successfully: $DOCKER_IMAGE"
+          LOCAL_IMAGE=$(cat .docker-image-name)
+          REGISTRY_IMAGE="ghcr.io/tenstorrent/tt-lang/${LOCAL_IMAGE}"
+          echo "local-image=$LOCAL_IMAGE" >> $GITHUB_OUTPUT
+          echo "docker-image=$REGISTRY_IMAGE" >> $GITHUB_OUTPUT
+          echo "Dist image built locally: $LOCAL_IMAGE"
           df -h
+
+      - name: Smoke-test dist image
+        run: |
+          set -e
+          docker run --rm "${{ steps.build-dist.outputs.local-image }}" bash -c '
+            set -e
+            export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
+            ttlang-sim --help
+            ttlang-sim-stats --help
+          '
+
+      - name: Push dist image to GHCR
+        if: ${{ inputs.push }}
+        run: |
+          set -e
+          LOCAL="${{ steps.build-dist.outputs.local-image }}"
+          REGISTRY="${{ steps.build-dist.outputs.docker-image }}"
+          docker tag "$LOCAL" "$REGISTRY"
+          docker push "$REGISTRY"
+
+      - name: Push dist image to GHCR as :latest
+        if: ${{ inputs.push && github.ref == 'refs/heads/main' }}
+        run: |
+          set -e
+          LOCAL="${{ steps.build-dist.outputs.local-image }}"
+          REGISTRY="${{ steps.build-dist.outputs.docker-image }}"
+          LATEST="${REGISTRY%:*}:latest"
+          docker tag "$LOCAL" "$LATEST"
+          docker push "$LATEST"
 
       - name: Remove dist toolchain to free space
         run: sudo rm -rf /opt/ttlang-toolchain
@@ -221,7 +272,8 @@ jobs:
       # dist-toolchain points to ird-toolchain here because dist toolchain was
       # already deleted to save space. BuildKit doesn't read dist-toolchain when
       # targeting ird, but it must be a valid path to avoid build errors.
-      - name: Build ird Docker image
+      - name: Build ird Docker image (local only)
+        id: build-ird
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
@@ -229,15 +281,49 @@ jobs:
         run: |
           set -o pipefail
           set -x
-          .github/containers/build-docker-images.sh --image-type ird | tee docker-ird.log
+          .github/containers/build-docker-images.sh --image-type ird --no-push | tee docker-ird.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          echo "IRD image built successfully"
+          LOCAL_IMAGE=$(cat .docker-image-ird)
+          REGISTRY_IMAGE="ghcr.io/tenstorrent/tt-lang/${LOCAL_IMAGE}"
+          echo "local-image=$LOCAL_IMAGE" >> $GITHUB_OUTPUT
+          echo "docker-image=$REGISTRY_IMAGE" >> $GITHUB_OUTPUT
+          echo "IRD image built locally: $LOCAL_IMAGE"
           df -h
+
+      - name: Smoke-test ird image
+        run: |
+          set -e
+          docker run --rm "${{ steps.build-ird.outputs.local-image }}" bash -c '
+            set -e
+            export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
+            mlir-opt --version
+            FileCheck --version
+            python3 --version
+          '
+
+      - name: Push ird image to GHCR
+        if: ${{ inputs.push }}
+        run: |
+          set -e
+          LOCAL="${{ steps.build-ird.outputs.local-image }}"
+          REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
+          docker tag "$LOCAL" "$REGISTRY"
+          docker push "$REGISTRY"
+
+      - name: Push ird image to GHCR as :latest
+        if: ${{ inputs.push && github.ref == 'refs/heads/main' }}
+        run: |
+          set -e
+          LOCAL="${{ steps.build-ird.outputs.local-image }}"
+          REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
+          LATEST="${REGISTRY%:*}:latest"
+          docker tag "$LOCAL" "$LATEST"
+          docker push "$LATEST"
 
       - name: Clean up Docker after build
         if: always()

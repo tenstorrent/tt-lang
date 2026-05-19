@@ -8,6 +8,7 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
       - 'v[0-9]+.[0-9]+.[0-9]+\+*'
   workflow_dispatch:
     inputs:
@@ -16,11 +17,7 @@ on:
         type: string
         required: true
       dry_run:
-        description: "Skip tag enforcement and the PyPI upload (for pipeline testing)."
-        type: boolean
-        default: false
-      allow_branch_publish:
-        description: "TEMPORARY: skip tag enforcement and publish to real PyPI from a branch. The wheel must already carry a unique PEP 440 version (e.g. X.Y.ZrcN, X.Y.Z.devN) — PyPI rejects re-uploads of an existing version."
+        description: "Skip tag enforcement and the PyPI upload (for pipeline testing). build-wheels and test-dist-tutorials still run; pass an existing docker_tag so build-docker is skipped."
         type: boolean
         default: false
 
@@ -42,12 +39,15 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           echo "dry_run=${{ inputs.dry_run }}"
-          echo "allow_branch_publish=${{ inputs.allow_branch_publish }}"
           echo "docker_tag=${{ inputs.docker_tag }}"
+
+      - name: Install packaging (for PEP 440 normalization in require-release-tag.sh)
+        if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
+        run: python3 -m pip install --user packaging
 
       - name: Require release tag
         id: parse
-        if: ${{ github.event_name == 'push' || (inputs.dry_run != true && inputs.allow_branch_publish != true) }}
+        if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
         run: .github/scripts/require-release-tag.sh
 
   build-docker:
@@ -59,6 +59,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/call-build-docker.yml
     secrets: inherit
+    with:
+      push: true
 
   build-wheels:
     needs: [preflight, build-docker]
@@ -70,10 +72,23 @@ jobs:
     with:
       docker_tag: ${{ (github.event_name == 'workflow_dispatch' && inputs.docker_tag != '' && inputs.docker_tag) || needs.build-docker.outputs.docker-tag }}
 
+  test-dist-tutorials:
+    needs: [preflight, build-docker, build-wheels]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && needs.build-wheels.result == 'success' }}
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    uses: ./.github/workflows/call-test-dist-tutorials.yml
+    secrets: inherit
+    with:
+      runs-on: n150
+      dist_docker_tag: ${{ (github.event_name == 'workflow_dispatch' && inputs.docker_tag != '' && inputs.docker_tag) || needs.build-docker.outputs.docker-tag }}
+
   publish:
     name: "Publish to PyPI"
-    needs: [preflight, build-wheels]
-    if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
+    needs: [preflight, build-wheels, test-dist-tutorials]
+    if: ${{ (github.event_name == 'push' || inputs.dry_run != true) && needs.test-dist-tutorials.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: pypi
@@ -94,7 +109,6 @@ jobs:
         run: ls -lh dist/
 
       - name: Verify wheel version matches tag
-        if: ${{ inputs.allow_branch_publish != true }}
         run: .github/scripts/verify-wheel-version.sh "${{ needs.preflight.outputs.tag_version }}" dist
 
       - name: Publish to PyPI
