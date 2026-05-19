@@ -513,64 +513,76 @@ def signpost(name: str):
 
 
 @syntax("broadcast")
-def broadcast(
-    input: TensorBlock, output: TensorBlock, *, dims: List[int]
-) -> TensorBlock:
+def broadcast(input: TensorBlock, *, dims: List[int], shape) -> TensorBlock:
     """
-    Broadcast over specified dimensions.
+    Broadcast a block over specified dimensions to a target shape.
 
-    Only 2D tensors are supported for broadcast (hardware constraint).
+    Matches the spec form ``ttl.block.broadcast(expr, dims, shape)``. For
+    tiled blocks, broadcast happens in two steps: intra-tile scalar broadcast
+    for any innermost dimension listed in ``dims``, and inter-tile broadcast
+    for every other dimension where the target shape is greater than 1.
 
-    ``dims`` uses the same indexing as PyTorch ``dim`` arguments: each index must
-    lie in ``[-ndim, ndim - 1]`` for ``ndim == 2`` (outermost is ``0`` or ``-2``,
-    innermost is ``1`` or ``-1``). Duplicate indices after normalization are
-    allowed (e.g. ``[0, -2]`` is row broadcast).
+    ``dims`` uses Python-style indexing: each index must lie in
+    ``[-rank, rank-1]``. Every dimension ``d`` in ``dims`` must have
+    ``input.shape[d] == 1``; every dimension not in ``dims`` must equal the
+    corresponding ``shape`` entry.
 
     Args:
         input: Input tensor (CB-attached)
-        output: Output tensor (CB-attached, used for output CB tracking)
         dims: Dimensions to broadcast over
+        shape: Target shape of the result
 
     Returns:
         Result tensor with broadcast values
     """
-    from ttl.ir import IntegerAttr, IntegerType
+    from ttl.ir import DenseI64ArrayAttr
 
-    if isinstance(input.type, RankedTensorType) and input.type.rank != 2:
-        raise ValueError(
-            f"broadcast only supports 2D tensors, got rank {input.type.rank}. "
-            "Use 2D tensors for broadcast operations."
-        )
-
-    rank = 2
     if not dims:
         raise ValueError("dims must be a non-empty list of dimension indices")
 
+    if not isinstance(input.type, RankedTensorType):
+        raise ValueError(f"broadcast input must be a ranked tensor, got {input.type}")
+
+    rank = input.type.rank
+    # Inside @ttl.compute(), int literals in a tuple come through as
+    # arith.ConstantOp values; unwrap to Python ints for verifier checks
+    # and the DenseI64ArrayAttr.
+    shape_list = [_get_constant_int(s) for s in shape]
+    if len(shape_list) != rank:
+        raise ValueError(
+            f"shape size {len(shape_list)} does not match input rank {rank}"
+        )
+
+    norm_dims = set()
     for d in dims:
         if d < -rank or d >= rank:
             raise ValueError(
                 f"Invalid broadcast dimension {d}: for rank-{rank} tensors, "
-                f"each index must satisfy {-rank} <= dim <= {rank - 1} "
-                "(PyTorch-style dim indexing)"
+                f"each index must satisfy {-rank} <= dim <= {rank - 1}"
+            )
+        norm_dims.add(d + rank if d < 0 else d)
+
+    input_shape = list(input.type.shape)
+    for i in range(rank):
+        if i in norm_dims:
+            if input_shape[i] != 1:
+                raise ValueError(
+                    f"broadcast dim {i} requires input shape 1, got "
+                    f"{input_shape[i]}"
+                )
+        elif input_shape[i] != shape_list[i]:
+            raise ValueError(
+                f"non-broadcast dim {i}: input has {input_shape[i]} but shape "
+                f"has {shape_list[i]}"
             )
 
-    dims_set = {d % rank for d in dims}
-    if dims_set == {0}:
-        bcast_val = 2  # Row
-    elif dims_set == {1}:
-        bcast_val = 1  # Col
-    elif dims_set == {0, 1}:
-        bcast_val = 3  # Scalar
-    else:
-        raise ValueError(
-            f"Invalid dims: {dims}. After normalization, expect row [0]/[-2], "
-            f"col [1]/[-1], or both for scalar broadcast (e.g. [0,1] or [-2,-1])"
-        )
+    result_type = RankedTensorType.get(
+        shape_list, input.type.element_type, input.type.encoding
+    )
 
-    ctx = input.type.context
-    i32_type = IntegerType.get_signless(32, ctx)
-    bcast_attr = IntegerAttr.get(i32_type, bcast_val)
-    return ttl.bcast(output.type, input, output, bcast_attr)
+    dims_attr = DenseI64ArrayAttr.get(list(dims))
+    shape_attr = DenseI64ArrayAttr.get(shape_list)
+    return ttl.block_broadcast(result_type, input, dims_attr, shape_attr)
 
 
 def _materialize_reduce_scaler(input_type: RankedTensorType, scaler) -> TensorBlock:

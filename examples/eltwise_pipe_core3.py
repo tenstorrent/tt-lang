@@ -87,7 +87,9 @@ def eltwise_pipe_node3(
 
                 # Use store() to properly populate the Block with computed results
                 # Broadcast c_block along dimension 0 (rows) to match a_block/b_block shape
-                result = a_block * b_block + ttl.math.broadcast(c_block, dims=[0])
+                result = a_block * b_block + ttl.block.broadcast(
+                    c_block, dims=[0], shape=out_block
+                )
                 out_block.store(result)
 
                 # finalize push, this advances the dfb pointers, the writing happened at the line above

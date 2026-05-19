@@ -211,7 +211,7 @@ def make_layernorm_kernel(dim_tiles):
                         acc.store(av + rv)
                     sum_x = acc_dfb.wait()
                     bc = bcast_dfb.reserve()
-                    bc.store(ttl.math.broadcast(sum_x, bc, dims=[1]))
+                    bc.store(ttl.block.broadcast(sum_x, dims=[1], shape=(1, 1)))
                     sum_x_bc = bcast_dfb.wait()
                     mean_out = mean_dfb.reserve()
                     mean_out.store(sum_x_bc * ms)
@@ -241,7 +241,7 @@ def make_layernorm_kernel(dim_tiles):
                         acc.store(av + rv)
                     sum_sq = acc_dfb.wait()
                     bc = bcast_dfb.reserve()
-                    bc.store(ttl.math.broadcast(sum_sq, bc, dims=[1]))
+                    bc.store(ttl.block.broadcast(sum_sq, dims=[1], shape=(1, 1)))
                     var_bc = bcast_dfb.wait()
                     istd = istd_dfb.reserve()
                     istd.store(
@@ -324,7 +324,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
                         av.pop()
                     sum_x = acc_dfb.wait()
                     bc = bcast_dfb.reserve()
-                    bc.store(ttl.math.broadcast(sum_x, bc, dims=[1]))
+                    bc.store(ttl.block.broadcast(sum_x, dims=[1], shape=(1, 1)))
                     bc.push()
                     sum_x.pop()
                     sum_x_bc = bcast_dfb.wait()
@@ -371,7 +371,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
                         av.pop()
                     sum_sq = acc_dfb.wait()
                     bc = bcast_dfb.reserve()
-                    bc.store(ttl.math.broadcast(sum_sq, bc, dims=[1]))
+                    bc.store(ttl.block.broadcast(sum_sq, dims=[1], shape=(1, 1)))
                     bc.push()
                     sum_sq.pop()
                     var_bc = bcast_dfb.wait()
@@ -443,7 +443,8 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                 with x_dfb.wait() as xj:
                                     mean_blk += ttl.math.reduce_sum(xj, sc, dims=[1])
                             mean_blk.store(
-                                ttl.math.broadcast(mean_blk, mean_blk, dims=[1]) * ms
+                                ttl.block.broadcast(mean_blk, dims=[1], shape=(1, 1))
+                                * ms
                             )
 
                         # Pass 2 + Pass 3 share one mean wait scope.
@@ -459,7 +460,9 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                         )
                                 var_blk.store(
                                     ttl.math.rsqrt(
-                                        ttl.math.broadcast(var_blk, var_blk, dims=[1])
+                                        ttl.block.broadcast(
+                                            var_blk, dims=[1], shape=(1, 1)
+                                        )
                                         * ms
                                         + ttl.math.fill(var_blk, 1e-6)
                                     )

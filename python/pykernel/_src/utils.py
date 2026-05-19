@@ -62,7 +62,7 @@ def _tensor_type_mismatch_message(val_type, ty, operation: str = "operation") ->
         return (
             f"shape mismatch between {_format_tensor_type(val_tensor)} and "
             f"{_format_tensor_type(ty_tensor)}; "
-            f"note: you can use ttl.math.broadcast() to expand the smaller tensor"
+            f"note: you can use ttl.block.broadcast() to expand the smaller tensor"
         )
     return f"Unhandled cast from {val_type} to {ty}"
 

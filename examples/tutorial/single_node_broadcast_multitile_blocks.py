@@ -53,9 +53,21 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                         b_dfb.wait() as b_blk,
                         y_dfb.reserve() as y_blk,
                     ):
-                        a_bcast = ttl.math.broadcast(a_blk, y_blk, dims=[-1])
-                        b_bcast = ttl.math.broadcast(b_blk, y_blk, dims=[0])
-                        c_bcast = ttl.math.broadcast(c_blk, y_blk, dims=[-2, -1])
+                        a_bcast = ttl.block.broadcast(
+                            a_blk,
+                            dims=[-1],
+                            shape=(row_tiles_per_block, col_tiles_per_block),
+                        )
+                        b_bcast = ttl.block.broadcast(
+                            b_blk,
+                            dims=[0],
+                            shape=(row_tiles_per_block, col_tiles_per_block),
+                        )
+                        c_bcast = ttl.block.broadcast(
+                            c_blk,
+                            dims=[-2, -1],
+                            shape=(row_tiles_per_block, col_tiles_per_block),
+                        )
                         y_blk.store(a_bcast * b_bcast + c_bcast)
 
     @ttl.datamovement()

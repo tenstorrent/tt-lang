@@ -46,60 +46,44 @@ def _warn_1d_broadcast_unsupported() -> None:
 def broadcast(
     block: Block,
     output_hint: Optional[Block] = None,
+    *,
     dims: Optional[List[int]] = None,
+    shape: Optional[List[int]] = None,
 ) -> Block:
     """Broadcast a block along specified dimensions.
 
-    This function can operate in two modes:
+    Supports three modes:
 
-    1. **Eager expansion** (when output_hint is provided):
-       Immediately expands the block to match the output hint's shape and returns
-       a fully materialized Block. This allows multiple broadcasts to be used in
-       the same expression without conflicts.
+    1. **Spec form** (``shape`` provided): expand each grid dim listed in
+       ``dims`` from 1 to the corresponding ``shape`` entry by replicating
+       tiles. Matches the ``ttl.block.broadcast(expr, dims, shape)``
+       compiler API at the grid level.
+    2. **Eager expansion** (``output_hint`` provided): expand the per-tile
+       buffer to match the output hint's element shape via torch.expand.
+       Used by legacy sim call sites that allocate 1x1 element-size tiles.
+    3. **Lazy expansion** (neither provided): mark the block with broadcast
+       metadata; expansion happens later when the block is stored or used.
 
-    2. **Lazy expansion** (when output_hint is None):
-       Marks the block with broadcast metadata. Actual expansion happens later
-       when the block is stored or used in operations.
-
-    Dimension indexing uses standard Python convention: positive dim 0 is the
-    outermost dimension, dim 1 is the next, and so on. Negative indices count
-    from the innermost: dim -1 is the innermost (last) dimension, dim -2 is
-    the next-to-innermost, and so on.
-
-    For a 2-D grid block of shape (N, M):
-    - dims=[0] or dims=[-2] (outermost/rows): Block must have element size 1 in first dimension.
-    - dims=[1] or dims=[-1] (innermost/columns): Block must have element size 1 in last dimension.
+    Dimension indexing uses standard Python convention: positive dim 0 is
+    the outermost; ``-1`` is the innermost.
 
     Args:
         block: Input block to broadcast
-        output_hint: Optional output block providing target shape for eager expansion
-        dims: List of dimension indices to broadcast along (standard Python indexing)
+        output_hint: Optional output block providing target shape (legacy form)
+        dims: List of dimension indices to broadcast along
+        shape: Target shape (spec form)
 
     Returns:
-        Block with broadcast applied (either lazy metadata or eagerly expanded)
-
-    Examples:
-        # Eager expansion - immediately materialized
-        # a_blk shape (N, 1): broadcast along innermost (cols) to match y_blk shape (N, M)
-        a_bcast = ttl.math.broadcast(a_blk, y_blk, dims=[-1])
-        # b_blk shape (1, M): broadcast along outermost (rows) to match y_blk shape (N, M)
-        b_bcast = ttl.math.broadcast(b_blk, y_blk, dims=[0])
-        y_blk.store(a_bcast * b_bcast)  # Works - both are materialized
-
-        # Lazy expansion - deferred until use
-        a_bcast = ttl.math.broadcast(a_blk, dims=[-1])
-        y_blk.store(a_bcast * b_blk)  # a_bcast expands during store
+        Materialized Block in modes 1 and 2; the same block with broadcast
+        metadata in mode 3.
     """
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
-    # Validate that the dimensions being broadcast have element size 1.
-    # dims uses standard Python indexing: positive 0 = outermost, -1 = innermost.
     block_shape = block._shape  # type: ignore[attr-defined]
     element_shape = block._element_shape  # type: ignore[attr-defined]
     ndim = len(block_shape)
 
-    # Check if this is a 1D broadcast and issue a warning
     if ndim == 1:
         _warn_1d_broadcast_unsupported()
 
@@ -109,31 +93,46 @@ def broadcast(
                 f"Cannot broadcast along dimension {dim}: block has shape {block_shape} "
                 f"with only {ndim} dimensions"
             )
-        # Standard Python indexing: element_shape[dim] handles both positive and negative.
-        if element_shape[dim] != 1:
+
+    if shape is not None:
+        # Spec-form: shape is a Shape (tuple/list of grid dims).
+        target_shape = tuple(shape)
+        target_element_shape = None
+        if len(target_shape) != ndim:
             raise ValueError(
-                f"Cannot broadcast along dimension {dim}: dimension must have element size 1, "
-                f"but has element size {element_shape[dim]}"
+                f"shape size {len(target_shape)} does not match input rank {ndim}"
+            )
+        norm_dims = {d + ndim if d < 0 else d for d in dims}
+        for i in range(ndim):
+            if i in norm_dims:
+                if block_shape[i] != 1:
+                    raise ValueError(
+                        f"broadcast dim {i} requires input grid shape 1, got "
+                        f"{block_shape[i]}"
+                    )
+            elif block_shape[i] != target_shape[i]:
+                raise ValueError(
+                    f"Non-broadcast dim {i}: input has {block_shape[i]} but "
+                    f"shape has {target_shape[i]}"
+                )
+
+        if target_element_shape is None:
+            # Derive per-tile element shape from input element shape: scale
+            # non-broadcast grid dims by the target/input ratio (which is 1
+            # for non-broadcast dims by validation above) and for broadcast
+            # dims, leave the element-shape unchanged (the broadcast happens
+            # tile-wise above the element level when input element is full).
+            target_element_shape = tuple(
+                (
+                    target_shape[i] * (element_shape[i] // max(block_shape[i], 1))
+                    if block_shape[i] != 0
+                    else element_shape[i]
+                )
+                for i in range(ndim)
             )
 
-    # If output hint is provided, perform eager expansion
-    if output_hint is not None:
-        target_shape = output_hint._shape  # type: ignore[attr-defined]
-        target_element_shape = output_hint._element_shape  # type: ignore[attr-defined]
-
-        # Validate dimensionality matches
-        if len(target_shape) != len(block_shape):
-            raise ValueError(
-                f"Broadcast output hint has {len(target_shape)} dimensions, "
-                f"but source block has {len(block_shape)} dimensions"
-            )
-
-        # Use PyTorch broadcasting to expand the tensor
         src_tensor = block._buf.to_torch()  # type: ignore[attr-defined]
         expanded_tensor = src_tensor.expand(*target_element_shape)
-
-        # Create a new materialized block directly with the target shape
-        # Use Block constructor to create a temporary block
         result_block = Block(
             tensor=Tensor(expanded_tensor.contiguous()),
             shape=target_shape,
@@ -144,7 +143,36 @@ def broadcast(
         track_source_blocks(result_block, block)
         return result_block
 
-    # No output hint - use lazy expansion with metadata
+    for dim in dims:
+        if element_shape[dim] != 1:
+            raise ValueError(
+                f"Cannot broadcast along dimension {dim}: dimension must have element size 1, "
+                f"but has element size {element_shape[dim]}"
+            )
+
+    if output_hint is not None:
+        target_shape = output_hint._shape  # type: ignore[attr-defined]
+        target_element_shape = output_hint._element_shape  # type: ignore[attr-defined]
+
+        if len(target_shape) != len(block_shape):
+            raise ValueError(
+                f"Broadcast output hint has {len(target_shape)} dimensions, "
+                f"but source block has {len(block_shape)} dimensions"
+            )
+
+        src_tensor = block._buf.to_torch()  # type: ignore[attr-defined]
+        expanded_tensor = src_tensor.expand(*target_element_shape)
+
+        result_block = Block(
+            tensor=Tensor(expanded_tensor.contiguous()),
+            shape=target_shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
+        track_source_blocks(result_block, block)
+        return result_block
+
     block._broadcast_dims = tuple(dims)  # type: ignore[attr-defined]
     return block
 

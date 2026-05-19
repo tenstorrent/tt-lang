@@ -56,7 +56,12 @@ def __demo_kernel(a, b, c, y):
                 ):
                     # c_blk has shape (4, 1), needs to broadcast along dimension -1 (innermost/columns)
                     y_blk.store(
-                        a_blk * b_blk + ttl.math.broadcast(c_blk, y_blk, dims=[-1])
+                        a_blk * b_blk
+                        + ttl.block.broadcast(
+                            c_blk,
+                            dims=[-1],
+                            shape=(row_tiles_per_block, col_tiles_per_block),
+                        )
                     )
 
     @ttl.datamovement()

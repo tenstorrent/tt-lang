@@ -39,7 +39,7 @@ def reduce_bcast_kernel(inp, scaler, out):
             with red_dfb.reserve() as red_blk:
                 red_blk.store(ttl.math.reduce_sum(inp_blk, scaler_blk, dims=[0, 1]))
             with red_dfb.wait() as red_blk, out_dfb.reserve() as out_blk:
-                out_blk.store(ttl.math.broadcast(red_blk, out_blk, dims=[0, 1]))
+                out_blk.store(ttl.block.broadcast(red_blk, dims=[0, 1], shape=(2, 1)))
 
     @ttl.datamovement()
     def dm_read():

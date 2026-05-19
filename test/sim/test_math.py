@@ -4,7 +4,7 @@
 """
 Tests for ttl.math module functions.
 
-Includes tests for ttl.math.broadcast and verification of explicit broadcasting requirements.
+Includes tests for ttl.block.broadcast and verification of explicit broadcasting requirements.
 """
 
 import pytest
@@ -22,7 +22,7 @@ def test_broadcast_basic():
     block1 = Block.from_list(t1, shape=(1, 1))
 
     # Broadcast along dimension 0 (outermost/rows); (1,1) has both dims = 1
-    broadcasted = ttl.math.broadcast(block1, dims=[0])
+    broadcasted = ttl.block.broadcast(block1, dims=[0])
 
     # Check that broadcast returns a Block
     assert isinstance(broadcasted, Block)
@@ -47,7 +47,7 @@ def test_broadcast_with_operation():
 
     # Broadcast B and add to A
     # This simulates: A + broadcast(B, dims=[0])
-    broadcasted_b = ttl.math.broadcast(block_b, dims=[0])
+    broadcasted_b = ttl.block.broadcast(block_b, dims=[0])
 
     # The addition should use broadcasting
     result = block_a + broadcasted_b
@@ -60,7 +60,7 @@ def test_broadcast_with_operation():
 def test_broadcast_example_from_spec():
     """Test the broadcast example from the specification.
 
-    From spec: y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[0]))
+    From spec: y = ttl.math.sqrt(a_squared + ttl.block.broadcast(b_squared, dims=[0]))
     Where a_squared has shape (1, N) and b_squared has shape (1, 1)
     """
     # Create a_squared with shape (1, 3)
@@ -76,7 +76,7 @@ def test_broadcast_example_from_spec():
     b_squared = Block.from_list(t_b, shape=(1, 1))
 
     # Broadcast b_squared along dimension 0 (innermost/columns)
-    b_broadcast = ttl.math.broadcast(b_squared, dims=[0])
+    b_broadcast = ttl.block.broadcast(b_squared, dims=[0])
 
     # Add them together (should broadcast b to match a's shape)
     result = a_squared + b_broadcast
@@ -92,7 +92,7 @@ def test_broadcast_multiple_dims():
     block1 = Block.from_list(t1, shape=(1, 1))
 
     # Broadcast along both dimensions
-    broadcasted = ttl.math.broadcast(block1, dims=[0, 1])
+    broadcasted = ttl.block.broadcast(block1, dims=[0, 1])
 
     # Check that it returns a Block
     assert isinstance(broadcasted, Block)
@@ -106,7 +106,7 @@ def test_broadcast_preserves_data():
     block1 = Block.from_list(t1, shape=(1, 1))
 
     # Broadcast it
-    broadcasted = ttl.math.broadcast(block1, dims=[0])
+    broadcasted = ttl.block.broadcast(block1, dims=[0])
 
     # Check that the broadcast returns a Block
     assert isinstance(broadcasted, Block)
@@ -134,7 +134,7 @@ def test_implicit_broadcast_rejected():
         result = block_a + block_b
 
     # Explicit broadcasting should work
-    broadcasted_b = ttl.math.broadcast(block_b, dims=[0])
+    broadcasted_b = ttl.block.broadcast(block_b, dims=[0])
     result = block_a + broadcasted_b
     assert result._shape == (1, 2)
 
@@ -161,8 +161,8 @@ def test_implicit_broadcast_different_shapes():
 
     # Explicit broadcasting of both should work.
     # block_a (2,1): broadcast cols (innermost, dims=[-1]); block_b (1,2): broadcast rows (outermost, dims=[0])
-    broadcasted_a = ttl.math.broadcast(block_a, dims=[-1])
-    broadcasted_b = ttl.math.broadcast(block_b, dims=[0])
+    broadcasted_a = ttl.block.broadcast(block_a, dims=[-1])
+    broadcasted_b = ttl.block.broadcast(block_b, dims=[0])
 
     # Can't combine two broadcasts together (ambiguous which should expand first)
     with pytest.raises(ValueError, match="both operands have pending broadcast"):
@@ -205,7 +205,7 @@ def test_broadcast_on_wrong_dimension_rejected():
         ValueError,
         match="Cannot broadcast along dimension 0: dimension must have element size 1",
     ):
-        ttl.math.broadcast(block_a, dims=[0])
+        ttl.block.broadcast(block_a, dims=[0])
 
 
 def test_broadcast_out_of_range_rejected():
@@ -219,7 +219,7 @@ def test_broadcast_out_of_range_rejected():
         ValueError,
         match="Cannot broadcast along dimension 2.*only 2 dimensions",
     ):
-        ttl.math.broadcast(block_a, dims=[2])
+        ttl.block.broadcast(block_a, dims=[2])
 
 
 # Tests for all different forms of broadcast usage
@@ -253,13 +253,13 @@ def test_all_broadcast_forms():
     block_b = Block.from_list(t_b, shape=(2, 1))
 
     # Form 1: Explicit broadcast with dims (dims=[-1]=innermost/columns)
-    result1 = block_a * ttl.math.broadcast(block_b, dims=[-1])
+    result1 = block_a * ttl.block.broadcast(block_b, dims=[-1])
 
     # Form 2: Explicit broadcast with unused output hint (None since we can't create a DFB here)
-    result2 = block_a * ttl.math.broadcast(block_b, None, dims=[-1])
+    result2 = block_a * ttl.block.broadcast(block_b, None, dims=[-1])
 
     # Form 3: Store broadcast result first, then use it
-    broadcast_b = ttl.math.broadcast(block_b, dims=[-1])
+    broadcast_b = ttl.block.broadcast(block_b, dims=[-1])
     result3 = block_a * broadcast_b
 
     # All forms should produce the same shape
@@ -289,7 +289,7 @@ def test_broadcast_form1_direct_implicit():
         result = block_a * block_b
 
     # Explicit form still works
-    result = block_a * ttl.math.broadcast(block_b, dims=[0])
+    result = block_a * ttl.block.broadcast(block_b, dims=[0])
     assert result.shape == (1, 3)
 
 
@@ -307,7 +307,7 @@ def test_broadcast_form2_explicit_dims():
     block_b = Block.from_list(t_b, shape=(1, 1))
 
     # Explicit broadcast with dims parameter (dims=[0]=innermost/columns)
-    result = block_a * ttl.math.broadcast(block_b, dims=[0])
+    result = block_a * ttl.block.broadcast(block_b, dims=[0])
 
     assert result.shape == (1, 3)
 
@@ -329,7 +329,7 @@ def test_broadcast_form3_with_output_hint():
     block_y = Block.from_list(t_y, shape=(1, 3))
 
     # Explicit broadcast with output block hint (unused but accepted)
-    result = block_a * ttl.math.broadcast(block_b, block_y, dims=[0])
+    result = block_a * ttl.block.broadcast(block_b, block_y, dims=[0])
 
     assert result.shape == (1, 3)
 
@@ -348,7 +348,7 @@ def test_broadcast_form4_intermediate_store():
     block_b = Block.from_list(t_b, shape=(1, 1))
 
     # Store broadcast result in w first (as an intermediate variable, not .store())
-    broadcast_b = ttl.math.broadcast(block_b, dims=[0])
+    broadcast_b = ttl.block.broadcast(block_b, dims=[0])
 
     # Then use it in the operation
     result = block_a * broadcast_b
@@ -1011,7 +1011,7 @@ def test_broadcast_3d_grid_batch_dim():
     block = Block.from_list(tiles, shape=(1, 2, 2))
     # Broadcast along batch dim (outermost = dim 0 in standard Python indexing);
     # the grid dim already has size 1 so this is a no-op at the grid level.
-    result = ttl.math.broadcast(block, dims=[0])
+    result = ttl.block.broadcast(block, dims=[0])
     assert result.shape == (1, 2, 2)
     result_tiles = result.to_list()
     for orig, res in zip(tiles, result_tiles):
@@ -1035,7 +1035,7 @@ def test_broadcast_3d_grid_spatial_dim():
     tiles = [Tensor(tile_data.clone()), Tensor(tile_data.clone())]
     block = Block.from_list(tiles, shape=(2, 1, 1))
     # Note: This will have element_shape=(2, 1, 32), can broadcast along dim 1
-    broadcasted = ttl.math.broadcast(block, dims=[1])
+    broadcasted = ttl.block.broadcast(block, dims=[1])
 
     # After broadcast, the block still has the same value in all elements
     for res_tile in broadcasted.to_list():
@@ -1122,7 +1122,7 @@ def test_1d_broadcast_warning(capsys, compute_thread_context):
     """Test that broadcasting a 1D block generates a hardware warning.
 
     1D broadcasts are not supported by current hardware, so the simulator
-    emits a warning when ttl.math.broadcast() is called on a 1D block.
+    emits a warning when ttl.block.broadcast() is called on a 1D block.
     This test verifies the warning message is properly displayed.
     """
     # Create a 1D block with shape (1,) - single tile in 1D
@@ -1133,7 +1133,7 @@ def test_1d_broadcast_warning(capsys, compute_thread_context):
     assert block_1d.shape == (1,), "Test setup: block should have shape (1,)"
 
     # Broadcast the 1D block - this should generate a warning
-    result = ttl.math.broadcast(block_1d, dims=[0])
+    result = ttl.block.broadcast(block_1d, dims=[0])
 
     # Capture stdout output
     captured = capsys.readouterr()

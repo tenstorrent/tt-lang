@@ -40,6 +40,11 @@ class _SignpostContextManager:
         return None
 
 
+# Spec change-log 0.17 (TTLangSpecification.md) moved these names from
+# ttl.math to ttl.block; the sim mirrors the compiler's namespace partition.
+_BLOCK_NAMESPACE_NAMES = {"broadcast"}
+
+
 # Create ttl.math namespace object
 class _TTLMathNamespace:
     """TT-Lang math namespace for block math functions.
@@ -52,17 +57,29 @@ class _TTLMathNamespace:
         from . import math as math_module
 
         # Manually add special functions that need custom logic
-        self.broadcast = math_module.broadcast
         self.reduce_max = math_module.reduce_max
         self.reduce_sum = math_module.reduce_sum
 
         # Auto-load all other functions from the math module
         # This includes all auto-generated unary operations
         for name in dir(math_module):
-            if not name.startswith("_") and not hasattr(self, name):
-                attr = getattr(math_module, name)
-                if callable(attr):
-                    setattr(self, name, attr)
+            if name.startswith("_") or hasattr(self, name):
+                continue
+            if name in _BLOCK_NAMESPACE_NAMES:
+                continue
+            attr = getattr(math_module, name)
+            if callable(attr):
+                setattr(self, name, attr)
+
+
+# Create ttl.block namespace object
+class _TTLBlockNamespace:
+    """TT-Lang block namespace; mirrors the spec's ttl.block module."""
+
+    def __init__(self):
+        from . import math as math_module
+
+        self.broadcast = math_module.broadcast
 
 
 # Create ttl namespace object
@@ -104,6 +121,7 @@ class _TTLNamespace:
         self.ROW_MAJOR_LAYOUT = ROW_MAJOR_LAYOUT
         self.Program = Program
         self.math = _TTLMathNamespace()
+        self.block = _TTLBlockNamespace()
 
     @staticmethod
     def signpost(*args: Any, **kwargs: Any) -> _SignpostContextManager:

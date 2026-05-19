@@ -94,10 +94,12 @@ def eltwise_sqrt_broadcast(
 
                     # b_squared has shape (1,); broadcast expands it to (BLOCK_SIZE,) along dim 0.
                     y_val = ttl.math.sqrt(
-                        a_squared + ttl.math.broadcast(b_squared, y_blk, dims=[0])
+                        a_squared
+                        + ttl.block.broadcast(b_squared, dims=[0], shape=(BLOCK_SIZE,))
                     )
                     z_val = ttl.math.sqrt(
-                        a_squared - ttl.math.broadcast(b_squared, z_blk, dims=[0])
+                        a_squared
+                        - ttl.block.broadcast(b_squared, dims=[0], shape=(BLOCK_SIZE,))
                     )
 
                     y_blk.store(y_val)
