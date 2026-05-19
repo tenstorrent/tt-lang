@@ -1316,6 +1316,79 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// Raw element access verifiers (shared logic + per-op entry points)
+//===----------------------------------------------------------------------===//
+
+/// Shared verification for raw_element_read and raw_element_write. Checks:
+///   1. Enclosing function is a data movement (noc) kernel thread.
+///   2. Coordinate count matches block tensor rank.
+///   3. Scalar type matches block's underlying element dtype.
+///   4. Only f32 and bf16 are supported.
+static mlir::LogicalResult verifyRawElementOp(mlir::Operation *op,
+                                              mlir::RankedTensorType blockTy,
+                                              mlir::ValueRange coords,
+                                              mlir::Type scalarTy) {
+  using namespace mlir::tt;
+
+  // 1. Must be inside a noc kernel thread function.
+  auto func = ttl::getEnclosingKernelThread(op);
+  if (!func) {
+    return op->emitOpError() << "must be inside a function with '"
+                             << ttl::kKernelThreadAttrName << "' attribute";
+  }
+  auto threadAttr =
+      func->getAttrOfType<ttkernel::ThreadTypeAttr>(ttl::kKernelThreadAttrName);
+  if (!threadAttr || threadAttr.getValue() != ttkernel::ThreadType::Noc) {
+    return op->emitOpError()
+           << "is only allowed in data movement (noc) threads";
+  }
+
+  // 2. Coordinate count must match block tensor rank.
+  int64_t blockRank = blockTy.getRank();
+  if (static_cast<int64_t>(coords.size()) != blockRank) {
+    return op->emitOpError()
+           << "coordinate count (" << coords.size()
+           << ") must match block tensor rank (" << blockRank << ")";
+  }
+
+  // 3. Resolve the expected scalar type from the block element type.
+  mlir::Type elemTy = blockTy.getElementType();
+  mlir::Type expectedScalarTy;
+  if (auto tileTy = mlir::dyn_cast<ttcore::TileType>(elemTy)) {
+    expectedScalarTy =
+        ttcore::dataTypeToElementType(op->getContext(), tileTy.getDataType());
+  } else {
+    expectedScalarTy = elemTy;
+  }
+
+  if (scalarTy != expectedScalarTy) {
+    return op->emitOpError()
+           << "scalar type (" << scalarTy
+           << ") must match block element dtype (" << expectedScalarTy << ")";
+  }
+
+  // 4. Only f32 and bf16 are supported.
+  if (!scalarTy.isF32() && !scalarTy.isBF16()) {
+    return op->emitOpError()
+           << "only f32 and bf16 element types are supported, got " << scalarTy;
+  }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
+  auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
+  return verifyRawElementOp(getOperation(), blockTy, getCoords(),
+                            getResult().getType());
+}
+
+mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
+  auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
+  return verifyRawElementOp(getOperation(), blockTy, getCoords(),
+                            getValue().getType());
+}
+
+//===----------------------------------------------------------------------===//
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
 
