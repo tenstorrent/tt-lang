@@ -107,29 +107,50 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
   return attachWait.getResult();
 }
 
-/// Rewrite a ReduceOp's numeric-scalar FillOp scaler into a neutral
-/// constant fill plus an attribute on the reduce. The DSL for
-/// `ttl.math.reduce_{sum,max}(x, <number>, ...)` emits a FillOp scaler;
-/// the tile lowering can't store a non-neutral scaler into a compiler-
-/// allocated DFB directly, so we move the original value onto a
-/// ttl.reduce_scalar_multiplier attribute (consumed by the tile lowering
-/// as a post-reduce mul_unary) and replace the scaler with a fresh
-/// FillOp(1.0). One neutral fill is cached per source FillOp so multiple
-/// reduces sharing the same scaler converge on the same SSA value and
-/// the standard DFB-materialization cache deduplicates the DFB.
-Value getOrCreateNeutralScalerFill(
-    FillOp sourceFill, ReduceOp reduceOp, OpBuilder &builder,
-    llvm::DenseMap<FillOp, Value> &neutralFillFor) {
-  reduceOp->setAttr(kReduceScalarMultiplierAttrName, sourceFill.getValueAttr());
-  auto [iter, inserted] = neutralFillFor.try_emplace(sourceFill, Value{});
-  if (inserted) {
-    builder.setInsertionPointAfter(sourceFill);
-    auto neutral = FillOp::create(builder, sourceFill.getLoc(),
-                                  sourceFill.getType(),
-                                  builder.getF32FloatAttr(1.0));
-    iter->second = neutral.getResult();
+/// Rewrite every `ttl.reduce(x, fill(c))` into the two-op chain
+///   intermediate = ttl.reduce(x, fill(1.0))
+///   result       = ttl.mul_unary_const(intermediate, c)
+/// (omit the wrapper when `c == 1.0`). The LLK reduce_tile primitive only
+/// reads the scaler tile at "magic" positions, so a fully-filled non-1.0
+/// scaler tile would over-scale; the 1.0 substitution + separate scalar
+/// multiply expresses the same math correctly. The structural rewrite is
+/// upstream-idiomatic (see `linalg.softmax` decomposition): the multiply
+/// becomes a separate op with all-parallel iterator types and naturally
+/// lands outside the K-accumulation loop after SCF lowering.
+///
+/// One neutral fill is cached per source FillOp so multiple reduces
+/// sharing the same scaler converge on the same SSA value, letting the
+/// standard DFB-materialization cache deduplicate.
+void rewriteNumericScalarReduces(func::FuncOp funcOp, OpBuilder &builder) {
+  SmallVector<ReduceOp> reducesToRewrite;
+  funcOp.walk([&](ReduceOp reduceOp) {
+    if (reduceOp.getScaler().getDefiningOp<FillOp>()) {
+      reducesToRewrite.push_back(reduceOp);
+    }
+  });
+  llvm::DenseMap<FillOp, Value> neutralFillFor;
+  for (ReduceOp reduceOp : reducesToRewrite) {
+    auto sourceFill = reduceOp.getScaler().getDefiningOp<FillOp>();
+    float scalerValue = sourceFill.getValueAttr().getValue().convertToFloat();
+
+    auto [iter, inserted] = neutralFillFor.try_emplace(sourceFill, Value{});
+    if (inserted) {
+      builder.setInsertionPointAfter(sourceFill);
+      auto neutral = FillOp::create(builder, sourceFill.getLoc(),
+                                    sourceFill.getType(),
+                                    builder.getF32FloatAttr(1.0));
+      iter->second = neutral.getResult();
+    }
+    reduceOp.getScalerMutable().assign(iter->second);
+
+    if (scalerValue != 1.0f) {
+      builder.setInsertionPointAfter(reduceOp);
+      auto mulOp = MulUnaryConstOp::create(
+          builder, reduceOp.getLoc(), reduceOp.getResult().getType(),
+          reduceOp.getResult(), builder.getF32FloatAttr(scalerValue));
+      reduceOp.getResult().replaceAllUsesExcept(mulOp.getResult(), mulOp);
+    }
   }
-  return iter->second;
 }
 
 struct TTLInsertIntermediateDFBsPass
@@ -186,9 +207,17 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
-    llvm::DenseMap<Value, Value> materialized;
-    llvm::DenseMap<FillOp, Value> neutralFillFor;
     OpBuilder builder(funcOp.getContext());
+
+    // Structural rewrite: each `ttl.reduce(x, fill(c))` becomes the chain
+    // `ttl.mul_unary_const(ttl.reduce(x, fill(1.0)), c)`. Re-collect
+    // candidates afterward so the new MulUnaryConstOps go through normal
+    // DFB materialization below.
+    rewriteNumericScalarReduces(funcOp, builder);
+    candidates.clear();
+    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
+
+    llvm::DenseMap<Value, Value> materialized;
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();
@@ -199,19 +228,6 @@ struct TTLInsertIntermediateDFBsPass
 
         if (getAttachedCB(operand)) {
           continue;
-        }
-
-        // Numeric-scalar reduce path: rewrite the FillOp scaler to a
-        // neutral 1.0 fill (cached per source FillOp) and move the
-        // original scaler value onto a ttl.reduce_scalar_multiplier
-        // attribute. Subsequent materialization sees the canonical
-        // neutral fill and dedups normally.
-        if (auto reduceOp = dyn_cast<ReduceOp>(op); reduceOp && idx == 1) {
-          if (auto sourceFill = operand.getDefiningOp<FillOp>()) {
-            operand = getOrCreateNeutralScalerFill(sourceFill, reduceOp,
-                                                   builder, neutralFillFor);
-            op->setOperand(idx, operand);
-          }
         }
 
         if (auto iter = materialized.find(operand); iter != materialized.end()) {

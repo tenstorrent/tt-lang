@@ -1365,21 +1365,47 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
                                         AffineMapAttr::get(outputMap)};
 
     auto reduceType = op.getReduceType();
-    auto scalarMultiplier =
-        op->getAttrOfType<FloatAttr>(kReduceScalarMultiplierAttrName);
     return buildComputeFromInputs(
         op, rewriter, ValueRange{op.getInput(), op.getScaler()}, resultType,
         inputMaps, outputMap, iterTypes,
-        [reduceType, reduceDim, scalarMultiplier](OpBuilder &b, Location loc,
-                                                  Type tileType, Block *body) {
-          auto tileReduce = createTileOpWithPlaceholderDstIndex<TileReduceOp>(
+        [reduceType, reduceDim](OpBuilder &b, Location loc, Type tileType,
+                                Block *body) {
+          return createTileOpWithPlaceholderDstIndex<TileReduceOp>(
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               body->getArgument(2), reduceType, reduceDim);
-          if (scalarMultiplier) {
-            tileReduce->setAttr(kReduceScalarMultiplierAttrName,
-                                scalarMultiplier);
-          }
-          return tileReduce;
+        });
+  }
+};
+
+/// Lower ttl.mul_unary_const to ttl.compute with a single
+/// ttl.tile_mul_unary_const in the body. All iterators parallel: the op
+/// scales each output tile independently, with no reduction.
+struct LowerMulUnaryConstToCompute : OpRewritePattern<MulUnaryConstOp> {
+  using OpRewritePattern<MulUnaryConstOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MulUnaryConstOp op,
+                                PatternRewriter &rewriter) const override {
+    auto resultType = getTensorType(op.getResult());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "result is not a ranked tensor");
+    }
+    if (!getAttachedCB(op.getInput())) {
+      return rewriter.notifyMatchFailure(op, "input must be CB-attached");
+    }
+
+    MLIRContext *ctx = rewriter.getContext();
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(resultType.getRank(), ctx);
+    SmallVector<Attribute> inputMaps = {AffineMapAttr::get(identityMap)};
+    SmallVector<Attribute> iterTypes(resultType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+    FloatAttr valueAttr = op.getValueAttr();
+    return buildComputeFromInputs(
+        op, rewriter, ValueRange{op.getInput()}, resultType, inputMaps,
+        identityMap, iterTypes,
+        [valueAttr](OpBuilder &b, Location loc, Type tileType, Block *body) {
+          return createTileOpWithPlaceholderDstIndex<TileMulUnaryConstOp>(
+              b, loc, tileType, body->getArgument(0), valueAttr);
         });
   }
 };
@@ -1599,6 +1625,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<LowerBcastToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);
+  patterns.add<LowerMulUnaryConstToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
   patterns.add<LowerTypecastToCompute>(ctx);
   patterns.add<LowerFillToCompute>(ctx);

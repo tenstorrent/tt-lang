@@ -80,8 +80,8 @@ import ttl
 def reduce_kernel(inp_a, inp_b, out_a, out_b):
     """Two reduces with distinct scalar scalers in one compute block.
 
-    Catches bugs where the kReduceScalarMultiplierAttrName attribute is
-    shared, hoisted, or otherwise leaked between two reduce sites.
+    Catches bugs where the post-reduce scaler multiply is shared, hoisted,
+    or otherwise leaked between two reduce sites.
     """
     a_in_dfb = ttl.make_dataflow_buffer_like(inp_a, shape=(1, 1), block_count=2)
     b_in_dfb = ttl.make_dataflow_buffer_like(inp_b, shape=(1, 1), block_count=2)
@@ -441,10 +441,10 @@ def test_scalar_form_matches_tile_form(device, dtype, reduce_fn, scaler):
 @pytest.mark.parametrize("reduce_fn", REDUCE_FNS)
 def test_two_distinct_scalers_in_one_kernel(device, dtype, reduce_fn):
     """Two reduce sites in one compute block carrying distinct scalar
-    constants. The kReduceScalarMultiplierAttrName attribute is set per
-    op; this test catches any leak that would apply one scaler to both
-    reduces, or any shared-FillOp materialization that produced the wrong
-    multiplier for the second site.
+    constants. The post-reduce mul_unary_const is per-reduce; this test
+    catches any leak that would apply one scaler to both reduces, or any
+    shared-FillOp materialization that produced the wrong multiplier for
+    the second site.
     """
     scaler_a, scaler_b = 0.25, -1.5
     kernel = make_two_reduce_kernel(

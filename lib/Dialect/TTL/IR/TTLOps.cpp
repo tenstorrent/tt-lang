@@ -1095,6 +1095,11 @@ mlir::tt::ttl::TransposeOp::getDFBInputOperandIndices() {
   return {0}; // input
 }
 
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::MulUnaryConstOp::getDFBInputOperandIndices() {
+  return {0}; // input
+}
+
 //===----------------------------------------------------------------------===//
 // MatmulOp
 //===----------------------------------------------------------------------===//

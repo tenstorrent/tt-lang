@@ -1150,6 +1150,37 @@ def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
   let assemblyFormat = "$value `into` `dst` `[` $dst_index `]` attr-dict `:` type($result)";
 }
 
+def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
+    [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_DstResultOpTrait, AllTypesMatch<["input", "result"]>]> {
+  let summary = "Tile-level multiply by a compile-time scalar constant";
+  let description = [{
+    Multiplies every element of a DST register tile by a compile-time
+    scalar constant. Operates in-place at `dst_index`. Maps to
+    ttkernel.binop_with_scalar_tile_init + ttkernel.mul_unary_tile.
+  }];
+  let arguments = (ins TTL_TileType:$input, F32Attr:$value, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat =
+      "$input `,` $value `into` `dst` `[` $dst_index `]` attr-dict `:` "
+      "type($input) `->` type($result)";
+}
+
+def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
+    [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
+  let summary = "Multiply a tensor of tiles by a compile-time scalar constant";
+  let description = [{
+    Element-wise multiply of an input tensor of tiles by a compile-time
+    scalar constant. Used internally to express the post-reduce scaler
+    multiply when a `ttl.reduce` originally carried a numeric scalar
+    scaler operand. Lowered to `ttl.compute` with `ttl.tile_mul_unary_const`.
+  }];
+  let arguments = (ins AnyRankedTensor:$input, F32Attr:$value);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat =
+      "$input `,` $value attr-dict `:` type($input) `->` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // Matrix Multiplication
 //===----------------------------------------------------------------------===//

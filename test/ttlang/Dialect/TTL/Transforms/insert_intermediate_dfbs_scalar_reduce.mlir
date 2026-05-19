@@ -3,15 +3,16 @@
 
 // -----
 
-// Two reduces consuming the same FillOp scaler share one compiler-allocated DFB.
+// Two reduces consuming the same FillOp scaler share one compiler-allocated
+// scaler DFB. Each reduce result is wrapped in its own ttl.mul_unary_const
+// (the post-reduce scaler multiply) and gets its own intermediate DFB.
 
 // CHECK-LABEL: func.func @shared_scalar_scaler_dedup
-// CHECK-COUNT-1: ttl.bind_cb{{.*}}{ttl.compiler_allocated}
-// CHECK-NOT: ttl.bind_cb{{.*}}{ttl.compiler_allocated}
-// CHECK: ttl.reduce
-// CHECK-SAME: ttl.reduce_scalar_multiplier = 5.000000e-01
-// CHECK: ttl.reduce
-// CHECK-SAME: ttl.reduce_scalar_multiplier = 5.000000e-01
+// CHECK-COUNT-1: ttl.fill 1.000000e+00
+// CHECK-NOT: ttl.fill
+// CHECK-COUNT-2: ttl.mul_unary_const {{.*}}, 5.000000e-01
+// CHECK-NOT: ttl.mul_unary_const
+// CHECK-NOT: ttl.reduce_scalar_multiplier
 func.func @shared_scalar_scaler_dedup()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb_in_a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -30,15 +31,15 @@ func.func @shared_scalar_scaler_dedup()
 
 // -----
 
-// After override rewrite, the only remaining `ttl.fill` should be the
-// internally-materialized 1.0 fill. The original 0.5 fill must be erased.
+// After the structural rewrite, the only remaining `ttl.fill` is the
+// internally-materialized 1.0 neutral fill. The original 0.5 fill must
+// be erased because its only consumer was the rewritten reduce scaler.
 
 // CHECK-LABEL: func.func @orphan_fill_erased
 // CHECK-NOT: ttl.fill 5.000000e-01
 // CHECK: ttl.fill 1.000000e+00
 // CHECK-NOT: ttl.fill 5.000000e-01
-// CHECK: ttl.reduce
-// CHECK-SAME: ttl.reduce_scalar_multiplier = 5.000000e-01
+// CHECK: ttl.mul_unary_const {{.*}}, 5.000000e-01
 func.func @orphan_fill_erased()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb_in = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -57,8 +58,7 @@ func.func @orphan_fill_erased()
 
 // CHECK-LABEL: func.func @fill_kept_when_other_users
 // CHECK: ttl.fill 5.000000e-01
-// CHECK: ttl.reduce
-// CHECK-SAME: ttl.reduce_scalar_multiplier = 5.000000e-01
+// CHECK: ttl.mul_unary_const {{.*}}, 5.000000e-01
 func.func @fill_kept_when_other_users()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb_in = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
