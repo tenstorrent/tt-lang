@@ -26,6 +26,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttl-insert-intermediate-dfbs"
@@ -107,50 +108,118 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
   return attachWait.getResult();
 }
 
-/// Rewrite every `ttl.reduce(x, fill(c))` into the two-op chain
-///   intermediate = ttl.reduce(x, fill(1.0))
-///   result       = ttl.mul_unary_const(intermediate, c)
-/// (omit the wrapper when `c == 1.0`). The LLK reduce_tile primitive only
-/// reads the scaler tile at "magic" positions, so a fully-filled non-1.0
-/// scaler tile would over-scale; the 1.0 substitution + separate scalar
-/// multiply expresses the same math correctly. The structural rewrite is
-/// upstream-idiomatic (see `linalg.softmax` decomposition): the multiply
-/// becomes a separate op with all-parallel iterator types and naturally
-/// lands outside the K-accumulation loop after SCF lowering.
+/// Returns true if `dimsAttr` reduces every axis of a rank-`inputRank`
+/// input (REDUCE_SCALAR mode in the LLK). Negative dims are normalized.
+static bool reducesAllDims(ArrayRef<int64_t> dimsAttr, int64_t inputRank) {
+  llvm::SmallSet<int64_t, 2> normDims;
+  for (int64_t dim : dimsAttr) {
+    normDims.insert((dim % inputRank + inputRank) % inputRank);
+  }
+  return static_cast<int64_t>(normDims.size()) == inputRank;
+}
+
+/// Always-feed-fill(1.0) rewrite for `ttl.reduce`. The LLK's REDUCE_SCALAR
+/// (dims=[0,1]) double-applies the scaler tile internally — documented in
+/// tt-metal's reduce_op.cpp note about sqrt-compensation — so any non-1.0
+/// scaler tile (compile-time fill or runtime value) produces wrong math.
+/// `1.0 × 1.0 = 1.0` makes the double-apply harmless when the reduce's
+/// scaler operand is always `fill(1.0)`; the actual scaler is applied
+/// once via a separate post-reduce multiply where the math is unambiguous.
+///
+/// Two post-multiply paths share the same structure:
+///   - Statically-known fill(c) (the numeric-scalar API): wrap the reduce
+///     result in `ttl.mul_unary_const(result, c)`. Fast path: lowers to
+///     LLK `mul_unary_tile` with an i32 bit pattern of `c`. No extra DFB.
+///   - Any other scaler tile (user tile-form, runtime-computed from a
+///     prior op, etc.) AND `dims=[0,1]`: wrap the reduce result in
+///     `ttl.mul(result, original_scaler)`. Element-wise tile multiply;
+///     correct at the only read position [0, 0] of a REDUCE_SCALAR output
+///     because `result[0, 0] = intermediate[0, 0] * scaler[0, 0]`.
+///
+/// Non-fill scalers on single-dim reduces (REDUCE_COL / REDUCE_ROW) are
+/// left alone — the LLK handles those correctly already (no double-apply).
 ///
 /// One neutral fill is cached per source FillOp so multiple reduces
-/// sharing the same scaler converge on the same SSA value, letting the
-/// standard DFB-materialization cache deduplicate.
-void rewriteNumericScalarReduces(func::FuncOp funcOp, OpBuilder &builder) {
+/// sharing the same compile-time scaler converge on the same SSA value
+/// and the standard DFB-materialization cache deduplicates the DFB.
+LogicalResult rewriteReduceScalersToPostMul(func::FuncOp funcOp,
+                                            OpBuilder &builder) {
+  auto moduleOp = funcOp->getParentOfType<ModuleOp>();
+
   SmallVector<ReduceOp> reducesToRewrite;
   funcOp.walk([&](ReduceOp reduceOp) {
-    if (reduceOp.getScaler().getDefiningOp<FillOp>()) {
+    Value scaler = reduceOp.getScaler();
+    if (auto fillOp = scaler.getDefiningOp<FillOp>()) {
+      float c = fillOp.getValueAttr().getValue().convertToFloat();
+      if (c != 1.0f) {
+        reducesToRewrite.push_back(reduceOp);
+      }
+      return;
+    }
+    auto inputType = cast<RankedTensorType>(reduceOp.getInput().getType());
+    if (reducesAllDims(reduceOp.getDims(), inputType.getRank())) {
       reducesToRewrite.push_back(reduceOp);
     }
   });
+
   llvm::DenseMap<FillOp, Value> neutralFillFor;
   for (ReduceOp reduceOp : reducesToRewrite) {
-    auto sourceFill = reduceOp.getScaler().getDefiningOp<FillOp>();
-    float scalerValue = sourceFill.getValueAttr().getValue().convertToFloat();
+    Location loc = reduceOp.getLoc();
+    Value scaler = reduceOp.getScaler();
+    auto fillOp = scaler.getDefiningOp<FillOp>();
 
-    auto [iter, inserted] = neutralFillFor.try_emplace(sourceFill, Value{});
-    if (inserted) {
-      builder.setInsertionPointAfter(sourceFill);
-      auto neutral = FillOp::create(builder, sourceFill.getLoc(),
-                                    sourceFill.getType(),
-                                    builder.getF32FloatAttr(1.0));
-      iter->second = neutral.getResult();
-    }
-    reduceOp.getScalerMutable().assign(iter->second);
-
-    if (scalerValue != 1.0f) {
+    if (fillOp) {
+      // Compile-time fill(c). MulUnaryConstOp has DFBInputOpInterface, so
+      // the standard inserter loop will materialize the reduce result into
+      // a compiler-allocated DFB later in this pass.
+      float c = fillOp.getValueAttr().getValue().convertToFloat();
+      auto [iter, inserted] = neutralFillFor.try_emplace(fillOp, Value{});
+      if (inserted) {
+        builder.setInsertionPointAfter(fillOp);
+        auto neutral = FillOp::create(builder, fillOp.getLoc(),
+                                      fillOp.getType(),
+                                      builder.getF32FloatAttr(1.0));
+        iter->second = neutral.getResult();
+      }
+      reduceOp.getScalerMutable().assign(iter->second);
       builder.setInsertionPointAfter(reduceOp);
       auto mulOp = MulUnaryConstOp::create(
-          builder, reduceOp.getLoc(), reduceOp.getResult().getType(),
-          reduceOp.getResult(), builder.getF32FloatAttr(scalerValue));
+          builder, loc, reduceOp.getResult().getType(),
+          reduceOp.getResult(), builder.getF32FloatAttr(c));
       reduceOp.getResult().replaceAllUsesExcept(mulOp.getResult(), mulOp);
+    } else {
+      // Runtime tile scaler. MulOp does not declare DFBInputOpInterface
+      // (it's the generic elementwise multiply used throughout the DSL),
+      // so we materialize the reduce result through a compiler-allocated
+      // DFB explicitly here. Then MulOp sees a CB-attached lhs.
+      //
+      // Snapshot the reduce-result's existing uses before adding new
+      // ones; materializeToDFB creates a fresh use (the store of the
+      // reduce result into the intermediate DFB) that we must not
+      // redirect to the mul.
+      SmallVector<OpOperand *> existingUses;
+      for (OpOperand &use : reduceOp.getResult().getUses()) {
+        existingUses.push_back(&use);
+      }
+      builder.setInsertionPoint(reduceOp);
+      auto neutral = FillOp::create(builder, loc,
+                                    cast<RankedTensorType>(scaler.getType()),
+                                    builder.getF32FloatAttr(1.0));
+      reduceOp.getScalerMutable().assign(neutral.getResult());
+      builder.setInsertionPointAfter(reduceOp);
+      auto materialized =
+          materializeToDFB(reduceOp.getResult(), moduleOp, builder);
+      if (failed(materialized)) {
+        return failure();
+      }
+      auto mulOp = MulOp::create(builder, loc, reduceOp.getResult().getType(),
+                                 *materialized, scaler);
+      for (OpOperand *use : existingUses) {
+        use->set(mulOp.getResult());
+      }
     }
   }
+  return success();
 }
 
 struct TTLInsertIntermediateDFBsPass
@@ -209,11 +278,18 @@ struct TTLInsertIntermediateDFBsPass
 
     OpBuilder builder(funcOp.getContext());
 
-    // Structural rewrite: each `ttl.reduce(x, fill(c))` becomes the chain
-    // `ttl.mul_unary_const(ttl.reduce(x, fill(1.0)), c)`. Re-collect
-    // candidates afterward so the new MulUnaryConstOps go through normal
-    // DFB materialization below.
-    rewriteNumericScalarReduces(funcOp, builder);
+    // Structural rewrite: every `ttl.reduce(x, scaler)` whose scaler is
+    // not `fill(1.0)` becomes the chain
+    //   intermediate = ttl.reduce(x, fill(1.0))
+    //   result       = post_mul(intermediate, scaler)
+    // where post_mul is `ttl.mul_unary_const` for compile-time fill(c)
+    // scalers and `ttl.mul` for any runtime tile scaler. Re-collect
+    // candidates afterward so the new ops go through normal DFB
+    // materialization below.
+    if (failed(rewriteReduceScalersToPostMul(funcOp, builder))) {
+      signalPassFailure();
+      return;
+    }
     candidates.clear();
     funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
 

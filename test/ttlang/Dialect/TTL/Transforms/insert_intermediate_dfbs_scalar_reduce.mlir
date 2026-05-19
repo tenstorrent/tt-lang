@@ -75,3 +75,55 @@ func.func @fill_kept_when_other_users()
   %r = ttl.reduce %a, %fill 0 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   return
 }
+
+// -----
+
+// Runtime tile-form scaler (user-allocated DFB) with dims=[0,1] is rewritten
+// to: reduce(x, fill(1.0), dims=[0,1]) → ttl.mul(reduce, original_scaler).
+// The reduce result is materialized to an intermediate compiler-allocated DFB
+// so the mul's lhs is CB-attached.
+
+// CHECK-LABEL: func.func @tile_form_scaler_dims_01_rewrites_to_mul
+// CHECK: ttl.fill 1.000000e+00
+// CHECK: ttl.reduce
+// CHECK: ttl.mul {{.*}}, {{.*}} : tensor
+// CHECK-NOT: ttl.mul_unary_const
+func.func @tile_form_scaler_dims_01_rewrites_to_mul()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb_in = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_scaler = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_wait = ttl.cb_wait %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %a_wait, %cb_in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %s_wait = ttl.cb_wait %cb_scaler : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %s = ttl.attach_cb %s_wait, %cb_scaler : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %r = ttl.reduce %a, %s 0 : i32 [0, 1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %r, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
+// Tile-form scaler on a single-dim reduce (REDUCE_COL / REDUCE_ROW) is left
+// alone — the LLK applies the scaler correctly without double-application,
+// so no rewrite is needed.
+
+// CHECK-LABEL: func.func @tile_form_scaler_dims_0_unchanged
+// CHECK-NOT: ttl.fill
+// CHECK-NOT: ttl.mul
+// CHECK: ttl.reduce
+func.func @tile_form_scaler_dims_0_unchanged()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb_in = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_scaler = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_wait = ttl.cb_wait %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %a_wait, %cb_in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %s_wait = ttl.cb_wait %cb_scaler : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %s = ttl.attach_cb %s_wait, %cb_scaler : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %r = ttl.reduce %a, %s 0 : i32 [0] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %r, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}
