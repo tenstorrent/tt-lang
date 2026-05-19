@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: ["main"]
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+permissions:
+  checks: write
+  contents: read
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    uses: ./.github/workflows/call-pre-commit.yml
+    secrets: inherit
+
+  check-tt-metal-version:
+    name: Verify tt-metal version (third-party/tt-metal-version)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: false
+      - run: .github/scripts/check-tt-metal-version.sh
+
+  resolve-docker-tag:
+    name: Resolve docker tag for this branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docker_tag: ${{ steps.resolve.outputs.docker_tag }}
+      needs_rebuild: ${{ steps.probe.outputs.needs_rebuild }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: false
+      - name: Compute tag
+        id: resolve
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          TAG=$(.github/containers/get-version-tag.sh)
+          # Fork-PR uplift guard: HEAD_REPO is non-empty only on pull_request events.
+          if [[ "$TAG" == *-uplift-* && -n "$HEAD_REPO" && "$HEAD_REPO" != "$BASE_REPO" ]]; then
+              echo "::error::Uplift PRs from forks are not supported."
+              echo "  Resolved tag: $TAG (uplift form)"
+              echo "  PR head: $HEAD_REPO; base: $BASE_REPO"
+              echo "  A tt-lang maintainer must land this branch into the org repo before CI can build the new toolchain image."
+              exit 1
+          fi
+          echo "docker_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved docker tag: $TAG"
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+      - name: Probe GHCR for image
+        id: probe
+        run: .github/scripts/probe-docker-image.sh "${{ steps.resolve.outputs.docker_tag }}"
+
+  build-docker:
+    needs: resolve-docker-tag
+    if: ${{ needs.resolve-docker-tag.outputs.needs_rebuild == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+    with:
+      push: true
+
+  changes:
+    name: Detect wheel/container-affecting changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      wheel_or_container: ${{ steps.diff.outputs.wheel_or_container }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Detect changes
+        id: diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.event.after }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) BASE="$PR_BASE";   HEAD="$PR_HEAD" ;;
+            push)         BASE="$PUSH_BASE"; HEAD="$PUSH_HEAD" ;;
+            *)            BASE="";           HEAD="" ;;
+          esac
+          .github/scripts/wheel-or-container-changed.sh "$BASE" "$HEAD"
+
+  dryrun-docker:
+    needs: [resolve-docker-tag, changes]
+    if: ${{ needs.changes.outputs.wheel_or_container == 'true' && needs.resolve-docker-tag.outputs.needs_rebuild != 'true' }}
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+    with:
+      push: false
+
+  build:
+    needs: [resolve-docker-tag, build-docker]
+    if: ${{ !cancelled() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    uses: ./.github/workflows/call-build.yml
+    secrets: inherit
+    with:
+      # Build docs on any main-branch run (push, schedule, workflow_dispatch)
+      # to catch sphinx-build regressions outside of merge events. Only the
+      # push event deploys (see deploy-docs).
+      build_docs: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+      docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
+
+  build-wheels:
+    needs: [resolve-docker-tag, build-docker]
+    if: ${{ !cancelled() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/call-build-wheels.yml
+    with:
+      docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
+
+  test-sim:
+    uses: ./.github/workflows/call-test-sim.yml
+    secrets: inherit
+
+  test-scripts:
+    uses: ./.github/workflows/call-test-scripts.yml
+
+  test-dist-tutorials:
+    needs: [resolve-docker-tag, build-docker, changes]
+    # Run when EITHER the diff touches wheel/container-relevant paths, OR the
+    # container was actually rebuilt (uplift: new toolchain may regress
+    # tutorials in ways the path filter alone cannot detect).
+    if: ${{ (needs.changes.outputs.wheel_or_container == 'true' || needs.build-docker.result == 'success') && !cancelled() && needs.resolve-docker-tag.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    uses: ./.github/workflows/call-test-dist-tutorials.yml
+    secrets: inherit
+    with:
+      runs-on: n150
+      dist_docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
+
+  deploy-docs:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+
+  check-all-green:
+    if: always()
+    needs:
+      - pre-commit
+      - check-tt-metal-version
+      - resolve-docker-tag
+      - build-docker
+      - dryrun-docker
+      - changes
+      - build
+      - build-wheels
+      - test-sim
+      - test-scripts
+      - test-dist-tutorials
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide whether all needed jobs succeeded or failed
+        uses: re-actors/alls-green@release/v1
+        with:
+          allowed-skips: build-docker, dryrun-docker, test-dist-tutorials
+          jobs: ${{ toJSON(needs) }}
