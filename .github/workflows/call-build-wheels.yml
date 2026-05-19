@@ -33,6 +33,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
@@ -53,6 +54,14 @@ jobs:
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation
+
+      - name: Test CMake-installed launchers (bin/ttlang-sim, bin/ttlang-sim-stats)
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          cmake --build build
+          cmake --install build --prefix /tmp/ttlang-prefix
+          /tmp/ttlang-prefix/bin/ttlang-sim --help
+          /tmp/ttlang-prefix/bin/ttlang-sim-stats --help
 
       - name: Repair tt-lang wheel
         run: |

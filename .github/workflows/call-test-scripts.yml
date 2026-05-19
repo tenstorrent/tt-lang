@@ -1,0 +1,38 @@
+name: Test Shell Scripts
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test-scripts:
+    name: "Shell-script unit tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Install packaging (for PEP 440 normalization in require-release-tag.sh)
+        run: python3 -m pip install --user packaging
+
+      - name: Install bats and helper libraries
+        uses: bats-core/bats-action@2.0.0
+        with:
+          bats-version: 1.11.0
+          support-install: true
+          assert-install: true
+          detik-install: false
+          file-install: false
+
+      - name: Run bats suite
+        env:
+          BATS_LIB_PATH: /usr/lib
+        run: bats --print-output-on-failure .github/scripts/tests/

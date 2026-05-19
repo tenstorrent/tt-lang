@@ -220,6 +220,15 @@ Pytest tests (parametric DSL tests):
 pytest test/python/
 ```
 
+### Pytest timeouts in CI
+
+`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
+`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
+test exits within ~60 seconds instead of holding the single `n150` runner
+until the 90-minute job timeout. Tests that legitimately need longer should
+set their own `@pytest.mark.timeout(...)` override. Local runs use the
+default (no timeout) unless you pass `--timeout` yourself.
+
 Middle end-to-end tests (requires ttnn and a TT device or simulator):
 ```bash
 pytest -v test/me2e/
@@ -254,6 +263,36 @@ export TT_METAL_SIMULATOR=1
 Then run tests as normal. ME2E tests with simulator:
 ```bash
 TT_METAL_SIMULATOR=1 pytest -v test/me2e/
+```
+
+## Shell-script unit tests (bats)
+
+`.github/scripts/tests/` is a bats suite covering the CI helper scripts
+(`get-version-tag.sh`, `detect-uplift.sh`, `require-release-tag.sh`,
+`verify-wheel-version.sh`, `probe-docker-image.sh`) and the two launcher
+scripts (`bin/ttlang-sim`, `bin/ttlang-sim-stats`). CI runs it via
+`bats-core/bats-action@2.0.0` on `ubuntu-latest`; for local runs (host or
+inside the ird container) install bats and the helper libraries once:
+
+```bash
+# Ubuntu 22.04 apt's bats is 1.2.1, too old for this suite. Install 1.11.0 from upstream:
+curl -fsSL https://github.com/bats-core/bats-core/archive/refs/tags/v1.11.0.tar.gz | tar -xz -C /tmp
+sudo /tmp/bats-core-1.11.0/install.sh /usr/local
+sudo git clone --depth 1 https://github.com/bats-core/bats-support /usr/local/lib/bats-support
+sudo git clone --depth 1 https://github.com/bats-core/bats-assert  /usr/local/lib/bats-assert
+export BATS_LIB_PATH=/usr/local/lib   # add to ~/.bashrc to persist
+
+# macOS:
+brew install bats-core bats-support bats-assert
+export BATS_LIB_PATH=/opt/homebrew/lib:/usr/local/lib
+```
+
+Run the suite:
+
+```bash
+bats --print-output-on-failure .github/scripts/tests/         # all files (~11s)
+bats .github/scripts/tests/test_get_version_tag.bats          # one file
+bats --filter "rejects branch ref" .github/scripts/tests/test_require_release_tag.bats
 ```
 
 ## Debugging Failed Tests
