@@ -1636,6 +1636,30 @@ class Tensor:
                 return NotImplemented
 
 
+def _validate_user_tile_alignment(shape: Sequence[int], layout: IndexType) -> None:
+    """Reject non-tile-aligned shapes for TILE_LAYOUT user-facing tensors.
+
+    Per the TT-Lang specification every tile is exactly ``TILE_SHAPE``
+    (32x32) scalar elements, and tiled blocks must have at least two
+    dimensions.  TT-NN itself silently pads non-aligned shapes; the
+    simulator instead surfaces the misuse early so that downstream
+    operations (broadcast, reduce, copy) cannot observe a malformed tile
+    layout.  See issue #601 for the bug class this guards against.
+    """
+    if layout != TILE_LAYOUT:
+        return
+    if len(shape) < 2:
+        raise ValueError(
+            f"TILE_LAYOUT tensors must have at least 2 dimensions, got shape {tuple(shape)}"
+        )
+    h, w = shape[-2], shape[-1]
+    if h % TILE_SHAPE[0] != 0 or w % TILE_SHAPE[1] != 0:
+        raise ValueError(
+            f"TILE_LAYOUT tensors require last two dimensions to be multiples of "
+            f"TILE_SHAPE {TILE_SHAPE}, got shape {tuple(shape)}"
+        )
+
+
 def rand(
     shape: Shape,
     dtype: DType = bfloat16,
@@ -1644,6 +1668,7 @@ def rand(
     memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
+    _validate_user_tile_alignment(shape, layout)
     return Tensor(torch.rand(shape, dtype=_promote_dtype(dtype)), layout, dtype=dtype)
 
 
@@ -1655,6 +1680,7 @@ def empty(
     memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
+    _validate_user_tile_alignment(shape, layout)
     return Tensor(torch.empty(shape, dtype=_promote_dtype(dtype)), layout, dtype=dtype)
 
 
@@ -1734,6 +1760,8 @@ def from_torch(
     else:
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+
+    _validate_user_tile_alignment(tensor.shape, layout)
 
     match eff_dtype:
         case _ if eff_dtype is not None:

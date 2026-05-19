@@ -1277,20 +1277,40 @@ def test_1d_multi_tile_dataflow_buffer_rejected():
 
 
 def test_1d_tensor_tile_aligned_validation():
-    """1-D tensors that are not tile-aligned (or size 1) are rejected by from_tensor."""
+    """1-D tensors that are not multiples of TILE_SHAPE are rejected by from_tensor."""
     from sim.dfb import Block
 
-    # Aligned: 32, 64, 1
     Block.from_tensor(Tensor(torch.zeros(32)))
     Block.from_tensor(Tensor(torch.zeros(64)))
-    Block.from_tensor(Tensor(torch.zeros(1)))
 
-    # Not aligned
+    with pytest.raises(ValueError, match="multiple of TILE_SHAPE"):
+        Block.from_tensor(Tensor(torch.zeros(1)))
+
     with pytest.raises(ValueError, match="multiple of TILE_SHAPE"):
         Block.from_tensor(Tensor(torch.zeros(33)))
 
     with pytest.raises(ValueError, match="multiple of TILE_SHAPE"):
         Block.from_tensor(Tensor(torch.zeros(16)))
+
+
+def test_tiled_dfb_rejects_degenerate_innermost_dim():
+    """Regression test for issue #601: a tile-layout DFB whose likeness tensor
+    has a non-tile-aligned innermost dim (e.g. (32, 1)) must be rejected at
+    construction.  Per spec every tile is 32x32; permitting "degenerate" 32x1
+    tiles led the spec-form ``broadcast(dims=[-1], shape=...)`` path to skip
+    the within-tile expansion and produce silently wrong outputs.
+    """
+    likeness = Tensor(torch.ones((32, 1), dtype=torch.float32), TILE_LAYOUT)
+
+    with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
+        DataflowBuffer(likeness_tensor=likeness, shape=(1, 1), block_count=2)
+
+    with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
+        make_dataflow_buffer_like(likeness, shape=(1, 1))
+
+    likeness_h = Tensor(torch.ones((1, 32), dtype=torch.float32), TILE_LAYOUT)
+    with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
+        make_dataflow_buffer_like(likeness_h, shape=(1, 1))
 
 
 def test_1d_arithmetic_on_blocks():

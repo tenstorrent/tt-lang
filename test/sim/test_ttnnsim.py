@@ -159,7 +159,7 @@ def test_device_compute_with_storage_grid_size():
 
 
 def test_tensor_rand_and_empty_and_to_torch():
-    shape = (4, 8)
+    shape = (32, 64)
     t1 = ttnn.rand(shape, dtype=ttnn.float32)
     assert isinstance(t1, ttnn.Tensor)
     assert t1.shape == shape
@@ -800,6 +800,36 @@ def test_from_torch_various_shapes():
         assert tensor.shape == shape
 
 
+def test_from_torch_tile_layout_rejects_non_tile_aligned_shapes():
+    """Regression test for issue #601: a TILE_LAYOUT tensor whose last two
+    dims are not multiples of TILE_SHAPE is rejected at construction.  Per
+    spec every tile is exactly 32x32; allowing non-aligned shapes here lets
+    downstream consumers (DFB, broadcast, reduce) observe malformed tile
+    layouts and produce silently wrong results.
+    """
+    with pytest.raises(ValueError, match="multiples of TILE_SHAPE"):
+        ttnn.from_torch(torch.ones((32, 1)), layout=ttnn.TILE_LAYOUT)
+
+    with pytest.raises(ValueError, match="multiples of TILE_SHAPE"):
+        ttnn.from_torch(torch.ones((1, 32)), layout=ttnn.TILE_LAYOUT)
+
+    with pytest.raises(ValueError, match="multiples of TILE_SHAPE"):
+        ttnn.from_torch(torch.ones((4, 4)), layout=ttnn.TILE_LAYOUT)
+
+    with pytest.raises(ValueError, match="at least 2 dimensions"):
+        ttnn.from_torch(torch.ones((32,)), layout=ttnn.TILE_LAYOUT)
+
+    # rand / empty are gated by the same check.
+    with pytest.raises(ValueError, match="multiples of TILE_SHAPE"):
+        ttnn.rand((32, 1))
+    with pytest.raises(ValueError, match="multiples of TILE_SHAPE"):
+        ttnn.empty((4, 4))
+
+    # Row-major bypasses the check; non-aligned shapes remain legal there.
+    ttnn.from_torch(torch.ones((32, 1)), layout=ttnn.ROW_MAJOR_LAYOUT)
+    ttnn.from_torch(torch.ones((4, 4)), layout=ttnn.ROW_MAJOR_LAYOUT)
+
+
 def test_from_torch_layout_parameter_accepted():
     """Test that layout parameter is accepted (no-op in simulator)."""
     t = torch.randn((64, 64), dtype=torch.bfloat16)
@@ -888,7 +918,7 @@ def test_from_torch_slice_conversion():
 def test_from_torch_dtype_conversion_preserves_values():
     """Test that dtype conversion preserves values within precision limits."""
     t = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
-    tensor = ttnn.from_torch(t, dtype=ttnn.bfloat16)
+    tensor = ttnn.from_torch(t, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT)
 
     result = ttnn.to_torch(tensor).to(torch.float32)
     assert torch.allclose(result, t, rtol=1e-2)  # bfloat16 has lower precision
@@ -2250,6 +2280,7 @@ class TestAllReduce:
         mesh = self._mesh(4)
         t = ttnn.from_torch(
             torch.zeros(8, 6),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         assert t.mesh_shard_info is not None
@@ -2262,6 +2293,7 @@ class TestAllReduce:
         mesh = self._mesh(3)
         t = ttnn.from_torch(
             torch.zeros(4, 9),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1),
         )
         assert t.mesh_shard_info is not None
@@ -2278,7 +2310,11 @@ class TestAllReduce:
         data[2:4, :] = 2.0
         data[4:6, :] = 3.0
         data[6:8, :] = 4.0
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_reduce(t)
         expected_shard = torch.full((2, 4), 10.0)
         for i in range(4):
@@ -2290,7 +2326,11 @@ class TestAllReduce:
         """With a single-device mesh, all_reduce is an identity."""
         mesh = self._mesh(1)
         data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_reduce(t)
         assert torch.allclose(result.to_torch(), data)
 
@@ -2309,6 +2349,7 @@ class TestAllReduce:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4, dtype=torch.float32),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         result = ttnn.all_reduce(t, dtype=torch.float16)
@@ -2319,6 +2360,7 @@ class TestAllReduce:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
@@ -2330,6 +2372,7 @@ class TestAllReduce:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         ttnn.all_reduce(t, cluster_axis=0, mesh_device=mesh)
@@ -2349,6 +2392,7 @@ class TestAllReduce:
         mesh = self._mesh(3)
         t = ttnn.from_torch(
             torch.zeros(8, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         assert t.mesh_shard_info is not None
@@ -2362,7 +2406,11 @@ class TestAllReduce:
         data = torch.zeros(3, 4, 5)
         data[:, 0:2, :] = 1.0  # first device's shard
         data[:, 2:4, :] = 3.0  # second device's shard
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1),
+        )
         assert t.mesh_shard_info is not None
         assert t.mesh_shard_info.dim == 1
         result = ttnn.all_reduce(t)
@@ -2386,7 +2434,11 @@ class TestAllGather:
         """all_gather along shard_dim concatenates all shards; output is n times the input."""
         mesh = self._mesh(4)
         data = torch.arange(32, dtype=torch.float32).reshape(8, 4)
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_gather(t, dim=0)
         # Each shard is [2, 4]; gathered per device = [8, 4] = data itself.
         # Output = 4 copies stacked along dim 0 = [32, 4].
@@ -2400,7 +2452,11 @@ class TestAllGather:
         mesh = self._mesh(4)
         # 4 devices, each with a [2, 6] shard; sharded along dim 0.
         data = torch.arange(48, dtype=torch.float32).reshape(8, 6)
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_gather(t, dim=1)
         # Each shard is [2, 6]; gathered along dim 1 = [2, 24].
         # Output = 4 copies stacked along dim 0 = [8, 24].
@@ -2419,7 +2475,11 @@ class TestAllGather:
         """With a single-device mesh, all_gather is an identity."""
         mesh = self._mesh(1)
         data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_gather(t, dim=0)
         assert torch.allclose(result.to_torch(), data)
 
@@ -2438,6 +2498,7 @@ class TestAllGather:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
@@ -2449,6 +2510,7 @@ class TestAllGather:
         mesh = self._mesh(4)
         t = ttnn.from_torch(
             torch.ones(8, 6),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         result = ttnn.all_gather(t, dim=0)
@@ -2461,6 +2523,7 @@ class TestAllGather:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         ttnn.all_gather(t, dim=0, cluster_axis=0, mesh_device=mesh)

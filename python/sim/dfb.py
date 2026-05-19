@@ -559,19 +559,17 @@ class Block:
         elem_shape = t.shape
         if len(elem_shape) == 1:
             w = elem_shape[0]
-            if w != 1 and w % TILE_SHAPE[0] != 0:
+            if w % TILE_SHAPE[0] != 0:
                 raise ValueError(
                     f"1-D tensor dimension ({w},) must be a multiple of "
-                    f"TILE_SHAPE[0]={TILE_SHAPE[0]}, or exactly 1"
+                    f"TILE_SHAPE[0]={TILE_SHAPE[0]}"
                 )
         else:
             h, w = elem_shape[-2], elem_shape[-1]
-            if (h != 1 and h % TILE_SHAPE[0] != 0) or (
-                w != 1 and w % TILE_SHAPE[1] != 0
-            ):
+            if h % TILE_SHAPE[0] != 0 or w % TILE_SHAPE[1] != 0:
                 raise ValueError(
                     f"Last two tensor dimensions ({h}, {w}) must be multiples of "
-                    f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
+                    f"TILE_SHAPE {TILE_SHAPE}"
                 )
         tile_shape: Shape = tile_shape_from_tensor(t)
 
@@ -971,15 +969,9 @@ class DataflowBuffer:
             TILE_SIZE = TILE_SHAPE[0]  # 32
             ndims = len(shape)
             for i, (edim, tdim) in enumerate(zip(likeness_tensor.shape, shape)):
-                if edim == 1:
-                    # Degenerate dimension: tile dimension must also be 1
-                    if tdim != 1:
-                        raise ValueError(
-                            f"Element shape dimension {i} is degenerate (size 1), but tile dimension is {tdim} (expected 1). "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
-                        )
-                elif i == ndims - 1 or i == ndims - 2:
-                    # Last two dimensions are tile dimensions
+                if i == ndims - 1 or i == ndims - 2:
+                    # Last two dimensions are tile dimensions: must be a
+                    # multiple of TILE_SIZE per spec (every tile is 32x32).
                     if edim % TILE_SIZE != 0:
                         raise ValueError(
                             f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
@@ -991,7 +983,6 @@ class DataflowBuffer:
                             f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
                         )
                 else:
-                    # Batch/other dimensions
                     if edim < tdim:
                         raise ValueError(
                             f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
@@ -999,8 +990,8 @@ class DataflowBuffer:
                         )
 
             self._element_shape = tuple(
-                1 if edim == 1 else tdim * TILE_SIZE
-                for edim, tdim in zip(likeness_tensor.shape, shape)
+                tdim * TILE_SIZE if i >= ndims - 2 else tdim
+                for i, tdim in enumerate(shape)
             )
 
         self._pending_reserved_block: Optional[Block] = None
