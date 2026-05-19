@@ -31,24 +31,6 @@ func.func @elementwise_into_reduce_disabled()
 
 // -----
 
-// FillOp scaler with compiler DFBs disabled: emit a targeted message that
-// points at the scalar-constant API rather than the generic operand error.
-
-func.func @scalar_constant_disabled()
-    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb_in = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %a_wait = ttl.cb_wait %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %a = ttl.attach_cb %a_wait, %cb_in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-
-  %fill = ttl.fill 5.000000e-01 : tensor<1x1x!ttcore.tile<32x32, bf16>>
-
-  // expected-error @below {{numeric scalar reduce scaler requires compiler-allocated DFBs}}
-  %r = ttl.reduce %a, %fill 0 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  return
-}
-
-// -----
-
 // All inputs already CB-attached: no error even with compiler DFBs disabled.
 
 func.func @already_cb_attached_disabled()

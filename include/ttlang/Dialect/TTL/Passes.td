@@ -186,44 +186,6 @@ def TTLAnnotateL1AccLoops
   ];
 }
 
-def TTLRewriteReduceScalers
-    : Pass<"ttl-rewrite-reduce-scalers", "::mlir::func::FuncOp"> {
-  let summary = "Split reduce ops with non-unit scalers into reduce + post-multiply";
-  let description = [{
-    Rewrites any `ttl.reduce(x, scaler)` whose scaler is not `fill(1.0)`
-    into a `ttl.reduce(x, fill(1.0))` followed by an explicit post-reduce
-    multiply op:
-
-      ttl.reduce(x, fill(c))    -->  r = ttl.reduce(x, fill(1.0))
-                                     ttl.mul_unary_const(r, c)
-
-      ttl.reduce(x, %scaler)    -->  r = ttl.reduce(x, fill(1.0))
-        (dims=[0,1] only)            ttl.mul(r, %scaler)
-
-    The LLK's REDUCE_SCALAR mode (dims=[0,1]) applies the scaler tile
-    twice internally — see tt-metal's `reduce_op.cpp` sqrt-compensation
-    note. Feeding `fill(1.0)` makes the double-apply a no-op; the
-    extracted multiply applies the actual scaler once on the reduce
-    result, where the arithmetic is unambiguous.
-
-    Single-dim reduces (REDUCE_COL / REDUCE_ROW) with non-fill scalers
-    are not rewritten — the LLK applies those scalers correctly. The
-    runtime-tile multiply is restricted to `dims=[0,1]` because only
-    position `[0, 0]` of a REDUCE_SCALAR output is defined; an
-    element-wise mul against the scaler tile yields the correct value at
-    `[0, 0]`.
-
-    One neutral `fill(1.0)` is cached per source `FillOp`, so N reduces
-    sharing the same compile-time scaler converge on the same SSA value.
-    DFB materialization of the new ops is left to
-    `ttl-insert-intermediate-dfbs`.
-  }];
-
-  let dependentDialects = [
-    "::mlir::tt::ttl::TTLDialect"
-  ];
-}
-
 def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
   let summary = "Insert intermediate dataflow buffers at fusion split points";
