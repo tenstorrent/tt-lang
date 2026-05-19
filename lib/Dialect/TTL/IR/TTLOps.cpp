@@ -1101,7 +1101,18 @@ mlir::tt::ttl::MulUnaryConstOp::getDFBInputOperandIndices() {
 }
 
 llvm::SmallVector<unsigned> mlir::tt::ttl::MulOp::getDFBInputOperandIndices() {
-  return {0, 1}; // lhs and rhs
+  // Only materialize operands whose producer cannot fuse into the mul's
+  // compute. Reduce and Matmul write their full result to DST and must be
+  // packed out to L1 before another compute can consume them; elementwise
+  // and broadcast results fuse naturally and must not be materialized.
+  llvm::SmallVector<unsigned> indices;
+  for (unsigned idx : {0u, 1u}) {
+    Operation *defOp = getOperand(idx).getDefiningOp();
+    if (defOp && isa<ReduceOp, MatmulOp>(defOp)) {
+      indices.push_back(idx);
+    }
+  }
+  return indices;
 }
 
 //===----------------------------------------------------------------------===//
