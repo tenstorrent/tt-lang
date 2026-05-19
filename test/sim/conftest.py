@@ -86,10 +86,10 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
     scheduler._main_greenlet = greenlet.getcurrent()
 
     # Simulate being within core 0 by using a valid scheduled kernel name so that
-    # get_current_core_id() returns "core0" and shard-locality stats work in tests.
+    # get_current_node_id() returns "node0" and shard-locality stats work in tests.
     test_greenlet = greenlet(lambda: None)
-    scheduler._current_name = "core0-compute"
-    scheduler._active["core0-compute"] = (
+    scheduler._current_name = "node0-compute"
+    scheduler._active["node0-compute"] = (
         test_greenlet,
         None,  # blocking_obj
         "",  # operation
@@ -97,7 +97,7 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
         "",  # location
         None,  # raw_loc
     )
-    scheduler._has_made_progress["core0-compute"] = False
+    scheduler._has_made_progress["node0-compute"] = False
 
     return scheduler
 

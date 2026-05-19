@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Greenlet-based cooperative scheduler for multi-core simulation.
+Greenlet-based cooperative scheduler for multi-node simulation.
 
 This module provides a cooperative scheduler using greenlets instead of
 yield transformations. Each compute or datamovement kernel runs in its own greenlet,
@@ -19,8 +19,8 @@ from .diagnostics import (
     print_diagnostic_error,
     find_user_code_location,
     is_simulator_frame,
-    format_core_ranges,
-    extract_core_id_from_kernel_name,
+    format_node_ranges,
+    extract_node_id_from_kernel_name,
 )
 from .trace import get_dfb_name, trace
 
@@ -43,7 +43,7 @@ def get_scheduler_algorithm() -> str:
 
 class GreenletScheduler:
     """
-    Cooperative scheduler using greenlets for per-core kernel execution.
+    Cooperative scheduler using greenlets for per-node kernel execution.
 
     The scheduler maintains a collection of greenlets (one per registered kernel)
     and runs them in round-robin fashion. When a kernel blocks (e.g., on wait/reserve),
@@ -79,7 +79,7 @@ class GreenletScheduler:
         """Add a scheduled kernel (greenlet) to the scheduler.
 
         Args:
-            name: Kernel identifier (e.g., "core0-compute")
+            name: Kernel identifier (e.g., "node0-compute")
             func: Kernel entry function to execute
             kernel_type: Kernel role (COMPUTE or DM)
         """
@@ -178,7 +178,7 @@ class GreenletScheduler:
         """Get the name of the currently executing scheduled kernel.
 
         Returns:
-            Kernel name (e.g., core0-dm), or None if none is executing
+            Kernel name (e.g., node0-dm), or None if none is executing
         """
         return self._current_name
 
@@ -196,7 +196,7 @@ class GreenletScheduler:
         """Format kernel runtime error with source location and re-raise.
 
         Args:
-            name: Scheduled kernel name (e.g., core0-compute)
+            name: Scheduled kernel name (e.g., node0-compute)
             exception: The exception that was raised
             include_traceback: Whether to include full traceback in fallback
 
@@ -419,39 +419,39 @@ class GreenletScheduler:
                 ) in self._active.items():
                     obj_desc = self._get_obj_description(blocking_obj)
                     key = (op, obj_desc, location)
-                    # Extract core identifier from kernel name
-                    core_id = extract_core_id_from_kernel_name(name)
-                    blocked_groups[key].append(core_id)
+                    # Extract node identifier from kernel name
+                    node_id = extract_node_id_from_kernel_name(name)
+                    blocked_groups[key].append(node_id)
                     if key not in blocked_raw_locs:
                         blocked_raw_locs[key] = raw_loc
 
                 # Format and print grouped messages with pretty source context
                 print("\nDeadlock detected: all generators blocked")
-                for (op, obj_desc, location), core_ids in blocked_groups.items():
+                for (op, obj_desc, location), node_ids in blocked_groups.items():
                     # Remove duplicates and sort for consistent output
-                    unique_cores = sorted(set(core_ids), key=lambda x: (len(x), x))
+                    unique_nodes = sorted(set(node_ids), key=lambda x: (len(x), x))
 
-                    if len(unique_cores) == 1:
-                        cores_label = unique_cores[0]
+                    if len(unique_nodes) == 1:
+                        nodes_label = unique_nodes[0]
                     else:
-                        core_numbers: list[int] = [
-                            int(core_id[4:]) for core_id in unique_cores
+                        node_numbers: list[int] = [
+                            int(node_id[4:]) for node_id in unique_nodes
                         ]
-                        cores_label = f"cores: {format_core_ranges(core_numbers)}"
+                        nodes_label = f"nodes: {format_node_ranges(node_numbers)}"
 
                     raw_loc = blocked_raw_locs.get((op, obj_desc, location))
                     if raw_loc:
                         filename, lineno = raw_loc
                         print_diagnostic_error(
                             "deadlock",
-                            f"blocked on {op}(){obj_desc} ({cores_label})",
+                            f"blocked on {op}(){obj_desc} ({nodes_label})",
                             filename,
                             lineno,
                             1,
                         )
                     else:
                         print(
-                            f"  blocked on {op}(){obj_desc}{location} ({cores_label})"
+                            f"  blocked on {op}(){obj_desc}{location} ({nodes_label})"
                         )
 
                 raise RuntimeError(
@@ -502,18 +502,18 @@ def set_scheduler(scheduler: Optional[GreenletScheduler]) -> None:
     get_context().scheduler = scheduler
 
 
-def get_current_core_id() -> str:
-    """Get the current core ID from the active scheduled kernel.
+def get_current_node_id() -> str:
+    """Get the current node ID from the active scheduled kernel.
 
     Returns:
-        Core ID like "core0".
+        Node ID like "node0".
 
     Raises:
         RuntimeError: If called outside a running kernel (no active scheduler).
     """
     scheduler = get_scheduler()
     kernel_name = scheduler.get_current_kernel_name()
-    return extract_core_id_from_kernel_name(kernel_name)
+    return extract_node_id_from_kernel_name(kernel_name)
 
 
 def block_if_needed(obj: Any, operation: str) -> None:

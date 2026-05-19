@@ -387,8 +387,8 @@ class TestContextManagerHandlers:
         assert tensors_equal(result, tile)
 
 
-class TestPipeCoreRangeTypes:
-    """Test pipe multicast with different dst_core_range types."""
+class TestPipeNodeRangeTypes:
+    """Test pipe multicast with different dst_node_range types."""
 
     def test_pipe_single_node_int(self) -> None:
         """Test pipe with single 1D core (int)."""
@@ -706,7 +706,7 @@ class TestPipeKeywordConstruction:
         assert p1 == p2
 
     def test_keyword_with_slice_dst(self) -> None:
-        """Pipe(src=..., dst=...) works when dst is a CoreRange with slices."""
+        """Pipe(src=..., dst=...) works when dst is a NodeRange with slices."""
         positional = Pipe((0, 0), (slice(1, 4), 0))
         keyword = Pipe(src=(0, 0), dst=(slice(1, 4), 0))
         assert positional == keyword

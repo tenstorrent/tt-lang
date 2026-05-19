@@ -5,10 +5,10 @@
 Test Program execution framework.
 
 This test verifies the Program class behavior including:
-- Context binding and per-core state isolation
+- Context binding and per-node state isolation
 - Cooperative execution mode
 - Error handling and deadlock detection
-- Multi-core execution
+- Multi-node execution
 """
 
 from typing import cast
@@ -141,10 +141,10 @@ class TestBasicExecution:
 
 
 class TestMultinode:
-    """Test multi-core execution."""
+    """Test multi-node execution."""
 
-    def test_two_core_execution(self) -> None:
-        """Test execution on 2 cores."""
+    def test_two_node_execution(self) -> None:
+        """Test execution on 2 nodes."""
 
         @ttl.operation(grid=(2, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
@@ -156,10 +156,10 @@ class TestMultinode:
 
             @ttl.compute()
             def compute():
-                core_id = cast(int, ttl.node(dims=1))
+                node_id = cast(int, ttl.node(dims=1))
                 block = a_dfb.wait()
                 out_block = out_dfb.reserve()
-                # All cores just do block + block (multiplies by 2)
+                # All nodes just do block + block (multiplies by 2)
                 result = block + block
                 out_block.store(result)
                 block.pop()
@@ -167,19 +167,19 @@ class TestMultinode:
 
             @ttl.datamovement()
             def dm0():
-                core_id = cast(int, ttl.node(dims=1))
+                node_id = cast(int, ttl.node(dims=1))
                 block = a_dfb.reserve()
-                # Each core reads its own tile
-                tx = copy(a[core_id : core_id + 1, 0:1], block)
+                # Each node reads its own tile
+                tx = copy(a[node_id : node_id + 1, 0:1], block)
                 tx.wait()
                 block.push()
 
             @ttl.datamovement()
             def dm1():
-                core_id = cast(int, ttl.node(dims=1))
+                node_id = cast(int, ttl.node(dims=1))
                 block = out_dfb.wait()
-                # Each core writes its own tile
-                tx = copy(block, out[core_id : core_id + 1, 0:1])
+                # Each node writes its own tile
+                tx = copy(block, out[node_id : node_id + 1, 0:1])
                 tx.wait()
                 block.pop()
 
@@ -190,12 +190,12 @@ class TestMultinode:
 
         test_kernel(a, out)
 
-        # Both cores multiply by 2: 5 * 2 = 10
+        # Both nodes multiply by 2: 5 * 2 = 10
         expected_tensor = make_ones_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1]) * 10
         tt_testing.assert_close(out.to_torch(), expected_tensor.to_torch())
 
-    def test_four_core_2d_grid(self) -> None:
-        """Test execution on 2x2 grid (4 cores)."""
+    def test_four_node_2d_grid(self) -> None:
+        """Test execution on 2x2 grid (4 nodes)."""
 
         @ttl.operation(grid=(2, 2))
         def test_kernel(out: ttnn.Tensor):
@@ -204,11 +204,11 @@ class TestMultinode:
 
             @ttl.compute()
             def compute():
-                core_y, core_x = cast(tuple[int, int], ttl.node(dims=2))
+                node_y, node_x = cast(tuple[int, int], ttl.node(dims=2))
                 out_block = out_dfb.reserve()
-                # Each core writes its coordinates
+                # Each node writes its coordinates
                 out_block.store(
-                    Block.from_tensor(make_ones_tensor(32, 32) * (core_y * 10 + core_x))
+                    Block.from_tensor(make_ones_tensor(32, 32) * (node_y * 10 + node_x))
                 )
                 out_block.push()
 
@@ -218,11 +218,11 @@ class TestMultinode:
 
             @ttl.datamovement()
             def dm1():
-                core_y, core_x = cast(tuple[int, int], ttl.node(dims=2))
+                node_y, node_x = cast(tuple[int, int], ttl.node(dims=2))
                 block = out_dfb.wait()
                 tx = copy(
                     block,
-                    out[core_y : core_y + 1, core_x : core_x + 1],
+                    out[node_y : node_y + 1, node_x : node_x + 1],
                 )
                 tx.wait()
                 block.pop()
@@ -233,7 +233,7 @@ class TestMultinode:
 
         test_kernel(out)
 
-        # Verify each core wrote its coordinates
+        # Verify each node wrote its coordinates
         # (0,0) = 0, (0,1) = 1, (1,0) = 10, (1,1) = 11
         out_torch = out.to_torch()
         assert (out_torch[0:32, 0:32] == 0).all()
@@ -243,24 +243,24 @@ class TestMultinode:
 
 
 class TestContextIsolation:
-    """Test that per-core contexts are properly isolated."""
+    """Test that per-node contexts are properly isolated."""
 
     def test_dataflow_buffers_isolated(self) -> None:
-        """Test that dataflow buffers are independent per core."""
+        """Test that dataflow buffers are independent per node."""
 
         @ttl.operation(grid=(2, 1))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
-            # Each core gets its own DFB instance
+            # Each node gets its own DFB instance
             dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
             @ttl.compute()
             def compute():
-                core_id = cast(int, ttl.node(dims=1))
-                # Each core reserves/pushes independently
+                node_id = cast(int, ttl.node(dims=1))
+                # Each node reserves/pushes independently
                 block = dfb.reserve()
                 block.store(
-                    Block.from_tensor(make_ones_tensor(32, 32) * (core_id + 100))
+                    Block.from_tensor(make_ones_tensor(32, 32) * (node_id + 100))
                 )
                 block.push()
 
@@ -270,10 +270,10 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
-                core_id = cast(int, ttl.node(dims=1))
-                # Each core waits/pops its own DFB
+                node_id = cast(int, ttl.node(dims=1))
+                # Each node waits/pops its own DFB
                 block = dfb.wait()
-                tx = copy(block, out[core_id : core_id + 1, 0:1])
+                tx = copy(block, out[node_id : node_id + 1, 0:1])
                 tx.wait()
                 block.pop()
 
@@ -283,7 +283,7 @@ class TestContextIsolation:
 
         test_kernel(out)
 
-        # Each core should have written its own value
+        # Each node should have written its own value
         out_torch = out.to_torch()
         assert (out_torch[0:32, :] == 100).all()
         assert (out_torch[32:64, :] == 101).all()
@@ -302,11 +302,11 @@ class TestContextIsolation:
             @ttl.compute()
             def compute():
                 # Compute kernel reads shared tensor and stores to DFB
-                core_id = cast(int, ttl.node(dims=1))
+                node_id = cast(int, ttl.node(dims=1))
                 block = dfb.reserve()
                 # Read from shared tensor and store (not copy)
-                # Add core_id to distinguish which core wrote
-                data = shared[0:1, 0:1] + core_id
+                # Add node_id to distinguish which node wrote
+                data = shared[0:1, 0:1] + node_id
                 block.store(Block.from_tensor(data))
                 block.push()
 
@@ -317,9 +317,9 @@ class TestContextIsolation:
             @ttl.datamovement()
             def dm1():
                 # DM kernel copies from DFB to output
-                core_id = cast(int, ttl.node(dims=1))
+                node_id = cast(int, ttl.node(dims=1))
                 block = dfb.wait()
-                tx = copy(block, out[core_id : core_id + 1, 0:1])
+                tx = copy(block, out[node_id : node_id + 1, 0:1])
                 tx.wait()
                 block.pop()
 
@@ -330,10 +330,10 @@ class TestContextIsolation:
 
         test_kernel(shared, out)
 
-        # Each core should have written shared + core_id
+        # Each node should have written shared + node_id
         out_torch = out.to_torch()
-        assert (out_torch[0:32, :] == 10).all()  # core 0: 10 + 0
-        assert (out_torch[32:64, :] == 11).all()  # core 1: 10 + 1
+        assert (out_torch[0:32, :] == 10).all()  # node 0: 10 + 0
+        assert (out_torch[32:64, :] == 11).all()  # node 1: 10 + 1
 
 
 class TestErrorHandling:
@@ -366,7 +366,7 @@ class TestErrorHandling:
         a = make_zeros_tensor(32, 32)
 
         with pytest.raises(
-            RuntimeError, match="core0-compute.*ValueError.*Test error in compute"
+            RuntimeError, match="node0-compute.*ValueError.*Test error in compute"
         ):
             test_kernel(a)
 
@@ -396,7 +396,7 @@ class TestErrorHandling:
         a = make_zeros_tensor(32, 32)
 
         with pytest.raises(
-            RuntimeError, match="core0-dm0.*RuntimeError.*Test error in dm0"
+            RuntimeError, match="node0-dm0.*RuntimeError.*Test error in dm0"
         ):
             test_kernel(a)
 
@@ -1010,12 +1010,12 @@ if __name__ == "__main__":
     test_basic.test_multi_tile_computation()
 
     test_multi = TestMultinode()
-    test_multi.test_two_core_execution()
-    test_multi.test_four_core_2d_grid()
+    test_multi.test_two_node_execution()
+    test_multi.test_four_node_2d_grid()
 
     test_ctx = TestContextIsolation()
     test_ctx.test_dataflow_buffers_isolated()
-    test_ctx.test_tensors_shared_across_cores()
+    test_ctx.test_tensors_shared_across_nodes()
 
     test_err = TestErrorHandling()
     test_err.test_error_in_compute()

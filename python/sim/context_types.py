@@ -17,7 +17,7 @@ from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
 from .blockstate import KernelType
 
-# Default L1 memory limit per core (simulator)
+# Default L1 memory limit per node (simulator)
 # keep in sync with ttl.constants.DEFAULT_L1_CB_BUDGET_BYTES
 DEFAULT_MAX_L1_BYTES: int = 1432 * 1024
 
@@ -96,7 +96,7 @@ class SimulatorContext:
     )
     trace_events: list[TraceEvent] = field(default_factory=list)
     # Maps kernel function objects to their precomputed InjectionPoint tuples.
-    # Populated once per kernel invocation before the core loop runs.
+    # Populated once per kernel invocation before the node loop runs.
     # Typed as Any to avoid importing analysis (which imports dfb -> context).
     injection_points_cache: Dict[Any, Any] = field(default_factory=dict)
     # Active copy-wait injection hooks for this simulation run.

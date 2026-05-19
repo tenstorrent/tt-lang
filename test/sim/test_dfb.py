@@ -6,7 +6,7 @@ Tests for DataflowBuffer.
 
 Covers the high-level DataflowBuffer interface (tensor-aware operations,
 context manager syntax, state machine enforcement) and the low-level ring-buffer
-primitives (reserve/wait/push/pop, error contracts, per-core limits).
+primitives (reserve/wait/push/pop, error contracts, per-node limits).
 """
 
 import pytest
@@ -982,7 +982,7 @@ def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
     assert dfb.stats().visible == 0
 
 
-def test_per_core_dfb_limit_exceeds_max() -> None:
+def test_per_node_dfb_limit_exceeds_max() -> None:
     """Test that exceeding the DFB limit emits a warning at definition time without aborting."""
     from sim import ttl
     from sim.program import set_max_dfbs

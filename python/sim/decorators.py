@@ -7,7 +7,7 @@ Function decorators for compute and data movement operations.
 This module provides decorators for marking functions as compute or data movement
 operations within the simulation framework, along with the BindableTemplate protocol
 and the rebind_func_with_ctx utility used by Program to bind decorated functions to
-per-core execution contexts.
+per-node execution contexts.
 """
 
 import types
@@ -34,7 +34,7 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     Create a new function from `func` but with:
       - globals = func.__globals__ + ctx
       - closure cells rebuilt from ctx when possible
-    so that names like `out_dfb` that were captured will now point to the per-core objects.
+    so that names like `out_dfb` that were captured will now point to the per-node objects.
     """
     freevars = func.__code__.co_freevars
     orig_closure = func.__closure__ or ()
@@ -50,7 +50,7 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
             # fall back to original cell if we don't have an override
             new_cells.append(orig_cell_map[name])
 
-    # merge globals with ctx so globals-based lookups also see per-core state
+    # merge globals with ctx so globals-based lookups also see per-node state
     new_globals: Dict[str, Any] = dict(func.__globals__)
     new_globals.update(ctx)
 
@@ -82,8 +82,8 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
     """
     Decorator to mark a function as a compute operation.
 
-    The decorated function will be executed on compute cores and can access
-    the core context including dataflow buffers and core index.
+    The decorated function will be executed on compute nodes and can access
+    the node context including dataflow buffers and node index.
 
     Returns:
         A BindableTemplate that can be bound to specific execution contexts
@@ -96,7 +96,7 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
             kernel_type = KernelType.COMPUTE  # KernelType enum for type safety
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
-                # rebuild function with per-core closure
+                # rebuild function with per-node closure
                 bound_func = rebind_func_with_ctx(func, ctx)
                 return bound_func
 
@@ -112,7 +112,7 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
     Decorator to mark a function as a data movement operation.
 
     The decorated function will handle data transfers between memory and
-    dataflow buffers, and can access the core context.
+    dataflow buffers, and can access the node context.
 
     Returns:
         A BindableTemplate that can be bound to specific execution contexts

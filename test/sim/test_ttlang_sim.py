@@ -826,8 +826,8 @@ class TestSimStats:
         finally:
             trace_path.unlink(missing_ok=True)
 
-    def test_dfb_stats_per_core(self):
-        """ttlang-sim-stats shows per-core DFB breakdown with a subtotal."""
+    def test_dfb_stats_per_node(self):
+        """ttlang-sim-stats shows per-node DFB breakdown with a subtotal."""
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:

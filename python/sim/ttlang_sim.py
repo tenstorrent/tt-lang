@@ -262,7 +262,7 @@ def main() -> None:
         type=int,
         metavar="N",
         dest="max_dfbs",
-        help="Maximum number of DataflowBuffers (CBs) per core (default: 32)",
+        help="Maximum number of DataflowBuffers (CBs) per node (default: 32)",
     )
 
     parser.add_argument(
@@ -270,7 +270,7 @@ def main() -> None:
         type=int,
         metavar="BYTES",
         dest="max_l1",
-        help="Maximum L1 memory per core in bytes; warns if total CB capacity exceeds this (default: 1336 KiB)",
+        help="Maximum L1 memory per node in bytes; warns if total CB capacity exceeds this (default: 1336 KiB)",
     )
 
     parser.add_argument(
