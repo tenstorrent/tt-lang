@@ -16,7 +16,7 @@
 
 # Build and packaging infrastructure.
 /cmake/ bnorris@tenstorrent.com
-/scripts/ bnorris@tenstorrent.com phizalev@tenstorrent.com
+/scripts/ bnorris@tenstorrent.com phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com
 /packaging/ bnorris@tenstorrent.com kfragkiadakis@tenstorrent.com
 
 # Core compiler and dialect implementation.
@@ -36,8 +36,8 @@
 /examples/elementwise-tutorial/ phizalev@tenstorrent.com
 
 # Documentation.
-/docs/ bnorris@tenstorrent.com phizalev@tenstorrent.com zcarver@tenstorrent.com
+/docs/ bnorris@tenstorrent.com phizalev@tenstorrent.com zcarver@tenstorrent.com kfragkiadakis@tenstorrent.com
 /docs/sphinx/spec/ phizalev@tenstorrent.com
 
 # Tooling.
-/tools/ bnorris@tenstorrent.com zcarver@tenstorrent.com
+/tools/ bnorris@tenstorrent.com zcarver@tenstorrent.com kfragkiadakis@tenstorrent.com
