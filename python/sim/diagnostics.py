@@ -137,7 +137,8 @@ def extract_core_id_from_thread_name(thread_name: Optional[str]) -> str:
     and type is the kernel role (e.g., "dm", "compute").
 
     Args:
-        thread_name: Scheduled kernel name like "core0-dm" or "core0-compute"
+        thread_name: Scheduled kernel display name like "core0-dm" or "core0-compute"
+            (see :func:`sim.greenlet_scheduler.kernel_thread_display_name`).
 
     Returns:
         Core ID like "core0", or "unknown" if extraction fails
