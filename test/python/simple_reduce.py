@@ -80,9 +80,9 @@ def reduce_kernel(inp, scaler, out):
 
 # CHECK-CPP: // reduce_compute
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 
 # CHECK-CPP: [[CB0]].wait_front(
 # CHECK-CPP: [[CB1]].wait_front(

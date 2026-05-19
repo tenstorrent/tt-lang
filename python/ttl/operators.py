@@ -803,8 +803,10 @@ def raw_element_read(block, *coords):
     for c in coords:
         if isinstance(c, int):
             index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
-        else:
+        elif hasattr(c, "type") and isinstance(c.type, IndexType):
             index_vals.append(c)
+        else:
+            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
     return ttl.raw_element_read(scalar_type, block, index_vals)
 
 
@@ -840,8 +842,10 @@ def raw_element_write(block, *args):
     for c in coord_args:
         if isinstance(c, int):
             index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
-        else:
+        elif hasattr(c, "type") and isinstance(c.type, IndexType):
             index_vals.append(c)
+        else:
+            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
     ttl.raw_element_write(block, index_vals, val)
 
 
