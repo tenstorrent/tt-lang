@@ -356,7 +356,7 @@ def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
     """Walk function closures and return unique PipeNet objects in encounter order.
 
     PipeNets are deduplicated by `id()` so the same captured net referenced
-    from multiple threads contributes one entry.
+    from multiple kernels contributes one entry.
     """
     seen: dict = {}
     for func in funcs:
@@ -411,7 +411,7 @@ class PipeNet(Generic[DstT]):
     def is_active(self) -> bool:
         """Return True if the current node participates in any pipe (source or destination).
 
-        Useful for early-exit when only PipeNet participants should run thread body code.
+        Useful for early-exit when only PipeNet participants should run kernel body code.
         Must be called within a kernel context.
 
         Returns:

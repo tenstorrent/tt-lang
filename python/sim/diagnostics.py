@@ -130,34 +130,34 @@ def format_core_ranges(core_numbers: list[int]) -> str:
     return ", ".join(ranges)
 
 
-def extract_core_id_from_thread_name(thread_name: Optional[str]) -> str:
+def extract_core_id_from_kernel_name(kernel_name: Optional[str]) -> str:
     """Extract core ID from a scheduled kernel name.
 
     Names follow the pattern "coreN-type" where N is the core number
     and type is the kernel role (e.g., "dm", "compute").
 
     Args:
-        thread_name: Scheduled kernel name like "core0-dm" or "core0-compute"
+        kernel_name: Scheduled kernel name like "core0-dm" or "core0-compute"
 
     Returns:
         Core ID like "core0", or "unknown" if extraction fails
 
     Examples:
-        >>> extract_core_id_from_thread_name("core0-dm")
+        >>> extract_core_id_from_kernel_name("core0-dm")
         'core0'
-        >>> extract_core_id_from_thread_name("core15-compute")
+        >>> extract_core_id_from_kernel_name("core15-compute")
         'core15'
-        >>> extract_core_id_from_thread_name(None)
+        >>> extract_core_id_from_kernel_name(None)
         'unknown'
     """
-    if not thread_name:
+    if not kernel_name:
         return "unknown"
 
     # Extract core ID from scheduled kernel name (e.g., "core0-dm" -> "core0")
-    if "-" in thread_name:
-        return thread_name.split("-")[0]  # Take the part before first dash
+    if "-" in kernel_name:
+        return kernel_name.split("-")[0]  # Take the part before first dash
 
-    return thread_name
+    return kernel_name
 
 
 def print_diagnostic_warning(

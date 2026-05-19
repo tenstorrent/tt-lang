@@ -289,9 +289,9 @@ class TestContextIsolation:
         assert (out_torch[32:64, :] == 101).all()
 
     def test_shared_tensor_with_compute_store(self) -> None:
-        """Test shared tensors where compute thread uses store instead of copy.
+        """Test shared tensors where compute kernel uses store instead of copy.
 
-        This tests the pattern where compute thread reads from a shared tensor
+        This tests the pattern where compute kernel reads from a shared tensor
         and uses store() to write to DFB (not copy).
         """
 
@@ -301,7 +301,7 @@ class TestContextIsolation:
 
             @ttl.compute()
             def compute():
-                # Compute thread reads shared tensor and stores to DFB
+                # Compute kernel reads shared tensor and stores to DFB
                 core_id = cast(int, ttl.node(dims=1))
                 block = dfb.reserve()
                 # Read from shared tensor and store (not copy)
@@ -316,7 +316,7 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
-                # DM thread copies from DFB to output
+                # DM kernel copies from DFB to output
                 core_id = cast(int, ttl.node(dims=1))
                 block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
@@ -442,7 +442,7 @@ class TestBlockCompletion:
     def test_missing_push_detected(self) -> None:
         """Test that a missing push() is handled automatically by auto push/pop.
 
-        With the simulator's AST-based auto push/pop insertion, a thread that
+        With the simulator's AST-based auto push/pop insertion, a kernel that
         omits block.push() after a reserve() no longer produces an error.  The
         push is inserted automatically before the next reserve on the same DFB
         or at function return.
@@ -839,10 +839,10 @@ class TestCooperativeScheduling:
         expected = make_ones_tensor(32, 32) * 15
         tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
-    def test_copy_block_to_tensor_with_dm_thread(self) -> None:
-        """Test Block → Tensor copy in cooperative mode using DM thread.
+    def test_copy_block_to_tensor_with_dm_kernel(self) -> None:
+        """Test Block → Tensor copy in cooperative mode using DM kernel.
 
-        This replaces test_copy_block_to_tensor_cooperative with proper thread separation:
+        This replaces test_copy_block_to_tensor_cooperative with proper kernel separation:
         - DM0 copies Tensor → Block
         - DM1 copies Block → Tensor
         - Compute processes data
@@ -884,12 +884,12 @@ class TestCooperativeScheduling:
         expected = make_ones_tensor(32, 32) * 7
         tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
-    def test_copy_mixed_pairs_with_dm_threads(self) -> None:
-        """Test mixed copy operations using DM threads for all copies.
+    def test_copy_mixed_pairs_with_dm_kernels(self) -> None:
+        """Test mixed copy operations using DM kernels for all copies.
 
-        This replaces test_copy_mixed_pairs_cooperative with proper thread separation:
-        - DM threads handle all copy operations
-        - Compute thread can read from wait() blocks (via direct access, not copy)
+        This replaces test_copy_mixed_pairs_cooperative with proper kernel separation:
+        - DM kernels handle all copy operations
+        - Compute kernel can read from wait() blocks (via direct access, not copy)
         """
 
         @ttl.operation(grid=(1, 1))

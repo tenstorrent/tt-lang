@@ -14,7 +14,7 @@ import builtins
 from .context import get_context
 from .ttnnsim import Tensor
 from .dfb import Block, DataflowBuffer
-from .blockstate import AccessState, BlockAcquisition, ThreadType
+from .blockstate import AccessState, BlockAcquisition, KernelType
 from .diagnostics import warn_once_per_location
 from .greenlet_scheduler import get_current_core_id
 
@@ -72,10 +72,10 @@ def _format_block(block: Block) -> str:
     """
     # Check if block is in an illegal state for printing
     # Illegal states:
-    # 1. DM thread + reserve + (MW or NAW)
-    # 2. DM thread + wait + NAW
+    # 1. DM kernel + reserve + (MW or NAW)
+    # 2. DM kernel + wait + NAW
     if not block.is_temporary:
-        if block.thread_type == ThreadType.DM:
+        if block.kernel_type == KernelType.DM:
             if block.acquisition == BlockAcquisition.RESERVE:
                 if block.access_state in (AccessState.MW, AccessState.NAW):
                     warning_msg = (

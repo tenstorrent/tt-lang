@@ -852,10 +852,10 @@ class TestFlattenCoreCoord:
         test_operation(a, b)
 
 
-class TestThreadOrderIndependence:
-    """Test that thread definition order doesn't matter in operations."""
+class TestKernelOrderIndependence:
+    """Test that kernel definition order doesn't matter in operations."""
 
-    def test_thread_order_dm_compute_dm(self):
+    def test_kernel_order_dm_compute_dm(self):
         """Test operation with order: DM, compute, DM (like broadcast_demo.py)."""
 
         @ttl.operation(grid=(1, 1))
@@ -903,7 +903,7 @@ class TestThreadOrderIndependence:
         expected = torch.ones((32, 32), dtype=torch.float32) * 3
         assert torch.allclose(Y_torch, expected)
 
-    def test_thread_order_compute_dm_dm(self):
+    def test_kernel_order_compute_dm_dm(self):
         """Test operation with order: compute, DM, DM (traditional order)."""
 
         @ttl.operation(grid=(1, 1))
@@ -951,7 +951,7 @@ class TestThreadOrderIndependence:
         expected = torch.ones((32, 32), dtype=torch.float32) * 3
         assert torch.allclose(Y_torch, expected)
 
-    def test_thread_order_dm_dm_compute(self):
+    def test_kernel_order_dm_dm_compute(self):
         """Test operation with order: DM, DM, compute."""
 
         @ttl.operation(grid=(1, 1))

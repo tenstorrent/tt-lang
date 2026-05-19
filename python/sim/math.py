@@ -23,7 +23,7 @@ from .context import get_context
 from .diagnostics import warn_once_per_location
 from .greenlet_scheduler import get_current_core_id
 from .dfb import Block, track_source_blocks, matmul
-from .blockstate import BlockAcquisition, ThreadType
+from .blockstate import BlockAcquisition, KernelType
 from .ttnnsim import Tensor
 from .typedefs import PositiveInt
 
@@ -138,7 +138,7 @@ def broadcast(
             tensor=Tensor(expanded_tensor.contiguous()),
             shape=target_shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=ThreadType.COMPUTE,
+            kernel_type=KernelType.COMPUTE,
             is_temporary=True,
         )
         track_source_blocks(result_block, block)

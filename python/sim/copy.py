@@ -280,7 +280,7 @@ def copy(
     handle = CopyTransaction(src, dst)
 
     # Case A: bare ttl.copy(...) with no assignment — auto-wait immediately.
-    # The AST analysis in analyze_thread_function identifies these call sites
+    # The AST analysis in analyze_kernel_function identifies these call sites
     # and registers their (caller_code, abs_lineno) in context.auto_wait_copy_lines.
     # Using equality-based set lookup so that code objects from different files
     # with identical bodies are still matched correctly.

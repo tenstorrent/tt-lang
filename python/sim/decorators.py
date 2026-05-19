@@ -14,7 +14,7 @@ import types
 from types import CellType, FunctionType
 from typing import Any, Callable, Dict, List
 
-from .blockstate import ThreadType
+from .blockstate import KernelType
 from .context import get_context
 from .typedefs import BindableTemplate
 
@@ -60,22 +60,22 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-def _register_thread(thread_template: BindableTemplate) -> None:
-    """Register a thread template during decoration."""
-    get_context().thread_registry.append(thread_template)
+def _register_kernel(kernel_template: BindableTemplate) -> None:
+    """Register a kernel template during decoration."""
+    get_context().kernel_registry.append(kernel_template)
 
 
-def clear_thread_registry() -> None:
-    """Clear the thread registry before kernel execution."""
-    get_context().thread_registry.clear()
+def clear_kernel_registry() -> None:
+    """Clear the kernel registry before operation execution."""
+    get_context().kernel_registry.clear()
 
 
-def get_registered_threads() -> List[BindableTemplate]:
-    """Get all registered threads and clear the registry."""
-    registry = get_context().thread_registry
-    threads = list(registry)
+def get_registered_kernels() -> List[BindableTemplate]:
+    """Get all registered kernels and clear the registry."""
+    registry = get_context().kernel_registry
+    kernels = list(registry)
     registry.clear()
-    return threads
+    return kernels
 
 
 def compute() -> Callable[[FunctionType], BindableTemplate]:
@@ -93,7 +93,7 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
         class ComputeTemplate:
             __name__ = func.__name__
             __wrapped__ = func  # Standard convention from functools.wraps
-            thread_type = ThreadType.COMPUTE  # ThreadType enum for type safety
+            kernel_type = KernelType.COMPUTE  # KernelType enum for type safety
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 # rebuild function with per-core closure
@@ -101,7 +101,7 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
                 return bound_func
 
         template = ComputeTemplate()
-        _register_thread(template)
+        _register_kernel(template)
         return template
 
     return decorator
@@ -122,14 +122,14 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
         class DMTemplate:
             __name__ = func.__name__
             __wrapped__ = func  # Standard convention from functools.wraps
-            thread_type = ThreadType.DM  # ThreadType enum for type safety
+            kernel_type = KernelType.DM  # KernelType enum for type safety
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 bound_func = rebind_func_with_ctx(func, ctx)
                 return bound_func
 
         template = DMTemplate()
-        _register_thread(template)
+        _register_kernel(template)
         return template
 
     return decorator

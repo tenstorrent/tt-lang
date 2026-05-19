@@ -18,7 +18,7 @@ from greenlet import getcurrent
 
 from .dfb import DataflowBuffer
 from .typedefs import BindableTemplate, Shape
-from .blockstate import ThreadType
+from .blockstate import KernelType
 from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
@@ -26,7 +26,7 @@ from .analysis import (
     collect_reachable_analyses,
     install_copy_wait_hooks,
     PatternViolation,
-    ThreadAnalysis,
+    KernelAnalysis,
 )
 from .diagnostics import print_diagnostic_error
 from .debug_print import ttlang_print
@@ -116,7 +116,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                 # Don't reset context - grid was already set in __init__
                 self.context.update(frame.f_back.f_locals)
 
-            # Extract closure variables from thread functions and add to context
+            # Extract closure variables from kernel functions and add to context
             # This ensures variables like DFBs that were defined in the kernel function
             # are available for per-core copying
             for tmpl in self.functions:
@@ -228,13 +228,13 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
             scheduler = GreenletScheduler()
             set_scheduler(scheduler)
 
-            # Analyse all three thread functions (and any reachable helpers)
+            # Analyse all three kernel functions (and any reachable helpers)
             # once before iterating over cores.  A shared visited set prevents
-            # duplicate analysis when helpers are called by more than one thread.
+            # duplicate analysis when helpers are called by more than one kernel.
             ctx = get_context()
-            _empty = ThreadAnalysis(injection_points=(), bare_copy_linenos=frozenset())
+            _empty = KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
             _visited: set[int] = set()
-            injection_map: dict[types.CodeType, ThreadAnalysis] = {}
+            injection_map: dict[types.CodeType, KernelAnalysis] = {}
             all_violations: List[PatternViolation] = []
 
             for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
@@ -257,13 +257,13 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                     )
                 n = len(all_violations)
                 raise RuntimeError(
-                    f"Found {n} unsupported pattern{'s' if n > 1 else ''} in thread "
+                    f"Found {n} unsupported pattern{'s' if n > 1 else ''} in kernel "
                     "function(s). See errors above for details."
                 )
 
             # Compute the PipeNet active set: linear node indices that
             # participate in any pipe as source or destination. Inactive nodes
-            # skip every kernel thread, mirroring the compiler's scf.if guard.
+            # skip every kernel, mirroring the compiler's scf.if guard.
             grid = self.context.get("grid", (1, 1))
             active_nodes = (
                 self.pipenets.active_node_set(tuple(grid))
@@ -287,17 +287,17 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                     core_context = self._build_core_context(core)
                     all_core_contexts.append(core_context)
 
-                    # Add threads to scheduler
+                    # Add kernels to scheduler
                     for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
-                        # Get ThreadType directly from template's thread_type attribute
-                        thread_type = getattr(tmpl, "thread_type", None)
-                        match thread_type:
-                            case ThreadType.COMPUTE | ThreadType.DM:
+                        # Get KernelType directly from template's kernel_type attribute
+                        kernel_type = getattr(tmpl, "kernel_type", None)
+                        match kernel_type:
+                            case KernelType.COMPUTE | KernelType.DM:
                                 pass
                             case _:
                                 raise RuntimeError(
-                                    f"Template {tmpl} has invalid thread_type '{thread_type}'. "
-                                    f"Expected ThreadType enum (COMPUTE or DM)."
+                                    f"Template {tmpl} has invalid kernel_type '{kernel_type}'. "
+                                    f"Expected KernelType enum (COMPUTE or DM)."
                                 )
 
                         # Bind template to core context
@@ -312,7 +312,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                         ) -> None:
                             getcurrent()._sim_core = c  # type: ignore[attr-defined]
                             fn()
-                            # Auto-push/pop any blocks still pending when the thread
+                            # Auto-push/pop any blocks still pending when the kernel
                             # function returns normally (final-iteration cleanup).
                             # This must not run during exception propagation, so it
                             # is placed after fn() rather than in a finally block.
@@ -322,14 +322,14 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                                     _val.auto_pop_block()
 
                         # Add to scheduler
-                        thread_name = f"core{core}-{tmpl.__name__}"
-                        scheduler.add_thread(thread_name, _tagged, thread_type)
+                        kernel_name = f"core{core}-{tmpl.__name__}"
+                        scheduler.add_kernel(kernel_name, _tagged, kernel_type)
 
-                # Install injection hooks for all discovered code objects (thread
+                # Install injection hooks for all discovered code objects (kernel
                 # functions, nested defs, and module-scope helpers).
                 install_copy_wait_hooks(injection_map)
 
-                # Iterator over the cores that actually run threads.
+                # Iterator over the cores that actually run kernels.
                 # Inactive cores (filtered above) are not traced.
                 active_cores = [c for c in range(total_cores) if _is_active(c)]
 
@@ -337,10 +337,10 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                 for core in active_cores:
                     trace("operation_start", node=core)
 
-                # Run scheduler; if any thread raises, the exception propagates
+                # Run scheduler; if any kernel raises, the exception propagates
                 # immediately and the validation below is intentionally skipped.
                 # Reporting a "simulator bug" for unpushed blocks only makes sense
-                # when all threads completed normally (auto-push/pop should have fired).
+                # when all kernels completed normally (auto-push/pop should have fired).
                 scheduler.run()
 
                 # Emit operation_end for each node now that all kernels completed.
