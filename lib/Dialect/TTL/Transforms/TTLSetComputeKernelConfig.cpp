@@ -42,21 +42,27 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
   });
 }
 
-static bool isF32CB0InputBlockArgument(Value value, ComputeOp computeOp) {
+/// Resolve the CB index of `value` when it is an f32 input block argument of
+/// `computeOp` that is consumed directly from a circular buffer.
+static std::optional<int64_t>
+getF32InputCBIndexForBlockArg(Value value, ComputeOp computeOp) {
   auto arg = dyn_cast<BlockArgument>(value);
   if (!arg || arg.getOwner() != &computeOp.getRegion().front()) {
-    return false;
+    return std::nullopt;
   }
   unsigned argNumber = arg.getArgNumber();
   if (argNumber >= computeOp.getNumInputs()) {
-    return false;
+    return std::nullopt;
   }
   std::optional<mlir::Type> elementType = getTileElementType(arg.getType());
   if (!elementType || !elementType->isF32()) {
-    return false;
+    return std::nullopt;
   }
   Value cb = getAttachedCB(computeOp.getInputs()[argNumber]);
-  return cb && getCBIndex(cb) == 0;
+  if (!cb) {
+    return std::nullopt;
+  }
+  return getCBIndex(cb);
 }
 
 // TODO: Add TTLFPUOp and TTLSFPUOp traits to distinguish FPU and SFPU tile ops.
@@ -76,19 +82,80 @@ static bool isDstInputTileComputeOp(Operation *op) {
          isa<TileBcastOp, TileTransposeOp>(op);
 }
 
-/// True when a compute body contains an SFPU-strategy tile op that must unpack
-/// an f32 input tile from CB0 into DST. FPU consumers (reduce, matmul, and
-/// FPU-eligible add/sub/mul) read via SRCA/SRCB and must not enable this mode.
-static bool needsUnpackToDestFp32(ComputeOp computeOp) {
+/// Return true if `op` benefits from `UnpackToDestFp32` when its input is an
+/// f32 tile fed directly from a CB. This is the SFPU subset of
+/// `isDstInputTileComputeOp`: tile_bcast and tile_transpose are also
+/// DST-input ops, but their LLK paths (unary_bcast, transpose_dest) do not
+/// support `UnpackToDestFp32` mode and produce incorrect results when it is
+/// enabled on their source CB (see tt-llk #1338). They are therefore
+/// excluded here so the CB stays in the default unpack mode.
+static inline bool wantsUnpackToDestFp32(Operation *op) {
+  return isDstInputTileComputeOp(op) && !isa<TileBcastOp, TileTransposeOp>(op);
+}
+
+/// Return the CB index when `value` is an f32 input block argument of
+/// `computeOp` consumed by an FPU-style tile op (reduce, matmul, or
+/// FPU-eligible add/sub/mul). FPU consumers route their operand through
+/// SRCA/SRCB, which is incompatible with `UnpackToDestFp32` mode on the CB.
+static std::optional<int64_t> getF32FPUSrcCBIndex(Operation *op, Value operand,
+                                                  ComputeOp computeOp) {
+  if (!isa<TileReduceOp, TileMatmulBlockOp>(op) && !isFPUEligibleBinaryOp(op)) {
+    return std::nullopt;
+  }
+  return getF32InputCBIndexForBlockArg(operand, computeOp);
+}
+
+/// Collect the CB indices that must be configured with `UnpackToDestFp32`
+/// because at least one SFPU-strategy tile op in the compute body reads an
+/// f32 input tile from that CB directly into DST.
+///
+/// FPU consumers (reduce, matmul, and FPU-eligible add/sub/mul) read via
+/// SRCA/SRCB and must remain in `Default` unpack mode; the two modes are
+/// mutually exclusive on a given CB. When a CB is consumed by both
+/// strategies the SFPU consumer's full-precision request is dropped (the CB
+/// is left in `Default` so the FPU consumer keeps working) and a warning is
+/// emitted on the FPU op so the user can rework the kernel if precision
+/// matters.
+static llvm::SmallSetVector<int64_t, 4>
+collectF32SFPUInputCBs(ComputeOp computeOp) {
+  llvm::SmallSetVector<int64_t, 4> sfpuCBs;
+  llvm::SmallDenseMap<int64_t, Operation *> fpuCBs;
+
   Block &body = computeOp.getRegion().front();
-  return llvm::any_of(body.without_terminator(), [&](Operation &op) {
-    if (!isDstInputTileComputeOp(&op)) {
-      return false;
+  for (Operation &op : body.without_terminator()) {
+    for (Value operand : op.getOperands()) {
+      if (auto fpuIdx = getF32FPUSrcCBIndex(&op, operand, computeOp)) {
+        fpuCBs.insert({*fpuIdx, &op});
+      }
     }
-    return llvm::any_of(op.getOperands(), [&](Value operand) {
-      return isF32CB0InputBlockArgument(operand, computeOp);
-    });
-  });
+    if (!wantsUnpackToDestFp32(&op)) {
+      continue;
+    }
+    for (Value operand : op.getOperands()) {
+      auto cbIdx = getF32InputCBIndexForBlockArg(operand, computeOp);
+      if (!cbIdx) {
+        continue;
+      }
+      sfpuCBs.insert(*cbIdx);
+    }
+  }
+
+  llvm::SmallVector<int64_t, 2> conflicts;
+  for (int64_t cb : sfpuCBs) {
+    if (fpuCBs.contains(cb)) {
+      conflicts.push_back(cb);
+    }
+  }
+  for (int64_t cb : conflicts) {
+    fpuCBs[cb]->emitWarning()
+        << "f32 input from CB " << cb
+        << " is consumed by both FPU and SFPU strategies; leaving the CB in "
+           "default unpack mode so the FPU consumer works, but the SFPU "
+           "consumer will lose precision";
+    sfpuCBs.remove(cb);
+  }
+
+  return sfpuCBs;
 }
 
 struct TTLSetComputeKernelConfigPass
@@ -177,18 +244,20 @@ struct TTLSetComputeKernelConfigPass
     funcOp->setAttr(kEnableFPUBinaryOpsAttrName,
                     BoolAttr::get(funcOp.getContext(), enableFPUBinaryOps));
 
-    bool needsUnpackFp32 = false;
+    llvm::SmallSetVector<int64_t, 4> unpackFp32CBs;
     funcOp->walk([&](ComputeOp computeOp) {
-      if (needsUnpackToDestFp32(computeOp)) {
-        needsUnpackFp32 = true;
-        return WalkResult::interrupt();
+      for (int64_t cb : collectF32SFPUInputCBs(computeOp)) {
+        unpackFp32CBs.insert(cb);
       }
-      return WalkResult::advance();
     });
 
-    if (needsUnpackFp32 && !funcOp->hasAttr(kUnpackToDestFp32AttrName)) {
+    if (!unpackFp32CBs.empty() && !funcOp->hasAttr(kUnpackToDestFp32AttrName)) {
+      SmallVector<int64_t> sortedCBs(unpackFp32CBs.begin(),
+                                     unpackFp32CBs.end());
+      llvm::sort(sortedCBs);
+      SmallVector<int32_t> sortedCBs32(sortedCBs.begin(), sortedCBs.end());
       funcOp->setAttr(kUnpackToDestFp32AttrName,
-                      BoolAttr::get(funcOp.getContext(), true));
+                      DenseI32ArrayAttr::get(funcOp.getContext(), sortedCBs32));
     }
   }
 };

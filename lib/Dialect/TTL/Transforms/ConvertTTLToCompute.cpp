@@ -179,10 +179,29 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 // Tile op emission for fusion
 //===----------------------------------------------------------------------===//
 
+/// Derive the tile result type of a fusable TTL op from its tensor result.
+static Type getFusedResultTileType(Operation *sourceOp) {
+  if (sourceOp->getNumResults() != 1) {
+    return Type();
+  }
+  auto resultTensor =
+      dyn_cast<RankedTensorType>(sourceOp->getResult(0).getType());
+  if (!resultTensor) {
+    return Type();
+  }
+  return ttcore::TileType::get(resultTensor.getElementType());
+}
+
 /// Returns the result Value, or null if the source op is unsupported.
-static Value emitTileOpFor(OpBuilder &builder, Location loc,
-                           Operation *sourceOp, ValueRange tileOperands,
-                           Type tileType) {
+/// Fusable ops, including `ttl.fill`, derive their tile type from the source
+/// op's tensor result so dtype-changing ops such as `ttl.typecast` produce
+/// correctly-typed intermediates inside a fused chain.
+static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
+                           ValueRange tileOperands) {
+  Type tileType = getFusedResultTileType(sourceOp);
+  if (!tileType) {
+    return nullptr;
+  }
 
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
@@ -204,6 +223,14 @@ static Value emitTileOpFor(OpBuilder &builder, Location loc,
         mulUnaryConstOp.getValueAttr());
   }
 
+  // TypecastOp: dtype-changing unary. The result tile type already reflects
+  // the destination dtype via `getFusedResultTileType`.
+  if (isa<TypecastOp>(sourceOp)) {
+    return createTileOpWithPlaceholderDstIndex<TileTypecastOp>(b, loc, tileType,
+                                                               tileOperands[0]);
+  }
+
+  // FillOp: no tile operands, just a value attribute.
   if (auto fillOp = dyn_cast<FillOp>(sourceOp)) {
     return createTileOpWithPlaceholderDstIndex<TileFillOp>(
         builder, loc, tileType, fillOp.getValueAttr());
@@ -463,18 +490,23 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Build the body region
   Block *body = rewriter.createBlock(&computeOp.getBody());
-  // TODO(#264): Assumes all inputs/outputs have the same element type (from
-  // output). This forces all block arguments to have the output's dtype, which
-  // may cause issues when fusing mixed dtype operations (e.g., f32 + bf16).
-  Type scalarType = type.getElementType();
-  Type tileType = ttcore::TileType::get(scalarType);
 
-  // Add block arguments for each root input + output
-  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    body->addArgument(tileType, loc);
+  // Each block argument's tile type is derived from its corresponding
+  // tensor's element type so mixed-dtype fusion (e.g., bf16 input + f32
+  // intermediate produced by a fused `ttl.typecast`) preserves per-value
+  // precision. The output block arg type matches the sink tensor.
+  Type outputTileType = ttcore::TileType::get(type.getElementType());
+  auto getInputTileType = [&](Value root) -> Type {
+    auto inputTensor = getTensorType(root);
+    return ttcore::TileType::get(inputTensor ? inputTensor.getElementType()
+                                             : type.getElementType());
+  };
+
+  for (Value root : trace.rootInputs) {
+    body->addArgument(getInputTileType(root), loc);
   }
   for (size_t i = 0; i < outCbs.size(); ++i) {
-    body->addArgument(tileType, loc);
+    body->addArgument(outputTileType, loc);
   }
 
   rewriter.setInsertionPointToStart(body);
@@ -557,7 +589,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back(); // output block arg
       auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
-          rewriter, loc, tileType, inputTile, outputTile,
+          rewriter, loc, outputTileType, inputTile, outputTile,
           bcastOp.getBcastTypeAttr());
       tileResult = bcastTileOp;
     } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
@@ -576,7 +608,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       if (!deferred) {
         auto matmulTileOp =
             createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
-                rewriter, loc, tileType, lhsTile, rhsTile, Value());
+                rewriter, loc, outputTileType, lhsTile, rhsTile, Value());
         tileResult = matmulTileOp;
       }
     } else {
@@ -596,7 +628,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           deferredMatmul.erase(dfIt);
           auto foldedMatmul =
               createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
-                  rewriter, loc, tileType, mmLhs, mmRhs, accTile);
+                  rewriter, loc, outputTileType, mmLhs, mmRhs, accTile);
           return foldedMatmul;
         };
         Value folded = tryFold(operands[0], operands[1]);
@@ -619,7 +651,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
             auto [mmLhs, mmRhs] = dfIt->second;
             auto mmTileOp =
                 createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
-                    rewriter, loc, tileType, mmLhs, mmRhs, Value());
+                    rewriter, loc, outputTileType, mmLhs, mmRhs, Value());
             tensorToTile[operand] = mmTileOp;
             deferredMatmul.erase(dfIt);
           }
@@ -638,7 +670,18 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           tileOperands.push_back(it2->second);
         }
 
-        tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+        if (op->getNumResults() != 1) {
+          return rewriter.notifyMatchFailure(
+              op, "fusion failed: tile emission requires exactly one tensor "
+                  "result");
+        }
+        if (!isa<RankedTensorType>(op->getResult(0).getType())) {
+          return rewriter.notifyMatchFailure(
+              op, "fusion failed: tile emission requires a ranked tensor "
+                  "result");
+        }
+
+        tileResult = emitTileOpFor(rewriter, loc, op, tileOperands);
         if (!tileResult) {
           return rewriter.notifyMatchFailure(
               op, "fusion failed: unsupported op type");

@@ -56,8 +56,34 @@ BLOCK_ID = f"{BLOCK_ROWS}x{BLOCK_COLS}"
 
 
 @ttl.operation(grid=(1, 1))
-def _typecast_bf16_f32_long_fusion_multi_tile(bf16_inp, f32_inp, out):
+def _typecast_bf16_f32_long_fusion_multi_tile(bf16_inp, out):
     """Cast bf16 to f32 and use it through a longer multi-tile fusion."""
+    bf16_dfb = ttl.make_dataflow_buffer_like(bf16_inp, shape=BLOCK_SHAPE, block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=BLOCK_SHAPE, block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with bf16_dfb.wait() as a, out_dfb.reserve() as o:
+            a_f32 = ttl.math.typecast(a, torch.float32)
+            fused = ((a_f32 + a_f32) * a_f32) + a_f32
+            o.store(fused)
+
+    @ttl.datamovement()
+    def dm_read():
+        with bf16_dfb.reserve() as blk:
+            tx = ttl.copy(bf16_inp[0:BLOCK_ROWS, 0:BLOCK_COLS], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0:BLOCK_ROWS, 0:BLOCK_COLS])
+            tx.wait()
+
+
+@ttl.operation(grid=(1, 1))
+def _typecast_bf16_f32_stray_f32_fusion_multi_tile(bf16_inp, f32_inp, out):
+    """Mix a casted bf16 input with an unrelated direct f32 input."""
     bf16_dfb = ttl.make_dataflow_buffer_like(bf16_inp, shape=BLOCK_SHAPE, block_count=2)
     f32_dfb = ttl.make_dataflow_buffer_like(f32_inp, shape=BLOCK_SHAPE, block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=BLOCK_SHAPE, block_count=2)
@@ -270,14 +296,25 @@ def test_typecast_dtype_sweep_multi_tile(device, src_name, dst_name):
     print(f"  [{src_name}->{dst_name} {BLOCK_ID}] max_diff={max_diff:.2e}  PASSED")
 
 
-@pytest.mark.xfail(
-    raises=RuntimeError,
-    match="expects a non-empty block",
-    reason="Fusing a typecast result with f32 binary compute currently fails lowering.",
-    strict=True,
-)
 def test_typecast_mixed_bf16_f32_long_fusion_multi_tile(device):
     """Cast bf16 to f32 and use it in a longer multi-tile fusion."""
+    shape = (BLOCK_ROWS * TILE, BLOCK_COLS * TILE)
+    a_torch = torch.rand(shape, dtype=torch.bfloat16)
+    out_torch = torch.zeros(shape, dtype=torch.float32)
+
+    a = _to_l1_with_dtype(a_torch, device, ttnn.bfloat16)
+    out = _to_l1_with_dtype(out_torch, device, ttnn.float32)
+
+    _typecast_bf16_f32_long_fusion_multi_tile(a, out)
+
+    a_ref = ttnn.to_torch(a).float()
+    result = ttnn.to_torch(out).float()
+    expected = ((a_ref + a_ref) * a_ref) + a_ref
+    assert_allclose(result, expected, rtol=5e-3, atol=1e-2)
+
+
+def test_typecast_mixed_bf16_f32_stray_f32_long_fusion_rejected(device):
+    """Reject a fusion that mixes typecasted bf16 with an unrelated f32 input."""
     shape = (BLOCK_ROWS * TILE, BLOCK_COLS * TILE)
     a_torch = torch.rand(shape, dtype=torch.bfloat16)
     b_torch = torch.rand(shape, dtype=torch.float32)
@@ -287,10 +324,8 @@ def test_typecast_mixed_bf16_f32_long_fusion_multi_tile(device):
     b = _to_l1_with_dtype(b_torch, device, ttnn.float32)
     out = _to_l1_with_dtype(out_torch, device, ttnn.float32)
 
-    _typecast_bf16_f32_long_fusion_multi_tile(a, b, out)
-
-    a_ref = ttnn.to_torch(a).float()
-    b_ref = ttnn.to_torch(b).float()
-    result = ttnn.to_torch(out).float()
-    expected = ((a_ref + b_ref) * b_ref) + a_ref
-    assert_allclose(result, expected, rtol=5e-3, atol=1e-2)
+    with pytest.raises(
+        RuntimeError,
+        match="mixed f32 and non-f32 tile arguments",
+    ):
+        _typecast_bf16_f32_stray_f32_fusion_multi_tile(a, b, out)

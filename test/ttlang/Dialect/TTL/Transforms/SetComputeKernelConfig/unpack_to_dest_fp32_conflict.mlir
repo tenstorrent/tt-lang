@@ -1,0 +1,69 @@
+// Summary: Diagnose CB conflicts when an f32 input is consumed by both FPU
+// and SFPU strategies in the same compute body. Default and UnpackToDestFp32
+// modes are mutually exclusive on a given CB, so the SFPU consumer's
+// full-precision request is dropped and a warning is emitted; the conflicting
+// CB is left out of the `ttl.unpack_to_dest_fp32` array attribute.
+//
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file --verify-diagnostics | FileCheck %s
+
+#map = affine_map<(d0, d1) -> (d0, d1)>
+
+// CHECK-LABEL: func.func @f32_cb1_used_by_both_fpu_and_sfpu
+// The conflicting CB1 is dropped, no `ttl.unpack_to_dest_fp32` attribute is
+// produced (only CB1 had an SFPU consumer; CB0/CB2 do not).
+// CHECK-NOT: ttl.unpack_to_dest_fp32
+func.func @f32_cb1_used_by_both_fpu_and_sfpu(
+    %a: tensor<1x1x!ttcore.tile<32x32, f32>>,
+    %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
+    -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.enable_fpu_binary_ops = true} {
+  %c0 = arith.constant 0 : index
+  %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
+
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+
+  %a_cb = ttl.attach_cb %a, %cb0
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // Both %b_cb and %b_cb_again attach to CB1 so the two block args inside
+  // the compute body both read their unpacks from CB1; one is consumed by an
+  // FPU tile_add and the other by an SFPU tile_exp.
+  %b_cb = ttl.attach_cb %b, %cb1
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %b_cb_again = ttl.attach_cb %b, %cb1
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb2
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+
+  %out_view = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %res = ttl.compute
+      ins(%a_cb, %b_cb, %b_cb_again : tensor<1x1x!ttcore.tile<32x32, f32>>,
+                                       tensor<1x1x!ttcore.tile<32x32, f32>>,
+                                       tensor<1x1x!ttcore.tile<32x32, f32>>)
+      outs(%init_cb : tensor<1x1x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [#map, #map, #map, #map],
+       iterator_types = ["parallel", "parallel"]} {
+    ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+         %b_tile_fpu: !ttcore.tile<32x32, f32>,
+         %b_tile_sfpu: !ttcore.tile<32x32, f32>,
+         %out_tile: !ttcore.tile<32x32, f32>):
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
+      // FPU path: CB0 + CB1 through SRCA/SRCB.
+      // expected-warning @below {{f32 input from CB 1 is consumed by both FPU and SFPU strategies}}
+      %sum = ttl.tile_add %a_tile, %b_tile_fpu into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+      // SFPU path: same b on CB1 read straight to DST via tile_exp.
+      %ex = ttl.tile_exp %b_tile_sfpu into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+      ttl.tile_store %sum, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %ex, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.yield
+  } -> tensor<1x1x!ttcore.tile<32x32, f32>>
+
+  return %res : tensor<1x1x!ttcore.tile<32x32, f32>>
+}
