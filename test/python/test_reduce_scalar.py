@@ -185,7 +185,8 @@ def make_scalar_reduce_kernel(
     cache_key = (reduce_fn, inp_rows, inp_cols, tuple(dims), scaler_expr, scaler_on_rhs)
     reduce_call = f"ttl.math.{reduce_fn}(inp_blk, dims={dims})"
     mul_expr = (
-        f"{reduce_call} * {scaler_expr}" if scaler_on_rhs
+        f"{reduce_call} * {scaler_expr}"
+        if scaler_on_rhs
         else f"{scaler_expr} * {reduce_call}"
     )
     code = SCALAR_REDUCE_KERNEL_TEMPLATE.format(
@@ -696,7 +697,9 @@ def test_reduce_times_reduce(device, dtype, reduce_fn):
     expected = torch.tensor(a_reduced * b_reduced, dtype=torch.float32)
     actual = ttnn.to_torch(out)[0, 0].float()
     # Each reduce can be ~|sum of 1024 ~U(-2,2)| ≈ 30; product amplifies error.
-    assert_allclose(actual, expected, **_tolerances(dtype, max(abs(a_reduced), abs(b_reduced))))
+    assert_allclose(
+        actual, expected, **_tolerances(dtype, max(abs(a_reduced), abs(b_reduced)))
+    )
 
 
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
@@ -783,7 +786,9 @@ def test_zero_scaler(device, dtype):
     kernel = make_scalar_reduce_kernel("reduce_sum", 1, 1, [0, 1], repr(0.0))
 
     inp_torch = torch.full((TILE, TILE), 1.0, dtype=dtype)
-    out_torch = torch.full((TILE, TILE), 7.0, dtype=dtype)  # nonzero so a no-op write fails
+    out_torch = torch.full(
+        (TILE, TILE), 7.0, dtype=dtype
+    )  # nonzero so a no-op write fails
     inp = to_l1(inp_torch, device)
     out = to_l1(out_torch, device)
     kernel(inp, out)
