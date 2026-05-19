@@ -10,4 +10,23 @@
 
 PYTHON="${PYTHON:-python}"
 
-exec "$PYTHON" -m sim_stats "$@"
+# Resolve the repo/toolchain root from the script's own location so this works
+# when invoked as ./bin/ttlang-sim-stats or from an arbitrary working directory.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
+
+# Sources: python/sim_stats; installed ttlang: python_packages/sim_stats.
+if [ -d "${_REPO_ROOT}/python/sim_stats" ]; then
+    export PYTHONPATH="${_REPO_ROOT}/python${PYTHONPATH:+:${PYTHONPATH}}"
+    exec "$PYTHON" -m sim_stats "$@"
+fi
+
+if [ -d "${_REPO_ROOT}/python_packages/sim_stats" ]; then
+    export PYTHONPATH="${_REPO_ROOT}/python_packages${PYTHONPATH:+:${PYTHONPATH}}"
+    exec "$PYTHON" -m sim_stats "$@"
+fi
+
+echo "ttlang-sim-stats: cannot locate the sim_stats package." >&2
+echo "  checked: ${_REPO_ROOT}/python/sim_stats (source tree)" >&2
+echo "  checked: ${_REPO_ROOT}/python_packages/sim_stats (installed)" >&2
+exit 1

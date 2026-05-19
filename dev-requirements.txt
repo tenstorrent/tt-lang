@@ -6,4 +6,5 @@ lit
 pre-commit
 pyright
 pytest-order>=1.0.0
+pytest-timeout>=2.0
 pytest-xdist>=3.0
