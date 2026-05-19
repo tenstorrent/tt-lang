@@ -12,22 +12,25 @@ set -euo pipefail
 BASE=${1:?missing base sha}
 HEAD=${2:?missing head sha}
 
-PATHS=(
-    third-party/tt-metal-version
-    third-party/llvm-project
-    third-party/tt-mlir
-    third-party/tt-metal
-    .github/containers/Dockerfile.base
-    pyproject.toml
-    requirements-runtime.txt
-)
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/uplift-paths.sh"
 
-CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- "${PATHS[@]}")
+# Run from the repo root so UPLIFT_PATHS (relative to repo root) resolves
+# consistently regardless of the caller's CWD. Without this, `git diff --
+# <paths>` from a subdirectory interprets the paths relative to the
+# subdirectory and silently produces an empty result.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ -z "$REPO_ROOT" ]; then
+    echo "ERROR: Not inside a git repository." >&2
+    exit 1
+fi
+cd "$REPO_ROOT"
 
-if [[ -n "$CHANGED" ]]; then
+mapfile -t CHANGED < <(git diff --name-only "$BASE" "$HEAD" -- "${UPLIFT_PATHS[@]}")
+
+if [[ ${#CHANGED[@]} -gt 0 ]]; then
     echo "uplift=true" >> "$GITHUB_OUTPUT"
     echo "Uplift detected:"
-    printf '  %s\n' $CHANGED
+    printf '  %s\n' "${CHANGED[@]}"
 else
     echo "uplift=false" >> "$GITHUB_OUTPUT"
     echo "No uplift-relevant changes."
