@@ -52,7 +52,7 @@ def _make_binary_add_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -90,7 +90,7 @@ def _make_binary_mul_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -127,7 +127,7 @@ def _make_unary_relu_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 out_blk += ttl.math.relu(a_blk)
@@ -161,7 +161,7 @@ def _make_binary_then_unary_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -200,7 +200,7 @@ def _make_fpu_chain_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -241,7 +241,7 @@ def _make_sfpu_chain_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 out_blk += ttl.math.exp(ttl.math.relu(a_blk))
@@ -281,7 +281,7 @@ def _make_subblocked_add_kernel(block_m, block_n):
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -325,7 +325,7 @@ def _make_mixed_elem_matmul_kernel(K1, K2):
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(K1):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -401,7 +401,7 @@ def _make_fused_linear_relu_kernel(block_m, block_n, grid="auto"):
                         nb = node_n * n_per + ln
                         if nb < N_num:
                             out_blk = out_dfb.reserve()
-                            out_blk.store(ttl.math.fill(out_blk, 0))
+                            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
                             c_blk = c_dfb.wait()
                             for _ in range(Kt):
                                 a_blk = a_dfb.wait()

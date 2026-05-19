@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List, Tuple, Union
 
 from ttl.dialects import arith
-from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type
+from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type, Context
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -678,12 +678,37 @@ def transpose(input: TensorBlock) -> TensorBlock:
 
 
 @syntax("fill")
-def fill(output: TensorBlock, value) -> TensorBlock:
-    """Fill a tensor with a constant f32 value."""
+def fill(value, *, shape, dtype=None) -> TensorBlock:
+    """Produce a block of ``shape`` filled with a constant value.
+
+    Matches the spec form ``ttl.block.fill(value, shape)``. ``dtype`` selects
+    the per-element tile dtype and defaults to bf16, matching the simulator's
+    spec-form default. Accepts ``ttcore.DataType``, a torch dtype, or a ttnn
+    dtype. The downstream ``ttl.store`` determines the output CB used during
+    lowering; no output operand is required.
+    """
+    from ttl.dialects import ttcore
+    from .dtype_utils import tensor_dtype_to_ttcore_datatype
+
     fill_val = _get_constant_float(value)
-    ctx = output.type.context
+    shape_list = [_get_constant_int(s) for s in shape]
+    if not shape_list:
+        raise ValueError("fill requires a non-empty shape")
+    if any(s <= 0 for s in shape_list):
+        raise ValueError(f"fill shape must be all-positive, got {tuple(shape_list)}")
+
+    if dtype is None:
+        ttcore_dtype = ttcore.DataType.BFloat16
+    elif isinstance(dtype, ttcore.DataType):
+        ttcore_dtype = dtype
+    else:
+        ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
+
+    ctx = Context.current
+    tile_type = ttcore.ir.TileType.get(ctx, 32, 32, ttcore_dtype)
+    result_type = RankedTensorType.get(shape_list, tile_type)
     value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
-    return ttl.fill(output.type, value_attr)
+    return ttl.fill(result_type, value_attr)
 
 
 def _is_supported_typecast_dtype(ttcore_dtype) -> bool:

@@ -28,8 +28,9 @@ def eltwise_pipe_node3(
     assert a_in.shape == b_in.shape == out.shape
     assert a_in.shape[0] % granularity == 0
 
-    # Check that c_in is 1x1 and expand it to tile shape (1, 1) -> (1, 1, 32, 32) -> (32, 32)
-    assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
+    # c_in is a single tile (TILE_SHAPE). Its value is added to every element
+    # of a*b via inter-tile broadcast along the row dimension.
+    assert c_in.shape == ttl.TILE_SHAPE, f"c_in must be one tile, got {c_in.shape}"
 
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
@@ -88,7 +89,7 @@ def eltwise_pipe_node3(
                 # Use store() to properly populate the Block with computed results
                 # Broadcast c_block along dimension 0 (rows) to match a_block/b_block shape
                 result = a_block * b_block + ttl.block.broadcast(
-                    c_block, dims=[0], shape=out_block
+                    c_block, dims=[0], shape=(granularity, 1)
                 )
                 out_block.store(result)
 
@@ -113,8 +114,10 @@ def eltwise_pipe_node3(
 
             def pipe_src(pipe_id):
                 print(f"dm0 (C multicast SRC): node={node_num}")
-                # C is only 1 tile
-                tx = ttl.copy(c_in[slice(0, 1), slice(0, 1)], c_block)
+                # C is one full tile
+                tx = ttl.copy(
+                    c_in[0 : ttl.TILE_SHAPE[0], 0 : ttl.TILE_SHAPE[1]], c_block
+                )
                 tx.wait()
                 tx2 = ttl.copy(c_block, pipe_id)
                 tx2.wait()
@@ -168,15 +171,21 @@ def eltwise_pipe_node3(
 
 def main() -> None:
     dim = 128
+    tile_h, tile_w = ttl.TILE_SHAPE
     a_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
     b_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
-    c_in = ttnn.rand((1, 1), dtype=ttnn.float32)
+    c_in = ttnn.rand((tile_h, tile_w), dtype=ttnn.float32)
     out = ttnn.empty((dim, dim), dtype=ttnn.float32)
 
     eltwise_pipe_node3(a_in, b_in, c_in, out)
 
-    golden = a_in * b_in + c_in
-    assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out))
+    # c_in is broadcast tile-wise: each (tile_h, tile_w) region of a*b adds
+    # the same c_in tile.
+    a_t = ttnn.to_torch(a_in)
+    b_t = ttnn.to_torch(b_in)
+    c_t = ttnn.to_torch(c_in)
+    golden = a_t * b_t + c_t.repeat(dim // tile_h, dim // tile_w)
+    assert_with_ulp(golden, ttnn.to_torch(out))
 
 
 if __name__ == "__main__":

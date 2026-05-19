@@ -245,7 +245,9 @@ def make_layernorm_kernel(dim_tiles):
                     var_bc = bcast_dfb.wait()
                     istd = istd_dfb.reserve()
                     istd.store(
-                        ttl.math.rsqrt(var_bc * ms + ttl.math.fill(var_bc, 1e-6))
+                        ttl.math.rsqrt(
+                            var_bc * ms + ttl.block.fill(1e-6, shape=var_bc.shape)
+                        )
                     )
                     # Pass 3: normalize + affine
                     inv_std = istd_dfb.wait()
@@ -377,7 +379,9 @@ def make_layernorm_kernel_explicit(dim_tiles):
                     var_bc = bcast_dfb.wait()
                     istd = istd_dfb.reserve()
                     istd.store(
-                        ttl.math.rsqrt(var_bc * ms + ttl.math.fill(var_bc, 1e-6))
+                        ttl.math.rsqrt(
+                            var_bc * ms + ttl.block.fill(1e-6, shape=var_bc.shape)
+                        )
                     )
                     istd.push()
                     var_bc.pop()
@@ -438,7 +442,7 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                         # Pass 1: mean via += L1 accumulation, then
                         # broadcast * ms.
                         with mean_dfb.reserve() as mean_blk:
-                            mean_blk.store(ttl.math.fill(mean_blk, 0))
+                            mean_blk.store(ttl.block.fill(0, shape=mean_blk.shape))
                             for _ in range(dim_tiles):
                                 with x_dfb.wait() as xj:
                                     mean_blk += ttl.math.reduce_sum(xj, sc, dims=[1])
@@ -451,7 +455,7 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                         with mean_dfb.wait() as mean_val:
                             # Pass 2: variance into istd_dfb, then rsqrt.
                             with istd_dfb.reserve() as var_blk:
-                                var_blk.store(ttl.math.fill(var_blk, 0))
+                                var_blk.store(ttl.block.fill(0, shape=var_blk.shape))
                                 for _ in range(dim_tiles):
                                     with x_dfb.wait() as xj:
                                         diff = xj - mean_val
@@ -464,7 +468,7 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                             var_blk, dims=[1], shape=(1, 1)
                                         )
                                         * ms
-                                        + ttl.math.fill(var_blk, 1e-6)
+                                        + ttl.block.fill(1e-6, shape=var_blk.shape)
                                     )
                                 )
 

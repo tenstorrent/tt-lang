@@ -31,7 +31,7 @@ def fill_kernel(out):
     @ttl.compute()
     def compute_fn():
         with out_dfb.reserve() as o:
-            o.store(ttl.math.fill(o, -3.0))
+            o.store(ttl.block.fill(-3.0, shape=o.shape))
 
     @ttl.datamovement()
     def dm_read():
@@ -53,7 +53,7 @@ def fill_add_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as x, out_dfb.reserve() as o:
-            filled = ttl.math.fill(o, 1.0)
+            filled = ttl.block.fill(1.0, shape=o.shape)
             o.store(x + filled)
 
     @ttl.datamovement()
