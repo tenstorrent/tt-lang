@@ -523,163 +523,34 @@ The type compatibility constraint prevents reuse across DFBs with different shap
 
 ## Scalar Element Access to DFBs
 
-Data movement threads sometimes need to read or write individual scalar
-elements from a DFB slot -- for example, to inspect a header word, patch a
-control field, or build a tile element-by-element from non-contiguous DRAM
-data. `ttl.raw_element_read` and `ttl.raw_element_write` provide this
-capability at the TTL dialect level.
-
-### Motivation
-
-The existing DFB interface (`cb_reserve`/`cb_push`/`cb_wait`/`cb_pop`,
-`ttl.store`, `ttl.copy`) operates on whole blocks. There is no mechanism
-for a data movement kernel to access a single scalar within a block, and
-there are performance gains to be had in the right context. Motivating use
-cases include updating KV-cache entries, currently non-vectorizable
-operations (or operations that are non-vectorizable when fused) such as
-top-K, and better utilization of data movement threads in heavily
-compute-bound contexts.
-
-### Scope and restrictions
-
-Raw element access is restricted to data movement (noc) threads. Compute
-threads operate through the tile pipeline (`cb_wait` -> `attach_cb` -> tile
-ops -> `tile_store` -> `cb_push`) and do not have direct L1 element access.
-
-Only `f32` and `bf16` scalar types are supported, matching the dtypes that
-tt-metal's L1 pointer access supports. Coordinates are `index`-typed values
-interpreted as flat scalar-element positions within the block.
-
-### Python DSL interface
+`ttl.raw_element_read` and `ttl.raw_element_write` give data movement (noc)
+threads per-element L1 access to DFB slots. The existing DFB interface
+operates on whole blocks; these ops fill the gap for use cases like KV-cache
+updates, top-K, and element-level data manipulation in DM threads.
 
 ```python
 val = ttl.raw_element_read(block, coord0, coord1, ...)
-
 ttl.raw_element_write(block, coord0, coord1, ..., val)
 ```
 
-The `block` operand is a tensor view obtained from `cb.reserve()` or
-`cb.wait()`. Coordinates are Python `int` literals or MLIR `index` values.
-Integer literals are automatically wrapped in `arith.constant` ops. The
-number of coordinates must exactly match the block tensor rank.
-
-```python
-@ttl.datamovement()
-def dm_kernel():
-    with some_dfb.wait() as block:
-        val = ttl.raw_element_read(block, row, col)
-        ttl.raw_element_write(block, row, col, val)
-
-    with some_3d_dfb.reserve() as block:
-        ttl.raw_element_write(block, i, j, k, val)
-```
-
-### MLIR operations
-
-Two operations are defined in the TTL dialect.
-
-`ttl.raw_element_read` extracts a single scalar element from a block:
-
 ```mlir
-%val = ttl.raw_element_read %block[%i, %j]
-       : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+%v = ttl.raw_element_read %block[%i, %j] : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+ttl.raw_element_write %block[%i, %j], %v : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
 ```
 
-- Operands: `$block` (ranked tensor), `$coords` (variadic index).
-- Result: scalar matching the block's underlying element dtype.
-- Traits: `MemRead`, `TTL_DataMovementOpTrait`.
+Coordinates are flat scalar-element positions (one per tensor dimension).
+For tiled blocks, lowering will decompose each coordinate into tile index +
+intra-tile offset; for row-major blocks they map directly to memory offsets.
+Blocks of any rank are supported.
 
-`ttl.raw_element_write` stores a single scalar value into a block:
+The verifier (`verifyRawElementOp` in `TTLOps.cpp`) enforces:
 
-```mlir
-ttl.raw_element_write %block[%i, %j], %val
-       : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
-```
+1. Enclosing function is a noc kernel thread.
+2. Coordinate count equals block tensor rank.
+3. Scalar type matches the block's element dtype (resolved through
+   `TileType` for tiled blocks).
+4. Only `f32` and `bf16` are accepted.
 
-- Operands: `$block` (ranked tensor), `$coords` (variadic index),
-  `$value` (scalar).
-- No result.
-- Traits: `MemRead`, `MemWrite`, `TTL_DataMovementOpTrait`.
-
-Both operations support blocks of any rank.
-
-### Verifier rules
-
-A shared verifier (`verifyRawElementOp` in `TTLOps.cpp`) enforces four
-rules on both ops:
-
-1. **Thread restriction** -- the enclosing `func.func` must carry
-   `ttl.kernel_thread = #ttkernel.thread<noc>`. Raw element access is
-   not permitted in compute or untagged functions.
-
-2. **Rank matching** -- the number of coordinates must equal the block
-   tensor rank. A rank-2 block requires exactly two coordinates; a rank-3
-   block requires exactly three.
-
-3. **Dtype matching** -- the scalar type (result type for read, value type
-   for write) must match the block's underlying element dtype. For tiled
-   blocks (`!ttcore.tile<HxW, dtype>`), the expected scalar type is resolved
-   from the tile's `DataType` enum (`Float32` -> `f32`, `BFloat16` ->
-   `bf16`). For row-major blocks, the tensor element type is used directly.
-
-4. **Supported dtypes** -- only `f32` and `bf16` are accepted.
-
-### Coordinate semantics
-
-Coordinates are flat scalar-element positions within the block, independent
-of memory layout. For a block of shape `tensor<R0 x R1 x ... x Rn x elem>`,
-each coordinate `c_i` indexes into dimension `i` of the tensor. For tiled
-blocks the coordinates address the logical element grid; lowering decomposes
-each coordinate into a tile index and an intra-tile offset. For example,
-coordinate `(row=35, col=10)` into a `tensor<2x2x!ttcore.tile<32x32, f32>>`
-addresses tile `(1, 0)` at intra-tile position `(3, 10)`. For row-major
-blocks, coordinates map directly to memory offsets.
-
-### Interaction with the DFB lifecycle
-
-Raw element operations occur within a DFB acquire interval:
-
-```
-cb_reserve / cb_wait     -- acquire slot
-  raw_element_read       -- read from acquired slot
-  raw_element_write      -- write to acquired slot
-cb_push / cb_pop         -- release slot
-```
-
-The ops carry `MemRead` / `MemWrite` side effects so that MLIR's side
-effect analysis does not reorder them across acquire/release boundaries.
-`raw_element_write` carries both `MemRead` and `MemWrite` because the
-underlying L1 write may interact with other data in the same buffer region,
-and the conservative effect set prevents illegal reordering.
-
-### Lowering (future work)
-
-Lowering from `ttl.raw_element_read` / `ttl.raw_element_write` to TTKernel
-and EmitC is not yet implemented. The planned approach:
-
-1. **Tiled blocks**: decompose coordinates into tile index + intra-tile
-   offset using the tile dimensions from the block's `TileType`. Compute
-   the L1 byte address from the tile's base address (via CB read/write
-   pointer) plus the intra-tile element offset. Emit a
-   `reinterpret_cast<tt_l1_ptr T*>` and a pointer dereference.
-
-2. **Row-major blocks**: linearize coordinates using the block's shape
-   strides. Compute the L1 byte address from the CB pointer plus the
-   linear element offset. Emit the same pointer cast and dereference.
-
-3. **Bounds checking**: optionally emit runtime bounds assertions via
-   tt-metal's `ASSERT()` macro (watcher-gated, zero cost in release builds)
-   for each coordinate against its dimension extent. Static bounds
-   violations are caught at Python trace time when coordinates are integer
-   literals.
-
-### Test coverage
-
-- `test/ttlang/Dialect/TTL/IR/raw_element_ops.mlir` -- verifier acceptance
-  tests for f32/bf16 read and write on 2D and 3D tiled blocks.
-- `test/ttlang/Dialect/TTL/IR/raw_element_ops_invalid.mlir` -- verifier
-  rejection tests covering: missing kernel thread attribute, compute thread
-  usage, coordinate count mismatch, and scalar dtype mismatch.
-- `test/python/simple_raw_element_access.py` -- compile-only Python DSL
-  test verifying the frontend lowers `ttl.raw_element_read` and
-  `ttl.raw_element_write` into the expected TTL ops.
+Both ops carry `MemRead`/`MemWrite` side effects to prevent reordering
+across acquire/release boundaries. Lowering to TTKernel/EmitC is future
+work
