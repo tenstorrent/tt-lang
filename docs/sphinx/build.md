@@ -286,7 +286,16 @@ pointer changes together:
 git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
         third-party/tt-metal-version pyproject.toml
 git commit -m "Uplift submodules"
+git push
 ```
+
+On push, `resolve-docker-tag` (see [Auto-resolved tag in PR /
+push workflows](#auto-resolved-tag-in-pr--push-workflows)) sees the
+uplift-relevant paths changed since the nearest version tag and emits
+`vX.Y.Z-uplift-<hash>`; if the corresponding image is missing in GHCR,
+the `build-docker` job builds and pushes it before any other downstream
+job consumes it. Subsequent pushes of the same submodule SHA set reuse
+the cached image.
 
 ### CI: toolchain cache and Docker images
 
@@ -299,87 +308,135 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    `call-build-toolchain.yml` workflow automatically builds and caches a new
    toolchain.
 
-2. **Docker images** -- `ird` and `dist` container images tagged by the nearest
-   git version tag (see `.github/containers/get-version-tag.sh`). Rebuilds
-   overwrite the same tag. A `latest` tag is also pushed alongside each
-   versioned tag. After building, `call-build-docker.yml` runs the tutorial
-   examples in the dist container to verify the image works.
+2. **Docker images** -- `ird` and `dist` container images at GHCR, tagged by
+   `.github/containers/get-version-tag.sh` (see [Docker tag scheme](#docker-tag-scheme)).
+   Uplift-hashed tags (`vX.Y.Z-uplift-<hash>`) include a hash of the content
+   installed into the image (tt-metal submodule + version pin, LLVM submodule,
+   `Dockerfile.base`, `requirements-runtime.txt`), so the same toolchain
+   state always resolves to the same tag. The bare release tag (`vX.Y.Z`) is
+   only pushed by `publish-pypi.yml` on a release tag push, and `:latest` is
+   only updated from `ci.yml` on push to `main`, and only when `build-docker`
+   actually runs there (i.e. an uplift commit whose image is not already in
+   GHCR). `call-build-docker.yml` takes
+   a `push` input (default `false`); it builds the image, smoke-tests it
+   inside `docker run`, and pushes to GHCR only when `push: true`.
+   Tutorial verification in the dist container runs separately as a
+   pre-publish check; see [Publishing to PyPI](#publishing-to-pypi).
 
-   Tags may carry SemVer build metadata after `+` to mark uplift rebuilds of
-   an existing release. Because Docker tags forbid `+`, `get-version-tag.sh`
-   translates `+` to `-` when forming the image tag (e.g. git tag
-   `<TAG>+<local>` produces Docker tag `<TAG>-<local>`). Use the sanitized
-   form anywhere a `docker_tag` parameter is passed to a workflow.
+(docker-tag-scheme)=
+#### Docker tag scheme
 
-#### Triggering a toolchain cache rebuild on PRs
+`get-version-tag.sh` returns one of two forms, derived deterministically from
+the current checkout:
 
-By default, PR and push workflows use a pre-built Docker container and skip
-building the toolchain from source. For uplift PRs where the recorded
-submodule commits have changed, pass `build_toolchain: true` to force a
-from-source build:
+- **Clean release state** (`vX.Y.Z`): the files in
+  `.github/scripts/uplift-paths.sh` match the nearest version tag commit.
+  The script returns the tag name itself, with `+` translated to `-` because
+  Docker tags allow only `[A-Za-z0-9_.-]`.
+- **Uplift state** (`vX.Y.Z-uplift-<8char>`): one or more of those files
+  differ from the nearest version tag. The hash is
+  `git ls-tree HEAD -- <uplift-files> | sha256sum | cut -c1-8`, so two
+  branches with identical submodule SHAs and Dockerfile/requirements content
+  resolve to the same tag and share the rebuilt image. "Uplift" here means
+  the dist/ird image content changed — tt-mlir and tt-lang itself are built
+  fresh by `call-build.yml` against the pre-built LLVM inside the container,
+  so they are not uplift files.
 
-```yaml
-# In on-pr.yml or on-push.yml, pass build_toolchain to call-build.yml:
-build:
-  uses: ./.github/workflows/call-build.yml
-  secrets: inherit
-  with:
-    build_toolchain: true
-    docker_tag: "<DOCKER_TAG>"
-```
+#### Auto-resolved tag in `ci.yml`
 
-When `build_toolchain` is true, the workflow:
+`ci.yml` (one workflow triggered by pull_request, push to main, scheduled
+runs, and workflow_dispatch) starts with a `resolve-docker-tag` job that
+runs `get-version-tag.sh` and then calls `.github/scripts/probe-docker-image.sh`
+to query GHCR. If the image is present, `build-docker` is skipped and
+downstream jobs proceed immediately. If the image is missing and the
+resolved tag is the uplift form, `build-docker` runs `call-build-docker.yml`
+with `push: true` and uploads the rebuilt image so downstream jobs
+(`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) can pull
+it. If the image is missing and the resolved tag is the bare release form
+(e.g. `vX.Y.Z`), the probe step fails the job with an error directing the
+maintainer to re-publish the release via `publish-pypi.yml`; rebuilding the
+release tag from a PR or main commit would push newer content under the
+release tag and overwrite the released image.
 
-1. Runs `call-build-toolchain.yml`, which checks for a cached toolchain
-   matching the current submodule SHAs. On cache miss, it builds LLVM + tt-metal
-   from source and saves the result.
-2. Runs the build job on a bare `ubuntu-22.04` runner (instead of inside the
-   Docker container), restoring the cached toolchain and building tt-lang
-   against it.
+`ci.yml` also has a `dryrun-docker` job that runs only on
+pull_request events when the PR touches container-relevant files
+(Dockerfile, `bin/`, `packaging/`, `CMakeLists.txt`, `examples/`,
+`pyproject.toml`, etc.) but the uplift `build-docker` is not already
+running. It calls `call-build-docker.yml` with `push: false`: the dist and
+ird images are built locally on the runner and the in-container smoke
+tests run, but nothing is uploaded to GHCR. This catches container-build
+regressions at PR time without uploading a separate container image for
+every PR. The path-change detection is in
+`.github/scripts/wheel-or-container-changed.sh` (path list in
+`wheel-or-container-paths.sh`).
 
-When `build_toolchain` is false (the default), the build job runs inside the
-pre-built `ird` Docker container, which already contains the toolchain.
+`call-build.yml` retains its `build_toolchain` input for manual
+`workflow_dispatch` runs, but the automated workflows no longer set it:
+the correct toolchain is always available inside the container at the
+resolved tag.
+
+#### Hardware test timeouts
+
+`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
+`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
+test exits within ~60 seconds instead of holding the single `n150` runner
+until the 90-minute job timeout. Tests that legitimately need longer should
+set their own `@pytest.mark.timeout(...)` override.
 
 #### Rebuilding Docker images
 
-Docker images are built by `call-build-docker.yml`, which is invoked either by
-manual `workflow_dispatch` or as a reusable sub-workflow of `publish-pypi.yml`
-(see [Publishing to PyPI](#publishing-to-pypi) below). The workflow:
+Docker images are built by `call-build-docker.yml`. The workflow takes a
+`push` input (default `false`); the image is tagged with whatever
+`get-version-tag.sh` returns and smoke-tested with `docker run` before any
+push step. A failing smoke test aborts before any tag would be published.
 
-1. Generates a deterministic tag from submodule SHAs and Dockerfile content
-   hashes.
-2. Checks whether images with that tag already exist in the registry.
-3. On cache miss, builds the toolchain (or restores from GitHub Actions cache),
-   then packages `base`, `ird`, and `dist` images.
+Push policy across events:
 
-Pushing a release tag triggers `publish-pypi.yml`, which calls
-`call-build-docker.yml` as its first step — so the same `git push <tag>` that
-publishes a release also rebuilds the Docker images. For uplifts that rebuild
-against a prior release (rather than advancing MAJOR/MINOR/PATCH), append
-`+uplift` (or another `+<local>` identifier) so the tag preserves SemVer
-ordering with the original release:
+| Event                                  | Pushes `vX.Y.Z`?     | Pushes `vX.Y.Z-uplift-<hash>`? | Updates `:latest`?           |
+|----------------------------------------|----------------------|--------------------------------|------------------------------|
+| PR (uplift)                            | refused by probe     | yes                            | no                           |
+| PR (non-uplift, container content)     | no (dryrun)          | n/a                            | no                           |
+| Main push (uplift)                     | refused by probe     | yes                            | yes                          |
+| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | no (`build-docker` skipped)  |
+| Tag push (release, via publish-pypi)   | yes                  | n/a                            | no                           |
+| `workflow_dispatch`                    | only if `push: true` | only if `push: true`           | only if `push: true` on main |
+
+For a final release:
 
 ```bash
-# Standard release bump:
-git tag <TAG>
-git push origin <TAG>
-
-# Uplift of an existing release (new submodule SHAs on top of an existing tag):
-git tag <TAG>+<local>
-git push origin <TAG>+<local>
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-Once the new images are published, update the `docker_tag` parameter in
-`on-pr.yml` and `on-push.yml` to reference the new tag. For `+`-suffixed
-tags, use the Docker-sanitized form: git tag `<TAG>+<local>` -> docker_tag
-`<TAG>-<local>`.
+For a dated dev release (preview of an in-flight version, typically used
+after a toolchain uplift lands on `main` and before the next final tag),
+follow the tt-metal convention: SemVer pre-release identifier of the form
+`-dev<YYYYMMDD>`:
+
+```bash
+git tag v1.2.0-dev20260515
+git push origin v1.2.0-dev20260515
+```
+
+SemVer orders `vX.Y.Z-dev<date>` strictly below `vX.Y.Z` (final), so users
+who pin to `vX.Y.Z` are unaffected by dev releases. Within a single
+`vX.Y.Z` line, dev tags order monotonically by date. The form is
+Docker-tag-safe directly (no `+` translation needed). `-rc<N>` works the
+same way (`v1.2.0-rc1` is a release candidate of `v1.2.0`).
+
+Legacy `<TAG>+<local>` build-metadata tags are still translated to
+`<TAG>-<local>` by `get-version-tag.sh` for image-tag compatibility, but
+SemVer treats `+`-suffixed tags as equal in precedence to the base tag, so
+they cannot be distinguished by `pip install`. Prefer `-dev<YYYYMMDD>` or
+`-rc<N>` for new tags.
 
 (publishing-to-pypi)=
 #### Publishing to PyPI
 
 `publish-pypi.yml` is the orchestrator that turns a release tag into a wheel
-on PyPI. It triggers automatically on push of `v*.*.*` or `v*.*.*+<local>`
-tags, and can also be dispatched manually for re-runs and dry-runs.
+on PyPI. It triggers automatically on push of `v*.*.*`, `v*.*.*-rc*`,
+`v*.*.*-dev*`, or `v*.*.*+*` tags, and can also be dispatched manually for
+re-runs and dry-runs.
 
 ```text
    push release tag
@@ -390,21 +447,23 @@ tags, and can also be dispatched manually for re-runs and dry-runs.
    |  preflight   |   verify GITHUB_REF is a v* tag
    +--------------+   (skipped if dry_run=true)
           |
-          +-----------------------+
-          |                       |
-          v                       |
-   +--------------+               |
+          v
+   +--------------+
    | build-docker |   call-build-docker.yml
-   +--------------+   (skipped if docker_tag input is set)
-          |                       |
-          +-----------------------+
-          |
+   +--------------+   (skipped if docker_tag input is set;
+          |            smoke-tests image before push to GHCR)
           v
    +--------------+
    | build-wheels |   call-build-wheels.yml
-   +--------------+   (builds wheel inside ird container,
+   +--------------+   (builds + smoke-tests wheel inside ird container,
           |            uploads tt-lang-wheels artifact)
           |
+          +-----------------------+
+          v                       |
+   +---------------------+        |
+   | test-dist-tutorials |        |  (skipped under dry_run=true)
+   +---------------------+        |
+          |                       |
           +-----------------------+
           v                       v
    +--------------+        +------------------+
@@ -426,14 +485,20 @@ Job-by-job:
    requires `docker_tag`. Outputs the freshly built ird tag.
 3. **`build-wheels`** — calls `call-build-wheels.yml` against either the
    `docker_tag` input (manual dispatch) or the `build-docker` output (tag
-   push). Builds the wheel inside the ird container and uploads it as the
-   `tt-lang-wheels` artifact.
-4. **`publish`** — runs on tag push or when `dry_run` is false. Downloads the
-   artifact, verifies every wheel filename's version field matches
-   `preflight.outputs.tag_version`, and uploads via
-   `pypa/gh-action-pypi-publish` using OIDC trusted publishing
-   (`environment: pypi`, `id-token: write`).
-5. **`dry-run-summary`** — runs only on `workflow_dispatch` with
+   push). Builds the wheel inside the ird container, runs
+   `smoke-test-wheel.py` in an isolated venv (imports + `ttlang-sim --help`
+   + `ttlang-sim-stats --help`), and runs the CMake-install regression test
+   (`cmake --install` + `bin/ttlang-sim --help` against the parallel-install
+   layout). Uploads the result as the `tt-lang-wheels` artifact.
+4. **`test-dist-tutorials`**: calls `call-test-dist-tutorials.yml` against
+   the dist image at the resolved tag, running the tutorial suite on the
+   `n150` hardware runner. Gates `publish`. Skipped under `dry_run: true`.
+5. **`publish`**: runs on tag push or when `dry_run` is false **and**
+   `test-dist-tutorials` succeeded. Downloads the artifact, verifies every
+   wheel filename's version field matches `preflight.outputs.tag_version`,
+   and uploads via `pypa/gh-action-pypi-publish` using OIDC trusted
+   publishing (`environment: pypi`, `id-token: write`).
+6. **`dry-run-summary`**: runs only on `workflow_dispatch` with
    `dry_run: true`. Downloads the artifact and lists what would have been
    uploaded. No `environment`, no PyPI credentials.
 

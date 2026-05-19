@@ -3,10 +3,10 @@ pydantic<3
 torch>=1.9.0
 numpy>=1.20.0
 greenlet>=3.0.0
-PyYAML>=5.4.0,<=6.0.1
+PyYAML>=5.4.0
 typing_extensions>=4.12.2
-ml_dtypes>=0.1.0,<=0.6.0; python_version<'3.13'
-ml_dtypes>=0.5.0,<=0.6.0; python_version>='3.13'
+ml_dtypes>=0.1.0,<1.0; python_version<'3.13'
+ml_dtypes>=0.5.0,<1.0; python_version>='3.13'
 # Note: ttnn is *not* listed here because the ttnn requirement is
 # platform-conditional (Linux x86_64 / aarch64 only, where ttnn publishes
 # wheels) and version-conditional (derived from third-party/tt-metal-version).

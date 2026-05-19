@@ -10,8 +10,8 @@
 #   pip install dist/*.whl
 #   python .github/scripts/smoke-test-wheel.py
 #
-# Also checks that `sim_stats` and the `ttlang-sim-stats` console script were
-# installed with the wheel (bundled entry point, not a separate package).
+# Also checks that `sim_stats` and the `ttlang-sim` / `ttlang-sim-stats` console
+# scripts were installed with the wheel (bundled entry points, not separate packages).
 
 import subprocess
 import sys
@@ -49,41 +49,37 @@ def main() -> int:
 
     # venv-aware; sys.executable may be a symlink out of the venv.
     scripts_dir = Path(sysconfig.get_path("scripts"))
-    stats_name = (
-        "ttlang-sim-stats.exe" if sys.platform == "win32" else "ttlang-sim-stats"
-    )
-    stats_path = scripts_dir / stats_name
-    if not stats_path.is_file():
-        print(
-            f"missing console script (expected next to this Python): {stats_path}",
-            file=sys.stderr,
-        )
-        return 1
+    exe_suffix = ".exe" if sys.platform == "win32" else ""
 
-    r = subprocess.run(
-        [str(stats_path), "--help"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if r.returncode != 0:
-        print(
-            f"ttlang-sim-stats --help failed (exit {r.returncode}):\n{r.stderr}",
-            file=sys.stderr,
-        )
-        return 1
+    def run_help(label: str, argv: list[str]) -> int:
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            print(f"{label} --help timed out after 60s", file=sys.stderr)
+            return 1
+        if r.returncode != 0:
+            print(
+                f"{label} --help failed (exit {r.returncode}):\n{r.stderr}",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
 
-    r2 = subprocess.run(
-        [sys.executable, "-m", "sim_stats", "--help"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if r2.returncode != 0:
-        print(
-            f"python -m sim_stats --help failed (exit {r2.returncode}):\n{r2.stderr}",
-            file=sys.stderr,
-        )
+    for script in ("ttlang-sim", "ttlang-sim-stats"):
+        script_path = scripts_dir / f"{script}{exe_suffix}"
+        if not script_path.is_file():
+            print(
+                f"missing console script (expected next to this Python): {script_path}",
+                file=sys.stderr,
+            )
+            return 1
+        if run_help(script, [str(script_path), "--help"]) != 0:
+            return 1
+
+    if (
+        run_help("python -m sim_stats", [sys.executable, "-m", "sim_stats", "--help"])
+        != 0
+    ):
         return 1
 
     print(f"{package} {version}: sim_stats + ttlang-sim-stats OK")

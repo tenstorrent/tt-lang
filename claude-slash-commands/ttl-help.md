@@ -21,7 +21,7 @@ The following commands are available for TT-Lang kernel development:
 
 ```
 /ttl-import my_cuda_kernel.cu
-/ttl-export examples/matmul.py
+/ttl-export examples/single_node_matmul.py
 /ttl-optimize my_kernel.py
 /ttl-profile my_kernel.py
 /ttl-simulate my_kernel.py
