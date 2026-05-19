@@ -40,6 +40,7 @@ import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl.pykernel._src.utils import _cleanup_source_code
 from ttl.dialects import ttkernel
 from ttl.ir import *
+from ttl.ir import DenseI32ArrayAttr
 from ttl.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
@@ -699,20 +700,12 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
         return []
-    attr_text = str(attr).strip()
-    # Expected form: `array<i32: 0, 1, 3>` or `array<i32>` for empty arrays.
-    prefix = "array<i32"
-    if not attr_text.startswith(prefix):
+    if not isinstance(attr, DenseI32ArrayAttr):
         raise ValueError(
             f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
-            f"'{kernel_name}', got {attr_text!r}"
+            f"'{kernel_name}', got {attr}"
         )
-    body = attr_text[len(prefix) :].rstrip(">").strip()
-    if not body or body == ":":
-        return []
-    if body.startswith(":"):
-        body = body[1:]
-    return [int(part.strip()) for part in body.split(",") if part.strip()]
+    return list(attr)
 
 
 def _compile_ttnn_kernel(
