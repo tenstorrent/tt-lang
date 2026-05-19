@@ -131,7 +131,6 @@ def run_script_in_process(
         "eltwise_add_3d.py",
         "eltwise_pipe.py",
         "eltwise_pipe_core3.py",
-        "matmul.py",
         "matmul_acc.py",
         "single_node_matmul.py",
         "multinode_matmul.py",

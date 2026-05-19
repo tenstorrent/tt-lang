@@ -26,11 +26,6 @@
 # equals summing M_TILES independent scalar values -- the same as
 # summing all M elements when each tile holds one logical value.
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
-
 import math
 
 import torch
