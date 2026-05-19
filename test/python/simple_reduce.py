@@ -22,28 +22,19 @@ import ttl
 
 
 @ttl.operation(grid=(1, 1))
-def reduce_kernel(inp, scaler, out):
+def reduce_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def reduce_compute():
-        with (
-            inp_dfb.wait() as inp,
-            scaler_dfb.wait() as s,
-            out_dfb.reserve() as out,
-        ):
-            out.store(ttl.math.reduce_sum(inp, s, dims=[0, 1]))
+        with inp_dfb.wait() as inp, out_dfb.reserve() as out:
+            out.store(ttl.math.reduce_sum(inp, dims=[0, 1]))
 
     @ttl.datamovement()
     def dm_read():
         with inp_dfb.reserve() as blk:
             tx = ttl.copy(inp[0, 0], blk)
-            tx.wait()
-
-        with scaler_dfb.reserve() as blk:
-            tx = ttl.copy(scaler[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
@@ -64,9 +55,11 @@ def reduce_kernel(inp, scaler, out):
 # CHECK: ttl.bind_cb{cb_index =
 
 # CHECK: ttl.cb_wait
-# CHECK: ttl.cb_wait
 # CHECK: ttl.cb_reserve
 
+# The DSL synthesizes a fill(1.0) tile internally as the LLK scaler operand
+# (the user no longer supplies a scaler; the unit reduce passes c=1 to the LLK).
+# CHECK: ttl.fill 1.000000e+00
 # CHECK: ttl.reduce
 
 # CHECK: ttl.store
@@ -80,39 +73,21 @@ def reduce_kernel(inp, scaler, out):
 
 # CHECK-CPP: // reduce_compute
 # CHECK-CPP: void kernel_main()
+# Three CBs: input, output, compiler-allocated scaler fill(1.0).
 # CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
 # CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 
-# CHECK-CPP: [[CB0]].wait_front(
-# CHECK-CPP: [[CB1]].wait_front(
-# CHECK-CPP: [[CB2]].reserve_back(
-
-# CHECK-CPP: tile_regs_acquire();
-
+# Scaler tile materialized inside compute via fill_tile, then reduce_init / reduce_tile.
+# CHECK-CPP: fill_tile_init();
+# CHECK-CPP: fill_tile(
 # CHECK-CPP: reduce_init<
 # CHECK-CPP: reduce_tile<
-
-# CHECK-CPP: tile_regs_commit();
-# CHECK-CPP: tile_regs_wait();
-
 # CHECK-CPP: pack_tile<true>(
-
-# CHECK-CPP: tile_regs_release();
-
-# CHECK-CPP: [[CB2]].push_back(
-# CHECK-CPP: [[CB0]].pop_front(
 
 
 device = ttnn.open_device(device_id=0)
 inp = ttnn.from_torch(
-    __import__("torch").ones(32, 32, dtype=__import__("torch").bfloat16),
-    dtype=ttnn.bfloat16,
-    layout=ttnn.TILE_LAYOUT,
-    device=device,
-    memory_config=ttnn.L1_MEMORY_CONFIG,
-)
-scaler = ttnn.from_torch(
     __import__("torch").ones(32, 32, dtype=__import__("torch").bfloat16),
     dtype=ttnn.bfloat16,
     layout=ttnn.TILE_LAYOUT,
@@ -126,5 +101,5 @@ out = ttnn.from_torch(
     device=device,
     memory_config=ttnn.L1_MEMORY_CONFIG,
 )
-reduce_kernel(inp, scaler, out)
+reduce_kernel(inp, out)
 ttnn.close_device(device)
