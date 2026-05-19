@@ -990,8 +990,7 @@ struct TTLTileMulUnaryConstToTTKernel
   using OpConversionPattern<TileMulUnaryConstOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(TileMulUnaryConstOp op,
-                  TileMulUnaryConstOp::Adaptor adaptor,
+  matchAndRewrite(TileMulUnaryConstOp op, TileMulUnaryConstOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value dstIdxVal = adaptor.getDstIndex();

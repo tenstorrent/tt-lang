@@ -168,7 +168,9 @@ def make_scalar_reduce_kernel(
         out_slice=_slice(out_rows, out_cols),
     )
     return _build_kernel(
-        code, prefix=f"scalar_reduce_{reduce_fn}_{inp_rows}x{inp_cols}_", cache_key=cache_key
+        code,
+        prefix=f"scalar_reduce_{reduce_fn}_{inp_rows}x{inp_cols}_",
+        cache_key=cache_key,
     )
 
 
@@ -177,9 +179,7 @@ def make_two_reduce_kernel(reduce_fn: str, scaler_a: str, scaler_b: str) -> Call
     code = TWO_REDUCE_DISTINCT_SCALER_TEMPLATE.format(
         reduce_fn=reduce_fn, scaler_a=scaler_a, scaler_b=scaler_b
     )
-    return _build_kernel(
-        code, prefix=f"two_reduce_{reduce_fn}_", cache_key=cache_key
-    )
+    return _build_kernel(code, prefix=f"two_reduce_{reduce_fn}_", cache_key=cache_key)
 
 
 def make_shared_scaler_n_reduce_kernel(reduce_fn: str, n: int, scaler: float):
@@ -193,20 +193,14 @@ def make_shared_scaler_n_reduce_kernel(reduce_fn: str, n: int, scaler: float):
 
         @ttl.operation(grid=(1, 1))
         def kernel(inp, out):
-            inp_dfb = ttl.make_dataflow_buffer_like(
-                inp, shape=(1, 1), block_count=2
-            )
-            out_dfb = ttl.make_dataflow_buffer_like(
-                out, shape=(1, 1), block_count=2
-            )
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
             @ttl.compute()
             def compute_fn():
                 for _ in range(n):
                     with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
-                        out_blk.store(
-                            ttl.math.reduce_sum(inp_blk, scaler, dims=[0, 1])
-                        )
+                        out_blk.store(ttl.math.reduce_sum(inp_blk, scaler, dims=[0, 1]))
 
             @ttl.datamovement()
             def dm_read():
@@ -224,20 +218,14 @@ def make_shared_scaler_n_reduce_kernel(reduce_fn: str, n: int, scaler: float):
 
         @ttl.operation(grid=(1, 1))
         def kernel(inp, out):
-            inp_dfb = ttl.make_dataflow_buffer_like(
-                inp, shape=(1, 1), block_count=2
-            )
-            out_dfb = ttl.make_dataflow_buffer_like(
-                out, shape=(1, 1), block_count=2
-            )
+            inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
             @ttl.compute()
             def compute_fn():
                 for _ in range(n):
                     with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
-                        out_blk.store(
-                            ttl.math.reduce_max(inp_blk, scaler, dims=[0, 1])
-                        )
+                        out_blk.store(ttl.math.reduce_max(inp_blk, scaler, dims=[0, 1]))
 
             @ttl.datamovement()
             def dm_read():
@@ -345,9 +333,7 @@ def test_scalar_reduce_single_tile(device, dtype, reduce_fn, dims, scaler):
     (bf16 / fp32), both reduce kinds, all dim combinations, and several
     scaler magnitudes/signs.
     """
-    kernel = make_scalar_reduce_kernel(
-        reduce_fn, 1, 1, list(dims), repr(float(scaler))
-    )
+    kernel = make_scalar_reduce_kernel(reduce_fn, 1, 1, list(dims), repr(float(scaler)))
 
     # Use a mix of positive and negative values so a sign-flipped scaler on
     # reduce_max would visibly diverge from the post-reduce-multiply result.
@@ -369,16 +355,16 @@ def test_scalar_reduce_single_tile(device, dtype, reduce_fn, dims, scaler):
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize("reduce_fn", REDUCE_FNS)
 @pytest.mark.parametrize("dims", [[0], [1], [0, 1]], ids=["dim0", "dim1", "dim01"])
-@pytest.mark.parametrize("scaler", [0.25, -1.5], ids=["scaler_quarter", "scaler_neg_1_5"])
+@pytest.mark.parametrize(
+    "scaler", [0.25, -1.5], ids=["scaler_quarter", "scaler_neg_1_5"]
+)
 def test_scalar_reduce_multi_tile(device, dtype, reduce_fn, dims, scaler):
     """Numeric scaler over a 2x2 tile grid input.
 
     Verifies the post-reduce mul_unary is applied to every output tile,
     not only the first.
     """
-    kernel = make_scalar_reduce_kernel(
-        reduce_fn, 2, 2, dims, repr(float(scaler))
-    )
+    kernel = make_scalar_reduce_kernel(reduce_fn, 2, 2, dims, repr(float(scaler)))
 
     torch.manual_seed(0xBEEF)
     inp_torch = (torch.rand(2 * TILE, 2 * TILE, dtype=dtype) - 0.5) * 4.0
@@ -397,7 +383,9 @@ def test_scalar_reduce_multi_tile(device, dtype, reduce_fn, dims, scaler):
 
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize("reduce_fn", REDUCE_FNS)
-@pytest.mark.parametrize("scaler", [0.5, -0.25, 2.5], ids=["half", "neg_quarter", "gt1"])
+@pytest.mark.parametrize(
+    "scaler", [0.5, -0.25, 2.5], ids=["half", "neg_quarter", "gt1"]
+)
 def test_scalar_form_matches_tile_form(device, dtype, reduce_fn, scaler):
     """Equivalence: numeric scaler and a tile-form scaler with the same value
     must produce equivalent results within dtype tolerance.
@@ -506,9 +494,7 @@ def test_scalar_extreme_magnitudes(device, dtype, scaler):
     any silent f32->lower-precision conversion in floatAttrToI32Bits or
     in the FloatAttr storage on the reduce op.
     """
-    kernel = make_scalar_reduce_kernel(
-        "reduce_sum", 1, 1, [0, 1], repr(float(scaler))
-    )
+    kernel = make_scalar_reduce_kernel("reduce_sum", 1, 1, [0, 1], repr(float(scaler)))
 
     inp_torch = torch.full((TILE, TILE), 1.0, dtype=dtype)
     out_torch = torch.zeros(TILE, TILE, dtype=dtype)

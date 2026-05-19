@@ -176,16 +176,16 @@ LogicalResult rewriteReduceScalersToPostMul(func::FuncOp funcOp,
       auto [iter, inserted] = neutralFillFor.try_emplace(fillOp, Value{});
       if (inserted) {
         builder.setInsertionPointAfter(fillOp);
-        auto neutral = FillOp::create(builder, fillOp.getLoc(),
-                                      fillOp.getType(),
-                                      builder.getF32FloatAttr(1.0));
+        auto neutral =
+            FillOp::create(builder, fillOp.getLoc(), fillOp.getType(),
+                           builder.getF32FloatAttr(1.0));
         iter->second = neutral.getResult();
       }
       reduceOp.getScalerMutable().assign(iter->second);
       builder.setInsertionPointAfter(reduceOp);
       auto mulOp = MulUnaryConstOp::create(
-          builder, loc, reduceOp.getResult().getType(),
-          reduceOp.getResult(), builder.getF32FloatAttr(c));
+          builder, loc, reduceOp.getResult().getType(), reduceOp.getResult(),
+          builder.getF32FloatAttr(c));
       reduceOp.getResult().replaceAllUsesExcept(mulOp.getResult(), mulOp);
     } else {
       // Runtime tile scaler. MulOp does not declare DFBInputOpInterface
@@ -202,9 +202,9 @@ LogicalResult rewriteReduceScalersToPostMul(func::FuncOp funcOp,
         existingUses.push_back(&use);
       }
       builder.setInsertionPoint(reduceOp);
-      auto neutral = FillOp::create(builder, loc,
-                                    cast<RankedTensorType>(scaler.getType()),
-                                    builder.getF32FloatAttr(1.0));
+      auto neutral =
+          FillOp::create(builder, loc, cast<RankedTensorType>(scaler.getType()),
+                         builder.getF32FloatAttr(1.0));
       reduceOp.getScalerMutable().assign(neutral.getResult());
       builder.setInsertionPointAfter(reduceOp);
       auto materialized =
@@ -306,7 +306,8 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        if (auto iter = materialized.find(operand); iter != materialized.end()) {
+        if (auto iter = materialized.find(operand);
+            iter != materialized.end()) {
           op->setOperand(idx, iter->second);
           continue;
         }
