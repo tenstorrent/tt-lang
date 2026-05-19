@@ -1,5 +1,7 @@
-// Tests for scalar-constant reduce scaler handling in ttl-insert-intermediate-dfbs.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs))' | FileCheck %s
+// Tests for scalar-constant reduce scaler handling: the rewrite splits
+// reduce-with-non-unit-scaler into reduce(fill(1.0)) + post-multiply, and
+// the inserter materializes the new ops' DFB-input operands.
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-rewrite-reduce-scalers, ttl-insert-intermediate-dfbs))' | FileCheck %s
 
 // -----
 

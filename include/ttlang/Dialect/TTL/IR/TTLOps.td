@@ -886,8 +886,9 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Used by add/sub/mul, where the tile op may lower to either an FPU or
 // SFPU TTKernel form depending on operand provenance.
 multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
-                                                string kernelOp> {
-  def Op : TTL_ElementWiseBinary<mnemonic> {
+                                                string kernelOp,
+                                                list<Trait> opTraits = []> {
+  def Op : TTL_ElementWiseBinary<mnemonic, opTraits> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
   def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic> {
@@ -910,7 +911,8 @@ multiclass TTL_BinarySfpuElementwisePair<string mnemonic, string kernelOp,
 // Define all binary elementwise ops using the multiclasses
 defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles">;
 defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles">;
+defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles",
+    [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]>;
 defm TTL_Div : TTL_BinarySfpuElementwisePair<"div", "div_binary_tile">;
 defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
                                              [TTL_InPlaceOpTrait]>;
@@ -1171,9 +1173,7 @@ def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
   let summary = "Multiply a tensor of tiles by a compile-time scalar constant";
   let description = [{
     Element-wise multiply of an input tensor of tiles by a compile-time
-    scalar constant. Used internally to express the post-reduce scaler
-    multiply when a `ttl.reduce` originally carried a numeric scalar
-    scaler operand. Lowered to `ttl.compute` with `ttl.tile_mul_unary_const`.
+    scalar constant. Lowered to `ttl.compute` with `ttl.tile_mul_unary_const`.
   }];
   let arguments = (ins AnyRankedTensor:$input, F32Attr:$value);
   let results = (outs AnyRankedTensor:$result);

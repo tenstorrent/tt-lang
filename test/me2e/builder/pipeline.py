@@ -42,6 +42,7 @@ def compile_ttl_to_ttkernel(
 
     # Build per-function passes.
     func_passes = [
+        "ttl-rewrite-reduce-scalers",
         "ttl-insert-intermediate-dfbs",
         "ttl-insert-copy-wait",
         "ttl-auto-sync",

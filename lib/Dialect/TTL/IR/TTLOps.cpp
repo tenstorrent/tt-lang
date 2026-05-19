@@ -1100,6 +1100,11 @@ mlir::tt::ttl::MulUnaryConstOp::getDFBInputOperandIndices() {
   return {0}; // input
 }
 
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::MulOp::getDFBInputOperandIndices() {
+  return {0, 1}; // lhs and rhs
+}
+
 //===----------------------------------------------------------------------===//
 // MatmulOp
 //===----------------------------------------------------------------------===//
