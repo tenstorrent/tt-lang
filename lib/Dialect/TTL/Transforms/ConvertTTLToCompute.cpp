@@ -52,8 +52,8 @@ deriveTileBcastType(const llvm::SmallDenseSet<int64_t> &broadcastDims,
 /// Build the N-dim input affine map for a broadcast: identity in
 /// non-broadcast dimensions and constant 0 in broadcast dimensions.
 static AffineMap
-buildBlockBroadcastInputMap(MLIRContext *ctx, int64_t rank,
-                            const llvm::SmallDenseSet<int64_t> &broadcastDims) {
+buildBcastInputMap(MLIRContext *ctx, int64_t rank,
+                   const llvm::SmallDenseSet<int64_t> &broadcastDims) {
   SmallVector<AffineExpr, 4> exprs;
   exprs.reserve(rank);
   for (int64_t i = 0; i < rank; ++i) {
@@ -985,38 +985,6 @@ static std::optional<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
   return *reduceDim;
 }
 
-/// Walk forward from a value through identity-shaped users (elementwise ops
-/// and other broadcasts) until a StoreOp is found, and return its view's
-/// attached CB. Returns null if no such store exists or if the path forks
-/// in a way that does not resolve to a single store.
-static Value findDownstreamStoreCB(Value v) {
-  llvm::SmallPtrSet<Operation *, 8> visited;
-  SmallVector<Value, 4> worklist;
-  worklist.push_back(v);
-  while (!worklist.empty()) {
-    Value cur = worklist.pop_back_val();
-    for (OpOperand &use : cur.getUses()) {
-      Operation *user = use.getOwner();
-      if (auto storeOp = dyn_cast<StoreOp>(user)) {
-        if (Value cb = getAttachedCB(storeOp.getView())) {
-          return cb;
-        }
-        return Value();
-      }
-      if (!visited.insert(user).second) {
-        continue;
-      }
-      // Recurse only into ops that produce a tensor result usable by a store
-      // chain (elementwise ops, other broadcasts/reduces). Anything else
-      // breaks the chain.
-      if (user->getNumResults() == 1) {
-        worklist.push_back(user->getResult(0));
-      }
-    }
-  }
-  return Value();
-}
-
 /// Validate a single BlockBroadcastOp. Called from runOnOperation() before
 /// patterns run, so emitOpError is safe (not inside a pattern rewriter).
 static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op) {
@@ -1031,10 +999,6 @@ static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op) {
         "broadcast input must come directly from a circular buffer, not from "
         "an elementwise result; move the broadcast to its own compute block "
         "or make it the first operation in a fused sequence");
-  }
-  if (!findDownstreamStoreCB(op.getResult())) {
-    return op.emitOpError(
-        "broadcast result must reach a circular-buffer-attached ttl.store");
   }
 
   int64_t rank = inputType.getRank();
@@ -1095,9 +1059,21 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
     }
 
     Value inputCb = getAttachedCB(op.getInput());
-    Value outCb = findDownstreamStoreCB(op.getResult());
-    if (!inputCb || !outCb) {
-      return rewriter.notifyMatchFailure(op, "input/output not CB-attached");
+    if (!inputCb) {
+      return rewriter.notifyMatchFailure(op, "input not CB-attached");
+    }
+    Value outCb;
+    for (OpOperand &use : op.getResult().getUses()) {
+      if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
+        if (Value cb = getAttachedCB(storeOp.getView())) {
+          outCb = cb;
+          break;
+        }
+      }
+    }
+    if (!outCb) {
+      return rewriter.notifyMatchFailure(
+          op, "no direct CB-attached store user (handled by fusion path)");
     }
 
     int64_t rank = inputType.getRank();
@@ -1108,7 +1084,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
     MLIRContext *ctx = rewriter.getContext();
 
     AffineMap outputMap = AffineMap::getMultiDimIdentityMap(rank, ctx);
-    AffineMap inputMap = buildBlockBroadcastInputMap(ctx, rank, broadcastDims);
+    AffineMap inputMap = buildBcastInputMap(ctx, rank, broadcastDims);
 
     SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
                                    AffineMapAttr::get(outputMap)};

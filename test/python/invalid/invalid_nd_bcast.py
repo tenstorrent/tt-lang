@@ -12,8 +12,6 @@ size is not 1.
 
 import os
 
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
 import ttnn
 import ttl
 
@@ -49,6 +47,7 @@ def invalid_bcast_dim_kernel(inp, out):
 if __name__ == "__main__":
     import torch
 
+    os.environ["TTLANG_COMPILE_ONLY"] = "1"
     device = ttnn.open_device(device_id=0)
 
     try:
