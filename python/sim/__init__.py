@@ -80,6 +80,7 @@ class _TTLBlockNamespace:
         from . import math as math_module
 
         self.broadcast = math_module.broadcast
+        self.fill = math_module.block_fill
 
 
 # Create ttl namespace object

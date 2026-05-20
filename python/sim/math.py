@@ -19,12 +19,13 @@ from typing import Callable, List, Optional, Set, Union
 
 import torch
 
+from .constants import TILE_SHAPE
 from .context import get_context
 from .diagnostics import warn_once_per_location
 from .greenlet_scheduler import get_current_core_id
 from .dfb import Block, track_source_blocks, matmul
 from .blockstate import BlockAcquisition, ThreadType
-from .ttnnsim import Tensor
+from .ttnnsim import Tensor, TILE_LAYOUT
 from .typedefs import PositiveInt
 
 _ = matmul
@@ -116,23 +117,41 @@ def broadcast(
                     f"shape has {target_shape[i]}"
                 )
 
-        if target_element_shape is None:
-            # Derive per-tile element shape from input element shape: scale
-            # non-broadcast grid dims by the target/input ratio (which is 1
-            # for non-broadcast dims by validation above) and for broadcast
-            # dims, leave the element-shape unchanged (the broadcast happens
-            # tile-wise above the element level when input element is full).
-            target_element_shape = tuple(
-                (
-                    target_shape[i] * (element_shape[i] // max(block_shape[i], 1))
-                    if block_shape[i] != 0
-                    else element_shape[i]
-                )
-                for i in range(ndim)
-            )
+        # For TILE_LAYOUT inputs the spec requires within-tile expansion on
+        # broadcast dims that touch the innermost two axes (every "tile" is
+        # logically TILE_SHAPE even when the dfb element shape stores a
+        # degenerate size-1 dim, e.g. a (N, 1) source tensor). Derive the
+        # effective per-tile size accordingly.
+        is_tile_layout = block.layout == TILE_LAYOUT
+
+        def _per_tile_size(i: int) -> int:
+            base = element_shape[i] // block_shape[i] if block_shape[i] else 1
+            if is_tile_layout and i >= ndim - 2 and base == 1:
+                return TILE_SHAPE[i - (ndim - 2)]
+            return base if base > 0 else 1
+
+        target_element_shape = tuple(
+            target_shape[i] * _per_tile_size(i) for i in range(ndim)
+        )
 
         src_tensor = block._buf.to_torch()  # type: ignore[attr-defined]
-        expanded_tensor = src_tensor.expand(*target_element_shape)
+        # Pad degenerate-tile broadcast dims to the full per-tile size so the
+        # repeat below produces TILE_SHAPE-aligned output tiles.
+        pad_factors = tuple(
+            _per_tile_size(i) if (i in norm_dims and element_shape[i] == 1) else 1
+            for i in range(ndim)
+        )
+        if any(f != 1 for f in pad_factors):
+            src_tensor = src_tensor.repeat(*pad_factors)
+        # Block-level broadcast replicates whole tiles along broadcast dims;
+        # torch.repeat (not expand) handles non-singleton source dims, which
+        # arise when the per-tile element width is > 1.
+        src_shape = src_tensor.shape
+        repeat_factors = tuple(
+            target_element_shape[i] // src_shape[i] if src_shape[i] > 0 else 1
+            for i in range(ndim)
+        )
+        expanded_tensor = src_tensor.repeat(*repeat_factors)
         result_block = Block(
             tensor=Tensor(expanded_tensor.contiguous()),
             shape=target_shape,
@@ -175,6 +194,42 @@ def broadcast(
 
     block._broadcast_dims = tuple(dims)  # type: ignore[attr-defined]
     return block
+
+
+def block_fill(value, *, shape, dtype=None) -> Block:
+    """Spec-form ttl.block.fill(value, shape).
+
+    Returns a temporary tiled Block of the given grid ``shape`` filled with
+    ``value``. ``dtype`` defaults to bf16 to match the spec/sim convention;
+    pass a ttnn/torch dtype to override.
+    """
+    shape_tuple = tuple(int(s) for s in shape)
+    if len(shape_tuple) < 2:
+        raise ValueError(
+            "fill requires a shape with at least 2 dimensions for tiled layout"
+        )
+    if any(s <= 0 for s in shape_tuple):
+        raise ValueError(f"fill shape must be all-positive, got {shape_tuple}")
+
+    # In the sim, ttnn dtypes (ttnn.bfloat16, ttnn.float32, ...) are aliased
+    # directly to the matching torch.dtype, so the same value works either way.
+    torch_dtype = torch.bfloat16 if dtype is None else dtype
+
+    tile_h, tile_w = TILE_SHAPE
+    batch = shape_tuple[:-2]
+    rows_tiles, cols_tiles = shape_tuple[-2], shape_tuple[-1]
+    elem = torch.full(
+        (*batch, rows_tiles * tile_h, cols_tiles * tile_w),
+        float(value),
+        dtype=torch_dtype,
+    )
+    return Block(
+        tensor=Tensor(elem),
+        shape=shape_tuple,
+        acquisition=BlockAcquisition.RESERVE,
+        thread_type=ThreadType.COMPUTE,
+        is_temporary=True,
+    )
 
 
 # Helper function to create unary operation wrappers
