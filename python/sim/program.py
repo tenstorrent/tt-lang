@@ -20,7 +20,7 @@ from .dfb import DataflowBuffer
 from .typedefs import BindableTemplate, Shape
 from .blockstate import KernelType
 from .context import get_context
-from .greenlet_scheduler import GreenletScheduler, set_scheduler
+from .greenlet_scheduler import GreenletScheduler, KernelId, set_scheduler
 from .ttnnsim import Tensor
 from .analysis import (
     collect_reachable_analyses,
@@ -308,7 +308,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                         def _tagged(
                             fn: Callable[[], Any] = bound_func,
                             n: int = node,
-                            nctx: Dict[str, Any] = node_context,
+                            node_ctx: Dict[str, Any] = node_context,
                         ) -> None:
                             getcurrent()._sim_node = n  # type: ignore[attr-defined]
                             fn()
@@ -316,14 +316,15 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                             # function returns normally (final-iteration cleanup).
                             # This must not run during exception propagation, so it
                             # is placed after fn() rather than in a finally block.
-                            for _val in nctx.values():
+                            for _val in node_ctx.values():
                                 if isinstance(_val, DataflowBuffer):
                                     _val.auto_push_block()
                                     _val.auto_pop_block()
 
-                        # Add to scheduler
-                        kernel_name = f"node{node}-{tmpl.__name__}"
-                        scheduler.add_kernel(kernel_name, _tagged, kernel_type)
+                        # Add to scheduler (display name is node{node}-{tmpl.__name__})
+                        scheduler.add_kernel(
+                            KernelId(node, tmpl.__name__), _tagged, kernel_type
+                        )
 
                 # Install injection hooks for all discovered code objects (kernel
                 # functions, nested defs, and module-scope helpers).

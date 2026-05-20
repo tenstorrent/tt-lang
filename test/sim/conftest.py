@@ -47,6 +47,7 @@ from sim.blockstate import KernelType
 from sim.context import set_current_kernel_type, reset_context
 from sim.greenlet_scheduler import (
     GreenletScheduler,
+    KernelId,
     set_scheduler,
     set_scheduler_algorithm,
 )
@@ -67,7 +68,7 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
     """Set up scheduler and kernel context for unit tests.
 
     Args:
-        kernel_type: Kernel role to simulate (COMPUTE or DM)
+        kernel_type: Type of kernel to simulate (COMPUTE or DM)
 
     Returns:
         Configured GreenletScheduler instance
@@ -85,11 +86,12 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
     # Set the main greenlet to the current greenlet (for switching back)
     scheduler._main_greenlet = greenlet.getcurrent()
 
-    # Simulate being within core 0 by using a valid scheduled kernel name so that
+    # Simulate being within node 0 with a valid KernelId so that
     # get_current_node_id() returns "node0" and shard-locality stats work in tests.
     test_greenlet = greenlet(lambda: None)
-    scheduler._current_name = "node0-compute"
-    scheduler._active["node0-compute"] = (
+    tid = KernelId(0, "compute")
+    scheduler._current_kernel_id = tid
+    scheduler._active[tid] = (
         test_greenlet,
         None,  # blocking_obj
         "",  # operation
@@ -97,7 +99,7 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
         "",  # location
         None,  # raw_loc
     )
-    scheduler._has_made_progress["node0-compute"] = False
+    scheduler._has_made_progress[tid] = False
 
     return scheduler
 

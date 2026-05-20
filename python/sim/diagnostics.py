@@ -102,6 +102,7 @@ def format_node_ranges(node_numbers: list[int]) -> str:
     if not node_numbers:
         return ""
 
+    # Sort to ensure consecutive numbers are adjacent
     sorted_nodes = sorted(node_numbers)
     ranges: list[str] = []
     start = sorted_nodes[0]
@@ -109,8 +110,10 @@ def format_node_ranges(node_numbers: list[int]) -> str:
 
     for i in range(1, len(sorted_nodes)):
         if sorted_nodes[i] == end + 1:
+            # Consecutive, extend the range
             end = sorted_nodes[i]
         else:
+            # Gap found, save the current range and start a new one
             if start == end:
                 ranges.append(str(start))
             else:
@@ -118,6 +121,7 @@ def format_node_ranges(node_numbers: list[int]) -> str:
             start = sorted_nodes[i]
             end = sorted_nodes[i]
 
+    # Add the final range
     if start == end:
         ranges.append(str(start))
     else:
@@ -133,7 +137,8 @@ def extract_node_id_from_kernel_name(kernel_name: Optional[str]) -> str:
     and type is the kernel role (e.g., "dm", "compute").
 
     Args:
-        kernel_name: Scheduled kernel name like "node0-dm" or "node0-compute"
+        kernel_name: Scheduled kernel display name like "node0-dm" or "node0-compute"
+            (see :func:`sim.greenlet_scheduler.kernel_display_name`).
 
     Returns:
         Node ID like "node0", or "unknown" if extraction fails
@@ -149,8 +154,9 @@ def extract_node_id_from_kernel_name(kernel_name: Optional[str]) -> str:
     if not kernel_name:
         return "unknown"
 
+    # Extract node ID from scheduled kernel name (e.g., "node0-dm" -> "node0")
     if "-" in kernel_name:
-        return kernel_name.split("-")[0]
+        return kernel_name.split("-")[0]  # Take the part before first dash
 
     return kernel_name
 
@@ -176,9 +182,11 @@ def print_diagnostic_warning(
     diagnostics = lazy_import_diagnostics()
     SourceDiagnostic = diagnostics.SourceDiagnostic
 
+    # Read source lines
     with open(source_file, "r") as f:
         source_lines = f.read().splitlines()
 
+    # Format warning using diagnostics module
     diag = SourceDiagnostic(source_lines, source_file)
     warning_msg = diag.format_error(
         line=source_line,
@@ -228,7 +236,7 @@ def warn_once_per_location(
 ) -> None:
     """Issue a warning once per source location, tracking which nodes hit it.
 
-    This is a common pattern for simulator warnings: warn about an issue
+    This is a common pattern for simulator warnings: we want to warn about an issue
     once per source location, but show which nodes encountered it.
 
     Args:
@@ -236,8 +244,10 @@ def warn_once_per_location(
         message: Warning message to display
         node_id: ID of the current node (from get_current_node_id())
     """
+    # Find user code location
     source_file, source_line = find_user_code_location()
 
+    # Track this node hitting this location
     location_key = (source_file, source_line)
     first_occurrence = location_key not in warnings_dict
     if first_occurrence:
@@ -245,12 +255,15 @@ def warn_once_per_location(
 
     warnings_dict[location_key].add(node_id)
 
+    # Only print on first occurrence for this location
     if first_occurrence:
         nodes = warnings_dict[location_key]
 
+        # Format the node label
         if len(nodes) == 1 and node_id != "unknown":
             nodes_label = node_id
         else:
+            # Extract numeric node IDs and format as ranges
             unique_nodes = sorted(nodes, key=lambda x: (len(x), x))
             try:
                 node_numbers = [
@@ -265,4 +278,5 @@ def warn_once_per_location(
             except (ValueError, IndexError):
                 nodes_label = f"nodes: {', '.join(unique_nodes)}"
 
+        # Print warning with diagnostic formatting
         print_diagnostic_warning(message, source_file, source_line, nodes_label)

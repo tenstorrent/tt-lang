@@ -113,7 +113,11 @@ class TestPipeErrorHandling:
 
     def test_pipe_receive_timeout_no_sender(self) -> None:
         """Test that receiving from pipe with no sender is detected as deadlock."""
-        from sim.greenlet_scheduler import GreenletScheduler, set_scheduler
+        from sim.greenlet_scheduler import (
+            GreenletScheduler,
+            KernelId,
+            set_scheduler,
+        )
 
         # Create a minimal scheduler context for this test
         scheduler = GreenletScheduler()
@@ -134,7 +138,7 @@ class TestPipeErrorHandling:
                     tx = copy(pipe, block)
                     tx.wait()
 
-            scheduler.add_kernel("test-dm", test_kernel, KernelType.DM)
+            scheduler.add_kernel(KernelId(0, "test-dm"), test_kernel, KernelType.DM)
 
             # With scheduler, waiting on pipe with no sender is detected as deadlock
             with pytest.raises(RuntimeError, match="Deadlock detected"):
@@ -387,8 +391,8 @@ class TestContextManagerHandlers:
         assert tensors_equal(result, tile)
 
 
-class TestPipeNodeRangeTypes:
-    """Test pipe multicast with different dst_node_range types."""
+class TestPipeCoreRangeTypes:
+    """Test pipe multicast with different dst_core_range types."""
 
     def test_pipe_single_node_int(self) -> None:
         """Test pipe with single 1D core (int)."""
@@ -587,7 +591,7 @@ class TestCanWaitBehavior:
             # can_wait should return False before data is sent
             assert tx_recv.can_wait() is False
 
-            # Now send data in a separate kernel (simulated by just doing it)
+            # Now send data in a separate "kernel" (simulated by just doing it)
             src_dfb = DataflowBuffer(
                 likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
             )
@@ -706,7 +710,7 @@ class TestPipeKeywordConstruction:
         assert p1 == p2
 
     def test_keyword_with_slice_dst(self) -> None:
-        """Pipe(src=..., dst=...) works when dst is a NodeRange with slices."""
+        """Pipe(src=..., dst=...) works when dst is a CoreRange with slices."""
         positional = Pipe((0, 0), (slice(1, 4), 0))
         keyword = Pipe(src=(0, 0), dst=(slice(1, 4), 0))
         assert positional == keyword
