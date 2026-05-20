@@ -133,20 +133,21 @@ def format_core_ranges(core_numbers: list[int]) -> str:
 def extract_core_id_from_thread_name(thread_name: Optional[str]) -> str:
     """Extract core ID from a scheduled kernel name.
 
-    Names follow the pattern "coreN-type" where N is the core number
-    and type is the kernel role (e.g., "dm", "compute").
+    Names follow the pattern ``coreN-<func_name>`` where N is the core number
+    and ``<func_name>`` is the kernel function's ``__name__``
+    (see :func:`sim.greenlet_scheduler.kernel_display_name`).
 
     Args:
-        thread_name: Scheduled kernel display name like "core0-dm" or "core0-compute"
-            (see :func:`sim.greenlet_scheduler.kernel_thread_display_name`).
+        thread_name: Scheduled kernel display name like ``core0-mm_reader`` or
+            ``core15-mm_compute``.
 
     Returns:
         Core ID like "core0", or "unknown" if extraction fails
 
     Examples:
-        >>> extract_core_id_from_thread_name("core0-dm")
+        >>> extract_core_id_from_thread_name("core0-mm_reader")
         'core0'
-        >>> extract_core_id_from_thread_name("core15-compute")
+        >>> extract_core_id_from_thread_name("core15-mm_compute")
         'core15'
         >>> extract_core_id_from_thread_name(None)
         'unknown'
