@@ -19,12 +19,27 @@ from ttl.dialects import ttl
 from .pipe import Pipe
 
 
+def _arith_constant_owner(val):
+    """If val is an OpResult of arith.constant, return the typed ConstantOp; else None."""
+    owner = getattr(val, "owner", None)
+    if owner is None:
+        return None
+    if isinstance(owner, arith.ConstantOp):
+        return owner
+    if getattr(owner, "name", None) == "arith.constant":
+        return arith.ConstantOp(owner)
+    return None
+
+
 def _get_constant_int(val):
     """Extract Python int from MLIR arith.ConstantOp or return as-is if already int."""
     if isinstance(val, int):
         return val
     if isinstance(val, arith.ConstantOp):
         return val.literal_value
+    owner = _arith_constant_owner(val)
+    if owner is not None:
+        return owner.literal_value
     raise ValueError(f"Expected int or arith.ConstantOp, got {type(val)}")
 
 
@@ -34,6 +49,9 @@ def _get_constant_float(val):
         return float(val)
     if isinstance(val, arith.ConstantOp):
         return float(val.literal_value)
+    owner = _arith_constant_owner(val)
+    if owner is not None:
+        return float(owner.literal_value)
     raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
 
 

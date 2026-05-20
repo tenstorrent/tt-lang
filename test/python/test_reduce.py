@@ -965,6 +965,8 @@ def _make_reduce_bcast_kernel(
         inp_cols=inp_cols,
         red_rows=red_rows,
         red_cols=red_cols,
+        out_rows=inp_rows,
+        out_cols=inp_cols,
         dims=dims,
         inp_slice=_slice_syntax(inp_rows, inp_cols),
         out_slice=_slice_syntax(inp_rows, inp_cols),
