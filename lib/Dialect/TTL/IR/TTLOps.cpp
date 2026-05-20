@@ -1313,10 +1313,6 @@ mlir::LogicalResult mlir::tt::ttl::BlockBroadcastOp::verify() {
                          << inputType.getElementType();
   }
 
-  if (!getAttachedCB(getInput())) {
-    return emitOpError() << "input must be CB-attached";
-  }
-
   return success();
 }
 

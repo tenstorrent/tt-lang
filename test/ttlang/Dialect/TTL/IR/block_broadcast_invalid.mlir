@@ -2,8 +2,12 @@
 
 // Summary: Verifier-level rejection cases for ttl.block.broadcast: shape
 // rank mismatch, broadcast dim with non-1 input size, non-broadcast dim
-// size mismatch, out-of-range dim, duplicate dim, row-major element type,
-// and missing CB attachment on input.
+// size mismatch, out-of-range dim, duplicate dim, and row-major element
+// type. CB-attachment of the input is a pipeline invariant (enforced in
+// ttl-convert-ttl-to-compute by the fusion path or the standalone
+// LowerBlockBroadcastToCompute pattern), not a structural op invariant:
+// ttl-insert-intermediate-dfbs materializes a CB for non-CB-attached
+// intermediates (e.g. reduce results feeding broadcast) before lowering.
 
 // Shape size does not match input rank.
 func.func @bcast_rank_mismatch(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>>) {
@@ -75,14 +79,5 @@ func.func @bcast_zero_shape(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>>) {
   %arg0_cb = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x1x!ttcore.tile<32x32, f32>>
   // expected-error @below {{shape[1] = 0 must be positive}}
   %r = ttl.block.broadcast %arg0_cb dims = [-1], shape = [2, 0] : tensor<2x1x!ttcore.tile<32x32, f32>> -> tensor<2x0x!ttcore.tile<32x32, f32>>
-  return
-}
-
-// -----
-
-// Input without a ttl.attach_cb (no CB attachment) is rejected.
-func.func @bcast_no_cb_attachment(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>>) {
-  // expected-error @below {{input must be CB-attached}}
-  %r = ttl.block.broadcast %arg0 dims = [-1], shape = [2, 4] : tensor<2x1x!ttcore.tile<32x32, f32>> -> tensor<2x4x!ttcore.tile<32x32, f32>>
   return
 }
