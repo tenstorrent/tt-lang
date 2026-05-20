@@ -8,7 +8,7 @@ This document lists operation examples under `examples/`, how they are exercised
 
 | Mode | Command |
 | --- | --- |
-| Simulator CLI | `./bin/ttlang-sim examples/<name>.py` |
+| Simulator CLI | `./bin/tt-lang-sim examples/<name>.py` |
 | Simulator pytest | `python -m pytest test/sim/test_examples.py -v` |
 
 **Compiler and device (Docker):** run `python` inside the device container using the Docker toolchain venv (`build-docker/env/activate`), not `TTLANG_COMPILE_ONLY`. That mode skips operation execution and does not validate an example end-to-end.
@@ -68,7 +68,7 @@ They are tagged `skip-compiler` so the hardware batch does not treat failure as 
 
 ## Migrating sim-only examples
 
-Files that use `from sim import ttl, ttnn` run under `ttlang-sim` and pytest with the simulator shadowing real `ttnn`. `broadcast_demo.py` is kept on that import style and is included in the hardware compile-and-run batch. Other sim-backed examples (for example `matmul.py`) may still be migrated to match `examples/broadcast.py` (`import ttl`, `ttnn.open_device`, `ttnn.from_torch(..., device=..., memory_config=...)`, `ttnn.close_device` in `finally`) before dropping `skip-compiler`.
+Files that use `from sim import ttl, ttnn` run under `tt-lang-sim` and pytest with the simulator shadowing real `ttnn`. `broadcast_demo.py` is kept on that import style and is included in the hardware compile-and-run batch. Other sim-backed examples (for example `matmul.py`) may still be migrated to match `examples/broadcast.py` (`import ttl`, `ttnn.open_device`, `ttnn.from_torch(..., device=..., memory_config=...)`, `ttnn.close_device` in `finally`) before dropping `skip-compiler`.
 
 ## Metal examples
 

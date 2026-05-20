@@ -73,7 +73,7 @@ For finer control: `tt-lang-setup-host` runs only the sfpi step, `tt-lang-setup-
 Run a tutorial example:
 
 ```bash
-ttlang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulated (no compilation, runs on CPU)
+tt-lang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulated (no compilation, runs on CPU)
 python tutorials/elementwise/step_4_multinode_grid_auto.py        # compiles and runs on hardware
 ```
 
@@ -84,9 +84,9 @@ To develop tt-lang itself or debug the compiler, use the Docker images below or 
 TT-Lang is also usable through Docker images for both users and developers.
 Two images are available:
 
-| Image                                                                                           | Purpose                                                            | Preinstalled tt-lang<br />(including ttlang-sim) | Can clone/build tt-lang? |
+| Image                                                                                           | Purpose                                                            | Preinstalled tt-lang<br />(including tt-lang-sim) | Can clone/build tt-lang? |
 | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | :----------------------------------------------: | :----------------------: |
-| ![dist](https://img.shields.io/badge/dist-tt--lang--dist--ubuntu--22--04-brightgreen)<br />"dist" | Run tt-lang programs using<br />ttlang-sim or Tenstorrent hardware |                       Yes                       |            No            |
+| ![dist](https://img.shields.io/badge/dist-tt--lang--dist--ubuntu--22--04-brightgreen)<br />"dist" | Run tt-lang programs using<br />tt-lang-sim or Tenstorrent hardware |                       Yes                       |            No            |
 | ![ird](https://img.shields.io/badge/ird-tt--lang--ird--ubuntu--22--04-blueviolet)<br />"ird"      | Develop and build tt-lang from source                              |                        No                        |           Yes           |
 
 Both images can be used with `ird reserve` (see [container build docs](.github/containers/README.md) for details).
@@ -189,7 +189,7 @@ To map a different TT device, change the `--device` argument (e.g., `--device=/d
 tt-lang includes a functional simulator that runs kernels as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
 
 ```bash
-ttlang-sim examples/eltwise_add.py
+tt-lang-sim examples/eltwise_add.py
 ```
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/simulator.md) for debugger setup and details.

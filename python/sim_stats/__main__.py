@@ -4,10 +4,10 @@
 """
 Post-processing tool for simulator trace files.
 
-The ``ttlang-sim-stats`` console command is bundled with ``pip install tt-lang-sim``
+The ``tt-lang-sim-stats`` console command is bundled with ``pip install tt-lang-sim``
 (or full ``tt-lang``); there is no standalone package for this tool.
 
-Reads a JSON Lines trace file produced by ttlang-sim --trace and derives
+Reads a JSON Lines trace file produced by tt-lang-sim --trace and derives
 simulator summary tables:
 
   Tensor Access Statistics   -- reads/writes and tile counts per tensor name
@@ -16,8 +16,8 @@ simulator summary tables:
                                 broken down by core with a per-DFB subtotal
 
 Usage:
-    ttlang-sim-stats trace.jsonl
-    ttlang-sim-stats --help
+    tt-lang-sim-stats trace.jsonl
+    tt-lang-sim-stats --help
 """
 
 from __future__ import annotations
@@ -345,7 +345,7 @@ def print_stats_from_trace(path: Path) -> None:
     if not tensor_stats and not pipe_stats and not dfb_stats:
         print("\nNo statistics found in trace.")
         print(
-            "Hint: regenerate the trace with ttlang-sim --trace and at least the "
+            "Hint: regenerate the trace with tt-lang-sim --trace and at least the "
             "'copy', 'dfb', or 'pipe' categories enabled (all are on by default)."
         )
         return
@@ -365,10 +365,10 @@ def print_stats_from_trace(path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="ttlang-sim-stats",
+        prog="tt-lang-sim-stats",
         description=(
-            "Derive simulator statistics from a ttlang-sim trace file.\n\n"
-            "Reads the JSON Lines trace written by ttlang-sim --trace and prints\n"
+            "Derive simulator statistics from a tt-lang-sim trace file.\n\n"
+            "Reads the JSON Lines trace written by tt-lang-sim --trace and prints\n"
             "tensor, pipe, and dataflow-buffer summary tables.\n"
             "DFB statistics include a per-core breakdown with a per-DFB subtotal."
         ),
@@ -377,7 +377,7 @@ def main() -> None:
     parser.add_argument(
         "trace",
         metavar="FILE",
-        help="JSON Lines trace file produced by ttlang-sim --trace",
+        help="JSON Lines trace file produced by tt-lang-sim --trace",
     )
     args = parser.parse_args()
 

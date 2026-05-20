@@ -486,9 +486,9 @@ Job-by-job:
 3. **`build-wheels`** — calls `call-build-wheels.yml` against either the
    `docker_tag` input (manual dispatch) or the `build-docker` output (tag
    push). Builds the wheel inside the ird container, runs
-   `smoke-test-wheel.py` in an isolated venv (imports + `ttlang-sim --help`
-   + `ttlang-sim-stats --help`), and runs the CMake-install regression test
-   (`cmake --install` + `bin/ttlang-sim --help` against the parallel-install
+   `smoke-test-wheel.py` in an isolated venv (imports + `tt-lang-sim --help`
+   + `tt-lang-sim-stats --help`), and runs the CMake-install regression test
+   (`cmake --install` + `bin/tt-lang-sim --help` against the parallel-install
    layout). Uploads the result as the `tt-lang-wheels` artifact.
 4. **`test-dist-tutorials`**: calls `call-test-dist-tutorials.yml` against
    the dist image at the resolved tag, running the tutorial suite on the

@@ -697,7 +697,7 @@ def install_copy_wait_hooks(
 
     # Claim the tool ID and register callbacks.  reset_context() frees the
     # slot between runs, so this always starts from a clean state.
-    sys.monitoring.use_tool_id(_TOOL_ID, "ttlang-sim")
+    sys.monitoring.use_tool_id(_TOOL_ID, "tt-lang-sim")
     sys.monitoring.register_callback(
         _TOOL_ID, sys.monitoring.events.LINE, _line_callback
     )
