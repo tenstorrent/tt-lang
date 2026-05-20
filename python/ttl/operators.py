@@ -6,10 +6,17 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 from ttl.dialects import arith
-from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type, Context
+from ttl.ir import (
+    Context,
+    F32Type,
+    FloatAttr,
+    IntegerAttr,
+    RankedTensorType,
+    Type,
+)
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -19,8 +26,10 @@ from ttl.dialects import ttl
 from .pipe import Pipe
 
 
-def _arith_constant_owner(val):
-    """If val is an OpResult of arith.constant, return the typed ConstantOp; else None."""
+def _arith_constant_op(val):
+    """If val is (or is the result of) an arith.constant, return the typed ConstantOp."""
+    if isinstance(val, arith.ConstantOp):
+        return val
     owner = getattr(val, "owner", None)
     if owner is None:
         return None
@@ -31,28 +40,55 @@ def _arith_constant_owner(val):
     return None
 
 
-def _get_constant_int(val):
-    """Extract Python int from MLIR arith.ConstantOp or return as-is if already int."""
+def get_constant_int_value(val) -> Optional[int]:
+    """Python analog of mlir::getConstantIntValue.
+
+    Returns the underlying Python int when val is a Python int, an IntegerAttr,
+    an arith.ConstantOp, or a Value defined by arith.constant; otherwise None.
+    """
+    if isinstance(val, bool):
+        return None
     if isinstance(val, int):
         return val
-    if isinstance(val, arith.ConstantOp):
-        return val.literal_value
-    owner = _arith_constant_owner(val)
-    if owner is not None:
-        return owner.literal_value
-    raise ValueError(f"Expected int or arith.ConstantOp, got {type(val)}")
+    if isinstance(val, IntegerAttr):
+        return val.value
+    op = _arith_constant_op(val)
+    if op is not None:
+        return op.literal_value
+    return None
 
 
-def _get_constant_float(val):
-    """Extract Python float from MLIR arith.ConstantOp or return as-is if already float."""
+def get_constant_float_value(val) -> Optional[float]:
+    """Python analog of mlir::getConstantIntValue for floats.
+
+    Returns the underlying Python float when val is a Python int/float, a
+    FloatAttr, an arith.ConstantOp, or a Value defined by arith.constant;
+    otherwise None.
+    """
+    if isinstance(val, bool):
+        return None
     if isinstance(val, (float, int)):
         return float(val)
-    if isinstance(val, arith.ConstantOp):
-        return float(val.literal_value)
-    owner = _arith_constant_owner(val)
-    if owner is not None:
-        return float(owner.literal_value)
-    raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
+    if isinstance(val, FloatAttr):
+        return float(val.value)
+    op = _arith_constant_op(val)
+    if op is not None:
+        return float(op.literal_value)
+    return None
+
+
+def _get_constant_int(val) -> int:
+    v = get_constant_int_value(val)
+    if v is None:
+        raise ValueError(f"Expected constant int, got {type(val).__name__}")
+    return v
+
+
+def _get_constant_float(val) -> float:
+    v = get_constant_float_value(val)
+    if v is None:
+        raise ValueError(f"Expected constant float, got {type(val).__name__}")
+    return v
 
 
 def _is_ranked_tensor_value(val) -> bool:
