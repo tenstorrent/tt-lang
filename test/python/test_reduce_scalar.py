@@ -427,11 +427,8 @@ def make_reduce_times_reduce_kernel(reduce_fn: str):
 
 
 def make_scalar_times_add_kernel(scaler: float):
-    """`c * (a + b)` — exercises mul_unary_const on a fusible (non-Reduce,
-    non-Matmul) producer. The narrowing in MulUnaryConstOp must skip DFB
-    materialization of the add result so the add and the scaled mul stay
-    in a single fused compute. A regression here would either split the
-    compute or trip the formal-output store verifier."""
+    """`c * (a + b)` — `ttl.add` feeds `ttl.mul_unary_const` directly
+    (no intervening store)."""
 
     @ttl.operation(grid=(1, 1))
     def kernel(inp_a, inp_b, out):
@@ -836,11 +833,7 @@ def test_zero_scaler(device, dtype):
 
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 def test_scalar_times_fused_add(device, dtype):
-    """`c * (a + b)` — regression check that MulUnaryConstOp does NOT
-    materialize an add result to a DFB. Without the narrowing in
-    MulUnaryConstOp::getDFBInputOperandIndices the materializer would
-    insert a CB pair between the add and the scaled mul, breaking
-    fusion and risking a formal-output verifier error."""
+    """`c * (a + b)` should compile and produce `scaler * (a + b)`."""
     scaler = 0.25
     kernel = make_scalar_times_add_kernel(scaler)
 

@@ -1169,7 +1169,8 @@ def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
 }
 
 def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
-    [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>,
+    [Pure, TTL_UnaryElementwiseOpTrait,
+     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>,
      AllTypesMatch<["input", "result"]>]> {
   let summary = "Multiply a tensor of tiles by a compile-time scalar constant";
   let description = [{
