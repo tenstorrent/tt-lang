@@ -3,17 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Verify (or update) that everything tied to tt-metal points at the same
-# release tag. The single source of truth is third-party/tt-metal-version.
+# release tag. The single source of truth is third-party/tt-metal-version,
+# a sourceable shell snippet defining TTNN_PYPI and TT_METAL_TAG. See that
+# file's header for variable semantics.
 #
 # Checks:
-#   - third-party/tt-metal-version is well-formed and points at a real
-#     tt-metal release tag
+#   - TT_METAL_TAG points at a real tt-metal release tag
 #   - third-party/tt-metal submodule HEAD == commit pointed to by the tag
 #   - Dockerfile.base does not hard-code a tt-metal SHA
-#
-# The ttnn version in the wheel's install_requires is derived dynamically
-# from this same file by setup.py:_ttnn_requirement(); no separate
-# verification is needed.
 #
 # Usage:
 #   .github/scripts/check-tt-metal-version.sh           # verify only (CI mode)
@@ -32,11 +29,14 @@ UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 
 [[ -f "$VERSION_FILE" ]] || { echo "missing $VERSION_FILE" >&2; exit 1; }
-TAG=$(tr -d '[:space:]' < "$VERSION_FILE")
-[[ -n "$TAG" ]] || { echo "$VERSION_FILE is empty" >&2; exit 1; }
+# shellcheck source=../../third-party/tt-metal-version
+. "$VERSION_FILE"
+: "${TT_METAL_TAG:?$VERSION_FILE: TT_METAL_TAG not set}"
+: "${TTNN_PYPI:?$VERSION_FILE: TTNN_PYPI not set}"
+TAG="$TT_METAL_TAG"
+PYPI="$TTNN_PYPI"
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] \
-  || { echo "$VERSION_FILE: '$TAG' does not look like vX.Y.Z" >&2; exit 1; }
-VERSION=${TAG#v}
+  || { echo "$VERSION_FILE: TT_METAL_TAG '$TAG' does not look like vX.Y.Z" >&2; exit 1; }
 
 # Resolve tag -> commit via ls-remote. Annotated tags get a `^{}` deref line.
 RESOLVED=$(git ls-remote --tags "$TT_METAL_REMOTE" \
@@ -73,5 +73,5 @@ fi
 if (( UPDATE )); then
   echo "ok: submodule checked out at $TAG ($(echo "$RESOLVED" | cut -c1-12))"
 else
-  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule (ttnn version derived dynamically by setup.py)"
+  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule; setup.py requires ttnn==$PYPI"
 fi
