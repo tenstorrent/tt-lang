@@ -66,7 +66,7 @@ def reduce_bcast_kernel(inp, scaler, out):
 # CHECK: ttl.store
 # CHECK: ttl.cb_push
 # CHECK: ttl.cb_wait
-# CHECK: ttl.bcast
+# CHECK: ttl.block.broadcast
 
 # =============================================================================
 # C++ Kernel Checks - Verify hardware bcast type is SCALAR and
