@@ -88,7 +88,7 @@ def eltwise_pipe(
                 # Use store() to properly populate the Block with computed results
                 # Broadcast c_block along dimension 0 (rows) to match a_block/b_block shape
                 result = a_block * b_block + ttl.block.broadcast(
-                    c_block, dims=[0], shape=out_block
+                    c_block, dims=[0], shape=(granularity, 1)
                 )
                 out_block.store(result)
 

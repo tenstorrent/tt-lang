@@ -79,7 +79,7 @@ def __demo_kernel(a, b, c, y):
                         b_expr = ttl.block.broadcast(
                             b_expr if b_expr != b_blk else b_blk,
                             dims=[-1] if b_row_tiles > 1 else [0, 1],
-                            shape=y_blk,
+                            shape=(row_tiles_per_block, col_tiles_per_block),
                         )
 
                     # Check if c needs broadcasting
@@ -93,7 +93,7 @@ def __demo_kernel(a, b, c, y):
                         c_expr = ttl.block.broadcast(
                             c_expr if c_expr != c_blk else c_blk,
                             dims=[-1] if c_row_tiles > 1 else [0, 1],
-                            shape=y_blk,
+                            shape=(row_tiles_per_block, col_tiles_per_block),
                         )
 
                     y_blk.store(a_blk * b_expr + c_expr)
