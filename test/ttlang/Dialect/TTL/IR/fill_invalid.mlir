@@ -18,3 +18,12 @@ func.func @fill_zero_shape() {
   %r = ttl.fill 1.000000e+00 : tensor<4x0x!ttcore.tile<32x32, f32>>
   return
 }
+
+// -----
+
+// Dynamic shape entry is rejected.
+func.func @fill_dynamic_shape() {
+  // expected-error @below {{result must have a static shape}}
+  %r = ttl.fill 1.000000e+00 : tensor<4x?x!ttcore.tile<32x32, f32>>
+  return
+}

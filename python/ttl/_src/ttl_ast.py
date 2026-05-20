@@ -631,17 +631,15 @@ class TTLGenericCompiler(TTCompilerBase):
                 ):
                     return self._resolve_ttl_function(node, func_args, kwargs)
                 # Tensor-typed .shape: return the value's grid shape as a
-                # Python tuple of ints. Lets users write `y_blk.shape` (or
-                # `expr().shape`) inside @ttl.compute / @ttl.datamovement to
-                # derive shape kwargs for spec-form ops like
-                # ttl.block.broadcast(..., shape=y_blk.shape). Resolved before
-                # the chained-call and module-attribute branches so it also
-                # works on call expressions.
+                # Python tuple of ints. Lets users write `y_blk.shape` inside
+                # @ttl.compute / @ttl.datamovement to derive shape kwargs for
+                # spec-form ops like ttl.block.broadcast(..., shape=y_blk.shape).
+                # Resolved before the chained-call and module-attribute branches
+                # so it also works on call expressions whose result is a ranked
+                # tensor. Non-tensor receivers fall through to the existing
+                # handlers and surface their normal diagnostic.
                 if not func_args and not kwargs and node.attr == "shape":
-                    try:
-                        value = self.visit(node.value)
-                    except Exception:
-                        value = None
+                    value = self.visit(node.value)
                     if value is not None and hasattr(value, "type"):
                         tensor_ty = RankedTensorType.maybe_downcast(value.type)
                         if tensor_ty is not None:
