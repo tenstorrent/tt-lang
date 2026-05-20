@@ -630,6 +630,22 @@ class TTLGenericCompiler(TTCompilerBase):
                     or self._is_ttl_block_access(node)
                 ):
                     return self._resolve_ttl_function(node, func_args, kwargs)
+                # Tensor-typed .shape: return the value's grid shape as a
+                # Python tuple of ints. Lets users write `y_blk.shape` (or
+                # `expr().shape`) inside @ttl.compute / @ttl.datamovement to
+                # derive shape kwargs for spec-form ops like
+                # ttl.block.broadcast(..., shape=y_blk.shape). Resolved before
+                # the chained-call and module-attribute branches so it also
+                # works on call expressions.
+                if not func_args and not kwargs and node.attr == "shape":
+                    try:
+                        value = self.visit(node.value)
+                    except Exception:
+                        value = None
+                    if value is not None and hasattr(value, "type"):
+                        tensor_ty = RankedTensorType.maybe_downcast(value.type)
+                        if tensor_ty is not None:
+                            return tuple(tensor_ty.shape)
                 # Handle chained method calls: expr().method()
                 if isinstance(node.value, ast.Call):
                     return self._resolve_chained_method_call(node, func_args, kwargs)
@@ -648,16 +664,6 @@ class TTLGenericCompiler(TTCompilerBase):
                     and hasattr(self.fn_globals[node.value.id], node.attr)
                 ):
                     return getattr(self.fn_globals[node.value.id], node.attr)
-                # Tensor block .shape: return the block's grid shape as a
-                # Python tuple of ints. Lets users write `y_blk.shape` inside
-                # @ttl.compute / @ttl.datamovement to derive shape kwargs for
-                # spec-form ops like ttl.block.broadcast(..., shape=y_blk.shape).
-                if not func_args and not kwargs and node.attr == "shape":
-                    value = self.visit(node.value)
-                    if value is not None and hasattr(value, "type"):
-                        tensor_ty = RankedTensorType.maybe_downcast(value.type)
-                        if tensor_ty is not None:
-                            return tuple(tensor_ty.shape)
                 return super().visit_Attribute(node, func_args, kwargs)
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):

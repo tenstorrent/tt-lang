@@ -1149,8 +1149,9 @@ def TTL_FillOp : TTL_Op<"fill", [Pure]> {
     The output CB is determined by the ttl.store on this op's result.
   }];
   let arguments = (ins F32Attr:$value);
-  let results = (outs AnyType:$result);
+  let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$value attr-dict `:` type($result)";
+  let hasVerifier = 1;
 }
 
 def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {

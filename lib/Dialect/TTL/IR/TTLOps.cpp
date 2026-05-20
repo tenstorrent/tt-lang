@@ -1284,6 +1284,10 @@ mlir::LogicalResult mlir::tt::ttl::BlockBroadcastOp::verify() {
 
   for (int64_t i = 0; i < rank; ++i) {
     if (normDims.contains(i)) {
+      if (shape[i] <= 0) {
+        return emitOpError()
+               << "shape[" << i << "] = " << shape[i] << " must be positive";
+      }
       if (inputType.getDimSize(i) != 1) {
         return emitOpError()
                << "input dim " << i << " is " << inputType.getDimSize(i)
@@ -1309,6 +1313,28 @@ mlir::LogicalResult mlir::tt::ttl::BlockBroadcastOp::verify() {
                          << inputType.getElementType();
   }
 
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// FillOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::FillOp::verify() {
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+  if (!isa<ttcore::TileType>(resultType.getElementType())) {
+    return emitOpError() << "result element type must be !ttcore.tile, got "
+                         << resultType.getElementType();
+  }
+  if (!resultType.hasStaticShape()) {
+    return emitOpError() << "result must have a static shape";
+  }
+  for (auto [i, dim] : llvm::enumerate(resultType.getShape())) {
+    if (dim <= 0) {
+      return emitOpError() << "result shape[" << i << "] = " << dim
+                           << " must be positive";
+    }
+  }
   return success();
 }
 

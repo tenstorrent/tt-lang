@@ -69,6 +69,17 @@ func.func @bcast_row_major_rejected(%arg0: tensor<2x1xf32>) {
 
 // -----
 
+// Zero in shape on a broadcast dim is rejected.
+func.func @bcast_zero_shape(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>>) {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>
+  %arg0_cb = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{shape[1] = 0 must be positive}}
+  %r = ttl.block.broadcast %arg0_cb dims = [-1], shape = [2, 0] : tensor<2x1x!ttcore.tile<32x32, f32>> -> tensor<2x0x!ttcore.tile<32x32, f32>>
+  return
+}
+
+// -----
+
 // Missing CB attachment on input (validateBlockBroadcastOp in
 // ConvertTTLToCompute).
 // RUN-VARIANT: this check runs the conversion pass that performs the
