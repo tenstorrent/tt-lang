@@ -1058,10 +1058,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
       return failure();
     }
 
-    Value inputCb = getAttachedCB(op.getInput());
-    if (!inputCb) {
-      return rewriter.notifyMatchFailure(op, "input not CB-attached");
-    }
+    // CB-attachment of the input is enforced by BlockBroadcastOp::verify.
     Value outCb;
     for (OpOperand &use : op.getResult().getUses()) {
       if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {

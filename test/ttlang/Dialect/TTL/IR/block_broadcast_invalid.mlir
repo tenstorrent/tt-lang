@@ -80,10 +80,9 @@ func.func @bcast_zero_shape(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>>) {
 
 // -----
 
-// Missing CB attachment on input (validateBlockBroadcastOp in
-// ConvertTTLToCompute).
-// RUN-VARIANT: this check runs the conversion pass that performs the
-// CB-attachment validation, not the op verifier.
-// expected-error not surfaced by the op verifier alone; covered by the
-// runOnOperation walk in convert-ttl-to-compute. Keep this case in the
-// conversion-level invalid file (bcast_lowering_invalid.mlir).
+// Input without a ttl.attach_cb (no CB attachment) is rejected.
+func.func @bcast_no_cb_attachment(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>>) {
+  // expected-error @below {{input must be CB-attached}}
+  %r = ttl.block.broadcast %arg0 dims = [-1], shape = [2, 4] : tensor<2x1x!ttcore.tile<32x32, f32>> -> tensor<2x4x!ttcore.tile<32x32, f32>>
+  return
+}
