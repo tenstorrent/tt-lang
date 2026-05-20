@@ -60,7 +60,7 @@ def _make_l1_acc_kernel(block_m, block_n, grid="auto"):
                         nb = node_n * n_per + ln
                         if nb < N_num:
                             out_blk = out_dfb.reserve()
-                            out_blk.store(ttl.math.fill(out_blk, 0))
+                            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
                             for _ in range(Kt):
                                 a_blk = a_dfb.wait()
                                 b_blk = b_dfb.wait()
@@ -209,7 +209,7 @@ def _make_sum_reduction_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(Kt):
                 inp_blk = inp_dfb.wait()
                 out_blk += inp_blk
@@ -290,7 +290,7 @@ def _make_consecutive_acc_kernel(K1, K2):
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
-            out_blk.store(ttl.math.fill(out_blk, 0))
+            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
             for _ in range(K1):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -445,8 +445,8 @@ def _make_multi_output_kernel(Kt):
         def compute():
             blk_a = out_a_dfb.reserve()
             blk_b = out_b_dfb.reserve()
-            blk_a.store(ttl.math.fill(blk_a, 0))
-            blk_b.store(ttl.math.fill(blk_b, 0))
+            blk_a.store(ttl.block.fill(0, shape=blk_a.shape))
+            blk_b.store(ttl.block.fill(0, shape=blk_b.shape))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()

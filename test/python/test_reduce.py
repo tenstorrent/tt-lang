@@ -929,7 +929,7 @@ def reduce_bcast_kernel(inp, scaler, out):
             with reduced_dfb.reserve() as r:
                 r.store(ttl.math.{reduce_fn}(x, s, dims={dims}))
             with reduced_dfb.wait() as r, out_dfb.reserve() as o:
-                o.store(ttl.math.broadcast(r, o, dims={dims}))
+                o.store(ttl.block.broadcast(r, dims={dims}, shape=({out_rows}, {out_cols})))
 
     @ttl.datamovement()
     def dm_read():
@@ -1399,7 +1399,7 @@ def bcast_reduce_kernel(inp, bcast_in, scaler, out):
     @ttl.compute()
     def compute_fn():
         with bcast_dfb.wait() as b, bcast_out_dfb.reserve() as bo:
-            bo.store(ttl.math.broadcast(b, bo, dims=[0, 1]))
+            bo.store(ttl.block.broadcast(b, dims=[0, 1], shape=({tile_rows}, {tile_cols})))
 
         with inp_dfb.wait() as x, bcast_out_dfb.wait() as bv, add_out_dfb.reserve() as ao:
             ao.store(x + bv)
@@ -1571,7 +1571,7 @@ def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
             with red_dfb.reserve() as r_out:
                 r_out.store(ttl.math.reduce_sum(r_in, s, dims=[0, 1]))
         with red_dfb.wait() as r_val, bcast_dfb.reserve() as b_out:
-            b_out.store(ttl.math.broadcast(r_val, b_out, dims=[0, 1]))
+            b_out.store(ttl.block.broadcast(r_val, dims=[0, 1], shape=({mt}, 1)))
 
         bcast_blk = bcast_dfb.wait()
 
@@ -1688,7 +1688,7 @@ def reduce_bcast_type_kernel(inp, scaler, out):
             with red_dfb.reserve() as r:
                 r.store(ttl.math.reduce_sum(x, s, dims=[0, 1]))
             with red_dfb.wait() as r, out_dfb.reserve() as o:
-                o.store(ttl.math.broadcast(r, o, dims={bcast_dims}))
+                o.store(ttl.block.broadcast(r, dims={bcast_dims}, shape=({out_rows}, {out_cols})))
 
     @ttl.datamovement()
     def dm_read():
