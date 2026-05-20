@@ -1,5 +1,43 @@
-# Global
+# CODEOWNERS for TT-Lang
+#
+# Notes:
+# - Keep this file in .github/ so it is authoritative for branch protection.
+# - Order matters: the last matching pattern wins.
+# - Multiple owners for one pattern must be on one line.
+# - This draft uses the highest-contribution authors by directory from git history.
+# - Prefer @user or @org/team where possible; emails work only if linked to GitHub accounts.
+
+# Default fallback owners for all files.
 * @tenstorrent/tt-lang-maintainers
 
-# CI
-/.github/ @tenstorrent/forge-developers-mlir-devops
+# Protect repository policy and automation configuration.
+/.github/CODEOWNERS @tenstorrent/tt-lang-maintainers
+/.github/ @tenstorrent/tt-lang-maintainers
+
+# Build and packaging infrastructure.
+/cmake/ bnorris@tenstorrent.com
+/scripts/ bnorris@tenstorrent.com phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com
+/packaging/ bnorris@tenstorrent.com kfragkiadakis@tenstorrent.com
+
+# Core compiler and dialect implementation.
+/include/ bnorris@tenstorrent.com zcarver@tenstorrent.com vtsilytskyi@tenstorrent.com
+/lib/ bnorris@tenstorrent.com zcarver@tenstorrent.com vtsilytskyi@tenstorrent.com
+
+# Python frontend, APIs, and runtime integration.
+/python/ zcarver@tenstorrent.com bnorris@tenstorrent.com
+/python/sim/ kfragkiadakis@tenstorrent.com
+
+# Tests and examples.
+/test/ bnorris@tenstorrent.com zcarver@tenstorrent.com kfragkiadakis@tenstorrent.com
+/test/sim/ kfragkiadakis@tenstorrent.com
+/examples/ phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com arichins@tenstorrent.com
+/examples/metal_examples/ arichins@tenstorrent.com
+/examples/matmul-tutorial/ phizalev@tenstorrent.com
+/examples/elementwise-tutorial/ phizalev@tenstorrent.com
+
+# Documentation.
+/docs/ bnorris@tenstorrent.com phizalev@tenstorrent.com zcarver@tenstorrent.com kfragkiadakis@tenstorrent.com
+/docs/sphinx/spec/ phizalev@tenstorrent.com
+
+# Tooling.
+/tools/ bnorris@tenstorrent.com zcarver@tenstorrent.com kfragkiadakis@tenstorrent.com

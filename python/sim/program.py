@@ -20,7 +20,7 @@ from .dfb import DataflowBuffer
 from .typedefs import BindableTemplate, Shape
 from .blockstate import ThreadType
 from .context import get_context
-from .greenlet_scheduler import GreenletScheduler, set_scheduler
+from .greenlet_scheduler import GreenletScheduler, KernelThreadId, set_scheduler
 from .ttnnsim import Tensor
 from .analysis import (
     collect_reachable_analyses,
@@ -321,9 +321,10 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                                     _val.auto_push_block()
                                     _val.auto_pop_block()
 
-                        # Add to scheduler
-                        thread_name = f"core{core}-{tmpl.__name__}"
-                        scheduler.add_thread(thread_name, _tagged, thread_type)
+                        # Add to scheduler (display name remains core{core}-{tmpl.__name__})
+                        scheduler.add_thread(
+                            KernelThreadId(core, tmpl.__name__), _tagged, thread_type
+                        )
 
                 # Install injection hooks for all discovered code objects (thread
                 # functions, nested defs, and module-scope helpers).
