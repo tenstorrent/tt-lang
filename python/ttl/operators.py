@@ -28,40 +28,30 @@ def _get_constant_int(val):
     raise ValueError(f"Expected int or arith.ConstantOp, got {type(val)}")
 
 
-def _get_constant_float(val):
-    """Extract Python float from MLIR arith.ConstantOp or return as-is if already float."""
-    if isinstance(val, (float, int)):
-        return float(val)
-    if isinstance(val, arith.ConstantOp):
-        return float(val.literal_value)
-    raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
-
-
 def _as_host_scalar(val):
-    """If `val` is a host-side scalar (Python int/float, or an MLIR Value
-    defined by `arith.ConstantOp` with an int or float type), return it
-    as a Python float. Otherwise return None.
-
-    Used by `__mul__` / `__rmul__` to detect scalar-by-tensor multiplication
-    and emit `ttl.mul_unary_const`. For a torch 0-dim float tensor, the
-    caller must extract the value with `.item()` before passing to the
-    kernel — the AST compiler does not capture torch tensors as constants.
-    """
+    """Return `val` as a Python float if it is a Python int/float, an
+    arith.ConstantOp, or an MLIR Value defined by arith.ConstantOp.
+    Otherwise return None. Torch 0-dim tensors are not recognized."""
     if isinstance(val, (int, float)):
         return float(val)
-    if isinstance(val, arith.ConstantOp):
-        try:
-            return float(val.literal_value)
-        except (TypeError, ValueError):
-            return None
-    if hasattr(val, "owner"):
-        owner = val.owner
-        if isinstance(owner, arith.ConstantOp):
-            try:
-                return float(owner.literal_value)
-            except (TypeError, ValueError):
-                return None
-    return None
+    const_op = val if isinstance(val, arith.ConstantOp) else None
+    if const_op is None and isinstance(getattr(val, "owner", None), arith.ConstantOp):
+        const_op = val.owner
+    if const_op is None:
+        return None
+    try:
+        return float(const_op.literal_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_constant_float(val):
+    """Extract Python float from `val` (Python int/float or arith.ConstantOp).
+    Raises ValueError if `val` is not a recognized host scalar."""
+    result = _as_host_scalar(val)
+    if result is None:
+        raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
+    return result
 
 
 # Type aliases for common patterns
@@ -125,7 +115,7 @@ class TensorBlock:
         if c is not None:
             ctx = ast_self.type.context
             value_attr = FloatAttr.get(F32Type.get(ctx), c)
-            return ttl.mul_unary_const(ast_self.type, ast_self, value_attr)
+            return ttl.mul_unary_const(ast_self, value_attr)
         return ttl.mul(ast_self.type, ast_self, rhs)
 
     def __rmul__(ast_self: TensorBlock, lhs) -> TensorBlock:
@@ -134,7 +124,7 @@ class TensorBlock:
         if c is not None:
             ctx = ast_self.type.context
             value_attr = FloatAttr.get(F32Type.get(ctx), c)
-            return ttl.mul_unary_const(ast_self.type, ast_self, value_attr)
+            return ttl.mul_unary_const(ast_self, value_attr)
         return NotImplemented
 
     def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:

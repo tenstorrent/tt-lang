@@ -17,17 +17,14 @@ from .utils import _cast, _get_type_str
 
 
 def _is_host_scalar_constant(val) -> bool:
-    """Return True if `val` is a float- or integer-typed MLIR Value defined
-    by an `arith.ConstantOp` (a Python int/float literal captured into the
-    kernel body by the AST). Used to recognize the scalar side of a
-    `scalar * tensor` expression so it can be commuted to `tensor * scalar`.
-    """
+    """True if `val` is a Float- or Integer-typed MLIR Value defined by
+    arith.ConstantOp (i.e. a Python int/float captured by the AST). Index
+    types are excluded so loop indices fall through unchanged."""
     if not hasattr(val, "type"):
         return False
     if not isinstance(val.type, (FloatType, IntegerType)):
         return False
-    owner = getattr(val, "owner", None)
-    return isinstance(owner, arith.ConstantOp)
+    return isinstance(getattr(val, "owner", None), arith.ConstantOp)
 
 
 class TTCompilerBase(PyKernelAstBase):
@@ -552,15 +549,10 @@ class TTCompilerBase(PyKernelAstBase):
             )
             return fn(lhs, rhs)
 
-        # Scalar-times-tensor (and tensor-times-scalar). For Mult only —
-        # multiplication is commutative — and only when the non-tensor side is
-        # a recognized host scalar (a float-typed Value defined by
-        # arith.ConstantOp, i.e. a Python int/float captured by the AST).
-        # In that case dispatch through the tensor's __mul__ so it can emit a
-        # scalar-aware op (ttl.mul_unary_const) without going through the
-        # type-equality cast that would try to cast a tensor to f32.
-        # Anything else (e.g. a non-constant scalar Value, an Index) falls
-        # through to the existing cast path so its failure mode is unchanged.
+        # Commute `scalar * tensor` to `tensor * scalar` so the tensor's
+        # __mul__ can dispatch to ttl.mul_unary_const. Applies only to Mult
+        # (commutative) and only when the scalar side is a host constant;
+        # otherwise fall through to the type-equality cast below.
         if isinstance(node.op, ast.Mult):
             lhs_is_tensor = hasattr(lhs, "type") and isinstance(
                 lhs.type, RankedTensorType

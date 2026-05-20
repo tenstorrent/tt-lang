@@ -1158,8 +1158,8 @@ def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
   let summary = "Tile-level multiply by a compile-time scalar constant";
   let description = [{
     Multiplies every element of a DST register tile by a compile-time
-    scalar constant. Operates in-place at `dst_index`. Maps to
-    ttkernel.binop_with_scalar_tile_init + ttkernel.mul_unary_tile.
+    scalar constant. Operates in-place at `dst_index`; the result has the
+    same type as the input tile.
   }];
   let arguments = (ins TTL_TileType:$input, F32Attr:$value, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
@@ -1169,11 +1169,12 @@ def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
 }
 
 def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
-    [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
+    [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>,
+     AllTypesMatch<["input", "result"]>]> {
   let summary = "Multiply a tensor of tiles by a compile-time scalar constant";
   let description = [{
     Element-wise multiply of an input tensor of tiles by a compile-time
-    scalar constant. Lowered to `ttl.compute` with `ttl.tile_mul_unary_const`.
+    scalar constant. The result has the same type as the input.
   }];
   let arguments = (ins AnyRankedTensor:$input, F32Attr:$value);
   let results = (outs AnyRankedTensor:$result);

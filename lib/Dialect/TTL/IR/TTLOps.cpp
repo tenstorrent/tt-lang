@@ -1095,20 +1095,26 @@ mlir::tt::ttl::TransposeOp::getDFBInputOperandIndices() {
   return {0}; // input
 }
 
+// True if `operand`'s producer is one whose result cannot fuse with a
+// downstream compute and so must be packed out to a DFB.
+static bool needsDFBMaterialization(mlir::Value operand) {
+  mlir::Operation *defOp = operand.getDefiningOp();
+  return defOp &&
+         mlir::isa<mlir::tt::ttl::ReduceOp, mlir::tt::ttl::MatmulOp>(defOp);
+}
+
 llvm::SmallVector<unsigned>
 mlir::tt::ttl::MulUnaryConstOp::getDFBInputOperandIndices() {
-  return {0}; // input
+  if (needsDFBMaterialization(getInput())) {
+    return {0};
+  }
+  return {};
 }
 
 llvm::SmallVector<unsigned> mlir::tt::ttl::MulOp::getDFBInputOperandIndices() {
-  // Only materialize operands whose producer cannot fuse into the mul's
-  // compute. Reduce and Matmul write their full result to DST and must be
-  // packed out to L1 before another compute can consume them; elementwise
-  // and broadcast results fuse naturally and must not be materialized.
   llvm::SmallVector<unsigned> indices;
   for (unsigned idx : {0u, 1u}) {
-    Operation *defOp = getOperand(idx).getDefiningOp();
-    if (defOp && isa<ReduceOp, MatmulOp>(defOp)) {
+    if (needsDFBMaterialization(getOperand(idx))) {
       indices.push_back(idx);
     }
   }

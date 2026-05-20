@@ -1385,10 +1385,7 @@ struct LowerMulUnaryConstToCompute : OpRewritePattern<MulUnaryConstOp> {
 
   LogicalResult matchAndRewrite(MulUnaryConstOp op,
                                 PatternRewriter &rewriter) const override {
-    auto resultType = getTensorType(op.getResult());
-    if (!resultType) {
-      return rewriter.notifyMatchFailure(op, "result is not a ranked tensor");
-    }
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
     if (!getAttachedCB(op.getInput())) {
       return rewriter.notifyMatchFailure(op, "input must be CB-attached");
     }
