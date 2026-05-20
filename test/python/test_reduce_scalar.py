@@ -426,6 +426,43 @@ def make_reduce_times_reduce_kernel(reduce_fn: str):
     return kernel
 
 
+def make_scalar_times_add_kernel(scaler: float):
+    """`c * (a + b)` — exercises mul_unary_const on a fusible (non-Reduce,
+    non-Matmul) producer. The narrowing in MulUnaryConstOp must skip DFB
+    materialization of the add result so the add and the scaled mul stay
+    in a single fused compute. A regression here would either split the
+    compute or trip the formal-output store verifier."""
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(inp_a, inp_b, out):
+        a_dfb = ttl.make_dataflow_buffer_like(inp_a, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(inp_b, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute_fn():
+            with (
+                a_dfb.wait() as a_blk,
+                b_dfb.wait() as b_blk,
+                out_dfb.reserve() as out_blk,
+            ):
+                out_blk.store(scaler * (a_blk + b_blk))
+
+        @ttl.datamovement()
+        def dm_read():
+            with a_dfb.reserve() as blk:
+                ttl.copy(inp_a[0, 0], blk).wait()
+            with b_dfb.reserve() as blk:
+                ttl.copy(inp_b[0, 0], blk).wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            with out_dfb.wait() as blk:
+                ttl.copy(blk, out[0, 0]).wait()
+
+    return kernel
+
+
 @atexit.register
 def _cleanup():
     for p in _temp_files:
@@ -795,3 +832,26 @@ def test_zero_scaler(device, dtype):
 
     actual = ttnn.to_torch(out)[0, 0].float().item()
     assert actual == 0.0
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_scalar_times_fused_add(device, dtype):
+    """`c * (a + b)` — regression check that MulUnaryConstOp does NOT
+    materialize an add result to a DFB. Without the narrowing in
+    MulUnaryConstOp::getDFBInputOperandIndices the materializer would
+    insert a CB pair between the add and the scaled mul, breaking
+    fusion and risking a formal-output verifier error."""
+    scaler = 0.25
+    kernel = make_scalar_times_add_kernel(scaler)
+
+    a_torch = torch.rand(TILE, TILE, dtype=dtype) - 0.5
+    b_torch = torch.rand(TILE, TILE, dtype=dtype) - 0.5
+    out_torch = torch.zeros(TILE, TILE, dtype=dtype)
+    inp_a = to_l1(a_torch, device)
+    inp_b = to_l1(b_torch, device)
+    out = to_l1(out_torch, device)
+    kernel(inp_a, inp_b, out)
+
+    expected = (a_torch.float() + b_torch.float()) * scaler
+    actual = ttnn.to_torch(out).float()
+    assert_allclose(actual, expected, **_tolerances(dtype, scaler))
