@@ -28,7 +28,11 @@ def eltwise_pipe(
     assert a_in.shape == b_in.shape == out.shape
     assert a_in.shape[0] % granularity == 0
 
-    # c_in is a single tile (32x32) broadcast across the grid to all output tiles.
+    # c_in is one tile (32x32).  The compute kernel below uses
+    # ``ttl.block.broadcast(c_block, dims=[0], shape=a_block.shape)`` which,
+    # per spec step (1), takes only row 0 of the source tile and replicates
+    # it across the remaining rows before tiling across the grid - so only
+    # row 0 of c_in contributes to the output.
     tile_h, tile_w = ttl.TILE_SHAPE
     assert c_in.shape == (
         tile_h,
@@ -175,16 +179,19 @@ def main() -> None:
     tile_h, tile_w = 32, 32
     a_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
     b_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
-    # c_in is a single tile broadcast to all output tiles (new API requires tile-aligned shape)
     c_in = ttnn.rand((tile_h, tile_w), dtype=ttnn.float32)
     out = ttnn.empty((dim, dim), dtype=ttnn.float32)
 
     eltwise_pipe(a_in, b_in, c_in, out)
 
-    # Golden: tile c_in across the full matrix shape to match a_in * b_in
-    import torch as _torch
-
-    c_full = ttnn.from_torch(ttnn.to_torch(c_in).repeat(dim // tile_h, dim // tile_w))
+    # Golden: per spec, ``broadcast(c_block, dims=[0], shape=a_block.shape)``
+    # broadcasts row 0 of the source tile across the rest of the rows (step 1)
+    # then replicates the resulting tile across the grid (step 2).  The
+    # effective per-element c contribution is therefore ``c_in[0, j % tile_w]``
+    # regardless of the row; rows 1..31 of the random ``c_in`` tile are not
+    # visible in the output.
+    c_row = ttnn.to_torch(c_in)[0:1, :]
+    c_full = ttnn.from_torch(c_row.repeat(dim, dim // tile_w))
     golden = a_in * b_in + c_full
     assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out))
 

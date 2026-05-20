@@ -114,6 +114,92 @@ def test_broadcast_preserves_data():
         assert torch.allclose(tile.to_torch(), torch.tensor([[7.0]]))
 
 
+def test_broadcast_within_tile_col_regression_601():
+    """Regression test for issue #601 (innermost-dim broadcast).
+
+    A (32, 1) logical column vector is auto-padded by ``from_torch`` to a
+    (32, 32) tile-aligned storage with the data in column 0 and zeros in
+    columns 1..31.  ``ttl.block.broadcast(dims=[-1], shape=...)`` must do
+    spec step (1) - replicate column 0 across all 32 columns within each
+    tile - before step (2) replicates the tile across the grid.  Pre-fix
+    the within-tile step was skipped, so the auto-pad zeros leaked into
+    cols 1..31 of every output tile and downstream consumers saw a tile
+    that didn't represent the broadcast result.
+    """
+    from sim.ttnnsim import from_torch
+
+    src_col = torch.arange(32, dtype=torch.float32).reshape(32, 1)
+    t = from_torch(src_col)
+    assert t.shape == (32, 32), "auto-pad should yield tile-aligned storage"
+
+    block = Block.from_tensor(t)
+    assert block.shape == (1, 1)
+
+    bcast = ttl.block.broadcast(block, dims=[-1], shape=(1, 4))
+    assert bcast.shape == (1, 4)
+
+    expected_tile = src_col.expand(32, 32).contiguous()
+    for tile in bcast.to_list():
+        assert torch.equal(
+            tile.to_torch(), expected_tile
+        ), "step (1) must broadcast col 0 across cols 1..31"
+
+
+def test_broadcast_within_tile_row_regression_601():
+    """Regression test for issue #601 (outer-dim broadcast on a 2-D shape).
+
+    A (1, 32) logical row vector is auto-padded to (32, 32) with the data
+    in row 0 and zeros in rows 1..31.  ``ttl.block.broadcast(dims=[0],
+    shape=...)`` on a 2-D shape must do spec step (1) - replicate row 0
+    across the remaining rows of each tile - so cols 0..31 of every result
+    row carry the source value, not the auto-pad zeros.
+    """
+    from sim.ttnnsim import from_torch
+
+    src_row = torch.arange(32, dtype=torch.float32).reshape(1, 32)
+    t = from_torch(src_row)
+    assert t.shape == (32, 32)
+
+    block = Block.from_tensor(t)
+    assert block.shape == (1, 1)
+
+    bcast = ttl.block.broadcast(block, dims=[0], shape=(4, 1))
+    assert bcast.shape == (4, 1)
+
+    expected_tile = src_row.expand(32, 32).contiguous()
+    for tile in bcast.to_list():
+        assert torch.equal(
+            tile.to_torch(), expected_tile
+        ), "step (1) must broadcast row 0 across rows 1..31"
+
+
+def test_broadcast_within_tile_scalar_regression_601():
+    """Regression test for issue #601 (broadcast on both tile dims).
+
+    A (1, 1) logical scalar is auto-padded to (32, 32) with the value at
+    position (0, 0) and zeros elsewhere.  ``ttl.block.broadcast(dims=[0,
+    1], shape=...)`` must do spec step (1) - replicate the (0, 0) value
+    across the rest of each tile - so every output cell carries the source
+    value, not the auto-pad zeros.
+    """
+    from sim.ttnnsim import from_torch
+
+    t = from_torch(torch.tensor([[3.5]], dtype=torch.float32))
+    assert t.shape == (32, 32)
+
+    block = Block.from_tensor(t)
+    assert block.shape == (1, 1)
+
+    bcast = ttl.block.broadcast(block, dims=[0, 1], shape=(2, 3))
+    assert bcast.shape == (2, 3)
+
+    expected_tile = torch.full((32, 32), 3.5)
+    for tile in bcast.to_list():
+        assert torch.equal(
+            tile.to_torch(), expected_tile
+        ), "step (1) must broadcast (0, 0) across the entire tile"
+
+
 # Tests for explicit broadcasting requirements
 
 
@@ -568,8 +654,38 @@ def test_reduce_max_rows():
     assert torch.allclose(result_tensor, expected)
 
 
+def test_reduce_max_rows_within_tile():
+    """Reduce_max along the outer (row) tile dim with a tile whose row axis > 1.
+
+    The existing ``test_reduce_max_rows`` uses ``(1, 2)`` tiles, so its
+    within-tile row collapse is a no-op (only one row) and would pass even
+    if step (2) along the row direction were buggy.  Here the tile shape is
+    ``(2, 1)``, so step (2) actually fires: the two within-tile rows must
+    be max-reduced into row 0 with row 1 zero-filled.
+    """
+    t_a = [
+        Tensor(torch.tensor([[3.0], [7.0]])),
+        Tensor(torch.tensor([[2.0], [4.0]])),
+    ]
+    block_a = Block.from_list(t_a, shape=(2, 1))
+
+    result = ttl.math.reduce_max(block_a, dims=[0], shape=(1, 1))
+
+    assert result.shape == (1, 1)
+    # Step (1) elementwise max across the two tiles -> [[3], [7]].
+    # Step (2) max along the within-tile row axis -> 7 placed at row 0;
+    # row 1 is zero per the spec data-placement / tail-zero convention.
+    expected = torch.tensor([[7.0], [0.0]])
+    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+
+
 def test_reduce_max_cols():
-    """Test reduce_max over columns (innermost dimension -1 for 2D)."""
+    """Test reduce_max over columns (innermost dimension -1 for 2D).
+
+    Spec: step (1) elementwise-maxes contributing tiles in the col-tile
+    direction; step (2) collapses the col dim within the result tile and
+    stores the max in col 0 (rest is zero per the spec data placement).
+    """
     t_a = [
         Tensor(torch.tensor([[1.0, 5.0]])),
         Tensor(torch.tensor([[3.0, 2.0]])),
@@ -579,13 +695,18 @@ def test_reduce_max_cols():
     result = ttl.math.reduce_max(block_a, dims=[-1], shape=(1, 1))
 
     assert result.shape == (1, 1)
-    # Max over cols: max([1, 5], [3, 2]) along innermost dim = [3, 5]
-    expected = torch.tensor([[3.0, 5.0]])
+    # Step (1) -> [[3, 5]]; step (2) -> max(3, 5) = 5 placed in col 0.
+    expected = torch.tensor([[5.0, 0.0]])
     assert torch.allclose(result.to_list()[0].to_torch(), expected)
 
 
 def test_reduce_max_all():
-    """Test reduce_max over all dimensions."""
+    """Test reduce_max over both tile-grid dimensions.
+
+    Spec: step (1) elementwise-maxes contributing tiles across both
+    directions; step (2) further collapses both tile dims into a single
+    scalar stored at position (0, 0).
+    """
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
         Tensor(torch.tensor([[3.0, 4.0]])),
@@ -597,9 +718,9 @@ def test_reduce_max_all():
     result = ttl.math.reduce_max(block_a, dims=[0, 1], shape=(1, 1))
 
     assert result.shape == (1, 1)
-    # Element-wise max across all tiles: max([[1,2], [3,4], [5,6], [7,8]]) = [7, 8]
+    # Step (1) -> [[7, 8]]; step (2) -> max(7, 8) = 8 at position (0, 0).
     result_tensor = result.to_list()[0].to_torch()
-    expected = torch.tensor([[7.0, 8.0]])
+    expected = torch.tensor([[8.0, 0.0]])
     assert torch.allclose(result_tensor, expected)
 
 
@@ -646,8 +767,36 @@ def test_reduce_sum_rows():
     assert torch.allclose(result_tensor, expected)
 
 
+def test_reduce_sum_rows_within_tile():
+    """Reduce_sum along the outer (row) tile dim with a tile whose row axis > 1.
+
+    Companion to ``test_reduce_max_rows_within_tile``; closes the same
+    coverage gap (existing ``test_reduce_sum_rows`` uses ``(1, 2)`` tiles
+    so step (2) along the row direction is a no-op there).
+    """
+    t_a = [
+        Tensor(torch.tensor([[3.0], [7.0]])),
+        Tensor(torch.tensor([[2.0], [4.0]])),
+    ]
+    block_a = Block.from_list(t_a, shape=(2, 1))
+
+    result = ttl.math.reduce_sum(block_a, dims=[0], shape=(1, 1))
+
+    assert result.shape == (1, 1)
+    # Step (1) elementwise sum across the two tiles -> [[5], [11]].
+    # Step (2) sum along the within-tile row axis -> 16 placed at row 0;
+    # row 1 is zero per the spec data-placement / tail-zero convention.
+    expected = torch.tensor([[16.0], [0.0]])
+    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+
+
 def test_reduce_sum_cols():
-    """Test reduce_sum over columns (innermost dimension -1 for 2D)."""
+    """Test reduce_sum over columns (innermost dimension -1 for 2D).
+
+    Spec: step (1) elementwise-sums contributing tiles in the col-tile
+    direction; step (2) collapses the col dim within the result tile and
+    stores the sum in col 0.
+    """
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
         Tensor(torch.tensor([[3.0, 4.0]])),
@@ -657,13 +806,18 @@ def test_reduce_sum_cols():
     result = ttl.math.reduce_sum(block_a, dims=[-1], shape=(1, 1))
 
     assert result.shape == (1, 1)
-    # Sum over cols: sum([1, 2], [3, 4]) along innermost dim = [4, 6]
-    expected = torch.tensor([[4.0, 6.0]])
+    # Step (1) -> [[4, 6]]; step (2) -> 4 + 6 = 10 placed in col 0.
+    expected = torch.tensor([[10.0, 0.0]])
     assert torch.allclose(result.to_list()[0].to_torch(), expected)
 
 
 def test_reduce_sum_all():
-    """Test reduce_sum over all dimensions."""
+    """Test reduce_sum over both tile-grid dimensions.
+
+    Spec: step (1) elementwise-sums contributing tiles across both
+    directions; step (2) further collapses both tile dims and stores the
+    scalar at position (0, 0).
+    """
     t_a = [
         Tensor(torch.tensor([[1.0, 1.0]])),
         Tensor(torch.tensor([[2.0, 2.0]])),
@@ -675,9 +829,9 @@ def test_reduce_sum_all():
     result = ttl.math.reduce_sum(block_a, dims=[0, 1], shape=(1, 1))
 
     assert result.shape == (1, 1)
-    # Element-wise sum across all tiles: sum([[1,1], [2,2], [3,3], [4,4]]) = [10, 10]
+    # Step (1) -> [[10, 10]]; step (2) -> 10 + 10 = 20 at position (0, 0).
     result_tensor = result.to_list()[0].to_torch()
-    expected = torch.tensor([[10.0, 10.0]])
+    expected = torch.tensor([[20.0, 0.0]])
     assert torch.allclose(result_tensor, expected)
 
 
@@ -715,34 +869,51 @@ def _tile1d(value: float, size: int = 32) -> Tensor:
 
 
 def test_reduce_sum_1d_single_tile():
-    """reduce_sum on a 1-D (1,) block with a single tile."""
+    """reduce_sum on a 1-D (1,) block with a single tile.
+
+    For a 1-D block dim 0 is the innermost dim, so step (2) fires and
+    collapses the within-tile vector into element 0 (the rest is zero).
+    """
     block = Block.from_list([_tile1d(2.0)], shape=(1,))
     result = ttl.math.reduce_sum(block, dims=[0], shape=(1,))
     assert result.shape == (1,)
     out = result.to_list()[0].to_torch()
-    assert torch.allclose(out, torch.full((32,), 2.0))
+    expected = torch.zeros(32)
+    expected[0] = 2.0 * 32  # sum of 32 copies of 2.0
+    assert torch.allclose(out, expected)
 
 
 def test_reduce_sum_1d_multi_tile():
-    """reduce_sum on a 1-D (4,) block reduces all 4 tiles to one."""
+    """reduce_sum on a 1-D (4,) block reduces all 4 tiles to one.
+
+    Step (1) elementwise-sums the 4 tiles; step (2) further collapses the
+    within-tile vector into element 0.
+    """
     tiles = [_tile1d(3.0) for _ in range(4)]
     block = Block.from_list(tiles, shape=(4,))
     result = ttl.math.reduce_sum(block, dims=[0], shape=(1,))
     assert result.shape == (1,)
     out = result.to_list()[0].to_torch()
-    # Element-wise sum: 4 tiles * 3.0 = 12.0 per element
-    assert torch.allclose(out, torch.full((32,), 12.0))
+    expected = torch.zeros(32)
+    expected[0] = 4 * 3.0 * 32  # 4 tiles, 32 elements each, all 3.0
+    assert torch.allclose(out, expected)
 
 
 def test_reduce_max_1d_multi_tile():
-    """reduce_max on a 1-D (3,) block takes the element-wise max across tiles."""
+    """reduce_max on a 1-D (3,) block takes the max across tiles, then within tile.
+
+    Step (1) elementwise-maxes the 3 tiles giving the max of {1, 5, 2} per
+    element = 5; step (2) then collapses the within-tile vector to element
+    0 (still 5 because every element of the post-step-(1) tile equals 5).
+    """
     tiles = [_tile1d(v) for v in [1.0, 5.0, 2.0]]
     block = Block.from_list(tiles, shape=(3,))
     result = ttl.math.reduce_max(block, dims=[0], shape=(1,))
     assert result.shape == (1,)
     out = result.to_list()[0].to_torch()
-    # Element-wise max across 3 tiles: max(1, 5, 2) = 5.0 per element
-    assert torch.allclose(out, torch.full((32,), 5.0))
+    expected = torch.zeros(32)
+    expected[0] = 5.0
+    assert torch.allclose(out, expected)
 
 
 def test_reduce_sum_batched_3d_batch_dim():

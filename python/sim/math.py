@@ -483,6 +483,13 @@ def _reduce_impl(
     # Each output grid position gets contributions from multiple input positions
     input_tensors = [t.to_torch() for t in block.to_list()]
 
+    # Spec step (2) fires when the user reduces along one or both of the last
+    # two (tile) dimensions of `block_shape`.  In that case the within-tile
+    # collapse stores the scalar/row/column result in row 0 / col 0 / (0, 0)
+    # of each output tile, matching the spec's data-placement convention.
+    reduce_row = (ndim - 2) in internal_dims_set
+    reduce_col = (ndim - 1) in internal_dims_set
+
     result_tensors: List[Tensor] = []
 
     for out_idx in _iter_product(*[range(s) for s in result_shape]):
@@ -504,7 +511,7 @@ def _reduce_impl(
             )
             contributing_tiles.append(input_tensors[flat])
 
-        # Reduce across contributing tiles using torch operations
+        # Spec step (1): elementwise reduce across contributing tiles.
         if len(contributing_tiles) == 1:
             result_tile = contributing_tiles[0]
         else:
@@ -513,6 +520,33 @@ def _reduce_impl(
                 result_tile = stacked.sum(dim=0)
             else:  # max
                 result_tile = stacked.max(dim=0).values
+
+        # Spec step (2): within-tile reduce along the requested tile dims.
+        # The result lives at position 0 of each collapsed dim (per the spec
+        # convention - col 0 / row 0 / (0, 0)); the rest of the tile is
+        # filled with zeros.  Index expressions use Ellipsis so the same
+        # branches work for 1-D, 2-D and 3-D tile shapes.
+        if reduce_row or reduce_col:
+            new_tile = torch.zeros_like(result_tile)
+            if reduce_row and reduce_col:
+                if op == "sum":
+                    seed = result_tile.sum(dim=(-1, -2))
+                else:
+                    seed = result_tile.amax(dim=(-1, -2))
+                new_tile[(..., 0, 0)] = seed
+            elif reduce_col:
+                if op == "sum":
+                    seed = result_tile.sum(dim=-1)
+                else:
+                    seed = result_tile.amax(dim=-1)
+                new_tile[(..., 0)] = seed
+            else:  # reduce_row only
+                if op == "sum":
+                    seed = result_tile.sum(dim=-2)
+                else:
+                    seed = result_tile.amax(dim=-2)
+                new_tile[(..., 0, slice(None))] = seed
+            result_tile = new_tile
 
         result_tensors.append(Tensor(result_tile, block.layout))
 

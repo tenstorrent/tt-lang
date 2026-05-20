@@ -136,8 +136,11 @@ def broadcast(
                 f"broadcast shape mismatch at dimension {i}: block has {s}, target has {t}"
             )
 
-    # Expand the element tensor to match the target shape.
-    # Block is guaranteed to be 2D+ here (1D is rejected above).
+    # Expand the element tensor to match the target shape.  The reshape /
+    # indexing below treats the last two dims of ``shape`` as the within-tile
+    # axes, so this function only handles blocks with at least two grid
+    # dimensions.  1-D blocks should be unsqueezed by the caller via
+    # ``ttl.block.unsqueeze`` before being broadcast.
     elem = block._buf.to_torch()  # type: ignore[attr-defined]
 
     batch = block_shape[:-2]
@@ -150,7 +153,28 @@ def broadcast(
 
     # Reshape: (*batch, TM_s, tile_h, TK_s, tile_w)
     exposed = elem.reshape(*batch, TM_s, tile_h, TK_s, tile_w)
-    # Expand at grid level: (*target_batch, TM_t, tile_h, TK_t, tile_w)
+
+    # Spec step (1): within-tile broadcast.  Fires when the broadcast hits one
+    # or both of the last two (tile) dimensions of `shape`.  Per the spec the
+    # source places vector data in row 0 / column 0 / position (0, 0) of each
+    # tile; step (1) replicates that seed value across the rest of the tile so
+    # step (2) can then replicate the now-uniform tile across the grid.
+    bcast_row = (ndim - 2) in internal_dims  # outer tile dim -> seed row 0
+    bcast_col = (ndim - 1) in internal_dims  # inner tile dim -> seed col 0
+    if bcast_row:
+        exposed = (
+            exposed[..., :, 0:1, :, :]
+            .expand(*batch, TM_s, tile_h, TK_s, tile_w)
+            .contiguous()
+        )
+    if bcast_col:
+        exposed = (
+            exposed[..., :, :, :, 0:1]
+            .expand(*batch, TM_s, tile_h, TK_s, tile_w)
+            .contiguous()
+        )
+
+    # Spec step (2): across-tile broadcast at grid level.
     expanded = exposed.expand(*target_batch, TM_t, tile_h, TK_t, tile_w)
     # Fuse back: (*target_batch, TM_t*tile_h, TK_t*tile_w)
     result_elem = expanded.reshape(
