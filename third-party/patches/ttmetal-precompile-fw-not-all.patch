@@ -19,9 +19,9 @@ index 5611f6c0a7..1d39f4b00f 100644
 @@ -33,7 +38,7 @@ add_custom_command(
      COMMENT "Pre-compiling firmware binaries"
  )
- 
+
 -add_custom_target(precompile-fw ALL DEPENDS ${PROJECT_BINARY_DIR}/tt_metal/pre-compiled/.stamp)
 +add_custom_target(precompile-fw DEPENDS ${PROJECT_BINARY_DIR}/tt_metal/pre-compiled/.stamp)
- 
+
  if(TT_INSTALL)
      install(
