@@ -63,8 +63,7 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
 }
 
 /// Return the user reserve that produced a pipe receive destination block.
-inline mlir::tt::ttl::CBReserveOp
-findCBReserveForPipeReceive(mlir::Value dst) {
+inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
   dst = traceUnrealizedCasts(dst);
   if (auto attach = dst.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return findCBReserveForView(attach.getTensor());

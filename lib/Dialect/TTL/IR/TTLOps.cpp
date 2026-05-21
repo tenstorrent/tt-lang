@@ -184,8 +184,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       return success();
     }
     if (!findCBReserveForPipeReceive(getDst())) {
-      return emitOpError()
-             << "pipe receive requires a cb_reserve destination";
+      return emitOpError() << "pipe receive requires a cb_reserve destination";
     }
     return success();
   }

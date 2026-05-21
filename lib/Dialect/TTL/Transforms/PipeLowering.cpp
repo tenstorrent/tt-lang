@@ -432,8 +432,7 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     auto senderMailboxNocAddr = ttk::GetNocAddrOp::create(
         rewriter, loc, srcXTranslated, srcYTranslated, mailboxSemAddr);
     ttk::RemoteSramWriteU32Op::create(rewriter, loc, mailboxSemAddr,
-                                      senderMailboxNocAddr.getResult(),
-                                      nocVal);
+                                      senderMailboxNocAddr.getResult(), nocVal);
     ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
     auto senderSemIdx = arith::ConstantIndexOp::create(
@@ -443,9 +442,8 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     auto senderSemNocAddr = ttk::GetNocAddrOp::create(
         rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
     auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    ttk::NocSemaphoreIncOp::create(rewriter, loc,
-                                   senderSemNocAddr.getResult(), readyIncr,
-                                   nocVal, /*posted=*/BoolAttr());
+    ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
+                                   readyIncr, nocVal, /*posted=*/BoolAttr());
   };
 
   if (pipeType.srcInDstRange()) {
@@ -460,9 +458,8 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     auto yNeq = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ne,
                                       myY, srcYConst);
     auto notSender = arith::OrIOp::create(rewriter, loc, xNeq, yNeq);
-    auto ifOp =
-        scf::IfOp::create(rewriter, loc, /*resultTypes=*/TypeRange{},
-                          notSender, /*withElseRegion=*/false);
+    auto ifOp = scf::IfOp::create(rewriter, loc, /*resultTypes=*/TypeRange{},
+                                  notSender, /*withElseRegion=*/false);
     rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
     emitAdvertiseToSender();
     rewriter.setInsertionPointAfter(ifOp);
@@ -482,8 +479,8 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
       waitVal = recvIdx;
       resetAfterWait = (recvIdx == total);
     }
-    auto semIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, getReceiverSemIdx(pipeType));
+    auto semIdx = arith::ConstantIndexOp::create(rewriter, loc,
+                                                 getReceiverSemIdx(pipeType));
     auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
     auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, semAddr);
     auto waitValConst = arith::ConstantOp::create(

@@ -766,8 +766,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
     bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
-    bool dstIsDFBAttachedTensor =
-        dstKind == CopyOperandKind::DFBAttachedTensor;
+    bool dstIsDFBAttachedTensor = dstKind == CopyOperandKind::DFBAttachedTensor;
 
     // Pipe transfers: CB <-> Pipe
     if (srcIsCB && dstIsPipe) {

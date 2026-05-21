@@ -55,7 +55,7 @@ void allocatePipeNetCountersForMulticast(ModuleOp mod,
 /// PipeGraph for gather; signals destinations via semaphore.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             const ReceiverCBInfo *receiverInfo,
-                            bool isConsumerCB,
+                            bool isConsumerCB, bool useLocalReceiverAddress,
                             ConversionPatternRewriter &rewriter);
 
 /// Lower Pipe -> CB copy (receiver side). Unicast gather: cumulative
@@ -65,6 +65,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
                             const PipeGraph *pipeGraph,
                             const PipeNetCounterMap *counters,
+                            bool skipReadyAdvertisement,
                             ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.
