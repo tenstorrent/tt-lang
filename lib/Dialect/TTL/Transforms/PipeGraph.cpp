@@ -111,7 +111,7 @@ LogicalResult PipeGraph::verifyGatherBlockCounts() const {
       bool isUnicast = pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
       return emitError(info.loc)
              << (isUnicast ? "gather" : "multicast overlap")
-             << " pipe receiver CB has block_count=" << info.blockCount
+             << " pipe receiver DFB has block_count=" << info.blockCount
              << " but slot " << info.gatherSlotIdx
              << " is assigned to this pipe; "
              << "block_count must be >= " << requiredBlocks;

@@ -88,12 +88,16 @@ func.func @copy_cb_to_pipe() {
 // CHECK-LABEL: func.func @copy_pipe_to_cb
 // CHECK: %[[CB:.*]] = ttl.bind_cb
 // CHECK: %[[P:.*]] = ttl.create_pipe
-// CHECK: %[[XF:.*]] = ttl.copy %[[P]], %[[CB]]
+// CHECK: %[[RECV:.*]] = ttl.cb_reserve %[[CB]]
+// CHECK: %[[XF:.*]] = ttl.copy %[[P]], %[[RECV]]
 // CHECK: ttl.wait %[[XF]]
+// CHECK: ttl.cb_push %[[CB]]
 func.func @copy_pipe_to_cb() {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
+  %recv = ttl.cb_reserve %cb : <[1, 1], f32, 2> -> tensor<1x1xf32>
+  %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1xf32>) -> !ttl.transfer_handle
   ttl.wait %xf : !ttl.transfer_handle
+  ttl.cb_push %cb : <[1, 1], f32, 2>
   func.return
 }

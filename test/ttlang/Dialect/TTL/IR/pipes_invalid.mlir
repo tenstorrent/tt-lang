@@ -12,10 +12,10 @@ func.func @pipe_to_pipe_copy() {
 
 // -----
 
-// Test: pipe copy without CB operand.
-func.func @pipe_without_cb(%t: tensor<32x32xf32>) {
+// Test: pipe receive without a reserved destination DFB slot.
+func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  // expected-error @+1 {{'ttl.copy' op pipe transfers require one operand to be !ttl.cb}}
+  // expected-error @+1 {{'ttl.copy' op pipe receive requires a cb_reserve destination}}
   %xf = ttl.copy %p, %t : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<32x32xf32>) -> !ttl.transfer_handle
   ttl.wait %xf : !ttl.transfer_handle
   func.return

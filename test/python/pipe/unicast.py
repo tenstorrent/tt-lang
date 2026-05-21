@@ -80,16 +80,24 @@ def unicast_pipe(inp, out):
 # C++ Output Checks (unicast pipe)
 # =============================================================================
 
-# Sender side: unicast write + semaphore inc
+# Sender side: wait for receiver address publication, then unicast write and
+# completion signal.
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
+# CHECK-CPP: experimental::semaphore_wait(
+# CHECK-CPP: noc_semaphore_set(
 # CHECK-CPP: noc_async_write(
 # CHECK-CPP: noc_async_write_barrier();
 # CHECK-CPP: noc_semaphore_inc(
 
-# Receiver side: wait for sender semaphore, then reset
+# Receiver side: publish the reserved DFB address, then wait for sender
+# completion.
+# CHECK-CPP: reserve_back(
+# CHECK-CPP: get_write_ptr()
+# CHECK-CPP: noc_semaphore_set_remote(
+# CHECK-CPP: noc_semaphore_inc(
 # CHECK-CPP: experimental::semaphore_wait_min(
-# CHECK-CPP: noc_semaphore_set(
+# CHECK-CPP: push_back(
 
 
 if __name__ == "__main__":
