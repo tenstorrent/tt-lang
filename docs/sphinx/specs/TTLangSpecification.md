@@ -371,7 +371,7 @@ def elwise_compute():
         d_squared_bcast = ttl.block.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES))
 
         # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
-        z_final = ttl.block.fill(0, dtype=ttnn.bfloat16, shape=(1, M_TILES))
+        z_final = ttl.block.fill(0, shape=(1, M_TILES))
 
         for _ in range(N_BLOCKS):
 
@@ -535,7 +535,7 @@ def matmul_compute():
                 with y_dfb.reserve() as y_blk:
 
                     # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
-                    y_final = ttl.block.fill(0, dtype=ttnn.bfloat16, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                    y_final = ttl.block.fill(0, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                     # Repeat for each K block
                     for _ in range(K_BLOCKS):
@@ -1321,7 +1321,7 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.block.fill(value: float, dtype: ttnn.DataType, shape: ttl.Shape) -> ttl.BlockExpr` | Fill a block of specified `shape` with specified `value` of specified `dtype`. |
+| `ttl.block.fill(value: float, shape: ttl.Shape, dtype: ttnn.DataType = ttnn.bfloat16) -> ttl.BlockExpr` | Fill a block of specified `shape` with specified `value` of specified `dtype`. |
 | `ttl.block.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
 | `ttl.block.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
 | `ttl.block.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
