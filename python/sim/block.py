@@ -17,7 +17,7 @@ from typing import Callable, List, Tuple
 import torch
 
 from .constants import TILE_SHAPE
-from .dfb import Block, track_source_blocks
+from .dfb import Block, check_same_layout, track_source_blocks
 from .blockstate import BlockAcquisition, ThreadType
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 
@@ -25,6 +25,10 @@ from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 def _apply_binary_op(
     a: Block, b: Block, op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 ) -> Block:
+    # Layout is checked before shape so a layout error wins when both
+    # mismatch: shape comparison only makes sense between like-laid-out
+    # operands.
+    check_same_layout(a, b)
     a_shape = a._shape  # type: ignore[attr-defined]
     b_shape = b._shape  # type: ignore[attr-defined]
     if a_shape != b_shape:
@@ -49,6 +53,9 @@ def _apply_ternary_op(
     c: Block,
     op: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
 ) -> Block:
+    # Layout is checked before shape so a layout error wins when both
+    # mismatch (see ``_apply_binary_op`` for the rationale).
+    check_same_layout(a, b, c)
     a_shape = a._shape  # type: ignore[attr-defined]
     b_shape = b._shape  # type: ignore[attr-defined]
     c_shape = c._shape  # type: ignore[attr-defined]
@@ -85,15 +92,24 @@ def broadcast(
     The block must have grid size 1 in each dimension listed in dims. The target
     shape must match the block shape in all non-broadcast dimensions.
 
-    Not supported for Row-Major layout blocks.
+    Not supported for Row-Major layout blocks.  Requires a block with at least
+    two grid dimensions; 1-D blocks should be ``ttl.block.unsqueeze``'d by the
+    caller before broadcasting.  ``dims`` must be non-empty - matching the
+    compiler's behaviour, an empty ``dims`` is a misuse rather than a no-op.
 
     Args:
         block: Input block to broadcast. Must have grid size 1 in each dim in dims.
-        dims: List of grid dimension indices to broadcast along.
+        dims: List of grid dimension indices to broadcast along (non-empty).
         shape: Target grid shape of the result block.
 
     Returns:
         A new temporary Block with the specified shape.
+
+    Raises:
+        ValueError: If the block is row-major, has fewer than 2 grid dims,
+            ``dims`` is empty, ``shape`` rank does not match the block, any
+            broadcast dim is out of range, the block's grid size is not 1 in
+            a broadcast dim, or a non-broadcast dim does not match the target.
 
     Examples:
         # a_blk shape (N, 1): broadcast along innermost (cols) to (N, M)
@@ -108,6 +124,17 @@ def broadcast(
 
     if block.layout == ROW_MAJOR_LAYOUT:
         raise ValueError("broadcast is not supported for Row-Major layout blocks")
+
+    if ndim < 2:
+        raise ValueError(
+            f"broadcast requires a block with at least 2 grid dimensions; got "
+            f"shape {block_shape}. Use ttl.block.unsqueeze first."
+        )
+
+    if not dims:
+        raise ValueError(
+            "broadcast requires at least one dim to broadcast along; got dims=[]"
+        )
 
     if len(shape) != ndim:
         raise ValueError(
@@ -139,8 +166,7 @@ def broadcast(
     # Expand the element tensor to match the target shape.  The reshape /
     # indexing below treats the last two dims of ``shape`` as the within-tile
     # axes, so this function only handles blocks with at least two grid
-    # dimensions.  1-D blocks should be unsqueezed by the caller via
-    # ``ttl.block.unsqueeze`` before being broadcast.
+    # dimensions; 1-D blocks are rejected by the ``ndim < 2`` guard above.
     elem = block._buf.to_torch()  # type: ignore[attr-defined]
 
     batch = block_shape[:-2]

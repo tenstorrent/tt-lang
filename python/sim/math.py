@@ -19,7 +19,7 @@ from typing import Callable, List, Optional, Set, Tuple
 
 import torch
 
-from .dfb import Block, track_source_blocks, matmul
+from .dfb import Block, check_same_layout, track_source_blocks, matmul
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 from .typedefs import PositiveInt
 
@@ -136,6 +136,9 @@ def _apply_binary_op(
     Raises:
         ValueError: If a and b have different shapes.
     """
+    # Layout is checked before shape so a layout error wins when both
+    # mismatch (see ``block._apply_binary_op`` for the rationale).
+    check_same_layout(a, b)
     a_shape = a._shape  # type: ignore[attr-defined]
     b_shape = b._shape  # type: ignore[attr-defined]
     if a_shape != b_shape:

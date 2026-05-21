@@ -300,6 +300,36 @@ def test_broadcast_out_of_range_rejected():
         ttl.block.broadcast(block_a, dims=[2], shape=(1, 1))
 
 
+def test_broadcast_1d_block_rejected():
+    """1-D blocks must be unsqueezed before broadcasting; the function rejects
+    them outright (matching the compiler) and points the user at unsqueeze.
+    The reshape / within-tile indexing inside ``broadcast`` only makes sense
+    for blocks with at least two grid dims.
+    """
+    t_a = [Tensor(torch.tensor([[1.0]]))]
+    block_a = Block.from_list(t_a, shape=(1,))
+
+    with pytest.raises(
+        ValueError,
+        match="at least 2 grid dimensions.*ttl.block.unsqueeze",
+    ):
+        ttl.block.broadcast(block_a, dims=[0], shape=(4,))
+
+
+def test_broadcast_empty_dims_rejected():
+    """An empty ``dims`` list is a misuse, not a no-op.  The compiler errors;
+    the simulator must mirror that to keep behaviour consistent across paths.
+    """
+    t_a = [Tensor(torch.tensor([[1.0]]))]
+    block_a = Block.from_list(t_a, shape=(1, 1))
+
+    with pytest.raises(
+        ValueError,
+        match="at least one dim",
+    ):
+        ttl.block.broadcast(block_a, dims=[], shape=(1, 1))
+
+
 # Tests for all different forms of broadcast usage
 
 
@@ -1234,6 +1264,82 @@ def test_reduce_sum_row_major_rejected():
         ValueError, match="reduce is not supported for Row-Major layout"
     ):
         ttl.math.reduce_sum(block, dims=[0], shape=(1, 1))
+
+
+# ---------------------------------------------------------------------------
+# Layout-mismatch tests for multi-operand operations
+#
+# Every ``ttl.block`` / ``ttl.math`` operation that takes more than one block
+# must reject mixed ``TILE_LAYOUT`` / ``ROW_MAJOR_LAYOUT`` operands fast,
+# because their underlying buffers have different stride / padding semantics
+# and elementwise pairing is only well-defined when both sides agree.  The
+# helper ``dfb._check_same_layout`` is wired into every multi-operand helper;
+# these tests pin that down.
+# ---------------------------------------------------------------------------
+
+
+def test_math_max_layout_mismatch_raises():
+    """``ttl.math.max`` raises when its two operand blocks have different layouts."""
+    a = Block.from_list([_tile(1.0)], shape=(1, 1))  # TILE_LAYOUT (default)
+    b = _make_row_major_block((1, 1))
+    with pytest.raises(ValueError, match="must share the same layout"):
+        ttl.math.max(a, b)
+
+
+def test_math_min_layout_mismatch_raises():
+    """``ttl.math.min`` raises when its two operand blocks have different layouts."""
+    a = Block.from_list([_tile(1.0)], shape=(1, 1))
+    b = _make_row_major_block((1, 1))
+    with pytest.raises(ValueError, match="must share the same layout"):
+        ttl.math.min(a, b)
+
+
+def test_block_mask_layout_mismatch_raises():
+    """``ttl.block.mask`` raises when the value and mask blocks have different layouts."""
+    a = Block.from_list([_tile(1.0)], shape=(1, 1))
+    m = _make_row_major_block((1, 1))
+    with pytest.raises(ValueError, match="must share the same layout"):
+        ttl.block.mask(a, m)
+
+
+def test_block_mask_posinf_layout_mismatch_raises():
+    """``ttl.block.mask_posinf`` raises when the value and mask layouts differ."""
+    a = Block.from_list([_tile(1.0)], shape=(1, 1))
+    m = _make_row_major_block((1, 1))
+    with pytest.raises(ValueError, match="must share the same layout"):
+        ttl.block.mask_posinf(a, m)
+
+
+def test_block_where_layout_mismatch_raises():
+    """``ttl.block.where`` (ternary) raises when any operand layout differs."""
+    cond = Block.from_list([_tile(1.0)], shape=(1, 1))  # TILE_LAYOUT
+    tv = Block.from_list([_tile(2.0)], shape=(1, 1))  # TILE_LAYOUT
+    fv = _make_row_major_block((1, 1))  # ROW_MAJOR_LAYOUT - the odd one out
+    with pytest.raises(ValueError, match="must share the same layout"):
+        ttl.block.where(cond, tv, fv)
+
+
+def test_math_max_layout_error_wins_over_shape_error():
+    """When both layout AND shape mismatch, ``ttl.math.max`` reports layout.
+
+    Ordering contract for ``math._apply_binary_op``: layout is checked before
+    shape, so the user sees the more fundamental (layout) error first.
+    """
+    a = Block.from_list([_tile(1.0)], shape=(1, 1))  # TILE, (1, 1)
+    b = _make_row_major_block((2, 1))  # ROW_MAJOR, (2, 1) - both differ
+    with pytest.raises(ValueError, match="must share the same layout") as exc_info:
+        ttl.math.max(a, b)
+    assert "Shape mismatch" not in str(exc_info.value)
+
+
+def test_block_where_layout_error_wins_over_shape_error():
+    """Ordering contract for ``block._apply_ternary_op``: layout before shape."""
+    cond = Block.from_list([_tile(1.0)], shape=(1, 1))  # TILE, (1, 1)
+    tv = Block.from_list([_tile(2.0)], shape=(1, 1))  # TILE, (1, 1)
+    fv = _make_row_major_block((2, 1))  # ROW_MAJOR, (2, 1) - both differ
+    with pytest.raises(ValueError, match="must share the same layout") as exc_info:
+        ttl.block.where(cond, tv, fv)
+    assert "Shape mismatch" not in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

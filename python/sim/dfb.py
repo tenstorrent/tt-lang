@@ -749,6 +749,12 @@ class Block:
 
         Tracks wait() Compute blocks that contribute to the result.
         """
+        # Layout consistency is checked before shape so a mismatched-layout
+        # error wins over a shape error: pairing the underlying buffers is
+        # only meaningful when both operands agree on layout, regardless of
+        # whether their declared shapes happen to match.
+        check_same_layout(self, other)
+
         left_shape = self._shape
         right_shape = other._shape
 
@@ -1449,6 +1455,26 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
                 result_source.extend(actual_source)
 
 
+def check_same_layout(*blocks: Block) -> None:
+    """Raise ``ValueError`` if not all input blocks share the same layout.
+
+    Multi-operand operations (binary / ternary / matmul) require all operands
+    to share a layout because ``TILE_LAYOUT`` and ``ROW_MAJOR_LAYOUT`` blocks
+    have different stride / padding semantics in their underlying buffers, so
+    elementwise pairing tile-by-tile is only well-defined when both sides
+    agree.  The compiler enforces the same precondition; this helper makes the
+    simulator fail fast with the same error class.
+    """
+    if len(blocks) < 2:
+        return
+    first = blocks[0].layout
+    if any(b.layout != first for b in blocks[1:]):
+        raise ValueError(
+            f"all operand blocks must share the same layout; got "
+            f"{[b.layout for b in blocks]}"
+        )
+
+
 def _matmul_tile_shape(a_shape: Shape, b_shape: Shape) -> Shape:
     """Compute the output tile-grid shape for matmul a @ b.
 
@@ -1496,6 +1522,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     Returns:
         Block whose tile shape corresponds to the matmul output shape.
     """
+    check_same_layout(a, b)
     result_tensor = a.to_tensor() @ b.to_tensor()
     result_shape = _matmul_tile_shape(a.shape, b.shape)
     result_block = Block(

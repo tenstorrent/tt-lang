@@ -1215,6 +1215,119 @@ def test_matmul_1x4_times_4x1_values():
 
 
 # ---------------------------------------------------------------------------
+# Layout-mismatch tests for Block operator overloads and matmul
+#
+# Block arithmetic (``+``, ``-``, ``*``, ``/`` ...) and matmul (``@`` and the
+# top-level ``matmul``) are multi-operand operations.  The simulator must
+# reject mixed ``TILE_LAYOUT`` / ``ROW_MAJOR_LAYOUT`` operands the same way
+# the compiler does, because pairing the underlying buffers tile-by-tile is
+# only well-defined when both sides agree.  The actual check lives in
+# ``dfb._check_same_layout``; these tests pin that contract down.
+# ---------------------------------------------------------------------------
+
+
+def _tile_block_1x1() -> Block:
+    """Tile-layout block of grid shape (1, 1) backed by a single 32x32 tile."""
+    return Block.from_list(
+        [Tensor(torch.zeros(32, 32, dtype=torch.float32))], shape=(1, 1)
+    )
+
+
+def _row_major_block_1x1() -> Block:
+    """Row-major-layout block of shape (1, 1) backed by a 1x1 row-major tensor."""
+    return Block.from_list(
+        [Tensor(torch.zeros(1, dtype=torch.float32), ROW_MAJOR_LAYOUT)], shape=(1, 1)
+    )
+
+
+def test_block_add_layout_mismatch_raises():
+    """``Block.__add__`` raises when operand layouts differ."""
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a + b
+
+
+def test_block_sub_layout_mismatch_raises():
+    """``Block.__sub__`` raises when operand layouts differ."""
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a - b
+
+
+def test_block_mul_layout_mismatch_raises():
+    """``Block.__mul__`` raises when operand layouts differ."""
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a * b
+
+
+def test_block_truediv_layout_mismatch_raises():
+    """``Block.__truediv__`` raises when operand layouts differ.
+
+    One sample of an arithmetic-operator-family check is enough since they
+    all share ``Block._binary_op``; the prior add/sub/mul tests pin that
+    helper from a few angles.
+    """
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a / b
+
+
+def test_block_matmul_op_layout_mismatch_raises():
+    """``Block.__matmul__`` (i.e. ``@``) raises when operand layouts differ.
+
+    ``Block.__matmul__`` delegates to the top-level ``matmul`` which has its
+    own ``_check_same_layout`` call (matmul has its own shape rules and does
+    not go through ``_binary_op``).
+    """
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a @ b
+
+
+def test_top_level_matmul_layout_mismatch_raises():
+    """The module-level ``dfb.matmul`` also rejects layout mismatches.
+
+    Direct callers of ``ttl.math.matmul`` (which re-exports ``dfb.matmul``)
+    bypass the operator overload; this test guards the direct path.
+    """
+    from sim.dfb import matmul as dfb_matmul
+
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        dfb_matmul(a, b)
+
+
+def test_block_add_layout_error_wins_over_shape_error():
+    """When both layout AND shape mismatch, the layout error fires first.
+
+    Layout is the more fundamental error: pairing the underlying buffers is
+    only meaningful when both operands agree on layout, regardless of
+    whether their declared shapes happen to match.  Locking this ordering
+    in keeps the user-visible error message focused on the root cause.
+    """
+    a = _tile_block_1x1()  # TILE_LAYOUT, shape (1, 1)
+    b = Block.from_list(
+        [
+            Tensor(torch.zeros(2, dtype=torch.float32), ROW_MAJOR_LAYOUT),
+            Tensor(torch.zeros(2, dtype=torch.float32), ROW_MAJOR_LAYOUT),
+        ],
+        shape=(2, 2),
+    )  # ROW_MAJOR_LAYOUT, shape (2, 2) -- both shape AND layout differ from a
+
+    with pytest.raises(ValueError, match="must share the same layout") as exc_info:
+        _ = a + b
+    # The shape error must NOT be the one that surfaced.
+    assert "Shape mismatch" not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
 # 1-D tensor support tests
 # ---------------------------------------------------------------------------
 
