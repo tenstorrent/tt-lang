@@ -18,6 +18,8 @@
 #
 # Options:
 #   --force-rebuild               Force toolchain rebuild (LLVM + tt-metal) even if cached
+#   --rebuild-ttmetal             Rebuild tt-metal from submodule while keeping LLVM
+#                                 from the toolchain (sets -DTTLANG_USE_TOOLCHAIN_TTMETAL=OFF)
 #   --remove-build-dir            Remove CMAKE_BINARY_DIR after finalize (for Docker builds)
 #   --accept-ttmetal-mismatch     Pass -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON to cmake
 #                                 configure to bypass the tt-metal SHA verification
@@ -42,6 +44,7 @@ git config --global --add safe.directory '*'
 MODE="full"
 REMOVE_BUILD_DIR=false
 FORCE_REBUILD=false
+REBUILD_TTMETAL=false
 ACCEPT_TTMETAL_MISMATCH=false
 PYTHON_EXECUTABLE=""
 
@@ -73,6 +76,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --force-rebuild)
             FORCE_REBUILD=true
+            shift
+            ;;
+        --rebuild-ttmetal)
+            REBUILD_TTMETAL=true
             shift
             ;;
         --remove-build-dir)
@@ -118,6 +125,14 @@ do_configure() {
         _use_toolchain=OFF
     fi
 
+    # Per-component override: rebuild tt-metal from submodule while still
+    # consuming LLVM from the toolchain. Defaults to TTLANG_USE_TOOLCHAIN
+    # unless --rebuild-ttmetal sets it to OFF.
+    local _use_toolchain_ttmetal=$_use_toolchain
+    if [ "$REBUILD_TTMETAL" = true ]; then
+        _use_toolchain_ttmetal=OFF
+    fi
+
     local _accept_ttmetal_mismatch=OFF
     if [ "$ACCEPT_TTMETAL_MISMATCH" = true ]; then
         _accept_ttmetal_mismatch=ON
@@ -131,6 +146,7 @@ do_configure() {
     cmake -G Ninja -B "$CMAKE_BINARY_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DTTLANG_USE_TOOLCHAIN=$_use_toolchain \
+        -DTTLANG_USE_TOOLCHAIN_TTMETAL=$_use_toolchain_ttmetal \
         -DTTLANG_TOOLCHAIN_DIR=$TTLANG_TOOLCHAIN_DIR \
         -DTTLANG_PYTHON_VENV=$TTLANG_TOOLCHAIN_DIR/venv \
         -DTTLANG_ENABLE_PERF_TRACE=ON \
@@ -232,14 +248,24 @@ do_test_toolchain() {
 case "$MODE" in
     full)
         do_configure
-        do_install_ttmetal
+        # Only install tt-metal into the toolchain when we actually built it
+        # from submodule. With TTLANG_USE_TOOLCHAIN_TTMETAL=ON (the default
+        # when a toolchain copy exists), BuildTTMetal.cmake skips the build
+        # and there is nothing in $CMAKE_BINARY_DIR/tt-metal to install.
+        if [ "$REBUILD_TTMETAL" = true ] || [ "$FORCE_REBUILD" = true ]; then
+            do_install_ttmetal
+        fi
         do_build_and_install
         do_finalize
         echo "=== Build complete ==="
         ;;
     toolchain-only)
         do_configure
-        do_install_ttmetal
+        if [ "$REBUILD_TTMETAL" = true ] || [ "$FORCE_REBUILD" = true ]; then
+            do_install_ttmetal
+        else
+            echo "=== Skipping tt-metal install: not rebuilt (pass --rebuild-ttmetal or --force-rebuild to install) ==="
+        fi
         do_finalize
         echo "=== Toolchain build complete ==="
         ;;
