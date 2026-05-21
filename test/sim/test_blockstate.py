@@ -23,23 +23,23 @@ from sim.blockstate import (
     AccessState,
     BlockAcquisition,
     ExpectedOp,
-    ThreadType,
+    KernelType,
     format_block_finished_error,
     format_cannot_read_block,
     format_cannot_write_block,
     format_validate_mismatch,
 )
 from sim.context import (
-    clear_current_thread_type,
-    set_current_thread_type,
+    clear_current_kernel_type,
+    set_current_kernel_type,
 )
 from sim.copy import copy as dm_copy
 from sim.dfb import Block, DataflowBuffer
 
 
 @pytest.fixture(autouse=True)
-def setup_thread_context(compute_thread_context):
-    """Set up scheduler and COMPUTE thread context for all blockstate tests."""
+def setup_kernel_context(compute_kernel_context):
+    """Set up scheduler and COMPUTE kernel context for all blockstate tests."""
     pass
 
 
@@ -85,14 +85,14 @@ def test_block_state_machine_restrictions() -> None:
 
 def test_copy_sets_block_to_na_state() -> None:
     """Test that copy operations set blocks to NAW (No Access while Writing) state."""
-    set_current_thread_type(ThreadType.DM)
+    set_current_kernel_type(KernelType.DM)
 
     try:
         block = Block(
             ttnn.Tensor(torch.zeros((64, 32))),
             (2, 1),
             BlockAcquisition.RESERVE,
-            ThreadType.DM,
+            KernelType.DM,
         )
 
         source_tensor = ttnn.Tensor(torch.ones((64, 32)))
@@ -112,19 +112,19 @@ def test_copy_sets_block_to_na_state() -> None:
 
         tx.wait()
     finally:
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 def test_push_validates_expected_state() -> None:
     """Test that push() validates the block is in a valid state before completing."""
-    set_current_thread_type(ThreadType.COMPUTE)
+    set_current_kernel_type(KernelType.COMPUTE)
 
     try:
         element = make_ones_tile()
         dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
-        # Populate the DFB from a DM thread
-        set_current_thread_type(ThreadType.DM)
+        # Populate the DFB from a DM kernel
+        set_current_kernel_type(KernelType.DM)
         from sim.copy import copy as dm_copy
 
         src = make_ones_tile()
@@ -133,8 +133,8 @@ def test_push_validates_expected_state() -> None:
         tx.wait()
         blk.push()
 
-        # Now wait for it in COMPUTE thread
-        set_current_thread_type(ThreadType.COMPUTE)
+        # Now wait for it in COMPUTE kernel
+        set_current_kernel_type(KernelType.COMPUTE)
         waited_block = dfb.wait()
 
         # push() on a wait() block must fail: STORE_SRC is expected, not PUSH
@@ -151,7 +151,7 @@ def test_push_validates_expected_state() -> None:
         out_block.push()
         waited_block.pop()
     finally:
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ class TestAssignSrcTransition:
         self,
     ) -> tuple["DataflowBuffer", "Block"]:
         """Return a DFB and a WAIT/COMPUTE block ready for use."""
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
         element = make_ones_tile()
         dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
         from sim.copy import copy as dm_copy
@@ -183,7 +183,7 @@ class TestAssignSrcTransition:
         tx.wait()
         blk.push()
 
-        set_current_thread_type(ThreadType.COMPUTE)
+        set_current_kernel_type(KernelType.COMPUTE)
         waited = dfb.wait(name="compute_in")
         return dfb, waited
 
@@ -197,7 +197,7 @@ class TestAssignSrcTransition:
             assert ExpectedOp.POP in block.expected_ops
         finally:
             block.pop()
-            clear_current_thread_type()
+            clear_current_kernel_type()
 
     def test_assign_src_registers_pending_confirmation(self) -> None:
         """assign_src adds the block to the DFB's pending confirmation set."""
@@ -208,7 +208,7 @@ class TestAssignSrcTransition:
             assert block in dfb._pending_confirmations
         finally:
             block.pop()
-            clear_current_thread_type()
+            clear_current_kernel_type()
 
     def test_store_read_complete_clears_pending_confirmation(self) -> None:
         """mark_store_read_complete() clears the pending confirmation registered by assign_src."""
@@ -220,7 +220,7 @@ class TestAssignSrcTransition:
             assert block not in dfb._pending_confirmations
         finally:
             block.pop()
-            clear_current_thread_type()
+            clear_current_kernel_type()
 
     def test_assign_src_idempotent_on_rw(self) -> None:
         """assign_src is idempotent: calling it again from RW state is safe."""
@@ -233,7 +233,7 @@ class TestAssignSrcTransition:
             assert len(dfb._pending_confirmations) == 1
         finally:
             block.pop()
-            clear_current_thread_type()
+            clear_current_kernel_type()
 
     def test_validate_no_pending_blocks_raises_on_unconfirmed(self) -> None:
         """validate_no_pending_blocks() raises if a block was assigned but never stored."""
@@ -247,7 +247,7 @@ class TestAssignSrcTransition:
             assert "never reached a store" in msg
             assert "block_name='compute_in'" in msg
         finally:
-            clear_current_thread_type()
+            clear_current_kernel_type()
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ class TestRORState:
 
     def _make_wait_block(self) -> Block:
         """Return a DM WAIT block pre-loaded with data via a DFB reserve/push cycle."""
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
@@ -397,7 +397,7 @@ def test_format_validate_mismatch_includes_what_to_do_and_details() -> None:
         {ExpectedOp.STORE_SRC, ExpectedOp.POP},
         AccessState.MR,
         BlockAcquisition.WAIT,
-        ThreadType.COMPUTE,
+        KernelType.COMPUTE,
     )
     assert "Next:" in msg
     assert "Details: expected one of" in msg
@@ -417,7 +417,7 @@ def test_format_validate_mismatch_store_on_waited_block_mentions_out_block_store
         {ExpectedOp.STORE_SRC},
         AccessState.MR,
         BlockAcquisition.WAIT,
-        ThreadType.COMPUTE,
+        KernelType.COMPUTE,
     )
     assert "wait() block" in msg
     assert "out_block.store" in msg
@@ -431,7 +431,7 @@ def test_format_validate_mismatch_push_on_wait_block_mentions_pop_not_push() -> 
         {ExpectedOp.STORE_SRC},
         AccessState.MR,
         BlockAcquisition.WAIT,
-        ThreadType.COMPUTE,
+        KernelType.COMPUTE,
     )
     assert "push() is for reserve() only" in msg
     assert "pop()" in msg
@@ -445,7 +445,7 @@ def test_format_validate_mismatch_naw_mentions_in_flight_and_wait() -> None:
         {ExpectedOp.TX_WAIT},
         AccessState.NAW,
         BlockAcquisition.RESERVE,
-        ThreadType.DM,
+        KernelType.DM,
     )
     assert (
         "may still be in flight" in msg.lower() or "wait until the copy" in msg.lower()
@@ -462,7 +462,7 @@ def test_format_validate_mismatch_includes_copy_callsite_when_pending_provided()
         {ExpectedOp.TX_WAIT},
         AccessState.NAW,
         BlockAcquisition.RESERVE,
-        ThreadType.DM,
+        KernelType.DM,
         pending_copy_location=("/x/y/z.py", 12),
     )
     assert "Where: the copy involving this block was requested at /x/y/z.py:12" in msg
@@ -550,7 +550,7 @@ def test_bsm_validate_finished_block_uses_block_finished_error() -> None:
 
 
 def test_block_cannot_read_mw_uses_friendly_read_message(
-    dm_thread_context,
+    dm_kernel_context,
 ) -> None:  # noqa: ARG001
     """Reading before the first write uses format_cannot_read (MW) wording."""
     dfb = DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2)
@@ -564,7 +564,7 @@ def test_block_cannot_read_mw_uses_friendly_read_message(
 
 
 def test_validate_no_pending_reserved_mentions_push_and_incomplete(
-    dm_thread_context,
+    dm_kernel_context,
 ) -> None:  # noqa: ARG001
     """A held DM reserve() without release should surface a simulator-bug blurb."""
     dfb = DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2)
@@ -583,7 +583,7 @@ def test_validate_no_pending_reserved_mentions_push_and_incomplete(
 
 
 def test_validate_no_pending_wait_mentions_pop_and_incomplete(
-    dm_thread_context,
+    dm_kernel_context,
 ) -> None:  # noqa: ARG001
     """A held wait() without pop() should emit a simulator-bug blurb."""
     element = make_ones_tile()
@@ -593,7 +593,7 @@ def test_validate_no_pending_wait_mentions_pop_and_incomplete(
     tx.wait()
     blk.push()
 
-    set_current_thread_type(ThreadType.COMPUTE)
+    set_current_kernel_type(KernelType.COMPUTE)
     try:
         waited = dfb.wait(name="consumer_view")
         with pytest.raises(RuntimeError) as err:
@@ -614,7 +614,7 @@ def test_validate_no_pending_wait_mentions_pop_and_incomplete(
         out_block.store(waited)
         out_block.push()
         waited.pop()
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 if __name__ == "__main__":

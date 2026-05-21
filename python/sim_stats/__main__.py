@@ -4,20 +4,20 @@
 """
 Post-processing tool for simulator trace files.
 
-The ``ttlang-sim-stats`` console command is bundled with ``pip install tt-lang-sim``
+The ``tt-lang-sim-stats`` console command is bundled with ``pip install tt-lang-sim``
 (or full ``tt-lang``); there is no standalone package for this tool.
 
-Reads a JSON Lines trace file produced by ttlang-sim --trace and derives
+Reads a JSON Lines trace file produced by tt-lang-sim --trace and derives
 simulator summary tables:
 
   Tensor Access Statistics   -- reads/writes and tile counts per tensor name
   Pipe Transfer Statistics   -- sends/receives and tile counts per pipe
   Dataflow Buffer Statistics -- reserves/waits and tile counts per DFB name,
-                                broken down by core with a per-DFB subtotal
+                                broken down by node with a per-DFB subtotal
 
 Usage:
-    ttlang-sim-stats trace.jsonl
-    ttlang-sim-stats --help
+    tt-lang-sim-stats trace.jsonl
+    tt-lang-sim-stats --help
 """
 
 from __future__ import annotations
@@ -30,17 +30,17 @@ from pathlib import Path
 from typing import Any, Dict, Iterator
 
 
-def _core_from_kernel(kernel: str | None) -> str:
-    """Extract the core identifier from a kernel name like 'core3-read'."""
+def _node_from_kernel(kernel: str | None) -> str:
+    """Extract the node identifier from a kernel name like 'node3-read'."""
     if kernel and "-" in kernel:
         return kernel.split("-", 1)[0]
     return kernel or "unknown"
 
 
-def _core_sort_key(core: str) -> int:
-    """Sort cores numerically: core0 < core1 < ... < core10."""
+def _node_sort_key(node: str) -> int:
+    """Sort nodes numerically: node0 < node1 < ... < node10."""
     try:
-        return int(core.removeprefix("core"))
+        return int(node.removeprefix("node"))
     except ValueError:
         return 0
 
@@ -73,8 +73,8 @@ def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
 _TensorStats = Dict[str, Dict[str, int]]
 _PipeStats = Dict[str, Dict[str, int]]
 _DfbStats = Dict[str, Dict[str, int]]
-# dfb_name -> core_id -> {reserves, waits, tiles_reserved, tiles_waited}
-_DfbPerCoreStats = Dict[str, Dict[str, Dict[str, int]]]
+# dfb_name -> node_id -> {reserves, waits, tiles_reserved, tiles_waited}
+_DfbPerNodeStats = Dict[str, Dict[str, Dict[str, int]]]
 
 
 def _new_rw() -> Dict[str, int]:
@@ -98,12 +98,12 @@ def _new_dfb() -> Dict[str, int]:
 
 def _accumulate(
     path: Path,
-) -> tuple[_TensorStats, _PipeStats, _DfbStats, _DfbPerCoreStats]:
-    """Read events and return (tensor_stats, pipe_stats, dfb_stats, dfb_per_core)."""
+) -> tuple[_TensorStats, _PipeStats, _DfbStats, _DfbPerNodeStats]:
+    """Read events and return (tensor_stats, pipe_stats, dfb_stats, dfb_per_node)."""
     tensor_stats: _TensorStats = defaultdict(_new_rw)
     pipe_stats: _PipeStats = defaultdict(_new_rw)
     dfb_stats: _DfbStats = defaultdict(_new_dfb)
-    dfb_per_core: _DfbPerCoreStats = defaultdict(lambda: defaultdict(_new_dfb))
+    dfb_per_node: _DfbPerNodeStats = defaultdict(lambda: defaultdict(_new_dfb))
 
     for ev in _iter_events(path):
         event = ev.get("event")
@@ -146,22 +146,22 @@ def _accumulate(
             case "dfb_reserve_end":
                 dfb = ev.get("dfb")
                 tiles = ev.get("tiles", 0)
-                core = _core_from_kernel(ev.get("kernel"))
+                node = _node_from_kernel(ev.get("kernel"))
                 if dfb:
                     dfb_stats[dfb]["reserves"] += 1
                     dfb_stats[dfb]["tiles_reserved"] += tiles
-                    dfb_per_core[dfb][core]["reserves"] += 1
-                    dfb_per_core[dfb][core]["tiles_reserved"] += tiles
+                    dfb_per_node[dfb][node]["reserves"] += 1
+                    dfb_per_node[dfb][node]["tiles_reserved"] += tiles
 
             case "dfb_wait_end":
                 dfb = ev.get("dfb")
                 tiles = ev.get("tiles", 0)
-                core = _core_from_kernel(ev.get("kernel"))
+                node = _node_from_kernel(ev.get("kernel"))
                 if dfb:
                     dfb_stats[dfb]["waits"] += 1
                     dfb_stats[dfb]["tiles_waited"] += tiles
-                    dfb_per_core[dfb][core]["waits"] += 1
-                    dfb_per_core[dfb][core]["tiles_waited"] += tiles
+                    dfb_per_node[dfb][node]["waits"] += 1
+                    dfb_per_node[dfb][node]["tiles_waited"] += tiles
 
             case _:
                 pass
@@ -170,7 +170,7 @@ def _accumulate(
         dict(tensor_stats),
         dict(pipe_stats),
         dict(dfb_stats),
-        {k: dict(v) for k, v in dfb_per_core.items()},
+        {k: dict(v) for k, v in dfb_per_node.items()},
     )
 
 
@@ -288,10 +288,10 @@ def _print_pipe_stats(stats: _PipeStats) -> None:
     print("=" * 74)
 
 
-def _dfb_row(dfb: str, core: str, s: Dict[str, int]) -> str:
+def _dfb_row(dfb: str, node: str, s: Dict[str, int]) -> str:
     """Format one DFB stats row.  dfb is blank for continuation lines."""
     return (
-        f"{dfb:<20} {core:<12}"
+        f"{dfb:<20} {node:<12}"
         f" {s['reserves']:>10} {s['waits']:>10}"
         f" {s['tiles_reserved']:>16} {s['tiles_waited']:>14}"
     )
@@ -299,13 +299,13 @@ def _dfb_row(dfb: str, core: str, s: Dict[str, int]) -> str:
 
 def _print_dfb_stats(
     dfb_stats: _DfbStats,
-    dfb_per_core: _DfbPerCoreStats,
+    dfb_per_node: _DfbPerNodeStats,
 ) -> None:
     print("\n" + "=" * _W)
     print("Dataflow Buffer Statistics")
     print("=" * _W)
     print(
-        f"{'DFB':<20} {'Core':<12}"
+        f"{'DFB':<20} {'Node':<12}"
         f" {'Reserves':>10} {'Waits':>10}"
         f" {'Tiles Reserved':>16} {'Tiles Waited':>14}"
     )
@@ -314,17 +314,17 @@ def _print_dfb_stats(
     grand = _new_dfb()
 
     for dfb_name in sorted(dfb_stats):
-        cores = dfb_per_core.get(dfb_name, {})
+        nodes = dfb_per_node.get(dfb_name, {})
         first = True
-        for core in sorted(cores, key=_core_sort_key):
-            s = cores[core]
+        for node in sorted(nodes, key=_node_sort_key):
+            s = nodes[node]
             label = dfb_name if first else ""
-            print(_dfb_row(label, core, s))
+            print(_dfb_row(label, node, s))
             first = False
 
-        # Per-DFB subtotal (only printed when there are multiple cores)
+        # Per-DFB subtotal (only printed when there are multiple nodes)
         subtotal = dfb_stats[dfb_name]
-        if len(cores) > 1:
+        if len(nodes) > 1:
             print(_dfb_row("", "TOTAL", subtotal))
 
         # Accumulate into grand total
@@ -340,12 +340,12 @@ def _print_dfb_stats(
 
 def print_stats_from_trace(path: Path) -> None:
     """Compute and print statistics derived from a trace file."""
-    tensor_stats, pipe_stats, dfb_stats, dfb_per_core = _accumulate(path)
+    tensor_stats, pipe_stats, dfb_stats, dfb_per_node = _accumulate(path)
 
     if not tensor_stats and not pipe_stats and not dfb_stats:
         print("\nNo statistics found in trace.")
         print(
-            "Hint: regenerate the trace with ttlang-sim --trace and at least the "
+            "Hint: regenerate the trace with tt-lang-sim --trace and at least the "
             "'copy', 'dfb', or 'pipe' categories enabled (all are on by default)."
         )
         return
@@ -355,7 +355,7 @@ def print_stats_from_trace(path: Path) -> None:
     if pipe_stats:
         _print_pipe_stats(pipe_stats)
     if dfb_stats:
-        _print_dfb_stats(dfb_stats, dfb_per_core)
+        _print_dfb_stats(dfb_stats, dfb_per_node)
 
 
 # ---------------------------------------------------------------------------
@@ -365,19 +365,19 @@ def print_stats_from_trace(path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="ttlang-sim-stats",
+        prog="tt-lang-sim-stats",
         description=(
-            "Derive simulator statistics from a ttlang-sim trace file.\n\n"
-            "Reads the JSON Lines trace written by ttlang-sim --trace and prints\n"
+            "Derive simulator statistics from a tt-lang-sim trace file.\n\n"
+            "Reads the JSON Lines trace written by tt-lang-sim --trace and prints\n"
             "tensor, pipe, and dataflow-buffer summary tables.\n"
-            "DFB statistics include a per-core breakdown with a per-DFB subtotal."
+            "DFB statistics include a per-node breakdown with a per-DFB subtotal."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "trace",
         metavar="FILE",
-        help="JSON Lines trace file produced by ttlang-sim --trace",
+        help="JSON Lines trace file produced by tt-lang-sim --trace",
     )
     args = parser.parse_args()
 

@@ -2,13 +2,13 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Dispatch tests for bin/ttlang-sim-stats. Mirrors test_ttlang_sim.bats; the
+# Dispatch tests for bin/tt-lang-sim-stats. Mirrors test_ttlang_sim.bats; the
 # sim_stats package lives top-level (not under ttl/), so both layouts dispatch
 # to `python -m sim_stats` — what differs is the PYTHONPATH that gets exported.
 
 load test_helper
 
-LAUNCHER="$BIN_DIR/ttlang-sim-stats"
+LAUNCHER="$BIN_DIR/tt-lang-sim-stats"
 
 make_mock_python() {
     local target="$1"
@@ -27,7 +27,7 @@ make_layout() {
     local root="$1"
     shift
     mkdir -p "$root/bin"
-    cp "$LAUNCHER" "$root/bin/ttlang-sim-stats"
+    cp "$LAUNCHER" "$root/bin/tt-lang-sim-stats"
     for layout in "$@"; do
         case "$layout" in
             source)     mkdir -p "$root/python/sim_stats" ;;
@@ -46,7 +46,7 @@ setup() {
 @test "source layout: dispatches sim_stats with PYTHONPATH=<root>/python" {
     make_layout "$ROOT" source
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim-stats" --version
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim-stats" --version
     assert_line --index 0 "PYTHONPATH=$ROOT/python"
     assert_line --index 1 "argv=-m"
     assert_line --index 2 "argv=sim_stats"
@@ -56,7 +56,7 @@ setup() {
 @test "installed layout: dispatches sim_stats with PYTHONPATH=<root>/python_packages" {
     make_layout "$ROOT" installed
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim-stats"
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim-stats"
     assert_line --index 0 "PYTHONPATH=$ROOT/python_packages"
     assert_line --index 2 "argv=sim_stats"
 }
@@ -64,13 +64,13 @@ setup() {
 @test "source layout wins when both are present" {
     make_layout "$ROOT" source installed
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim-stats"
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim-stats"
     assert_line --index 0 "PYTHONPATH=$ROOT/python"
 }
 
 @test "neither layout: exit 1 with both probed paths named in error" {
     make_layout "$ROOT"
-    PYTHON=/bin/false PYTHONPATH="" run -1 "$ROOT/bin/ttlang-sim-stats"
+    PYTHON=/bin/false PYTHONPATH="" run -1 "$ROOT/bin/tt-lang-sim-stats"
     assert_output --partial "python/sim_stats"
     assert_output --partial "python_packages/sim_stats"
 }
@@ -78,7 +78,7 @@ setup() {
 @test "existing PYTHONPATH is preserved as a suffix" {
     make_layout "$ROOT" installed
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="/elsewhere" run -0 "$ROOT/bin/ttlang-sim-stats"
+    PYTHON="$MOCK_PY" PYTHONPATH="/elsewhere" run -0 "$ROOT/bin/tt-lang-sim-stats"
     assert_line --index 0 "PYTHONPATH=$ROOT/python_packages:/elsewhere"
 }
 
@@ -89,13 +89,13 @@ setup() {
 exit 7
 EOF
     chmod +x "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -7 "$ROOT/bin/ttlang-sim-stats"
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -7 "$ROOT/bin/tt-lang-sim-stats"
 }
 
 @test "arguments pass through to the module" {
     make_layout "$ROOT" installed
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim-stats" /tmp/trace.jsonl --filter foo
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim-stats" /tmp/trace.jsonl --filter foo
     assert_line --index 3 "argv=/tmp/trace.jsonl"
     assert_line --index 4 "argv=--filter"
     assert_line --index 5 "argv=foo"

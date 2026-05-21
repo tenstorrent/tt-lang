@@ -12,7 +12,7 @@ import pytest
 from test_utils import make_zeros_tensor
 
 from sim import ttl, ttnn
-from sim.corecontext import flatten_core_index
+from sim.nodecontext import flatten_node_index
 from sim.typedefs import Shape
 
 
@@ -270,11 +270,11 @@ class TestGridSize:
         test_operation(a, b)
 
 
-class TestCore:
-    """Test core() function."""
+class TestNode:
+    """Test node() function."""
 
-    def test_core_1d_grid_dims_1(self):
-        """Test core() returns single Index for 1D grid with dims=1."""
+    def test_node_1d_grid_dims_1(self):
+        """Test node() returns single Index for 1D grid with dims=1."""
 
         @ttl.operation(grid=(8,))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -282,10 +282,10 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_id = ttl.node(dims=1)
+                node_id = ttl.node(dims=1)
                 # Should be an int, not a tuple
-                assert isinstance(core_id, int)
-                assert 0 <= core_id < 8
+                assert isinstance(node_id, int)
+                assert 0 <= node_id < 8
 
             @ttl.datamovement()
             def dm0():
@@ -299,8 +299,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_2d_grid_dims_1(self):
-        """Test core() with dims=1 on 2D grid returns flattened index."""
+    def test_node_2d_grid_dims_1(self):
+        """Test node() with dims=1 on 2D grid returns flattened index."""
 
         @ttl.operation(grid=(2, 3))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -308,10 +308,10 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_id = ttl.node(dims=1)
+                node_id = ttl.node(dims=1)
                 # Should be a single int from 0 to 5 (2*3 - 1)
-                assert isinstance(core_id, int)
-                assert 0 <= core_id < 6
+                assert isinstance(node_id, int)
+                assert 0 <= node_id < 6
 
             @ttl.datamovement()
             def dm0():
@@ -325,8 +325,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_2d_grid_dims_2(self):
-        """Test core() returns 2D coordinates for 2D grid with dims=2."""
+    def test_node_2d_grid_dims_2(self):
+        """Test node() returns 2D coordinates for 2D grid with dims=2."""
 
         @ttl.operation(grid=(3, 4))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -334,12 +334,12 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.node(dims=2)
+                node_coord = ttl.node(dims=2)
                 # Should be a tuple of 2 ints
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 2
-                assert 0 <= core_coord[0] < 3
-                assert 0 <= core_coord[1] < 4
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 2
+                assert 0 <= node_coord[0] < 3
+                assert 0 <= node_coord[1] < 4
 
             @ttl.datamovement()
             def dm0():
@@ -353,8 +353,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_3d_grid_dims_1(self):
-        """Test core() with dims=1 on 3D grid returns fully flattened index."""
+    def test_node_3d_grid_dims_1(self):
+        """Test node() with dims=1 on 3D grid returns fully flattened index."""
 
         @ttl.operation(grid=(2, 3, 4))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -362,10 +362,10 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_id = ttl.node(dims=1)
+                node_id = ttl.node(dims=1)
                 # Should be a single int from 0 to 23 (2*3*4 - 1)
-                assert isinstance(core_id, int)
-                assert 0 <= core_id < 24
+                assert isinstance(node_id, int)
+                assert 0 <= node_id < 24
 
             @ttl.datamovement()
             def dm0():
@@ -379,8 +379,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_3d_grid_dims_2_flattens_first_dimension(self):
-        """Test core() with dims=2 on 3D grid flattens first two dimensions."""
+    def test_node_3d_grid_dims_2_flattens_first_dimension(self):
+        """Test node() with dims=2 on 3D grid flattens first two dimensions."""
 
         @ttl.operation(grid=(2, 3, 5))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -388,14 +388,14 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.node(dims=2)
+                node_coord = ttl.node(dims=2)
                 # Should be a tuple of 2 ints
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 2
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 2
                 # First dimension: flattened [0,1] x [0,1,2] -> [0,5]
-                assert 0 <= core_coord[0] < 6  # 2 * 3
+                assert 0 <= node_coord[0] < 6  # 2 * 3
                 # Second dimension: unchanged
-                assert 0 <= core_coord[1] < 5
+                assert 0 <= node_coord[1] < 5
 
             @ttl.datamovement()
             def dm0():
@@ -409,8 +409,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_3d_grid_dims_3(self):
-        """Test core() returns 3D coordinates for 3D grid with dims=3."""
+    def test_node_3d_grid_dims_3(self):
+        """Test node() returns 3D coordinates for 3D grid with dims=3."""
 
         @ttl.operation(grid=(2, 3, 4))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -418,13 +418,13 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.node(dims=3)
+                node_coord = ttl.node(dims=3)
                 # Should be a tuple of 3 ints
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 3
-                assert 0 <= core_coord[0] < 2
-                assert 0 <= core_coord[1] < 3
-                assert 0 <= core_coord[2] < 4
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 3
+                assert 0 <= node_coord[0] < 2
+                assert 0 <= node_coord[1] < 3
+                assert 0 <= node_coord[2] < 4
 
             @ttl.datamovement()
             def dm0():
@@ -438,8 +438,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_2d_grid_dims_3_pads_with_zeros(self):
-        """Test core() pads with zeros when dims > grid dimensions."""
+    def test_node_2d_grid_dims_3_pads_with_zeros(self):
+        """Test node() pads with zeros when dims > grid dimensions."""
 
         @ttl.operation(grid=(2, 3))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -447,13 +447,13 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.node(dims=3)
+                node_coord = ttl.node(dims=3)
                 # Should be a tuple of 3 ints, third one padded with 0
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 3
-                assert 0 <= core_coord[0] < 2
-                assert 0 <= core_coord[1] < 3
-                assert core_coord[2] == 0  # Padded
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 3
+                assert 0 <= node_coord[0] < 2
+                assert 0 <= node_coord[1] < 3
+                assert node_coord[2] == 0  # Padded
 
             @ttl.datamovement()
             def dm0():
@@ -467,8 +467,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_default_dims_is_2(self):
-        """Test that core() defaults to dims=2."""
+    def test_node_default_dims_is_2(self):
+        """Test that node() defaults to dims=2."""
 
         @ttl.operation(grid=(4, 5))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -476,12 +476,12 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_default = ttl.node()
-                core_explicit = ttl.node(dims=2)
+                node_default = ttl.node()
+                node_explicit = ttl.node(dims=2)
                 # Should be the same
-                assert core_default == core_explicit
-                assert isinstance(core_default, tuple)
-                assert len(core_default) == 2
+                assert node_default == node_explicit
+                assert isinstance(node_default, tuple)
+                assert len(node_default) == 2
 
             @ttl.datamovement()
             def dm0():
@@ -495,13 +495,13 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_outside_program_raises(self):
-        """Test that core() raises error when called outside Program context."""
-        with pytest.raises(RuntimeError, match="core not available"):
+    def test_node_outside_program_raises(self):
+        """Test that node() raises error when called outside Program context."""
+        with pytest.raises(RuntimeError, match="node not available"):
             ttl.node()
 
-    def test_core_in_nested_functions(self):
-        """Test core() works in nested function calls."""
+    def test_node_in_nested_functions(self):
+        """Test node() works in nested function calls."""
 
         @ttl.operation(grid=(3, 4))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -534,8 +534,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_in_datamovement_functions(self):
-        """Test core() can be called from datamovement functions."""
+    def test_node_in_datamovement_functions(self):
+        """Test node() can be called from datamovement functions."""
 
         @ttl.operation(grid=(2, 3))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -547,26 +547,26 @@ class TestCore:
 
             @ttl.datamovement()
             def dm0():
-                core_coord = ttl.node(dims=2)
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 2
-                assert 0 <= core_coord[0] < 2
-                assert 0 <= core_coord[1] < 3
+                node_coord = ttl.node(dims=2)
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 2
+                assert 0 <= node_coord[0] < 2
+                assert 0 <= node_coord[1] < 3
 
             @ttl.datamovement()
             def dm1():
-                core_coord = ttl.node(dims=2)
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 2
-                assert 0 <= core_coord[0] < 2
-                assert 0 <= core_coord[1] < 3
+                node_coord = ttl.node(dims=2)
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 2
+                assert 0 <= node_coord[0] < 2
+                assert 0 <= node_coord[1] < 3
 
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_consistent_across_calls(self):
-        """Test that core() returns consistent values across multiple calls."""
+    def test_node_consistent_across_calls(self):
+        """Test that node() returns consistent values across multiple calls."""
 
         @ttl.operation(grid=(3, 5))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -574,12 +574,12 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core1 = ttl.node(dims=2)
-                core2 = ttl.node(dims=2)
-                core3 = ttl.node(dims=2)
+                node1 = ttl.node(dims=2)
+                node2 = ttl.node(dims=2)
+                node3 = ttl.node(dims=2)
 
                 # All calls should return the same value
-                assert core1 == core2 == core3
+                assert node1 == node2 == node3
 
             @ttl.datamovement()
             def dm0():
@@ -593,8 +593,8 @@ class TestCore:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_core_different_dims_same_core(self):
-        """Test that different dims values on same core produce correct transformations."""
+    def test_node_different_dims_same_node(self):
+        """Test that different dims values on same node produce correct transformations."""
 
         @ttl.operation(grid=(2, 3, 4))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -602,19 +602,19 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core1d = ttl.node(dims=1)
-                core2d = ttl.node(dims=2)
-                core3d = ttl.node(dims=3)
+                node1d = ttl.node(dims=1)
+                node2d = ttl.node(dims=2)
+                node3d = ttl.node(dims=3)
 
                 # Verify consistency: all should be valid
-                assert isinstance(core1d, int)
-                assert isinstance(core2d, tuple) and len(core2d) == 2
-                assert isinstance(core3d, tuple) and len(core3d) == 3
+                assert isinstance(node1d, int)
+                assert isinstance(node2d, tuple) and len(node2d) == 2
+                assert isinstance(node3d, tuple) and len(node3d) == 3
 
                 # Verify ranges
-                assert 0 <= core1d < 24
-                assert 0 <= core2d[0] < 6 and 0 <= core2d[1] < 4
-                assert 0 <= core3d[0] < 2 and 0 <= core3d[1] < 3 and 0 <= core3d[2] < 4
+                assert 0 <= node1d < 24
+                assert 0 <= node2d[0] < 6 and 0 <= node2d[1] < 4
+                assert 0 <= node3d[0] < 2 and 0 <= node3d[1] < 3 and 0 <= node3d[2] < 4
 
             @ttl.datamovement()
             def dm0():
@@ -629,8 +629,8 @@ class TestCore:
         test_operation(a, b)
 
 
-class TestFlattenCoreCoord:
-    """Test flatten_core_index() function."""
+class TestFlattenNodeCoord:
+    """Test flatten_node_index() function."""
 
     def test_flatten_already_linear_coord(self):
         """Test flattening an already linear coordinate returns it unchanged."""
@@ -642,7 +642,7 @@ class TestFlattenCoreCoord:
             @ttl.compute()
             def compute_func():
                 # Linear coordinate should be returned unchanged
-                result = flatten_core_index(5)
+                result = flatten_node_index(5)
                 assert result == 5
                 assert isinstance(result, int)
 
@@ -658,8 +658,8 @@ class TestFlattenCoreCoord:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_flatten_2d_core_coord(self):
-        """Test flattening a 2D core coordinate to linear."""
+    def test_flatten_2d_node_coord(self):
+        """Test flattening a 2D node coordinate to linear."""
 
         @ttl.operation(grid=(4, 8))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -668,19 +668,19 @@ class TestFlattenCoreCoord:
             @ttl.compute()
             def compute_func():
                 # (0, 0) -> 0
-                assert flatten_core_index((0, 0)) == 0
+                assert flatten_node_index((0, 0)) == 0
                 # (0, 1) -> 1
-                assert flatten_core_index((0, 1)) == 1
+                assert flatten_node_index((0, 1)) == 1
                 # (0, 7) -> 7
-                assert flatten_core_index((0, 7)) == 7
+                assert flatten_node_index((0, 7)) == 7
                 # (1, 0) -> 8 (1 * 8 + 0)
-                assert flatten_core_index((1, 0)) == 8
+                assert flatten_node_index((1, 0)) == 8
                 # (1, 1) -> 9 (1 * 8 + 1)
-                assert flatten_core_index((1, 1)) == 9
+                assert flatten_node_index((1, 1)) == 9
                 # (2, 3) -> 19 (2 * 8 + 3)
-                assert flatten_core_index((2, 3)) == 19
+                assert flatten_node_index((2, 3)) == 19
                 # (3, 7) -> 31 (3 * 8 + 7)
-                assert flatten_core_index((3, 7)) == 31
+                assert flatten_node_index((3, 7)) == 31
 
             @ttl.datamovement()
             def dm0():
@@ -694,8 +694,8 @@ class TestFlattenCoreCoord:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_flatten_3d_core_coord(self):
-        """Test flattening a 3D core coordinate to linear."""
+    def test_flatten_3d_node_coord(self):
+        """Test flattening a 3D node coordinate to linear."""
 
         @ttl.operation(grid=(2, 3, 4))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -704,17 +704,17 @@ class TestFlattenCoreCoord:
             @ttl.compute()
             def compute_func():
                 # (0, 0, 0) -> 0
-                assert flatten_core_index((0, 0, 0)) == 0
+                assert flatten_node_index((0, 0, 0)) == 0
                 # (0, 0, 1) -> 1
-                assert flatten_core_index((0, 0, 1)) == 1
+                assert flatten_node_index((0, 0, 1)) == 1
                 # (0, 1, 0) -> 4 (0 * 3 * 4 + 1 * 4 + 0)
-                assert flatten_core_index((0, 1, 0)) == 4
+                assert flatten_node_index((0, 1, 0)) == 4
                 # (0, 2, 3) -> 11 (0 * 3 * 4 + 2 * 4 + 3)
-                assert flatten_core_index((0, 2, 3)) == 11
+                assert flatten_node_index((0, 2, 3)) == 11
                 # (1, 0, 0) -> 12 (1 * 3 * 4 + 0 * 4 + 0)
-                assert flatten_core_index((1, 0, 0)) == 12
+                assert flatten_node_index((1, 0, 0)) == 12
                 # (1, 2, 3) -> 23 (1 * 3 * 4 + 2 * 4 + 3)
-                assert flatten_core_index((1, 2, 3)) == 23
+                assert flatten_node_index((1, 2, 3)) == 23
 
             @ttl.datamovement()
             def dm0():
@@ -728,8 +728,8 @@ class TestFlattenCoreCoord:
         b = make_zeros_tensor(32, 32)
         test_operation(a, b)
 
-    def test_flatten_with_core_function(self):
-        """Test flattening the result of core() function."""
+    def test_flatten_with_node_function(self):
+        """Test flattening the result of node() function."""
 
         @ttl.operation(grid=(3, 5))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -737,18 +737,18 @@ class TestFlattenCoreCoord:
 
             @ttl.compute()
             def compute_func():
-                # Get 2D core coordinates
-                core_2d = ttl.node(dims=2)
-                # Get 1D core index
-                core_1d = ttl.node(dims=1)
+                # Get 2D node coordinates
+                node_2d = ttl.node(dims=2)
+                # Get 1D node index
+                node_1d = ttl.node(dims=1)
 
                 # Flattening the 2D coordinates should equal the 1D index
-                flattened = flatten_core_index(core_2d)
-                assert flattened == core_1d
+                flattened = flatten_node_index(node_2d)
+                assert flattened == node_1d
 
                 # Flattening the already-linear index should return itself
-                flattened_linear = flatten_core_index(core_1d)
-                assert flattened_linear == core_1d
+                flattened_linear = flatten_node_index(node_1d)
+                assert flattened_linear == node_1d
 
             @ttl.datamovement()
             def dm0():
@@ -771,9 +771,9 @@ class TestFlattenCoreCoord:
 
             @ttl.compute()
             def compute_func():
-                core_2d = (1, 2)
-                flat1 = flatten_core_index(core_2d)
-                flat2 = flatten_core_index(flat1)
+                node_2d = (1, 2)
+                flat1 = flatten_node_index(node_2d)
+                flat2 = flatten_node_index(flat1)
 
                 # Should be the same (idempotent)
                 assert flat1 == flat2
@@ -802,13 +802,13 @@ class TestFlattenCoreCoord:
             def compute_func():
                 # Test with 10x5 grid
                 # (0, 0) -> 0
-                assert flatten_core_index((0, 0)) == 0
+                assert flatten_node_index((0, 0)) == 0
                 # (1, 0) -> 5 (1 * 5 + 0)
-                assert flatten_core_index((1, 0)) == 5
+                assert flatten_node_index((1, 0)) == 5
                 # (5, 3) -> 28 (5 * 5 + 3)
-                assert flatten_core_index((5, 3)) == 28
+                assert flatten_node_index((5, 3)) == 28
                 # (9, 4) -> 49 (9 * 5 + 4)
-                assert flatten_core_index((9, 4)) == 49
+                assert flatten_node_index((9, 4)) == 49
 
             @ttl.datamovement()
             def dm0():
@@ -823,7 +823,7 @@ class TestFlattenCoreCoord:
         test_operation(a, b)
 
     def test_flatten_returns_int_type(self):
-        """Test that flatten_core_index always returns an int."""
+        """Test that flatten_node_index always returns an int."""
 
         @ttl.operation(grid=(2, 2))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -832,11 +832,11 @@ class TestFlattenCoreCoord:
             @ttl.compute()
             def compute_func():
                 # Test with linear coordinate
-                result1 = flatten_core_index(3)
+                result1 = flatten_node_index(3)
                 assert isinstance(result1, int)
 
                 # Test with 2D tuple
-                result2 = flatten_core_index((1, 1))
+                result2 = flatten_node_index((1, 1))
                 assert isinstance(result2, int)
 
             @ttl.datamovement()
@@ -852,10 +852,10 @@ class TestFlattenCoreCoord:
         test_operation(a, b)
 
 
-class TestThreadOrderIndependence:
-    """Test that thread definition order doesn't matter in operations."""
+class TestKernelOrderIndependence:
+    """Test that kernel definition order doesn't matter in operations."""
 
-    def test_thread_order_dm_compute_dm(self):
+    def test_kernel_order_dm_compute_dm(self):
         """Test operation with order: DM, compute, DM (like broadcast_demo.py)."""
 
         @ttl.operation(grid=(1, 1))
@@ -903,7 +903,7 @@ class TestThreadOrderIndependence:
         expected = torch.ones((32, 32), dtype=torch.float32) * 3
         assert torch.allclose(Y_torch, expected)
 
-    def test_thread_order_compute_dm_dm(self):
+    def test_kernel_order_compute_dm_dm(self):
         """Test operation with order: compute, DM, DM (traditional order)."""
 
         @ttl.operation(grid=(1, 1))
@@ -951,7 +951,7 @@ class TestThreadOrderIndependence:
         expected = torch.ones((32, 32), dtype=torch.float32) * 3
         assert torch.allclose(Y_torch, expected)
 
-    def test_thread_order_dm_dm_compute(self):
+    def test_kernel_order_dm_dm_compute(self):
         """Test operation with order: DM, DM, compute."""
 
         @ttl.operation(grid=(1, 1))
@@ -1008,7 +1008,7 @@ class TestRowMajoroperation:
     """
 
     def test_row_major_double_rows(self):
-        """Single-core operation doubles each row of a row-major tensor via DFB.
+        """Single-node operation doubles each row of a row-major tensor via DFB.
 
         DM reader copies one row at a time into the input DFB.
         Compute doubles each row via block addition (in_blk + in_blk).

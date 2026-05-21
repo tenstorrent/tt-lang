@@ -31,13 +31,13 @@ NaturalInt = Annotated[int, Field(ge=0)]
 Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
-CoreCoord = Union[Index, Tuple[Index, ...]]
+NodeCoord = Union[Index, Tuple[Index, ...]]
 
 # A single dimension selector: either a non-negative integer coordinate or a
-# slice range.  Used for core ranges and tensor tile-coordinate keys.
+# slice range.  Used for node ranges and tensor tile-coordinate keys.
 Selector = Union[Index, slice]
 
-CoreRange = Tuple[Selector, ...]
+NodeRange = Tuple[Selector, ...]
 
 Shape = Tuple[Size, ...]
 

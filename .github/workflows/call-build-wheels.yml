@@ -55,13 +55,13 @@ jobs:
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation
 
-      - name: Test CMake-installed launchers (bin/ttlang-sim, bin/ttlang-sim-stats)
+      - name: Test CMake-installed launchers (bin/tt-lang-sim, bin/tt-lang-sim-stats)
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           cmake --build build
           cmake --install build --prefix /tmp/ttlang-prefix
-          /tmp/ttlang-prefix/bin/ttlang-sim --help
-          /tmp/ttlang-prefix/bin/ttlang-sim-stats --help
+          /tmp/ttlang-prefix/bin/tt-lang-sim --help
+          /tmp/ttlang-prefix/bin/tt-lang-sim-stats --help
 
       - name: Repair tt-lang wheel
         run: |

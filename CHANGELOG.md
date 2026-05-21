@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for `ttl.GroupTransfer`
 - SPMD and mesh device simulation support
 - Support for `ttnn.all_reduce` CCLs
-- Use tracing to report statistics with `ttlang-sim-stats`
+- Use tracing to report statistics with `tt-lang-sim-stats`
 - Remote L1 reads/writes statistics
 
 ### Examples and documentation

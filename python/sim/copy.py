@@ -25,7 +25,7 @@ import math
 def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
     """Return extra fields for copy_start/copy_end when a Tensor is involved.
 
-    When called from within a kernel (greenlet tagged with _sim_core), adds
+    When called from within a kernel (greenlet tagged with _sim_node), adds
     element-level locality fields: local_l1, remote_l1, dram.
     """
     match (src, dst):
@@ -255,7 +255,7 @@ def copy(
     Supported transfer patterns:
     - torch.Tensor → Block: Load tensor data into dataflow buffer
     - Block → torch.Tensor: Extract tensor data from dataflow buffer
-    - Block → Pipe: Broadcast data to multiple cores (pipe send)
+    - Block → Pipe: Broadcast data to multiple nodes (pipe send)
     - Pipe → Block: Receive broadcasted data from pipe (pipe receive)
 
     Args:
@@ -280,7 +280,7 @@ def copy(
     handle = CopyTransaction(src, dst)
 
     # Case A: bare ttl.copy(...) with no assignment — auto-wait immediately.
-    # The AST analysis in analyze_thread_function identifies these call sites
+    # The AST analysis in analyze_kernel_function identifies these call sites
     # and registers their (caller_code, abs_lineno) in context.auto_wait_copy_lines.
     # Using equality-based set lookup so that code objects from different files
     # with identical bodies are still matched correctly.
