@@ -2,25 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Core coordinate and grid utilities for kernel execution contexts.
+Node coordinate and grid utilities for kernel execution contexts.
 
-Provides functions to query the current core index and grid size from within
-a running kernel, and to convert multi-dimensional core coordinates to a
+Provides functions to query the current node index and grid size from within
+a running kernel, and to convert multi-dimensional node coordinates to a
 linear index.
 """
 
 import inspect
 from typing import Any, List, Union
 
-from .typedefs import CoreCoord, Index, Shape, Size
+from .typedefs import NodeCoord, Index, Shape, Size
 
 
 def _get_from_frame(var_name: str, error_msg: str) -> Any:
     """Helper to walk up the call stack and find a variable.
 
     Searches through the call stack (locals first, then globals) to find
-    a variable by name. This is used by functions like grid_size(), core(),
-    and flatten_core_index() to access context variables like 'grid' and '_core'.
+    a variable by name. This is used by functions like grid_size(), node(),
+    and flatten_node_index() to access context variables like 'grid' and '_node'.
 
     Args:
         var_name: Name of the variable to search for
@@ -48,25 +48,25 @@ def _get_from_frame(var_name: str, error_msg: str) -> Any:
     raise RuntimeError(error_msg)
 
 
-def flatten_core_index(core_coord: CoreCoord) -> Index:
-    """Flatten a CoreCoord to a linear Index.
+def flatten_node_index(node_coord: NodeCoord) -> Index:
+    """Flatten a NodeCoord to a linear node index.
 
     Args:
-        core_coord: A CoreCoord which can be a single Index or a tuple of Indices
+        node_coord: A NodeCoord which can be a single Index or a tuple of Indices
 
     Returns:
         A linear Index (single integer)
 
     Example:
-        >>> flatten_core_index(5)  # Already linear
+        >>> flatten_node_index(5)  # Already linear
         5
-        >>> # With grid (8, 8), core (2, 3) -> 2 * 8 + 3 = 19
-        >>> flatten_core_index((2, 3))
+        >>> # With grid (8, 8), node (2, 3) -> 2 * 8 + 3 = 19
+        >>> flatten_node_index((2, 3))
         19
     """
-    match core_coord:
+    match node_coord:
         case int():
-            return core_coord
+            return node_coord
         case _:
             # Convert to linear index using grid dimensions
             grid = _get_from_frame(
@@ -74,7 +74,7 @@ def flatten_core_index(core_coord: CoreCoord) -> Index:
                 "grid not available - function must be called within a kernel context",
             )
 
-            coords = list(core_coord)
+            coords = list(node_coord)
 
             # Calculate linear index: for (y, x) with grid (h, w), linear = y * w + x
             # For 3D: (z, y, x) with grid (d, h, w), linear = z * h * w + y * w + x
@@ -141,20 +141,20 @@ def grid_size(dims: Size = 2) -> Union[Size, Shape]:
         return result
 
 
-def node(dims: Size = 2) -> CoreCoord:
-    """Get the current core coordinates from injected context.
+def node(dims: Size = 2) -> NodeCoord:
+    """Get the current node coordinates from injected context.
 
     Args:
-        dims: Number of dimensions for the core coordinates. Default is 2
+        dims: Number of dimensions for the node coordinates. Default is 2
 
     Returns:
-        CoreCoord: The core coordinates (int for 1D, tuple for > 1D)
+        NodeCoord: The node coordinates (int for 1D, tuple for > 1D)
 
     Raises:
         RuntimeError: If called outside of a Program context
     """
-    cid = _get_from_frame(
-        "_core", "core not available - function must be called within Program context"
+    nid = _get_from_frame(
+        "_node", "node not available - function must be called within Program context"
     )
 
     grid = _get_from_frame(
@@ -164,8 +164,8 @@ def node(dims: Size = 2) -> CoreCoord:
     coords: List[Index] = []
 
     for s in reversed(grid):
-        coords.append(cid % s)
-        cid = cid // s
+        coords.append(nid % s)
+        nid = nid // s
     coords.reverse()
 
     # If dims < len(grid), flatten the first dimension(s)

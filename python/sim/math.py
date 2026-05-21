@@ -21,9 +21,9 @@ import torch
 
 from .context import get_context
 from .diagnostics import warn_once_per_location
-from .greenlet_scheduler import get_current_core_id
+from .greenlet_scheduler import get_current_node_id
 from .dfb import Block, track_source_blocks, matmul
-from .blockstate import BlockAcquisition, ThreadType
+from .blockstate import BlockAcquisition, KernelType
 from .ttnnsim import Tensor
 from .typedefs import PositiveInt
 
@@ -33,13 +33,13 @@ _ = matmul
 def _warn_1d_broadcast_unsupported() -> None:
     """Issue a warning that 1D broadcast is not supported on current hardware.
 
-    Tracks which cores hit each source location and only prints once per location,
-    showing the list of cores that encountered the issue.
+    Tracks which nodes hit each source location and only prints once per location,
+    showing the list of nodes that encountered the issue.
     """
     warn_once_per_location(
         get_context().warnings.broadcast_1d_warnings,
         "1D broadcast is not supported on current hardware",
-        get_current_core_id(),
+        get_current_node_id(),
     )
 
 
@@ -138,7 +138,7 @@ def broadcast(
             tensor=Tensor(expanded_tensor.contiguous()),
             shape=target_shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=ThreadType.COMPUTE,
+            kernel_type=KernelType.COMPUTE,
             is_temporary=True,
         )
         track_source_blocks(result_block, block)

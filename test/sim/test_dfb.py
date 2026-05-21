@@ -6,7 +6,7 @@ Tests for DataflowBuffer.
 
 Covers the high-level DataflowBuffer interface (tensor-aware operations,
 context manager syntax, state machine enforcement) and the low-level ring-buffer
-primitives (reserve/wait/push/pop, error contracts, per-core limits).
+primitives (reserve/wait/push/pop, error contracts, per-node limits).
 """
 
 import pytest
@@ -35,25 +35,25 @@ from sim.dfb import (
 )
 from sim.math import broadcast
 from sim.blockstate import (
-    ThreadType,
+    KernelType,
     BlockAcquisition,
 )
 from sim.context import (
-    set_current_thread_type,
-    clear_current_thread_type,
+    set_current_kernel_type,
+    clear_current_kernel_type,
 )
 
 
 @pytest.fixture(autouse=True)
-def setup_thread_context(compute_thread_context):
-    """Automatically set thread context and scheduler for all DFB tests.
+def setup_kernel_context(compute_kernel_context):
+    """Automatically set kernel context and scheduler for all DFB tests.
 
-    Note: These tests primarily exercise COMPUTE thread patterns (using store()).
-    DM thread patterns (using copy operations) are tested separately in copy/pipe tests.
-    The state machine enforces different expected operations for DM vs COMPUTE threads,
+    Note: These tests primarily exercise COMPUTE kernel patterns (using store()).
+    DM kernel patterns (using copy operations) are tested separately in copy/pipe tests.
+    The state machine enforces different expected operations for DM vs COMPUTE kernels,
     so parametrizing these tests would require substantial test logic changes.
     """
-    # Use the shared compute_thread_context fixture
+    # Use the shared compute_kernel_context fixture
     pass
 
 
@@ -153,8 +153,8 @@ def test_dataflow_buffer_multi_tile() -> None:
 
 
 def test_copy_operations_with_dm_context() -> None:
-    """Test copy operations between tensor and DataflowBuffer with proper DM thread context."""
-    set_current_thread_type(ThreadType.DM)
+    """Test copy operations between tensor and DataflowBuffer with proper DM kernel context."""
+    set_current_kernel_type(KernelType.DM)
 
     try:
         tensor_a = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
@@ -162,7 +162,7 @@ def test_copy_operations_with_dm_context() -> None:
         element = make_ones_tile()
         dfb_a = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
-        # Test copy from tensor to dataflow buffer (DM thread can do this)
+        # Test copy from tensor to dataflow buffer (DM kernel can do this)
         dfb_view = dfb_a.reserve()
         tensor_slice = tensor_a[0:1, 0:1]  # Single tile
 
@@ -188,8 +188,8 @@ def test_copy_operations_with_dm_context() -> None:
         assert output_tensor.to_torch().sum() != 0
 
     finally:
-        # Clean up thread context
-        clear_current_thread_type()
+        # Clean up kernel context
+        clear_current_kernel_type()
 
     print("Copy operations with DM context test passed!")
 
@@ -220,12 +220,12 @@ def test_error_handling() -> None:
     print("Error handling test passed!")
 
 
-def test_copy_in_dm_thread_context() -> None:
-    """Test copy operations with proper DM thread context.
+def test_copy_in_dm_kernel_context() -> None:
+    """Test copy operations with proper DM kernel context.
 
     This test demonstrates the full workflow:
-    - DM thread: copy data into DFBs (reserve + copy + push)
-    - Switch to COMPUTE thread for consumption (wait + read + pop)
+    - DM kernel: copy data into DFBs (reserve + copy + push)
+    - Switch to COMPUTE kernel for consumption (wait + read + pop)
     """
 
     try:
@@ -252,8 +252,8 @@ def test_copy_in_dm_thread_context() -> None:
         assert c_in_dfb.shape == (1, 1)
         assert c_in_dfb.capacity_tiles == 2
 
-        # DM thread: Producer side - copy data into DFBs
-        set_current_thread_type(ThreadType.DM)
+        # DM kernel: Producer side - copy data into DFBs
+        set_current_kernel_type(KernelType.DM)
 
         # Copy c_in data
         c_block = c_in_dfb.reserve()
@@ -269,8 +269,8 @@ def test_copy_in_dm_thread_context() -> None:
         tx.wait()
         a_block.push()
 
-        # Switch to COMPUTE thread: Consumer side - read data back
-        set_current_thread_type(ThreadType.COMPUTE)
+        # Switch to COMPUTE kernel: Consumer side - read data back
+        set_current_kernel_type(KernelType.COMPUTE)
 
         c_data = c_in_dfb.wait()
         a_data = a_in_dfb.wait()
@@ -306,10 +306,10 @@ def test_copy_in_dm_thread_context() -> None:
         a_data.pop()
 
     finally:
-        # Clean up thread context
-        clear_current_thread_type()
+        # Clean up kernel context
+        clear_current_kernel_type()
 
-    print("Copy in DM thread context test passed!")
+    print("Copy in DM kernel context test passed!")
 
 
 def test_single_pending_reserve_constraint() -> None:
@@ -320,7 +320,7 @@ def test_single_pending_reserve_constraint() -> None:
     machine rejects the push with a diagnostic.
     """
 
-    set_current_thread_type(ThreadType.DM)
+    set_current_kernel_type(KernelType.DM)
 
     try:
         element = make_ones_tile()
@@ -353,7 +353,7 @@ def test_single_pending_reserve_constraint() -> None:
         block2.push()
     finally:
 
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 def test_single_pending_wait_constraint() -> None:
@@ -364,13 +364,13 @@ def test_single_pending_wait_constraint() -> None:
     rejects the pop with a diagnostic.
     """
 
-    set_current_thread_type(ThreadType.COMPUTE)
+    set_current_kernel_type(KernelType.COMPUTE)
 
     try:
         element = make_ones_tile()
         dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
         block = dfb.reserve()
         test_data = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
         test_slice = test_data[0:1, 0:1]
@@ -378,8 +378,8 @@ def test_single_pending_wait_constraint() -> None:
         tx.wait()
         block.push()
 
-        # Switch to COMPUTE thread for consumption
-        set_current_thread_type(ThreadType.COMPUTE)
+        # Switch to COMPUTE kernel for consumption
+        set_current_kernel_type(KernelType.COMPUTE)
 
         # First wait() should succeed
         data1 = dfb.wait()
@@ -396,14 +396,14 @@ def test_single_pending_wait_constraint() -> None:
         out_block.push()
         data1.pop()
 
-        # Add more data (using DM thread)
-        set_current_thread_type(ThreadType.DM)
+        # Add more data (using DM kernel)
+        set_current_kernel_type(KernelType.DM)
         block = dfb.reserve()
         tx = copy(test_slice, block)
         tx.wait()
         block.push()
 
-        set_current_thread_type(ThreadType.COMPUTE)
+        set_current_kernel_type(KernelType.COMPUTE)
         data2 = dfb.wait()
         assert data2 is not None
         # Use second waited block as STORE_SRC before pop
@@ -412,7 +412,7 @@ def test_single_pending_wait_constraint() -> None:
         out_block2.push()
         data2.pop()
     finally:
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 def test_reserve_store_push_pop_workflow() -> None:
@@ -808,24 +808,24 @@ def test_iadd_raises_on_non_temporary() -> None:
 def test_pending_confirmation_cleared_when_result_is_stored() -> None:
     """Block used in arithmetic clears its pending confirmation when the result is stored."""
     from sim import ttnn, TILE_SHAPE
-    from sim.blockstate import ThreadType
-    from sim.context import set_current_thread_type, clear_current_thread_type
+    from sim.blockstate import KernelType
+    from sim.context import set_current_kernel_type, clear_current_kernel_type
     from sim.copy import copy as dm_copy
 
     element = make_element_for_buffer_shape((1, 1))
     src_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
     dst_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
-    # DM thread: write a value into src_dfb
-    set_current_thread_type(ThreadType.DM)
+    # DM kernel: write a value into src_dfb
+    set_current_kernel_type(KernelType.DM)
     src_blk = src_dfb.reserve()
     tx = dm_copy(ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)), src_blk)
     tx.wait()
     src_blk.push()
-    clear_current_thread_type()
+    clear_current_kernel_type()
 
-    # Compute thread: use src_blk in arithmetic, store the result
-    set_current_thread_type(ThreadType.COMPUTE)
+    # Compute kernel: use src_blk in arithmetic, store the result
+    set_current_kernel_type(KernelType.COMPUTE)
     try:
         with src_dfb.wait() as c_blk:
             # arithmetic use registers pending confirmation
@@ -842,29 +842,29 @@ def test_pending_confirmation_cleared_when_result_is_stored() -> None:
         assert c_blk not in src_dfb._pending_confirmations
         src_dfb.validate_no_pending_blocks()
     finally:
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
     """validate_no_pending_blocks() raises if block data was used in arithmetic but never stored."""
     from sim import ttnn, TILE_SHAPE
-    from sim.blockstate import ThreadType
-    from sim.context import set_current_thread_type, clear_current_thread_type
+    from sim.blockstate import KernelType
+    from sim.context import set_current_kernel_type, clear_current_kernel_type
     from sim.copy import copy as dm_copy
 
     element = make_element_for_buffer_shape((1, 1))
     src_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
-    # DM thread: write a value
-    set_current_thread_type(ThreadType.DM)
+    # DM kernel: write a value
+    set_current_kernel_type(KernelType.DM)
     src_blk = src_dfb.reserve()
     tx = dm_copy(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0)), src_blk)
     tx.wait()
     src_blk.push()
-    clear_current_thread_type()
+    clear_current_kernel_type()
 
-    # Compute thread: use block in arithmetic but discard the result without storing
-    set_current_thread_type(ThreadType.COMPUTE)
+    # Compute kernel: use block in arithmetic but discard the result without storing
+    set_current_kernel_type(KernelType.COMPUTE)
     try:
         with src_dfb.wait(name="arith_src") as c_blk:
             _unused = c_blk + Block.from_tensor(
@@ -879,7 +879,7 @@ def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
         assert "name: 'arith_src'" in out
         assert "block_name='arith_src'" in out
     finally:
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 # ---------------------------------------------------------------------------
@@ -982,7 +982,7 @@ def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
     assert dfb.stats().visible == 0
 
 
-def test_per_core_dfb_limit_exceeds_max() -> None:
+def test_per_node_dfb_limit_exceeds_max() -> None:
     """Test that exceeding the DFB limit emits a warning at definition time without aborting."""
     from sim import ttl
     from sim.program import set_max_dfbs
@@ -1014,12 +1014,12 @@ def test_per_core_dfb_limit_exceeds_max() -> None:
 
 
 def test_l1_limit_counts_unreferenced_dfbs() -> None:
-    """Test that the L1 limit warning counts DFBs not referenced by any thread.
+    """Test that the L1 limit warning counts DFBs not referenced by any kernel.
 
     With shape=(1,1), block_count=2, bfloat16 each DFB uses 4096 bytes.
     Setting max_l1 to 4096 allows exactly one DFB. Defining two unreferenced
     DFBs (8192 bytes total) must still trigger the warning even though neither
-    appears in any thread closure and would be invisible to self.context counting.
+    appears in any kernel closure and would be invisible to self.context counting.
     """
     from sim import ttl
     from sim.program import set_max_l1_bytes
@@ -1053,7 +1053,7 @@ def test_l1_limit_counts_unreferenced_dfbs() -> None:
 
 def test_heterogeneous_dfbs_independent() -> None:
     """Test that multiple DataflowBuffers operate independently."""
-    set_current_thread_type(ThreadType.COMPUTE)
+    set_current_kernel_type(KernelType.COMPUTE)
 
     try:
         element = make_full_tensor(64, 64, 1.0)
@@ -1091,12 +1091,12 @@ def test_heterogeneous_dfbs_independent() -> None:
         read2.pop()
         write2_2.push()
     finally:
-        set_current_thread_type(None)
+        set_current_kernel_type(None)
 
 
 def test_two_dfbs_independent_state() -> None:
     """Test that two DataflowBuffers have fully independent ring-buffer state."""
-    set_current_thread_type(ThreadType.COMPUTE)
+    set_current_kernel_type(KernelType.COMPUTE)
 
     try:
         element = make_full_tensor(32, 32, 1.0)
@@ -1124,7 +1124,7 @@ def test_two_dfbs_independent_state() -> None:
         read2.pop()
         write2_2.push()
     finally:
-        set_current_thread_type(None)
+        set_current_kernel_type(None)
 
 
 # ---------------------------------------------------------------------------
@@ -1264,8 +1264,8 @@ def test_1d_block_from_list():
 
 def test_1d_dataflow_buffer_reserve_push_wait_pop():
     """DataflowBuffer with 1-D shape correctly reserves, pushes, and delivers data."""
-    from sim.blockstate import ThreadType
-    from sim.context import set_current_thread_type, clear_current_thread_type
+    from sim.blockstate import KernelType
+    from sim.context import set_current_kernel_type, clear_current_kernel_type
 
     element = Tensor(torch.zeros(32))
     dfb = DataflowBuffer(likeness_tensor=element, shape=(1,), block_count=2)
@@ -1273,7 +1273,7 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
     assert dfb.shape == (1,)
     assert dfb.capacity_tiles == 2
 
-    set_current_thread_type(ThreadType.COMPUTE)
+    set_current_kernel_type(KernelType.COMPUTE)
     try:
         write = dfb.reserve()
         assert len(write) == 1
@@ -1295,13 +1295,13 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
         out_block.push()
         read.pop()
     finally:
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 def test_1d_multi_tile_dataflow_buffer():
     """DataflowBuffer with 1-D shape (4,) operates over 4 tiles per operation."""
-    from sim.blockstate import ThreadType
-    from sim.context import set_current_thread_type, clear_current_thread_type
+    from sim.blockstate import KernelType
+    from sim.context import set_current_kernel_type, clear_current_kernel_type
 
     # Full buffer element shape for 4 tiles of size 32 each
     element = Tensor(torch.zeros(128))
@@ -1310,7 +1310,7 @@ def test_1d_multi_tile_dataflow_buffer():
     assert dfb.shape == (4,)
     assert dfb.capacity_tiles == 8
 
-    set_current_thread_type(ThreadType.COMPUTE)
+    set_current_kernel_type(KernelType.COMPUTE)
     try:
         write = dfb.reserve()
         assert len(write) == 4
@@ -1333,7 +1333,7 @@ def test_1d_multi_tile_dataflow_buffer():
         out_block.push()
         read.pop()
     finally:
-        clear_current_thread_type()
+        clear_current_kernel_type()
 
 
 def test_1d_tensor_tile_aligned_validation():

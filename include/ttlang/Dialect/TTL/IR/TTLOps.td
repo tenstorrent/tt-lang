@@ -886,8 +886,9 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Used by add/sub/mul, where the tile op may lower to either an FPU or
 // SFPU TTKernel form depending on operand provenance.
 multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
-                                                string kernelOp> {
-  def Op : TTL_ElementWiseBinary<mnemonic> {
+                                                string kernelOp,
+                                                list<Trait> opTraits = []> {
+  def Op : TTL_ElementWiseBinary<mnemonic, opTraits> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
   def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic> {
@@ -910,7 +911,8 @@ multiclass TTL_BinarySfpuElementwisePair<string mnemonic, string kernelOp,
 // Define all binary elementwise ops using the multiclasses
 defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles">;
 defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles">;
+defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles",
+    [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]>;
 defm TTL_Div : TTL_BinarySfpuElementwisePair<"div", "div_binary_tile">;
 defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
                                              [TTL_InPlaceOpTrait]>;
@@ -1148,6 +1150,37 @@ def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
   let arguments = (ins F32Attr:$value, Index:$dst_index);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$value `into` `dst` `[` $dst_index `]` attr-dict `:` type($result)";
+}
+
+def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
+    [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_DstResultOpTrait, AllTypesMatch<["input", "result"]>]> {
+  let summary = "Tile-level multiply by a compile-time scalar constant";
+  let description = [{
+    Multiplies every element of a DST register tile by a compile-time
+    scalar constant. Operates in-place at `dst_index`; the result has the
+    same type as the input tile.
+  }];
+  let arguments = (ins TTL_TileType:$input, F32Attr:$value, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat =
+      "$input `,` $value `into` `dst` `[` $dst_index `]` attr-dict `:` "
+      "type($input) `->` type($result)";
+}
+
+def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
+    [Pure, TTL_UnaryElementwiseOpTrait,
+     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>,
+     AllTypesMatch<["input", "result"]>]> {
+  let summary = "Multiply a tensor of tiles by a compile-time scalar constant";
+  let description = [{
+    Element-wise multiply of an input tensor of tiles by a compile-time
+    scalar constant. The result has the same type as the input.
+  }];
+  let arguments = (ins AnyRankedTensor:$input, F32Attr:$value);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat =
+      "$input `,` $value attr-dict `:` type($input) `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//

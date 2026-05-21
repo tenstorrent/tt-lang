@@ -9,9 +9,9 @@ Patches sys.modules with simulator implementations of ttl/ttnn before pytest
 collects and runs tests, so kernel code executes on the simulator backend.
 
 Usage:
-    ttlang-sim-pytest test/python/test_matmul_simple.py
-    ttlang-sim-pytest test/python/test_matmul_simple.py -k test_matmul
-    ttlang-sim-pytest test/python/          # run all tests in a directory
+    tt-lang-sim-pytest test/python/test_matmul_simple.py
+    tt-lang-sim-pytest test/python/test_matmul_simple.py -k test_matmul
+    tt-lang-sim-pytest test/python/          # run all tests in a directory
 """
 
 import os

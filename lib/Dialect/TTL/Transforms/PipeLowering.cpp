@@ -133,6 +133,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   if (failed(cbConverted)) {
@@ -181,7 +182,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto senderSemAddr =
         ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
     auto senderSemPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, senderSemAddr);
+        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
     auto expectedVal = arith::ConstantOp::create(
         rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(expectedSignals));
     ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedVal);
@@ -386,6 +387,7 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   if (pipeType.isUnicast()) {
     // Point-to-point: wait for sender's atomic increment.
@@ -402,7 +404,7 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     auto semIdx = arith::ConstantIndexOp::create(rewriter, loc,
                                                  getSenderSemIdx(pipeType));
     auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
-    auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, semAddr);
+    auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, semAddr);
     auto waitValConst = arith::ConstantOp::create(
         rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(waitVal));
     ttk::SemaphoreWaitMinOp::create(rewriter, loc, semPtr, waitValConst);
@@ -416,7 +418,8 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     auto recvSemIdx = arith::ConstantIndexOp::create(
         rewriter, loc, getReceiverSemIdx(pipeType));
     auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
-    auto recvSemPtr = ttk::CastToL1PtrOp::create(rewriter, loc, recvSemAddr);
+    auto recvSemPtr =
+        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
 
     // Counter is allocated by allocatePipeNetCountersForMulticast.
     Value counter;

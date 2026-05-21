@@ -270,7 +270,7 @@ TT_METAL_SIMULATOR=1 pytest -v test/me2e/
 `.github/scripts/tests/` is a bats suite covering the CI helper scripts
 (`get-version-tag.sh`, `detect-uplift.sh`, `require-release-tag.sh`,
 `verify-wheel-version.sh`, `probe-docker-image.sh`) and the two launcher
-scripts (`bin/ttlang-sim`, `bin/ttlang-sim-stats`). CI runs it via
+scripts (`bin/tt-lang-sim`, `bin/tt-lang-sim-stats`). CI runs it via
 `bats-core/bats-action@2.0.0` on `ubuntu-latest`; for local runs (host or
 inside the ird container) install bats and the helper libraries once:
 

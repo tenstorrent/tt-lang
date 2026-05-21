@@ -25,8 +25,8 @@
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
 
 // CB wrappers declared at top of kernel
-// CHECK:   experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-// CHECK:   experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+// CHECK:   CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+// CHECK:   CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
 
 // First copy: 64x64 (2x2 tiles) → CB [2,2]
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);

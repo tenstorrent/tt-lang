@@ -120,7 +120,7 @@ class TestDefaultGrid:
 
 
 class TestGridCommandLineOption:
-    """Test --grid command-line option in ttlang-sim."""
+    """Test --grid command-line option in tt-lang-sim."""
 
     @staticmethod
     def create_test_script(grid_check: tuple[int, int]) -> Path:
@@ -312,7 +312,7 @@ if __name__ == "__main__":
 
 
 class TestScriptMustBeFirstArgument:
-    """The Python entry script must precede all ttlang-sim options."""
+    """The Python entry script must precede all tt-lang-sim options."""
 
     _REPO = Path(__file__).parent.parent.parent
     _ENV = {**os.environ, "PYTHONPATH": "python"}
@@ -367,11 +367,11 @@ class TestScriptMustBeFirstArgument:
             text=True,
         )
         assert result.returncode == 0
-        assert "ttlang-sim" in result.stdout
+        assert "tt-lang-sim" in result.stdout
 
 
 class TestMaxDfbsCommandLineOption:
-    """Test --max-dfbs command-line option in ttlang-sim."""
+    """Test --max-dfbs command-line option in tt-lang-sim."""
 
     @staticmethod
     def create_test_script(num_cbs: int) -> Path:
@@ -573,7 +573,7 @@ if __name__ == "__main__":
 
 
 class TestMaxL1CommandLineOption:
-    """Test --max-l1 command-line option in ttlang-sim.
+    """Test --max-l1 command-line option in tt-lang-sim.
 
     Each CB uses shape=(1,1), block_count=2.  ttnn.bfloat16 is promoted to
     float32 for computation, but memory accounting uses the declared dtype
@@ -760,7 +760,7 @@ if __name__ == "__main__":
 
 
 class TestSimStats:
-    """Test ttlang-sim-stats post-processing tool."""
+    """Test tt-lang-sim-stats post-processing tool."""
 
     _REPO = Path(__file__).parent.parent.parent
     _ENV = {**os.environ, "PYTHONPATH": "python", "TTLANG_SIM_ONLY": "1"}
@@ -794,7 +794,7 @@ class TestSimStats:
         )
 
     def test_tensor_stats_basic(self):
-        """ttlang-sim-stats prints tensor access statistics from a trace."""
+        """tt-lang-sim-stats prints tensor access statistics from a trace."""
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:
@@ -811,7 +811,7 @@ class TestSimStats:
             trace_path.unlink(missing_ok=True)
 
     def test_tensor_stats_shows_tensor_names(self):
-        """ttlang-sim-stats shows tensor parameter names from the trace."""
+        """tt-lang-sim-stats shows tensor parameter names from the trace."""
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:
@@ -826,8 +826,8 @@ class TestSimStats:
         finally:
             trace_path.unlink(missing_ok=True)
 
-    def test_dfb_stats_per_core(self):
-        """ttlang-sim-stats shows per-core DFB breakdown with a subtotal."""
+    def test_dfb_stats_per_node(self):
+        """tt-lang-sim-stats shows per-node DFB breakdown with a subtotal."""
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:
@@ -837,14 +837,14 @@ class TestSimStats:
             stats = self._run_stats(trace_path)
             assert stats.returncode == 0, f"sim-stats failed: {stats.stderr}"
             assert "Dataflow Buffer Statistics" in stats.stdout
-            assert "Core" in stats.stdout
+            assert "Node" in stats.stdout
             assert "Reserves" in stats.stdout
             assert "Waits" in stats.stdout
         finally:
             trace_path.unlink(missing_ok=True)
 
     def test_no_stats_without_trace(self):
-        """Running ttlang-sim without --trace produces no trace file to post-process."""
+        """Running tt-lang-sim without --trace produces no trace file to post-process."""
         result = subprocess.run(
             [sys.executable, "-m", "sim.ttlang_sim", "examples/single_node_matmul.py"],
             cwd=self._REPO,
@@ -857,7 +857,7 @@ class TestSimStats:
         assert "TOTAL" not in result.stdout
 
     def test_no_stats_events_in_empty_trace(self):
-        """ttlang-sim-stats reports no statistics when the trace has no relevant events."""
+        """tt-lang-sim-stats reports no statistics when the trace has no relevant events."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:
