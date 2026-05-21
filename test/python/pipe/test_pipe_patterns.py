@@ -10,7 +10,6 @@ Pipe pattern tests matching the four spec examples:
   4. Forward: unicast to +1 neighbor (ring)
 """
 
-
 import pytest
 import torch
 import ttl
@@ -353,6 +352,42 @@ def posted_loopback_multicast_kernel(inp, out):
             ttl.copy(out_blk, out[0, x]).wait()
 
 
+@ttl.operation(grid=(1, 1))
+def posted_self_unicast_wait_receive_before_send_wait_kernel(inp, out):
+    net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, 0))])
+
+    send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with recv_cb.wait() as recv_blk, out_cb.reserve() as out_blk:
+            out_blk.store(recv_blk)
+
+    @ttl.datamovement()
+    def post_receive_send_then_wait_receive():
+        with send_cb.reserve() as send_blk, recv_cb.reserve() as recv_blk:
+            ttl.copy(inp[0, 0], send_blk).wait()
+
+            def recv(pipe):
+                recv_tx = ttl.copy(pipe, recv_blk)
+
+                def send(pipe):
+                    send_tx = ttl.copy(send_blk, pipe)
+                    recv_tx.wait()
+                    send_tx.wait()
+
+                net.if_src(send)
+
+            net.if_dst(recv)
+
+    @ttl.datamovement()
+    def write_output():
+        with out_cb.wait() as out_blk:
+            ttl.copy(out_blk, out[0, 0]).wait()
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -465,6 +500,18 @@ def test_same_thread_receive_post_before_send_loopback(device):
     result = ttnn.to_torch(out_tt)
     expected = torch.cat([inp_torch, inp_torch], dim=1)
     assert_pcc(expected, result)
+
+
+def test_self_unicast_wait_receive_before_send_wait(device):
+    """Unicast self-loop is valid after receive post and send post both run."""
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    inp_tt = to_dram(inp_torch, device)
+    out_tt = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+
+    posted_self_unicast_wait_receive_before_send_wait_kernel(inp_tt, out_tt)
+
+    result = ttnn.to_torch(out_tt)
+    assert_pcc(inp_torch, result)
 
 
 # ---------------------------------------------------------------------------

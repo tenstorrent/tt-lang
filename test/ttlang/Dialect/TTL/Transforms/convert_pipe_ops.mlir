@@ -60,17 +60,22 @@ func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // -----
 
-// Pipe -> CB copy (unicast receiver): wait for sender semaphore, then reset
+// Pipe -> DFB copy (unicast receiver): publish the reserved destination
+// address, then wait for sender completion.
 // CHECK-LABEL: func.func @copy_pipe_to_cb
 // CHECK: ttkernel.get_semaphore
-// CHECK-NEXT: ttkernel.reinterpret_cast
-// CHECK-NEXT: ttkernel.experimental::semaphore_wait
-// CHECK-NEXT: ttkernel.noc_semaphore_set
+// CHECK: ttkernel.get_write_ptr
+// CHECK: ttkernel.store_to_l1
+// CHECK: ttkernel.experimental::remote_sram_write_u32
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.experimental::semaphore_wait_min
 func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle
+  %recv = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   ttl.wait %xf : !ttl.transfer_handle
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
 
@@ -130,7 +135,7 @@ func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread"
 
 // -----
 
-// Pipe -> CB (multicast receiver): per-PipeNet counter ++, wait_min on
+// Pipe -> DFB (multicast receiver): per-PipeNet counter ++, wait_min on
 // recvSem. With one pipe the counter walks 0->1; with N overlapping
 // pipes a receiver walks 1..N.
 // CHECK-LABEL: func.func @copy_pipe_to_cb_multicast
@@ -139,10 +144,13 @@ func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread"
 // CHECK: ttkernel.get_semaphore
 // CHECK: ttkernel.reinterpret_cast
 // CHECK: ttkernel.get_semaphore
+// CHECK: ttkernel.get_write_ptr
+// CHECK: ttkernel.store_to_l1
+// CHECK: ttkernel.experimental::remote_sram_write_u32
+// CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental::convert_logical_x_to_translated
 // CHECK: ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: ttkernel.get_noc_addr
-// CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[V:.*]] = memref.load %[[CTR]]
 // CHECK: %[[NEW:.*]] = arith.addi %[[V]]
 // CHECK: memref.store %[[NEW]], %[[CTR]]
@@ -151,7 +159,9 @@ func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread"
 func.func @copy_pipe_to_cb_multicast() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
-  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle
+  %recv = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   ttl.wait %xf : !ttl.transfer_handle
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }

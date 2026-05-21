@@ -11,7 +11,7 @@
 // CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[CTR]]
 
-// First Pipe->CB receive:
+// First Pipe->DFB receive:
 // CHECK: ttkernel.noc_semaphore_inc({{.*}})
 // CHECK: %[[V1:.*]] = memref.load %[[CTR]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
@@ -28,10 +28,14 @@ func.func @overlap_two_receives_share_counter() attributes { "ttl.kernel_thread"
   %cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
-  %xf1 = ttl.copy %p1, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle
+  %recv1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   ttl.wait %xf1 : !ttl.transfer_handle
-  %xf2 = ttl.copy %p2, %cb : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %recv2 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   ttl.wait %xf2 : !ttl.transfer_handle
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   func.return
 }
 
@@ -52,75 +56,80 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p_net0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p_net1 = ttl.create_pipe src(0, 1) dst(2, 0) to(2, 3) net 1 : !ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>
-  %xf0 = ttl.copy %p_net0, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle
+  %recv0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf0 = ttl.copy %p_net0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   ttl.wait %xf0 : !ttl.transfer_handle
-  %xf1 = ttl.copy %p_net1, %cb : (!ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %recv1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf1 = ttl.copy %p_net1, %recv1 : (!ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   ttl.wait %xf1 : !ttl.transfer_handle
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
 
 // -----
 
 //===----------------------------------------------------------------------===//
-// Two senders to the SAME destination range get distinct slot offsets.
-// Slot 0 writes at offset 0 (no addi); slot 1 writes at offset 4096
-// (one f32 tile = 4096 bytes for this CB shape).
+// Two senders to the same destination range use receiver-published
+// addresses. Each send reads the posted destination address from the
+// sender-visible mailbox before issuing its multicast write.
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @overlap_distinct_slots
+// CHECK: ttkernel.load_from_l1
 // CHECK: ttkernel.noc_async_write_multicast
-// CHECK: arith.addi {{.*}}, %{{c4096|.*}} : index
+// CHECK: ttkernel.load_from_l1
 // CHECK: ttkernel.noc_async_write_multicast
 func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
-  %xf1 = ttl.copy %cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
-  ttl.wait %xf1 : !ttl.transfer_handle<write>
-  %xf2 = ttl.copy %cb, %p2 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
-  ttl.wait %xf2 : !ttl.transfer_handle<write>
-  // Receivers needed so PipeGraph sees both pipes.
-  %xf3 = ttl.copy %p1, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle
-  ttl.wait %xf3 : !ttl.transfer_handle
-  %xf4 = ttl.copy %p2, %cb : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle
-  ttl.wait %xf4 : !ttl.transfer_handle
+  %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %recv2 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send1 = ttl.copy %src_cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  %send2 = ttl.copy %src_cb, %p2 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send2 : !ttl.transfer_handle<write>
+  ttl.wait %post1 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  ttl.wait %post2 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   func.return
 }
 
 // -----
 
 //===----------------------------------------------------------------------===//
-// Slot assignment is order-independent: declaring src(2,0) before src(0,0)
-// in program order must produce the same slot map (src(0,0) -> slot 0,
-// src(2,0) -> slot 1) because `assignGatherSlotIndices` sorts pipes by
-// (srcX, srcY, ...) before assigning. Program order only controls which
-// multicast IR appears first; the slot offset still tracks the sorted
-// assignment. So the first multicast in the output (the src(2,0) copy)
-// carries the slot-1 offset (addi c4096) and the second has no offset.
+// Send program order is independent of the stable PipeGraph slot assignment:
+// the sender still reads the destination address posted for the specific pipe.
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @overlap_distinct_slots_reversed_order
-// First multicast: slot 1, uses addi with c4096.
-// CHECK: arith.addi %{{.*}}, %c4096 : index
+// CHECK: ttkernel.load_from_l1
 // CHECK: ttkernel.noc_async_write_multicast
-// Second multicast: slot 0, no addi with c4096 between get_write_ptr and mcast.
-// CHECK: ttkernel.get_write_ptr
-// CHECK-NOT: arith.addi %{{.*}}, %c4096 : index
+// CHECK: ttkernel.load_from_l1
 // CHECK: ttkernel.noc_async_write_multicast
 func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
-  // Reverse program order: p2's send comes first.
-  %xf2 = ttl.copy %cb, %p2 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
-  ttl.wait %xf2 : !ttl.transfer_handle<write>
-  %xf1 = ttl.copy %cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
-  ttl.wait %xf1 : !ttl.transfer_handle<write>
-  // Receivers needed so PipeGraph sees both pipes.
-  %xf3 = ttl.copy %p2, %cb : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle
-  ttl.wait %xf3 : !ttl.transfer_handle
-  %xf4 = ttl.copy %p1, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle
-  ttl.wait %xf4 : !ttl.transfer_handle
+  %recv2 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  // Reverse program order: p2's send runs before p1's send.
+  %send2 = ttl.copy %src_cb, %p2 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send2 : !ttl.transfer_handle<write>
+  %send1 = ttl.copy %src_cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  ttl.wait %post2 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  ttl.wait %post1 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   func.return
 }
 

@@ -81,17 +81,17 @@ def minimal_matmul_kernel(a, b, out):
     n_blocks_per_node, num_cols_used = _even_split(N_BLOCKS, num_cols)
 
     # One row-broadcast Pipe per used row: source is column 0 of that row,
-    # destinations cover columns 0 through num_cols_used.
+    # destinations cover columns 1 through num_cols_used.
     a_pipes = [
-        ttl.Pipe(src=(0, row), dst=(slice(0, num_cols_used), row))
+        ttl.Pipe(src=(0, row), dst=(slice(1, num_cols_used), row))
         for row in range(num_rows_used)
     ]
     a_net = ttl.PipeNet(a_pipes)
 
     # One column-broadcast Pipe per used column: source is row 0 of that
-    # column, destinations cover rows 0 through num_rows_used.
+    # column, destinations cover rows 1 through num_rows_used.
     b_pipes = [
-        ttl.Pipe(src=(col, 0), dst=(col, slice(0, num_rows_used)))
+        ttl.Pipe(src=(col, 0), dst=(col, slice(1, num_rows_used)))
         for col in range(num_cols_used)
     ]
     b_net = ttl.PipeNet(b_pipes)
