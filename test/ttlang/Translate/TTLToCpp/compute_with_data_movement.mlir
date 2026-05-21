@@ -33,8 +33,8 @@
 // FPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
 // CB wrappers declared at top of kernel
-// FPU:   experimental::CircularBuffer [[FPU_R_CB0:.*]](get_compile_time_arg_val(0));
-// FPU:   experimental::CircularBuffer [[FPU_R_CB1:.*]](get_compile_time_arg_val(1));
+// FPU:   CircularBuffer [[FPU_R_CB0:.*]](get_compile_time_arg_val(0));
+// FPU:   CircularBuffer [[FPU_R_CB1:.*]](get_compile_time_arg_val(1));
 
 // Read tensor A into CB0
 // FPU:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
@@ -98,9 +98,9 @@
 // FPU-DAG:   size_t [[CZERO:v[0-9]+]] = 0
 
 // CB wrappers declared at top of kernel
-// FPU:       experimental::CircularBuffer [[FPU_C_CB0:.*]](get_compile_time_arg_val(0));
-// FPU:       experimental::CircularBuffer [[FPU_C_CB1:.*]](get_compile_time_arg_val(1));
-// FPU:       experimental::CircularBuffer [[FPU_C_CB2:.*]](get_compile_time_arg_val(2));
+// FPU:       CircularBuffer [[FPU_C_CB0:.*]](get_compile_time_arg_val(0));
+// FPU:       CircularBuffer [[FPU_C_CB1:.*]](get_compile_time_arg_val(1));
+// FPU:       CircularBuffer [[FPU_C_CB2:.*]](get_compile_time_arg_val(2));
 // FPU:       [[FPU_C_CB0]].wait_front([[TILES]]);
 // FPU-NEXT:  [[FPU_C_CB1]].wait_front([[TILES]]);
 // FPU-NEXT:  [[FPU_C_CB2]].reserve_back([[TILES]]);
@@ -139,7 +139,7 @@
 // FPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
 // FPU-DAG:   size_t [[WZERO:v[0-9]+]] = 0
 // CB wrapper declared at top of kernel
-// FPU:   experimental::CircularBuffer [[FPU_W_CB2:.*]](get_compile_time_arg_val(2));
+// FPU:   CircularBuffer [[FPU_W_CB2:.*]](get_compile_time_arg_val(2));
 // FPU:   int32_t [[WRT_ARG:.*]] = get_common_arg_val<uint32_t>([[WZERO]]);
 // FPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // FPU-NEXT:   TensorAccessor [[WACC:.*]] = TensorAccessor([[WARGS]], [[WRT_ARG]],
@@ -175,8 +175,8 @@
 // SFPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
 // CB wrappers declared at top of kernel
-// SFPU:   experimental::CircularBuffer [[SFPU_R_CB0:.*]](get_compile_time_arg_val(0));
-// SFPU:   experimental::CircularBuffer [[SFPU_R_CB1:.*]](get_compile_time_arg_val(1));
+// SFPU:   CircularBuffer [[SFPU_R_CB0:.*]](get_compile_time_arg_val(0));
+// SFPU:   CircularBuffer [[SFPU_R_CB1:.*]](get_compile_time_arg_val(1));
 
 // Read tensor A into CB0
 // SFPU:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
@@ -240,9 +240,9 @@
 // SFPU-DAG:   size_t [[CZERO:v[0-9]+]] = 0
 
 // CB wrappers declared at top of kernel
-// SFPU:       experimental::CircularBuffer [[SFPU_C_CB0:.*]](get_compile_time_arg_val(0));
-// SFPU:       experimental::CircularBuffer [[SFPU_C_CB1:.*]](get_compile_time_arg_val(1));
-// SFPU:       experimental::CircularBuffer [[SFPU_C_CB2:.*]](get_compile_time_arg_val(2));
+// SFPU:       CircularBuffer [[SFPU_C_CB0:.*]](get_compile_time_arg_val(0));
+// SFPU:       CircularBuffer [[SFPU_C_CB1:.*]](get_compile_time_arg_val(1));
+// SFPU:       CircularBuffer [[SFPU_C_CB2:.*]](get_compile_time_arg_val(2));
 // SFPU:       [[SFPU_C_CB0]].wait_front([[TILES]]);
 // SFPU-NEXT:  [[SFPU_C_CB1]].wait_front([[TILES]]);
 // SFPU-NEXT:  [[SFPU_C_CB2]].reserve_back([[TILES]]);
@@ -281,7 +281,7 @@
 // SFPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
 // SFPU-DAG:   size_t [[WZERO:v[0-9]+]] = 0
 // CB wrapper declared at top of kernel
-// SFPU:   experimental::CircularBuffer [[SFPU_W_CB2:.*]](get_compile_time_arg_val(2));
+// SFPU:   CircularBuffer [[SFPU_W_CB2:.*]](get_compile_time_arg_val(2));
 // SFPU:   int32_t [[WRT_ARG:.*]] = get_common_arg_val<uint32_t>([[WZERO]]);
 // SFPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // SFPU-NEXT:   TensorAccessor [[WACC:.*]] = TensorAccessor([[WARGS]], [[WRT_ARG]],

@@ -41,8 +41,7 @@ namespace {
 /// cb_reserve, store, cb_wait, attach_cb. Returns the CB-attached result,
 /// or failure if the maximum CB count would be exceeded.
 FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                                  OpBuilder &builder,
-                                  FloatAttr fillOverride = nullptr) {
+                                  OpBuilder &builder) {
   auto tensorType = mlir::cast<RankedTensorType>(intermediate.getType());
   Location loc = intermediate.getLoc();
   MLIRContext *ctx = builder.getContext();
@@ -92,20 +91,11 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
   // Remaining ops bind to the intermediate's def site.
   builder.setInsertionPointAfter(defOp);
 
-  Value storedValue = intermediate;
-  if (fillOverride) {
-    auto fillOp = FillOp::create(builder, loc, tensorType, fillOverride);
-    storedValue = fillOp.getResult();
-    builder.setInsertionPointAfter(fillOp);
-  }
-
   auto reserve =
       CBReserveOp::create(builder, loc, tensorType, bindCB.getResult());
 
-  StoreOp::create(builder, loc, storedValue, reserve.getResult(),
+  StoreOp::create(builder, loc, intermediate, reserve.getResult(),
                   /*accumulate=*/nullptr);
-
-  // cb_push is inserted by ttl-insert-cb-sync which runs after this pass.
 
   auto wait = CBWaitOp::create(builder, loc, tensorType, bindCB.getResult());
 
@@ -142,7 +132,6 @@ struct TTLInsertIntermediateDFBsPass
           if (getAttachedCB(operand)) {
             continue;
           }
-
           op->emitOpError("operand #")
               << idx
               << " requires a DFB-attached value but compiler-allocated DFBs "
@@ -156,10 +145,8 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
-    // Track values already materialized to avoid duplicate DFBs when
-    // multiple DFBInputOpInterface ops consume the same intermediate.
-    llvm::DenseMap<Value, Value> materialized;
     OpBuilder builder(funcOp.getContext());
+    llvm::DenseMap<Value, Value> materialized;
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();
@@ -172,26 +159,13 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        FloatAttr fillOverride;
-        if (auto reduceOp = dyn_cast<ReduceOp>(op); reduceOp && idx == 1) {
-          if (auto fillOp = operand.getDefiningOp<FillOp>()) {
-            reduceOp->setAttr(kReduceScalarMultiplierAttrName,
-                              fillOp.getValueAttr());
-            fillOverride = builder.getF32FloatAttr(1.0);
-          }
+        if (auto iter = materialized.find(operand);
+            iter != materialized.end()) {
+          op->setOperand(idx, iter->second);
+          continue;
         }
 
-        // Reuse an existing materialization for a different consumer.
-        if (!fillOverride) {
-          if (auto iter = materialized.find(operand);
-              iter != materialized.end()) {
-            op->setOperand(idx, iter->second);
-            continue;
-          }
-        }
-
-        auto replacement =
-            materializeToDFB(operand, moduleOp, builder, fillOverride);
+        auto replacement = materializeToDFB(operand, moduleOp, builder);
         if (failed(replacement)) {
           signalPassFailure();
           return;
@@ -202,9 +176,7 @@ struct TTLInsertIntermediateDFBsPass
         // the producer in a single compute block.
         op->setOperand(idx, *replacement);
 
-        if (!fillOverride) {
-          materialized[operand] = *replacement;
-        }
+        materialized[operand] = *replacement;
       }
     }
   }

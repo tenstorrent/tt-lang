@@ -66,7 +66,7 @@ def fill_kernel(out):
 
 # CHECK-CPP: // fill_compute
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 
 # CHECK-CPP: [[CB0]].reserve_back(
 

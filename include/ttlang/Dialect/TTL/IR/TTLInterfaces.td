@@ -9,16 +9,21 @@ include "mlir/IR/OpBase.td"
 
 def TTL_DFBInputOpInterface : OpInterface<"DFBInputOpInterface"> {
   let description = [{
-    Tensor-level ops whose tile-level lowerings read one or more operands
-    from dataflow buffers via the unpacker. Returns the operand indices
-    that must be DFB-attached.
+    Tensor-level ops whose tile-level lowerings may read one or more
+    operands from dataflow buffers via the unpacker. The set of operands
+    that require DFB attachment is computed per instance because it can
+    depend on the producer of each operand (e.g., an elementwise consumer
+    needs DFB materialization only when its operand comes from a producer
+    that cannot fuse with it). Returning an empty list is valid and means
+    no operand of this instance needs to be DFB-attached.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return the operand indices that require DFB-attached values.",
+      /*desc=*/"Return the operand indices of this instance that require "
+               "DFB-attached values. May be empty.",
       /*retTy=*/"::llvm::SmallVector<unsigned>",
       /*methodName=*/"getDFBInputOperandIndices",
       /*args=*/(ins),
