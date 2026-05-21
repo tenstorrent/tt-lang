@@ -243,8 +243,8 @@ jobs:
           docker run --rm "${{ steps.build-dist.outputs.local-image }}" bash -c '
             set -e
             export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
-            ttlang-sim --help
-            ttlang-sim-stats --help
+            tt-lang-sim --help
+            tt-lang-sim-stats --help
           '
 
       - name: Push dist image to GHCR

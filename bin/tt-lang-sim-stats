@@ -2,16 +2,16 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# TT-Lang trace statistics tool (ttlang-sim-stats)
+# TT-Lang trace statistics tool (tt-lang-sim-stats)
 #
 # Derives simulator statistics from a JSON Lines trace file produced by
-# ttlang-sim --trace (tensor / pipe / DFB summary tables).
-# Usage: ttlang-sim-stats trace.jsonl
+# tt-lang-sim --trace (tensor / pipe / DFB summary tables).
+# Usage: tt-lang-sim-stats trace.jsonl
 
 PYTHON="${PYTHON:-python}"
 
 # Resolve the repo/toolchain root from the script's own location so this works
-# when invoked as ./bin/ttlang-sim-stats or from an arbitrary working directory.
+# when invoked as ./bin/tt-lang-sim-stats or from an arbitrary working directory.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 
@@ -26,7 +26,7 @@ if [ -d "${_REPO_ROOT}/python_packages/sim_stats" ]; then
     exec "$PYTHON" -m sim_stats "$@"
 fi
 
-echo "ttlang-sim-stats: cannot locate the sim_stats package." >&2
+echo "tt-lang-sim-stats: cannot locate the sim_stats package." >&2
 echo "  checked: ${_REPO_ROOT}/python/sim_stats (source tree)" >&2
 echo "  checked: ${_REPO_ROOT}/python_packages/sim_stats (installed)" >&2
 exit 1

@@ -20,10 +20,10 @@ from sim import ttl, ttnn
 from sim.analysis import (
     InjectionPoint,
     PatternViolation,
-    ThreadAnalysis,
-    analyze_thread_function,
+    KernelAnalysis,
+    analyze_kernel_function,
     collect_reachable_analyses,
-    validate_thread_function,
+    validate_kernel_function,
 )
 from sim.context import get_context, reset_context
 
@@ -44,7 +44,7 @@ def _reset():
 # ---------------------------------------------------------------------------
 
 
-class TestAnalyzeThreadFunction:
+class TestAnalyzeKernelFunction:
     """Verify InjectionPoint detection from function source.
 
     Push/pop injection is now handled directly by DataflowBuffer.reserve() and
@@ -60,7 +60,7 @@ class TestAnalyzeThreadFunction:
             ttl.copy(data, blk).wait()  # noqa: F821
             blk.push()
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert ips == ()
 
     def test_explicit_pop_suppresses_injection(self):
@@ -71,7 +71,7 @@ class TestAnalyzeThreadFunction:
             _ = blk + blk  # noqa: F821
             blk.pop()
 
-        ips = analyze_thread_function(compute).injection_points
+        ips = analyze_kernel_function(compute).injection_points
         assert ips == ()
 
     def test_with_acquire_skipped(self):
@@ -81,7 +81,7 @@ class TestAnalyzeThreadFunction:
             with dfb.reserve() as blk:  # noqa: F821
                 ttl.copy(data, blk).wait()  # noqa: F821
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert ips == ()
 
 
@@ -197,7 +197,7 @@ class TestRuntimeAutoPushPop:
         op(inp, out)  # Should not raise (no double push/pop)
 
     def test_sequential_reserve_then_wait_same_dfb(self):
-        """Producer reserves, writes, then consumer waits on the same DFB thread.
+        """Producer reserves, writes, then consumer waits on the same DFB across kernels.
 
         This is the critical deadlock scenario: push must fire BEFORE the
         subsequent wait, not at end of scope.
@@ -207,7 +207,7 @@ class TestRuntimeAutoPushPop:
 
         @ttl.operation(grid=(1, 1))
         def op(a, o):
-            # Single shared DFB used by all three threads.
+            # Single shared DFB used by all three kernels.
             dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1))
             out_dfb = ttl.make_dataflow_buffer_like(o, shape=(1, 1))
 
@@ -409,7 +409,7 @@ class TestCopyWaitAnalysis:
             tx = ttl.copy(src, blk)  # noqa: F821
             tx.wait()
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert ips == ()
 
     def test_outer_copy_waited_in_nested_callback_not_detected(self):
@@ -441,7 +441,7 @@ class TestCopyWaitAnalysis:
                 blk = dfb.reserve()  # noqa: F821
                 tx = ttl.copy(src, blk)  # noqa: F821 — new copy, must be injected
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert len(ips) == 1
         assert ips[0].var_name == "tx"
         # The copy is the last statement in source order; no later line exists to
@@ -464,7 +464,7 @@ class TestCopyWaitAnalysis:
                 src, blk
             )  # noqa: F821 — name reused for a copy, needs injection
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert len(ips) == 1
         assert ips[0].var_name == "tx"
         assert ips[0].trigger_on_return is True
@@ -477,7 +477,7 @@ class TestCopyWaitAnalysis:
             tx = ttl.copy(src, blk)  # noqa: F821
             # no tx.wait()
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert len(ips) == 1
         assert ips[0].var_name == "tx"
         assert ips[0].trigger_on_return is True
@@ -499,7 +499,7 @@ class TestCopyWaitAnalysis:
                 for _j in range(3):  # noqa: F821
                     pass
 
-        analysis = analyze_thread_function(dm)
+        analysis = analyze_kernel_function(dm)
         assert len(analysis.injection_points) == 1
         ip = analysis.injection_points[0]
         assert ip.var_name == "tx"
@@ -524,7 +524,7 @@ class TestCopyWaitAnalysis:
             blk = dfb.reserve()  # noqa: F821
             tx = ttl.copy(src, blk)  # noqa: F821
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert len(ips) == 1
         assert ips[0].var_name == "tx"
         assert ips[0].trigger_on_return is True
@@ -538,7 +538,7 @@ class TestCopyWaitAnalysis:
             tx = ttl.copy(src, blk)  # noqa: F821
             blk.push()  # next statement — trigger must land here
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert len(ips) == 1
         assert ips[0].var_name == "tx"
         assert ips[0].trigger_on_return is False
@@ -556,7 +556,7 @@ class TestCopyWaitAnalysis:
             blk = dfb.reserve()  # noqa: F821
             ttl.copy(src, blk)  # noqa: F821  bare call — Case A
 
-        result = analyze_thread_function(dm)
+        result = analyze_kernel_function(dm)
         assert len(result.bare_copy_linenos) == 1
 
     def test_bare_copy_not_in_injection_points(self):
@@ -566,7 +566,7 @@ class TestCopyWaitAnalysis:
             blk = dfb.reserve()  # noqa: F821
             ttl.copy(src, blk)  # noqa: F821
 
-        assert analyze_thread_function(dm).injection_points == ()
+        assert analyze_kernel_function(dm).injection_points == ()
 
     def test_non_ttl_copy_not_detected(self):
         """copy() from a different namespace is not treated as ttl.copy."""
@@ -576,7 +576,7 @@ class TestCopyWaitAnalysis:
             tx = copy(src, blk)  # noqa: F821  plain 'copy', not ttl.copy
             tx.wait()
 
-        result = analyze_thread_function(dm)
+        result = analyze_kernel_function(dm)
         assert result.injection_points == ()
         assert result.bare_copy_linenos == frozenset()
 
@@ -592,7 +592,7 @@ class TestCopyWaitAnalysis:
             blk = dfb.reserve()  # noqa: F821
             ttl.copy(src, blk).wait()  # noqa: F821  chained wait
 
-        result = analyze_thread_function(dm)
+        result = analyze_kernel_function(dm)
         assert result.injection_points == ()
         assert result.bare_copy_linenos == frozenset()
 
@@ -609,7 +609,7 @@ class TestCopyWaitAnalysis:
                 tx = ttl.copy(src, blk)  # noqa: F821
             post_if_call()  # noqa: F821
 
-        analysis = analyze_thread_function(dm)
+        analysis = analyze_kernel_function(dm)
         assert len(analysis.injection_points) == 1
         ip = analysis.injection_points[0]
         assert ip.var_name == "tx"
@@ -635,7 +635,7 @@ class TestCopyWaitAnalysis:
             tx = ttl.copy(src, blk)  # noqa: F821  second copy
             done()  # noqa: F821
 
-        analysis = analyze_thread_function(dm)
+        analysis = analyze_kernel_function(dm)
         assert len(analysis.injection_points) == 2
 
         src_lines, start = inspect.getsourcelines(dm)
@@ -768,7 +768,7 @@ class TestCopyWaitRuntime:
         op(inp, out)
         assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())
 
-    def test_thread_exit_cleanup_does_not_push_other_threads_block(
+    def test_kernel_exit_cleanup_does_not_push_other_kernels_block(
         self, reset_simulator_context
     ):
         """dm_write's exit cleanup must not push a block that dm_read reserved.
@@ -976,8 +976,8 @@ class TestInlineAcquireRuntime:
 # ---------------------------------------------------------------------------
 
 
-class TestValidateThreadFunction:
-    """Verify that validate_thread_function catches unsupported ttl.copy() patterns."""
+class TestValidateKernelFunction:
+    """Verify that validate_kernel_function catches unsupported ttl.copy() patterns."""
 
     def test_copy_passed_to_function_is_violation(self):
         """ttl.copy() nested inside another function call is flagged."""
@@ -985,7 +985,7 @@ class TestValidateThreadFunction:
         def dm():
             group.add(ttl.copy(src, dst))  # noqa: F821
 
-        violations = validate_thread_function(dm)
+        violations = validate_kernel_function(dm)
         assert len(violations) == 1
         assert "ttl.copy()" in violations[0].message
 
@@ -996,7 +996,7 @@ class TestValidateThreadFunction:
             blk = dfb.reserve()  # noqa: F821
             ttl.copy(src, blk)  # noqa: F821
 
-        assert validate_thread_function(dm) == []
+        assert validate_kernel_function(dm) == []
 
     def test_assigned_copy_is_ok(self):
         """tx = ttl.copy(src, dst) is a supported pattern; no violation."""
@@ -1006,7 +1006,7 @@ class TestValidateThreadFunction:
             tx = ttl.copy(src, blk)  # noqa: F821
             tx.wait()  # noqa: F821
 
-        assert validate_thread_function(dm) == []
+        assert validate_kernel_function(dm) == []
 
     def test_violation_contains_source_location(self):
         """PatternViolation has a valid source file and line number."""
@@ -1014,7 +1014,7 @@ class TestValidateThreadFunction:
         def dm():
             group.add(ttl.copy(src, dst))  # noqa: F821
 
-        violations = validate_thread_function(dm)
+        violations = validate_kernel_function(dm)
         assert len(violations) == 1
         v = violations[0]
         assert v.source_file.endswith(".py")
@@ -1023,13 +1023,13 @@ class TestValidateThreadFunction:
         assert v.func_name == "dm"
 
     def test_func_name_in_violation(self):
-        """PatternViolation.func_name matches the thread function name."""
+        """PatternViolation.func_name matches the kernel function name."""
 
-        def my_dm_thread():
+        def my_dm_kernel():
             group.add(ttl.copy(src, dst))  # noqa: F821
 
-        violations = validate_thread_function(my_dm_thread)
-        assert violations[0].func_name == "my_dm_thread"
+        violations = validate_kernel_function(my_dm_kernel)
+        assert violations[0].func_name == "my_dm_kernel"
 
     def test_method_chain_wait_is_ok(self):
         """ttl.copy(src, dst).wait() is a supported pattern; no violation."""
@@ -1037,7 +1037,7 @@ class TestValidateThreadFunction:
         def dm():
             ttl.copy(src, dst).wait()  # noqa: F821
 
-        assert validate_thread_function(dm) == []
+        assert validate_kernel_function(dm) == []
 
     def test_method_chain_non_wait_is_violation(self):
         """ttl.copy(src, dst).foo() is not a supported pattern and must be flagged.
@@ -1049,7 +1049,7 @@ class TestValidateThreadFunction:
         def dm():
             ttl.copy(src, dst).foo()  # noqa: F821
 
-        violations = validate_thread_function(dm)
+        violations = validate_kernel_function(dm)
         assert len(violations) == 1
         assert "ttl.copy()" in violations[0].message
 
@@ -1362,7 +1362,7 @@ class TestCollectReachableAnalyses:
     """
 
     def test_top_level_function_included(self):
-        """The thread function itself is always present in the result."""
+        """The kernel function itself is always present in the result."""
 
         def dm():
             ttl.copy(src, dst)  # noqa: F821
@@ -1673,7 +1673,7 @@ class TestNestedDefCopyWaitRuntime:
         op(inp, out)
         assert torch.allclose(ttnn.to_torch(out).float(), torch.ones(32, 32).float())
 
-    def test_shared_module_scope_helper_used_by_both_dm_threads(
+    def test_shared_module_scope_helper_used_by_both_dm_kernels(
         self, reset_simulator_context
     ):
         """A module-scope helper shared by dm0 and dm1 is installed once and runs correctly."""

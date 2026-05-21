@@ -640,13 +640,14 @@ pipe-coupled work.
 
 ## Test coverage
 
-Most pytest files can run on hardware and on the simulator via
-`test/scripts/ttlang-sim-pytest`, which patches `sys.modules` with the
-simulator's `ttl` and `ttnn` before pytest collects. Some tests remain
-device-only because they depend on behavior the simulator does not
-model. Sim-only tests under `test/sim/` are reserved for sim-internal
-helpers that have no hardware analogue. Lit tests cover compile-time
-properties not runtime-observable.
+The same pytest file runs on hardware and on the simulator via
+`test/scripts/tt-lang-sim-pytest`, which patches `sys.modules` with the
+simulator's `ttl` and `ttnn` before pytest collects, so hardware and
+simulator coverage is the default for any test under `test/python/`.
+Sim-only
+tests under `test/sim/` are reserved for sim-internal helpers that have
+no hardware analogue. Lit tests cover compile-time properties not
+runtime-observable.
 
 | #  | Behavior under test                                       | Device | Sim | Lit |
 |----|-----------------------------------------------------------|:------:|:---:|:---:|

@@ -17,12 +17,12 @@ from .dfb import DFBStats
 from .constants import TILE_SHAPE
 from .copy import CopyTransaction, GroupTransfer, copy
 from .decorators import compute, datamovement
-from .corecontext import node
+from .nodecontext import node
 from .operation import operation
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
 from .program import Program
 from .ttnnsim import TTNN_AVAILABLE, ROW_MAJOR_LAYOUT, TILE_LAYOUT
-from .typedefs import CoreCoord, CoreRange, Shape
+from .typedefs import NodeCoord, NodeRange, Shape
 
 
 class _SignpostContextManager:
@@ -74,12 +74,12 @@ class _TTLNamespace:
         from .constants import TILE_SHAPE
         from .copy import copy
         from .decorators import compute, datamovement
-        from .corecontext import node, grid_size
+        from .nodecontext import node, grid_size
         from .operation import operation
         from . import math as math_module
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program
-        from .typedefs import CoreCoord, CoreRange, Shape, Size
+        from .typedefs import NodeCoord, NodeRange, Shape, Size
 
         self.operation = operation
         self.grid_size = grid_size
@@ -94,8 +94,8 @@ class _TTLNamespace:
         self.PipeNet = PipeNet
         self.SrcPipeIdentity = SrcPipeIdentity
         self.DstPipeIdentity = DstPipeIdentity
-        self.CoreCoord = CoreCoord
-        self.CoreRange = CoreRange
+        self.NodeCoord = NodeCoord
+        self.NodeRange = NodeRange
         self.DstT = DstT
         self.Size = Size
         self.Shape = Shape
@@ -115,8 +115,8 @@ ttl = _TTLNamespace()
 
 __all__ = [
     "DFBStats",
-    "CoreCoord",
-    "CoreRange",
+    "NodeCoord",
+    "NodeRange",
     "DstT",
     "Shape",
     "Pipe",

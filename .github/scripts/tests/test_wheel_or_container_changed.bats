@@ -37,7 +37,7 @@ setup() {
         echo "FROM ubuntu:22.04" > .github/containers/Dockerfile
         echo "# run-tutorials" > .github/scripts/run-tutorials.sh
         echo "# smoke-test" > .github/scripts/smoke-test-wheel.py
-        echo "#!/bin/sh" > bin/ttlang-sim
+        echo "#!/bin/sh" > bin/tt-lang-sim
         echo "cmake_minimum_required(VERSION 3.20)" > CMakeLists.txt
         echo "# example" > examples/foo.py
         echo "# packaging" > packaging/setup.cfg
@@ -66,8 +66,8 @@ setup() {
     assert_equal "$(run_changed "$BASE" "$head")" "true"
 }
 
-@test "diff in bin/ttlang-sim -> true" {
-    echo "echo new" >> "$REPO/bin/ttlang-sim"
+@test "diff in bin/tt-lang-sim -> true" {
+    echo "echo new" >> "$REPO/bin/tt-lang-sim"
     commit_all "$REPO" "bin"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_changed "$BASE" "$head")" "true"
@@ -134,7 +134,7 @@ setup() {
 @test "mixed wheel-path + unrelated diff -> true" {
     mkdir -p "$REPO/lib"
     echo "// kernel" > "$REPO/lib/foo.cpp"
-    echo "echo extra" >> "$REPO/bin/ttlang-sim"
+    echo "echo extra" >> "$REPO/bin/tt-lang-sim"
     commit_all "$REPO" "mixed"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_changed "$BASE" "$head")" "true"

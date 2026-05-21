@@ -34,11 +34,11 @@ from .blockstate import (
     BlockAcquisition,
     BlockStateMachine,
     ExpectedOp,
-    ThreadType,
+    KernelType,
     format_cannot_read_block,
     format_cannot_write_block,
 )
-from .context import get_current_thread_type
+from .context import get_current_kernel_type
 from .diagnostics import find_user_code_location
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
@@ -69,7 +69,7 @@ class Block:
     State Machine:
     The block maintains a state machine that validates correct usage patterns:
     - Tracks acquisition method (reserve vs wait)
-    - Tracks current thread type (DM vs Compute)
+    - Tracks current kernel role (DM vs Compute)
     - Tracks access state (RO/WO/RW/NA)
     - Tracks expected next operation
     - Transitions to DONE state after final operation (push/pop)
@@ -102,7 +102,7 @@ class Block:
         tensor: Tensor,
         shape: Shape,
         acquisition: BlockAcquisition,
-        thread_type: ThreadType,
+        kernel_type: KernelType,
         is_temporary: bool = False,
         dfb: Optional["DataflowBuffer"] = None,
         name: Optional[str] = None,
@@ -127,7 +127,7 @@ class Block:
         self._pending_copy_src_location: Optional[Tuple[str, int]] = None
 
         # Delegate all access-state logic to BlockStateMachine
-        self._sm: BlockStateMachine = BlockStateMachine(acquisition, thread_type)
+        self._sm: BlockStateMachine = BlockStateMachine(acquisition, kernel_type)
         if not is_temporary:
             self._sm.initialize()
         else:
@@ -143,8 +143,8 @@ class Block:
         return self._sm.acquisition
 
     @property
-    def _thread_type(self) -> ThreadType:
-        return self._sm.thread_type
+    def _kernel_type(self) -> KernelType:
+        return self._sm.kernel_type
 
     @property
     def _access_state(self) -> AccessState:
@@ -188,7 +188,7 @@ class Block:
             f"shape={self._shape}, "
             f"data={repr(self._buf.to_torch())}, "
             f"acq={acq}, "
-            f"kernel={self._thread_type.name}, "
+            f"kernel={self._kernel_type.name}, "
             f"access={self._access_state.name}, "
             f"expected={expected})"
         )
@@ -500,7 +500,7 @@ class Block:
                 tensor=Tensor(elem_tensor, ROW_MAJOR_LAYOUT),
                 shape=shape,
                 acquisition=BlockAcquisition.RESERVE,
-                thread_type=ThreadType.COMPUTE,
+                kernel_type=KernelType.COMPUTE,
                 is_temporary=True,
             )
             return block
@@ -528,7 +528,7 @@ class Block:
             tensor=Tensor(elem_tensor),
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=ThreadType.COMPUTE,
+            kernel_type=KernelType.COMPUTE,
             is_temporary=True,
         )
         return block
@@ -558,7 +558,7 @@ class Block:
                 tensor=t,
                 shape=t.shape,
                 acquisition=BlockAcquisition.RESERVE,
-                thread_type=ThreadType.COMPUTE,
+                kernel_type=KernelType.COMPUTE,
                 is_temporary=True,
             )
 
@@ -585,7 +585,7 @@ class Block:
             tensor=t,
             shape=tile_shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=ThreadType.COMPUTE,
+            kernel_type=KernelType.COMPUTE,
             is_temporary=True,
         )
 
@@ -713,7 +713,7 @@ class Block:
         # Track wait() Compute source blocks for state machine
         if (
             items._acquisition == BlockAcquisition.WAIT
-            and items._thread_type == ThreadType.COMPUTE
+            and items._kernel_type == KernelType.COMPUTE
             and ExpectedOp.STORE_SRC in items._expected_ops
         ):
             source_blocks_to_mark.append(items)
@@ -779,7 +779,7 @@ class Block:
             if (
                 not source._is_temporary
                 and source._acquisition == BlockAcquisition.WAIT
-                and source._thread_type == ThreadType.COMPUTE
+                and source._kernel_type == KernelType.COMPUTE
             ):
                 result_block._source_blocks.append(source)
                 # Fire assign_src so pop() is allowed when the 'with' context exits,
@@ -808,7 +808,7 @@ class Block:
             tensor=result_tensor,
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=ThreadType.COMPUTE,
+            kernel_type=KernelType.COMPUTE,
             is_temporary=True,
         )
         # Track all source blocks (self + any additional)
@@ -956,9 +956,9 @@ class Block:
         return self._acquisition
 
     @property
-    def thread_type(self) -> ThreadType:
+    def kernel_type(self) -> KernelType:
         """Get the kernel role (DM or Compute) that acquired this block."""
-        return self._thread_type
+        return self._kernel_type
 
     @property
     def access_state(self) -> AccessState:
@@ -1164,12 +1164,12 @@ class DataflowBuffer:
         )
         slot = state.buf[state.head]
         assert slot is not None, "Visible slot has no data — internal inconsistency."
-        thread_type = get_current_thread_type()
+        kernel_type = get_current_kernel_type()
         block = Block(
             tensor=slot,
             shape=state.shape,
             acquisition=BlockAcquisition.WAIT,
-            thread_type=thread_type,
+            kernel_type=kernel_type,
             name=name,
         )
         block.dfb = self
@@ -1251,12 +1251,12 @@ class DataflowBuffer:
         state.buf[slot_idx] = slot
         state.reserved += 1
 
-        thread_type = get_current_thread_type()
+        kernel_type = get_current_kernel_type()
         block = Block(
             tensor=slot,
             shape=state.shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=thread_type,
+            kernel_type=kernel_type,
             name=name,
         )
         block.dfb = self
@@ -1333,7 +1333,7 @@ class DataflowBuffer:
         """Push the reserved block if one is pending for the current greenlet.
 
         No-op when no block is pending or when the pending block belongs to
-        a different greenlet (i.e., a different thread function).
+        a different greenlet (i.e., a different kernel function).
         """
         if self._pending_reserved_block is None:
             return
@@ -1347,7 +1347,7 @@ class DataflowBuffer:
         """Pop the waited block if one is pending for the current greenlet.
 
         No-op when no block is pending or when the pending block belongs to
-        a different greenlet (i.e., a different thread function).
+        a different greenlet (i.e., a different kernel function).
         """
         if self._pending_waited_block is None:
             return
@@ -1436,7 +1436,7 @@ class DataflowBuffer:
                 f"Block{nm} from reserve() was not pushed before kernel exit. "
                 f"This is a simulator bug — auto-push injection should have fired. "
                 f"Please file a bug report with a reproducer.\n\n"
-                f"Details: block_name={block.name!r}, acquisition=RESERVE, kernel={block.thread_type.name}, "
+                f"Details: block_name={block.name!r}, acquisition=RESERVE, kernel={block.kernel_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
 
@@ -1448,7 +1448,7 @@ class DataflowBuffer:
                 f"Block{nm} from wait() was not popped before kernel exit. "
                 f"This is a simulator bug — auto-pop injection should have fired. "
                 f"Please file a bug report with a reproducer.\n\n"
-                f"Details: block_name={block.name!r}, acquisition=WAIT, kernel={block.thread_type.name}, "
+                f"Details: block_name={block.name!r}, acquisition=WAIT, kernel={block.kernel_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
 
@@ -1546,7 +1546,7 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
         if (
             not is_temporary
             and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
-            and getattr(block, "thread_type", None) == ThreadType.COMPUTE
+            and getattr(block, "kernel_type", None) == KernelType.COMPUTE
         ):
             source_blocks = getattr(result_block, "_source_blocks", None)
             if source_blocks is not None:
@@ -1617,7 +1617,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
         tensor=result_tensor,
         shape=result_shape,
         acquisition=BlockAcquisition.RESERVE,
-        thread_type=ThreadType.COMPUTE,
+        kernel_type=KernelType.COMPUTE,
         is_temporary=True,
     )
     track_source_blocks(result_block, a, b)

@@ -5,7 +5,7 @@
 """
 Block state machine enumerations and transition table.
 
-Defines the thread-type context, access-state machine, and the full
+Defines the kernel-type context, access-state machine, and the full
 transition table used by Block to validate correct usage patterns.
 """
 
@@ -32,8 +32,8 @@ class AccessState(Enum):
     OS = auto()  # Out of Scope: block was pushed or popped
 
 
-class ThreadType(Enum):
-    """Thread type for block operations."""
+class KernelType(Enum):
+    """Kernel role for block operations (compute vs datamovement)."""
 
     DM = auto()  # Data Movement
     COMPUTE = auto()  # Compute
@@ -101,7 +101,7 @@ def _validate_mismatch_hint(
     expected_ops: Set[ExpectedOp],
     access: AccessState,
     acquisition: BlockAcquisition,
-    thread: ThreadType,
+    kernel: KernelType,
 ) -> Optional[str]:
     """What the mistake usually means; None selects the generic secondary sentence."""
     if attempted == ExpectedOp.PUSH and acquisition == BlockAcquisition.WAIT:
@@ -112,13 +112,13 @@ def _validate_mismatch_hint(
         AccessState.MR,
         AccessState.RW,
     ):
-        if thread == ThreadType.DM:
+        if kernel == KernelType.DM:
             if attempted == ExpectedOp.COPY_DST and ExpectedOp.COPY_SRC in expected_ops:
                 return (
                     "After wait(), data is already in the block: copy *from* it first, not into it (unless the "
                     "state machine already allows a destination copy)."
                 )
-        if thread == ThreadType.COMPUTE:
+        if kernel == KernelType.COMPUTE:
             if attempted == ExpectedOp.STORE and ExpectedOp.STORE_SRC in expected_ops:
                 return (
                     "A wait() block is not written in place with store(...); pass this block as the source to "
@@ -146,11 +146,11 @@ def format_validate_mismatch(
     expected_ops: Set[ExpectedOp],
     access: AccessState,
     acquisition: BlockAcquisition,
-    thread: ThreadType,
+    kernel: KernelType,
     pending_copy_location: Optional[Tuple[str, int]] = None,
 ) -> str:
     expected_names = _sorted_op_names(expected_ops)
-    hint = _validate_mismatch_hint(attempted, expected_ops, access, acquisition, thread)
+    hint = _validate_mismatch_hint(attempted, expected_ops, access, acquisition, kernel)
     follow = _guidance_for_expected_ops(expected_ops)
     body = [
         f"Cannot perform {operation}: not a valid next dataflow step for this block.",
@@ -172,7 +172,7 @@ def format_validate_mismatch(
     body.append(f"Next: {follow}.")
     body.append(
         f"Details: expected one of [{expected_names}], attempted {attempted.name}, "
-        f"acquisition={acquisition.name}, kernel={thread.name}, access={access.name}."
+        f"acquisition={acquisition.name}, kernel={kernel.name}, access={access.name}."
     )
     return "\n\n".join(body)
 
@@ -283,17 +283,17 @@ def format_cannot_write_block(
 
 
 # State machine transition table
-# Organized by (acquisition, thread_type) -> {(operation, access_state): (new_access_state, new_expected_ops)}
+# Organized by (acquisition, kernel_type) -> {(operation, access_state): (new_access_state, new_expected_ops)}
 # This structure makes it easy to see all transitions for a particular acquisition/kernel-role combination
 STATE_TRANSITIONS: Dict[
-    Tuple[BlockAcquisition, ThreadType],
+    Tuple[BlockAcquisition, KernelType],
     Dict[
         Tuple[str, AccessState],
         Tuple[AccessState, set[ExpectedOp]],
     ],
 ] = {
-    # DM thread, WAIT acquisition
-    (BlockAcquisition.WAIT, ThreadType.DM): {
+    # DM kernel, WAIT acquisition
+    (BlockAcquisition.WAIT, KernelType.DM): {
         # Copy as source: MR/RW -> ROR; further copies and tx_wait both expected
         ("copy_src", AccessState.MR): (
             AccessState.ROR,
@@ -319,8 +319,8 @@ STATE_TRANSITIONS: Dict[
             {ExpectedOp.COPY_SRC},
         ),
     },
-    # DM thread, RESERVE acquisition
-    (BlockAcquisition.RESERVE, ThreadType.DM): {
+    # DM kernel, RESERVE acquisition
+    (BlockAcquisition.RESERVE, KernelType.DM): {
         # Copy as source: MR/RW -> ROR; further copies and tx_wait both expected
         ("copy_src", AccessState.MR): (
             AccessState.ROR,
@@ -350,8 +350,8 @@ STATE_TRANSITIONS: Dict[
             {ExpectedOp.COPY_DST, ExpectedOp.COPY_SRC, ExpectedOp.PUSH},
         ),
     },
-    # COMPUTE thread, WAIT acquisition
-    (BlockAcquisition.WAIT, ThreadType.COMPUTE): {
+    # COMPUTE kernel, WAIT acquisition
+    (BlockAcquisition.WAIT, KernelType.COMPUTE): {
         # Assign as arithmetic source: MR/RW -> RW; POP now allowed but store
         # confirmation is deferred and tracked until program termination.
         ("assign_src", AccessState.MR): (
@@ -377,8 +377,8 @@ STATE_TRANSITIONS: Dict[
             {ExpectedOp.STORE_SRC},
         ),
     },
-    # COMPUTE thread, RESERVE acquisition
-    (BlockAcquisition.RESERVE, ThreadType.COMPUTE): {
+    # COMPUTE kernel, RESERVE acquisition
+    (BlockAcquisition.RESERVE, KernelType.COMPUTE): {
         # Store read complete: MR/RW -> RW with store ops + push
         ("store_src", AccessState.MR): (
             AccessState.RW,
@@ -407,22 +407,22 @@ _ROR_EXPECTED: Set[ExpectedOp] = {ExpectedOp.TX_WAIT, ExpectedOp.COPY_SRC}
 class BlockStateMachine:
     """All access-state logic for a Block: initial state, validation, and transitions.
 
-    Owns the five state fields (acquisition, thread_type, access_state, expected_ops,
+    Owns the five state fields (acquisition, kernel_type, access_state, expected_ops,
     ror_count) and every method that mutates them.  Block in dfb.py holds one
     instance and delegates to it.
     """
 
     __slots__ = (
         "_acquisition",
-        "_thread_type",
+        "_kernel_type",
         "_access_state",
         "_expected_ops",
         "_ror_count",
     )
 
-    def __init__(self, acquisition: BlockAcquisition, thread_type: ThreadType) -> None:
+    def __init__(self, acquisition: BlockAcquisition, kernel_type: KernelType) -> None:
         self._acquisition: BlockAcquisition = acquisition
-        self._thread_type: ThreadType = thread_type
+        self._kernel_type: KernelType = kernel_type
         self._access_state: AccessState = AccessState.OS
         self._expected_ops: Set[ExpectedOp] = set()
         self._ror_count: int = 0
@@ -436,8 +436,8 @@ class BlockStateMachine:
         return self._acquisition
 
     @property
-    def thread_type(self) -> ThreadType:
-        return self._thread_type
+    def kernel_type(self) -> KernelType:
+        return self._kernel_type
 
     @property
     def access_state(self) -> AccessState:
@@ -457,16 +457,16 @@ class BlockStateMachine:
     # ------------------------------------------------------------------
 
     def initialize(self) -> None:
-        """Set the initial state based on acquisition method and thread type."""
+        """Set the initial state based on acquisition method and kernel role."""
         if self._acquisition == BlockAcquisition.RESERVE:
             self._access_state = AccessState.MW
-            if self._thread_type == ThreadType.DM:
+            if self._kernel_type == KernelType.DM:
                 self._expected_ops = {ExpectedOp.COPY_DST}
             else:
                 self._expected_ops = {ExpectedOp.STORE}
         elif self._acquisition == BlockAcquisition.WAIT:
             self._access_state = AccessState.MR
-            if self._thread_type == ThreadType.DM:
+            if self._kernel_type == KernelType.DM:
                 self._expected_ops = {ExpectedOp.COPY_SRC}
             else:
                 self._expected_ops = {ExpectedOp.STORE_SRC}
@@ -505,7 +505,7 @@ class BlockStateMachine:
                     self._expected_ops,
                     self._access_state,
                     self._acquisition,
-                    self._thread_type,
+                    self._kernel_type,
                     pending_copy_location=pending_copy_location,
                 )
             )
@@ -548,13 +548,13 @@ class BlockStateMachine:
                 self._expected_ops = _ROR_EXPECTED
                 return
 
-        context_key = (self._acquisition, self._thread_type)
+        context_key = (self._acquisition, self._kernel_type)
         context_transitions = STATE_TRANSITIONS.get(context_key)
 
         if context_transitions is None:
             raise RuntimeError(
                 f"No state-machine table for this acquisition/kernel role (simulator bug).\n\n"
-                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}."
+                f"Details: acquisition={self._acquisition.name}, kernel={self._kernel_type.name}."
             )
 
         transition_key = (operation_key, self._access_state)
@@ -563,7 +563,7 @@ class BlockStateMachine:
         if transition is None:
             raise RuntimeError(
                 f"Invalid transition: {operation_display!r} in access={self._access_state.name} for "
-                f"{self._acquisition.name}/{self._thread_type.name} (internal inconsistency: validate() should have "
+                f"{self._acquisition.name}/{self._kernel_type.name} (internal inconsistency: validate() should have "
                 f"failed first; file a repro).\n\n"
                 f"Details: operation_key={operation_key!r}, access={self._access_state.name}."
             )
@@ -587,7 +587,7 @@ class BlockStateMachine:
         if self._acquisition != BlockAcquisition.RESERVE:
             raise RuntimeError(
                 f"push() only for reserve() blocks; wait() blocks use pop() on the consumer.\n\n"
-                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}, "
+                f"Details: acquisition={self._acquisition.name}, kernel={self._kernel_type.name}, "
                 f"access={self._access_state.name}."
             )
         self._access_state = AccessState.OS
@@ -622,7 +622,7 @@ class BlockStateMachine:
         if self._acquisition != BlockAcquisition.WAIT:
             raise RuntimeError(
                 f"pop() only for wait() blocks; reserve() blocks use push() on the producer.\n\n"
-                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}, "
+                f"Details: acquisition={self._acquisition.name}, kernel={self._kernel_type.name}, "
                 f"access={self._access_state.name}."
             )
         if self._access_state not in (AccessState.MR, AccessState.RW):

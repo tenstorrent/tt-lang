@@ -2,18 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-TT-Lang Simulator launcher (ttlang-sim).
+TT-Lang Simulator launcher (tt-lang-sim).
 
 Runs tt-lang kernels written for the compiler on the simulator backend
 without requiring any code changes to the kernel files.
 
 Usage:
-    ttlang-sim examples/eltwise_add.py
-    ttlang-sim examples/single_node_matmul.py --trace /tmp/matmul.jsonl --grid 4,4
-    ttlang-sim-stats /tmp/matmul.jsonl
+    tt-lang-sim examples/eltwise_add.py
+    tt-lang-sim examples/single_node_matmul.py --trace /tmp/matmul.jsonl --grid 4,4
+    tt-lang-sim-stats /tmp/matmul.jsonl
 
 The Python script must be the first argument (before any simulator options).
-``ttlang-sim --help``, ``ttlang-sim -h``, and ``ttlang-sim --version`` work with
+``tt-lang-sim --help``, ``tt-lang-sim -h``, and ``tt-lang-sim --version`` work with
 no script.
 """
 
@@ -32,7 +32,7 @@ def setup_simulator_imports() -> None:
     Inject simulator implementations into sys.modules so they shadow the compiler APIs.
 
     This allows kernel code written for the compiler to transparently use simulator
-    implementations when run under ttlang-sim.
+    implementations when run under tt-lang-sim.
     """
     # Import simulator implementations
     from . import ttl, ttnn
@@ -190,7 +190,7 @@ def _print_filtered_traceback(exc: Exception) -> None:
 
 
 def _get_version() -> str:
-    """Return the tt-lang version string for ttlang-sim --version."""
+    """Return the tt-lang version string for tt-lang-sim --version."""
     try:
         from ttl.version import __version__  # type: ignore[import-untyped]
 
@@ -224,7 +224,7 @@ def main() -> None:
     argv = sys.argv[1:]
 
     parser = argparse.ArgumentParser(
-        prog="ttlang-sim",
+        prog="tt-lang-sim",
         usage=(
             "%(prog)s [-h] [--version]\n       "
             "%(prog)s SCRIPT.py [options] [-- SCRIPT_ARGS ...]"
@@ -234,9 +234,9 @@ def main() -> None:
             "SCRIPT.py must be the first argument (before any options)."
         ),
         epilog="Examples:\n"
-        "  ttlang-sim examples/eltwise_add.py\n"
-        "  ttlang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
-        "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
+        "  tt-lang-sim examples/eltwise_add.py\n"
+        "  tt-lang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
+        "  tt-lang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
@@ -262,7 +262,7 @@ def main() -> None:
         type=int,
         metavar="N",
         dest="max_dfbs",
-        help="Maximum number of DataflowBuffers (CBs) per core (default: 32)",
+        help="Maximum number of DataflowBuffers (CBs) per node (default: 32)",
     )
 
     parser.add_argument(
@@ -270,7 +270,7 @@ def main() -> None:
         type=int,
         metavar="BYTES",
         dest="max_l1",
-        help="Maximum L1 memory per core in bytes; warns if total CB capacity exceeds this (default: 1336 KiB)",
+        help="Maximum L1 memory per node in bytes; warns if total CB capacity exceeds this (default: 1336 KiB)",
     )
 
     parser.add_argument(
@@ -330,14 +330,14 @@ def main() -> None:
         parser.print_help()
         sys.exit(0)
     if first == "--version":
-        print(f"ttlang-sim {_get_version()}")
+        print(f"tt-lang-sim {_get_version()}")
         sys.exit(0)
     if first.startswith("-"):
         print(
-            "ttlang-sim: error: the Python script (.py) must be the first argument "
+            "tt-lang-sim: error: the Python script (.py) must be the first argument "
             "(before any simulator options).\n"
-            "Example: ttlang-sim examples/eltwise_add.py --grid 4,4\n"
-            "For usage without a script: ttlang-sim --help",
+            "Example: tt-lang-sim examples/eltwise_add.py --grid 4,4\n"
+            "For usage without a script: tt-lang-sim --help",
             file=sys.stderr,
         )
         sys.exit(2)

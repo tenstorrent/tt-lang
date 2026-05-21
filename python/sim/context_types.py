@@ -15,9 +15,9 @@ from typing import Any, Deque, Dict, FrozenSet, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
 from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
-from .blockstate import ThreadType
+from .blockstate import KernelType
 
-# Default L1 memory limit per core (simulator)
+# Default L1 memory limit per node (simulator)
 # keep in sync with ttl.constants.DEFAULT_L1_CB_BUDGET_BYTES
 DEFAULT_MAX_L1_BYTES: int = 1432 * 1024
 
@@ -86,8 +86,8 @@ class SimulatorContext:
     copy_state: CopySystemState = field(default_factory=CopySystemState)
     warnings: WarningState = field(default_factory=WarningState)
     scheduler: Any = None  # Optional[GreenletScheduler] - avoid import cycle
-    current_thread_type: Optional[ThreadType] = None
-    thread_registry: list[BindableTemplate] = field(
+    current_kernel_type: Optional[KernelType] = None
+    kernel_registry: list[BindableTemplate] = field(
         default_factory=list[BindableTemplate]
     )  # pyright: ignore[reportUnknownVariableType]
     kernel_dfb_count: int = 0  # DFBs created in the current kernel body
@@ -95,8 +95,8 @@ class SimulatorContext:
         0  # Total L1 capacity of DFBs created in the current kernel body
     )
     trace_events: list[TraceEvent] = field(default_factory=list)
-    # Maps thread function objects to their precomputed InjectionPoint tuples.
-    # Populated once per kernel invocation before the core loop runs.
+    # Maps kernel function objects to their precomputed InjectionPoint tuples.
+    # Populated once per kernel invocation before the node loop runs.
     # Typed as Any to avoid importing analysis (which imports dfb -> context).
     injection_points_cache: Dict[Any, Any] = field(default_factory=dict)
     # Active copy-wait injection hooks for this simulation run.
