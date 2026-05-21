@@ -1371,8 +1371,8 @@ static mlir::LogicalResult verifyRawElementOp(mlir::Operation *op,
            << "is only allowed in data movement (noc) threads";
   }
 
-  // 2. Block must originate from a circular buffer (ttl.cb_wait / cb_reserve).
-  if (!mlir::tt::ttl::getAttachedCB(block)) {
+  // 2. Block must originate directly from ttl.cb_wait or ttl.cb_reserve.
+  if (!mlir::tt::ttl::isCBAcquireView(block)) {
     return op->emitOpError() << "block must be a tensor view acquired from "
                                 "ttl.cb_wait or ttl.cb_reserve";
   }

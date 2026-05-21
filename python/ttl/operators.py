@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List, Tuple, Union
 
 
-from ttl.dialects import arith, arith
+from ttl.dialects import arith
 from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type, IndexType
 
 # Re-export generated elementwise operations

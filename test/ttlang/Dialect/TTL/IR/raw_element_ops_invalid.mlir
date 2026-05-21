@@ -122,3 +122,35 @@ func.func @write_dtype_mismatch(%val: f32)
   ttl.raw_element_write %block[%c0, %c0], %val : tensor<1x1x!ttcore.tile<32x32, bf16>>, f32
   func.return
 }
+
+// -----
+
+// raw_element_read on a tensor from ttl.attach_cb (not a direct CB acquire).
+func.func @read_attach_cb_not_allowed(
+    %t: tensor<1x1x!ttcore.tile<32x32, f32>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %block = ttl.attach_cb %t, %cb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{block must be a tensor view acquired from ttl.cb_wait or ttl.cb_reserve}}
+  %val = ttl.raw_element_read %block[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+  func.return
+}
+
+// -----
+
+// raw_element_write on a tensor from ttl.attach_cb (not a direct CB acquire).
+func.func @write_attach_cb_not_allowed(
+    %t: tensor<1x1x!ttcore.tile<32x32, f32>>, %val: f32)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %block = ttl.attach_cb %t, %cb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{block must be a tensor view acquired from ttl.cb_wait or ttl.cb_reserve}}
+  ttl.raw_element_write %block[%c0, %c0], %val : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
+  func.return
+}
