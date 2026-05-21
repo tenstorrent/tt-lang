@@ -17,7 +17,7 @@
 // CHECK-DAG:   size_t [[UB:v[0-9]+]] = 4;
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
 // CB wrapper declared at top of kernel
-// CHECK:   experimental::CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
+// CHECK:   CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
 // CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
 // Read: tensor -> CB (uses get_write_ptr for CB destination)
 // CHECK:     int32_t [[RT_ARG_R:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
