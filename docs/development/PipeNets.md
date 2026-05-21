@@ -546,7 +546,7 @@ pipe-coupled work.
 ## Test coverage
 
 The same pytest file runs on hardware and on the simulator via
-`test/scripts/ttlang-sim-pytest`, which patches `sys.modules` with the
+`test/scripts/tt-lang-sim-pytest`, which patches `sys.modules` with the
 simulator's `ttl` and `ttnn` before pytest collects, so hardware and
 simulator coverage is the default for any test under `test/python/`.
 Sim-only
