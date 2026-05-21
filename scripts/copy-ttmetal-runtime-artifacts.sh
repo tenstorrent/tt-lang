@@ -15,7 +15,7 @@
 # Artifacts:
 #   runtime/hw/                  - linker scripts and object files (build-generated)
 #   runtime/sfpi/                - SFPI compiler intrinsics (JIT kernel compilation)
-#   tt_metal/third_party/tt_llk/ - LLK headers (ckernel_structs.h, etc.)
+#   tt_metal/tt-llk/             - LLK headers (ckernel_structs.h, etc.)
 #   tt_metal/soc_descriptors/    - SoC architecture descriptors (device open)
 #   tt_metal/core_descriptors/   - Core architecture descriptors (device open)
 
@@ -35,25 +35,46 @@ fi
 SRC="$1"
 DEST="$2"
 
-# Each entry: <check-file> <artifact-dir>
-# check-file is used in restore mode to skip if already present in dest.
+SOC_DESCRIPTOR_CHECKS="tt_metal/soc_descriptors/blackhole_140_arch.yaml"
+SOC_DESCRIPTOR_CHECKS+="|tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml"
+
+CORE_DESCRIPTOR_CHECKS="tt_metal/core_descriptors/blackhole_140_arch.yaml"
+CORE_DESCRIPTOR_CHECKS+="|tt_metal/core_descriptors/blackhole_140_arch_eth_dispatch.yaml"
+CORE_DESCRIPTOR_CHECKS+="|tt_metal/core_descriptors/blackhole_140_arch_fabric_mux.yaml"
+CORE_DESCRIPTOR_CHECKS+="|tt_metal/core_descriptors/wormhole_b0_80_arch.yaml"
+CORE_DESCRIPTOR_CHECKS+="|tt_metal/core_descriptors/wormhole_b0_80_arch_eth_dispatch.yaml"
+CORE_DESCRIPTOR_CHECKS+="|tt_metal/core_descriptors/wormhole_b0_80_arch_fabric_mux.yaml"
+
+# Each entry: <check-files> <artifact-dir>
+# check-files is a `|`-separated list used in restore mode to skip only when
+# all required files are already present.
 ARTIFACTS=(
     "runtime/hw/toolchain"                            "runtime/hw"
     "runtime/sfpi/include"                            "runtime/sfpi"
-    "tt_metal/third_party/tt_llk/README.md"           "tt_metal/third_party/tt_llk"
-    "tt_metal/soc_descriptors/blackhole_140_arch.yaml" "tt_metal/soc_descriptors"
-    "tt_metal/core_descriptors/blackhole_140_arch.yaml" "tt_metal/core_descriptors"
+    "tt_metal/tt-llk/README.md"                       "tt_metal/tt-llk"
+    "$SOC_DESCRIPTOR_CHECKS"                           "tt_metal/soc_descriptors"
+    "$CORE_DESCRIPTOR_CHECKS"                          "tt_metal/core_descriptors"
 )
 
 ERRORS=0
 
 for ((i=0; i<${#ARTIFACTS[@]}; i+=2)); do
-    check_file="${ARTIFACTS[i]}"
+    check_files="${ARTIFACTS[i]}"
     artifact="${ARTIFACTS[i+1]}"
     parent_dir="$(dirname "$artifact")"
 
-    if $RESTORE && [ -e "$DEST/$check_file" ]; then
-        continue
+    if $RESTORE; then
+        all_present=true
+        IFS='|' read -r -a required_files <<< "$check_files"
+        for check_file in "${required_files[@]}"; do
+            if [ ! -e "$DEST/$check_file" ]; then
+                all_present=false
+                break
+            fi
+        done
+        if $all_present; then
+            continue
+        fi
     fi
 
     if [ -d "$SRC/$artifact" ]; then

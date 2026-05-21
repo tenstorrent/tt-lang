@@ -106,7 +106,11 @@ uplift_one_path() {
     echo "uplift-state" > "$REPO/third-party/tt-metal-version"
     commit_all "$REPO" "uplift"
     first_tag=$(get_tag "$REPO")
-    echo "v0.69.0" > "$REPO/third-party/tt-metal-version"
+    # Restore the exact content mkrepo() initialized so revert matches BASE_TAG.
+    cat > "$REPO/third-party/tt-metal-version" <<'VERSION_EOF'
+TTNN_PYPI="0.69.0"
+TT_METAL_TAG="v0.69.0"
+VERSION_EOF
     commit_all "$REPO" "revert"
     revert_tag=$(get_tag "$REPO")
     echo "uplift-state" > "$REPO/third-party/tt-metal-version"

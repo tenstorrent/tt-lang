@@ -84,9 +84,9 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: int32_t [[ZERO:v[0-9]+]] = 0;
 # CHECK-CPP-DAG: int32_t [[ONE:v[0-9]+]] = 1;
-# CHECK-CPP-DAG: experimental::CircularBuffer [[LHS:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[RHS:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[OUT:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-DAG: CircularBuffer [[LHS:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: CircularBuffer [[RHS:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-DAG: CircularBuffer [[OUT:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP: [[LHS]].wait_front(
 # CHECK-CPP: [[RHS]].wait_front(
 # CHECK-CPP: [[OUT]].reserve_back(
@@ -121,9 +121,9 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: void kernel_main()
 # CHECK-CPP-FPU-DAG: int32_t [[ZERO:v[0-9]+]] = 0;
 # CHECK-CPP-FPU-DAG: int32_t [[ONE:v[0-9]+]] = 1;
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[LHS:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[RHS:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[OUT:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[LHS:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[RHS:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[OUT:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP-FPU: [[LHS]].wait_front(
 # CHECK-CPP-FPU: [[RHS]].wait_front(
 # CHECK-CPP-FPU: [[OUT]].reserve_back(
