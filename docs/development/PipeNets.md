@@ -2,13 +2,13 @@
 
 This document describes how PipeNets are owned, validated, lowered, and
 scheduled in tt-lang. Both the compiler and the simulator consume the
-same operation-level PipeNet collection; this doc covers the data flow,
-the PipeNet guard verification pass that catches missing user guards
-before lowering, the simulator launch semantics, and the test coverage.
+same operation-level PipeNet collection; this document covers the data
+flow, PipeNet verification, simulator launch semantics, and test
+coverage.
 
 The launch grid (the grid that `@ttl.operation(grid=...)` schedules
 onto) is decoupled from the *work extent* described by the user's
-PipeNets — the per-axis bounding box of every pipe coordinate. The
+PipeNets - the per-axis bounding box of every pipe coordinate. The
 `grid=` argument selects the launch:
 
 - `grid="full"` (and `grid="auto"`, which is currently an alias for
@@ -39,16 +39,110 @@ failure mode is the one the verifier guards against (see issue #541).
 
 The compiler verifies user-written guards: each pipe-coupled operation
 must be reachable only from the nodes permitted by its role
-(`ttl.copy(cb, pipe)` only from `pipe.src`; `ttl.copy(pipe, cb)` only
-from `pipe.dst`; `cb_wait` reachable only within the static producer domain
-for that DFB index). The verifier reads the IR and emits diagnostics;
-it does not rewrite the program.
+(`ttl.copy(buffer, pipe)` only from `pipe.src`;
+`ttl.copy(pipe, buffer)` only from `pipe.dst`; `cb_wait` reachable
+only within the static producer domain for that DFB index). The
+verifier reads the IR and emits diagnostics; it does not rewrite the
+program.
+
+## Semantics
+
+Pipe transfers have the following operational semantics:
+
+- A pipe has no hidden in-transit DFB. The destination storage is the DFB
+  block the user reserves in the receiver callback.
+- `ttl.copy(pipe, dst_blk)` posts a receive. It publishes `dst_blk`'s
+  current write pointer to the sender and returns a transfer handle.
+- Waiting on the receive transfer handle waits for the sender's
+  completion signal for that posted receive.
+- `ttl.copy(src_blk, pipe)` posts a send. The send waits until every
+  destination in the pipe has posted a destination address, writes
+  `src_blk` directly to those addresses, then signals completion to the
+  receivers.
+- Waiting on the send transfer handle waits until the send has
+  completed and the source block can be released.
+- The compiler uses the user's DFB reserve and wait structure for pipe
+  payload storage. Pipe lowering does not create a separate payload DFB.
+- A deadlock-free schedule must allow every receive post required by a
+  send to run before that send can block on the post.
+- A receive wait must run only after a send has been posted that can
+  complete that receive.
+- The verifier builds a wait-for graph over send, receive-post, and
+  receive-wait events. It rejects schedules whose same-thread ordering
+  creates a wait-for cycle. Other runtime hangs can still have different
+  causes.
+
+These synchronization rules matter most when the source is also a
+destination, or when a same-thread relay receives and forwards in one
+data-movement kernel.
+
+For example, the loopback schedule below is invalid because the same thread
+tries to send before it posts its own receive address:
+
+```python
+@ttl.datamovement()
+def transfer():
+    x, _ = ttl.node(dims=2)
+    if x == 0:
+        with send_cb.wait() as src_blk, recv_cb.reserve() as dst_blk:
+
+            def send(pipe):
+                ttl.copy(src_blk, pipe).wait()
+
+            net.if_src(send)
+
+            def recv(pipe):
+                ttl.copy(pipe, dst_blk).wait()
+
+            net.if_dst(recv)
+```
+
+The send cannot complete until the receiver publishes `dst_blk`, but the
+receive post is sequenced after the blocking send in the same thread:
+
+```text
+same data-movement thread
+
+program order:
+  send copy + wait  ------------------>  receive post
+
+wait-for dependency:
+  send copy + wait  waits for dst address from receive post
+
+cycle:
+  [send copy + wait] --program order--> [receive post]
+          ^                                  |
+          |                                  |
+          +-------- waits for address -------+
+```
+
+Valid same-thread loopback schedules post the receive first, then post
+the send, then wait for completion.
+
+```python
+@ttl.datamovement()
+def transfer():
+    x, _ = ttl.node(dims=2)
+    if x == 0:
+        with send_cb.wait() as src_blk, recv_cb.reserve() as dst_blk:
+
+            def recv(pipe):
+                recv_tx = ttl.copy(pipe, dst_blk)
+
+                def send(pipe):
+                    ttl.copy(src_blk, pipe).wait()
+
+                net.if_src(send)
+                recv_tx.wait()
+
+            net.if_dst(recv)
+```
 
 The soundness argument for the verifier is published as a
 [gist](https://gist.github.com/brnorris03/5c969f4359fa895c9055c00659074f9d).
 
-Three predicate ops — `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
-(the union of source and destination roles) — let user code carry
+Three predicate ops - `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
+(the union of source and destination roles) - let user code carry
 per-PipeNet guards that the verifier recognizes structurally. Frontend
 methods `net.is_src()`, `net.is_dst()`, `net.is_active()` lower to
 these ops; coordinate comparisons over `ttl.node(dims=2)` against
@@ -74,18 +168,19 @@ one PipeNet, those pipes get slot indices `0..N-1`. Two pipes whose
 destination ranges intersect on even one node get distinct slots; pipes
 whose ranges are disjoint may reuse slot 0.
 
-The sender lowering (`PipeLowering.cpp`) writes to
-`base + slot_idx * page_size * cb_num_tiles` in the receiver's CB, so
-each sender's payload lands at its own offset and overlapping
-multicasts never overwrite each other.
+The receiver publishes the concrete DFB write pointer for each receive
+post. The slot assignment is therefore a compile-time capacity proof,
+not a sender-side address computation: overlapping arrivals are safe
+because the user reserves one DFB block per receive callback and the
+lowering writes to the address published by that specific post.
 
 This is the same mechanism unicast gather uses (N unicast pipes to one
 destination get slot indices `0..N-1`); the only difference is that
 multicast overlap also handshakes through `noc_semaphore_inc_multicast`
-(see `PipeOptimizations.md` §2) rather than per-destination
+(see `PipeOptimizations.md`, section 2) rather than per-destination
 `noc_semaphore_inc`. The `block_count` requirement is identical and
 checked by the same code: `PipeGraph::verifyGatherBlockCounts` errors
-at compile time if any receiver CB's `block_count` is less than
+at compile time if any receiver DFB's `block_count` is less than
 `max(gatherSlotIdx) + 1` for its pipes, with diagnostic prefix
 `"multicast overlap"` (vs `"gather"` for unicast). There is no
 synchronous serialization between senders: they run concurrently and
@@ -106,9 +201,10 @@ blocking until the remote counter catches up. Consequences:
 - `N` senders targeting one receiver do not coordinate with each other;
   they only need to increment the receiver's counter independently.
 
-The full sender / receiver NoC protocol — `noc_semaphore_inc_multicast`,
+The full sender / receiver NoC protocol - `noc_semaphore_inc_multicast`,
 `noc_async_atomic_barrier`, `experimental::semaphore_wait_min`, and the
-multicast-loopback case — is documented in `PipeOptimizations.md` §2.
+multicast-loopback case - is documented in `PipeOptimizations.md`,
+section 2.
 
 ### Sender concurrency
 
@@ -116,30 +212,21 @@ Slot-per-sender preserves every parallelism property of a non-overlapping
 multicast. The proof tracks four points in the lowered IR:
 
 1. Slot assignment is static. `assignGatherSlotIndices`
-   (`PipeGraph.cpp:32-102`) runs at compile time, assigns each pipe a
-   slot index `0..N-1`, and bakes the offset into the lowered IR as a
-   constant `slotByteOffset = slotIdx * pageSize * cbNumTiles`
-   (`PipeLowering.cpp:265`). No runtime slot-allocation or contention.
-2. No inter-sender wait. Each sender's emitted sequence
-   (`PipeLowering.cpp:218-310`) is:
-   - `cb_reserve_back` on its local view of the destination DFB
-   - `noc_async_write_multicast` to `base + slot_offset`
-   - `noc_async_write_barrier` — waits for this sender's own writes
-     to complete on its NoC, nothing else
-   - `noc_semaphore_inc_multicast` — atomic counter bump at every
-     receiver
-   - `cb_push_back`
-
-   No sender ever reads a semaphore signaled by another sender. The
-   `senderSem` the sender waits on at the top is its own local L1 word
-   that receivers increment (ready/valid flow control between sender
-   and its own receivers — independent of any other sender in the
-   PipeNet).
+   (`PipeGraph.cpp`) runs at compile time, assigns each pipe a slot
+   index `0..N-1`, and verifies the receiver DFB has enough blocks for
+   all concurrently live arrivals. The lowered address still comes from
+   the receiver's posted write pointer. Future batched slot reuse could
+   allow fewer receiver DFB blocks by scheduling overlapping senders in
+   capacity-bounded groups.
+2. No inter-sender wait. Each sender waits only for its own receivers to
+   publish destination addresses, performs its own NOC write, then
+   increments the receiver completion semaphore. No sender reads a
+   semaphore signaled by another sender.
 3. Sender/receiver semaphores are per-PipeNet, not per-pipe.
-   `PipeLowering.h:24-26` encodes `senderSem = pipeNetId * 2` and
+   Pipe lowering encodes `senderSem = pipeNetId * 2` and
    `recvSem = pipeNetId * 2 + 1`. Two distinct pipes within one PipeNet
    share index numbers, but each core has its own L1 word at that
-   index — no cross-core wait gets routed through them.
+   index; no cross-core wait gets routed through them.
 4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
    for a count of total arrivals, not for specific senders. Senders
    bump the counter in any order; the receiver only cares about the
@@ -147,8 +234,8 @@ multicast. The proof tracks four points in the lowered IR:
 
 The only places execution can stall are:
 
-- A sender waiting for its own receivers' ready signal (ready/valid
-  handshake — same as the unicast case).
+- A sender waiting for its own receivers' ready signal (the same
+  ready/valid handshake as unicast).
 - A receiver waiting for the cumulative arrival count to reach its
   expected value.
 - Hardware NoC bandwidth contention (physical, not compiler-inserted).
@@ -160,8 +247,8 @@ accumulation. The cost comparison:
 
 | Pattern | Data writes | Signal ops |
 |---|---|---|
-| N senders × M receivers, slot-per-sender mcast | N mcast | N inc_mcast |
-| N senders × M receivers, naive unicast emulation | N × M unicast | N × M inc |
+| N senders * M receivers, slot-per-sender mcast | N mcast | N inc_mcast |
+| N senders * M receivers, naive unicast emulation | N*M unicast | N*M inc |
 
 A hypothetical "merged" multicast that combines payloads from N
 different sender cores into one NoC operation is not a hardware
@@ -207,7 +294,7 @@ t1 and t2 may swap (the two senders are independent). The end state at
 t2 is unchanged because writes target different slots and
 `inc_multicast` is atomic.
 
-## Operation pipenets
+## Operation PipeNets
 
 `OperationPipeNets` (defined in `python/ttl/_pipenets/__init__.py`)
 is the per-operation data structure the compiler and the simulator
@@ -236,7 +323,7 @@ invocations and keep TTKernel semaphore allocation
 emission on the compiler side and before `Program(...)` runs on the
 simulator side. `PipeNet.__init__` also builds a one-PipeNet
 `OperationPipeNets` and runs the same `validate()` synchronously, so
-malformed PipeNets error at the construction source line.
+malformed PipeNets error at the construction source location.
 
 ## Pass placement
 
@@ -283,7 +370,7 @@ may execute there.
 - `visitRegionBranchControlFlowTransfer`: when entering a region of
   `scf.if`, `affine.if`, `ttl.if_src`, `ttl.if_dst`, or
   `ttl.pipenet_scope`, the lattice at the region entry is set to
-  `current ∩ predicate-domain`. The framework's
+  `current` intersected with `predicate-domain`. The framework's
   `RegionBranchOpInterface` machinery handles join points after the
   op (the post-op lattice is the union of region exits and skip).
 
@@ -295,7 +382,7 @@ detect region exits. The verifier loads
 convention.
 
 `Domain` is an explicit `std::set<Coord>` (Coord = `(x, y)`) over the
-launch grid — sufficient for current 2D grids (≤ ~200 nodes) and
+launch grid - sufficient for current 2D grids (<= ~200 nodes) and
 avoiding an upstream Presburger dependency. Set ops use the standard
 library (`std::set_union`, `std::set_intersection`,
 `std::set_difference`, `std::includes`).
@@ -306,8 +393,8 @@ the role required by the op:
 
 | Op | Required role |
 | --- | --- |
-| `ttl.copy(cb, pipe)` | `pipe.src` (single coord) |
-| `ttl.copy(pipe, cb)` | `pipe.dst` (mcast range) |
+| `ttl.copy(buffer, pipe)` | `pipe.src` (single coord) |
+| `ttl.copy(pipe, buffer)` | `pipe.dst` (mcast range) |
 | `ttl.if_src %pipe` body | `pipe.src` (op carries the predicate intrinsically) |
 | `ttl.if_dst %pipe` body | `pipe.dst` (op carries the predicate intrinsically) |
 | `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
@@ -389,6 +476,9 @@ note: suggested guard: `net_0.is_src()`
 | this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union. | wrap the surrounding work in `if net_<N>.is_active(): ...` |
 | this `ttl.copy(buffer, pipe)` sends data on PipeNet \<N\> from a node that is not a source of any pipe in that net | A DFB-to-pipe copy is reachable from a node that isn't the pipe's source coordinate. | wrap the copy in `net_<N>.if_src(...)` or guard with `if net_<N>.is_src(): ...` |
 | this `ttl.copy(pipe, buffer)` receives data from PipeNet \<N\> on a node that is not a destination of any pipe in that net | A pipe-to-DFB copy is reachable from a node outside the pipe's destination range. | wrap the copy in `net_<N>.if_dst(...)` or guard with `if net_<N>.is_dst(): ...` |
+| pipe send occurs before the receiver publishes a destination address on PipeNet \<N\> | A same-thread source can block waiting for a receiver address that is posted later in the same thread. | move `ttl.copy(pipe, dst)` before `ttl.copy(src, pipe)`, then wait after the send has been posted |
+| receive wait occurs before the send that completes it on PipeNet \<N\> | A receiver waits on the receive transfer before the matching sender operation can run. | post the receive first, run the send, then wait on the receive handle |
+| pipe schedule contains a wait-for cycle | Same-thread ordering creates a wait-for cycle not matched by a more specific diagnostic. | reorder same-thread sends and receives so all required receive posts happen before dependent sends |
 | this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
 | this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of `cb_push` producer domains for the same DFB index. | guard the wait with the same `if net.is_active(): ...` predicate the producer uses |
 | could not statically analyze the PipeNet guard around this op | A surrounding condition uses runtime values or arithmetic the verifier can't enumerate per coordinate (e.g. `arith.muli %core_x, %runtime_value`). | rewrite using `net.is_src()` / `net.is_dst()` / `net.is_active()`, or compare `ttl.node(dims=2)` coordinates against integer constants |
@@ -412,7 +502,7 @@ The frontend emits this region op around DFB-context blocks
 (`with cb.reserve()`) whose body contains pipe role work. It carries
 two parallel attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
 `ttl.pipe_net_roles` (`DenseI64ArrayAttr`, one entry per id; 0 =
-Source, 1 = Destination — `Active` is a *predicate* via
+Source, 1 = Destination - `Active` is a *predicate* via
 `ttl.is_active` and is not valid as a scope role). The verifier checks
 that the scope's effective execution domain is a subset of the union
 of declared role domains, then walks its body with the same incoming
@@ -435,7 +525,7 @@ The verifier relies on these input properties.
 | Invariant | Rationale |
 | --- | --- |
 | `ttl.launch_grid` module attribute present | Subset checks against an unbounded universe are meaningless. The pass emits a module-level error and fails if the attribute is missing. |
-| `ttl.create_pipe` source/destination coordinates are static `I64Attr`s, encoded both on the op and in the result `PipeType` | Domain construction reads the attributes directly to materialize each pipe's source unit box and destination range as concrete `Coord` sets, and `PipeLowering.cpp` emits `arith.ConstantIndexOp` for each coordinate when building per-node role predicates. The static-attribute encoding is a property of today's IR, not a fundamental constraint of the verifier or lowering — see "Future work: parametric PipeNets" for the path to runtime-bound coordinates. |
+| `ttl.create_pipe` source/destination coordinates are static `I64Attr`s, encoded both on the op and in the result `PipeType` | Domain construction reads the attributes directly to materialize each pipe's source unit box and destination range as concrete `Coord` sets, and `PipeLowering.cpp` emits `arith.ConstantIndexOp` for each coordinate when building per-node role predicates. The static-attribute encoding is a property of today's IR, not a fundamental constraint of the verifier or lowering; see "Future work: parametric PipeNets" for the approach to runtime-bound coordinates. |
 | Pipe-coupled ops have stable DFB indices | DFB wait checks require `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices` to have run already. |
 | One operation per module | The verifier walks all pipes in the module to compute role domains; co-compiling multiple operations would require per-operation scoping. |
 
@@ -443,7 +533,7 @@ The verifier relies on these input properties.
 
 The verifier checks each pipe-coupled op against the role of *its
 own* PipeNet, not against the union of all PipeNets' active sets.
-A `ttl.copy(cb, %pipe_a)` reachable from a node that is in
+A `ttl.copy(buffer, %pipe_a)` reachable from a node that is in
 `net_b.is_active()` but outside `net_a.src` is rejected with a
 diagnostic that names `net_a`, not "the active set".
 
@@ -483,16 +573,17 @@ def dm_read():
 
 ## Simulator parity
 
-Compiler and simulator share `OperationPipeNets.validate()`
-(empty PipeNets, mixed unicast/multicast, within-PipeNet multicast
-destination overlap), invoked at `PipeNet(...)` construction and again
-at operation build time. Beyond that the two diverge:
+Compiler and simulator share `OperationPipeNets.validate()` for
+construction invariants: non-empty PipeNets, no mixed unicast/multicast
+PipeNet, and consistent coordinate rank. The validator runs at
+`PipeNet(...)` construction and again at operation build time. Beyond
+that the two diverge:
 
 | Check | Compiler | Simulator |
 | --- | --- | --- |
 | Cross-pipe construction validation (above) | yes | yes |
 | `ttl.copy` reachable only from `pipe.src` / `pipe.dst` | yes (`ttl-verify-pipenet-guards`) | no |
-| `ttl.pipenet_scope` domain ⊆ declared role union | yes | no |
+| `ttl.pipenet_scope` domain is a subset of declared role union | yes | no |
 | `cb_wait` covered by `cb_push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
 | Unanalyzable coord-dependent predicate diagnosed | yes | no |
 | Missing/malformed `ttl.launch_grid`, unknown PipeNet ids | yes | n/a (no IR) |
@@ -504,7 +595,7 @@ runtime deadlock detector with no static context.
 
 Grid resolution is shared: both compiler and simulator treat `"auto"`
 and `"full"` as the device compute grid. Neither side skips nodes
-outside PipeNet roles — user guards (`net.is_active()` or coordinate
+outside PipeNet roles; user guards (`net.is_active()` or coordinate
 predicates) decide which nodes execute pipe-coupled work.
 
 ## Example: 2D mcast matmul
@@ -545,17 +636,16 @@ pipe-coupled work.
 
 ## Test coverage
 
-The same pytest file runs on hardware and on the simulator via
+Most pytest files can run on hardware and on the simulator via
 `test/scripts/ttlang-sim-pytest`, which patches `sys.modules` with the
-simulator's `ttl` and `ttnn` before pytest collects, so hardware and
-simulator coverage is the default for any test under `test/python/`.
-Sim-only
-tests under `test/sim/` are reserved for sim-internal helpers that have
-no hardware analogue. Lit tests cover compile-time properties not
-runtime-observable.
+simulator's `ttl` and `ttnn` before pytest collects. Some tests remain
+device-only because they depend on behavior the simulator does not
+model. Sim-only tests under `test/sim/` are reserved for sim-internal
+helpers that have no hardware analogue. Lit tests cover compile-time
+properties not runtime-observable.
 
-| #  | Behavior under test                                       | Dev | Sim | Lit |
-|----|-----------------------------------------------------------|:---:|:---:|:---:|
+| #  | Behavior under test                                       | Device | Sim | Lit |
+|----|-----------------------------------------------------------|:------:|:---:|:---:|
 |  1 | Empty PipeNet rejected at construction                    |  X  |  X  |     |
 |  2 | Within-PipeNet mcast dst overlap allowed (full)           |  X  |  X  |     |
 |  3 | Within-PipeNet mcast dst overlap allowed (partial)        |  X  |  X  |     |
@@ -587,6 +677,9 @@ runtime-observable.
 | 23 | Ring forward (1D unicast +1)                              |  X  |  X  |     |
 | 24 | 2D broadcast                                              |  X  |  X  |     |
 | 25 | Pipe chain / conv multi-stage                             |  X  |  X  |     |
+| 25a| True unicast loop with receiver reserve in user code      |  X  |  X  |     |
+| 25b| Unicast self-loop (`src == dst`) with receive-post before send | X | X | |
+| 25c| Row/column unicast forwarding chains, multi-tile loop     |  X  |  X  |     |
 | 26 | 1D mcast matmul auto-grid baseline                        |  X  |  X  |     |
 | 27 | Issue #541 regression: 4x3 work extent under grid="full"  |  X  |  X  |     |
 | 28 | Issue #541 regression: 2x2 work extent under grid="full"  |  X  |  X  |     |
@@ -598,15 +691,15 @@ runtime-observable.
 | 34 | OperationPipeNets: unicast pipe single dst                |     |  X  |     |
 | 35 | OperationPipeNets: None when empty                        |     |  X  |     |
 | 36 | OperationPipeNets: validate empty PipeNet                 |     |  X  |     |
-| 37 | OperationPipeNets: validate overlapping mcast             |     |  X  |     |
+| 37 | OperationPipeNets: allow overlapping mcast                |     |  X  |     |
 | 38 | OperationPipeNets: operation-local id allocation          |     |  X  |     |
 | 39 | sim pipe deadlock detection                               |     |  X  |     |
 | 40 | Verifier accepts `if net.is_src/is_dst/is_active()` guards |    |     |  X  |
 | 41 | Verifier accepts coordinate-compare guards over `core_x`/`core_y` |     |     |  X  |
 | 42 | Verifier accepts `affine.if` guards via IntegerSet eval   |     |     |  X  |
 | 43 | Verifier accepts `pipenet_scope` and inlines it post-check |     |     |  X  |
-| 44 | Verifier rejects `ttl.copy(cb, pipe)` outside source role |     |     |  X  |
-| 45 | Verifier rejects `ttl.copy(pipe, cb)` outside destination role |  |     |  X  |
+| 44 | Verifier rejects `ttl.copy(buffer, pipe)` outside source role |     |     |  X  |
+| 45 | Verifier rejects `ttl.copy(pipe, buffer)` outside destination role |  |     |  X  |
 | 46 | Verifier rejects `cb_wait` with no producer domain coverage |   |     |  X  |
 | 47 | Verifier names per-PipeNet role in cross-net diagnostics  |     |     |  X  |
 | 48 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (x)    |     |     |  X  |
@@ -627,9 +720,11 @@ runtime-observable.
 | 61 | Lowering: two receives at one core share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
 | 62 | Lowering: loopback mcast (sender in dst range) uses `noc_async_write_multicast_loopback_src` + local recvSem inc |  |  |  X  |
 | 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"multicast overlap"` (and `"gather"` for unicast) |  |  |  X  |
+| 64 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
+| 65 | Schedule verifier rejects same-thread send before receive address publication | X | | X |
 
-(1) Device-only due to a pre-existing simulator divergence orthogonal
-to PipeNet verification: the simulator's block-state machine accepts
+(1) Device-only due to a simulator divergence outside PipeNet
+verification: the simulator's block-state machine accepts
 in-place `+=` only on a *temporary* block (the result of a `fill` or
 a block expression), not on a dataflow-buffer block that has already
 been written via `store(...)`. Hardware accepts both. The matmul
@@ -642,27 +737,33 @@ strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `matmul_1d_mcast` example uses them. The test asserts the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
-## Lowering: sender/receiver DFB lockstep
+## Lowering: receiver-published destination addresses
 
-`PipeLowering.cpp::lowerCBToPipe` emits, around every sender-side
-`ttl.copy(cb, pipe)`, a `ttkernel.cb_reserve_back` before the NOC
-write and a `ttkernel.cb_push_back` after the barrier and semaphore
-signal, on the sender's local view of the destination DFB. This
-keeps the sender's `fifo_wr_ptr` advancing in lockstep with the
-receiver's per iteration: the destination address handed to
-`noc_async_write` is `cb_<recvIdx>.get_write_ptr()` on the sender,
-which is correct only while sender and receiver have issued the
-same number of reserves/pushes against that DFB. Without the
-bracket, multi-iteration kernels write to slot 0 every iteration
-while the receiver's `cb_<recvIdx>.fifo_wr_ptr` keeps advancing,
-and data lands in a slot the receiver never waits on (issue #574).
+`PipeLowering.cpp::lowerPipeRecvPost` lowers `ttl.copy(pipe, dst_blk)`
+as the receive post. It reads the receiver DFB write pointer for the
+user-reserved block, publishes that address to the sender-visible
+mailbox, and increments the sender ready semaphore. This operation does
+not create or reserve any DFB block; it uses the block already reserved
+by the user.
 
-Loopback exception: when the sender is also a destination of the
-pipe (`pipeType.srcInDstRange()`) and the destination DFB index
-coincides with the sender's source DFB index, the receive callback
-running on the sender core already issues `cb_reserve_back` /
-`cb_push_back` on that DFB; the lowering skips its sender-side
-pair to avoid double-advancing.
+`PipeLowering.cpp::lowerCBToPipe` lowers `ttl.copy(src_blk, pipe)` as
+the send. The sender waits until all destinations have published their
+addresses, reads the mailbox address, performs the NOC write directly
+to that receiver-owned DFB block, and signals receiver completion. A
+multicast send waits for every destination in the multicast range to
+post before issuing the write.
+
+`PipeLowering.cpp::lowerPipeRecvWait` lowers a wait on the receive
+handle to a per-PipeNet cumulative wait. The receiver keeps a local
+runtime counter and waits for `recvSem >= counter`, so repeated unicast
+and multicast receives in loops advance across iterations without
+reusing stale completion state.
+
+This protocol fixes the multi-iteration write-pointer issue by making
+the receiver's published write pointer authoritative. It also makes
+same-thread loopback schedules explicit: the receive post must run
+before the dependent send, and the receive wait must run after a send
+has been posted that can complete it.
 
 ## Limitations
 
@@ -682,7 +783,7 @@ pair to avoid double-advancing.
   coupled to a PipeNet (pipe-typed copies, pipe-coupled DFB waits,
   `if_src` / `if_dst` bodies) require role containment.
 * Domain representation is `std::set<Coord>` over the launch grid.
-  Sufficient for current 2D grids (≤ ~200 nodes); revisit when grids
+  Sufficient for current 2D grids (<= ~200 nodes); revisit when grids
   grow to 3D or thousands of nodes.
 * Three pipeline definitions: verifier and eraser are registered in
   three separate strings (C++ pipeline, Python frontend, me2e
@@ -727,7 +828,16 @@ pair to avoid double-advancing.
   `std::set<Coord>` representation should be replaced with a Presburger
   set or axis-aligned rectangle set so domain operations stay
   tractable.
-* Parametric PipeNets — runtime-bound pipe coordinates resolved at
+* Batched receive-slot reuse for overlapping arrivals. The current
+  slot assignment requires the receiver DFB to have one block for every
+  concurrently live sender that can target that receiver within one
+  PipeNet. A future scheduler could partition those senders into
+  batches no larger than the receiver DFB capacity, post receives for
+  one batch, wait for those arrivals, release the consumed slots, then
+  reuse the same slots for the next batch. That would trade sender
+  concurrency for lower receiver SRAM usage without changing the
+  receiver-published address protocol.
+* Parametric PipeNets - runtime-bound pipe coordinates resolved at
   kernel-launch time rather than `@ttl.operation` decoration time. The
   current pipeline resolves `ttl.Pipe(src=..., dst=...)` arguments to
   Python `int` / `slice` literals during frontend tracing, materializes
@@ -743,13 +853,13 @@ pair to avoid double-advancing.
      `@ttl.operation` invocations whose coordinates are known at
      trace time.
   2. Verifier: replace the `std::set<Coord>` `Domain` with a symbolic
-     representation — either an upstream Presburger set
+     representation, either an upstream Presburger set
      (`mlir::presburger::IntegerRelation`) or a structured
-     axis-aligned-rectangle set with parametric bounds — and recast
+     axis-aligned-rectangle set with parametric bounds, and recast
      `pipeSourceDomain` / `pipeDestinationDomain` / `getBranchDomains`
      to produce symbolic constraints over the pipe's coordinate
      operands and the launch-grid extents. Per-pipe role containment
-     then becomes a Presburger emptiness check (`current ∩ ¬role` is
+     then becomes a Presburger emptiness check (`current - role` is
      empty) parameterized by the static bounds. The `ttl.is_src` /
      `ttl.is_dst` / `ttl.is_active` recognition stays structural; the
      per-coord enumeration in `evalBool` becomes a constraint
@@ -761,7 +871,7 @@ pair to avoid double-advancing.
      mechanical: tt-metal's multicast NoC primitives already accept
      runtime coordinates, and `IsSrcLowering` / `IsDstLowering` already
      construct per-pipe `arith.cmpi` / `arith.andi` / `arith.ori`
-     chains over the pipe's coordinate values — they currently chain
+     chains over the pipe's coordinate values; they currently chain
      against constants but would chain against the SSA operands
      instead.
 
