@@ -181,9 +181,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
         rewriter, loc, getSenderSemIdx(pipeType));
     auto senderSemAddr =
         ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
-    auto senderSemPtr = ttk::CastToL1PtrOp::create(
-        rewriter, loc, ttk::L1AddrPtrType::get(rewriter.getContext(), 32),
-        senderSemAddr);
+    auto senderSemPtr =
+        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
     auto expectedVal = arith::ConstantOp::create(
         rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(expectedSignals));
     ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedVal);
@@ -406,9 +405,6 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
                                                  getSenderSemIdx(pipeType));
     auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
     auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, semAddr);
-    auto semPtr = ttk::CastToL1PtrOp::create(
-        rewriter, loc, ttk::L1AddrPtrType::get(rewriter.getContext(), 32),
-        semAddr);
     auto waitValConst = arith::ConstantOp::create(
         rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(waitVal));
     ttk::SemaphoreWaitMinOp::create(rewriter, loc, semPtr, waitValConst);
@@ -424,9 +420,6 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
     auto recvSemPtr =
         ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
-    auto recvSemPtr = ttk::CastToL1PtrOp::create(
-        rewriter, loc, ttk::L1AddrPtrType::get(rewriter.getContext(), 32),
-        recvSemAddr);
 
     // Counter is allocated by allocatePipeNetCountersForMulticast.
     Value counter;

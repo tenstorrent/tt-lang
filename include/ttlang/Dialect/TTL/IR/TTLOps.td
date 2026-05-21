@@ -1408,7 +1408,7 @@ def TTL_RawElementReadOp : TTL_Op<"raw_element_read",
     AnyRankedTensor:$block,
     Variadic<Index>:$coords
   );
-  let results = (outs AnyType:$result);
+  let results = (outs AnyTypeOf<[F32, BF16]>:$result);
   let assemblyFormat =
       "$block `[` $coords `]` attr-dict `:` type($block) `->` type($result)";
   let hasVerifier = 1;
@@ -1439,7 +1439,7 @@ def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
   let arguments = (ins
     AnyRankedTensor:$block,
     Variadic<Index>:$coords,
-    AnyType:$value
+    AnyTypeOf<[F32, BF16]>:$value
   );
   let assemblyFormat =
       "$block `[` $coords `]` `,` $value attr-dict `:` type($block) `,` type($value)";

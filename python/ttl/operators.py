@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import List, Tuple, Union
 
-from ttl.dialects import arith
+
+from ttl.dialects import arith, arith
 from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type, IndexType
 
 # Re-export generated elementwise operations
@@ -808,8 +809,8 @@ def raw_element_read(block, *coords):
     Returns:
         Scalar value matching the block's element dtype
     """
-    from ttl.dialects import arith
-
+    if len(coords) < 1:
+        raise ValueError("raw_element_read requires at least one coordinate")
     scalar_type = _get_block_scalar_type(block)
     ctx = block.type.context
     index_vals = []
@@ -842,7 +843,6 @@ def raw_element_write(block, *args):
     Example:
         ttl.raw_element_write(block, row, col, val)
     """
-    from ttl.dialects import arith
 
     if len(args) < 2:
         raise ValueError(
