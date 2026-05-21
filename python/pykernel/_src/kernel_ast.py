@@ -27,6 +27,37 @@ def _is_host_scalar_constant(val) -> bool:
     return isinstance(getattr(val, "owner", None), arith.ConstantOp)
 
 
+def _eval_host_scalar_expr(node):
+    """Evaluate Python scalar expressions that do not depend on IR values."""
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            return None
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp):
+        operand = _eval_host_scalar_expr(node.operand)
+        if operand is None:
+            return None
+        if isinstance(node.op, ast.UAdd):
+            return operand
+        if isinstance(node.op, ast.USub):
+            return -operand
+        return None
+    if isinstance(node, ast.BinOp):
+        lhs = _eval_host_scalar_expr(node.left)
+        rhs = _eval_host_scalar_expr(node.right)
+        if lhs is None or rhs is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return lhs + rhs
+        if isinstance(node.op, ast.Sub):
+            return lhs - rhs
+        if isinstance(node.op, ast.Mult):
+            return lhs * rhs
+        if isinstance(node.op, ast.Div):
+            return lhs / rhs
+    return None
+
+
 class TTCompilerBase(PyKernelAstBase):
     def __init__(self, name, kernel_type=None, *args, **kwargs):
         assert kernel_type in [
@@ -516,26 +547,45 @@ class TTCompilerBase(PyKernelAstBase):
         return chained_op
 
     def visit_BinOp(self, node):
-        lhs = self.visit(node.left)
-        rhs = self.visit(node.right)
-        if not lhs or not rhs:
-            raise ValueError("Binary operands not found")
+        def materialize(value):
+            if not value:
+                raise ValueError("Binary operands not found")
+            if isinstance(value, OpView):
+                value = value.result
+            if hasattr(value, "type") and isinstance(value.type, memref.MemRefType):
+                value = memref.LoadOp(
+                    value, arith.ConstantOp(IndexType.get(self.ctx), 0)
+                ).result
+            return value
 
-        # load variable if needed
-        if isinstance(lhs, OpView):
-            lhs = lhs.result
+        def try_scalar_tensor_mul(scalar, tensor_node):
+            if scalar is None:
+                return None
+            tensor_side = materialize(self.visit(tensor_node))
+            if not (
+                hasattr(tensor_side, "type")
+                and isinstance(tensor_side.type, RankedTensorType)
+            ):
+                return None
+            mlir_type = _get_type_str(tensor_side.type)
+            fn = self._fn_map.get(f"{mlir_type}.__mul__")
+            if fn is None:
+                return None
+            return fn(tensor_side, scalar)
 
-        if isinstance(rhs, OpView):
-            rhs = rhs.result
+        if isinstance(node.op, ast.Mult):
+            lhs_scalar = _eval_host_scalar_expr(node.left)
+            rhs_scalar = _eval_host_scalar_expr(node.right)
+            if not (lhs_scalar is not None and rhs_scalar is not None):
+                result = try_scalar_tensor_mul(lhs_scalar, node.right)
+                if result is not None:
+                    return result
+                result = try_scalar_tensor_mul(rhs_scalar, node.left)
+                if result is not None:
+                    return result
 
-        if hasattr(lhs, "type") and isinstance(lhs.type, memref.MemRefType):
-            lhs = memref.LoadOp(
-                lhs, arith.ConstantOp(IndexType.get(self.ctx), 0)
-            ).result
-        if hasattr(rhs, "type") and isinstance(rhs.type, memref.MemRefType):
-            rhs = memref.LoadOp(
-                rhs, arith.ConstantOp(IndexType.get(self.ctx), 0)
-            ).result
+        lhs = materialize(self.visit(node.left))
+        rhs = materialize(self.visit(node.right))
 
         # Matmul: operands have different shapes (A[M,K] @ B[K,N]), so dispatch
         # before the elementwise type-matching cast.
