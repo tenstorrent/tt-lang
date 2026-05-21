@@ -5,12 +5,6 @@ All notable changes to TT-Lang will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-### Compiler
-
-- Spec-form `ttl.block.broadcast(expr, dims, shape)` replaces `ttl.math.broadcast(input, output, dims)`. The block-level MLIR op (`ttl.block.broadcast`) carries `dims` and `shape` attributes instead of a target-block operand and supports arbitrary rank. Outer broadcast dims lower via the input affine map; the innermost two dims continue to use the `tile_bcast` hardware primitive (Row/Col/Scalar). The Python frontend now lives under `ttl.block.broadcast`; calls to `ttl.math.broadcast` raise a clear migration error pointing to the new namespace.
-
 ## Version 1.1.1
 
 ### Compiler
