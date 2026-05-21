@@ -123,6 +123,106 @@ func.func @bcast_row_fused_add(%arg0: tensor<1x2x!ttcore.tile<32x32, f32>>, %arg
 
 // -----
 
+// Column reduce -> row broadcast. REDUCE_COL leaves valid data in row 0, so
+// the consuming broadcast must use BcastType::Row (2).
+// CHECK-LABEL: func.func @bcast_row_after_col_reduce
+func.func @bcast_row_after_col_reduce() {
+  %inp_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %sc_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %red_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %out_cb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+
+  %inp_wait = ttl.cb_wait %inp_cb : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %inp_a = ttl.attach_cb %inp_wait, %inp_cb : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %sc_wait = ttl.cb_wait %sc_cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sc_a = ttl.attach_cb %sc_wait, %sc_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %red_res = ttl.cb_reserve %red_cb : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %reduced = ttl.reduce %inp_a, %sc_a 0 : i32 [0] : (tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %reduced, %red_res : tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %red_cb : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+
+  %red_wait = ttl.cb_wait %red_cb : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %red_a = ttl.attach_cb %red_wait, %red_cb : (tensor<1x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %out_res = ttl.cb_reserve %out_cb : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+
+  // CHECK: %[[RED_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 2
+  // CHECK: %[[OUT_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 3
+  // CHECK: ttl.cb_push %[[RED_CB]]
+  // CHECK: %[[RED_WAIT:.*]] = ttl.cb_wait %[[RED_CB]]
+  // CHECK: %[[RED_IN:.*]] = ttl.attach_cb %[[RED_WAIT]], %[[RED_CB]]
+  // CHECK: %[[OUT:.*]] = ttl.cb_reserve %[[OUT_CB]]
+  // CHECK: %[[INIT:.*]] = ttl.attach_cb {{.*}}, %[[OUT_CB]]
+  // CHECK: %[[COMPUTE:.*]] = ttl.compute ins(%[[RED_IN]]
+  // CHECK-SAME: outs(%[[INIT]]
+  // CHECK-NEXT: ^bb0(%[[IN_TILE:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, bf16>):
+  // CHECK-NEXT: %[[ROW:.*]] = ttl.iter_index 0
+  // CHECK-NEXT: %[[COL:.*]] = ttl.iter_index 1
+  // CHECK-NEXT: %[[BCASTED:.*]] = ttl.tile_bcast %[[IN_TILE]], %[[OUT_TILE]] 2 : i32
+  // CHECK-NEXT: ttl.tile_store %[[BCASTED]], %[[OUT]][%[[ROW]], %[[COL]]] from dst
+  // CHECK-NEXT: ttl.yield
+  // CHECK: ttl.cb_push %[[OUT_CB]]
+  %bcast = ttl.block.broadcast %red_a dims = [-2], shape = [2, 2] : tensor<1x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %bcast, %out_res : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %out_cb : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %red_cb : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %sc_cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %inp_cb : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
+// Row reduce -> column broadcast. REDUCE_ROW leaves valid data in column 0,
+// so the consuming broadcast must use BcastType::Col (1).
+// CHECK-LABEL: func.func @bcast_col_after_row_reduce
+func.func @bcast_col_after_row_reduce() {
+  %inp_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %sc_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %red_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>
+  %out_cb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+
+  %inp_wait = ttl.cb_wait %inp_cb : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %inp_a = ttl.attach_cb %inp_wait, %inp_cb : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %sc_wait = ttl.cb_wait %sc_cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sc_a = ttl.attach_cb %sc_wait, %sc_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %red_res = ttl.cb_reserve %red_cb : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  %reduced = ttl.reduce %inp_a, %sc_a 0 : i32 [1] : (tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %reduced, %red_res : tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %red_cb : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %red_wait = ttl.cb_wait %red_cb : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  %red_a = ttl.attach_cb %red_wait, %red_cb : (tensor<2x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  %out_res = ttl.cb_reserve %out_cb : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+
+  // CHECK: %[[RED_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 2
+  // CHECK: %[[OUT_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 3
+  // CHECK: ttl.cb_push %[[RED_CB]]
+  // CHECK: %[[RED_WAIT:.*]] = ttl.cb_wait %[[RED_CB]]
+  // CHECK: %[[RED_IN:.*]] = ttl.attach_cb %[[RED_WAIT]], %[[RED_CB]]
+  // CHECK: %[[OUT:.*]] = ttl.cb_reserve %[[OUT_CB]]
+  // CHECK: %[[INIT:.*]] = ttl.attach_cb {{.*}}, %[[OUT_CB]]
+  // CHECK: %[[COMPUTE:.*]] = ttl.compute ins(%[[RED_IN]]
+  // CHECK-SAME: outs(%[[INIT]]
+  // CHECK-NEXT: ^bb0(%[[IN_TILE:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, bf16>):
+  // CHECK-NEXT: %[[ROW:.*]] = ttl.iter_index 0
+  // CHECK-NEXT: %[[COL:.*]] = ttl.iter_index 1
+  // CHECK-NEXT: %[[BCASTED:.*]] = ttl.tile_bcast %[[IN_TILE]], %[[OUT_TILE]] 1 : i32
+  // CHECK-NEXT: ttl.tile_store %[[BCASTED]], %[[OUT]][%[[ROW]], %[[COL]]] from dst
+  // CHECK-NEXT: ttl.yield
+  // CHECK: ttl.cb_push %[[OUT_CB]]
+  %bcast = ttl.block.broadcast %red_a dims = [-1], shape = [2, 2] : tensor<2x1x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %bcast, %out_res : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %out_cb : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %red_cb : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %sc_cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %inp_cb : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
 // Scalar reduce -> SCALAR broadcast with dims=[-2, -1]. Verifies reduce-dim
 // tracing still accepts the derived bcast type matching the producing reduce.
 // CHECK-LABEL: func.func @bcast_scalar_after_scalar_reduce
