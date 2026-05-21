@@ -334,12 +334,12 @@ class TestNode:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.node(dims=2)
+                node_coord = ttl.node(dims=2)
                 # Should be a tuple of 2 ints
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 2
-                assert 0 <= core_coord[0] < 3
-                assert 0 <= core_coord[1] < 4
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 2
+                assert 0 <= node_coord[0] < 3
+                assert 0 <= node_coord[1] < 4
 
             @ttl.datamovement()
             def dm0():
@@ -388,14 +388,14 @@ class TestNode:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.node(dims=2)
+                node_coord = ttl.node(dims=2)
                 # Should be a tuple of 2 ints
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 2
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 2
                 # First dimension: flattened [0,1] x [0,1,2] -> [0,5]
-                assert 0 <= core_coord[0] < 6  # 2 * 3
+                assert 0 <= node_coord[0] < 6  # 2 * 3
                 # Second dimension: unchanged
-                assert 0 <= core_coord[1] < 5
+                assert 0 <= node_coord[1] < 5
 
             @ttl.datamovement()
             def dm0():
@@ -418,13 +418,13 @@ class TestNode:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.node(dims=3)
+                node_coord = ttl.node(dims=3)
                 # Should be a tuple of 3 ints
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 3
-                assert 0 <= core_coord[0] < 2
-                assert 0 <= core_coord[1] < 3
-                assert 0 <= core_coord[2] < 4
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 3
+                assert 0 <= node_coord[0] < 2
+                assert 0 <= node_coord[1] < 3
+                assert 0 <= node_coord[2] < 4
 
             @ttl.datamovement()
             def dm0():
@@ -447,13 +447,13 @@ class TestNode:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.node(dims=3)
+                node_coord = ttl.node(dims=3)
                 # Should be a tuple of 3 ints, third one padded with 0
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 3
-                assert 0 <= core_coord[0] < 2
-                assert 0 <= core_coord[1] < 3
-                assert core_coord[2] == 0  # Padded
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 3
+                assert 0 <= node_coord[0] < 2
+                assert 0 <= node_coord[1] < 3
+                assert node_coord[2] == 0  # Padded
 
             @ttl.datamovement()
             def dm0():
@@ -476,12 +476,12 @@ class TestNode:
 
             @ttl.compute()
             def compute_func():
-                core_default = ttl.node()
-                core_explicit = ttl.node(dims=2)
+                node_default = ttl.node()
+                node_explicit = ttl.node(dims=2)
                 # Should be the same
-                assert core_default == core_explicit
-                assert isinstance(core_default, tuple)
-                assert len(core_default) == 2
+                assert node_default == node_explicit
+                assert isinstance(node_default, tuple)
+                assert len(node_default) == 2
 
             @ttl.datamovement()
             def dm0():
@@ -547,19 +547,19 @@ class TestNode:
 
             @ttl.datamovement()
             def dm0():
-                core_coord = ttl.node(dims=2)
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 2
-                assert 0 <= core_coord[0] < 2
-                assert 0 <= core_coord[1] < 3
+                node_coord = ttl.node(dims=2)
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 2
+                assert 0 <= node_coord[0] < 2
+                assert 0 <= node_coord[1] < 3
 
             @ttl.datamovement()
             def dm1():
-                core_coord = ttl.node(dims=2)
-                assert isinstance(core_coord, tuple)
-                assert len(core_coord) == 2
-                assert 0 <= core_coord[0] < 2
-                assert 0 <= core_coord[1] < 3
+                node_coord = ttl.node(dims=2)
+                assert isinstance(node_coord, tuple)
+                assert len(node_coord) == 2
+                assert 0 <= node_coord[0] < 2
+                assert 0 <= node_coord[1] < 3
 
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
@@ -574,12 +574,12 @@ class TestNode:
 
             @ttl.compute()
             def compute_func():
-                core1 = ttl.node(dims=2)
-                core2 = ttl.node(dims=2)
-                core3 = ttl.node(dims=2)
+                node1 = ttl.node(dims=2)
+                node2 = ttl.node(dims=2)
+                node3 = ttl.node(dims=2)
 
                 # All calls should return the same value
-                assert core1 == core2 == core3
+                assert node1 == node2 == node3
 
             @ttl.datamovement()
             def dm0():
@@ -602,19 +602,19 @@ class TestNode:
 
             @ttl.compute()
             def compute_func():
-                core1d = ttl.node(dims=1)
-                core2d = ttl.node(dims=2)
-                core3d = ttl.node(dims=3)
+                node1d = ttl.node(dims=1)
+                node2d = ttl.node(dims=2)
+                node3d = ttl.node(dims=3)
 
                 # Verify consistency: all should be valid
-                assert isinstance(core1d, int)
-                assert isinstance(core2d, tuple) and len(core2d) == 2
-                assert isinstance(core3d, tuple) and len(core3d) == 3
+                assert isinstance(node1d, int)
+                assert isinstance(node2d, tuple) and len(node2d) == 2
+                assert isinstance(node3d, tuple) and len(node3d) == 3
 
                 # Verify ranges
-                assert 0 <= core1d < 24
-                assert 0 <= core2d[0] < 6 and 0 <= core2d[1] < 4
-                assert 0 <= core3d[0] < 2 and 0 <= core3d[1] < 3 and 0 <= core3d[2] < 4
+                assert 0 <= node1d < 24
+                assert 0 <= node2d[0] < 6 and 0 <= node2d[1] < 4
+                assert 0 <= node3d[0] < 2 and 0 <= node3d[1] < 3 and 0 <= node3d[2] < 4
 
             @ttl.datamovement()
             def dm0():

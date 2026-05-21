@@ -191,7 +191,7 @@ class TestPipeMulticast:
         set_current_kernel_type(KernelType.DM)
         grid = (100, 100)  # Set grid context for pipe operations
 
-        # Range covering 2 cores: (10,0) and (10,1)
+        # Range covering 2 nodes: (10,0) and (10,1)
         pipe = Pipe((10, 0), (10, slice(0, 2)))
 
         tile = make_full_tile(42.0)
@@ -391,16 +391,16 @@ class TestContextManagerHandlers:
         assert tensors_equal(result, tile)
 
 
-class TestPipeCoreRangeTypes:
-    """Test pipe multicast with different dst_core_range types."""
+class TestPipeNodeRangeTypes:
+    """Test pipe multicast with different dst_node_range types."""
 
     def test_pipe_single_node_int(self) -> None:
-        """Test pipe with single 1D core (int)."""
+        """Test pipe with single 1D node (int)."""
 
         set_current_kernel_type(KernelType.DM)
 
-        # Single 1D core
-        pipe = Pipe(0, 1)  # src_core=0, dst_core_range=1 (single int)
+        # Single 1D node
+        pipe = Pipe(0, 1)  # src_node=0, dst_node_range=1 (single int)
 
         tile = make_full_tile(15.0)
         src_dfb = DataflowBuffer(
@@ -432,14 +432,14 @@ class TestPipeCoreRangeTypes:
         assert tensors_equal(result, tile)
 
     def test_pipe_single_node_tuple(self) -> None:
-        """Test pipe with single multi-dimensional core (tuple)."""
+        """Test pipe with single multi-dimensional node (tuple)."""
 
         set_current_kernel_type(KernelType.DM)
 
-        # Single 2D core
+        # Single 2D node
         pipe = Pipe(
             (0, 0), (1, 1)
-        )  # src_core=(0,0), dst_core_range=(1,1) (single tuple)
+        )  # src_node=(0,0), dst_node_range=(1,1) (single tuple)
 
         tile = make_full_tile(17.0)
         src_dfb = DataflowBuffer(
@@ -470,13 +470,13 @@ class TestPipeCoreRangeTypes:
 
         assert tensors_equal(result, tile)
 
-    def test_pipe_core_range(self) -> None:
-        """Test pipe with core range (2x2 = 4 receivers)."""
+    def test_pipe_node_range(self) -> None:
+        """Test pipe with node range (2x2 = 4 receivers)."""
 
         set_current_kernel_type(KernelType.DM)
         grid = (100, 100)  # Set grid context for pipe operations
 
-        # Core range: (20,20) to (21,21) = 2x2 = 4 cores
+        # Node range: (20,20) to (21,21) = 2x2 = 4 nodes
         pipe = Pipe((20, 20), (slice(20, 22), slice(20, 22)))
 
         tile = make_full_tile(19.0)
@@ -710,12 +710,12 @@ class TestPipeKeywordConstruction:
         assert p1 == p2
 
     def test_keyword_with_slice_dst(self) -> None:
-        """Pipe(src=..., dst=...) works when dst is a CoreRange with slices."""
+        """Pipe(src=..., dst=...) works when dst is a NodeRange with slices."""
         positional = Pipe((0, 0), (slice(1, 4), 0))
         keyword = Pipe(src=(0, 0), dst=(slice(1, 4), 0))
         assert positional == keyword
 
-    def test_keyword_1d_cores(self) -> None:
+    def test_keyword_1d_nodes(self) -> None:
         """Pipe(src=int, dst=int) with keyword args works for 1-D grids."""
         positional = Pipe(0, 3)
         keyword = Pipe(src=0, dst=3)

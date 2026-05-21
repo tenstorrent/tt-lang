@@ -140,7 +140,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                                     pass
 
             grid = self.context.get("grid", (1, 1))
-            # Calculate total cores for any dimension grid
+            # Calculate total nodes for any dimension grid
             total_nodes = 1
             for dim_size in grid:
                 total_nodes *= dim_size
@@ -233,7 +233,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
             set_scheduler(scheduler)
 
             # Analyse all three kernel functions (and any reachable helpers)
-            # once before iterating over cores.  A shared visited set prevents
+            # once before iterating over nodes.  A shared visited set prevents
             # duplicate analysis when helpers are called by more than one kernel.
             ctx = get_context()
             _empty = KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())

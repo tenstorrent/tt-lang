@@ -17,7 +17,7 @@ def lazy_import_diagnostics() -> Any:
     """Lazy import of ttl.diagnostics module to avoid circular dependency.
 
     Uses file-based import rather than ``from ttl import diagnostics`` because
-    ttlang-sim shadows the ``ttl`` module with a simulator shim.
+    tt-lang-sim shadows the ``ttl`` module with a simulator shim.
 
     Returns:
         The ttl.diagnostics module

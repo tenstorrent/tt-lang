@@ -49,7 +49,7 @@ class TestCountLocalRemoteL1Dram:
     # ---- HEIGHT_SHARDED (shard_shape in elements) ----
 
     def test_height_sharded_local_access(self) -> None:
-        """Core 0 reading its own shard: all elements are local."""
+        """Node 0 reading its own shard: all elements are local."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(32, 128))
         mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
         full = ttnn.Tensor(torch.zeros(128, 128), memory_config=mc)
@@ -61,7 +61,7 @@ class TestCountLocalRemoteL1Dram:
         assert dram == 0
 
     def test_height_sharded_remote_access(self) -> None:
-        """Core 0 reading core 1's shard: all elements are remote."""
+        """Node 0 reading node 1's shard: all elements are remote."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(32, 128))
         mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
         full = ttnn.Tensor(torch.zeros(128, 128), memory_config=mc)
@@ -72,8 +72,8 @@ class TestCountLocalRemoteL1Dram:
         assert remote == 32 * 128
         assert dram == 0
 
-    def test_height_sharded_full_tensor_core0(self) -> None:
-        """Core 0 on full tensor: only its row band is local."""
+    def test_height_sharded_full_tensor_node0(self) -> None:
+        """Node 0 on full tensor: only its row band is local."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(32, 64))
         mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(128, 64), memory_config=mc)
@@ -82,8 +82,8 @@ class TestCountLocalRemoteL1Dram:
         assert remote == 96 * 64
         assert dram == 0
 
-    def test_height_sharded_each_core_local(self) -> None:
-        """Each core reading its own height shard reports all-local."""
+    def test_height_sharded_each_node_local(self) -> None:
+        """Each node reading its own height shard reports all-local."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(32, 64))
         mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
         full = ttnn.Tensor(torch.zeros(128, 64), memory_config=mc)
@@ -143,7 +143,7 @@ class TestCountLocalRemoteL1Dram:
         assert remote == 64 * 64
         assert dram == 0
 
-    def test_block_sharded_all_cores_local(self) -> None:
+    def test_block_sharded_all_nodes_local(self) -> None:
         spec = ShardSpec(shard_grid=(2, 2), shard_shape=(32, 64))
         mc = MemoryConfig(strategy=ShardingStrategy.BLOCK_SHARDED, shard_spec=spec)
         full = ttnn.Tensor(torch.zeros(64, 128), memory_config=mc)
@@ -311,7 +311,7 @@ class TestNdSharding:
             0,
         )
 
-    def test_round_robin_multi_shard_per_core(self) -> None:
+    def test_round_robin_multi_shard_per_node(self) -> None:
         spec = NdShardSpec(
             shard_shape=(32, 32),
             shard_grid=(1, 2),

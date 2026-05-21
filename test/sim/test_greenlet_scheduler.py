@@ -75,7 +75,7 @@ class TestGreenletScheduler:
         assert "kernel2" in executed
 
     def test_kernel_id_rejects_invalid_values(self) -> None:
-        """KernelId validates linear core and func_name."""
+        """KernelId validates linear node and func_name."""
 
         def fn() -> None:
             pass
@@ -90,7 +90,7 @@ class TestGreenletScheduler:
         scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "role"), fn)
 
     def test_add_kernel_rejects_duplicate_func_name_on_same_node(self) -> None:
-        """Two DM kernels with the same __name__ on the same core is rejected.
+        """Two DM kernels with the same __name__ on the same node is rejected.
 
         This is the registration-time enforcement of the uniqueness invariant
         that ``KernelId`` relies on: identity is
@@ -109,9 +109,9 @@ class TestGreenletScheduler:
         with pytest.raises(RuntimeError, match="Duplicate kernel registration"):
             scheduler.add_kernel(KernelId(0, KernelType.DM, "reader"), dm_b)
 
-        # Different core: allowed.
+        # Different node: allowed.
         scheduler.add_kernel(KernelId(1, KernelType.DM, "reader"), dm_b)
-        # Different kind on same core: allowed (compute vs DM).
+        # Different kind on same node: allowed (compute vs DM).
         scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "reader"), dm_a)
 
     def test_kernel_display_name_matches_program_convention(self) -> None:

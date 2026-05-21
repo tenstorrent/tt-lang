@@ -837,7 +837,7 @@ class TestSimStats:
             stats = self._run_stats(trace_path)
             assert stats.returncode == 0, f"sim-stats failed: {stats.stderr}"
             assert "Dataflow Buffer Statistics" in stats.stdout
-            assert "Core" in stats.stdout
+            assert "Node" in stats.stdout
             assert "Reserves" in stats.stdout
             assert "Waits" in stats.stdout
         finally:

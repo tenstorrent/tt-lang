@@ -37,7 +37,7 @@ The hardware CI batch (`.github/scripts/compile-and-run-examples.sh`) uses the s
 | `eltwise_add_3d.py` | real | yes | yes | |
 | `errors/eltwise_add_error.py` | real | negative test (expect failure) | skip | Demonstrates a bad copy; must not exit 0. |
 | `eltwise_pipe.py` | real | yes | yes | |
-| `eltwise_pipe_core3.py` | real | yes | yes | |
+| `eltwise_pipe_node3.py` | real | yes | yes | |
 | `matmul.py` | sim | yes | skip | Sim-backed; not in hardware batch until migrated (unlike `broadcast_demo.py`). |
 | `matmul_explicit_acc.py` | real | yes | yes | |
 | `singlecore_matmul.py` | real | yes | yes | |
