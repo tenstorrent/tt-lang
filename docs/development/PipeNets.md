@@ -97,27 +97,31 @@ def transfer():
             net.if_dst(recv)
 ```
 
-The send cannot complete until the receiver publishes `dst_blk`, but the
-receive post is sequenced after the blocking send in the same thread:
+The send waits until every destination has published a reserved DFB slot
+address. In this same-thread loopback schedule, that publication is placed
+after the blocking send, so the thread can never reach it:
 
 ```text
-same data-movement thread
+same data-movement kernel (thread):
 
-program order:
-  send copy + wait  ------------------>  receive post
-
-wait-for dependency:
-  send copy + wait  waits for dst address from receive post
-
-cycle:
-  [send copy + wait] --program order--> [receive post]
-          ^                                  |
-          |                                  |
-          +-------- waits for address -------+
+Kernel                 Send operation                  Receive post
+  |                          |                               |
+  | ttl.copy(src, pipe).wait()                               |
+  |------------------------->|                               |
+  |                          | waits for destination address |
+  |                          |------------------------------>|
+  |                          |                               |
+  | blocked here             |                               |
+  |                          |                               |
+  | ttl.copy(pipe, dst) would publish the address,           |
+  | but this later operation is never reached.               |
+  |                          |                               |
+  |                          |<------------------------------|
+  |                          | address publication needed    |
 ```
 
 Valid same-thread loopback schedules post the receive first, then post
-the send, then wait for completion.
+and wait for the send, then wait for receive completion.
 
 ```python
 @ttl.datamovement()
