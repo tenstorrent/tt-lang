@@ -30,7 +30,6 @@ def flash_attention(
     K_all,
     V_all,
     scale_tile,
-    scaler,
     neg_inf_tile,
     zero_tile,
     zero_head,
@@ -48,7 +47,6 @@ def flash_attention(
         V_all, shape=(KV_CHUNK, HD_TILES), block_count=2
     )
     sc_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), block_count=1)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
     ninf_dfb = ttl.make_dataflow_buffer_like(neg_inf_tile, shape=(1, 1), block_count=1)
     zero_dfb = ttl.make_dataflow_buffer_like(zero_tile, shape=(1, 1), block_count=1)
     zero_head_dfb = ttl.make_dataflow_buffer_like(
@@ -96,7 +94,6 @@ def flash_attention(
         with (
             q_dfb.wait() as q,
             sc_dfb.wait() as scale,
-            scaler_dfb.wait() as sclr,
             ninf_dfb.wait() as ninf,
             zero_dfb.wait() as zero,
             zero_head_dfb.wait() as zh,
@@ -122,7 +119,7 @@ def flash_attention(
 
                 with scaled_dfb.wait() as sv:
                     with chunk_max_dfb.reserve() as cm:
-                        cm.store(ttl.math.reduce_max(sv, sclr, dims=[1]))
+                        cm.store(ttl.math.reduce_max(sv, dims=[1]))
                     with scaled_dfb.reserve() as sv_copy:
                         sv_copy.store(sv)
 
@@ -147,7 +144,7 @@ def flash_attention(
 
                 with exp_dfb.wait() as ex:
                     with chunk_sum_dfb.reserve() as cs:
-                        cs.store(ttl.math.reduce_sum(ex, sclr, dims=[1]))
+                        cs.store(ttl.math.reduce_sum(ex, dims=[1]))
                     with exp_dfb.reserve() as ex_copy:
                         ex_copy.store(ex)
 
@@ -197,9 +194,6 @@ def flash_attention(
         with sc_dfb.reserve() as blk:
             tx = ttl.copy(scale_tile[0, 0], blk)
             tx.wait()
-        with scaler_dfb.reserve() as blk:
-            tx = ttl.copy(scaler[0, 0], blk)
-            tx.wait()
         with ninf_dfb.reserve() as blk:
             tx = ttl.copy(neg_inf_tile[0, 0], blk)
             tx.wait()
@@ -247,7 +241,6 @@ def test_flash_attention_ambiguous_store_broadcast(device):
         zeros((N_KV * padded_seq, hd)),  # K
         zeros((N_KV * padded_seq, hd)),  # V
         scalar,  # scale
-        scalar,  # scaler
         scalar,  # neg_inf
         scalar,  # zero
         zeros((TILE, hd)),  # zero_head

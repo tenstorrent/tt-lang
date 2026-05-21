@@ -28,18 +28,30 @@ def _get_constant_int(val):
     raise ValueError(f"Expected int or arith.ConstantOp, got {type(val)}")
 
 
-def _get_constant_float(val):
-    """Extract Python float from MLIR arith.ConstantOp or return as-is if already float."""
-    if isinstance(val, (float, int)):
+def _as_host_scalar(val):
+    """Return `val` as a Python float if it is a Python int/float, an
+    arith.ConstantOp, or an MLIR Value defined by arith.ConstantOp.
+    Otherwise return None. Torch 0-dim tensors are not recognized."""
+    if isinstance(val, (int, float)):
         return float(val)
-    if isinstance(val, arith.ConstantOp):
-        return float(val.literal_value)
-    raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
+    const_op = val if isinstance(val, arith.ConstantOp) else None
+    if const_op is None and isinstance(getattr(val, "owner", None), arith.ConstantOp):
+        const_op = val.owner
+    if const_op is None:
+        return None
+    try:
+        return float(const_op.literal_value)
+    except (TypeError, ValueError):
+        return None
 
 
-def _is_ranked_tensor_value(val) -> bool:
-    """Return true for DSL values that can be passed as ranked tensor operands."""
-    return hasattr(val, "type") and isinstance(val.type, RankedTensorType)
+def _get_constant_float(val):
+    """Extract Python float from `val` (Python int/float or arith.ConstantOp).
+    Raises ValueError if `val` is not a recognized host scalar."""
+    result = _as_host_scalar(val)
+    if result is None:
+        raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
+    return result
 
 
 # Type aliases for common patterns
@@ -92,9 +104,28 @@ class TensorBlock:
         """Element-wise subtraction using ttl.sub."""
         return ttl.sub(ast_self.type, ast_self, rhs)
 
-    def __mul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Element-wise multiplication using ttl.mul."""
+    def __mul__(ast_self: TensorBlock, rhs) -> TensorBlock:
+        """Multiplication.
+
+        If `rhs` is a host-side scalar (Python int/float or torch 0-dim
+        float tensor), emit `ttl.mul_unary_const(self, rhs)`. Otherwise
+        treat `rhs` as a TensorBlock and emit `ttl.mul`.
+        """
+        c = _as_host_scalar(rhs)
+        if c is not None:
+            ctx = ast_self.type.context
+            value_attr = FloatAttr.get(F32Type.get(ctx), c)
+            return ttl.mul_unary_const(ast_self, value_attr)
         return ttl.mul(ast_self.type, ast_self, rhs)
+
+    def __rmul__(ast_self: TensorBlock, lhs) -> TensorBlock:
+        """Reflected multiplication for `scalar * self`."""
+        c = _as_host_scalar(lhs)
+        if c is not None:
+            ctx = ast_self.type.context
+            value_attr = FloatAttr.get(F32Type.get(ctx), c)
+            return ttl.mul_unary_const(ast_self, value_attr)
+        return NotImplemented
 
     def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise division using ttl.div."""
@@ -573,23 +604,8 @@ def broadcast(
     return ttl.bcast(output.type, input, output, bcast_attr)
 
 
-def _materialize_reduce_scaler(input_type: RankedTensorType, scaler) -> TensorBlock:
-    """Materialize a numeric reduce scaler as a 1x1 fill tensor."""
-    if _is_ranked_tensor_value(scaler):
-        return scaler
-
-    fill_val = _get_constant_float(scaler)
-    ctx = input_type.context
-    scaler_type = RankedTensorType.get(
-        [1, 1], input_type.element_type, input_type.encoding
-    )
-    value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
-    return ttl.fill(scaler_type, value_attr)
-
-
 def _reduce_impl(
     input: TensorBlock,
-    scaler: Union[TensorBlock, int, float],
     dims: List[int],
     reduce_type: int,
 ) -> TensorBlock:
@@ -621,32 +637,29 @@ def _reduce_impl(
     i32_type = IntegerType.get_signless(32, ctx)
     reduce_type_attr = IntegerAttr.get(i32_type, reduce_type)
     dims_attr = DenseI64ArrayAttr.get(dims, ctx)
-    scaler_value = _materialize_reduce_scaler(input_type, scaler)
-    return ttl.reduce(result_type, input, scaler_value, reduce_type_attr, dims_attr)
+    scaler_type = RankedTensorType.get(
+        [1, 1], input_type.element_type, input_type.encoding
+    )
+    scaler = ttl.fill(scaler_type, FloatAttr.get(F32Type.get(ctx), 1.0))
+    return ttl.reduce(result_type, input, scaler, reduce_type_attr, dims_attr)
 
 
 @syntax("reduce_sum")
-def reduce_sum(
-    input: TensorBlock, scaler: Union[TensorBlock, int, float], *, dims: List[int]
-) -> TensorBlock:
-    """Scaled sum reduction over specified dimensions.
+def reduce_sum(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+    """Sum reduction over specified dimensions.
 
-    The scaler may be a 1x1 tensor block or a numeric constant. Numeric
-    constants are materialized as a 1x1 fill tensor before lowering.
+    To scale the result by a constant, multiply: `c * reduce_sum(x, dims=...)`.
     """
-    return _reduce_impl(input, scaler, dims, reduce_type=0)
+    return _reduce_impl(input, dims, reduce_type=0)
 
 
 @syntax("reduce_max")
-def reduce_max(
-    input: TensorBlock, scaler: Union[TensorBlock, int, float], *, dims: List[int]
-) -> TensorBlock:
-    """Scaled max reduction over specified dimensions.
+def reduce_max(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+    """Max reduction over specified dimensions.
 
-    The scaler may be a 1x1 tensor block or a numeric constant. Numeric
-    constants are materialized as a 1x1 fill tensor before lowering.
+    To scale the result by a constant, multiply: `c * reduce_max(x, dims=...)`.
     """
-    return _reduce_impl(input, scaler, dims, reduce_type=1)
+    return _reduce_impl(input, dims, reduce_type=1)
 
 
 @syntax("transpose")

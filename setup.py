@@ -10,6 +10,7 @@ import glob
 import os
 import pathlib
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -33,22 +34,28 @@ class NoSdist(_sdist):
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
-def _ttnn_requirement():
-    """Build the platform-conditional ttnn requirement from the canonical
-    tt-metal version.
+def _read_tt_metal_version_var(name):
+    """Read a shell variable from third-party/tt-metal-version.
 
-    third-party/tt-metal-version holds a single tt-metal release tag (e.g.
-    `v0.69.0`); the matching ttnn PyPI version is the tag minus the leading
-    `v`. ttnn only publishes wheels for Linux x86_64 / aarch64, so the
-    requirement is conditioned on those platforms via a PEP 508 marker;
-    on macOS / Windows it is silently skipped (those platforms are
-    sim-only via the separate `tt-lang-sim` package).
+    The file is a sourceable shell snippet (`KEY="value"` assignments).
+    Expected names: TTNN_PYPI, TT_METAL_TAG. See the file's header.
     """
     version_file = REPO_ROOT / "third-party" / "tt-metal-version"
-    tag = version_file.read_text().strip()
-    if not tag.startswith("v"):
-        raise SystemExit(f"{version_file}: '{tag}' must start with 'v'")
-    version = tag[1:]
+    text = version_file.read_text()
+    match = re.search(rf'^{re.escape(name)}="([^"]*)"$', text, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"{version_file}: variable '{name}' not found")
+    return match.group(1)
+
+
+def _ttnn_requirement():
+    """Build the platform-conditional ttnn requirement from
+    third-party/tt-metal-version. ttnn only publishes wheels for Linux
+    x86_64 / aarch64, so the requirement is conditioned on those platforms
+    via a PEP 508 marker; on macOS / Windows it is silently skipped (those
+    platforms are sim-only via the separate `tt-lang-sim` package).
+    """
+    version = _read_tt_metal_version_var("TTNN_PYPI")
     marker = (
         "sys_platform == 'linux' "
         "and (platform_machine == 'x86_64' or platform_machine == 'aarch64')"

@@ -38,13 +38,10 @@ REDUCE_KERNEL_TEMPLATE = '''
 import ttl
 
 @ttl.operation(grid=(1, 1))
-def reduce_kernel(inp, scaler, out):
-    """Reduce {reduce_fn} dims={dims} on ({inp_rows},{inp_cols}) grid."""
+def reduce_kernel(inp, out):
+    """Reduce {reduce_fn} dims={dims} scaler={scaler_expr} on ({inp_rows},{inp_cols}) grid."""
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({inp_rows}, {inp_cols}), block_count=2
-    )
-    scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=({out_rows}, {out_cols}), block_count=2
@@ -52,9 +49,8 @@ def reduce_kernel(inp, scaler, out):
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as inp_blk, scaler_dfb.wait() as scaler_blk, out_dfb.reserve() as out_blk:
-            result = ttl.math.{reduce_fn}(inp_blk, scaler_blk, dims={dims})
-            out_blk.store(result)
+        with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
+            out_blk.store({scaler_expr} * ttl.math.{reduce_fn}(inp_blk, dims={dims}))
 
     @ttl.datamovement()
     def dm_read():
@@ -62,10 +58,6 @@ def reduce_kernel(inp, scaler, out):
         tx_inp = ttl.copy(inp[{inp_slice}], inp_blk)
         tx_inp.wait()
         inp_blk.push()
-        scaler_blk = scaler_dfb.reserve()
-        tx_scaler = ttl.copy(scaler[0, 0], scaler_blk)
-        tx_scaler.wait()
-        scaler_blk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -79,13 +71,10 @@ MULTICORE_REDUCE_KERNEL_TEMPLATE = '''
 import ttl
 
 @ttl.operation(grid=({grid_cols}, {grid_rows}))
-def reduce_kernel(inp, scaler, out):
-    """Multicore reduce {reduce_fn} dims={dims}, each core reduces its own tile."""
+def reduce_kernel(inp, out):
+    """Multicore reduce {reduce_fn} dims={dims} scaler={scaler_expr}, each core reduces its own tile."""
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=(1, 1), block_count=2
-    )
-    scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(1, 1), block_count=2
@@ -93,9 +82,8 @@ def reduce_kernel(inp, scaler, out):
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as inp_blk, scaler_dfb.wait() as scaler_blk, out_dfb.reserve() as out_blk:
-            result = ttl.math.{reduce_fn}(inp_blk, scaler_blk, dims={dims})
-            out_blk.store(result)
+        with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
+            out_blk.store({scaler_expr} * ttl.math.{reduce_fn}(inp_blk, dims={dims}))
 
     @ttl.datamovement()
     def dm_read():
@@ -104,10 +92,6 @@ def reduce_kernel(inp, scaler, out):
         tx_inp = ttl.copy(inp[core_y, core_x], inp_blk)
         tx_inp.wait()
         inp_blk.push()
-        scaler_blk = scaler_dfb.reserve()
-        tx_scaler = ttl.copy(scaler[0, 0], scaler_blk)
-        tx_scaler.wait()
-        scaler_blk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -140,11 +124,12 @@ def _compute_out_shape(
 
 
 def make_reduce_kernel(
-    reduce_fn: str, inp_rows: int, inp_cols: int, dims: List[int]
+    reduce_fn: str, inp_rows: int, inp_cols: int, dims: List[int], scaler_val: float
 ) -> Callable:
     """Generate and cache a reduce kernel for the given configuration."""
     out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
-    cache_key = (reduce_fn, inp_rows, inp_cols, tuple(dims))
+    scaler_expr = repr(float(scaler_val))
+    cache_key = (reduce_fn, inp_rows, inp_cols, tuple(dims), scaler_expr)
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
@@ -155,6 +140,7 @@ def make_reduce_kernel(
         out_rows=out_rows,
         out_cols=out_cols,
         dims=dims,
+        scaler_expr=scaler_expr,
         inp_slice=_slice_syntax(inp_rows, inp_cols),
         out_slice=_slice_syntax(out_rows, out_cols),
     )
@@ -179,10 +165,15 @@ def make_reduce_kernel(
 
 
 def make_multicore_reduce_kernel(
-    reduce_fn: str, grid_rows: int, grid_cols: int, dims: List[int]
+    reduce_fn: str,
+    grid_rows: int,
+    grid_cols: int,
+    dims: List[int],
+    scaler_val: float,
 ) -> Callable:
     """Generate a multicore reduce kernel (1 tile per core)."""
-    cache_key = ("multicore", reduce_fn, grid_rows, grid_cols, tuple(dims))
+    scaler_expr = repr(float(scaler_val))
+    cache_key = ("multicore", reduce_fn, grid_rows, grid_cols, tuple(dims), scaler_expr)
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
@@ -191,6 +182,7 @@ def make_multicore_reduce_kernel(
         grid_rows=grid_rows,
         grid_cols=grid_cols,
         dims=dims,
+        scaler_expr=scaler_expr,
     )
 
     with tempfile.NamedTemporaryFile(
@@ -226,14 +218,6 @@ atexit.register(_cleanup_temp_files)
 # =============================================================================
 # Scaler helper
 # =============================================================================
-
-
-def create_scaler_tile(value: float = 1.0, dtype=torch.bfloat16):
-    """Scaler tile with value in first row of each 16x16 face."""
-    tile = torch.zeros((TILE, TILE), dtype=dtype)
-    tile[0, :] = value
-    tile[16, :] = value
-    return tile
 
 
 # =============================================================================
@@ -632,17 +616,15 @@ def test_reduce_single_tile(
 ):
     """Single-tile reduce with parameterized inputs."""
     inp_rows, inp_cols = inp_shape
-    kernel = make_reduce_kernel(reduce_fn, inp_rows, inp_cols, dims)
+    kernel = make_reduce_kernel(reduce_fn, inp_rows, inp_cols, dims, scaler_val)
 
     inp_torch = inp_factory(dtype)
-    scaler_torch = create_scaler_tile(scaler_val, dtype=dtype)
     out_torch = torch.zeros(TILE, TILE, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out)
 
     expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, scaler_val)
@@ -663,18 +645,16 @@ def test_reduce_multi_tile(
     """Multi-tile reduce with parameterized grid shapes."""
     inp_rows, inp_cols = inp_shape
     out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
-    kernel = make_reduce_kernel(reduce_fn, inp_rows, inp_cols, dims)
+    kernel = make_reduce_kernel(reduce_fn, inp_rows, inp_cols, dims, scaler_val)
 
     inp_torch = inp_factory(dtype)
-    scaler_torch = create_scaler_tile(scaler_val, dtype=dtype)
     out_shape = (out_rows * TILE, out_cols * TILE)
     out_torch = torch.zeros(out_shape, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out)
 
     expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, scaler_val)
@@ -708,7 +688,7 @@ def test_reduce_multicore(
     device, grid_rows, grid_cols, reduce_fn, dims, test_id, dtype
 ):
     """Each core in the grid independently reduces its own tile."""
-    kernel = make_multicore_reduce_kernel(reduce_fn, grid_rows, grid_cols, dims)
+    kernel = make_multicore_reduce_kernel(reduce_fn, grid_rows, grid_cols, dims, 1.0)
 
     tensor_rows = grid_rows * TILE
     tensor_cols = grid_cols * TILE
@@ -716,14 +696,12 @@ def test_reduce_multicore(
         inp_torch = torch.randn(tensor_rows, tensor_cols, dtype=dtype)
     else:
         inp_torch = torch.ones(tensor_rows, tensor_cols, dtype=dtype)
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_torch = torch.zeros(tensor_rows, tensor_cols, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out).float()
 
     # Each core writes its scalar reduction at the [0,0] of its output tile.
@@ -763,13 +741,10 @@ L1_ACC_TEMPLATE = '''
 import ttl
 
 @ttl.operation(grid=(1, 1), options="--no-ttl-maximize-dst")
-def reduce_kernel(inp, scaler, out):
-    """Reduce {reduce_fn} dims={dims} with L1 accumulation."""
+def reduce_kernel(inp, out):
+    """Reduce {reduce_fn} dims={dims} scaler={scaler_expr} with L1 accumulation."""
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({inp_rows}, {inp_cols}), block_count=2
-    )
-    scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=({out_rows}, {out_cols}), block_count=2
@@ -777,9 +752,8 @@ def reduce_kernel(inp, scaler, out):
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as inp_blk, scaler_dfb.wait() as scaler_blk, out_dfb.reserve() as out_blk:
-            result = ttl.math.{reduce_fn}(inp_blk, scaler_blk, dims={dims})
-            out_blk.store(result)
+        with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
+            out_blk.store({scaler_expr} * ttl.math.{reduce_fn}(inp_blk, dims={dims}))
 
     @ttl.datamovement()
     def dm_read():
@@ -787,10 +761,6 @@ def reduce_kernel(inp, scaler, out):
         tx_inp = ttl.copy(inp[{inp_slice}], inp_blk)
         tx_inp.wait()
         inp_blk.push()
-        scaler_blk = scaler_dfb.reserve()
-        tx_scaler = ttl.copy(scaler[0, 0], scaler_blk)
-        tx_scaler.wait()
-        scaler_blk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -802,10 +772,11 @@ def reduce_kernel(inp, scaler, out):
 
 
 def _make_l1_acc_kernel(
-    reduce_fn: str, inp_rows: int, inp_cols: int, dims: List[int]
+    reduce_fn: str, inp_rows: int, inp_cols: int, dims: List[int], scaler_val: float
 ) -> Callable:
     out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
-    cache_key = (reduce_fn, inp_rows, inp_cols, tuple(dims))
+    scaler_expr = repr(float(scaler_val))
+    cache_key = (reduce_fn, inp_rows, inp_cols, tuple(dims), scaler_expr)
     if cache_key in _l1_kernel_cache:
         return _l1_kernel_cache[cache_key]
 
@@ -816,6 +787,7 @@ def _make_l1_acc_kernel(
         out_rows=out_rows,
         out_cols=out_cols,
         dims=dims,
+        scaler_expr=scaler_expr,
         inp_slice=_slice_syntax(inp_rows, inp_cols),
         out_slice=_slice_syntax(out_rows, out_cols),
     )
@@ -881,18 +853,16 @@ def test_reduce_l1_accumulation(
     """Multi-tile reduce_sum with L1 accumulation (maximize_dst=false)."""
     inp_rows, inp_cols = inp_shape
     out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
-    kernel = _make_l1_acc_kernel(reduce_fn, inp_rows, inp_cols, dims)
+    kernel = _make_l1_acc_kernel(reduce_fn, inp_rows, inp_cols, dims, scaler_val)
 
     inp_torch = inp_factory(dtype)
-    scaler_torch = create_scaler_tile(scaler_val, dtype=dtype)
     out_shape = (out_rows * TILE, out_cols * TILE)
     out_torch = torch.zeros(*out_shape, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out)
 
     expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, scaler_val)
@@ -909,15 +879,12 @@ REDUCE_BCAST_TEMPLATE = """
 import ttl
 
 @ttl.operation(grid=(1, 1))
-def reduce_bcast_kernel(inp, scaler, out):
+def reduce_bcast_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({inp_rows}, {inp_cols}), block_count=2
     )
-    scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), block_count=2
-    )
     reduced_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=({red_rows}, {red_cols}), block_count=2
+        out, shape=({red_rows}, {red_cols}), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=({inp_rows}, {inp_cols}), block_count=2
@@ -925,9 +892,9 @@ def reduce_bcast_kernel(inp, scaler, out):
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as x, scaler_dfb.wait() as s:
+        with inp_dfb.wait() as x:
             with reduced_dfb.reserve() as r:
-                r.store(ttl.math.{reduce_fn}(x, s, dims={dims}))
+                r.store(ttl.math.{reduce_fn}(x, dims={dims}))
             with reduced_dfb.wait() as r, out_dfb.reserve() as o:
                 o.store(ttl.math.broadcast(r, o, dims={dims}))
 
@@ -936,9 +903,6 @@ def reduce_bcast_kernel(inp, scaler, out):
         blk = inp_dfb.reserve()
         ttl.copy(inp[{inp_slice}], blk).wait()
         blk.push()
-        sblk = scaler_dfb.reserve()
-        ttl.copy(scaler[0, 0], sblk).wait()
-        sblk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -1019,14 +983,12 @@ def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id, dty
     kernel = _make_reduce_bcast_kernel(reduce_fn, inp_rows, inp_cols, dims)
 
     inp_torch = torch.rand(inp_rows * TILE, inp_cols * TILE, dtype=dtype)
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_torch = torch.zeros(inp_rows * TILE, inp_cols * TILE, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out)
 
     inp_f = inp_torch.float()
@@ -1056,17 +1018,15 @@ def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id, dty
 )
 def test_reduce_dram(device, reduce_fn, dims, test_id, dtype):
     """Single-tile reduce with DRAM-interleaved tensors."""
-    kernel = make_reduce_kernel(reduce_fn, 1, 1, dims)
+    kernel = make_reduce_kernel(reduce_fn, 1, 1, dims, 1.0)
 
     inp_torch = torch.rand(TILE, TILE, dtype=dtype)
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_torch = torch.zeros(TILE, TILE, dtype=dtype)
 
     inp = to_dram(inp_torch, device)
-    scaler = to_dram(scaler_torch, device)
     out = to_dram(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out)
 
     expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, 1.0)
@@ -1083,12 +1043,9 @@ MULTICORE_ROW_COL_TEMPLATE = """
 import ttl
 
 @ttl.operation(grid=({grid_rows}, {grid_cols}))
-def reduce_kernel(inp, scaler, out):
+def reduce_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=(1, {inp_cols}), block_count=2
-    )
-    scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(1, {out_cols}), block_count=2
@@ -1096,10 +1053,8 @@ def reduce_kernel(inp, scaler, out):
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as inp_blk, scaler_dfb.wait() as scaler_blk:
-            with out_dfb.reserve() as out_blk:
-                result = ttl.math.{reduce_fn}(inp_blk, scaler_blk, dims={dims})
-                out_blk.store(result)
+        with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
+            out_blk.store(ttl.math.{reduce_fn}(inp_blk, dims={dims}))
 
     @ttl.datamovement()
     def dm_read():
@@ -1107,9 +1062,6 @@ def reduce_kernel(inp, scaler, out):
         inp_blk = inp_dfb.reserve()
         ttl.copy(inp[y, x * {inp_cols} : x * {inp_cols} + {inp_cols}], inp_blk).wait()
         inp_blk.push()
-        sblk = scaler_dfb.reserve()
-        ttl.copy(scaler[0, 0], sblk).wait()
-        sblk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -1191,15 +1143,13 @@ def test_reduce_multicore_row_col(
     total_rows = grid_rows * TILE
     total_cols = grid_cols * inp_cols * TILE
     inp_torch = torch.rand(total_rows, total_cols, dtype=dtype)
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_total_cols = grid_cols * out_cols * TILE
     out_torch = torch.zeros(total_rows, out_total_cols, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out)
 
     # Verify first core's populated reduction slice.
@@ -1222,12 +1172,9 @@ MULTICORE_MULTITILE_TEMPLATE = """
 import ttl
 
 @ttl.operation(grid=({grid_rows}, {grid_cols}))
-def reduce_kernel(inp, scaler, out):
+def reduce_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({tile_rows}, {tile_cols}), block_count=2
-    )
-    scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=({out_tile_rows}, {out_tile_cols}), block_count=2
@@ -1235,9 +1182,8 @@ def reduce_kernel(inp, scaler, out):
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as inp_blk, scaler_dfb.wait() as scaler_blk:
-            with out_dfb.reserve() as out_blk:
-                out_blk.store(ttl.math.{reduce_fn}(inp_blk, scaler_blk, dims={dims}))
+        with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
+            out_blk.store(ttl.math.{reduce_fn}(inp_blk, dims={dims}))
 
     @ttl.datamovement()
     def dm_read():
@@ -1246,9 +1192,6 @@ def reduce_kernel(inp, scaler, out):
         ttl.copy(inp[y * {tile_rows} : y * {tile_rows} + {tile_rows},
                      x * {tile_cols} : x * {tile_cols} + {tile_cols}], inp_blk).wait()
         inp_blk.push()
-        sblk = scaler_dfb.reserve()
-        ttl.copy(scaler[0, 0], sblk).wait()
-        sblk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -1341,7 +1284,6 @@ def test_reduce_multicore_multitile(
     total_rows = grid_rows * tile_rows * TILE
     total_cols = grid_cols * tile_cols * TILE
     inp_torch = torch.rand(total_rows, total_cols, dtype=dtype)
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
 
     out_tile_rows = 1 if 0 in dims else tile_rows
     out_tile_cols = 1 if 1 in dims else tile_cols
@@ -1350,10 +1292,9 @@ def test_reduce_multicore_multitile(
     out_torch = torch.zeros(out_rows, out_cols, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out)
 
     # Check first core's populated reduction slice.
@@ -1376,7 +1317,7 @@ BCAST_REDUCE_TEMPLATE = """
 import ttl
 
 @ttl.operation(grid=({grid_rows}, {grid_cols}))
-def bcast_reduce_kernel(inp, bcast_in, scaler, out):
+def bcast_reduce_kernel(inp, bcast_in, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({tile_rows}, {tile_cols}), block_count=2
     )
@@ -1385,9 +1326,6 @@ def bcast_reduce_kernel(inp, bcast_in, scaler, out):
     )
     bcast_out_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({tile_rows}, {tile_cols}), block_count=2
-    )
-    scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), block_count=2
     )
     add_out_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({tile_rows}, {tile_cols}), block_count=2
@@ -1404,8 +1342,8 @@ def bcast_reduce_kernel(inp, bcast_in, scaler, out):
         with inp_dfb.wait() as x, bcast_out_dfb.wait() as bv, add_out_dfb.reserve() as ao:
             ao.store(x + bv)
 
-        with add_out_dfb.wait() as av, scaler_dfb.wait() as s, out_dfb.reserve() as o:
-            o.store(ttl.math.reduce_sum(av, s, dims=[0, 1]))
+        with add_out_dfb.wait() as av, out_dfb.reserve() as o:
+            o.store(ttl.math.reduce_sum(av, dims=[0, 1]))
 
     @ttl.datamovement()
     def dm_read():
@@ -1417,9 +1355,6 @@ def bcast_reduce_kernel(inp, bcast_in, scaler, out):
         bblk = bcast_dfb.reserve()
         ttl.copy(bcast_in[0, 0], bblk).wait()
         bblk.push()
-        sblk = scaler_dfb.reserve()
-        ttl.copy(scaler[0, 0], sblk).wait()
-        sblk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -1460,15 +1395,13 @@ def test_bcast_then_reduce_multicore_multitile(device, dtype):
     bcast_torch = torch.zeros(TILE, TILE, dtype=dtype)
     bcast_torch[0, 0] = 2.0
     bcast_torch[16, 0] = 2.0
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_torch = torch.zeros(grid_rows * TILE, grid_cols * TILE, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     bcast_in = to_l1(bcast_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, bcast_in, scaler, out)
+    kernel(inp, bcast_in, out)
     result = ttnn.to_torch(out).float()
 
     # Each core: sum((1.0 + 2.0) * 2*2 tiles * 32*32 elements) = 3.0 * 4096 = 12288
@@ -1487,19 +1420,18 @@ def test_bcast_then_reduce_multicore_multitile(device, dtype):
 
 
 @ttl.operation(grid=(1, 1))
-def matmul_then_reduce_kernel(mat_a, mat_b, scaler, out):
+def matmul_then_reduce_kernel(mat_a, mat_b, out):
     a_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=(1, 1), block_count=2)
     mm_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), block_count=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
         with a_dfb.wait() as a, b_dfb.wait() as b, mm_dfb.reserve() as mm:
             mm.store(a @ b)
-        with mm_dfb.wait() as mm, scaler_dfb.wait() as s, out_dfb.reserve() as o:
-            o.store(ttl.math.reduce_sum(mm, s, dims=[0, 1]))
+        with mm_dfb.wait() as mm, out_dfb.reserve() as o:
+            o.store(ttl.math.reduce_sum(mm, dims=[0, 1]))
 
     @ttl.datamovement()
     def dm_read():
@@ -1509,9 +1441,6 @@ def matmul_then_reduce_kernel(mat_a, mat_b, scaler, out):
         bblk = b_dfb.reserve()
         ttl.copy(mat_b[0, 0], bblk).wait()
         bblk.push()
-        sblk = scaler_dfb.reserve()
-        ttl.copy(scaler[0, 0], sblk).wait()
-        sblk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -1525,15 +1454,13 @@ def test_matmul_then_reduce(device, dtype):
     """matmul(A, B) -> reduce_sum: single tile."""
     a_torch = torch.rand(TILE, TILE, dtype=dtype)
     b_torch = torch.rand(TILE, TILE, dtype=dtype)
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_torch = torch.zeros(TILE, TILE, dtype=dtype)
 
     a = to_l1(a_torch, device)
     b = to_l1(b_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    matmul_then_reduce_kernel(a, b, scaler, out)
+    matmul_then_reduce_kernel(a, b, out)
     result = ttnn.to_torch(out).float()
 
     expected_val = (a_torch.float() @ b_torch.float()).sum().item()
@@ -1555,11 +1482,10 @@ REDUCE_BCAST_MATMUL_TEMPLATE = """
 import ttl
 
 @ttl.operation(grid=(1, 1), fp32_dest_acc_en=True)
-def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
+def reduce_bcast_matmul_kernel(reduce_in, mat_b, out):
     reduce_dfb = ttl.make_dataflow_buffer_like(reduce_in, shape=({mt}, {kt}), block_count=2)
-    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
-    red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
-    bcast_dfb = ttl.make_dataflow_buffer_like(scaler, shape=({mt}, 1), block_count=2)
+    red_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, 1), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=(1, {nt}), block_count=2)
     partial_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, {nt}), block_count=2)
     acc_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, {nt}), block_count=2)
@@ -1567,9 +1493,9 @@ def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
 
     @ttl.compute()
     def compute_fn():
-        with reduce_dfb.wait() as r_in, sc_dfb.wait() as s:
+        with reduce_dfb.wait() as r_in:
             with red_dfb.reserve() as r_out:
-                r_out.store(ttl.math.reduce_sum(r_in, s, dims=[0, 1]))
+                r_out.store(ttl.math.reduce_sum(r_in, dims=[0, 1]))
         with red_dfb.wait() as r_val, bcast_dfb.reserve() as b_out:
             b_out.store(ttl.math.broadcast(r_val, b_out, dims=[0, 1]))
 
@@ -1598,9 +1524,6 @@ def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
         rblk = reduce_dfb.reserve()
         ttl.copy(reduce_in[0:{mt}, 0:{kt}], rblk).wait()
         rblk.push()
-        sblk = sc_dfb.reserve()
-        ttl.copy(scaler[0, 0], sblk).wait()
-        sblk.push()
         for kt_idx in range({kt}):
             bblk = b_dfb.reserve()
             ttl.copy(mat_b[kt_idx, 0:{nt}], bblk).wait()
@@ -1650,15 +1573,13 @@ def test_reduce_bcast_matmul(device, mt, kt, nt, test_id, dtype):
     torch.manual_seed(12345)
     r_torch = torch.randn(size_m, size_k, dtype=dtype)
     b_torch = torch.randn(size_k, size_n, dtype=dtype)
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_torch = torch.zeros(size_m, size_n, dtype=dtype)
 
     r = to_l1(r_torch, device)
     b = to_l1(b_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(r, b, scaler, out)
+    kernel(r, b, out)
     result = ttnn.to_torch(out)
 
     scalar_val = r_torch.float().sum().item()
@@ -1676,17 +1597,16 @@ REDUCE_BCAST_TYPE_TEMPLATE = """
 import ttl
 
 @ttl.operation(grid=(1, 1))
-def reduce_bcast_type_kernel(inp, scaler, out):
+def reduce_bcast_type_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({inp_rows}, {inp_cols}), block_count=2)
-    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
-    red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    red_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=({out_rows}, {out_cols}), block_count=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as x, sc_dfb.wait() as s:
+        with inp_dfb.wait() as x:
             with red_dfb.reserve() as r:
-                r.store(ttl.math.reduce_sum(x, s, dims=[0, 1]))
+                r.store(ttl.math.reduce_sum(x, dims=[0, 1]))
             with red_dfb.wait() as r, out_dfb.reserve() as o:
                 o.store(ttl.math.broadcast(r, o, dims={bcast_dims}))
 
@@ -1695,9 +1615,6 @@ def reduce_bcast_type_kernel(inp, scaler, out):
         blk = inp_dfb.reserve()
         ttl.copy(inp[{inp_slice}], blk).wait()
         blk.push()
-        sblk = sc_dfb.reserve()
-        ttl.copy(scaler[0, 0], sblk).wait()
-        sblk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -1758,14 +1675,12 @@ def test_reduce_bcast_type(device, inp_shape, bcast_dims, out_shape, test_id, dt
     kernel = module.reduce_bcast_type_kernel
 
     inp_torch = torch.rand(inp_rows * TILE, inp_cols * TILE, dtype=dtype)
-    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_torch = torch.zeros(out_rows * TILE, out_cols * TILE, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
-    scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, scaler, out)
+    kernel(inp, out)
     result = ttnn.to_torch(out)
 
     scalar_val = inp_torch.float().sum().item()

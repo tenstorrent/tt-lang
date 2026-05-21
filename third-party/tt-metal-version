@@ -1,1 +1,40 @@
-v0.69.0
+# tt-metal version used by tt-lang.
+# Sourceable shell snippet: shell consumers `. third-party/tt-metal-version`
+# and read $TTNN_PYPI / $TT_METAL_TAG; setup.py reads the same variables
+# via a small regex parser.
+#
+# Variables:
+#   TTNN_PYPI    - PyPI version of ttnn. setup.py uses it in the wheel's
+#                  install_requires (ttnn == $TTNN_PYPI).
+#   TT_METAL_TAG - tt-metal git tag the ttnn release was built from.
+#                  check-tt-metal-version.sh uses it to verify the
+#                  third-party/tt-metal submodule HEAD;
+#                  .github/containers/Dockerfile.base uses it to download
+#                  install_dependencies.sh and SFPI info.
+#
+# Why two variables: TTNN_PYPI and TT_METAL_TAG may diverge. ttnn 0.70.1,
+# for example, was built from tt-metal tag v0.70.1-rc1; tt-metal does not
+# publish a v0.70.1 tag. To confirm which tt-metal tag a given ttnn
+# release was built from, inspect the PyPI release's provenance
+# attestation: https://pypi.org/project/ttnn/<version>/
+#
+# Bumping:
+#   1. Update both variables below to match an existing ttnn PyPI release
+#      and its underlying tt-metal tag.
+#   2. Run: .github/scripts/check-tt-metal-version.sh --update
+#      to check out third-party/tt-metal at the matching commit.
+#   3. Commit the version file and the submodule update together.
+#
+# Mismatch warning: the build verifies that third-party/tt-metal's SHA
+# matches tt-mlir's TT_METAL_VERSION value. When a tt-mlir uplift requires
+# a newer tt-metal than the released ttnn wheel was built from, the
+# generated kernel may fail to compile (moved headers, renamed
+# namespaces, etc.). Resolve by either: (a) carrying a patch under
+# third-party/patches/ttmlir-*.patch that adapts the emission to the
+# older tt-metal, or (b) passing -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON to
+# CMake to develop against a newer tt-metal locally (releases must
+# still align with the ttnn PyPI wheel).
+
+TTNN_PYPI="0.70.1"
+# DANGER: the matching tt-metal tag for the above ttnn is v0.70.1-rc1
+TT_METAL_TAG="v0.71.0-rc2"

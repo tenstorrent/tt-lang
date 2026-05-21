@@ -133,6 +133,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   if (failed(cbConverted)) {
@@ -387,6 +388,7 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   if (pipeType.isUnicast()) {
     // Point-to-point: wait for sender's atomic increment.
@@ -403,6 +405,7 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     auto semIdx = arith::ConstantIndexOp::create(rewriter, loc,
                                                  getSenderSemIdx(pipeType));
     auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
+    auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, semAddr);
     auto semPtr = ttk::CastToL1PtrOp::create(
         rewriter, loc, ttk::L1AddrPtrType::get(rewriter.getContext(), 32),
         semAddr);
@@ -419,6 +422,8 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     auto recvSemIdx = arith::ConstantIndexOp::create(
         rewriter, loc, getReceiverSemIdx(pipeType));
     auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
+    auto recvSemPtr =
+        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
     auto recvSemPtr = ttk::CastToL1PtrOp::create(
         rewriter, loc, ttk::L1AddrPtrType::get(rewriter.getContext(), 32),
         recvSemAddr);

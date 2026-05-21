@@ -1095,6 +1095,32 @@ mlir::tt::ttl::TransposeOp::getDFBInputOperandIndices() {
   return {0}; // input
 }
 
+// True if `operand`'s producer is one whose result cannot fuse with a
+// downstream compute and so must be packed out to a DFB.
+static bool needsDFBMaterialization(mlir::Value operand) {
+  mlir::Operation *defOp = operand.getDefiningOp();
+  return defOp &&
+         mlir::isa<mlir::tt::ttl::ReduceOp, mlir::tt::ttl::MatmulOp>(defOp);
+}
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::MulUnaryConstOp::getDFBInputOperandIndices() {
+  if (needsDFBMaterialization(getInput())) {
+    return {0};
+  }
+  return {};
+}
+
+llvm::SmallVector<unsigned> mlir::tt::ttl::MulOp::getDFBInputOperandIndices() {
+  llvm::SmallVector<unsigned> indices;
+  for (unsigned idx : {0u, 1u}) {
+    if (needsDFBMaterialization(getOperand(idx))) {
+      indices.push_back(idx);
+    }
+  }
+  return indices;
+}
+
 //===----------------------------------------------------------------------===//
 // MatmulOp
 //===----------------------------------------------------------------------===//
