@@ -101,9 +101,9 @@ def add_multitile_kernel(lhs, rhs, out):
 # Compiler emits both as immediate locals at kernel_main entry; their relative
 # order is not contractual so DAG-match them as a single group.
 # CHECK-CPP-DAG: size_t [[BOUND:v[0-9]+]] = 2;
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 
 # DFB operations before loops
 # CHECK-CPP: [[CB0]].wait_front(
@@ -139,9 +139,9 @@ def add_multitile_kernel(lhs, rhs, out):
 
 # CHECK-CPP-FPU: // add_compute
 # CHECK-CPP-FPU: void kernel_main()
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP-FPU: [[CB0]].wait_front(
 # CHECK-CPP-FPU: [[CB1]].wait_front(
 # CHECK-CPP-FPU: [[CB2]].reserve_back(

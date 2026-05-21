@@ -42,9 +42,9 @@ def reduce_scalar_kernel(inp, scalar_out, col_out, row_out):
             col_out_dfb.reserve() as col_out_block,
             row_out_dfb.reserve() as row_out_block,
         ):
-            scalar_out_block.store(ttl.math.reduce_sum(scalar_block, 0.5, dims=[0, 1]))
-            col_out_block.store(ttl.math.reduce_sum(col_block, 1.25, dims=[0]))
-            row_out_block.store(ttl.math.reduce_sum(row_block, -0.25, dims=[1]))
+            scalar_out_block.store(0.5 * ttl.math.reduce_sum(scalar_block, dims=[0, 1]))
+            col_out_block.store(1.25 * ttl.math.reduce_sum(col_block, dims=[0]))
+            row_out_block.store(-0.25 * ttl.math.reduce_sum(row_block, dims=[1]))
 
     @ttl.datamovement()
     def dm_read():
@@ -73,15 +73,17 @@ def reduce_scalar_kernel(inp, scalar_out, col_out, row_out):
 
 # CHECK-LABEL: func.func @reduce_compute
 # CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
-# CHECK: %[[SCALAR_IN:.*]] = ttl.attach_cb
-# CHECK: %[[COL_IN:.*]] = ttl.attach_cb
-# CHECK: %[[ROW_IN:.*]] = ttl.attach_cb
-# CHECK: %[[SCALAR_FILL:.*]] = ttl.fill 5.000000e-01 : tensor<1x1x!ttcore.tile<32x32, bf16>>
-# CHECK: ttl.reduce %[[SCALAR_IN]], %[[SCALAR_FILL]] 0 : i32 [0, 1]
-# CHECK: %[[COL_FILL:.*]] = ttl.fill 1.250000e+00 : tensor<1x1x!ttcore.tile<32x32, bf16>>
-# CHECK: ttl.reduce %[[COL_IN]], %[[COL_FILL]] 0 : i32 [0]
-# CHECK: %[[ROW_FILL:.*]] = ttl.fill -2.500000e-01 : tensor<1x1x!ttcore.tile<32x32, bf16>>
-# CHECK: ttl.reduce %[[ROW_IN]], %[[ROW_FILL]] 0 : i32 [1]
+# Each reduce uses an internally-synthesized fill(1.0) scaler; the user's
+# Python-float coefficient is applied separately by mul_unary_const.
+# CHECK: ttl.fill 1.000000e+00
+# CHECK: %[[SCALAR_RED:.*]] = ttl.reduce {{.*}} 0 : i32 [0, 1]
+# CHECK: ttl.mul_unary_const %[[SCALAR_RED]], 5.000000e-01
+# CHECK: ttl.fill 1.000000e+00
+# CHECK: %[[COL_RED:.*]] = ttl.reduce {{.*}} 0 : i32 [0]
+# CHECK: ttl.mul_unary_const %[[COL_RED]], 1.250000e+00
+# CHECK: ttl.fill 1.000000e+00
+# CHECK: %[[ROW_RED:.*]] = ttl.reduce {{.*}} 0 : i32 [1]
+# CHECK: ttl.mul_unary_const %[[ROW_RED]], -2.500000e-01
 
 
 device = ttnn.open_device(device_id=0)

@@ -108,18 +108,13 @@ echo "$BASE_IMAGE" > .docker-image-base
 echo "$DIST_IMAGE" > .docker-image-name
 echo "$IRD_IMAGE"  > .docker-image-ird
 
-# Read the canonical tt-metal tag from third-party/tt-metal-version and pass
-# it to the Dockerfile.base build via --build-arg. Single source of truth:
-# every tt-metal-derived value (submodule SHA, ttnn version,
-# install_dependencies.sh URL) comes from this tag and is verified by
+# Source third-party/tt-metal-version (a sourceable shell snippet) to get
+# TT_METAL_TAG; pass it to Dockerfile.base via --build-arg. The same file
+# also defines TTNN_PYPI for setup.py. Both are verified by
 # check-tt-metal-version.sh.
-TT_METAL_VERSION_FILE="$(git rev-parse --show-toplevel)/third-party/tt-metal-version"
-if [[ ! -f "$TT_METAL_VERSION_FILE" ]]; then
-    echo "ERROR: missing $TT_METAL_VERSION_FILE" >&2
-    exit 1
-fi
-TT_METAL_TAG=$(tr -d '[:space:]' < "$TT_METAL_VERSION_FILE")
-[[ -n "$TT_METAL_TAG" ]] || { echo "ERROR: $TT_METAL_VERSION_FILE is empty" >&2; exit 1; }
+# shellcheck source=../../third-party/tt-metal-version
+. "$(git rev-parse --show-toplevel)/third-party/tt-metal-version"
+: "${TT_METAL_TAG:?third-party/tt-metal-version: TT_METAL_TAG not set}"
 
 # Build function
 build_image() {

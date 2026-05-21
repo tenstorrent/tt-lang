@@ -6,8 +6,9 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: undefined numeric reduce scaler names produce an actionable
-compiler error instead of an internal AttributeError.
+Validation test: an undefined name on the scalar side of a `scalar * reduce`
+expression produces an actionable compiler error pointing at the name, not
+an internal AttributeError.
 """
 
 import os
@@ -20,8 +21,8 @@ import ttl
 from ttlang_test_utils import to_l1
 
 
-# CHECK: unable to resolve argument 'abc' while compiling call 'ttl.math.reduce_sum'
-# CHECK: check that the value is defined in this scope
+# CHECK: TTLangCompileError
+# CHECK: abc
 @ttl.operation(grid=(1, 1))
 def invalid_reduce_scalar_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -30,7 +31,7 @@ def invalid_reduce_scalar_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
-            result = ttl.math.reduce_sum(inp_blk, abc, dims=[0, 1])
+            result = abc * ttl.math.reduce_sum(inp_blk, dims=[0, 1])
             out_blk.store(result)
 
     @ttl.datamovement()
