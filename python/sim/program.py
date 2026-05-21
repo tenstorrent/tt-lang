@@ -20,7 +20,11 @@ from .dfb import DataflowBuffer
 from .typedefs import BindableTemplate, Shape
 from .blockstate import ThreadType
 from .context import get_context
-from .greenlet_scheduler import GreenletScheduler, KernelThreadId, set_scheduler
+from .greenlet_scheduler import (
+    GreenletScheduler,
+    KernelId,
+    set_scheduler,
+)
 from .ttnnsim import Tensor
 from .analysis import (
     collect_reachable_analyses,
@@ -287,8 +291,11 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                     core_context = self._build_core_context(core)
                     all_core_contexts.append(core_context)
 
-                    # Add threads to scheduler
-                    for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
+                    # Add threads to scheduler (one compute + two DM per core).
+                    # Identity is (core, kind, __name__); the two DM kernels on
+                    # a core must have distinct __name__s -- the scheduler
+                    # rejects duplicates with a user-facing error.
+                    for tmpl in (compute_func_tmpl, dm0_tmpl, dm1_tmpl):
                         # Get ThreadType directly from template's thread_type attribute
                         thread_type = getattr(tmpl, "thread_type", None)
                         match thread_type:
@@ -321,9 +328,9 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                                     _val.auto_push_block()
                                     _val.auto_pop_block()
 
-                        # Add to scheduler (display name remains core{core}-{tmpl.__name__})
                         scheduler.add_thread(
-                            KernelThreadId(core, tmpl.__name__), _tagged, thread_type
+                            KernelId(core, thread_type, tmpl.__name__),
+                            _tagged,
                         )
 
                 # Install injection hooks for all discovered code objects (thread

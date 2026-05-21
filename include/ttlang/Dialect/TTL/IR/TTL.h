@@ -111,12 +111,6 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral
     kTransposeOutputCBIndexAttrName("ttl.transpose_output_cb_index");
 
-/// Original numeric scalar for ttl.reduce scalers that were materialized from
-/// ttl.fill. The scaler DFB stores a neutral 1.0 tile and this attribute tells
-/// tile lowering to apply the requested scale after reduce_tile.
-constexpr llvm::StringLiteral
-    kReduceScalarMultiplierAttrName("ttl.reduce_scalar_multiplier");
-
 /// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 

@@ -27,17 +27,16 @@ import ttl
 
 
 @ttl.operation(grid=(1, 1))
-def reduce_bcast_kernel(inp, scaler, out):
+def reduce_bcast_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
-    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
-    red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    red_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as inp_blk, sc_dfb.wait() as scaler_blk:
+        with inp_dfb.wait() as inp_blk:
             with red_dfb.reserve() as red_blk:
-                red_blk.store(ttl.math.reduce_sum(inp_blk, scaler_blk, dims=[0, 1]))
+                red_blk.store(ttl.math.reduce_sum(inp_blk, dims=[0, 1]))
             with red_dfb.wait() as red_blk, out_dfb.reserve() as out_blk:
                 out_blk.store(ttl.math.broadcast(red_blk, out_blk, dims=[0, 1]))
 
@@ -45,8 +44,6 @@ def reduce_bcast_kernel(inp, scaler, out):
     def dm_read():
         with inp_dfb.reserve() as blk:
             ttl.copy(inp[0:2, 0:2], blk).wait()
-        with sc_dfb.reserve() as blk:
-            ttl.copy(scaler[0, 0], blk).wait()
 
     @ttl.datamovement()
     def dm_write():
@@ -95,13 +92,6 @@ inp = ttnn.from_torch(
     device=device,
     memory_config=ttnn.L1_MEMORY_CONFIG,
 )
-scaler = ttnn.from_torch(
-    __import__("torch").ones(32, 32, dtype=__import__("torch").bfloat16),
-    dtype=ttnn.bfloat16,
-    layout=ttnn.TILE_LAYOUT,
-    device=device,
-    memory_config=ttnn.L1_MEMORY_CONFIG,
-)
 out = ttnn.from_torch(
     __import__("torch").zeros(64, 32, dtype=__import__("torch").bfloat16),
     dtype=ttnn.bfloat16,
@@ -109,5 +99,5 @@ out = ttnn.from_torch(
     device=device,
     memory_config=ttnn.L1_MEMORY_CONFIG,
 )
-reduce_bcast_kernel(inp, scaler, out)
+reduce_bcast_kernel(inp, out)
 ttnn.close_device(device)

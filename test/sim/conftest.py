@@ -47,7 +47,7 @@ from sim.blockstate import ThreadType
 from sim.context import set_current_thread_type, reset_context
 from sim.greenlet_scheduler import (
     GreenletScheduler,
-    KernelThreadId,
+    KernelId,
     set_scheduler,
     set_scheduler_algorithm,
 )
@@ -86,11 +86,13 @@ def setup_scheduler_and_thread_context(thread_type: ThreadType) -> GreenletSched
     # Set the main greenlet to the current greenlet (for switching back)
     scheduler._main_greenlet = greenlet.getcurrent()
 
-    # Simulate being within core 0 with a valid KernelThreadId so that
+    # Simulate being within core 0 with a valid KernelId so that
     # get_current_core_id() returns "core0" and shard-locality stats work in tests.
+    # ``kind`` mirrors ``thread_type``; ``func_name`` matches the chosen role
+    # for readable display in any test diagnostics.
     test_greenlet = greenlet(lambda: None)
-    tid = KernelThreadId(0, "compute")
-    scheduler._current_thread_id = tid
+    tid = KernelId(0, thread_type, thread_type.name.lower())
+    scheduler._current_kernel_id = tid
     scheduler._active[tid] = (
         test_greenlet,
         None,  # blocking_obj

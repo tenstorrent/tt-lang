@@ -115,7 +115,7 @@ class TestPipeErrorHandling:
         """Test that receiving from pipe with no sender is detected as deadlock."""
         from sim.greenlet_scheduler import (
             GreenletScheduler,
-            KernelThreadId,
+            KernelId,
             set_scheduler,
         )
 
@@ -138,9 +138,7 @@ class TestPipeErrorHandling:
                     tx = copy(pipe, block)
                     tx.wait()
 
-            scheduler.add_thread(
-                KernelThreadId(0, "test-dm"), test_thread, ThreadType.DM
-            )
+            scheduler.add_thread(KernelId(0, ThreadType.DM, "test-dm"), test_thread)
 
             # With scheduler, waiting on pipe with no sender is detected as deadlock
             with pytest.raises(RuntimeError, match="Deadlock detected"):
