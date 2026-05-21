@@ -1025,7 +1025,7 @@ def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [
     For tiled blocks broadcast happens in two steps: intra-tile scalar
     broadcast for any innermost dimension listed in `$dims`, and inter-tile
     broadcast for every other dimension where the target shape is greater
-    than 1. Row-major blocks are not supported. The input must be CB-attached.
+    than 1. Row-major blocks are not supported.
 
     Example:
     ```mlir
