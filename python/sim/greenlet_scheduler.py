@@ -26,31 +26,33 @@ from .trace import get_dfb_name, trace
 
 
 @dataclass(frozen=True)
-class KernelThreadId:
+class KernelId:
     """Stable identity for a cooperative scheduled kernel (scheduler dict key).
 
-    ``linear_core`` is the linear core index used by ``program`` when registering
-    threads. ``suffix`` is the kernel template name (e.g. ``compute``, ``dm0``).
-
-    User-visible strings match the historical format ``core{linear_core}-{suffix}``;
-    use :func:`kernel_thread_display_name` for traces and diagnostics.
+    Identity is ``(linear_core, kind, func_name)``: the linear core index, the
+    kernel role (compute or data movement), and the decorated function's
+    ``__name__``. The function name is part of identity because a core can host
+    up to two data movement kernels; their ``__name__`` distinguishes them. The
+    scheduler enforces uniqueness on registration -- two kernels with the same
+    triple on the same core is rejected with a user-facing error.
     """
 
     linear_core: int
-    suffix: str
+    kind: ThreadType
+    func_name: str
 
     def __post_init__(self) -> None:
         if self.linear_core < 0:
             raise ValueError(
                 f"linear_core must be non-negative; got {self.linear_core!r}"
             )
-        if not self.suffix:
-            raise ValueError("suffix must be a non-empty string")
+        if not self.func_name:
+            raise ValueError("func_name must be a non-empty string")
 
 
-def kernel_thread_display_name(thread_id: KernelThreadId) -> str:
-    """Return the user-facing kernel label (``core0-compute`` style)."""
-    return f"core{thread_id.linear_core}-{thread_id.suffix}"
+def kernel_display_name(kernel_id: KernelId) -> str:
+    """Return the user-facing kernel label (``core0-mm_compute`` style)."""
+    return f"core{kernel_id.linear_core}-{kernel_id.func_name}"
 
 
 def set_scheduler_algorithm(algorithm: str) -> None:
@@ -80,38 +82,52 @@ class GreenletScheduler:
 
     def __init__(self) -> None:
         """Initialize the scheduler."""
-        # Active greenlets: thread_id -> (greenlet, blocking_obj, operation, thread_type, block_location, raw_loc)
+        # Active greenlets: kernel_id -> (greenlet, blocking_obj, operation, thread_type, block_location, raw_loc)
         # raw_loc is Optional[Tuple[str, int]] = (filename, lineno) for pretty-printing
         self._active: Dict[
-            KernelThreadId,
+            KernelId,
             Tuple[greenlet, Any, str, ThreadType, str, Optional[Tuple[str, int]]],
         ] = {}
         # Completed greenlets (internal bookkeeping)
-        self._completed: List[KernelThreadId] = []
+        self._completed: List[KernelId] = []
         # Main greenlet for the scheduler
         self._main_greenlet: Optional[greenlet] = None
         # Currently executing scheduled kernel
-        self._current_thread_id: Optional[KernelThreadId] = None
-        # Last run timestamp for fair scheduling (thread_id -> timestamp)
-        self._last_run: Dict[KernelThreadId, int] = {}
+        self._current_kernel_id: Optional[KernelId] = None
+        # Last run timestamp for fair scheduling (kernel_id -> timestamp)
+        self._last_run: Dict[KernelId, int] = {}
         # Global timestamp counter
         self._timestamp: int = 0
         # Track if thread has ever made progress (passed at least one block_if_needed check)
-        self._has_made_progress: Dict[KernelThreadId, bool] = {}
+        self._has_made_progress: Dict[KernelId, bool] = {}
 
     def add_thread(
         self,
-        thread_id: KernelThreadId,
+        kernel_id: KernelId,
         func: Callable[[], None],
-        thread_type: ThreadType,
     ) -> None:
         """Add a scheduled kernel (greenlet) to the scheduler.
 
         Args:
-            thread_id: Stable kernel identity (linear core index and template suffix).
-            func: Kernel entry function to execute
-            thread_type: Kernel role (COMPUTE or DM)
+            kernel_id: Stable kernel identity. Its ``kind`` field doubles as the
+                kernel role (COMPUTE or DM); two kernels with the same
+                ``(linear_core, kind, func_name)`` triple is rejected.
+            func: Kernel entry function to execute.
+
+        Raises:
+            RuntimeError: If a kernel with this identity is already registered.
+                Most commonly fired when two data movement kernels on the same
+                core have the same ``__name__``; rename one of them.
         """
+        if kernel_id in self._active:
+            label = kernel_display_name(kernel_id)
+            raise RuntimeError(
+                f"Duplicate kernel registration: {label!r} "
+                f"({kernel_id.kind.name}) is already scheduled on "
+                f"core{kernel_id.linear_core}. Two {kernel_id.kind.name} kernels "
+                f"on the same core must have distinct function names; rename "
+                f"one of them."
+            )
 
         # Create greenlet that wraps the function
         def wrapped_func() -> None:
@@ -119,15 +135,15 @@ class GreenletScheduler:
             func()
             trace("kernel_end")
             # Thread completed successfully
-            self._mark_completed(thread_id)
+            self._mark_completed(kernel_id)
 
         g = greenlet(wrapped_func)
         # Initially not blocked (will start when scheduled)
-        self._active[thread_id] = (g, None, "", thread_type, "", None)
+        self._active[kernel_id] = (g, None, "", kernel_id.kind, "", None)
         # Initialize last run time to 0 (never run)
-        self._last_run[thread_id] = 0
+        self._last_run[kernel_id] = 0
         # Thread hasn't made progress yet
-        self._has_made_progress[thread_id] = False
+        self._has_made_progress[kernel_id] = False
 
     def block_current_thread(self, blocking_obj: Any, operation: str) -> None:
         """Block the current scheduled kernel on an operation.
@@ -139,7 +155,7 @@ class GreenletScheduler:
             blocking_obj: Object being waited on (DataflowBuffer or CopyTransaction)
             operation: Operation name ("wait" or "reserve")
         """
-        if self._current_thread_id is None:
+        if self._current_kernel_id is None:
             raise RuntimeError(
                 "block_current_thread called outside of scheduler context "
                 "(no kernel is currently scheduled)"
@@ -151,8 +167,8 @@ class GreenletScheduler:
         raw_loc: Optional[Tuple[str, int]] = (filename, lineno)
 
         # Update active entry with blocking info and location
-        g, _, _, thread_type, _, _ = self._active[self._current_thread_id]
-        self._active[self._current_thread_id] = (
+        g, _, _, thread_type, _, _ = self._active[self._current_kernel_id]
+        self._active[self._current_kernel_id] = (
             g,
             blocking_obj,
             operation,
@@ -169,18 +185,18 @@ class GreenletScheduler:
         self._main_greenlet.switch()
         trace("kernel_unblock")
 
-    def _mark_completed(self, thread_id: KernelThreadId) -> None:
+    def _mark_completed(self, kernel_id: KernelId) -> None:
         """Mark a kernel as completed and remove from active set.
 
         Args:
-            thread_id: Kernel identity
+            kernel_id: Kernel identity
         """
-        if thread_id in self._active:
-            del self._active[thread_id]
-        self._completed.append(thread_id)
+        if kernel_id in self._active:
+            del self._active[kernel_id]
+        self._completed.append(kernel_id)
         # Clean up last run time
-        if thread_id in self._last_run:
-            del self._last_run[thread_id]
+        if kernel_id in self._last_run:
+            del self._last_run[kernel_id]
 
     def mark_thread_progress(self) -> None:
         """Mark that the current scheduled kernel has made progress.
@@ -191,32 +207,33 @@ class GreenletScheduler:
         Raises:
             RuntimeError: If no kernel is scheduled or the name is missing from progress tracking
         """
-        if self._current_thread_id is None:
+        if self._current_kernel_id is None:
             raise RuntimeError(
                 "mark_thread_progress called but no kernel is currently scheduled. "
                 "This indicates a bug in the scheduler."
             )
-        if self._current_thread_id not in self._has_made_progress:
-            label = kernel_thread_display_name(self._current_thread_id)
+        if self._current_kernel_id not in self._has_made_progress:
+            label = kernel_display_name(self._current_kernel_id)
             raise RuntimeError(
                 f"Kernel {label!r} not found in progress tracking. "
                 "This indicates a bug in the scheduler."
             )
-        self._has_made_progress[self._current_thread_id] = True
+        self._has_made_progress[self._current_kernel_id] = True
 
-    def get_current_kernel_thread_id(self) -> Optional[KernelThreadId]:
+    def get_current_kernel_id(self) -> Optional[KernelId]:
         """Return the identity of the currently executing kernel, if any."""
-        return self._current_thread_id
+        return self._current_kernel_id
 
-    def get_current_thread_name(self) -> Optional[str]:
-        """Get the name of the currently executing scheduled kernel.
+    def get_current_kernel_name(self) -> Optional[str]:
+        """Get the display name of the currently executing kernel.
 
         Returns:
-            Kernel name (e.g., core0-dm), or None if none is executing
+            Kernel display name (e.g., ``core0-mm_reader``), or None if none
+            is executing.
         """
-        if self._current_thread_id is None:
+        if self._current_kernel_id is None:
             return None
-        return kernel_thread_display_name(self._current_thread_id)
+        return kernel_display_name(self._current_kernel_id)
 
     @property
     def tick(self) -> int:
@@ -285,19 +302,19 @@ class GreenletScheduler:
         keep ts=0, giving them priority in fair scheduling.
         """
 
-        for thread_id in list(self._active.keys()):
-            g, blocking_obj, _, thread_type, _, _ = self._active[thread_id]
+        for kernel_id in list(self._active.keys()):
+            g, blocking_obj, _, thread_type, _, _ = self._active[kernel_id]
 
             # All threads should start unblocked in init phase
             if blocking_obj is not None:
-                label = kernel_thread_display_name(thread_id)
+                label = kernel_display_name(kernel_id)
                 raise RuntimeError(
                     f"Kernel {label!r} is already blocked at init phase start. "
                     "This indicates a bug in the scheduler."
                 )
 
             # Set current thread context
-            self._current_thread_id = thread_id
+            self._current_kernel_id = kernel_id
             set_current_thread_type(thread_type)
 
             try:
@@ -305,31 +322,29 @@ class GreenletScheduler:
                 g.switch()
 
                 # Update timestamp only if thread made progress
-                made_progress = self._has_made_progress.get(thread_id, False)
+                made_progress = self._has_made_progress.get(kernel_id, False)
 
                 if g.dead:
-                    self._mark_completed(thread_id)
+                    self._mark_completed(kernel_id)
                 elif made_progress:
                     # Thread passed one or more block_if_needed checks - give it a timestamp
                     self._timestamp += 1
-                    self._last_run[thread_id] = self._timestamp
+                    self._last_run[kernel_id] = self._timestamp
                 # Threads that blocked on their first check keep ts=0
 
             except Exception as e:
                 # Thread raised an error during initialization
                 clear_current_thread_type()
-                self._current_thread_id = None
+                self._current_kernel_id = None
 
                 # Format and raise error with source location
-                self._format_and_raise_thread_error(
-                    kernel_thread_display_name(thread_id), e
-                )
+                self._format_and_raise_thread_error(kernel_display_name(kernel_id), e)
 
             clear_current_thread_type()
 
-        self._current_thread_id = None
+        self._current_kernel_id = None
 
-    def _get_fair_thread_order(self) -> List[KernelThreadId]:
+    def _get_fair_thread_order(self) -> List[KernelId]:
         """Get threads sorted by least recently run.
 
         Threads that can potentially make progress (not blocked or can unblock)
@@ -339,13 +354,20 @@ class GreenletScheduler:
             List of thread ids in least-recently-run order
         """
         # Get all active threads with their last run times
-        thread_times: List[Tuple[int, KernelThreadId]] = []
-        for thread_id in self._active.keys():
-            last_run = self._last_run.get(thread_id, 0)
-            thread_times.append((last_run, thread_id))
+        thread_times: List[Tuple[int, KernelId]] = []
+        for kernel_id in self._active.keys():
+            last_run = self._last_run.get(kernel_id, 0)
+            thread_times.append((last_run, kernel_id))
 
-        # Sort by timestamp (ascending), then by display name for stability
-        thread_times.sort(key=lambda x: (x[0], kernel_thread_display_name(x[1])))
+        # Sort by timestamp (ascending), then by core, kind, and name for stability
+        thread_times.sort(
+            key=lambda x: (
+                x[0],
+                x[1].linear_core,
+                x[1].kind.value,
+                x[1].func_name,
+            )
+        )
 
         return [tid for _, tid in thread_times]
 
@@ -376,13 +398,13 @@ class GreenletScheduler:
                 thread_candidates = list(self._active.keys())
 
             # Try to advance each thread in the selected order
-            for thread_id in thread_candidates:
-                if thread_id not in self._active:
+            for kernel_id in thread_candidates:
+                if kernel_id not in self._active:
                     # Thread may have completed during this iteration
                     continue
 
                 g, blocking_obj, blocked_op, thread_type, location, _ = self._active[
-                    thread_id
+                    kernel_id
                 ]
 
                 # If thread is blocked, check if it can proceed
@@ -393,10 +415,10 @@ class GreenletScheduler:
                         continue
 
                     # Unblocked! Clear blocking state
-                    self._active[thread_id] = (g, None, "", thread_type, "", None)
+                    self._active[kernel_id] = (g, None, "", thread_type, "", None)
 
                 # Set current thread for block_current_thread()
-                self._current_thread_id = thread_id
+                self._current_kernel_id = kernel_id
 
                 # Run thread until it blocks or completes
 
@@ -404,8 +426,8 @@ class GreenletScheduler:
                 try:
                     if g.dead:
                         # Thread already completed (marked by wrapped_func)
-                        if thread_id in self._active:
-                            del self._active[thread_id]
+                        if kernel_id in self._active:
+                            del self._active[kernel_id]
                         continue
 
                     # Switch to the greenlet
@@ -415,28 +437,28 @@ class GreenletScheduler:
                     # Always update timestamp after thread runs
                     # The pre-check already prevented threads that can't make progress from running
                     self._timestamp += 1
-                    self._last_run[thread_id] = self._timestamp
+                    self._last_run[kernel_id] = self._timestamp
 
                     # If greenlet is dead, it completed
-                    if g.dead and thread_id in self._active:
+                    if g.dead and kernel_id in self._active:
                         # Should have been marked by wrapped_func, but double-check
-                        self._mark_completed(thread_id)
+                        self._mark_completed(kernel_id)
                 except Exception as e:
                     # Thread raised an error - preserve traceback for debugging
                     clear_current_thread_type()
-                    self._current_thread_id = None
+                    self._current_kernel_id = None
 
                     # Format and raise error with source location
                     # Include full traceback for main loop errors (more debugging info)
                     self._format_and_raise_thread_error(
-                        kernel_thread_display_name(thread_id),
+                        kernel_display_name(kernel_id),
                         e,
                         include_traceback=True,
                     )
                 finally:
                     clear_current_thread_type()
 
-                self._current_thread_id = None
+                self._current_kernel_id = None
 
             # Deadlock detection
             if not any_progress and self._active:
@@ -451,7 +473,7 @@ class GreenletScheduler:
                     tuple[str, str, str], Optional[Tuple[str, int]]
                 ] = {}
 
-                for thread_id, (
+                for kernel_id, (
                     g,
                     blocking_obj,
                     op,
@@ -461,7 +483,7 @@ class GreenletScheduler:
                 ) in self._active.items():
                     obj_desc = self._get_obj_description(blocking_obj)
                     key = (op, obj_desc, location)
-                    core_id = f"core{thread_id.linear_core}"
+                    core_id = f"core{kernel_id.linear_core}"
                     blocked_groups[key].append(core_id)
                     if key not in blocked_raw_locs:
                         blocked_raw_locs[key] = raw_loc
@@ -557,7 +579,7 @@ def get_current_core_id() -> str:
             scheduled. That indicates a simulator bug, not user misuse.
     """
     scheduler = get_scheduler()
-    tid = scheduler.get_current_kernel_thread_id()
+    tid = scheduler.get_current_kernel_id()
     if tid is None:
         raise RuntimeError(
             "get_current_core_id() called with no kernel "

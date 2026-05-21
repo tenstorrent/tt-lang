@@ -10,11 +10,11 @@ import pytest
 from sim.blockstate import ThreadType
 from sim.greenlet_scheduler import (
     GreenletScheduler,
-    KernelThreadId,
+    KernelId,
     block_if_needed,
     get_scheduler,
     get_scheduler_algorithm,
-    kernel_thread_display_name,
+    kernel_display_name,
     set_scheduler,
     set_scheduler_algorithm,
 )
@@ -62,8 +62,8 @@ class TestGreenletScheduler:
         def thread2() -> None:
             executed.append("thread2")
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-        scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.DM)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+        scheduler.add_thread(KernelId(1, ThreadType.DM, "t2"), thread2)
 
         set_scheduler(scheduler)
         try:
@@ -75,23 +75,49 @@ class TestGreenletScheduler:
         assert "thread2" in executed
 
     def test_kernel_thread_id_rejects_invalid_values(self) -> None:
-        """KernelThreadId validates linear core and suffix."""
+        """KernelId validates linear core and func_name."""
 
         def fn() -> None:
             pass
 
         with pytest.raises(ValueError, match="non-negative"):
-            KernelThreadId(-1, "a")
+            KernelId(-1, ThreadType.COMPUTE, "a")
 
         with pytest.raises(ValueError, match="non-empty"):
-            KernelThreadId(0, "")
+            KernelId(0, ThreadType.COMPUTE, "")
 
         scheduler = GreenletScheduler()
-        scheduler.add_thread(KernelThreadId(0, "role"), fn, ThreadType.COMPUTE)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "role"), fn)
 
-    def test_kernel_thread_display_name_matches_program_convention(self) -> None:
+    def test_add_thread_rejects_duplicate_func_name_on_same_core(self) -> None:
+        """Two DM kernels with the same __name__ on the same core is rejected.
+
+        This is the registration-time enforcement of the uniqueness invariant
+        that ``KernelId`` relies on: identity is
+        ``(linear_core, kind, func_name)``, and two registrations with the same
+        triple would silently collide in the scheduler's dict otherwise.
+        """
+
+        def dm_a() -> None:
+            pass
+
+        def dm_b() -> None:
+            pass
+
+        scheduler = GreenletScheduler()
+        scheduler.add_thread(KernelId(0, ThreadType.DM, "reader"), dm_a)
+        with pytest.raises(RuntimeError, match="Duplicate kernel registration"):
+            scheduler.add_thread(KernelId(0, ThreadType.DM, "reader"), dm_b)
+
+        # Different core: allowed.
+        scheduler.add_thread(KernelId(1, ThreadType.DM, "reader"), dm_b)
+        # Different kind on same core: allowed (compute vs DM).
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "reader"), dm_a)
+
+    def test_kernel_display_name_matches_program_convention(self) -> None:
         assert (
-            kernel_thread_display_name(KernelThreadId(3, "compute")) == "core3-compute"
+            kernel_display_name(KernelId(3, ThreadType.COMPUTE, "compute"))
+            == "core3-compute"
         )
 
     def test_thread_completion_tracking(self) -> None:
@@ -105,8 +131,8 @@ class TestGreenletScheduler:
         def thread2() -> None:
             completed.append("t2")
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-        scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.DM)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+        scheduler.add_thread(KernelId(1, ThreadType.DM, "t2"), thread2)
 
         set_scheduler(scheduler)
         try:
@@ -136,8 +162,8 @@ class TestGreenletScheduler:
             mock_obj.make_ready()
             execution_order.append("t2-end")
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-        scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.DM)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+        scheduler.add_thread(KernelId(1, ThreadType.DM, "t2"), thread2)
 
         set_scheduler(scheduler)
         try:
@@ -157,9 +183,7 @@ class TestGreenletScheduler:
             # This will block forever
             do_wait(mock_obj)
 
-        scheduler.add_thread(
-            KernelThreadId(0, "t1"), blocked_thread, ThreadType.COMPUTE
-        )
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), blocked_thread)
 
         set_scheduler(scheduler)
         try:
@@ -180,8 +204,8 @@ class TestGreenletScheduler:
         def thread2() -> None:
             do_reserve(mock2)
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-        scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.DM)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+        scheduler.add_thread(KernelId(1, ThreadType.DM, "t2"), thread2)
 
         set_scheduler(scheduler)
         try:
@@ -197,9 +221,7 @@ class TestGreenletScheduler:
         def failing_thread() -> None:
             raise ValueError("Test error")
 
-        scheduler.add_thread(
-            KernelThreadId(0, "t1"), failing_thread, ThreadType.COMPUTE
-        )
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), failing_thread)
 
         set_scheduler(scheduler)
         try:
@@ -229,8 +251,8 @@ class TestGreenletScheduler:
             do_wait(mock2)
             execution_order.append("t2-3")
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-        scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.DM)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+        scheduler.add_thread(KernelId(1, ThreadType.DM, "t2"), thread2)
 
         set_scheduler(scheduler)
         try:
@@ -262,7 +284,7 @@ class TestGreenletScheduler:
             do_wait(mock_obj)
             executed.append("after")
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread, ThreadType.COMPUTE)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread)
 
         set_scheduler(scheduler)
         try:
@@ -288,8 +310,8 @@ class TestGreenletScheduler:
             executed.append("t2")
             mock_obj.make_ready()
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-        scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.DM)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+        scheduler.add_thread(KernelId(1, ThreadType.DM, "t2"), thread2)
 
         set_scheduler(scheduler)
         try:
@@ -315,7 +337,7 @@ class TestGreenletScheduler:
                 do_wait(mock_obj)
                 count.append(i)
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread, ThreadType.COMPUTE)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread)
 
         set_scheduler(scheduler)
         try:
@@ -333,7 +355,7 @@ class TestGreenletScheduler:
             executed.append("done")
 
         scheduler = GreenletScheduler()
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread, ThreadType.COMPUTE)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread)
 
         set_scheduler(scheduler)
         try:
@@ -364,8 +386,8 @@ class TestBlockIfNeeded:
         def thread2() -> None:
             mock_obj.make_ready()
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-        scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.DM)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+        scheduler.add_thread(KernelId(1, ThreadType.DM, "t2"), thread2)
 
         set_scheduler(scheduler)
         try:
@@ -388,7 +410,7 @@ class TestBlockIfNeeded:
             do_reserve(mock_obj)
             executed.append(3)
 
-        scheduler.add_thread(KernelThreadId(0, "t1"), thread, ThreadType.COMPUTE)
+        scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread)
 
         set_scheduler(scheduler)
         try:
@@ -438,8 +460,8 @@ class TestSchedulerAlgorithm:
                 execution_order.append("t2-1")
                 execution_order.append("t2-2")
 
-            scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-            scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.DM)
+            scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+            scheduler.add_thread(KernelId(1, ThreadType.DM, "t2"), thread2)
 
             set_scheduler(scheduler)
             try:
@@ -477,9 +499,9 @@ class TestSchedulerAlgorithm:
                 mock_obj1.make_ready()
                 mock_obj2.make_ready()
 
-            scheduler.add_thread(KernelThreadId(0, "t1"), thread1, ThreadType.COMPUTE)
-            scheduler.add_thread(KernelThreadId(1, "t2"), thread2, ThreadType.COMPUTE)
-            scheduler.add_thread(KernelThreadId(2, "t3"), thread3, ThreadType.DM)
+            scheduler.add_thread(KernelId(0, ThreadType.COMPUTE, "t1"), thread1)
+            scheduler.add_thread(KernelId(1, ThreadType.COMPUTE, "t2"), thread2)
+            scheduler.add_thread(KernelId(2, ThreadType.DM, "t3"), thread3)
 
             set_scheduler(scheduler)
             try:
