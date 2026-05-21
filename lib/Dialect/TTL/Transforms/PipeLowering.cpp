@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PipeLowering.h"
-#include "PipeGraph.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -83,21 +82,26 @@ static int64_t getMailboxSemIdx(PipeType pipeType) {
 // Per-PipeNet receiver counter allocation
 //===----------------------------------------------------------------------===//
 
-void allocatePipeNetCountersForMulticast(ModuleOp mod,
-                                         PipeNetCounterMap &counters) {
+void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
   mod.walk([&](FuncOp func) {
-    // Collect unique pipeNetIds that have at least one multicast Pipe->CB
-    // CopyOp in this function.
+    // Collect unique pipeNetIds that have at least one receive in this
+    // function. A runtime counter is required because receive waits may be
+    // dynamically re-executed inside loops.
     llvm::SmallSet<int64_t, 4> pipeNetIds;
-    func.walk([&](CopyOp copy) {
-      auto pipeTy = mlir::dyn_cast<PipeType>(copy.getSrc().getType());
-      if (!pipeTy || !pipeTy.isMulticast()) {
+    func.walk([&](Operation *op) {
+      if (auto copy = mlir::dyn_cast<CopyOp>(op)) {
+        auto pipeTy = mlir::dyn_cast<PipeType>(copy.getSrc().getType());
+        if (pipeTy && getAttachedCB(copy.getDst())) {
+          pipeNetIds.insert(pipeTy.getPipeNetId());
+        }
         return;
       }
-      if (!getAttachedCB(copy.getDst())) {
-        return;
+      if (auto post = mlir::dyn_cast<PipeRecvPostOp>(op)) {
+        auto pipeTy = mlir::cast<PipeType>(post.getPipe().getType());
+        if (getAttachedCB(post.getDst())) {
+          pipeNetIds.insert(pipeTy.getPipeNetId());
+        }
       }
-      pipeNetIds.insert(pipeTy.getPipeNetId());
     });
     if (pipeNetIds.empty()) {
       return;
@@ -121,17 +125,9 @@ void allocatePipeNetCountersForMulticast(ModuleOp mod,
   });
 }
 
-/// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
-/// For gather patterns, uses receiver's CB address from PipeGraph.
-/// After multicast, signals destinations via semaphore.
-///
-/// Parameters:
-/// - receiverInfo: If non-null, contains the receiver's CB index and runtime
-///   arg index for the gather pattern. The receiver's CB address is loaded from
-///   runtime args to ensure data lands at the correct L1 address on the
-///   destination core (which may differ from the sender's CB address).
+/// Lower CB -> Pipe copy: write source DFB data to the receiver-published
+/// destination address, then signal arrival.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
-                            const ReceiverCBInfo *receiverInfo,
                             bool isConsumerCB,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
@@ -173,45 +169,23 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                                        rewriter.getI8IntegerAttr(nocIdx));
   }
 
-  // Wait until remote receivers have reserved DFB space and advertised the
-  // destination address. The local loopback receiver does not participate in
-  // this handshake because its sender may run before the receive callback.
-  int64_t expectedSignals = 0;
-  if (pipeType.isUnicast()) {
-    expectedSignals = pipeType.srcInDstRange() ? 0 : 1;
-  } else {
-    expectedSignals = pipeType.srcInDstRange() ? numDests - 1 : numDests;
-  }
-  if (expectedSignals > 0) {
-    auto senderSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, getSenderSemIdx(pipeType));
-    auto senderSemAddr =
-        ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
-    auto senderSemPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
-    auto expectedVal = arith::ConstantOp::create(
-        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(expectedSignals));
-    ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedVal);
-    auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
-  }
+  int64_t expectedSignals = pipeType.isUnicast() ? 1 : numDests;
+  auto senderSemIdx =
+      arith::ConstantIndexOp::create(rewriter, loc, getSenderSemIdx(pipeType));
+  auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
+  auto senderSemPtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
+  auto expectedVal = arith::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(expectedSignals));
+  ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedVal);
+  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
   int64_t cbNumTiles = 1;
   for (int64_t d : cbBounds) {
     cbNumTiles *= d;
   }
-  Value localReceiverCB;
-  if (pipeType.srcInDstRange()) {
-    if (!receiverInfo) {
-      return rewriter.notifyMatchFailure(
-          op, "loopback pipe send requires receiver DFB information");
-    }
-    auto srcCBType = mlir::cast<ttk::CBType>(cbConverted->getType());
-    localReceiverCB = ttk::GetCompileArgValOp::create(
-        rewriter, loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
-  }
-
   // Producer source address is at the source DFB's write_ptr (data is staged
   // there before push_back); consumer source address is at its read_ptr.
   Value srcPtrIdx;
@@ -244,13 +218,6 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto numDestsVal = arith::ConstantOp::create(
       rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
 
-  // For gather patterns (multiple sources to one destination), each source
-  // writes to a different slot in the destination CB to avoid overwrites.
-  // Slot indices are assigned by PipeGraph based on actual destination
-  // sharing.
-  int64_t slotIdx = receiverInfo ? receiverInfo->gatherSlotIdx : 0;
-  int64_t slotByteOffset = slotIdx * pageSizeBytes * cbNumTiles;
-
   // Transfer the entire block in a single NOC write. Tiles are contiguous in
   // the CB, and destination CB layout is uniform across cores, so we can send
   // all tiles at once instead of one per tile.
@@ -260,31 +227,16 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
-  Value dstAddr;
-  if (pipeType.srcInDstRange()) {
-    auto receiverWritePtr =
-        ttk::GetWritePtrOp::create(rewriter, loc, localReceiverCB);
-    Value dstAddrIdx =
-        arith::IndexCastOp::create(rewriter, loc, indexTy, receiverWritePtr);
-    if (slotByteOffset > 0) {
-      auto slotOffsetIdx =
-          arith::ConstantIndexOp::create(rewriter, loc, slotByteOffset);
-      dstAddrIdx =
-          arith::AddIOp::create(rewriter, loc, dstAddrIdx, slotOffsetIdx);
-    }
-    dstAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, dstAddrIdx);
-  } else {
-    auto mailboxSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, getMailboxSemIdx(pipeType));
-    auto mailboxSemAddr =
-        ttk::GetSemaphoreOp::create(rewriter, loc, mailboxSemIdx);
-    auto mailboxPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxSemAddr);
-    auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                             rewriter.getI32IntegerAttr(0));
-    dstAddr =
-        ttk::LoadFromL1Op::create(rewriter, loc, i32Ty, mailboxPtr, zeroI32);
-  }
+  auto mailboxSemIdx =
+      arith::ConstantIndexOp::create(rewriter, loc, getMailboxSemIdx(pipeType));
+  auto mailboxSemAddr =
+      ttk::GetSemaphoreOp::create(rewriter, loc, mailboxSemIdx);
+  auto mailboxPtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxSemAddr);
+  auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                           rewriter.getI32IntegerAttr(0));
+  Value dstAddr =
+      ttk::LoadFromL1Op::create(rewriter, loc, i32Ty, mailboxPtr, zeroI32);
 
   if (pipeType.isUnicast()) {
     auto nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
@@ -374,22 +326,15 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   return success();
 }
 
-/// Lower Pipe -> CB (receiver). Unicast gather: cumulative wait_min with
-/// static recvProgress. Multicast: cumulative wait_min via per-PipeNet
-/// runtime counter. Sender core in loopback skips the ready advertisement;
-/// the sender computes the local receiver address from the DFB slot assigned
-/// by PipeGraph.
-LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
-                            const PipeGraph *pipeGraph,
-                            const PipeNetCounterMap *counters,
-                            ConversionPatternRewriter &rewriter) {
+LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
+                                ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
-  Value receiverCB = getAttachedCB(dstCB);
+  Value receiverCB = getAttachedCB(dst);
   if (!receiverCB) {
     return rewriter.notifyMatchFailure(
         op, "pipe receive destination is not attached to a DFB");
@@ -407,137 +352,95 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
                                        rewriter.getI8IntegerAttr(nocIdx));
   }
 
-  auto emitAdvertiseToSender = [&]() {
-    auto receiverWritePtr =
-        ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
-    auto mailboxSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, getMailboxSemIdx(pipeType));
-    auto mailboxSemAddr =
-        ttk::GetSemaphoreOp::create(rewriter, loc, mailboxSemIdx);
-    auto mailboxPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxSemAddr);
-    auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                             rewriter.getI32IntegerAttr(0));
-    ttk::StoreToL1Op::create(rewriter, loc, receiverWritePtr, mailboxPtr,
-                             zeroI32);
+  auto receiverWritePtr =
+      ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
+  auto mailboxSemIdx =
+      arith::ConstantIndexOp::create(rewriter, loc, getMailboxSemIdx(pipeType));
+  auto mailboxSemAddr =
+      ttk::GetSemaphoreOp::create(rewriter, loc, mailboxSemIdx);
+  auto mailboxPtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxSemAddr);
+  auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                           rewriter.getI32IntegerAttr(0));
+  ttk::StoreToL1Op::create(rewriter, loc, receiverWritePtr, mailboxPtr,
+                           zeroI32);
 
-    auto srcXLogical =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
-    auto srcYLogical =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
-    auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
-        rewriter, loc, indexTy, srcXLogical);
-    auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
-        rewriter, loc, indexTy, srcYLogical);
-    auto senderMailboxNocAddr = ttk::GetNocAddrOp::create(
-        rewriter, loc, srcXTranslated, srcYTranslated, mailboxSemAddr);
-    ttk::RemoteSramWriteU32Op::create(rewriter, loc, mailboxSemAddr,
-                                      senderMailboxNocAddr.getResult(), nocVal);
-    ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
+  auto srcXLogical =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
+  auto srcYLogical =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
+  auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, indexTy, srcXLogical);
+  auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, indexTy, srcYLogical);
+  auto senderMailboxNocAddr = ttk::GetNocAddrOp::create(
+      rewriter, loc, srcXTranslated, srcYTranslated, mailboxSemAddr);
+  ttk::RemoteSramWriteU32Op::create(rewriter, loc, mailboxSemAddr,
+                                    senderMailboxNocAddr.getResult(), nocVal);
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
-    auto senderSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, getSenderSemIdx(pipeType));
-    auto senderSemAddr =
-        ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
-    auto senderSemNocAddr = ttk::GetNocAddrOp::create(
-        rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
-    auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
-                                   readyIncr, nocVal, /*posted=*/BoolAttr());
-  };
-
-  if (pipeType.srcInDstRange()) {
-    auto myX = ttk::MyLogicalXOp::create(rewriter, loc, indexTy);
-    auto myY = ttk::MyLogicalYOp::create(rewriter, loc, indexTy);
-    auto srcXConst =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
-    auto srcYConst =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
-    auto xNeq = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ne,
-                                      myX, srcXConst);
-    auto yNeq = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ne,
-                                      myY, srcYConst);
-    auto notSender = arith::OrIOp::create(rewriter, loc, xNeq, yNeq);
-    auto ifOp = scf::IfOp::create(rewriter, loc, /*resultTypes=*/TypeRange{},
-                                  notSender, /*withElseRegion=*/false);
-    rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    emitAdvertiseToSender();
-    rewriter.setInsertionPointAfter(ifOp);
-  } else {
-    emitAdvertiseToSender();
-  }
-
-  if (pipeType.isUnicast()) {
-    // Point-to-point: wait for sender's atomic increment.
-    // For gather (N senders to 1 receiver), use cumulative waits:
-    // 1st recv waits for sem >= 1, 2nd for >= 2, etc. Only reset after last.
-    int64_t waitVal = 1;
-    bool resetAfterWait = true;
-    if (pipeGraph) {
-      auto [recvIdx, total] =
-          pipeGraph->getGatherRecvProgress(op.getOperation());
-      waitVal = recvIdx;
-      resetAfterWait = (recvIdx == total);
-    }
-    auto semIdx = arith::ConstantIndexOp::create(rewriter, loc,
-                                                 getReceiverSemIdx(pipeType));
-    auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
-    auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, semAddr);
-    auto waitValConst = arith::ConstantOp::create(
-        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(waitVal));
-    ttk::SemaphoreWaitMinOp::create(rewriter, loc, semPtr, waitValConst);
-    if (resetAfterWait) {
-      auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-      ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, zeroIdx);
-    }
-  } else {
-    // Multicast receiver hit by N pipes walks 1..N through a function-local
-    // counter so the shared arrival semaphore is consumed cumulatively.
-    auto recvSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, getReceiverSemIdx(pipeType));
-    auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
-    auto recvSemPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
-
-    // Counter is allocated by allocatePipeNetCountersForMulticast.
-    Value counter;
-    if (counters) {
-      auto func = op->getParentOfType<func::FuncOp>();
-      auto fIt = counters->find(func);
-      if (fIt != counters->end()) {
-        auto pIt = fIt->second.find(pipeType.getPipeNetId());
-        if (pIt != fIt->second.end()) {
-          counter = pIt->second;
-        }
-      }
-    }
-    if (!counter) {
-      // Counter pre-allocation is a hard precondition. Surfacing this as
-      // notifyMatchFailure would let the partial-conversion driver report
-      // a generic "no legalization for ttl.copy" instead of the actual
-      // pipeline-ordering bug; emit a real error.
-      op.emitError("multicast Pipe->CB CopyOp without per-PipeNet counter; "
-                   "allocatePipeNetCountersForMulticast must run before "
-                   "convert-ttl-to-ttkernel");
-      return failure();
-    }
-
-    auto emitCounterAndWait = [&]() {
-      auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-      auto loaded =
-          memref::LoadOp::create(rewriter, loc, counter, ValueRange{zeroIdx});
-      auto oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                              rewriter.getI32IntegerAttr(1));
-      auto newCounter = arith::AddIOp::create(rewriter, loc, loaded, oneI32);
-      memref::StoreOp::create(rewriter, loc, newCounter, counter,
-                              ValueRange{zeroIdx});
-      ttk::SemaphoreWaitMinOp::create(rewriter, loc, recvSemPtr, newCounter);
-    };
-
-    emitCounterAndWait();
-  }
+  auto senderSemIdx =
+      arith::ConstantIndexOp::create(rewriter, loc, getSenderSemIdx(pipeType));
+  auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
+  auto senderSemNocAddr = ttk::GetNocAddrOp::create(
+      rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
+  auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
+                                 readyIncr, nocVal, /*posted=*/BoolAttr());
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
+/// Lower the receiver completion wait with a per-PipeNet runtime counter.
+LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
+                                const PipeNetCounterMap *counters,
+                                ConversionPatternRewriter &rewriter) {
+  auto loc = op.getLoc();
+  auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  auto i32Ty = rewriter.getI32Type();
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+  (void)dst;
+
+  auto recvSemIdx = arith::ConstantIndexOp::create(rewriter, loc,
+                                                   getReceiverSemIdx(pipeType));
+  auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
+  auto recvSemPtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
+
+  Value counter;
+  if (counters) {
+    auto func = op->getParentOfType<func::FuncOp>();
+    auto fIt = counters->find(func);
+    if (fIt != counters->end()) {
+      auto pIt = fIt->second.find(pipeType.getPipeNetId());
+      if (pIt != fIt->second.end()) {
+        counter = pIt->second;
+      }
+    }
+  }
+  if (!counter) {
+    // Counter pre-allocation is a hard precondition. Surfacing this as
+    // notifyMatchFailure would let the partial-conversion driver report
+    // a generic legalization failure instead of the actual pipeline-ordering
+    // bug; emit a real error.
+    op.emitError("pipe receive without per-PipeNet counter; "
+                 "allocatePipeNetReceiveCounters must run before "
+                 "convert-ttl-to-ttkernel");
+    return failure();
+  }
+
+  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  auto loaded =
+      memref::LoadOp::create(rewriter, loc, counter, ValueRange{zeroIdx});
+  auto oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                          rewriter.getI32IntegerAttr(1));
+  auto newCounter = arith::AddIOp::create(rewriter, loc, loaded, oneI32);
+  memref::StoreOp::create(rewriter, loc, newCounter, counter,
+                          ValueRange{zeroIdx});
+  ttk::SemaphoreWaitMinOp::create(rewriter, loc, recvSemPtr, newCounter);
+
+  rewriter.eraseOp(op);
   return success();
 }
 
@@ -558,7 +461,7 @@ static void lowerToScfIf(Op op, Value cond,
   Block &srcBlock = op.getBody().front();
   Block &thenBlock = ifOp.getThenRegion().front();
   if (Operation *terminator = srcBlock.getTerminator();
-      terminator && isa<YieldOp>(terminator)) {
+      terminator && mlir::isa<YieldOp>(terminator)) {
     rewriter.eraseOp(terminator);
   }
   rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
@@ -774,7 +677,7 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   llvm::DenseMap<int64_t, llvm::SmallSet<PipeKey, 4>> seenPerNet;
   mod.walk([&](Operation *o) {
     for (Type t : o->getResultTypes()) {
-      auto pt = dyn_cast<PipeType>(t);
+      auto pt = mlir::dyn_cast<PipeType>(t);
       if (!pt) {
         continue;
       }

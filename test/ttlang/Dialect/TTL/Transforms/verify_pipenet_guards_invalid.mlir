@@ -32,11 +32,18 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_reserve = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %recv_view = ttl.attach_cb %recv_reserve, %cb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     // expected-error @below {{this `ttl.copy(pipe, buffer)` receives data from PipeNet net_0 on a node that is not a destination}}
     // expected-note @below {{example node where the guard does not hold: core_x=0}}
-    %recv = ttl.copy %pipe, %cb
+    %recv = ttl.copy %pipe, %recv_view
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
         -> !ttl.transfer_handle
     func.return
   }
@@ -279,11 +286,18 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_dst {pipe_net_id = 1 : i64}
     scf.if %cond {
+      %recv_reserve = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv_view = ttl.attach_cb %recv_reserve, %cb
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       // expected-error @below {{this `ttl.copy(pipe, buffer)` receives data from PipeNet net_a on a node that is not a destination}}
       // expected-note @below {{example node where the guard does not hold:}}
-      %r = ttl.copy %pa, %cb
+      %r = ttl.copy %pa, %recv_view
           : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -326,11 +340,18 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
     scf.if %a_active {
       %b_active = ttl.is_active {pipe_net_id = 1 : i64}
       scf.if %b_active {
+        %recv_reserve = ttl.cb_reserve %cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %recv_view = ttl.attach_cb %recv_reserve, %cb
+            : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+               !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
         // expected-error @below {{this `ttl.copy(pipe, buffer)` receives data from PipeNet net_0 on a node that is not a destination}}
         // expected-note @below {{example node where the guard does not hold: core_x=0}}
-        %recv = ttl.copy %pa, %cb
+        %recv = ttl.copy %pa, %recv_view
             : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
-               !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
             -> !ttl.transfer_handle
       }
     }
@@ -453,9 +474,16 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-error @below {{references unknown PipeNet id 9}}
     %cond = ttl.is_dst {pipe_net_id = 9 : i64}
     scf.if %cond {
-      %recv = ttl.copy %pipe, %cb
-          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+      %recv_reserve = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv_view = ttl.attach_cb %recv_reserve, %cb
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
              !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_view
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return

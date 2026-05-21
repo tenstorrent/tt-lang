@@ -5,8 +5,6 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_PIPELOWERING_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPELOWERING_H
 
-#include "PipeGraph.h"
-
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
@@ -31,8 +29,8 @@ inline int64_t getMailboxSemIdx(int64_t pipeNetId) {
   return pipeNetId * getPipeNetSemaphoreStride() + 2;
 }
 
-/// Per-function map: pipeNetId -> kernel-local i32 counter for the
-/// multicast cumulative wait_min protocol (issue #505).
+/// Per-function map: pipeNetId -> kernel-local i32 counter for cumulative
+/// pipe receive wait_min progress.
 using PipeNetCounterMap =
     llvm::DenseMap<func::FuncOp, llvm::DenseMap<int64_t, Value>>;
 
@@ -47,26 +45,23 @@ using PipeNetIndex = llvm::DenseMap<int64_t, SmallVector<PipeType>>;
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
-/// pipeNetId used by a multicast Pipe->CB CopyOp.
-void allocatePipeNetCountersForMulticast(ModuleOp mod,
-                                         PipeNetCounterMap &counters);
+/// pipeNetId used by a pipe receive.
+void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
-/// Lower CB -> Pipe copy (sender side). Uses receiver's CB address from
-/// PipeGraph for gather; signals destinations via semaphore.
+/// Lower CB -> Pipe copy (sender side). Uses receiver-published destination
+/// addresses and signals destinations via semaphore.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
-                            const ReceiverCBInfo *receiverInfo,
-                            bool isConsumerCB, bool useLocalReceiverAddress,
+                            bool isConsumerCB,
                             ConversionPatternRewriter &rewriter);
 
-/// Lower Pipe -> CB copy (receiver side). Unicast gather: cumulative
-/// wait_min with static recvProgress from PipeGraph. Multicast:
-/// cumulative wait_min via the runtime counter from
-/// `allocatePipeNetCountersForMulticast`.
-LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
-                            const PipeGraph *pipeGraph,
-                            const PipeNetCounterMap *counters,
-                            bool skipReadyAdvertisement,
-                            ConversionPatternRewriter &rewriter);
+/// Lower the receiver-side pipe receive address publication.
+LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
+                                ConversionPatternRewriter &rewriter);
+
+/// Lower the receiver-side pipe receive completion wait.
+LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
+                                const PipeNetCounterMap *counters,
+                                ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.
 /// `pipeNetIndex` is borrowed and must outlive `patterns`; the is_src /

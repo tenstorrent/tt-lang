@@ -15,6 +15,10 @@
 namespace mlir::tt::ttl::verify {
 namespace {
 
+// Return true when `v` is a transfer handle produced by `ttl.copy`, allowing
+// the handle to flow through tensor containers and loop-carried values.
+// `ttl.pipe_recv_post` is accepted because receive-side `ttl.copy` expands to
+// that internal op before lowering while preserving the original wait contract.
 static bool isDerivedFromCopy(mlir::Value v,
                               llvm::SmallPtrSetImpl<mlir::Value> &seen) {
   if (!seen.insert(v).second) {
@@ -22,6 +26,9 @@ static bool isDerivedFromCopy(mlir::Value v,
   }
 
   if (v.getDefiningOp<mlir::tt::ttl::CopyOp>() != nullptr) {
+    return true;
+  }
+  if (v.getDefiningOp<mlir::tt::ttl::PipeRecvPostOp>() != nullptr) {
     return true;
   }
 
@@ -77,10 +84,8 @@ static bool isDerivedFromCopy(mlir::Value v,
 
 mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
                                        mlir::Value handle) {
-  // Accept any TransferHandleType (typed or untyped).
-  // Typed handles (read/write) get corresponding barriers.
-  // Untyped handles (e.g., pipe receive) are no-ops since data arrives via
-  // multicast from source core.
+  // Accept typed and untyped transfer handles. Untyped handles model async
+  // pipe receive completion and are expanded before lowering.
   if (!mlir::isa<mlir::tt::ttl::TransferHandleType>(handle.getType())) {
     return op->emitOpError()
            << "expects transfer handle (!ttl.transfer_handle), got "
@@ -92,7 +97,7 @@ mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
     return mlir::success();
   }
 
-  return op->emitOpError() << "expects operand to be the result of ttl.copy.";
+  return op->emitOpError() << "expects operand to be derived from ttl.copy.";
 }
 
 } // namespace mlir::tt::ttl::verify

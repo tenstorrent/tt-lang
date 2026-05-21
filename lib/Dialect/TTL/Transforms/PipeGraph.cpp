@@ -17,15 +17,17 @@ LogicalResult PipeGraph::addReceiverCB(int64_t srcX, int64_t srcY,
                                        int64_t dstStartX, int64_t dstStartY,
                                        int64_t dstEndX, int64_t dstEndY,
                                        int64_t pipeNetId, int64_t cbIndex,
-                                       int64_t blockCount, Location loc,
-                                       Operation *receiverCopyOp) {
+                                       int64_t blockCount, Location loc) {
   PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
-  if (receiverCBs.count(key) != 0) {
-    return emitError(loc) << "duplicate receiver CB for the same pipe";
+  auto existing = receiverCBs.find(key);
+  if (existing != receiverCBs.end()) {
+    if (existing->second.cbIndex != cbIndex ||
+        existing->second.blockCount != blockCount) {
+      return emitError(loc) << "conflicting receiver DFBs for the same pipe";
+    }
+    return success();
   }
   receiverCBs.insert({key, {cbIndex, 0, blockCount, loc}});
-  receiverCopyToKey[receiverCopyOp] = key;
-  receiverCopyOrder.push_back({receiverCopyOp, key});
   return success();
 }
 
@@ -100,33 +102,6 @@ void PipeGraph::assignGatherSlotIndices() {
       }
     }
   }
-
-  // Count senders per unicast destination.
-  for (auto &[key, info] : receiverCBs) {
-    bool isUnicast =
-        key.dstStartX == key.dstEndX && key.dstStartY == key.dstEndY;
-    if (!isUnicast) {
-      continue;
-    }
-    detail::GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
-    gatherDstCounts[dk]++;
-  }
-
-  // Assign 1-based receive indices per destination. receiver CopyOps
-  // targeting the same gather destination get sequential indices based
-  // on the program order they were discovered during build().
-  // Uses receiverCopyOrder (insertion-ordered) instead of the DenseMap
-  // receiverCopyToKey, because the cumulative wait protocol requires
-  // the last CopyOp in program order to reset the semaphore.
-  llvm::DenseMap<detail::GatherDstKey, int64_t, detail::GatherDstKeyInfo>
-      dstCounters;
-  for (auto &[copyOp, key] : receiverCopyOrder) {
-    detail::GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
-    if (gatherDstCounts.count(dk) == 0) {
-      continue;
-    }
-    gatherRecvProgress[copyOp] = ++dstCounters[dk];
-  }
 }
 
 LogicalResult PipeGraph::verifyGatherBlockCounts() const {
@@ -145,68 +120,49 @@ LogicalResult PipeGraph::verifyGatherBlockCounts() const {
   return success();
 }
 
-std::pair<int64_t, int64_t>
-PipeGraph::getGatherRecvProgress(Operation *receiverCopyOp) const {
-  auto keyIt = receiverCopyToKey.find(receiverCopyOp);
-  if (keyIt == receiverCopyToKey.end()) {
-    return {1, 1};
+static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
+                                     PipeType pipeType, Value dst) {
+  Value dstCB = getAttachedCB(dst);
+  if (!dstCB) {
+    return op->emitError("pipe receive destination is not attached to a DFB");
   }
-  const PipeKey &pk = keyIt->second;
-  detail::GatherDstKey dk{pk.dstStartX, pk.dstStartY, pk.pipeNetId};
-  auto it = gatherDstCounts.find(dk);
-  if (it == gatherDstCounts.end()) {
-    return {1, 1};
+  auto cbType = mlir::dyn_cast<CircularBufferType>(dstCB.getType());
+  if (!cbType) {
+    return op->emitError("pipe receive destination is not attached to a DFB");
   }
-  auto progIt = gatherRecvProgress.find(receiverCopyOp);
-  if (progIt == gatherRecvProgress.end()) {
-    return {1, 1};
+
+  std::optional<int64_t> cbIndex = getCBIndex(dstCB);
+  if (!cbIndex.has_value()) {
+    return op->emitError("could not trace pipe receiver to a DFB binding");
   }
-  return {progIt->second, it->second};
+
+  return graph.addReceiverCB(
+      pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
+      pipeType.getDstStartY(), pipeType.getDstEndX(), pipeType.getDstEndY(),
+      pipeType.getPipeNetId(), *cbIndex, cbType.getBlockCount(), op->getLoc());
 }
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
 
-  // Find all Pipe->DFB copies (receiver side) and extract DFB index.
   LogicalResult walkResult = success();
-  mod.walk([&](CopyOp copyOp) {
+  mod.walk([&](Operation *op) {
     if (failed(walkResult)) {
       return;
     }
-    auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType());
-    if (!srcPipeType) {
+    if (auto copyOp = mlir::dyn_cast<CopyOp>(op)) {
+      auto srcPipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType());
+      if (!srcPipeType) {
+        return;
+      }
+      walkResult = addPipeReceiver(graph, op, srcPipeType, copyOp.getDst());
       return;
     }
-
-    // Found Pipe->DFB copy: this is the receiver side. Either failure here
-    // would let the sender silently target its own write_ptr instead of the
-    // receiver's, so fail the pass loudly rather than warn-and-skip.
-    Value dstCB = getAttachedCB(copyOp.getDst());
-    if (!dstCB) {
-      copyOp.emitError("pipe copy destination is not attached to a DFB");
-      walkResult = failure();
+    if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {
+      auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
+      walkResult = addPipeReceiver(graph, op, pipeType, postOp.getDst());
       return;
     }
-    auto cbType = dyn_cast<CircularBufferType>(dstCB.getType());
-    if (!cbType) {
-      copyOp.emitError("pipe copy destination is not attached to a DFB");
-      walkResult = failure();
-      return;
-    }
-
-    std::optional<int64_t> cbIndex = getCBIndex(dstCB);
-    if (!cbIndex.has_value()) {
-      copyOp.emitError("could not trace pipe receiver to a DFB binding");
-      walkResult = failure();
-      return;
-    }
-
-    walkResult = graph.addReceiverCB(
-        srcPipeType.getSrcX(), srcPipeType.getSrcY(),
-        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
-        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
-        srcPipeType.getPipeNetId(), *cbIndex, cbType.getBlockCount(),
-        copyOp.getLoc(), copyOp);
   });
 
   if (failed(walkResult)) {

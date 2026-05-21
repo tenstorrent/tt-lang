@@ -253,6 +253,31 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
+  if (!findCBReserveForPipeReceive(getDst())) {
+    return emitOpError() << "requires a cb_reserve destination";
+  }
+
+  auto handleType = mlir::cast<TransferHandleType>(getXf().getType());
+  if (handleType.getKind()) {
+    return emitOpError() << "requires an untyped transfer handle result";
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeRecvWaitOp::verify() {
+  auto handleType = mlir::cast<TransferHandleType>(getXf().getType());
+  if (handleType.getKind()) {
+    return emitOpError() << "requires an untyped transfer handle operand";
+  }
+  if (!findCBReserveForPipeReceive(getDst())) {
+    return emitOpError() << "requires a cb_reserve destination";
+  }
+
+  return success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
   if (failed(
           mlir::tt::ttl::verify::isValidWaitOperand(getOperation(), getXf()))) {

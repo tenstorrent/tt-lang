@@ -21,6 +21,7 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -38,6 +39,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -458,6 +460,110 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
+static bool isPipeReceiveCopy(CopyOp op) {
+  return llvm::isa<PipeType>(op.getSrc().getType()) &&
+         getAttachedCB(op.getDst());
+}
+
+static PipeRecvPostOp findPipeRecvPost(Value value,
+                                       llvm::SmallPtrSetImpl<Value> &seen) {
+  value = traceUnrealizedCasts(value);
+  if (!seen.insert(value).second) {
+    return {};
+  }
+
+  if (auto postOp = value.getDefiningOp<PipeRecvPostOp>()) {
+    return postOp;
+  }
+  if (auto extractOp = value.getDefiningOp<tensor::ExtractOp>()) {
+    return findPipeRecvPost(extractOp.getTensor(), seen);
+  }
+  if (auto insertOp = value.getDefiningOp<tensor::InsertOp>()) {
+    return findPipeRecvPost(insertOp.getScalar(), seen);
+  }
+  if (auto result = mlir::dyn_cast<OpResult>(value)) {
+    if (auto loop = mlir::dyn_cast<LoopLikeOpInterface>(result.getOwner())) {
+      auto yieldedOpt = loop.getYieldedValuesMutable();
+      auto resultsOpt = loop.getLoopResults();
+      if (yieldedOpt && resultsOpt) {
+        auto yielded = *yieldedOpt;
+        auto results = *resultsOpt;
+        for (unsigned idx = 0; idx < results.size(); ++idx) {
+          if (results[idx] == result) {
+            return findPipeRecvPost(yielded[idx].get(), seen);
+          }
+        }
+      }
+    }
+  }
+  if (auto blockArg = mlir::dyn_cast<BlockArgument>(value)) {
+    Operation *parent = blockArg.getOwner()->getParentOp();
+    if (auto loop = mlir::dyn_cast_or_null<LoopLikeOpInterface>(parent)) {
+      auto iterArgs = loop.getRegionIterArgs();
+      auto inits = loop.getInitsMutable();
+      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
+        if (iterArgs[idx] == blockArg) {
+          return findPipeRecvPost(inits[idx].get(), seen);
+        }
+      }
+    }
+  }
+
+  return {};
+}
+
+static LogicalResult expandPipeReceiveCopies(ModuleOp mod) {
+  SmallVector<CopyOp> receiveCopies;
+  mod.walk([&](CopyOp op) {
+    if (isPipeReceiveCopy(op)) {
+      receiveCopies.push_back(op);
+    }
+  });
+
+  OpBuilder builder(mod.getContext());
+  for (CopyOp copyOp : receiveCopies) {
+    builder.setInsertionPoint(copyOp);
+    auto postOp = PipeRecvPostOp::create(builder, copyOp.getLoc(),
+                                         copyOp.getResult().getType(),
+                                         copyOp.getSrc(), copyOp.getDst());
+    copyOp.getResult().replaceAllUsesWith(postOp.getXf());
+    copyOp->erase();
+  }
+
+  SmallVector<WaitOp> receiveWaits;
+  LogicalResult result = success();
+  mod.walk([&](WaitOp waitOp) {
+    auto handleType =
+        mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
+    if (!handleType || handleType.getKind()) {
+      return;
+    }
+    llvm::SmallPtrSet<Value, 16> seen;
+    PipeRecvPostOp postOp = findPipeRecvPost(waitOp.getXf(), seen);
+    if (!postOp) {
+      waitOp.emitError()
+          << "untyped transfer handle wait must reference ttl.pipe_recv_post";
+      result = failure();
+      return;
+    }
+    receiveWaits.push_back(waitOp);
+  });
+  if (failed(result)) {
+    return failure();
+  }
+
+  for (WaitOp waitOp : receiveWaits) {
+    llvm::SmallPtrSet<Value, 16> seen;
+    PipeRecvPostOp postOp = findPipeRecvPost(waitOp.getXf(), seen);
+    builder.setInsertionPoint(waitOp);
+    PipeRecvWaitOp::create(builder, waitOp.getLoc(), waitOp.getXf(),
+                           postOp.getPipe(), postOp.getDst());
+    waitOp->erase();
+  }
+
+  return success();
+}
+
 /// Compute CTA index for a tensor function argument.
 /// Reads ttl.base_cta_index and ttl.crta_indices from parent function.
 /// Returns the baseCTA (number of CBs) and global tensor index for a function
@@ -741,11 +847,7 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 };
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
-  CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
-               const PipeGraph *pipeGraph,
-               const PipeNetCounterMap *pipeNetCounters)
-      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph),
-        pipeNetCounters(pipeNetCounters) {}
+  using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -771,15 +873,6 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     // Pipe transfers: CB <-> Pipe
     if (srcIsCB && dstIsPipe) {
       // CB -> Pipe: source core multicasts data to destination cores
-      // Look up receiver CB info for gather patterns
-      const ReceiverCBInfo *receiverInfo = nullptr;
-      if (pipeGraph) {
-        auto pipeType = llvm::cast<PipeType>(adaptor.getDst().getType());
-        receiverInfo = pipeGraph->getReceiverInfo(
-            pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
-            pipeType.getDstStartY(), pipeType.getDstEndX(),
-            pipeType.getDstEndY(), pipeType.getPipeNetId());
-      }
       // Determine CB access context: consumer (cb_wait/cb_pop) vs producer
       // (cb_reserve/cb_push). This controls whether we read from the CB's
       // read pointer or write pointer for the pipe source address.
@@ -787,16 +880,14 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       // inside scf.if from pipe callbacks) and CBs used in both roles.
       DominanceInfo domInfo(op->getParentOfType<func::FuncOp>());
       bool isConsumerCB = llvm::any_of(src.getUsers(), [&](Operation *user) {
-        return isa<CBWaitOp>(user) && user->getOperand(0) == src &&
+        return mlir::isa<CBWaitOp>(user) && user->getOperand(0) == src &&
                domInfo.dominates(user, op);
       });
-      return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
-                           isConsumerCB, rewriter);
+      return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), isConsumerCB,
+                           rewriter);
     }
     if (srcIsPipe && dstIsDFBAttachedTensor) {
-      // Pipe -> CB: destination receives data via multicast from source
-      return lowerPipeToCB(op, adaptor.getSrc(), dst, pipeGraph,
-                           pipeNetCounters, rewriter);
+      return op.emitError("pipe receive copy survived pipe receive expansion");
     }
     if (srcIsPipe || dstIsPipe) {
       return rewriter.notifyMatchFailure(
@@ -832,9 +923,32 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
                              NocCopyDirection::Write, rewriter, *typeConverter);
   }
+};
+
+struct PipeRecvPostLowering : OpConversionPattern<PipeRecvPostOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(PipeRecvPostOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerPipeRecvPost(op, adaptor.getPipe(), op.getDst(), rewriter);
+  }
+};
+
+struct PipeRecvWaitLowering : OpConversionPattern<PipeRecvWaitOp> {
+  PipeRecvWaitLowering(const TypeConverter &typeConverter, MLIRContext *context,
+                       const PipeNetCounterMap *pipeNetCounters)
+      : OpConversionPattern(typeConverter, context),
+        pipeNetCounters(pipeNetCounters) {}
+
+  LogicalResult
+  matchAndRewrite(PipeRecvWaitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerPipeRecvWait(op, adaptor.getPipe(), op.getDst(),
+                             pipeNetCounters, rewriter);
+  }
 
 private:
-  const PipeGraph *pipeGraph;
   const PipeNetCounterMap *pipeNetCounters;
 };
 
@@ -848,14 +962,12 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
     // MVP behavior: emit the corresponding global barrier based on transfer
-    // direction. Untyped handles (no kind) are no-ops - used for pipe receives
-    // where data arrives via multicast and no local barrier is needed.
+    // direction. Pipe receive waits are expanded to ttl.pipe_recv_wait before
+    // this conversion.
     auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
     if (!kind) {
-      // No transfer kind means no barrier needed (e.g., pipe receive where
-      // data arrives via multicast from source core).
-      rewriter.eraseOp(op);
-      return success();
+      return op.emitError("untyped transfer handle survived pipe receive "
+                          "expansion");
     }
     if (*kind == TransferKind::read) {
       ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc());
@@ -1008,18 +1120,20 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
-  // Build the pipe graph to track receiver CB addresses for gather
-  // patterns. This must happen before lowering so we can look up receiver
-  // info.
+  if (failed(expandPipeReceiveCopies(mod))) {
+    return failure();
+  }
+
+  // Validate receiver DFB consistency before lowering emits the rendezvous
+  // protocol.
   auto pipeGraphOrErr = PipeGraph::build(mod);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }
-  PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
 
-  // Per-PipeNet runtime counters for multicast cumulative wait_min.
+  // Per-PipeNet runtime counters for cumulative receive wait_min.
   PipeNetCounterMap pipeNetCounters;
-  allocatePipeNetCountersForMulticast(mod, pipeNetCounters);
+  allocatePipeNetReceiveCounters(mod, pipeNetCounters);
 
   // Per-net-id pipe list, shared by IsSrc/IsDst/IsActive lowerings so they
   // don't walk the module per match.
@@ -1027,7 +1141,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   buildPipeNetIndex(mod, pipeNetIndex);
 
   RewritePatternSet patterns(&ctx);
-  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph, &pipeNetCounters);
+  patterns.add<CopyLowering>(typeConverter, &ctx);
+  patterns.add<PipeRecvPostLowering>(typeConverter, &ctx);
+  patterns.add<PipeRecvWaitLowering>(typeConverter, &ctx, &pipeNetCounters);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
@@ -1085,8 +1201,8 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
           return false;
         }
         // DST lifecycle ops are illegal.
-        if (isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
-                TileRegsReleaseOp>(op)) {
+        if (mlir::isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+                      TileRegsReleaseOp>(op)) {
           return false;
         }
         // All other TTL ops are legal (ComputeOp, YieldOp, AttachCBOp).
@@ -1133,7 +1249,8 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
 static void removeTensorDataflowOps(func::FuncOp func) {
   SmallVector<Operation *> deadOps;
   func.walk([&](Operation *op) {
-    if (isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp>(op) &&
+    if (mlir::isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp>(
+            op) &&
         op->use_empty()) {
       deadOps.push_back(op);
     }
@@ -1204,7 +1321,7 @@ static void expandDstSection(DstSectionOp dstSection) {
   // Find the first TileStoreOp -- this is the math/pack boundary.
   Operation *firstStore = nullptr;
   for (Operation &op : body.without_terminator()) {
-    if (isa<TileStoreOp>(&op)) {
+    if (mlir::isa<TileStoreOp>(&op)) {
       firstStore = &op;
       break;
     }

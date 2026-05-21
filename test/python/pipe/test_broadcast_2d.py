@@ -47,28 +47,27 @@ def broadcast_2d_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as blk:
-
-            def read_and_send(pipe):
-                tx = ttl.copy(inp[0, 0], blk)
-                tx.wait()
-                xf = ttl.copy(blk, pipe)
-                xf.wait()
-
-            net.if_src(read_and_send)
+        with inp_cb.reserve() as recv_dst_blk:
 
             def recv(pipe):
-                xf = ttl.copy(pipe, blk)
-                xf.wait()
+                recv_tx = ttl.copy(pipe, recv_dst_blk)
+
+                def read_and_send(pipe):
+                    read_tx = ttl.copy(inp[0, 0], recv_dst_blk)
+                    read_tx.wait()
+                    ttl.copy(recv_dst_blk, pipe).wait()
+
+                net.if_src(read_and_send)
+                recv_tx.wait()
 
             net.if_dst(recv)
 
     @ttl.datamovement()
     def dm_write():
         x, y = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            tx = ttl.copy(blk, out[y, x])
-            tx.wait()
+        with out_cb.wait() as out_blk:
+            write_tx = ttl.copy(out_blk, out[y, x])
+            write_tx.wait()
 
 
 def test_broadcast_2d(device):
