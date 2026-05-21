@@ -196,8 +196,8 @@ static Type getFusedResultTileType(Operation *sourceOp) {
 /// Fusable ops, including `ttl.fill`, derive their tile type from the source
 /// op's tensor result so dtype-changing ops such as `ttl.typecast` produce
 /// correctly-typed intermediates inside a fused chain.
-static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
-                           ValueRange tileOperands) {
+static Value emitTileOpFor(OpBuilder &builder, Location loc,
+                           Operation *sourceOp, ValueRange tileOperands) {
   Type tileType = getFusedResultTileType(sourceOp);
   if (!tileType) {
     return nullptr;
@@ -226,8 +226,8 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
   // TypecastOp: dtype-changing unary. The result tile type already reflects
   // the destination dtype via `getFusedResultTileType`.
   if (isa<TypecastOp>(sourceOp)) {
-    return createTileOpWithPlaceholderDstIndex<TileTypecastOp>(b, loc, tileType,
-                                                               tileOperands[0]);
+    return createTileOpWithPlaceholderDstIndex<TileTypecastOp>(
+        builder, loc, tileType, tileOperands[0]);
   }
 
   // FillOp: no tile operands, just a value attribute.
