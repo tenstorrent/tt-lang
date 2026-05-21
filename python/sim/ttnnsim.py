@@ -1636,6 +1636,38 @@ class Tensor:
                 return NotImplemented
 
 
+def _pad_to_tile_alignment(tensor: torch.Tensor, layout: IndexType) -> torch.Tensor:
+    """Pad a user tensor's last two dims to ``TILE_SHAPE`` multiples.
+
+    Per the TT-Lang specification every tile is exactly ``TILE_SHAPE``
+    (32x32) scalar elements (see TTLangSpecification.md, tiled-block
+    section).  Logical shapes that are not already tile-aligned have
+    their data placed in the top-left of each output tile by spec
+    convention - ``(N, 1)`` column vectors live in column 0, ``(1, M)``
+    row vectors live in row 0, ``(1, 1)`` scalars at position
+    ``(0, 0)`` - and the remainder of the tile is padding.  The
+    two-step ``block.broadcast`` and ``math.reduce_*`` ops then
+    overwrite that padding when needed.  ``ROW_MAJOR_LAYOUT`` tensors
+    are returned untouched.
+    """
+    if layout != TILE_LAYOUT:
+        return tensor
+    if tensor.ndim < 2:
+        raise ValueError(
+            f"TILE_LAYOUT tensors must have at least 2 dimensions, got shape "
+            f"{tuple(tensor.shape)}"
+        )
+    h, w = tensor.shape[-2], tensor.shape[-1]
+    pad_h = (-h) % TILE_SHAPE[0]
+    pad_w = (-w) % TILE_SHAPE[1]
+    if pad_h == 0 and pad_w == 0:
+        return tensor
+    # torch.nn.functional.pad takes (left, right, top, bottom, ...) starting
+    # from the last dim; we pad zero on the right of the innermost dim and
+    # the bottom of the next-to-innermost dim.
+    return torch.nn.functional.pad(tensor, (0, pad_w, 0, pad_h), value=0.0)
+
+
 def rand(
     shape: Shape,
     dtype: DType = bfloat16,
@@ -1644,7 +1676,8 @@ def rand(
     memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
-    return Tensor(torch.rand(shape, dtype=_promote_dtype(dtype)), layout, dtype=dtype)
+    raw = torch.rand(shape, dtype=_promote_dtype(dtype))
+    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
 
 
 def empty(
@@ -1655,7 +1688,8 @@ def empty(
     memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
-    return Tensor(torch.empty(shape, dtype=_promote_dtype(dtype)), layout, dtype=dtype)
+    raw = torch.empty(shape, dtype=_promote_dtype(dtype))
+    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
 
 
 def to_torch(
@@ -1734,6 +1768,8 @@ def from_torch(
     else:
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+
+    tensor = _pad_to_tile_alignment(tensor, layout)
 
     match eff_dtype:
         case _ if eff_dtype is not None:

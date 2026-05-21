@@ -54,19 +54,13 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                         y_dfb.reserve() as y_blk,
                     ):
                         a_bcast = ttl.block.broadcast(
-                            a_blk,
-                            dims=[-1],
-                            shape=(row_tiles_per_block, col_tiles_per_block),
+                            a_blk, dims=[-1], shape=y_blk.shape
                         )
                         b_bcast = ttl.block.broadcast(
-                            b_blk,
-                            dims=[0],
-                            shape=(row_tiles_per_block, col_tiles_per_block),
+                            b_blk, dims=[0], shape=y_blk.shape
                         )
                         c_bcast = ttl.block.broadcast(
-                            c_blk,
-                            dims=[-2, -1],
-                            shape=(row_tiles_per_block, col_tiles_per_block),
+                            c_blk, dims=[-2, -1], shape=y_blk.shape
                         )
                         y_blk.store(a_bcast * b_bcast + c_bcast)
 

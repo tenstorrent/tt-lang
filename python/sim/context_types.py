@@ -70,9 +70,6 @@ class CopySystemState:
 class WarningState:
     """Warning deduplication tracking."""
 
-    broadcast_1d_warnings: Dict[tuple[str, int], Set[str]] = field(
-        default_factory=dict[tuple[str, int], Set[str]]
-    )  # pyright: ignore[reportUnknownVariableType]
     block_print_warnings: Dict[tuple[str, int], Set[str]] = field(
         default_factory=dict[tuple[str, int], Set[str]]
     )  # pyright: ignore[reportUnknownVariableType]

@@ -40,9 +40,25 @@ class _SignpostContextManager:
         return None
 
 
-# Spec change-log 0.17 (TTLangSpecification.md) moved these names from
-# ttl.math to ttl.block; the sim mirrors the compiler's namespace partition.
-_BLOCK_NAMESPACE_NAMES = {"broadcast"}
+# Create ttl.block namespace object
+class _TTLBlockNamespace:
+    """TT-Lang block namespace for shape-manipulation and utility functions.
+
+    Contains: broadcast, fill, mask, mask_posinf, where, squeeze, unsqueeze,
+    transpose.
+    """
+
+    def __init__(self):
+        from . import block as block_module
+
+        self.broadcast = block_module.broadcast
+        self.fill = block_module.fill
+        self.mask = block_module.mask
+        self.mask_posinf = block_module.mask_posinf
+        self.where = block_module.where
+        self.squeeze = block_module.squeeze
+        self.unsqueeze = block_module.unsqueeze
+        self.transpose = block_module.transpose
 
 
 # Create ttl.math namespace object
@@ -63,24 +79,10 @@ class _TTLMathNamespace:
         # Auto-load all other functions from the math module
         # This includes all auto-generated unary operations
         for name in dir(math_module):
-            if name.startswith("_") or hasattr(self, name):
-                continue
-            if name in _BLOCK_NAMESPACE_NAMES:
-                continue
-            attr = getattr(math_module, name)
-            if callable(attr):
-                setattr(self, name, attr)
-
-
-# Create ttl.block namespace object
-class _TTLBlockNamespace:
-    """TT-Lang block namespace; mirrors the spec's ttl.block module."""
-
-    def __init__(self):
-        from . import math as math_module
-
-        self.broadcast = math_module.broadcast
-        self.fill = math_module.block_fill
+            if not name.startswith("_") and not hasattr(self, name):
+                attr = getattr(math_module, name)
+                if callable(attr):
+                    setattr(self, name, attr)
 
 
 # Create ttl namespace object
@@ -94,7 +96,6 @@ class _TTLNamespace:
         from .decorators import compute, datamovement
         from .corecontext import node, grid_size
         from .operation import operation
-        from . import math as math_module
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program
         from .typedefs import CoreCoord, CoreRange, Shape, Size
@@ -107,7 +108,6 @@ class _TTLNamespace:
         self.node = node
         self.copy = copy
         self.GroupTransfer = GroupTransfer
-        self.transpose = math_module.transpose
         self.Pipe = Pipe
         self.PipeNet = PipeNet
         self.SrcPipeIdentity = SrcPipeIdentity
@@ -121,8 +121,8 @@ class _TTLNamespace:
         self.TILE_LAYOUT = TILE_LAYOUT
         self.ROW_MAJOR_LAYOUT = ROW_MAJOR_LAYOUT
         self.Program = Program
-        self.math = _TTLMathNamespace()
         self.block = _TTLBlockNamespace()
+        self.math = _TTLMathNamespace()
 
     @staticmethod
     def signpost(*args: Any, **kwargs: Any) -> _SignpostContextManager:
