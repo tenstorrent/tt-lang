@@ -731,17 +731,6 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
         ttk::ReduceTypeAttr::get(op.getContext(), ttkReduceType),
         ttk::ReduceDimAttr::get(op.getContext(), op.getReduceDim()));
 
-    if (auto scalarMultiplier =
-            op->getAttrOfType<FloatAttr>(kReduceScalarMultiplierAttrName)) {
-      if (scalarMultiplier.getValueAsDouble() != 1.0) {
-        ttk::BinopWithScalarTileInitOp::create(rewriter, op.getLoc());
-        Value scalarParam =
-            floatAttrToI32Bits(rewriter, op.getLoc(), scalarMultiplier);
-        ttk::MulUnaryTileOp::create(rewriter, op.getLoc(), setup->dstIdx,
-                                    scalarParam);
-      }
-    }
-
     bool useFullFp32 = shouldUseFullFp32Reduce(op, fullFp32);
     if (fullFp32 && isBlackholeTarget(op) &&
         op.getReduceDim() == ttk::ReduceDim::Row) {
@@ -996,6 +985,25 @@ struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
   }
 };
 
+struct TTLTileMulUnaryConstToTTKernel
+    : OpConversionPattern<TileMulUnaryConstOp> {
+  using OpConversionPattern<TileMulUnaryConstOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileMulUnaryConstOp op, TileMulUnaryConstOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value dstIdxVal = adaptor.getDstIndex();
+
+    ttk::BinopWithScalarTileInitOp::create(rewriter, loc);
+    Value scalarParam = floatAttrToI32Bits(rewriter, loc, op.getValueAttr());
+    ttk::MulUnaryTileOp::create(rewriter, loc, dstIdxVal, scalarParam);
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1034,6 +1042,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // DST-based ops (no type converter needed).
   patterns.add<TTLTileFillToTTKernel>(ctx);
+  patterns.add<TTLTileMulUnaryConstToTTKernel>(ctx);
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
 
   // Copy ops need the type converter.

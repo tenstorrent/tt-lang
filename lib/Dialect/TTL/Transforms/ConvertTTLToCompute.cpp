@@ -180,25 +180,33 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 //===----------------------------------------------------------------------===//
 
 /// Returns the result Value, or null if the source op is unsupported.
-static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
-                           ValueRange tileOperands, Type tileType) {
+static Value emitTileOpFor(OpBuilder &builder, Location loc,
+                           Operation *sourceOp, ValueRange tileOperands,
+                           Type tileType) {
 
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
-    return createTileOpWithPlaceholderDstIndex<TILE_OP>(b, loc, tileType,      \
-                                                        tileOperands[0]);
+    return createTileOpWithPlaceholderDstIndex<TILE_OP>(                       \
+        builder, loc, tileType, tileOperands[0]);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
     return createTileOpWithPlaceholderDstIndex<TILE_OP>(                       \
-        b, loc, tileType, tileOperands[0], tileOperands[1]);
+        builder, loc, tileType, tileOperands[0], tileOperands[1]);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // FillOp: no tile operands, just a value attribute.
+  if (auto mulUnaryConstOp = dyn_cast<MulUnaryConstOp>(sourceOp)) {
+    assert(tileOperands.size() == 1 &&
+           "mul_unary_const fusion requires one tile operand");
+    return createTileOpWithPlaceholderDstIndex<TileMulUnaryConstOp>(
+        builder, loc, tileType, tileOperands[0],
+        mulUnaryConstOp.getValueAttr());
+  }
+
   if (auto fillOp = dyn_cast<FillOp>(sourceOp)) {
     return createTileOpWithPlaceholderDstIndex<TileFillOp>(
-        b, loc, tileType, fillOp.getValueAttr());
+        builder, loc, tileType, fillOp.getValueAttr());
   }
 
   return nullptr;
@@ -1365,21 +1373,44 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
                                         AffineMapAttr::get(outputMap)};
 
     auto reduceType = op.getReduceType();
-    auto scalarMultiplier =
-        op->getAttrOfType<FloatAttr>(kReduceScalarMultiplierAttrName);
     return buildComputeFromInputs(
         op, rewriter, ValueRange{op.getInput(), op.getScaler()}, resultType,
         inputMaps, outputMap, iterTypes,
-        [reduceType, reduceDim, scalarMultiplier](OpBuilder &b, Location loc,
-                                                  Type tileType, Block *body) {
-          auto tileReduce = createTileOpWithPlaceholderDstIndex<TileReduceOp>(
+        [reduceType, reduceDim](OpBuilder &b, Location loc, Type tileType,
+                                Block *body) {
+          return createTileOpWithPlaceholderDstIndex<TileReduceOp>(
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               body->getArgument(2), reduceType, reduceDim);
-          if (scalarMultiplier) {
-            tileReduce->setAttr(kReduceScalarMultiplierAttrName,
-                                scalarMultiplier);
-          }
-          return tileReduce;
+        });
+  }
+};
+
+/// Lower ttl.mul_unary_const to ttl.compute with a single tile operation, or
+/// fuse it with its producer when the input is not attached to a dataflow
+/// buffer.
+struct LowerMulUnaryConstToCompute : OpRewritePattern<MulUnaryConstOp> {
+  using OpRewritePattern<MulUnaryConstOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MulUnaryConstOp op,
+                                PatternRewriter &rewriter) const override {
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    if (!getAttachedCB(op.getInput())) {
+      return tryFusion(op.getOperation(), rewriter);
+    }
+
+    MLIRContext *ctx = rewriter.getContext();
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(resultType.getRank(), ctx);
+    SmallVector<Attribute> inputMaps = {AffineMapAttr::get(identityMap)};
+    SmallVector<Attribute> iterTypes(resultType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+    FloatAttr valueAttr = op.getValueAttr();
+    return buildComputeFromInputs(
+        op, rewriter, ValueRange{op.getInput()}, resultType, inputMaps,
+        identityMap, iterTypes,
+        [valueAttr](OpBuilder &b, Location loc, Type tileType, Block *body) {
+          return createTileOpWithPlaceholderDstIndex<TileMulUnaryConstOp>(
+              b, loc, tileType, body->getArgument(0), valueAttr);
         });
   }
 };
@@ -1599,6 +1630,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<LowerBcastToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);
+  patterns.add<LowerMulUnaryConstToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
   patterns.add<LowerTypecastToCompute>(ctx);
   patterns.add<LowerFillToCompute>(ctx);

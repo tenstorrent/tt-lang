@@ -11,7 +11,7 @@
 Multinode row-wise softmax with compiler-allocated intermediate DFBs.
 
 Each core in the (COLS, ROWS) grid processes one row of COLS tiles.
-The user provides only inp, scaler, and out DFBs. The compiler inserts
+The user provides only inp and out DFBs. The compiler inserts
 intermediate DFBs for reduce_max, exp(x - max), and reduce_sum results
 via ttl-insert-intermediate-dfbs.
 
@@ -36,18 +36,17 @@ COLS = 4
 
 
 @ttl.operation(grid=(COLS, ROWS))
-def softmax_kernel(inp, scaler, out):
+def softmax_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
-        with inp_dfb.wait() as x_blk, scaler_dfb.wait() as s_blk:
-            mx = ttl.math.reduce_max(x_blk, s_blk, dims=[0, 1])
+        with inp_dfb.wait() as x_blk:
+            mx = ttl.math.reduce_max(x_blk, dims=[0, 1])
             shifted = ttl.sub(x_blk, ttl.math.broadcast(mx, x_blk, dims=[0, 1]))
             ex = ttl.exp(shifted)
-            sm = ttl.math.reduce_sum(ex, s_blk, dims=[0, 1])
+            sm = ttl.math.reduce_sum(ex, dims=[0, 1])
             inv_sum = ttl.recip(ttl.math.broadcast(sm, ex, dims=[0, 1]))
             with out_dfb.reserve() as out_blk:
                 out_blk.store(ttl.mul(ex, inv_sum))
@@ -57,8 +56,6 @@ def softmax_kernel(inp, scaler, out):
         col, row = ttl.node(dims=2)
         with inp_dfb.reserve() as blk:
             ttl.copy(inp[row, col], blk).wait()
-        with scaler_dfb.reserve() as blk:
-            ttl.copy(scaler[0, 0], blk).wait()
 
     @ttl.datamovement()
     def dm_write():
@@ -110,14 +107,12 @@ if __name__ == "__main__":
 
     try:
         inp_torch = torch.randn(ROWS * TILE, COLS * TILE, dtype=torch.bfloat16)
-        scaler_torch = torch.ones(TILE, TILE, dtype=torch.bfloat16)
         out_torch = torch.zeros(ROWS * TILE, COLS * TILE, dtype=torch.bfloat16)
 
         inp = to_dram(inp_torch, device)
-        scaler = to_l1(scaler_torch, device)
         out = to_dram(out_torch, device)
 
-        softmax_kernel(inp, scaler, out)
+        softmax_kernel(inp, out)
         result = ttnn.to_torch(out).float()
 
         # Scalar softmax per tile: reduce_max/reduce_sum use dims=[0,1],
@@ -132,9 +127,6 @@ if __name__ == "__main__":
                     TILE, TILE
                 )
 
-        # Six chained bf16 operations (reduce_max, sub, exp, reduce_sum,
-        # recip, mul) each truncate to bf16, compounding precision loss.
-        # Measured PCC ~0.96 on Blackhole.
         assert_pcc(expected, result, threshold=0.999)
         print("PASS")
 

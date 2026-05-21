@@ -83,10 +83,10 @@ def bcast_multitile_kernel(
 
 # CHECK:          // demo_compute
 # CHECK:          void kernel_main()
-# CHECK-DAG:          experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-DAG:          experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-DAG:          experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
-# CHECK-DAG:          experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
+# CHECK-DAG:          CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-DAG:          CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-DAG:          CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-DAG:          CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
 
 # CHECK-NOT:      DeviceZoneScopedN(
 # CHECK:          DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
@@ -161,10 +161,10 @@ def bcast_multitile_kernel(
 
 # CHECK-FPU:          // demo_compute
 # CHECK-FPU:          void kernel_main()
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
+# CHECK-FPU-DAG:          CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-FPU-DAG:          CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-FPU-DAG:          CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-FPU-DAG:          CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
 
 # CHECK-FPU-NOT:      DeviceZoneScopedN(
 # CHECK-FPU:          DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
