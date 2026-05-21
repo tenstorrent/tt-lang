@@ -88,8 +88,10 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
 
     # Simulate being within node 0 with a valid KernelId so that
     # get_current_node_id() returns "node0" and shard-locality stats work in tests.
+    # ``kind`` mirrors ``kernel_type``; ``func_name`` matches the chosen role
+    # for readable display in any test diagnostics.
     test_greenlet = greenlet(lambda: None)
-    tid = KernelId(0, "compute")
+    tid = KernelId(0, kernel_type, kernel_type.name.lower())
     scheduler._current_kernel_id = tid
     scheduler._active[tid] = (
         test_greenlet,

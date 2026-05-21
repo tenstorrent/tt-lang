@@ -62,8 +62,8 @@ class TestGreenletScheduler:
         def kernel2() -> None:
             executed.append("kernel2")
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-        scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.DM)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+        scheduler.add_kernel(KernelId(1, KernelType.DM, "t2"), kernel2)
 
         set_scheduler(scheduler)
         try:
@@ -75,22 +75,50 @@ class TestGreenletScheduler:
         assert "kernel2" in executed
 
     def test_kernel_id_rejects_invalid_values(self) -> None:
-        """KernelId validates linear node and suffix."""
+        """KernelId validates linear core and func_name."""
 
         def fn() -> None:
             pass
 
         with pytest.raises(ValueError, match="non-negative"):
-            KernelId(-1, "a")
+            KernelId(-1, KernelType.COMPUTE, "a")
 
         with pytest.raises(ValueError, match="non-empty"):
-            KernelId(0, "")
+            KernelId(0, KernelType.COMPUTE, "")
 
         scheduler = GreenletScheduler()
-        scheduler.add_kernel(KernelId(0, "role"), fn, KernelType.COMPUTE)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "role"), fn)
+
+    def test_add_kernel_rejects_duplicate_func_name_on_same_node(self) -> None:
+        """Two DM kernels with the same __name__ on the same core is rejected.
+
+        This is the registration-time enforcement of the uniqueness invariant
+        that ``KernelId`` relies on: identity is
+        ``(linear_node, kind, func_name)``, and two registrations with the same
+        triple would silently collide in the scheduler's dict otherwise.
+        """
+
+        def dm_a() -> None:
+            pass
+
+        def dm_b() -> None:
+            pass
+
+        scheduler = GreenletScheduler()
+        scheduler.add_kernel(KernelId(0, KernelType.DM, "reader"), dm_a)
+        with pytest.raises(RuntimeError, match="Duplicate kernel registration"):
+            scheduler.add_kernel(KernelId(0, KernelType.DM, "reader"), dm_b)
+
+        # Different core: allowed.
+        scheduler.add_kernel(KernelId(1, KernelType.DM, "reader"), dm_b)
+        # Different kind on same core: allowed (compute vs DM).
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "reader"), dm_a)
 
     def test_kernel_display_name_matches_program_convention(self) -> None:
-        assert kernel_display_name(KernelId(3, "compute")) == "node3-compute"
+        assert (
+            kernel_display_name(KernelId(3, KernelType.COMPUTE, "compute"))
+            == "node3-compute"
+        )
 
     def test_kernel_completion_tracking(self) -> None:
         """Test that completed kernels are tracked."""
@@ -103,8 +131,8 @@ class TestGreenletScheduler:
         def kernel2() -> None:
             completed.append("t2")
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-        scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.DM)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+        scheduler.add_kernel(KernelId(1, KernelType.DM, "t2"), kernel2)
 
         set_scheduler(scheduler)
         try:
@@ -134,8 +162,8 @@ class TestGreenletScheduler:
             mock_obj.make_ready()
             execution_order.append("t2-end")
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-        scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.DM)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+        scheduler.add_kernel(KernelId(1, KernelType.DM, "t2"), kernel2)
 
         set_scheduler(scheduler)
         try:
@@ -155,7 +183,7 @@ class TestGreenletScheduler:
             # This will block forever
             do_wait(mock_obj)
 
-        scheduler.add_kernel(KernelId(0, "t1"), blocked_kernel, KernelType.COMPUTE)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), blocked_kernel)
 
         set_scheduler(scheduler)
         try:
@@ -176,8 +204,8 @@ class TestGreenletScheduler:
         def kernel2() -> None:
             do_reserve(mock2)
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-        scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.DM)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+        scheduler.add_kernel(KernelId(1, KernelType.DM, "t2"), kernel2)
 
         set_scheduler(scheduler)
         try:
@@ -193,7 +221,7 @@ class TestGreenletScheduler:
         def failing_kernel() -> None:
             raise ValueError("Test error")
 
-        scheduler.add_kernel(KernelId(0, "t1"), failing_kernel, KernelType.COMPUTE)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), failing_kernel)
 
         set_scheduler(scheduler)
         try:
@@ -223,8 +251,8 @@ class TestGreenletScheduler:
             do_wait(mock2)
             execution_order.append("t2-3")
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-        scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.DM)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+        scheduler.add_kernel(KernelId(1, KernelType.DM, "t2"), kernel2)
 
         set_scheduler(scheduler)
         try:
@@ -256,7 +284,7 @@ class TestGreenletScheduler:
             do_wait(mock_obj)
             executed.append("after")
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel, KernelType.COMPUTE)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel)
 
         set_scheduler(scheduler)
         try:
@@ -282,8 +310,8 @@ class TestGreenletScheduler:
             executed.append("t2")
             mock_obj.make_ready()
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-        scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.DM)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+        scheduler.add_kernel(KernelId(1, KernelType.DM, "t2"), kernel2)
 
         set_scheduler(scheduler)
         try:
@@ -309,7 +337,7 @@ class TestGreenletScheduler:
                 do_wait(mock_obj)
                 count.append(i)
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel, KernelType.COMPUTE)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel)
 
         set_scheduler(scheduler)
         try:
@@ -327,7 +355,7 @@ class TestGreenletScheduler:
             executed.append("done")
 
         scheduler = GreenletScheduler()
-        scheduler.add_kernel(KernelId(0, "t1"), kernel, KernelType.COMPUTE)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel)
 
         set_scheduler(scheduler)
         try:
@@ -358,8 +386,8 @@ class TestBlockIfNeeded:
         def kernel2() -> None:
             mock_obj.make_ready()
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-        scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.DM)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+        scheduler.add_kernel(KernelId(1, KernelType.DM, "t2"), kernel2)
 
         set_scheduler(scheduler)
         try:
@@ -382,7 +410,7 @@ class TestBlockIfNeeded:
             do_reserve(mock_obj)
             executed.append(3)
 
-        scheduler.add_kernel(KernelId(0, "t1"), kernel, KernelType.COMPUTE)
+        scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel)
 
         set_scheduler(scheduler)
         try:
@@ -432,8 +460,8 @@ class TestSchedulerAlgorithm:
                 execution_order.append("t2-1")
                 execution_order.append("t2-2")
 
-            scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-            scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.DM)
+            scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+            scheduler.add_kernel(KernelId(1, KernelType.DM, "t2"), kernel2)
 
             set_scheduler(scheduler)
             try:
@@ -471,9 +499,9 @@ class TestSchedulerAlgorithm:
                 mock_obj1.make_ready()
                 mock_obj2.make_ready()
 
-            scheduler.add_kernel(KernelId(0, "t1"), kernel1, KernelType.COMPUTE)
-            scheduler.add_kernel(KernelId(1, "t2"), kernel2, KernelType.COMPUTE)
-            scheduler.add_kernel(KernelId(2, "t3"), kernel3, KernelType.DM)
+            scheduler.add_kernel(KernelId(0, KernelType.COMPUTE, "t1"), kernel1)
+            scheduler.add_kernel(KernelId(1, KernelType.COMPUTE, "t2"), kernel2)
+            scheduler.add_kernel(KernelId(2, KernelType.DM, "t3"), kernel3)
 
             set_scheduler(scheduler)
             try:

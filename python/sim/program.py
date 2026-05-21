@@ -20,7 +20,11 @@ from .dfb import DataflowBuffer
 from .typedefs import BindableTemplate, Shape
 from .blockstate import KernelType
 from .context import get_context
-from .greenlet_scheduler import GreenletScheduler, KernelId, set_scheduler
+from .greenlet_scheduler import (
+    GreenletScheduler,
+    KernelId,
+    set_scheduler,
+)
 from .ttnnsim import Tensor
 from .analysis import (
     collect_reachable_analyses,
@@ -136,7 +140,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                                     pass
 
             grid = self.context.get("grid", (1, 1))
-            # Calculate total nodes for any dimension grid
+            # Calculate total cores for any dimension grid
             total_nodes = 1
             for dim_size in grid:
                 total_nodes *= dim_size
@@ -229,7 +233,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
             set_scheduler(scheduler)
 
             # Analyse all three kernel functions (and any reachable helpers)
-            # once before iterating over nodes.  A shared visited set prevents
+            # once before iterating over cores.  A shared visited set prevents
             # duplicate analysis when helpers are called by more than one kernel.
             ctx = get_context()
             _empty = KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
@@ -263,7 +267,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
 
             # Compute the PipeNet active set: linear node indices that
             # participate in any pipe as source or destination. Inactive nodes
-            # skip every kernel, mirroring the compiler's scf.if guard.
+            # skip every kernel kernel, mirroring the compiler's scf.if guard.
             grid = self.context.get("grid", (1, 1))
             active_nodes = (
                 self.pipenets.active_node_set(tuple(grid))
@@ -287,8 +291,11 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                     node_context = self._build_node_context(node)
                     all_node_contexts.append(node_context)
 
-                    # Add kernels to scheduler
-                    for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
+                    # Add kernels to scheduler (one compute + two DM per node).
+                    # Identity is (node, kind, __name__); the two DM kernels on
+                    # a node must have distinct __name__s -- the scheduler
+                    # rejects duplicates with a user-facing error.
+                    for tmpl in (compute_func_tmpl, dm0_tmpl, dm1_tmpl):
                         # Get KernelType directly from template's kernel_type attribute
                         kernel_type = getattr(tmpl, "kernel_type", None)
                         match kernel_type:
@@ -321,9 +328,9 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                                     _val.auto_push_block()
                                     _val.auto_pop_block()
 
-                        # Add to scheduler (display name is node{node}-{tmpl.__name__})
                         scheduler.add_kernel(
-                            KernelId(node, tmpl.__name__), _tagged, kernel_type
+                            KernelId(node, kernel_type, tmpl.__name__),
+                            _tagged,
                         )
 
                 # Install injection hooks for all discovered code objects (kernel

@@ -138,7 +138,7 @@ class TestPipeErrorHandling:
                     tx = copy(pipe, block)
                     tx.wait()
 
-            scheduler.add_kernel(KernelId(0, "test-dm"), test_kernel, KernelType.DM)
+            scheduler.add_kernel(KernelId(0, KernelType.DM, "test-dm"), test_kernel)
 
             # With scheduler, waiting on pipe with no sender is detected as deadlock
             with pytest.raises(RuntimeError, match="Deadlock detected"):

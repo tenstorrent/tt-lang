@@ -17,7 +17,7 @@ def lazy_import_diagnostics() -> Any:
     """Lazy import of ttl.diagnostics module to avoid circular dependency.
 
     Uses file-based import rather than ``from ttl import diagnostics`` because
-    tt-lang-sim shadows the ``ttl`` module with a simulator shim.
+    ttlang-sim shadows the ``ttl`` module with a simulator shim.
 
     Returns:
         The ttl.diagnostics module
@@ -133,20 +133,21 @@ def format_node_ranges(node_numbers: list[int]) -> str:
 def extract_node_id_from_kernel_name(kernel_name: Optional[str]) -> str:
     """Extract node ID from a scheduled kernel name.
 
-    Names follow the pattern "nodeN-type" where N is the linear node index
-    and type is the kernel role (e.g., "dm", "compute").
+    Names follow the pattern ``nodeN-<func_name>`` where N is the node number
+    and ``<func_name>`` is the kernel function's ``__name__``
+    (see :func:`sim.greenlet_scheduler.kernel_display_name`).
 
     Args:
-        kernel_name: Scheduled kernel display name like "node0-dm" or "node0-compute"
-            (see :func:`sim.greenlet_scheduler.kernel_display_name`).
+        kernel_name: Scheduled kernel display name like ``node0-mm_reader`` or
+            ``node15-mm_compute``.
 
     Returns:
         Node ID like "node0", or "unknown" if extraction fails
 
     Examples:
-        >>> extract_node_id_from_kernel_name("node0-dm")
+        >>> extract_node_id_from_kernel_name("node0-mm_reader")
         'node0'
-        >>> extract_node_id_from_kernel_name("node15-compute")
+        >>> extract_node_id_from_kernel_name("node15-mm_compute")
         'node15'
         >>> extract_node_id_from_kernel_name(None)
         'unknown'

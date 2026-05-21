@@ -29,28 +29,30 @@ from .trace import get_dfb_name, trace
 class KernelId:
     """Stable identity for a cooperative scheduled kernel (scheduler dict key).
 
-    ``linear_node`` is the linear node index used by ``program`` when registering
-    kernels. ``suffix`` is the kernel template name (e.g. ``compute``, ``dm0``).
-
-    User-visible strings match the historical format ``node{linear_node}-{suffix}``;
-    use :func:`kernel_display_name` for traces and diagnostics.
+    Identity is ``(linear_node, kind, func_name)``: the linear node index, the
+    kernel role (compute or data movement), and the decorated function's
+    ``__name__``. The function name is part of identity because a node can host
+    up to two data movement kernels; their ``__name__`` distinguishes them. The
+    scheduler enforces uniqueness on registration -- two kernels with the same
+    triple on the same node is rejected with a user-facing error.
     """
 
     linear_node: int
-    suffix: str
+    kind: KernelType
+    func_name: str
 
     def __post_init__(self) -> None:
         if self.linear_node < 0:
             raise ValueError(
                 f"linear_node must be non-negative; got {self.linear_node!r}"
             )
-        if not self.suffix:
-            raise ValueError("suffix must be a non-empty string")
+        if not self.func_name:
+            raise ValueError("func_name must be a non-empty string")
 
 
 def kernel_display_name(kernel_id: KernelId) -> str:
-    """Return the user-facing kernel label (``node0-compute`` style)."""
-    return f"node{kernel_id.linear_node}-{kernel_id.suffix}"
+    """Return the user-facing kernel label (``node0-mm_compute`` style)."""
+    return f"node{kernel_id.linear_node}-{kernel_id.func_name}"
 
 
 def set_scheduler_algorithm(algorithm: str) -> None:
@@ -103,30 +105,44 @@ class GreenletScheduler:
         self,
         kernel_id: KernelId,
         func: Callable[[], None],
-        kernel_type: KernelType,
     ) -> None:
         """Add a scheduled kernel (greenlet) to the scheduler.
 
         Args:
-            kernel_id: Stable kernel identity (linear node index and template suffix).
-            func: Kernel entry function to execute
-            kernel_type: Kernel role (COMPUTE or DM)
+            kernel_id: Stable kernel identity. Its ``kind`` field doubles as the
+                kernel role (COMPUTE or DM); two kernels with the same
+                ``(linear_node, kind, func_name)`` triple is rejected.
+            func: Kernel entry function to execute.
+
+        Raises:
+            RuntimeError: If a kernel with this identity is already registered.
+                Most commonly fired when two data movement kernels on the same
+                node have the same ``__name__``; rename one of them.
         """
+        if kernel_id in self._active:
+            label = kernel_display_name(kernel_id)
+            raise RuntimeError(
+                f"Duplicate kernel registration: {label!r} "
+                f"({kernel_id.kind.name}) is already scheduled on "
+                f"node{kernel_id.linear_node}. Two {kernel_id.kind.name} kernels "
+                f"on the same node must have distinct function names; rename "
+                f"one of them."
+            )
 
         # Create greenlet that wraps the function
         def wrapped_func() -> None:
             trace("kernel_start")
             func()
             trace("kernel_end")
-            # kernel completed successfully
+            # Kernel completed successfully
             self._mark_completed(kernel_id)
 
         g = greenlet(wrapped_func)
         # Initially not blocked (will start when scheduled)
-        self._active[kernel_id] = (g, None, "", kernel_type, "", None)
+        self._active[kernel_id] = (g, None, "", kernel_id.kind, "", None)
         # Initialize last run time to 0 (never run)
         self._last_run[kernel_id] = 0
-        # kernel has not made progress yet
+        # Kernel hasn't made progress yet
         self._has_made_progress[kernel_id] = False
 
     def block_current_kernel(self, blocking_obj: Any, operation: str) -> None:
@@ -209,10 +225,11 @@ class GreenletScheduler:
         return self._current_kernel_id
 
     def get_current_kernel_name(self) -> Optional[str]:
-        """Get the name of the currently executing scheduled kernel.
+        """Get the display name of the currently executing kernel.
 
         Returns:
-            Kernel name (e.g., node0-dm), or None if none is executing
+            Kernel display name (e.g., ``node0-mm_reader``), or None if none
+            is executing.
         """
         if self._current_kernel_id is None:
             return None
@@ -310,13 +327,13 @@ class GreenletScheduler:
                 if g.dead:
                     self._mark_completed(kernel_id)
                 elif made_progress:
-                    # kernel passed one or more block_if_needed checks - give it a timestamp
+                    # Kernel passed one or more block_if_needed checks - give it a timestamp
                     self._timestamp += 1
                     self._last_run[kernel_id] = self._timestamp
-                # kernels that blocked on their first check keep ts=0
+                # Kernels that blocked on their first check keep ts=0
 
             except Exception as e:
-                # kernel raised an error during initialization
+                # Kernel raised an error during initialization
                 clear_current_kernel_type()
                 self._current_kernel_id = None
 
@@ -342,8 +359,15 @@ class GreenletScheduler:
             last_run = self._last_run.get(kernel_id, 0)
             kernel_times.append((last_run, kernel_id))
 
-        # Sort by timestamp (ascending), then by display name for stability
-        kernel_times.sort(key=lambda x: (x[0], kernel_display_name(x[1])))
+        # Sort by timestamp (ascending), then by node, kind, and name for stability
+        kernel_times.sort(
+            key=lambda x: (
+                x[0],
+                x[1].linear_node,
+                x[1].kind.value,
+                x[1].func_name,
+            )
+        )
 
         return [tid for _, tid in kernel_times]
 
@@ -376,7 +400,7 @@ class GreenletScheduler:
             # Try to advance each kernel in the selected order
             for kernel_id in kernel_candidates:
                 if kernel_id not in self._active:
-                    # kernel may have completed during this iteration
+                    # Kernel may have completed during this iteration
                     continue
 
                 g, blocking_obj, blocked_op, kernel_type, location, _ = self._active[
@@ -401,7 +425,7 @@ class GreenletScheduler:
                 set_current_kernel_type(kernel_type)
                 try:
                     if g.dead:
-                        # kernel already completed (marked by wrapped_func)
+                        # Kernel already completed (marked by wrapped_func)
                         if kernel_id in self._active:
                             del self._active[kernel_id]
                         continue
@@ -420,7 +444,7 @@ class GreenletScheduler:
                         # Should have been marked by wrapped_func, but double-check
                         self._mark_completed(kernel_id)
                 except Exception as e:
-                    # kernel raised an error - preserve traceback for debugging
+                    # Kernel raised an error - preserve traceback for debugging
                     clear_current_kernel_type()
                     self._current_kernel_id = None
 
@@ -473,9 +497,7 @@ class GreenletScheduler:
                     if len(unique_nodes) == 1:
                         nodes_label = unique_nodes[0]
                     else:
-                        node_numbers: list[int] = [
-                            int(node_id[4:]) for node_id in unique_nodes
-                        ]
+                        node_numbers: list[int] = [int(n[4:]) for n in unique_nodes]
                         nodes_label = f"nodes: {format_node_ranges(node_numbers)}"
 
                     raw_loc = blocked_raw_locs.get((op, obj_desc, location))
