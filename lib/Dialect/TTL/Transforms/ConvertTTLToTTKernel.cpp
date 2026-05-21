@@ -422,7 +422,13 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
 namespace {
 
-enum class CopyOperandKind { TensorSlice, CircularBuffer, Pipe, Unknown };
+enum class CopyOperandKind {
+  TensorSlice,
+  CircularBuffer,
+  Pipe,
+  DFBAttachedTensor,
+  Unknown
+};
 
 static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
@@ -433,6 +439,9 @@ static CopyOperandKind classifyOperand(Value v) {
   }
   if (v.getDefiningOp<TensorSliceOp>()) {
     return CopyOperandKind::TensorSlice;
+  }
+  if (getAttachedCB(v)) {
+    return CopyOperandKind::DFBAttachedTensor;
   }
   return CopyOperandKind::Unknown;
 }
@@ -757,6 +766,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
     bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
+    bool dstIsDFBAttachedTensor =
+        dstKind == CopyOperandKind::DFBAttachedTensor;
 
     // Pipe transfers: CB <-> Pipe
     if (srcIsCB && dstIsPipe) {
@@ -783,9 +794,9 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
                            isConsumerCB, rewriter);
     }
-    if (srcIsPipe && dstIsCB) {
+    if (srcIsPipe && dstIsDFBAttachedTensor) {
       // Pipe -> CB: destination receives data via multicast from source
-      return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), pipeGraph,
+      return lowerPipeToCB(op, adaptor.getSrc(), dst, pipeGraph,
                            pipeNetCounters, rewriter);
     }
     if (srcIsPipe || dstIsPipe) {

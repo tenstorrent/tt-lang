@@ -54,10 +54,22 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
 /// Walk through `tensor.extract_slice` ops and return the underlying
 /// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
+  view = traceUnrealizedCasts(view);
   while (auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
     view = slice.getSource();
+    view = traceUnrealizedCasts(view);
   }
   return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
+}
+
+/// Return the user reserve that produced a pipe receive destination block.
+inline mlir::tt::ttl::CBReserveOp
+findCBReserveForPipeReceive(mlir::Value dst) {
+  dst = traceUnrealizedCasts(dst);
+  if (auto attach = dst.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
+    return findCBReserveForView(attach.getTensor());
+  }
+  return findCBReserveForView(dst);
 }
 
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion

@@ -343,11 +343,11 @@ def run_kernel_on_device(
     )
 
     # Build semaphore descriptors for pipe synchronization.
-    # Each PipeNet uses 2 semaphores: sender_sem and receiver_sem.
-    # Index: pipeNetId * 2 (sender), pipeNetId * 2 + 1 (receiver).
+    # Each PipeNet uses 3 semaphores: sender_ready, receiver_arrival, mailbox.
+    # Index: pipeNetId * 3 (ready), +1 (arrival), +2 (mailbox).
     semaphore_descriptors = []
     if num_pipe_nets > 0:
-        num_sems = num_pipe_nets * 2
+        num_sems = num_pipe_nets * 3
         for sem_id in range(num_sems):
             semaphore_descriptors.append(
                 ttnn.SemaphoreDescriptor(

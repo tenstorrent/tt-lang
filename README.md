@@ -140,6 +140,7 @@ docker run -d --name $USER-ird \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
   -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
+  -v $HOME/.ssh/known_hosts:/root/.ssh/known_hosts:ro \
   ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
   sleep infinity
 ```

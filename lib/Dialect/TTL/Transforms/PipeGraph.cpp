@@ -167,7 +167,7 @@ PipeGraph::getGatherRecvProgress(Operation *receiverCopyOp) const {
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
 
-  // Find all Pipe->CB copies (receiver side) and extract CB index.
+  // Find all Pipe->DFB copies (receiver side) and extract DFB index.
   LogicalResult walkResult = success();
   mod.walk([&](CopyOp copyOp) {
     if (failed(walkResult)) {
@@ -178,31 +178,34 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
       return;
     }
 
-    // Found Pipe->CB copy: this is the receiver side. Either failure here
+    // Found Pipe->DFB copy: this is the receiver side. Either failure here
     // would let the sender silently target its own write_ptr instead of the
     // receiver's, so fail the pass loudly rather than warn-and-skip.
-    Value dstCB = copyOp.getDst();
+    Value dstCB = getAttachedCB(copyOp.getDst());
+    if (!dstCB) {
+      copyOp.emitError("pipe copy destination is not attached to a DFB");
+      walkResult = failure();
+      return;
+    }
     auto cbType = dyn_cast<CircularBufferType>(dstCB.getType());
     if (!cbType) {
-      copyOp.emitError("pipe copy destination is not a circular buffer");
+      copyOp.emitError("pipe copy destination is not attached to a DFB");
       walkResult = failure();
       return;
     }
 
-    Value cbVal = traceUnrealizedCasts(dstCB);
-    auto bindOp = cbVal.getDefiningOp<BindCBOp>();
-    if (!bindOp) {
-      copyOp.emitError("could not trace pipe receiver to a BindCBOp");
+    std::optional<int64_t> cbIndex = getCBIndex(dstCB);
+    if (!cbIndex.has_value()) {
+      copyOp.emitError("could not trace pipe receiver to a DFB binding");
       walkResult = failure();
       return;
     }
 
-    int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
     walkResult = graph.addReceiverCB(
         srcPipeType.getSrcX(), srcPipeType.getSrcY(),
         srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
         srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
-        srcPipeType.getPipeNetId(), cbIndex, cbType.getBlockCount(),
+        srcPipeType.getPipeNetId(), *cbIndex, cbType.getBlockCount(),
         copyOp.getLoc(), copyOp);
   });
 

@@ -16,14 +16,19 @@
 
 namespace mlir::tt::ttl {
 
-/// Each PipeNet allocates two semaphores: one signaled by receivers (sender
-/// waits on it before multicasting) and one signaled by the sender (receivers
-/// wait on it for data arrival). They are laid out consecutively per net id,
-/// `sender` at `id * 2` and `receiver` at `id * 2 + 1`, so kernel-side code
-/// and host-side allocators agree without an extra side table.
-inline int64_t getSenderSemIdx(int64_t pipeNetId) { return pipeNetId * 2; }
+/// Each PipeNet allocates a sender-ready semaphore, a receiver-arrival
+/// semaphore, and a mailbox scratch word. They are laid out consecutively per
+/// net id so kernel-side code and host-side allocators agree without an extra
+/// side table.
+inline int64_t getPipeNetSemaphoreStride() { return 3; }
+inline int64_t getSenderSemIdx(int64_t pipeNetId) {
+  return pipeNetId * getPipeNetSemaphoreStride();
+}
 inline int64_t getReceiverSemIdx(int64_t pipeNetId) {
-  return pipeNetId * 2 + 1;
+  return pipeNetId * getPipeNetSemaphoreStride() + 1;
+}
+inline int64_t getMailboxSemIdx(int64_t pipeNetId) {
+  return pipeNetId * getPipeNetSemaphoreStride() + 2;
 }
 
 /// Per-function map: pipeNetId -> kernel-local i32 counter for the

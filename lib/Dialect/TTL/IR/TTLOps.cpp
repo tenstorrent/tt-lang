@@ -176,9 +176,16 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     if (srcIsPipe && dstIsPipe) {
       return emitOpError() << "cannot copy directly between pipes";
     }
-    if (!srcIsCb && !dstIsCb) {
+    if (dstIsPipe) {
+      if (!srcIsCb) {
+        return emitOpError()
+               << "pipe send requires source operand to be !ttl.cb";
+      }
+      return success();
+    }
+    if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError()
-             << "pipe transfers require one operand to be !ttl.cb";
+             << "pipe receive requires a cb_reserve destination";
     }
     return success();
   }
