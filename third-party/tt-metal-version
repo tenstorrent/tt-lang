@@ -36,4 +36,5 @@
 # still align with the ttnn PyPI wheel).
 
 TTNN_PYPI="0.70.1"
-TT_METAL_TAG="v0.70.1-rc1"
+# DANGER: the matching tt-metal tag for the above ttnn is v0.70.1-rc1
+TT_METAL_TAG="v0.71.0-rc2"

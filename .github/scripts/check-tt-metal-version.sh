@@ -60,9 +60,22 @@ GITLINK_SHA=$(git -C "$ROOT" ls-tree HEAD third-party/tt-metal | awk '{print $3}
 
 if [[ "$GITLINK_SHA" != "$RESOLVED" ]]; then
   if (( UPDATE )); then
+    # Nuke and re-init. The simpler in-place sequence (fetch + checkout +
+    # recursive submodule update) leaves stale state behind when bumping
+    # tt-metal across versions: shallow clones drop files, nested
+    # submodules stay at the previous tt-metal's SHAs, and untracked
+    # artifacts mirrored into the source tree (e.g. _ttnn.so from a prior
+    # build) survive. Removing the directory and re-cloning is slower
+    # (~30s + CPM cache re-population) but guarantees a clean state
+    # matching the new tag exactly. Anything saved under
+    # third-party/tt-metal that you want to keep should live elsewhere.
+    echo "Removing third-party/tt-metal for a clean re-clone..."
+    git -C "$ROOT" submodule deinit -f "$SUBMODULE" 2>/dev/null || true
+    rm -rf "$SUBMODULE"
     git -C "$ROOT" submodule update --init "$SUBMODULE"
     git -C "$SUBMODULE" fetch --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG"
     git -C "$SUBMODULE" checkout --detach "$RESOLVED"
+    git -C "$SUBMODULE" submodule update --init --recursive --depth 1
     echo "updated: third-party/tt-metal gitlink ${GITLINK_SHA:0:12} -> ${RESOLVED:0:12} ($TAG)"
   else
     echo "drift: third-party/tt-metal gitlink is ${GITLINK_SHA:0:12}, expected ${RESOLVED:0:12} ($TAG); run: $0 --update" >&2
@@ -71,7 +84,7 @@ if [[ "$GITLINK_SHA" != "$RESOLVED" ]]; then
 fi
 
 if (( UPDATE )); then
-  echo "ok: submodule checked out at $TAG ($(echo "$RESOLVED" | cut -c1-12))"
+  echo "ok: submodule re-cloned at $TAG ($(echo "$RESOLVED" | cut -c1-12)) with nested submodules"
 else
   echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule; setup.py requires ttnn==$PYPI"
 fi

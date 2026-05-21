@@ -42,6 +42,20 @@ include(TTLangCompilerSetup)
 option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
 option(TTLANG_BUILD_TOOLCHAIN
   "Build LLVM and tt-metal into a reusable toolchain directory" OFF)
+
+# Per-component toolchain overrides. By default they follow TTLANG_USE_TOOLCHAIN
+# but can be set independently, e.g. to rebuild tt-metal from submodule while
+# still consuming LLVM from a pre-built toolchain.
+option(TTLANG_USE_TOOLCHAIN_TTMETAL
+  "Use pre-built tt-metal from ttlang toolchain (defaults to TTLANG_USE_TOOLCHAIN)"
+  ${TTLANG_USE_TOOLCHAIN})
+
+# External tt-metal override: point at an existing tt-metal installation
+# (install-ttmetal.sh output layout) instead of the toolchain copy or the
+# submodule. Takes precedence over TTLANG_USE_TOOLCHAIN_TTMETAL. See
+# BuildTTMetal.cmake for the required directory layout.
+set(TTLANG_EXTERNAL_TT_METAL_DIR "" CACHE PATH
+  "Path to an existing tt-metal installation; overrides the toolchain or submodule build.")
 if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
   if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
     set(TTLANG_TOOLCHAIN_DIR "$ENV{TTLANG_TOOLCHAIN_DIR}" CACHE PATH
@@ -117,6 +131,16 @@ if(TTLANG_SIM_ONLY)
 endif()
 
 # ---------------------------------------------------------------------------
+# tt-metal runtime (from submodule).
+#
+# Built before LLVM so a tt-metal compile failure surfaces without first
+# spending time on the LLVM build. tt-metal does not consume any LLVM
+# outputs; both only need Python3_EXECUTABLE, which TTLangPython has
+# already set above.
+# ---------------------------------------------------------------------------
+include(BuildTTMetal)
+
+# ---------------------------------------------------------------------------
 # LLVM/MLIR dependency (pre-built or from submodule)
 # ---------------------------------------------------------------------------
 include(BuildLLVM)
@@ -130,14 +154,8 @@ include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 # ---------------------------------------------------------------------------
 include(BuildTTMLIRMinimal)
 
-# ---------------------------------------------------------------------------
-# tt-metal runtime (from submodule)
-# ---------------------------------------------------------------------------
-include(BuildTTMetal)
-
 # Detect Python dev packages (Python3, pybind11, nanobind) using MLIR's
-# helpers.  This must run after BuildLLVM (which sets Python3_EXECUTABLE to the
-# venv when building from submodule) and before add_subdirectory(python).
+# helpers. Must run after BuildLLVM and before add_subdirectory(python).
 include(MLIRDetectPythonEnv)
 mlir_configure_python_dev_packages()
 

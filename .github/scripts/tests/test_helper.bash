@@ -17,6 +17,9 @@ TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(dirname "$TESTS_DIR")"
 CONTAINERS_DIR="$(dirname "$SCRIPTS_DIR")/containers"
 BIN_DIR="$(dirname "$SCRIPTS_DIR")/../bin"
+# Real tt-lang repo root (parent of .github/). Lets tests reach
+# scripts/ (top-level) without hard-coding a path.
+TTLANG_REPO_ROOT="$(dirname "$(dirname "$SCRIPTS_DIR")")"
 
 # Build a synthetic git repo in $BATS_TEST_TMPDIR (auto-cleaned). Initialized
 # with one file at each UPLIFT_PATHS location, plus python/sim/example.py for
@@ -32,7 +35,12 @@ mkrepo() {
         git config user.email t@t
         git config user.name t
         mkdir -p third-party/llvm-project third-party/tt-metal .github/containers python/sim
-        echo v0.69.0 > third-party/tt-metal-version
+        # Sourceable shell snippet matching the real third-party/tt-metal-version
+        # schema (TTNN_PYPI, TT_METAL_TAG).
+        cat > third-party/tt-metal-version <<'VERSION_EOF'
+TTNN_PYPI="0.69.0"
+TT_METAL_TAG="v0.69.0"
+VERSION_EOF
         echo "llvm-content-v1" > third-party/llvm-project/sentinel
         echo "tt-metal-content-v1" > third-party/tt-metal/sentinel
         cat > .github/containers/Dockerfile.base <<'EOF'
