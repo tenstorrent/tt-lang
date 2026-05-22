@@ -85,8 +85,8 @@ traceTransferHandleSource(mlir::Value value, MatchFn match,
         auto results = *resultsOpt;
         for (unsigned idx = 0; idx < results.size(); ++idx) {
           if (results[idx] == result) {
-            return traceTransferHandleSource<ResultT>(yielded[idx].get(),
-                                                      match, seen);
+            return traceTransferHandleSource<ResultT>(yielded[idx].get(), match,
+                                                      seen);
           }
         }
       }

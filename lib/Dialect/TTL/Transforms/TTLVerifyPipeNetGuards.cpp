@@ -196,8 +196,7 @@ struct WaitUse {
 CopyOp findDefiningCopy(Value value) {
   llvm::SmallPtrSet<Value, 16> seen;
   return traceTransferHandleSource<CopyOp>(
-      value, [](Value source) { return source.getDefiningOp<CopyOp>(); },
-      seen);
+      value, [](Value source) { return source.getDefiningOp<CopyOp>(); }, seen);
 }
 
 enum class PipeEventKind { Send, ReceivePost, ReceiveWait };

@@ -465,16 +465,19 @@ static bool isPipeReceiveCopy(CopyOp op) {
 
 static CopyOp findPipeReceiveCopy(Value value) {
   llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<CopyOp>(value, [](Value source) {
-    auto copyOp = source.getDefiningOp<CopyOp>();
-    if (!copyOp) {
-      return CopyOp();
-    }
-    if (isPipeReceiveCopy(copyOp)) {
-      return copyOp;
-    }
-    return CopyOp();
-  }, seen);
+  return traceTransferHandleSource<CopyOp>(
+      value,
+      [](Value source) {
+        auto copyOp = source.getDefiningOp<CopyOp>();
+        if (!copyOp) {
+          return CopyOp();
+        }
+        if (isPipeReceiveCopy(copyOp)) {
+          return copyOp;
+        }
+        return CopyOp();
+      },
+      seen);
 }
 
 static LogicalResult expandPipeReceiveCopies(ModuleOp mod) {
@@ -494,7 +497,7 @@ static LogicalResult expandPipeReceiveCopies(ModuleOp mod) {
         if (!handleType || handleType.getKind()) {
           return;
         }
-    CopyOp copyOp = findPipeReceiveCopy(waitOp.getXf());
+        CopyOp copyOp = findPipeReceiveCopy(waitOp.getXf());
         if (!copyOp) {
           waitOp.emitError()
               << "untyped transfer handle wait must reference a pipe receive "

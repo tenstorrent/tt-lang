@@ -23,8 +23,7 @@ static bool isDerivedFromCopy(mlir::Value value) {
       value,
       [](mlir::Value source) {
         return source.getDefiningOp<mlir::tt::ttl::CopyOp>() != nullptr ||
-               source.getDefiningOp<mlir::tt::ttl::PipeRecvPostOp>() !=
-                   nullptr;
+               source.getDefiningOp<mlir::tt::ttl::PipeRecvPostOp>() != nullptr;
       },
       seen);
 }
