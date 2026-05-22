@@ -24,7 +24,6 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
-#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -57,6 +56,7 @@ namespace {
 constexpr llvm::StringLiteral kLaunchGridAttrName = "ttl.launch_grid";
 constexpr llvm::StringLiteral kPipeNetIdsAttrName = "ttl.pipe_net_ids";
 constexpr llvm::StringLiteral kPipeNetRolesAttrName = "ttl.pipe_net_roles";
+constexpr unsigned kMaxPipeScheduleCycleNotes = 8;
 
 // A 2D coordinate representing a launch node.
 struct Coord {
@@ -193,50 +193,11 @@ struct WaitUse {
   int64_t cbIndex;
 };
 
-CopyOp findDefiningCopy(Value value, llvm::SmallPtrSetImpl<Value> &seen) {
-  value = traceUnrealizedCasts(value);
-  if (!seen.insert(value).second) {
-    return {};
-  }
-
-  if (auto copyOp = value.getDefiningOp<CopyOp>()) {
-    return copyOp;
-  }
-  if (auto extractOp = value.getDefiningOp<tensor::ExtractOp>()) {
-    return findDefiningCopy(extractOp.getTensor(), seen);
-  }
-  if (auto insertOp = value.getDefiningOp<tensor::InsertOp>()) {
-    return findDefiningCopy(insertOp.getScalar(), seen);
-  }
-  if (auto result = mlir::dyn_cast<OpResult>(value)) {
-    if (auto loop = mlir::dyn_cast<LoopLikeOpInterface>(result.getOwner())) {
-      auto yieldedOpt = loop.getYieldedValuesMutable();
-      auto resultsOpt = loop.getLoopResults();
-      if (yieldedOpt && resultsOpt) {
-        auto yielded = *yieldedOpt;
-        auto results = *resultsOpt;
-        for (unsigned idx = 0; idx < results.size(); ++idx) {
-          if (results[idx] == result) {
-            return findDefiningCopy(yielded[idx].get(), seen);
-          }
-        }
-      }
-    }
-  }
-  if (auto blockArg = mlir::dyn_cast<BlockArgument>(value)) {
-    Operation *parent = blockArg.getOwner()->getParentOp();
-    if (auto loop = mlir::dyn_cast_or_null<LoopLikeOpInterface>(parent)) {
-      auto iterArgs = loop.getRegionIterArgs();
-      auto inits = loop.getInitsMutable();
-      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
-        if (iterArgs[idx] == blockArg) {
-          return findDefiningCopy(inits[idx].get(), seen);
-        }
-      }
-    }
-  }
-
-  return {};
+CopyOp findDefiningCopy(Value value) {
+  llvm::SmallPtrSet<Value, 16> seen;
+  return traceTransferHandleSource<CopyOp>(
+      value, [](Value source) { return source.getDefiningOp<CopyOp>(); },
+      seen);
 }
 
 enum class PipeEventKind { Send, ReceivePost, ReceiveWait };
@@ -362,8 +323,7 @@ struct ModuleState {
 
   void recordPipeWaitEvent(WaitOp waitOp, const Domain &domain,
                            Operation *unanalyzableOp) {
-    llvm::SmallPtrSet<Value, 16> seen;
-    CopyOp copyOp = findDefiningCopy(waitOp.getXf(), seen);
+    CopyOp copyOp = findDefiningCopy(waitOp.getXf());
     if (!copyOp) {
       return;
     }
@@ -1376,7 +1336,7 @@ void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
     const PipeScheduleNode &successor = nodes[successorId];
     diag.attachNote(successor.op->getLoc())
         << describePipeScheduleEdge(predecessor, successor, *edgeKind);
-    if (idx == 7) {
+    if (idx + 1 >= kMaxPipeScheduleCycleNotes) {
       break;
     }
   }
@@ -1530,8 +1490,9 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
 void validatePipeNetReferences(ModuleOp module, ModuleState &state) {
   module.walk([&](Operation *op) {
     auto report = [&](int64_t netId) {
-      op->emitOpError() << "references unknown PipeNet id " << netId
-                        << "; no `ttl.create_pipe` declares this net";
+      op->emitOpError() << "references unknown PipeNet " << state.netName(netId)
+                        << " (id " << netId
+                        << "); no `ttl.create_pipe` declares this net";
       state.sawError = true;
     };
     if (auto pred = mlir::dyn_cast<PipeNetPredicateOpInterface>(op)) {
@@ -1568,6 +1529,10 @@ struct TTLVerifyPipeNetGuardsPass
     }
 
     validatePipeNetReferences(module, state);
+    if (state.sawError) {
+      signalPassFailure();
+      return;
+    }
 
     // Kernel-thread `func.func`s are runtime-invoked entry points with no
     // callers (so they are analysis roots and get `setToEntryState`); helpers

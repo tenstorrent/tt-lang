@@ -21,7 +21,6 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
-#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -41,9 +40,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/JSON.h"
-#include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
+#include <utility>
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
@@ -465,51 +463,18 @@ static bool isPipeReceiveCopy(CopyOp op) {
          getAttachedCB(op.getDst());
 }
 
-static PipeRecvPostOp findPipeRecvPost(Value value,
-                                       llvm::SmallPtrSetImpl<Value> &seen) {
-  value = traceUnrealizedCasts(value);
-  if (!seen.insert(value).second) {
-    return {};
-  }
-
-  if (auto postOp = value.getDefiningOp<PipeRecvPostOp>()) {
-    return postOp;
-  }
-  if (auto extractOp = value.getDefiningOp<tensor::ExtractOp>()) {
-    return findPipeRecvPost(extractOp.getTensor(), seen);
-  }
-  if (auto insertOp = value.getDefiningOp<tensor::InsertOp>()) {
-    return findPipeRecvPost(insertOp.getScalar(), seen);
-  }
-  if (auto result = mlir::dyn_cast<OpResult>(value)) {
-    if (auto loop = mlir::dyn_cast<LoopLikeOpInterface>(result.getOwner())) {
-      auto yieldedOpt = loop.getYieldedValuesMutable();
-      auto resultsOpt = loop.getLoopResults();
-      if (yieldedOpt && resultsOpt) {
-        auto yielded = *yieldedOpt;
-        auto results = *resultsOpt;
-        for (unsigned idx = 0; idx < results.size(); ++idx) {
-          if (results[idx] == result) {
-            return findPipeRecvPost(yielded[idx].get(), seen);
-          }
-        }
-      }
+static CopyOp findPipeReceiveCopy(Value value) {
+  llvm::SmallPtrSet<Value, 16> seen;
+  return traceTransferHandleSource<CopyOp>(value, [](Value source) {
+    auto copyOp = source.getDefiningOp<CopyOp>();
+    if (!copyOp) {
+      return CopyOp();
     }
-  }
-  if (auto blockArg = mlir::dyn_cast<BlockArgument>(value)) {
-    Operation *parent = blockArg.getOwner()->getParentOp();
-    if (auto loop = mlir::dyn_cast_or_null<LoopLikeOpInterface>(parent)) {
-      auto iterArgs = loop.getRegionIterArgs();
-      auto inits = loop.getInitsMutable();
-      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
-        if (iterArgs[idx] == blockArg) {
-          return findPipeRecvPost(inits[idx].get(), seen);
-        }
-      }
+    if (isPipeReceiveCopy(copyOp)) {
+      return copyOp;
     }
-  }
-
-  return {};
+    return CopyOp();
+  }, seen);
 }
 
 static LogicalResult expandPipeReceiveCopies(ModuleOp mod) {
@@ -520,41 +485,45 @@ static LogicalResult expandPipeReceiveCopies(ModuleOp mod) {
     }
   });
 
-  OpBuilder builder(mod.getContext());
-  for (CopyOp copyOp : receiveCopies) {
-    builder.setInsertionPoint(copyOp);
-    auto postOp = PipeRecvPostOp::create(builder, copyOp.getLoc(),
-                                         copyOp.getResult().getType(),
-                                         copyOp.getSrc(), copyOp.getDst());
-    copyOp.getResult().replaceAllUsesWith(postOp.getXf());
-    copyOp->erase();
-  }
-
-  SmallVector<WaitOp> receiveWaits;
+  SmallVector<std::pair<WaitOp, Operation *>> receiveWaits;
   LogicalResult result = success();
-  mod.walk([&](WaitOp waitOp) {
-    auto handleType =
-        mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
-    if (!handleType || handleType.getKind()) {
-      return;
-    }
-    llvm::SmallPtrSet<Value, 16> seen;
-    PipeRecvPostOp postOp = findPipeRecvPost(waitOp.getXf(), seen);
-    if (!postOp) {
-      waitOp.emitError()
-          << "untyped transfer handle wait must reference ttl.pipe_recv_post";
-      result = failure();
-      return;
-    }
-    receiveWaits.push_back(waitOp);
-  });
+  mod.walk(
+      [&](WaitOp waitOp) {
+        auto handleType =
+            mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
+        if (!handleType || handleType.getKind()) {
+          return;
+        }
+    CopyOp copyOp = findPipeReceiveCopy(waitOp.getXf());
+        if (!copyOp) {
+          waitOp.emitError()
+              << "untyped transfer handle wait must reference a pipe receive "
+                 "ttl.copy";
+          result = failure();
+          return;
+        }
+        receiveWaits.push_back({waitOp, copyOp.getOperation()});
+      });
   if (failed(result)) {
     return failure();
   }
 
-  for (WaitOp waitOp : receiveWaits) {
-    llvm::SmallPtrSet<Value, 16> seen;
-    PipeRecvPostOp postOp = findPipeRecvPost(waitOp.getXf(), seen);
+  llvm::DenseMap<Operation *, PipeRecvPostOp> postByCopy;
+  OpBuilder builder(mod.getContext());
+  for (CopyOp copyOp : receiveCopies) {
+    Operation *copyOperation = copyOp.getOperation();
+    builder.setInsertionPoint(copyOp);
+    auto postOp = PipeRecvPostOp::create(builder, copyOp.getLoc(),
+                                         copyOp.getResult().getType(),
+                                         copyOp.getSrc(), copyOp.getDst());
+    postByCopy[copyOperation] = postOp;
+    copyOp.getResult().replaceAllUsesWith(postOp.getXf());
+    copyOp->erase();
+  }
+
+  for (auto [waitOp, copyOperation] : receiveWaits) {
+    PipeRecvPostOp postOp = postByCopy.lookup(copyOperation);
+    assert(postOp && "pipe receive copy disappeared during expansion");
     builder.setInsertionPoint(waitOp);
     PipeRecvWaitOp::create(builder, waitOp.getLoc(), waitOp.getXf(),
                            postOp.getPipe(), postOp.getDst());
@@ -890,7 +859,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
                            pipeRuntimeLayout, rewriter);
     }
     if (srcIsPipe && dstIsDFBAttachedTensor) {
-      return op.emitError("pipe receive copy survived pipe receive expansion");
+      return op.emitError("internal compiler error: pipe receive copy "
+                          "survived pipe receive expansion");
     }
     if (srcIsPipe || dstIsPipe) {
       return rewriter.notifyMatchFailure(

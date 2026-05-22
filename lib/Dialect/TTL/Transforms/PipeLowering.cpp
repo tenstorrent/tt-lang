@@ -86,11 +86,13 @@ static FailureOr<PipeChannelLayout>
 lookupPipeChannelLayout(Operation *op, PipeType pipeType,
                         const PipeRuntimeLayout *pipeRuntimeLayout) {
   if (!pipeRuntimeLayout) {
-    return op->emitError("missing pipe runtime layout");
+    return op->emitError("internal compiler error: missing pipe runtime "
+                         "layout");
   }
   auto it = pipeRuntimeLayout->channels.find(getPipeKey(pipeType));
   if (it == pipeRuntimeLayout->channels.end()) {
-    return op->emitError("pipe missing from runtime layout");
+    return op->emitError("internal compiler error: pipe missing from runtime "
+                         "layout");
   }
   return it->second;
 }
@@ -106,13 +108,6 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     // dynamically re-executed inside loops.
     llvm::SmallSet<int64_t, 4> pipeNetIds;
     func.walk([&](Operation *op) {
-      if (auto copy = mlir::dyn_cast<CopyOp>(op)) {
-        auto pipeTy = mlir::dyn_cast<PipeType>(copy.getSrc().getType());
-        if (pipeTy && getAttachedCB(copy.getDst())) {
-          pipeNetIds.insert(pipeTy.getPipeNetId());
-        }
-        return;
-      }
       if (auto post = mlir::dyn_cast<PipeRecvPostOp>(op)) {
         auto pipeTy = mlir::cast<PipeType>(post.getPipe().getType());
         if (getAttachedCB(post.getDst())) {
@@ -123,8 +118,8 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     if (pipeNetIds.empty()) {
       return;
     }
-    // Allocas + zero-stores at function entry dominate every Pipe->CB
-    // CopyOp, including those inside scf.if from `if_dst`.
+    // Allocas + zero-stores at function entry dominate every receive post,
+    // including posts inside scf.if from `if_dst`.
     OpBuilder b(func.getContext());
     b.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
@@ -418,8 +413,9 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
         arith::AddIOp::create(rewriter, loc, receiverWritePtr, byteOffset);
   }
 
-  // Multicast payload writes require one common destination address for the
-  // rectangle, so all receivers of a pipe publish to its source-local mailbox.
+  // TODO(#617): Support per-destination receive addresses for multicast.
+  // TTKernel multicast writes take one destination address for the rectangle,
+  // so all receivers of a pipe currently publish to its source-local mailbox.
   Value targetMailboxSemIdx = arith::ConstantIndexOp::create(
       rewriter, loc, pipeChannelLayout->mailboxSemIdxBase);
   auto mailboxStagingSemIdx = arith::ConstantIndexOp::create(
@@ -805,12 +801,12 @@ void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
 
     for (PipeType pipeType : pipes) {
       PipeKey sourceKey = getPipeSourceKey(pipeType);
-      int64_t &nextSemaphoreIdx = nextSemaphoreIdxBySource[sourceKey];
-      if (nextSemaphoreIdx == 0) {
-        nextSemaphoreIdx = firstSourceLocalSemIdx;
-      }
-      PipeChannelLayout channelLayout{nextSemaphoreIdx++, nextSemaphoreIdx};
-      nextSemaphoreIdx += 1;
+      auto emplaceResult = nextSemaphoreIdxBySource.try_emplace(
+          sourceKey, firstSourceLocalSemIdx);
+      int64_t &nextSemaphoreIdx = emplaceResult.first->second;
+      int64_t senderReadySemIdx = nextSemaphoreIdx++;
+      int64_t mailboxSemIdxBase = nextSemaphoreIdx++;
+      PipeChannelLayout channelLayout{senderReadySemIdx, mailboxSemIdxBase};
       layout.channels[getPipeKey(pipeType)] = channelLayout;
     }
   }

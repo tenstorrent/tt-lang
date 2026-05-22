@@ -623,7 +623,8 @@ def TTL_PipeRecvWaitOp : TTL_Op<"pipe_recv_wait",
   let description = [{
     Blocks until the sender has completed the pipe transfer associated with a
     posted receive. The destination dataflow buffer slot is safe to consume
-    after this operation completes.
+    after this operation completes. The `dst` operand identifies the posted
+    destination slot whose receive is being completed.
   }];
   let arguments = (ins
     TTL_TransferHandle:$xf,

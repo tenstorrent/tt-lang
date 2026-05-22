@@ -258,7 +258,10 @@ mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
     return emitOpError() << "requires a cb_reserve destination";
   }
 
-  auto handleType = mlir::cast<TransferHandleType>(getXf().getType());
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType) {
+    return emitOpError() << "requires a transfer handle result";
+  }
   if (handleType.getKind()) {
     return emitOpError() << "requires an untyped transfer handle result";
   }
@@ -267,7 +270,10 @@ mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeRecvWaitOp::verify() {
-  auto handleType = mlir::cast<TransferHandleType>(getXf().getType());
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType) {
+    return emitOpError() << "requires a transfer handle operand";
+  }
   if (handleType.getKind()) {
     return emitOpError() << "requires an untyped transfer handle operand";
   }

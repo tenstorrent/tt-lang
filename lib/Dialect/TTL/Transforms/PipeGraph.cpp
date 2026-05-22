@@ -23,7 +23,11 @@ LogicalResult PipeGraph::addReceiverCB(int64_t srcX, int64_t srcY,
   if (existing != receiverCBs.end()) {
     if (existing->second.cbIndex != cbIndex ||
         existing->second.blockCount != blockCount) {
-      return emitError(loc) << "conflicting receiver DFBs for the same pipe";
+      auto diag = emitError(loc)
+                  << "conflicting receiver DFBs for the same pipe";
+      diag.attachNote(existing->second.loc)
+          << "previous receiver DFB for this pipe was here";
+      return failure();
     }
     return success();
   }
@@ -58,15 +62,18 @@ void PipeGraph::assignGatherSlotIndices() {
   llvm::DenseMap<ReceiverKey, llvm::SmallSet<int64_t, 4>, ReceiverKeyInfo>
       usedAtReceiver;
 
-  // (srcX, srcY) order is stable and reproducible across runs.
+  // Order by the complete PipeKey so the greedy coloring is independent of
+  // DenseMap iteration order.
   SmallVector<PipeKey> orderedPipes;
   orderedPipes.reserve(receiverCBs.size());
   for (auto &[key, info] : receiverCBs) {
     orderedPipes.push_back(key);
   }
   llvm::sort(orderedPipes, [](const PipeKey &a, const PipeKey &b) {
-    return std::tie(a.srcX, a.srcY, a.dstStartX, a.dstStartY, a.pipeNetId) <
-           std::tie(b.srcX, b.srcY, b.dstStartX, b.dstStartY, b.pipeNetId);
+    return std::tie(a.srcX, a.srcY, a.dstStartX, a.dstStartY, a.dstEndX,
+                    a.dstEndY, a.pipeNetId) <
+           std::tie(b.srcX, b.srcY, b.dstStartX, b.dstStartY, b.dstEndX,
+                    b.dstEndY, b.pipeNetId);
   });
 
   for (const PipeKey &pk : orderedPipes) {
@@ -148,14 +155,6 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   LogicalResult walkResult = success();
   mod.walk([&](Operation *op) {
     if (failed(walkResult)) {
-      return;
-    }
-    if (auto copyOp = mlir::dyn_cast<CopyOp>(op)) {
-      auto srcPipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType());
-      if (!srcPipeType) {
-        return;
-      }
-      walkResult = addPipeReceiver(graph, op, srcPipeType, copyOp.getDst());
       return;
     }
     if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {

@@ -68,8 +68,8 @@ struct ReceiverCBInfo {
   Location loc;          // Source location for error reporting
 };
 
-/// Graph tracking pipe connections and receiver CB assignments.
-/// Built before lowering by analyzing Pipe->CB copy operations.
+/// Graph tracking pipe connections and receiver DFB assignments.
+/// Built after pipe receive copies have been expanded to receive-post ops.
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.

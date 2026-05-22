@@ -461,7 +461,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{references unknown PipeNet id 7}}
+    // expected-error @below {{references unknown PipeNet net_7}}
     %cond = ttl.is_src {pipe_net_id = 7 : i64}
     scf.if %cond {
       %send = ttl.copy %cb, %pipe
@@ -510,7 +510,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{references unknown PipeNet id 9}}
+    // expected-error @below {{references unknown PipeNet net_9}}
     %cond = ttl.is_dst {pipe_net_id = 9 : i64}
     scf.if %cond {
       %recv_reserve = ttl.cb_reserve %cb
@@ -539,7 +539,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{references unknown PipeNet id 5}}
+    // expected-error @below {{references unknown PipeNet net_5}}
     %cond = ttl.is_active {pipe_net_id = 5 : i64}
     scf.if %cond {
       %send = ttl.copy %cb, %pipe
@@ -553,17 +553,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// `pipenet_scope` referencing an unknown PipeNet id is rejected. The
-// downstream containment check against the empty role domain also fires;
-// both diagnostics are expected.
+// `pipenet_scope` referencing an unknown PipeNet id is rejected before
+// downstream role-domain analysis runs.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id_scope() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    // expected-error @below {{references unknown PipeNet id 4}}
-    // expected-error @below {{this region exchanges data on PipeNet}}
-    // expected-note @below {{example node where the guard does not hold}}
+    // expected-error @below {{references unknown PipeNet net_4}}
     ttl.pipenet_scope attributes {ttl.pipe_net_ids = [4 : i64], ttl.pipe_net_roles = [0 : i64]} {
     }
     func.return
