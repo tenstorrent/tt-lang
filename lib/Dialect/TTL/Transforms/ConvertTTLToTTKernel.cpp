@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Transforms/Transforms.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -56,6 +57,8 @@ namespace ttk = mlir::tt::ttkernel;
 // addresses). CRTA is filtered per-thread, containing only addresses for
 // tensors this thread uses.
 constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
+constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
+    "ttlang.expand_linearize_index";
 
 // PipeGraph is defined in PipeGraph.h.
 
@@ -109,6 +112,19 @@ static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
   }
   return std::nullopt;
 }
+
+struct ExpandMarkedLinearizeIndex
+    : OpRewritePattern<affine::AffineLinearizeIndexOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineLinearizeIndexOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->hasAttr(kExpandLinearizeIndexAttr)) {
+      return failure();
+    }
+    return affine::lowerAffineLinearizeIndexOp(rewriter, op);
+  }
+};
 
 /// Get the function argument index for a tensor value.
 /// Returns the index if the tensor is a block argument of an entry block,
@@ -666,25 +682,6 @@ static void emitTileLoop(
                      });
 }
 
-/// Compute a linearized (row-major) index from ND coordinates and shape.
-/// index = coords[0] * (shape[1]*...*shape[N-1]) + ... + coords[N-1]
-static Value linearizeNDIndex(OpBuilder &builder, Location loc,
-                              ValueRange coords, ArrayRef<int64_t> shape) {
-  assert(coords.size() == shape.size() && "coords and shape rank mismatch");
-  Value result = arith::ConstantIndexOp::create(builder, loc, 0);
-  for (size_t i = 0; i < coords.size(); ++i) {
-    // stride = product of shape[i+1..N-1]
-    int64_t stride = 1;
-    for (size_t j = i + 1; j < shape.size(); ++j) {
-      stride *= shape[j];
-    }
-    Value strideVal = arith::ConstantIndexOp::create(builder, loc, stride);
-    Value term = arith::MulIOp::create(builder, loc, coords[i], strideVal);
-    result = arith::AddIOp::create(builder, loc, result, term);
-  }
-  return result;
-}
-
 /// Direction of a tensor<->CB tile copy for NOC operations.
 enum class NocCopyDirection { Read, Write };
 
@@ -772,10 +769,15 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
           tensorCoords.push_back(coord);
         }
 
-        Value tensorTileIdx =
-            linearizeNDIndex(b, bodyLoc, tensorCoords, tensorGridShape);
+        auto tensorTileIdxOp = affine::AffineLinearizeIndexOp::create(
+            b, bodyLoc, tensorCoords, tensorGridShape);
+        tensorTileIdxOp->setAttr(kExpandLinearizeIndexAttr, b.getUnitAttr());
+        Value tensorTileIdx = tensorTileIdxOp.getResult();
 
-        Value cbTileIdx = linearizeNDIndex(b, bodyLoc, cbIVs, cbBounds);
+        auto cbTileIdxOp =
+            affine::AffineLinearizeIndexOp::create(b, bodyLoc, cbIVs, cbBounds);
+        cbTileIdxOp->setAttr(kExpandLinearizeIndexAttr, b.getUnitAttr());
+        Value cbTileIdx = cbTileIdxOp.getResult();
 
         // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =
@@ -1151,6 +1153,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // Apply post-conversion cleanup patterns (e.g., barrier deduplication).
   RewritePatternSet cleanupPatterns(&ctx);
   ttkernel::populateTTKernelCleanupPatterns(cleanupPatterns);
+  cleanupPatterns.add<ExpandMarkedLinearizeIndex>(&ctx);
   if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns)))) {
     return failure();
   }

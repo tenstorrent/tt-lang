@@ -39,7 +39,6 @@
 #include <algorithm>
 #include <functional>
 #include <iterator>
-#include <map>
 #include <optional>
 #include <set>
 #include <tuple>
@@ -1142,10 +1141,11 @@ PipeNodeIdentity getPipeNodeIdentity(Operation *op, Coord coord,
   return {op, coord.x, coord.y, static_cast<int64_t>(kind)};
 }
 
-unsigned addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
-                             std::map<PipeNodeIdentity, unsigned> &nodeIds,
-                             Operation *op, PipeType pipeType, Coord coord,
-                             PipeScheduleNodeKind kind) {
+unsigned
+addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
+                    llvm::DenseMap<PipeNodeIdentity, unsigned> &nodeIds,
+                    Operation *op, PipeType pipeType, Coord coord,
+                    PipeScheduleNodeKind kind) {
   PipeNodeIdentity identity = getPipeNodeIdentity(op, coord, kind);
   auto [it, inserted] = nodeIds.try_emplace(identity, nodes.size());
   if (inserted) {
@@ -1230,6 +1230,22 @@ bool cycleContainsEdge(ArrayRef<PipeScheduleNode> nodes,
   return false;
 }
 
+bool cycleHasProgramOrderPath(ArrayRef<PipeScheduleNode> nodes,
+                              ArrayRef<unsigned> cycle,
+                              unsigned startCycleIndex,
+                              unsigned endCycleIndex) {
+  assert(startCycleIndex < endCycleIndex &&
+         "expected a forward range within the reported cycle");
+  for (unsigned idx = startCycleIndex; idx < endCycleIndex; ++idx) {
+    std::optional<PipeScheduleEdgeKind> edgeKind =
+        getPipeScheduleEdgeKind(nodes, cycle[idx], cycle[idx + 1]);
+    if (!edgeKind || *edgeKind != PipeScheduleEdgeKind::ProgramOrder) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::string describePipeScheduleNode(const PipeScheduleNode &node) {
   std::string buffer;
   llvm::raw_string_ostream os(buffer);
@@ -1273,23 +1289,26 @@ std::string describePipeScheduleEdge(const PipeScheduleNode &predecessor,
 std::optional<std::pair<unsigned, unsigned>>
 findReceiveWaitBeforeCompletingSend(ArrayRef<PipeScheduleNode> nodes,
                                     ArrayRef<unsigned> cycle) {
-  for (unsigned idx = 0, count = cycle.size() - 1; idx < count; ++idx) {
-    unsigned waitNodeId = cycle[idx];
-    unsigned sendNodeId = cycle[idx + 1];
+  unsigned cycleNodeCount = cycle.size() - 1;
+  for (unsigned waitIdx = 0; waitIdx < cycleNodeCount; ++waitIdx) {
+    unsigned waitNodeId = cycle[waitIdx];
     const PipeScheduleNode &waitNode = nodes[waitNodeId];
-    const PipeScheduleNode &sendNode = nodes[sendNodeId];
-    if (waitNode.kind != PipeScheduleNodeKind::ReceiveWait ||
-        sendNode.kind != PipeScheduleNodeKind::Send) {
+    if (waitNode.kind != PipeScheduleNodeKind::ReceiveWait) {
       continue;
     }
-    std::optional<PipeScheduleEdgeKind> edgeKind =
-        getPipeScheduleEdgeKind(nodes, waitNodeId, sendNodeId);
-    if (!edgeKind || *edgeKind != PipeScheduleEdgeKind::ProgramOrder) {
-      continue;
-    }
-    if (cycleContainsEdge(nodes, cycle, sendNodeId, waitNodeId,
-                          PipeScheduleEdgeKind::SendCompletesReceive)) {
-      return std::make_pair(waitNodeId, sendNodeId);
+    for (unsigned sendIdx = waitIdx + 1; sendIdx < cycle.size(); ++sendIdx) {
+      unsigned sendNodeId = cycle[sendIdx];
+      const PipeScheduleNode &sendNode = nodes[sendNodeId];
+      if (sendNode.kind != PipeScheduleNodeKind::Send) {
+        continue;
+      }
+      if (!cycleHasProgramOrderPath(nodes, cycle, waitIdx, sendIdx)) {
+        continue;
+      }
+      if (cycleContainsEdge(nodes, cycle, sendNodeId, waitNodeId,
+                            PipeScheduleEdgeKind::SendCompletesReceive)) {
+        return std::make_pair(waitNodeId, sendNodeId);
+      }
     }
   }
   return std::nullopt;
@@ -1298,23 +1317,26 @@ findReceiveWaitBeforeCompletingSend(ArrayRef<PipeScheduleNode> nodes,
 std::optional<std::pair<unsigned, unsigned>>
 findSendBeforeReceivePost(ArrayRef<PipeScheduleNode> nodes,
                           ArrayRef<unsigned> cycle) {
-  for (unsigned idx = 0, count = cycle.size() - 1; idx < count; ++idx) {
-    unsigned sendNodeId = cycle[idx];
-    unsigned postNodeId = cycle[idx + 1];
+  unsigned cycleNodeCount = cycle.size() - 1;
+  for (unsigned sendIdx = 0; sendIdx < cycleNodeCount; ++sendIdx) {
+    unsigned sendNodeId = cycle[sendIdx];
     const PipeScheduleNode &sendNode = nodes[sendNodeId];
-    const PipeScheduleNode &postNode = nodes[postNodeId];
-    if (sendNode.kind != PipeScheduleNodeKind::Send ||
-        postNode.kind != PipeScheduleNodeKind::ReceivePost) {
+    if (sendNode.kind != PipeScheduleNodeKind::Send) {
       continue;
     }
-    std::optional<PipeScheduleEdgeKind> edgeKind =
-        getPipeScheduleEdgeKind(nodes, sendNodeId, postNodeId);
-    if (!edgeKind || *edgeKind != PipeScheduleEdgeKind::ProgramOrder) {
-      continue;
-    }
-    if (cycleContainsEdge(nodes, cycle, postNodeId, sendNodeId,
-                          PipeScheduleEdgeKind::ReceivePostEnablesSend)) {
-      return std::make_pair(sendNodeId, postNodeId);
+    for (unsigned postIdx = sendIdx + 1; postIdx < cycle.size(); ++postIdx) {
+      unsigned postNodeId = cycle[postIdx];
+      const PipeScheduleNode &postNode = nodes[postNodeId];
+      if (postNode.kind != PipeScheduleNodeKind::ReceivePost) {
+        continue;
+      }
+      if (!cycleHasProgramOrderPath(nodes, cycle, sendIdx, postIdx)) {
+        continue;
+      }
+      if (cycleContainsEdge(nodes, cycle, postNodeId, sendNodeId,
+                            PipeScheduleEdgeKind::ReceivePostEnablesSend)) {
+        return std::make_pair(sendNodeId, postNodeId);
+      }
     }
   }
   return std::nullopt;
@@ -1403,10 +1425,10 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
 void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   SmallVector<PipeScheduleNode> nodes;
   SmallVector<std::pair<unsigned, PipeType>> sendNodes;
-  std::map<PipeNodeIdentity, unsigned> nodeIds;
-  std::map<PipeCoordIdentity, SmallVector<unsigned>> receivePostNodes;
-  std::map<PipeCoordIdentity, SmallVector<unsigned>> receiveWaitNodes;
-  std::map<ProgramPointIdentity, unsigned> lastCompletionNodes;
+  llvm::DenseMap<PipeNodeIdentity, unsigned> nodeIds;
+  llvm::DenseMap<PipeCoordIdentity, SmallVector<unsigned>> receivePostNodes;
+  llvm::DenseMap<PipeCoordIdentity, SmallVector<unsigned>> receiveWaitNodes;
+  llvm::DenseMap<ProgramPointIdentity, unsigned> lastCompletionNodes;
 
   module.walk([&](Operation *op) {
     auto eventIt = state.pipeEventIndices.find(op);
