@@ -131,6 +131,215 @@ posted_gather_kernel = make_two_net_posted_gather_kernel()
 same_source_two_pipe_kernel = make_same_source_two_pipe_kernel()
 
 
+def make_many_pipe_rendezvous_kernel():
+    grid_dim = 2
+    row_upper_net = ttl.PipeNet(
+        [
+            ttl.Pipe((0, row_idx), (slice(row_idx, grid_dim), row_idx))
+            for row_idx in range(grid_dim)
+        ]
+    )
+    row_lower_net = ttl.PipeNet(
+        [
+            ttl.Pipe((0, row_idx), (slice(0, row_idx), row_idx))
+            for row_idx in range(1, grid_dim)
+        ]
+    )
+    col_upper_net = ttl.PipeNet(
+        [
+            ttl.Pipe(
+                (col_idx, 0),
+                (col_idx, slice(0, col_idx + 1)),
+            )
+            for col_idx in range(grid_dim)
+        ]
+    )
+    col_lower_net = ttl.PipeNet(
+        [
+            ttl.Pipe(
+                (col_idx, 0),
+                (col_idx, slice(col_idx + 1, grid_dim)),
+            )
+            for col_idx in range(0, grid_dim - 1)
+        ]
+    )
+    helper_row_even_net = ttl.PipeNet(
+        [ttl.Pipe((0, row_idx), (grid_dim, row_idx)) for row_idx in range(grid_dim)]
+    )
+    helper_col_even_net = ttl.PipeNet(
+        [ttl.Pipe((row_idx, 0), (grid_dim, row_idx)) for row_idx in range(grid_dim)]
+    )
+
+    @ttl.operation(grid=(grid_dim + 1, grid_dim), fp32_dest_acc_en=True)
+    def many_pipe_rendezvous(inp, out):
+        _row_upper_net = row_upper_net
+        _row_lower_net = row_lower_net
+        _col_upper_net = col_upper_net
+        _col_lower_net = col_lower_net
+        _helper_row_even_net = helper_row_even_net
+        _helper_col_even_net = helper_col_even_net
+
+        half_k = inp.shape[1] // (2 * TILE)
+        tile11 = (1, 1)
+        row_recv_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=tile11, block_count=half_k
+        )
+        col_recv_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=tile11, block_count=half_k
+        )
+        row_send_dfb = ttl.make_dataflow_buffer_like(inp, shape=tile11, block_count=2)
+        col_send_dfb = ttl.make_dataflow_buffer_like(inp, shape=tile11, block_count=2)
+
+        @ttl.compute()
+        def compute():
+            pass
+
+        @ttl.datamovement()
+        def post_receives_and_send():
+            node_x, node_y = ttl.node(dims=2)
+            for k_pair in range(half_k):
+                even_k = 2 * k_pair
+                odd_k = even_k + 1
+
+                def recv_row(pipe):
+                    ttl.copy(pipe, row_recv_blk).wait()
+
+                def recv_col(pipe):
+                    ttl.copy(pipe, col_recv_blk).wait()
+
+                if row_lower_net.is_src():
+                    with row_send_dfb.reserve() as row_send_blk:
+                        ttl.copy(
+                            inp[node_y : node_y + 1, even_k : even_k + 1], row_send_blk
+                        ).wait()
+
+                        def send_row(pipe):
+                            ttl.copy(row_send_blk, pipe).wait()
+
+                        if row_lower_net.is_dst():
+                            with row_recv_dfb.reserve() as row_recv_blk:
+
+                                def recv_row_then_send(pipe):
+                                    recv_tx = ttl.copy(pipe, row_recv_blk)
+                                    row_lower_net.if_src(send_row)
+                                    helper_row_even_net.if_src(send_row)
+                                    recv_tx.wait()
+
+                                row_lower_net.if_dst(recv_row_then_send)
+                        else:
+                            row_lower_net.if_src(send_row)
+                            helper_row_even_net.if_src(send_row)
+                elif helper_row_even_net.is_src():
+                    with row_send_dfb.reserve() as row_send_blk:
+                        ttl.copy(
+                            inp[node_y : node_y + 1, even_k : even_k + 1], row_send_blk
+                        ).wait()
+
+                        def send_row(pipe):
+                            ttl.copy(row_send_blk, pipe).wait()
+
+                        helper_row_even_net.if_src(send_row)
+                elif row_lower_net.is_dst():
+                    with row_recv_dfb.reserve() as row_recv_blk:
+                        row_lower_net.if_dst(recv_row)
+                elif helper_row_even_net.is_dst():
+                    with row_recv_dfb.reserve() as row_recv_blk:
+                        helper_row_even_net.if_dst(recv_row)
+
+                if col_lower_net.is_src():
+                    with col_send_dfb.reserve() as col_send_blk:
+                        ttl.copy(
+                            inp[node_x : node_x + 1, even_k : even_k + 1], col_send_blk
+                        ).wait()
+
+                        def send_col(pipe):
+                            ttl.copy(col_send_blk, pipe).wait()
+
+                        if col_lower_net.is_dst():
+                            with col_recv_dfb.reserve() as col_recv_blk:
+
+                                def recv_col_then_send(pipe):
+                                    recv_tx = ttl.copy(pipe, col_recv_blk)
+                                    col_lower_net.if_src(send_col)
+                                    helper_col_even_net.if_src(send_col)
+                                    recv_tx.wait()
+
+                                col_lower_net.if_dst(recv_col_then_send)
+                        else:
+                            col_lower_net.if_src(send_col)
+                            helper_col_even_net.if_src(send_col)
+                elif helper_col_even_net.is_src():
+                    with col_send_dfb.reserve() as col_send_blk:
+                        ttl.copy(
+                            inp[node_x : node_x + 1, even_k : even_k + 1], col_send_blk
+                        ).wait()
+
+                        def send_col(pipe):
+                            ttl.copy(col_send_blk, pipe).wait()
+
+                        helper_col_even_net.if_src(send_col)
+                elif col_lower_net.is_dst():
+                    with col_recv_dfb.reserve() as col_recv_blk:
+                        col_lower_net.if_dst(recv_col)
+                elif helper_col_even_net.is_dst():
+                    with col_recv_dfb.reserve() as col_recv_blk:
+                        helper_col_even_net.if_dst(recv_col)
+
+                if row_upper_net.is_src():
+                    with row_send_dfb.reserve() as row_send_blk:
+                        ttl.copy(
+                            inp[node_y : node_y + 1, odd_k : odd_k + 1], row_send_blk
+                        ).wait()
+
+                        def send_row(pipe):
+                            ttl.copy(row_send_blk, pipe).wait()
+
+                        if row_upper_net.is_dst():
+                            with row_recv_dfb.reserve() as row_recv_blk:
+
+                                def recv_row_then_send(pipe):
+                                    recv_tx = ttl.copy(pipe, row_recv_blk)
+                                    row_upper_net.if_src(send_row)
+                                    recv_tx.wait()
+
+                                row_upper_net.if_dst(recv_row_then_send)
+                        else:
+                            row_upper_net.if_src(send_row)
+                elif row_upper_net.is_dst():
+                    with row_recv_dfb.reserve() as row_recv_blk:
+                        row_upper_net.if_dst(recv_row)
+
+                if col_upper_net.is_src():
+                    with col_send_dfb.reserve() as col_send_blk:
+                        ttl.copy(
+                            inp[node_x : node_x + 1, odd_k : odd_k + 1], col_send_blk
+                        ).wait()
+
+                        def send_col(pipe):
+                            ttl.copy(col_send_blk, pipe).wait()
+
+                        if col_upper_net.is_dst():
+                            with col_recv_dfb.reserve() as col_recv_blk:
+
+                                def recv_col_then_send(pipe):
+                                    recv_tx = ttl.copy(pipe, col_recv_blk)
+                                    col_upper_net.if_src(send_col)
+                                    recv_tx.wait()
+
+                                col_upper_net.if_dst(recv_col_then_send)
+                        else:
+                            col_upper_net.if_src(send_col)
+                elif col_upper_net.is_dst():
+                    with col_recv_dfb.reserve() as col_recv_blk:
+                        col_upper_net.if_dst(recv_col)
+
+        @ttl.datamovement()
+        def write_output():
+            pass
+
+    return many_pipe_rendezvous
+
+
 def make_non_uniform_multicast_receive_address_kernel():
     bcast_pipe = ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0))
     bcast_net = ttl.PipeNet([bcast_pipe])
@@ -180,6 +389,7 @@ def make_non_uniform_multicast_receive_address_kernel():
 non_uniform_multicast_receive_address_kernel = (
     make_non_uniform_multicast_receive_address_kernel()
 )
+many_pipe_rendezvous_kernel = make_many_pipe_rendezvous_kernel()
 
 
 def test_posted_gather_uses_distinct_receiver_slots(device):
@@ -211,6 +421,24 @@ def test_same_source_pipes_use_distinct_rendezvous_state(device):
 
     result = ttnn.to_torch(out)
     assert_pcc(inp_torch.float(), result.float())
+
+
+@pytest.mark.xfail(
+    reason=(
+        "issue #619: PipeNet lowering can exceed the hardware semaphore limit "
+        "for valid multi-PipeNet schedules"
+    ),
+    strict=True,
+)
+def test_many_pipe_rendezvous_sites_fit_hardware_semaphore_limit(device):
+    inp_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    many_pipe_rendezvous_kernel(inp, out)
+    ttnn.synchronize_device(device)
 
 
 @pytest.mark.xfail(
