@@ -74,7 +74,7 @@ def _even_split(n_blocks, max_grid):
     return bpn, n_blocks // bpn
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def minimal_matmul_kernel(a, b, out):
     num_cols, num_rows = ttl.grid_size(dims=2)
     m_blocks_per_node, num_rows_used = _even_split(M_BLOCKS, num_rows)

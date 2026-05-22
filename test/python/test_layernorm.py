@@ -168,7 +168,7 @@ def make_layernorm_kernel(dim_tiles):
     """Assignment-style layernorm — no `with:`, no explicit push/pop.
     The sync pass places every `cb_push` / `cb_pop`."""
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def layernorm_kernel(x, weight, ln_bias, mean_scale, out):
         grid_cols, _ = ttl.grid_size(dims=2)
         seq_tiles = x.shape[0] // TILE
@@ -270,7 +270,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
     `.push()` / `.pop()` after every reserve/wait. Bypasses the sync
     pass and serves as a hand-synced reference."""
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def layernorm_kernel(x, weight, ln_bias, mean_scale, out):
         grid_cols, _ = ttl.grid_size(dims=2)
         seq_tiles = x.shape[0] // TILE
@@ -408,7 +408,7 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
     carry. Intermediates are SSA or compiler-allocated. Uses `with:`
     context managers and `+=` L1 accumulation."""
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def layernorm_kernel(x, weight, ln_bias, mean_scale, out):
         grid_cols, _ = ttl.grid_size(dims=2)
         seq_tiles = x.shape[0] // TILE

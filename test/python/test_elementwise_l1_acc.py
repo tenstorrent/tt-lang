@@ -361,7 +361,7 @@ def _make_mixed_elem_matmul_kernel(K1, K2):
     return kernel
 
 
-def _make_fused_linear_relu_kernel(block_m, block_n, grid="auto"):
+def _make_fused_linear_relu_kernel(block_m, block_n, grid="full"):
     """out = sum over K of relu(a[k] @ b[k] + c). Fused linear + bias + relu.
 
     Bias `c` is shared across K iterations (one read per output block);

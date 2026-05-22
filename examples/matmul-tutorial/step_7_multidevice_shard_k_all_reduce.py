@@ -45,7 +45,7 @@ N_GRANULARITY = 4
 K_GRANULARITY = 4
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def tutorial_operation(
     a: ttnn.Tensor,
     b: ttnn.Tensor,

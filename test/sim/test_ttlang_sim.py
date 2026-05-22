@@ -50,14 +50,14 @@ class TestDefaultGrid:
         finally:
             set_default_grid(original)
 
-    def test_kernel_auto_grid_uses_default(self):
+    def test_kernel_full_grid_uses_default(self):
         """Test that kernel with grid='auto' uses the configured default grid."""
         original = get_default_grid()
         try:
             # Set custom default
             set_default_grid((3, 5))
 
-            @ttl.operation(grid="auto")
+            @ttl.operation(grid="full")
             def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
                 assert a is not None and b is not None
 

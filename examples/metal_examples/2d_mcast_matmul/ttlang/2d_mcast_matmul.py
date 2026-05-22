@@ -10,7 +10,7 @@ from utils.block_allocation import get_large_matmul_params
 from utils.correctness import assert_with_ulp
 
 
-@ttl.operation(grid=("auto"))
+@ttl.operation(grid="full")
 def tt_lang_2d_mcast_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."

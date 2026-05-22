@@ -25,7 +25,7 @@ N_GRANULARITY = 4
 K_GRANULARITY = 1
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def matmul_with_bias(
     a: ttnn.Tensor,
     b: ttnn.Tensor,

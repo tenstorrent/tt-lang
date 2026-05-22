@@ -49,7 +49,7 @@ K_GRANULARITY = 4
 # sum partial outputs across devices before activating.
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def tutorial_operation(
     a: ttnn.Tensor,
     b: ttnn.Tensor,

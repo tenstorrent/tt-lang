@@ -28,7 +28,7 @@ from utils.correctness import assert_pcc
 TILE = 32
 
 
-def _make_l1_acc_kernel(block_m, block_n, grid="auto"):
+def _make_l1_acc_kernel(block_m, block_n, grid="full"):
     """Matmul with L1 accumulation via += across K iterations."""
 
     @ttl.operation(grid=grid)
@@ -157,7 +157,7 @@ def test_l1_acc_single_core(block_m, block_n, Kt, device):
     assert_pcc(golden, result, threshold=0.999)
 
 
-# Multicore tests (grid="auto") with multiple output blocks
+# Multicore tests (grid="full") with multiple output blocks
 MULTI_CORE_PARAMS = [
     # (Mt, Kt, Nt, block_m, block_n)
     (16, 4, 16, 8, 8),  # 2x2 output blocks, K=4

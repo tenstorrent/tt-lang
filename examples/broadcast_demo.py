@@ -26,7 +26,7 @@ BLOCK_SIZE = 128
 # All tensors have row-major layout
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def eltwise_sqrt_broadcast(
     a: ttnn.Tensor,
     b: ttnn.Tensor,

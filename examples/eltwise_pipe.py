@@ -13,7 +13,7 @@ from utils.correctness import assert_with_ulp
 
 
 @ttl.operation(
-    grid="auto",  # NOTE: allow compiler to choose grid
+    grid="full",  # NOTE: allow compiler to choose grid
 )
 def eltwise_pipe(
     a_in: ttnn.Tensor,

@@ -49,11 +49,11 @@ N_GRANULARITY = 4
 K_GRANULARITY = 4
 
 
-# The TT-Lang operation body is identical to Step 4.  grid="auto" applies
+# The TT-Lang operation body is identical to Step 4.  grid="full" applies
 # independently to each device in SPMD mode; each device fills its own grid.
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def tutorial_operation(
     a: ttnn.Tensor,
     b: ttnn.Tensor,

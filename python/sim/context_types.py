@@ -28,7 +28,7 @@ class SimulatorConfig:
 
     max_dfbs: int = 32
     scheduler_algorithm: str = "fair"
-    default_auto_grid: Shape = (8, 8)
+    default_full_grid: Shape = (8, 8)
     max_l1_bytes: int = DEFAULT_MAX_L1_BYTES
     num_devices: int = 4
     # Set of event categories to record. Empty means tracing is disabled.

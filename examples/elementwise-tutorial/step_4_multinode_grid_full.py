@@ -9,7 +9,7 @@
 # dimensions that are not evenly divisible by the grid.
 #
 # New concepts introduced:
-#   - grid="auto"     — the compiler picks the largest grid available in the
+#   - grid="full"     — the compiler picks the largest grid available in the
 #                       hardware; the operation must not assume any specific
 #                       grid dimensions
 #   - ceiling division — ensures every block is assigned to a node even when
@@ -41,12 +41,12 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-# grid="auto" asks the compiler to select the grid at compile time based on
+# grid="full" asks the compiler to select the grid at compile time based on
 # available hardware resources.  The operation body must work correctly for any
 # grid the compiler may choose.
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def __tutorial_operation(
     a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 ):

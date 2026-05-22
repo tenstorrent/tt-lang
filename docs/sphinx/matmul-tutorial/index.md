@@ -255,20 +255,20 @@ directly — the DM kernels already stream only the relevant tiles into the DFBs
 This version requires the block counts to be evenly divisible by the grid.
 See Step 4 for a version that handles arbitrary sizes.
 
-## Step 4 — Multi-Node, Auto Grid
+## Step 4 — Multi-Node, Full Grid
 
-**Script**: [`examples/matmul-tutorial/step_4_multinode_grid_auto.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/matmul-tutorial/step_4_multinode_grid_auto.py)
+**Script**: [`examples/matmul-tutorial/step_4_multinode_grid_full.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/matmul-tutorial/step_4_multinode_grid_full.py)
 
 This step removes two constraints from Step 3: the hard-coded grid size and
 the requirement for even divisibility.
 
-### Auto grid
+### Full grid
 
 ```python
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 ```
 
-`grid="auto"` lets the compiler select the largest grid that fits available
+`grid="full"` lets the compiler select the largest grid that fits available
 hardware resources. The operation must work correctly for any grid the compiler
 may choose.
 
@@ -344,7 +344,7 @@ After the operation, the per-device output shards are concatenated on the host:
 y = ttnn.to_torch(y, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 ```
 
-The TT-Lang operation runs identically on each device in SPMD mode — `grid="auto"`
+The TT-Lang operation runs identically on each device in SPMD mode — `grid="full"`
 applies independently per device, filling the full per-device grid.
 
 ## Step 6 — Multi-Device, Shard K

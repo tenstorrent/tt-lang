@@ -1615,7 +1615,7 @@ def _compile_kernel(
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op.
-        # `launch_grid` may be smaller than `grid` when grid="auto" reduces
+        # `launch_grid` may be smaller than `grid` when grid="full" reduces
         # the launch to the PipeNet work extent; only core_ranges uses it.
         compiled_kernel = _compile_ttnn_kernel(
             module,

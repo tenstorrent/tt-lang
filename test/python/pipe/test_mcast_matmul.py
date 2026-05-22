@@ -8,7 +8,7 @@
 A rows are multicast horizontally (one pipe per row of the grid).
 B columns are multicast vertically (one pipe per column of the grid).
 
-Uses grid="auto" to adapt to the available device grid.
+Uses grid="full" to adapt to the available device grid.
 
 Tests: multi-tile 8x8 blocks, mcast and balanced (two-NOC) patterns
 with PipeNet named-function callbacks.
@@ -46,7 +46,7 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def mcast_matmul(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
         # Pipes must target the work subgrid (num_*_used), not the full launch grid.
@@ -153,7 +153,7 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def balanced_matmul(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
         m_blocks_per_node, num_rows_used = _even_split(M_BLOCKS, NUM_ROWS)
@@ -260,7 +260,7 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def balanced_matmul_relu(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
         m_blocks_per_node, num_rows_used = _even_split(M_BLOCKS, NUM_ROWS)

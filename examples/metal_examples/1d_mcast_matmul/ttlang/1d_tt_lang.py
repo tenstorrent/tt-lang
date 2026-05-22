@@ -10,7 +10,7 @@ from utils.correctness import assert_with_ulp
 TS = ttnn.TILE_SIZE  # 32
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def matmul_1d(
     a_tensor: ttnn.Tensor,
     b_tensor: ttnn.Tensor,

@@ -22,7 +22,7 @@ from utils.correctness import assert_pcc
 TILE = 32
 
 
-def _make_l1_acc_multinode_kernel(block_m, block_n, grid="auto"):
+def _make_l1_acc_multinode_kernel(block_m, block_n, grid="full"):
     """Multinode matmul with L1 accumulation.
 
     All K blocks are pre-loaded into L1 before compute begins (no DRAM

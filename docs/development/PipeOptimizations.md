@@ -236,7 +236,7 @@ lowering:
   existing per-Pipe lowering and only invoke 3.2.6 (waves) when
   `N > 32`.
 - Ring forward without reduction (`test_pipe_patterns.py::test_forward_ring`,
-  `test_pipe_patterns.py::test_row_rings_auto`) — `N` parallel
+  `test_pipe_patterns.py::test_row_rings_full`) — `N` parallel
   unicast pipes with `block_count = 2`, no convergence at any
   receiver, so none of the rewrites here match.
 - Pipe chain (`test/python/pipe/test_pipe_conv.py`) — multi-stage
@@ -342,7 +342,7 @@ deferred to the issue tracked in §4.3 rather than specified here.
 
 Until the cost model is in place, the rewrite is conditional on a
 `PassOptions` flag that defaults to off, so tt-lang's existing
-tests (`test_mcast_matmul`, `test_scatter_auto`, etc.) see no
+tests (`test_mcast_matmul`, `test_scatter_full`, etc.) see no
 behavior change. Reference points from tt-metal:
 `minimal_matmul`'s data-movement kernels always use the forwarding
 chain (no multicast fallback), while
