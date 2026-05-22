@@ -85,8 +85,6 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
         None,  # blocking_obj
         "",  # operation
         kernel_type,
-        "",  # location
-        None,  # raw_loc
     )
     scheduler._has_made_progress[tid] = False
 

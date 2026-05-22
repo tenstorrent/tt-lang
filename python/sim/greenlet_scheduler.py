@@ -99,11 +99,16 @@ class GreenletScheduler:
 
     def __init__(self) -> None:
         """Initialize the scheduler."""
-        # Active greenlets: kernel_id -> (greenlet, blocking_obj, operation, kernel_type, block_location, raw_loc)
-        # raw_loc is Optional[Tuple[str, int]] = (filename, lineno) for pretty-printing
+        # Active greenlets: kernel_id -> (greenlet, blocking_obj, operation, kernel_type).
+        # The block location is intentionally NOT stored here: capturing
+        # (filename, lineno) on every block adds ~5-6s/run for step_1 worth
+        # of stack-walking and string formatting, and the only consumer is
+        # the deadlock diagnostic below, which fires at most once per run.
+        # When a deadlock is detected we recover the location lazily from each
+        # blocked greenlet's ``gr_frame`` instead.
         self._active: Dict[
             KernelId,
-            Tuple[greenlet, Any, str, KernelType, str, Optional[Tuple[str, int]]],
+            Tuple[greenlet, Any, str, KernelType],
         ] = {}
         # Completed greenlets (internal bookkeeping)
         self._completed: List[KernelId] = []
@@ -156,7 +161,7 @@ class GreenletScheduler:
 
         g = greenlet(wrapped_func)
         # Initially not blocked (will start when scheduled)
-        self._active[kernel_id] = (g, None, "", kernel_id.kind, "", None)
+        self._active[kernel_id] = (g, None, "", kernel_id.kind)
         # Initialize last run time to 0 (never run)
         self._last_run[kernel_id] = 0
         # Kernel hasn't made progress yet
@@ -178,20 +183,15 @@ class GreenletScheduler:
                 "(no kernel is currently scheduled)"
             )
 
-        # Capture location where blocking occurred
-        filename, lineno = find_user_code_location()
-        location_str = f" at {filename}:{lineno}"
-        raw_loc: Optional[Tuple[str, int]] = (filename, lineno)
-
-        # Update active entry with blocking info and location
-        g, _, _, kernel_type, _, _ = self._active[self._current_kernel_id]
+        # Update active entry with blocking info.  The source location of the
+        # blocking call is not captured here -- see the comment on
+        # ``self._active`` in ``__init__``.
+        g, _, _, kernel_type = self._active[self._current_kernel_id]
         self._active[self._current_kernel_id] = (
             g,
             blocking_obj,
             operation,
             kernel_type,
-            location_str,
-            raw_loc,
         )
 
         # Switch back to scheduler
@@ -320,7 +320,7 @@ class GreenletScheduler:
         """
 
         for kernel_id in list(self._active.keys()):
-            g, blocking_obj, _, kernel_type, _, _ = self._active[kernel_id]
+            g, blocking_obj, _, kernel_type = self._active[kernel_id]
 
             # All kernels should start unblocked in init phase
             if blocking_obj is not None:
@@ -420,9 +420,7 @@ class GreenletScheduler:
                     # Kernel may have completed during this iteration
                     continue
 
-                g, blocking_obj, blocked_op, kernel_type, location, _ = self._active[
-                    kernel_id
-                ]
+                g, blocking_obj, blocked_op, kernel_type = self._active[kernel_id]
 
                 # If kernel is blocked, check if it can proceed
                 if blocking_obj is not None:
@@ -432,7 +430,7 @@ class GreenletScheduler:
                         continue
 
                     # Unblocked! Clear blocking state
-                    self._active[kernel_id] = (g, None, "", kernel_type, "", None)
+                    self._active[kernel_id] = (g, None, "", kernel_type)
 
                 # Set current kernel for block_current_kernel()
                 self._current_kernel_id = kernel_id
@@ -479,7 +477,11 @@ class GreenletScheduler:
 
             # Deadlock detection
             if not any_progress and self._active:
-                # Group kernels by (operation, object, location)
+                # Group kernels by (operation, object, location).  Each blocked
+                # greenlet is suspended at its wait()/reserve() call site and
+                # still has a live frame chain, so we resolve the user code
+                # location here -- on the cold path -- rather than capturing
+                # it on every block.
                 from collections import defaultdict
 
                 blocked_groups: dict[tuple[str, str, str], list[str]] = defaultdict(
@@ -495,10 +497,15 @@ class GreenletScheduler:
                     blocking_obj,
                     op,
                     _,
-                    location,
-                    raw_loc,
                 ) in self._active.items():
                     obj_desc = self._get_obj_description(blocking_obj)
+                    raw_loc: Optional[Tuple[str, int]] = None
+                    if g.gr_frame is not None:
+                        try:
+                            raw_loc = find_user_code_location(g.gr_frame)
+                        except RuntimeError:
+                            raw_loc = None
+                    location = f" at {raw_loc[0]}:{raw_loc[1]}" if raw_loc else ""
                     key = (op, obj_desc, location)
                     node_id = f"node{kernel_id.linear_node}"
                     blocked_groups[key].append(node_id)
