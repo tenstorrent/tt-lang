@@ -122,6 +122,45 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Pipe receive waits are schedule-relevant. A receive wait under an
+// unanalyzable coordinate-dependent predicate is rejected instead of being
+// omitted from the wait-for graph.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @pipe_receive_wait_unanalyzable_guard(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %reserve = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %view = ttl.attach_cb %reserve, %cb
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %view
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      %core_x = ttl.core_x : index
+      %scaled = arith.muli %core_x, %runtime : index
+      %zero = arith.constant 0 : index
+      // expected-note @below {{this expression is not statically analyzable}}
+      %cond = arith.cmpi eq, %scaled, %zero : index
+      scf.if %cond {
+        // expected-error @below {{could not statically analyze the PipeNet guard}}
+        ttl.wait %recv : !ttl.transfer_handle
+      }
+      ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // `arith.andi` of two unanalyzable predicates: the verifier attaches the
 // "not statically analyzable" note to the source-earliest predicate, so the
 // diagnostic is the same regardless of dataflow visit order.

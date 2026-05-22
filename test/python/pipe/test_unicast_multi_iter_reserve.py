@@ -4,15 +4,13 @@
 
 """True-unicast pipe receive uses the user's reserved DFB block.
 
+Regression test for issue #608.
+
 The sender and receiver pipe callbacks live in the same NCRISC function and
 are predicated by node coordinate. The receiver reserves the destination DFB in
 the pipe callback. Repeating more times than the DFB depth catches sender-side
 synthetic producer operations for the receiver DFB.
 """
-
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
 
 import pytest
 import torch

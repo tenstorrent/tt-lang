@@ -248,6 +248,13 @@ struct PipeEvent {
   Domain domain;
 };
 
+struct ModuleState;
+void checkKnownSubset(Operation *op, const Domain &current,
+                      const Domain &allowed, Operation *unanalyzableOp,
+                      Twine primaryMessage,
+                      ArrayRef<std::pair<int64_t, PipeRole>> roles,
+                      ModuleState &state);
+
 struct ModuleState {
   Domain baseDomain;
   llvm::DenseMap<int64_t, Domain> netSourceDomains;
@@ -353,7 +360,8 @@ struct ModuleState {
     pipeEvents[it->second] = event;
   }
 
-  void recordPipeWaitEvent(WaitOp waitOp, const Domain &domain) {
+  void recordPipeWaitEvent(WaitOp waitOp, const Domain &domain,
+                           Operation *unanalyzableOp) {
     llvm::SmallPtrSet<Value, 16> seen;
     CopyOp copyOp = findDefiningCopy(waitOp.getXf(), seen);
     if (!copyOp) {
@@ -361,6 +369,22 @@ struct ModuleState {
     }
     auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType());
     if (!pipeType) {
+      return;
+    }
+
+    int64_t netId = pipeType.getPipeNetId();
+    std::string name = netName(netId);
+    std::string msg;
+    llvm::raw_string_ostream(msg)
+        << "this `ttl.wait` waits for a pipe receive on launched nodes "
+           "that are not destinations of PipeNet "
+        << name << "; keep the wait under the same `if " << name
+        << ".is_dst(): ...` or `" << name
+        << ".if_dst(...)` guard as the receive copy";
+    checkKnownSubset(waitOp, domain, pipeDestinationDomain(pipeType),
+                     unanalyzableOp, msg, {{netId, PipeRole::Destination}},
+                     *this);
+    if (sawError) {
       return;
     }
 
@@ -970,7 +994,8 @@ public:
           state.recordPipeEvent(copy, before.getDomain());
         })
         .Case<WaitOp>([&](WaitOp wait) {
-          state.recordPipeWaitEvent(wait, before.getDomain());
+          state.recordPipeWaitEvent(wait, before.getDomain(),
+                                    before.getUnanalyzableOp());
         })
         .Case<CBPushOp>([&](CBPushOp push) {
           if (auto cbIndex = getCBIndex(push.getCb())) {
