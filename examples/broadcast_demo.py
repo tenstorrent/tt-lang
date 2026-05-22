@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Runnable under both the compiler and the simulator (via ttlang-sim).
+# Runnable under both the compiler and the simulator (via tt-lang-sim).
 #
 # TTLANG_HARDWARE_CI: xfail-compiler
 

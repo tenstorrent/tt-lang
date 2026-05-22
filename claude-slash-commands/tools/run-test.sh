@@ -2,7 +2,7 @@
 # Run a tt-lang test on a remote machine
 # Usage: ./run-test.sh [-v|--verbose] [--hw] [--emit-runner] [--perf] <test_path> [extra_args...]
 #
-# By default, runs through the functional simulator (ttlang-sim).
+# By default, runs through the functional simulator (tt-lang-sim).
 # Use --hw to run on real hardware instead (for final validation).
 # Output is saved to /tmp/ttlang_test_output.log on the remote (silent mode).
 # Use -v to stream output to terminal AND enable verbose MLIR passes.
@@ -137,7 +137,7 @@ if [ -n "$USE_HW" ]; then
     RUNNER="python3"
     MODE_LABEL="hardware"
 else
-    RUNNER="ttlang-sim"
+    RUNNER="tt-lang-sim"
     MODE_LABEL="simulator"
 fi
 

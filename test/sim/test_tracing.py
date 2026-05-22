@@ -8,7 +8,7 @@ Tests cover:
 - Enabling tracing via SimulatorConfig
 - Correct events emitted for operation, kernel, dfb, and copy categories
 - Inclusive (--trace-events) and exclusive (--no-trace-events) filtering
-- JSONL output via ttlang-sim CLI
+- JSONL output via tt-lang-sim CLI
 - CLI validation (mutual exclusivity, requires --trace)
 """
 

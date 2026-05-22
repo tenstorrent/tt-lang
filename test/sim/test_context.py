@@ -247,17 +247,17 @@ class TestWarningState:
         reset_context()
         ctx = get_context()
 
-        ctx.warnings.broadcast_1d_warnings[("file.py", 10)] = {"core0", "core1"}
-        ctx.warnings.block_print_warnings[("other.py", 20)] = {"core2"}
+        ctx.warnings.broadcast_1d_warnings[("file.py", 10)] = {"node0", "node1"}
+        ctx.warnings.block_print_warnings[("other.py", 20)] = {"node2"}
 
         assert len(ctx.warnings.broadcast_1d_warnings) == 1
         assert len(ctx.warnings.block_print_warnings) == 1
-        assert "core0" in ctx.warnings.broadcast_1d_warnings[("file.py", 10)]
+        assert "node0" in ctx.warnings.broadcast_1d_warnings[("file.py", 10)]
 
     def test_warning_state_is_reset_between_runs(self):
         """``reset_context()`` clears accumulated warning state."""
         reset_context()
-        get_context().warnings.broadcast_1d_warnings[("file.py", 10)] = {"core0"}
+        get_context().warnings.broadcast_1d_warnings[("file.py", 10)] = {"node0"}
 
         reset_context()
         assert len(get_context().warnings.broadcast_1d_warnings) == 0

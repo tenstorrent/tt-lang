@@ -5,7 +5,7 @@
 Simulator context management.
 
 The simulator owns a single ``SimulatorContext`` per process at any time.
-Each simulation run (a ``Program`` invocation, a ``ttlang-sim`` command, or a
+Each simulation run (a ``Program`` invocation, a ``tt-lang-sim`` command, or a
 single pytest test) gets its own fresh context, set up at the start of the
 run.
 
@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .context_types import SimulatorContext
-from .blockstate import ThreadType
+from .blockstate import KernelType
 
 
 # Single per-process simulator context.  Created lazily by ``get_context()``
@@ -40,7 +40,7 @@ def get_context() -> SimulatorContext:
 
     Auto-creation makes simulator APIs usable from any thread/greenlet
     without explicit setup, which keeps ad-hoc scripts and the existing
-    test surface simple.  Production callers (the ``ttlang-sim`` CLI, the
+    test surface simple.  Production callers (the ``tt-lang-sim`` CLI, the
     pytest fixture, and ``Program.__call__``) explicitly install a fresh
     context at the start of each run via ``reset_context()``.
     """
@@ -64,7 +64,7 @@ def reset_context() -> None:
     """Discard the current context and install a fresh one.
 
     Called at the start of every test (via the autouse fixture) and by
-    ``ttlang-sim`` at process startup so each run begins with default
+    ``tt-lang-sim`` at process startup so each run begins with default
     state.  Also releases the ``sys.monitoring`` tool slot used for
     copy-wait injection so the next run can re-register its callbacks.
     """
@@ -82,15 +82,15 @@ def cleanup_run_context() -> None:
     Unlike ``reset_context()``, this preserves persistent session state
     such as ``trace_events`` and ``config`` so that callers can read
     trace output after the run completes; it only zeroes the
-    per-run scratch state (scheduler, thread registry, monitoring hooks,
+    per-run scratch state (scheduler, kernel registry, monitoring hooks,
     auto-wait caches, DFB and L1 counters).
     """
     import sys
 
     ctx = get_context()
     ctx.scheduler = None
-    ctx.current_thread_type = None
-    ctx.thread_registry.clear()
+    ctx.current_kernel_type = None
+    ctx.kernel_registry.clear()
     ctx.kernel_dfb_count = 0
     ctx.kernel_l1_bytes = 0
     ctx.active_hooks.clear()
@@ -126,33 +126,33 @@ def set_dry_run(enabled: bool) -> None:
     get_context().config.dry_run = enabled
 
 
-def get_current_thread_type() -> ThreadType:
+def get_current_kernel_type() -> KernelType:
     """Get the current kernel role (compute vs datamovement).
 
     Returns:
-        ThreadType
+        KernelType
 
     Raises:
         RuntimeError: If kernel role is not set (not within a running compute/DM kernel)
     """
-    current_thread_type = get_context().current_thread_type
-    if current_thread_type is None:
+    current_kernel_type = get_context().current_kernel_type
+    if current_kernel_type is None:
         raise RuntimeError(
             "Compute/DM kernel context is not set. Use this only while a compute or "
-            "datamovement kernel is running, or after calling set_current_thread_type()."
+            "datamovement kernel is running, or after calling set_current_kernel_type()."
         )
-    return current_thread_type
+    return current_kernel_type
 
 
-def set_current_thread_type(thread_type: Optional[ThreadType]) -> None:
-    """Set the current thread type.
+def set_current_kernel_type(kernel_type: Optional[KernelType]) -> None:
+    """Set the current kernel role (compute vs datamovement).
 
     Args:
-        thread_type: The thread type to set, or None to clear the context
+        kernel_type: The kernel role to set, or None to clear the context
     """
-    get_context().current_thread_type = thread_type
+    get_context().current_kernel_type = kernel_type
 
 
-def clear_current_thread_type() -> None:
-    """Clear the current thread type."""
-    get_context().current_thread_type = None
+def clear_current_kernel_type() -> None:
+    """Clear the current kernel role."""
+    get_context().current_kernel_type = None

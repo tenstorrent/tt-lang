@@ -17,7 +17,7 @@ class TestPipeNetPredicates:
     """PipeNet.is_src / is_dst / is_active use ttl.node(); run inside @ttl.operation."""
 
     def test_unicast_src_dst_inactive(self) -> None:
-        """Unicast (0,0) -> (1,0): only those two cores participate on a 2x2 grid."""
+        """Unicast (0,0) -> (1,0): only those two nodes participate on a 2x2 grid."""
         pipe = ttl.Pipe((0, 0), (1, 0))
         net = ttl.PipeNet([pipe])
 
@@ -39,7 +39,7 @@ class TestPipeNetPredicates:
                     assert net.is_dst() is False
                     assert net.is_active() is False
                 else:
-                    raise AssertionError(f"unexpected core {cid}")
+                    raise AssertionError(f"unexpected node {cid}")
 
             @ttl.datamovement()
             def dm0() -> None:
@@ -68,7 +68,7 @@ class TestPipeNetPredicates:
                 elif cid in (3, 4, 5):
                     assert not net.is_src() and not net.is_dst() and not net.is_active()
                 else:
-                    raise AssertionError(f"unexpected core {cid}")
+                    raise AssertionError(f"unexpected node {cid}")
 
             @ttl.datamovement()
             def dm0() -> None:
@@ -104,7 +104,7 @@ class TestPipeNetPredicates:
                 elif cid == 3:
                     assert not net.is_src() and net.is_dst() and net.is_active()
                 else:
-                    raise AssertionError(f"unexpected core {cid}")
+                    raise AssertionError(f"unexpected node {cid}")
 
             @ttl.datamovement()
             def dm0() -> None:
@@ -131,7 +131,7 @@ class TestPipeNetPredicates:
                 elif cid == 1:
                     assert not net.is_src() and net.is_dst()
                 else:
-                    raise AssertionError(f"unexpected core {cid}")
+                    raise AssertionError(f"unexpected node {cid}")
 
             @ttl.datamovement()
             def dm0() -> None:

@@ -210,11 +210,11 @@ def _count_nd_sharded_elements(
 
 def count_local_remote_l1_dram(
     t: Tensor,
-    current_core_linear: Index,
+    current_node_linear: Index,
     *,
     origin_in_parent_elements: Optional[Shape] = None,
 ) -> Tuple[Count, Count, Count]:
-    """Classify access to ``t`` as local L1, remote L1, or DRAM for ``current_core_linear``.
+    """Classify access to ``t`` as local L1, remote L1, or DRAM for ``current_node_linear``.
 
     For sharded tensors, returned counts are **element** totals.  For interleaved
     tensors, the third component is the total number of elements in ``t``
@@ -222,7 +222,7 @@ def count_local_remote_l1_dram(
 
     Args:
         t: Tensor view (often a slice of a larger sharded tensor).
-        current_core_linear: 0-based linear core index.
+        current_node_linear: 0-based linear node index.
         origin_in_parent_elements: Element-coordinate origin of ``t`` within its
             logical parent.  When ``None``, the origin is all zeros (full tensor).
     """
@@ -241,7 +241,7 @@ def count_local_remote_l1_dram(
         if mc.nd_shard_spec is None:
             raise ValueError("ND_SHARDED requires nd_shard_spec")
         return _count_nd_sharded_elements(
-            current_core_linear, mc.nd_shard_spec, origin, eshape
+            current_node_linear, mc.nd_shard_spec, origin, eshape
         )
 
     if mc.shard_spec is None:
@@ -250,27 +250,27 @@ def count_local_remote_l1_dram(
     counter = _SHARD_ELEMENT_COUNTERS.get(mc.strategy)
     if counter is None:
         raise ValueError(f"Unsupported sharding strategy: {mc.strategy}")
-    return counter(current_core_linear, mc.shard_spec, origin, eshape)
+    return counter(current_node_linear, mc.shard_spec, origin, eshape)
 
 
 def try_count_locality(t: Tensor) -> Optional[Tuple[int, int, int]]:
-    """Return (local_l1, remote_l1, dram) element counts for the current kernel core.
+    """Return (local_l1, remote_l1, dram) element counts for the current kernel node.
 
-    Returns ``None`` when called outside a kernel context (no ``_sim_core`` tag on
+    Returns ``None`` when called outside a kernel context (no ``_sim_node`` tag on
     the current greenlet) or when the tensor has no memory config information.
     The returned counts are in **elements**, not tiles.
     """
-    core: Optional[int] = getattr(getcurrent(), "_sim_core", None)
-    if core is None:
+    node: Optional[int] = getattr(getcurrent(), "_sim_node", None)
+    if node is None:
         return None
     origin: Optional[Tuple[int, ...]] = getattr(t, "_element_origin", None)
-    return count_local_remote_l1_dram(t, core, origin_in_parent_elements=origin)
+    return count_local_remote_l1_dram(t, node, origin_in_parent_elements=origin)
 
 
 def count_local_remote_l1_dram_for_getitem(
     parent: Tensor,
     key: TensorKey,
-    core: Index,
+    node: Index,
 ) -> Tuple[Count, Count, Count]:
     """Like :func:`count_local_remote_l1_dram` on ``parent[key]`` with the correct origin.
 
@@ -280,4 +280,4 @@ def count_local_remote_l1_dram_for_getitem(
     normalized = normalize_tensor_key(key)
     child = parent[key]
     origin = shard_origin_from_key(parent, normalized)
-    return count_local_remote_l1_dram(child, core, origin_in_parent_elements=origin)
+    return count_local_remote_l1_dram(child, node, origin_in_parent_elements=origin)

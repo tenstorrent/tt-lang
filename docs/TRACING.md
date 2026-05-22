@@ -274,21 +274,21 @@ Several things to observe:
 
 ### Enabling tracing
 
-Tracing is controlled by a `--trace` flag on `ttlang-sim`:
+Tracing is controlled by a `--trace` flag on `tt-lang-sim`:
 
 ```
-ttlang-sim examples/single_node_matmul.py --trace
+tt-lang-sim examples/single_node_matmul.py --trace
 ```
 
 This enables tracing and writes the collected events to `trace.jsonl` in the current
 directory on exit. An explicit path can be given when a different location is needed:
 
 ```
-ttlang-sim examples/single_node_matmul.py --trace /tmp/matmul_trace.jsonl
+tt-lang-sim examples/single_node_matmul.py --trace /tmp/matmul_trace.jsonl
 ```
 
 Statistics tables (tensor / pipe / DFB summaries) are produced offline: run
-`ttlang-sim-stats` on the trace file after the simulation exits (see
+`tt-lang-sim-stats` on the trace file after the simulation exits (see
 `docs/sphinx/simulator.md`, section **Simulator statistics**). That command is
 bundled with `tt-lang-sim` or full `tt-lang`, not as its own installable package.
 When no `--trace` flag is given, `trace()` is a no-op and adds no overhead.
@@ -301,13 +301,13 @@ which categories are written to the output file.
 **Inclusive filter** -- collect only the listed categories:
 
 ```
-ttlang-sim examples/single_node_matmul.py --trace trace.jsonl --trace-events dfb,copy
+tt-lang-sim examples/single_node_matmul.py --trace trace.jsonl --trace-events dfb,copy
 ```
 
 **Exclusive filter** -- collect everything except the listed categories:
 
 ```
-ttlang-sim examples/single_node_matmul.py --trace trace.jsonl --no-trace-events dfb
+tt-lang-sim examples/single_node_matmul.py --trace trace.jsonl --no-trace-events dfb
 ```
 
 Specifying both `--trace-events` and `--no-trace-events` in the same invocation is

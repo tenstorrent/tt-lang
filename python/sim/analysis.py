@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Automatic copy-wait insertion for simulator thread functions.
+"""Automatic copy-wait insertion for simulator kernel functions.
 
 This module handles `ttl.copy()` calls that are missing the paired
 `tx.wait()` call, mirroring the compiler's `ttl-insert-copy-wait` pass:
@@ -18,13 +18,13 @@ directly inside `DataflowBuffer` at runtime, not here:
 
 * A second `dfb.reserve()` on the same buffer auto-pushes the previous block.
 * A second `dfb.wait()` on the same buffer auto-pops the previous block.
-* When a thread function returns normally, any remaining pending blocks are
+* When a kernel function returns normally, any remaining pending blocks are
   auto-pushed/popped by the `_tagged` wrapper in `program.py`.
 
 The analysis approach:
 
 1. **AST analysis** (`collect_reachable_analyses`) — parse the source of
-   each thread function, recursively discover nested `def` helpers and
+   each kernel function, recursively discover nested `def` helpers and
    module-scope callees referenced by simple name, and for each unwaited
    `tx = ttl.copy(...)` compute an *injection point*: the first line the
    runtime should execute after the copy call.
@@ -36,23 +36,23 @@ The analysis approach:
 
 Helper discovery
 ----------------
-`collect_reachable_analyses` walks the AST of each thread function and
+`collect_reachable_analyses` walks the AST of each kernel function and
 recurses into:
 
-* **Nested `def`s** — functions defined inline inside the thread function
+* **Nested `def`s** — functions defined inline inside the kernel function
   body.  Their code objects are matched via `func.__code__.co_consts`.
 * **Module-scope callees** — functions referenced by a bare name in the
-  thread body and resolved via `func.__globals__`.  Only plain Python
+  kernel body and resolved via `func.__globals__`.  Only plain Python
   functions (those with `__code__` and `__globals__`) are followed.
 
 A shared visited set prevents duplicate analysis when the same helper is
-called from multiple thread functions.
+called from multiple kernel functions.
 
 Design constraints
 ------------------
 * The original source must remain untouched (no AST rewriting, no exec of
   modified code) so that Python debuggers work on the original file.
-* The analysis runs once per thread function and the result is stored in
+* The analysis runs once per kernel function and the result is stored in
   `SimulatorContext.injection_points_cache` by the caller.
 * `sys.monitoring` allows multiple independent tools (debugger, coverage,
   this module) to coexist without any chaining or mutual interference.
@@ -98,8 +98,8 @@ class InjectionPoint:
 
 
 @dataclass
-class ThreadAnalysis:
-    """Result of analysing one thread function.
+class KernelAnalysis:
+    """Result of analysing one kernel function.
 
     ``injection_points`` covers copy-wait injection (Case B: assigned
     ``tx = ttl.copy(...)`` with no explicit ``tx.wait()``).
@@ -123,7 +123,7 @@ class ThreadAnalysis:
 class PatternViolation:
     """One unsupported ``ttl.copy()`` pattern found during analysis.
 
-    The simulator collects all violations across every thread function before
+    The simulator collects all violations across every kernel function before
     reporting them together, so the user sees every problem in a single run.
     """
 
@@ -131,7 +131,7 @@ class PatternViolation:
     lineno: int  # absolute file line number (1-based)
     col: int  # 1-based column number
     message: str
-    func_name: str  # name of the thread function containing the violation
+    func_name: str  # name of the kernel function containing the violation
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +296,7 @@ def _violations_for_func_def(
     ]
 
 
-def validate_thread_function(func: types.FunctionType) -> list[PatternViolation]:
+def validate_kernel_function(func: types.FunctionType) -> list[PatternViolation]:
     """Check that all ``ttl.copy()`` calls use supported patterns.
 
     Returns a list of ``PatternViolation`` objects (one per unsupported call
@@ -362,7 +362,7 @@ def _all_stmts_flat(tree: ast.FunctionDef) -> list[ast.stmt]:
 def _analyze_func_def_node(
     func_def: ast.FunctionDef,
     file_start_line: int,
-) -> ThreadAnalysis:
+) -> KernelAnalysis:
     """Return injection points for a single ``FunctionDef`` AST node.
 
     ``file_start_line`` is the absolute line number of the first line of the
@@ -374,7 +374,7 @@ def _analyze_func_def_node(
     """
     stmts = _all_stmts_flat(func_def)
     if not stmts:
-        return ThreadAnalysis(injection_points=(), bare_copy_linenos=frozenset())
+        return KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
 
     assigned_no_wait, bare_linenos = _find_copy_records(stmts, file_start_line)
     abs_linenos = [file_start_line + s.lineno - 1 for s in stmts]
@@ -388,7 +388,7 @@ def _analyze_func_def_node(
         )
         for var_name, copy_lineno in assigned_no_wait
     )
-    return ThreadAnalysis(
+    return KernelAnalysis(
         injection_points=injection_points,
         bare_copy_linenos=frozenset(bare_linenos),
     )
@@ -419,15 +419,15 @@ def _make_analysis_with_violations(
     file_start_line: int,
     source_file: str,
     func_name: str,
-) -> ThreadAnalysis:
+) -> KernelAnalysis:
     """Analyse ``func_def`` and attach pattern violations.
 
     Combines ``_analyze_func_def_node`` (injection points) with
     ``_violations_for_func_def`` (unsupported pattern checks) into a single
-    ``ThreadAnalysis``.
+    ``KernelAnalysis``.
     """
     base = _analyze_func_def_node(func_def, file_start_line)
-    return ThreadAnalysis(
+    return KernelAnalysis(
         injection_points=base.injection_points,
         bare_copy_linenos=base.bare_copy_linenos,
         violations=tuple(
@@ -442,7 +442,7 @@ def _collect_reachable_from_parsed(
     file_start_line: int,
     source_file: str,
     _visited: set[int],
-) -> dict[types.CodeType, ThreadAnalysis]:
+) -> dict[types.CodeType, KernelAnalysis]:
     """Collect analyses for ``func`` and all reachable callees.
 
     Called by ``collect_reachable_analyses`` with an already-parsed AST so
@@ -452,7 +452,7 @@ def _collect_reachable_from_parsed(
     module-scope callees referenced by simple name (via ``func.__globals__``).
     """
     code = func.__code__
-    result: dict[types.CodeType, ThreadAnalysis] = {}
+    result: dict[types.CodeType, KernelAnalysis] = {}
 
     result[code] = _make_analysis_with_violations(
         func_def, file_start_line, source_file, func.__name__
@@ -483,17 +483,17 @@ def _collect_reachable_from_parsed(
     return result
 
 
-def analyze_thread_function(func: types.FunctionType) -> ThreadAnalysis:
+def analyze_kernel_function(func: types.FunctionType) -> KernelAnalysis:
     """Analyse ``func`` and return injection points for missing ``tx.wait()`` calls.
 
-    Returns an empty ``ThreadAnalysis`` if:
+    Returns an empty ``KernelAnalysis`` if:
     * The source is unavailable (built-in, dynamically generated, etc.).
     * All ``ttl.copy()`` calls already have explicit ``tx.wait()`` calls.
     * No ``ttl.copy()`` calls are found.
     """
     parsed = _parse_func_def(func)
     if parsed is None:
-        return ThreadAnalysis(injection_points=(), bare_copy_linenos=frozenset())
+        return KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
     func_def, file_start_line, source_file = parsed
 
     return _make_analysis_with_violations(
@@ -504,12 +504,12 @@ def analyze_thread_function(func: types.FunctionType) -> ThreadAnalysis:
 def collect_reachable_analyses(
     func: types.FunctionType,
     _visited: set[int] | None = None,
-) -> dict[types.CodeType, ThreadAnalysis]:
-    """Return ``ThreadAnalysis`` for ``func`` and all reachable callees.
+) -> dict[types.CodeType, KernelAnalysis]:
+    """Return ``KernelAnalysis`` for ``func`` and all reachable callees.
 
     Discovers and analyses:
 
-    * ``func`` itself (the top-level thread function, including violations).
+    * ``func`` itself (the top-level kernel function, including violations).
     * Nested ``def``s at any depth inside ``func``'s body — code objects are
       located via a full recursive walk of ``func.__code__.co_consts``.
     * Module-scope callees referenced by a simple name anywhere in the body —
@@ -523,8 +523,8 @@ def collect_reachable_analyses(
     ``_visited`` is a set of ``id(code)`` values already processed, used to
     prevent infinite recursion through mutually-recursive helpers.  Omit it
     when calling for a single function.  Pass a shared set across multiple
-    top-level calls (e.g. across the three thread functions) so that a callee
-    shared by more than one thread is analysed only once.
+    top-level calls (e.g. across the three kernel functions) so that a callee
+    shared by more than one kernel is analysed only once.
     """
     if _visited is None:
         _visited = set()
@@ -654,12 +654,12 @@ def _return_callback(
 
 
 def install_copy_wait_hooks(
-    injection_map: dict[types.CodeType, ThreadAnalysis],
+    injection_map: dict[types.CodeType, KernelAnalysis],
 ) -> None:
     """Register copy-wait injection hooks for the current simulation run.
 
-    ``injection_map`` maps each thread function's code object to its
-    ``ThreadAnalysis``.  Copy-wait injection points (Case B: assigned
+    ``injection_map`` maps each kernel function's code object to its
+    ``KernelAnalysis``.  Copy-wait injection points (Case B: assigned
     ``tx = ttl.copy(...)`` with no ``tx.wait()``) are stored in
     ``get_context().active_hooks``; bare-copy line numbers (Case A) are added
     to ``get_context().auto_wait_copy_lines``.
@@ -687,7 +687,7 @@ def install_copy_wait_hooks(
 
     ctx = get_context()
 
-    # Populate bare-copy line set (Case A) for all thread functions.
+    # Populate bare-copy line set (Case A) for all kernel functions.
     for code, analysis in injection_map.items():
         for lineno in analysis.bare_copy_linenos:
             ctx.auto_wait_copy_lines.add((code, lineno))
@@ -697,7 +697,7 @@ def install_copy_wait_hooks(
 
     # Claim the tool ID and register callbacks.  reset_context() frees the
     # slot between runs, so this always starts from a clean state.
-    sys.monitoring.use_tool_id(_TOOL_ID, "ttlang-sim")
+    sys.monitoring.use_tool_id(_TOOL_ID, "tt-lang-sim")
     sys.monitoring.register_callback(
         _TOOL_ID, sys.monitoring.events.LINE, _line_callback
     )
