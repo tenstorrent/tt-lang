@@ -345,7 +345,7 @@ y = ttnn.to_torch(y, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 ```
 
 The TT-Lang operation runs identically on each device in SPMD mode — `grid="full"`
-applies independently per device, filling the full per-device grid.
+applies independently per device, filling the entire per-device grid.
 
 ## Step 6 — Multi-Device, Shard K
 
