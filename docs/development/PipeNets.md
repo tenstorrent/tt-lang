@@ -571,7 +571,7 @@ runtime-observable.
 | 11b| Overlapping mcast end-to-end: two senders share dst range (issue #505 base) | X | X |     |
 | 11c| Overlapping mcast end-to-end: multi-tile blocks, partial overlap | X | X |     |
 | 12 | Scatter on subgrid (work < launch, single mcast)          |  X  |  X  |     |
-| 12a| Scatter under grid="auto" (spec scatter example)          |  X  |  X  |     |
+| 12a| Scatter under grid="full" (spec scatter example)          |  X  |  X  |     |
 | 13 | Per-row scatter (multi-pipe disjoint dst, 2D active set)  |  X  |  X  |     |
 | 14 | Cross-PipeNet destination overlap permitted               |  X  |  X  |     |
 | 15 | Loopback mcast (src in dst range)                         |  X  |  X  |     |
@@ -768,7 +768,7 @@ pair to avoid double-advancing.
   Frontend surface: `ttl.Pipe(src=ttl.runtime_arg("M"), ...)` or a
   similar SSA-typed coordinate, with the `OperationPipeNets`
   data structure carrying static bounds plus a record of which axes
-  are runtime-resolved. `grid="auto"` shrinks to the static bounding
+  are runtime-resolved. `grid="full"` shrinks to the static bounding
   box rather than the resolved work extent. The `@ttl.operation`
   caching key includes the bounds (not the runtime values), so a
   single compiled kernel covers every invocation that fits the

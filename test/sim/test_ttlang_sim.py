@@ -24,7 +24,7 @@ from sim.typedefs import Shape
 
 
 class TestDefaultGrid:
-    """Test default grid configuration for grid='auto'."""
+    """Test default grid configuration for grid='full'."""
 
     def test_get_default_grid_initial_value(self):
         """Test that get_default_grid returns initial default of (8, 8)."""
@@ -51,7 +51,7 @@ class TestDefaultGrid:
             set_default_grid(original)
 
     def test_kernel_full_grid_uses_default(self):
-        """Test that kernel with grid='auto' uses the configured default grid."""
+        """Test that kernel with grid='full' uses the configured default grid."""
         original = get_default_grid()
         try:
             # Set custom default
@@ -130,7 +130,7 @@ import ttl
 import ttnn
 import torch
 
-@ttl.operation(grid='auto')
+@ttl.operation(grid='full')
 def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():

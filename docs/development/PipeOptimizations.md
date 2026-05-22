@@ -869,7 +869,7 @@ lowering as the fallback when no rewrite matches.
 The pattern matching assumes Pipe coordinates are
 compile-time-known integers, which is what `ttl.create_pipe`'s
 `I64Attr` operands carry today. tt-lang's frontend resolves
-`grid="auto"` and `ttl.grid_size(dims=2)` to concrete integers in
+`grid="full"` and `ttl.grid_size(dims=2)` to concrete integers in
 `_resolve_grid` (`python/ttl/ttl_api.py:436-444`) before MLIR is
 emitted, so a kernel using `for x in range(grid_x)` to construct
 pipes materialises one Pipe per `x` with constant attributes. If

@@ -67,7 +67,7 @@ def nop_fixed_grid(a):
 
 def test_full_grid_host_tensor():
     """
-    grid='auto' with a host tensor should produce a clear error, not an AttributeError on NoneType.
+    grid='full' with a host tensor should produce a clear error, not an AttributeError on NoneType.
     """
     a_host = ttnn.from_torch(
         torch.zeros(32, 32, dtype=torch.bfloat16),
@@ -95,7 +95,7 @@ def test_fixed_grid_host_tensor():
 
 def test_full_grid_no_ttnn_tensors():
     """
-    grid='auto' with no ttnn tensors should report that none were provided.
+    grid='full' with no ttnn tensors should report that none were provided.
     The fixed-grid path hits _require_device at __call__ time (post-compile),
     so it can't be reached without a valid ttnn tensor to compile against.
     """

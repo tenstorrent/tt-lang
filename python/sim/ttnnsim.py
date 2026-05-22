@@ -967,7 +967,7 @@ class Device:
         """Return the compute grid size for the device.
 
         In the simulator, returns a fixed 8x8 grid to match the default
-        'auto' grid size used by kernels.
+        'full' grid size used by kernels.
 
         Returns:
             CoreCoord: Grid size (x=8, y=8)

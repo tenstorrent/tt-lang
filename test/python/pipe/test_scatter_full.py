@@ -69,7 +69,7 @@ def scatter_full(inp, out):
 
 
 def test_scatter_full(device):
-    """Scatter with grid='auto': row 0 multicasts down each column."""
+    """Scatter with grid='full': row 0 multicasts down each column."""
     grid = device.compute_with_storage_grid_size()
     grid_x, grid_y = grid.x, grid.y
 

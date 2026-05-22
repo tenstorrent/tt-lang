@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test that grid='auto' resolves to device compute grid dimensions.
+Test that grid='full' resolves to device compute grid dimensions.
 """
 
 import pytest
@@ -45,7 +45,7 @@ def auto_grid_kernel(a, out):
 
 
 def test_grid_full(device):
-    """Verify grid='auto' resolves to full device compute grid."""
+    """Verify grid='full' resolves to full device compute grid."""
     device_grid = device.compute_with_storage_grid_size()
     expected_cols, expected_rows = device_grid.x, device_grid.y
 
