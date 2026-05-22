@@ -1370,10 +1370,10 @@ def matmul_read():
 | Built-in binary math operators: `+`, `-`, `*`, `/` | 0.1.7 | 0.1.7 |
 | Built-in binary math operators: `@` | 0.1.7 | 0.1.8 |
 | Built-in binary math operators: `%`, `//`, `^`, | 0.1.7 | N/S |
-| `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip` | 0.1.7 | 0.1.7 |
-| `ttl.math` unary math functions: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` | 0.1.7 | 0.1.8 |
-| `ttl.math` unary math functions: `expm1`, `exp2`, `ceil`, `sign`, `gelu`, `silu`, `hardsigmoid`, `square`, `softsign`, `signbit`, `frac`, `trunc` | 0.1.7 | 1.0.0 |
-| `ttl.math` unary math functions: `logp1`, `atanh`, `asinh`, `acosh`, `selu`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold` | 0.1.7 | N/S |
+| `ttl.math` unary math functions:<br>`exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip` | 0.1.7 | 0.1.7 |
+| `ttl.math` unary math functions:<br>`sin`, `cos`, `tan`, `asin`, `acos`, `atan` | 0.1.7 | 0.1.8 |
+| `ttl.math` unary math functions:<br>`expm1`, `exp2`, `ceil`, `sign`, `gelu`, `silu`, `hardsigmoid`, `square`, `softsign`<br>`signbit`, `frac`, `trunc` | 0.1.7 | 1.0.0 |
+| `ttl.math` unary math functions:<br>`logp1`, `atanh`, `asinh`, `acosh`, `selu`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`<br>`elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold` | 0.1.7 | N/S |
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
 | `ttl.block` mask functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
 | `ttl.block.where` | 0.1.7 | N/S |
