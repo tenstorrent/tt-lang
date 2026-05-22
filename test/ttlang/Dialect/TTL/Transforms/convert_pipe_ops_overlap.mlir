@@ -12,7 +12,7 @@
 // CHECK: memref.store {{.*}}, %[[CTR]]
 // CHECK: %[[DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 
-// First Pipe->DFB receive:
+// First Pipe->DFB receive publishes slot 0 at the raw DFB write pointer.
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.store_to_l1(%[[WP1]]
@@ -25,7 +25,8 @@
 // CHECK: ttkernel.experimental::semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 
-// Second Pipe->CB receive uses the SAME counter:
+// Second Pipe->DFB receive uses the same counter. The previous push releases
+// the first slot, so the raw DFB write pointer is correct for the next post.
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.store_to_l1(%[[WP2]]
@@ -98,34 +99,34 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[POSTED_ADDR1:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
 // CHECK: ttkernel.store_to_l1(%[[POSTED_ADDR1]]
-// CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
-// CHECK: %[[POSTED_ADDR2:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
+// CHECK: %[[POSTED_BASE2:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
+// CHECK: %[[POSTED_ADDR2:.*]] = arith.addi %[[POSTED_BASE2]]
 // CHECK: ttkernel.store_to_l1(%[[POSTED_ADDR2]]
 // CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[LOADED_ADDR1:.*]] = ttkernel.load_from_l1
-// CHECK: %[[NOC_ADDR1:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR1]])
-// CHECK-NEXT: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], %[[NOC_ADDR1]]
+// CHECK: %[[MCAST_ADDR1:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR1]])
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], %[[MCAST_ADDR1]]
 // CHECK: %[[SRC_ADDR2:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[LOADED_ADDR2:.*]] = ttkernel.load_from_l1
-// CHECK: %[[NOC_ADDR2:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR2]])
-// CHECK-NEXT: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], %[[NOC_ADDR2]]
+// CHECK: %[[MCAST_ADDR2:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR2]])
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], %[[MCAST_ADDR2]]
 func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
-  %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %recv_group = ttl.cb_reserve %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  %recv1 = tensor.extract_slice %recv_group[0, 0] [1, 1] [1, 1] : tensor<1x2x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
   %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  %recv2 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %recv2 = tensor.extract_slice %recv_group[0, 1] [1, 1] [1, 1] : tensor<1x2x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
   %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   %send1 = ttl.copy %src_cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send1 : !ttl.transfer_handle<write>
   %send2 = ttl.copy %src_cb, %p2 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send2 : !ttl.transfer_handle<write>
   ttl.wait %post1 : !ttl.transfer_handle
-  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   ttl.wait %post2 : !ttl.transfer_handle
-  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  ttl.cb_push %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   func.return
 }
 
@@ -142,45 +143,44 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[POSTED_ADDR1:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
 // CHECK: ttkernel.store_to_l1(%[[POSTED_ADDR1]]
-// CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
-// CHECK: %[[POSTED_ADDR2:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
+// CHECK: %[[POSTED_BASE2:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
+// CHECK: %[[POSTED_ADDR2:.*]] = arith.addi %[[POSTED_BASE2]]
 // CHECK: ttkernel.store_to_l1(%[[POSTED_ADDR2]]
 // CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[LOADED_ADDR1:.*]] = ttkernel.load_from_l1
-// CHECK: %[[NOC_ADDR1:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR1]])
-// CHECK-NEXT: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], %[[NOC_ADDR1]]
+// CHECK: %[[MCAST_ADDR1:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR1]])
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], %[[MCAST_ADDR1]]
 // CHECK: %[[SRC_ADDR2:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[LOADED_ADDR2:.*]] = ttkernel.load_from_l1
-// CHECK: %[[NOC_ADDR2:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR2]])
-// CHECK-NEXT: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], %[[NOC_ADDR2]]
+// CHECK: %[[MCAST_ADDR2:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR2]])
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], %[[MCAST_ADDR2]]
 func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
-  %recv2 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %recv_group = ttl.cb_reserve %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  %recv1 = tensor.extract_slice %recv_group[0, 0] [1, 1] [1, 1] : tensor<1x2x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
   %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %recv2 = tensor.extract_slice %recv_group[0, 1] [1, 1] [1, 1] : tensor<1x2x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   // Reverse program order: p2's send runs before p1's send.
   %send2 = ttl.copy %src_cb, %p2 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send2 : !ttl.transfer_handle<write>
   %send1 = ttl.copy %src_cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send1 : !ttl.transfer_handle<write>
-  ttl.wait %post2 : !ttl.transfer_handle
-  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   ttl.wait %post1 : !ttl.transfer_handle
-  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  ttl.wait %post2 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   func.return
 }
 
 // -----
 
 //===----------------------------------------------------------------------===//
-// Loopback sender: data path uses noc_async_write_multicast_loopback_src
-// (sender included). The signal path is split: noc_semaphore_inc_multicast
-// to remote receivers + local noc_semaphore_inc on the sender's own
-// recvSem (no inc_multicast loopback variant in tt-metal).
+// Loopback sender: payload writes use multicast with the receiver-published
+// common destination address. Signaling splits into noc_semaphore_inc_multicast
+// to remote receivers + local noc_semaphore_inc on the sender's own recvSem.
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @loopback_self_inc

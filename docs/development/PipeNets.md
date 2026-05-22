@@ -289,11 +289,12 @@ multicast. The proof tracks four points in the lowered IR:
    publish destination addresses, performs its own NOC write, then
    increments the receiver completion semaphore. No sender reads a
    semaphore signaled by another sender.
-3. Sender/receiver semaphores are per-PipeNet, not per-pipe.
-   Pipe lowering encodes `senderSem = pipeNetId * 2` and
-   `recvSem = pipeNetId * 2 + 1`. Two distinct pipes within one PipeNet
-   share index numbers, but each core has its own L1 word at that
-   index; no cross-core wait gets routed through them.
+3. Receiver completion semaphores are per-PipeNet. Sender-ready
+   semaphores and mailbox words are per pipe on the source core, so two
+   distinct pipes from one source can be posted and sent independently.
+   Receive-post staging words are per NOC data-movement thread, so
+   concurrent receiver posts from the two DM kernels do not overwrite
+   each other's mailbox payload before the remote write completes.
 4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
    for a count of total arrivals, not for specific senders. Senders
    bump the counter in any order; the receiver only cares about the
@@ -384,13 +385,13 @@ closure, and module-scope PipeNets through `__globals__`. See the
 the enclosing-scope capture rule.
 
 Operation-local ids keep `ttl.create_pipe` ids stable across
-invocations and keep TTKernel semaphore allocation
-(`pipeNetId * 2` / `pipeNetId * 2 + 1`) deterministic. The
-`OperationPipeNets` instance is built and validated before MLIR
-emission on the compiler side and before `Program(...)` runs on the
-simulator side. `PipeNet.__init__` also builds a one-PipeNet
-`OperationPipeNets` and runs the same `validate()` synchronously, so
-malformed PipeNets error at the construction source location.
+invocations, anchor receiver completion semaphore indices, and keep
+the sender-ready/mailbox layout deterministic. The `OperationPipeNets`
+instance is built and validated before MLIR emission on the compiler
+side and before `Program(...)` runs on the simulator side.
+`PipeNet.__init__` also builds a one-PipeNet `OperationPipeNets` and
+runs the same `validate()` synchronously, so malformed PipeNets error
+at the construction source location.
 
 ## Pass placement
 
@@ -827,7 +828,11 @@ as the receive post. It reads the receiver DFB write pointer for the
 user-reserved block, publishes that address to the sender-visible
 mailbox, and increments the sender ready semaphore. This operation does
 not create or reserve any DFB block; it uses the block already reserved
-by the user.
+by the user. The current implementation uses semaphore L1 words as the
+mailbox storage and uses one local staging word per NOC data-movement
+thread before `remote_sram_write_u32`. Planned SRAM scratch lowering can
+replace those semaphore-backed mailbox words with explicit scratch
+allocation when that feature exists.
 
 `PipeLowering.cpp::lowerCBToPipe` lowers `ttl.copy(src_blk, pipe)` as
 the send. The sender waits until all destinations have published their
@@ -969,8 +974,8 @@ has been posted that can complete it.
 
   Out of scope for parametric PipeNets: per-iteration dynamic routing
   decided inside a kernel function. The TTKernel multicast handshake
-  allocates one semaphore pair per PipeNet at kernel compile time
-  (`pipeNetId * 2` / `pipeNetId * 2 + 1`) and reconfiguring an mcast
-  group mid-kernel is not a tt-metal-supported operation; data-
+  allocates receiver completion semaphores per PipeNet and sender-ready
+  / mailbox words per pipe at kernel compile time. Reconfiguring an
+  mcast group mid-kernel is not a tt-metal-supported operation; data-
   dependent routing would be expressed as point-to-point unicast with
   runtime destination, not as a PipeNet.

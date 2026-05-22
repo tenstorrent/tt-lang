@@ -110,6 +110,24 @@ class OperationPipeNets:
             _validate_no_mixed_kinds(net.pipes)
         _validate_consistent_coord_rank(self.pipe_nets)
 
+    def num_pipe_sync_semaphores(self, num_noc_threads: int = 1) -> int:
+        """Return the total semaphore count required by pipe lowering."""
+        if not self.pipe_nets:
+            return 0
+
+        first_source_local_sem_id = len(self.pipe_nets) + max(1, num_noc_threads)
+        next_sem_id_by_source = {}
+        num_semaphores = first_source_local_sem_id
+        for net in self.pipe_nets:
+            for pipe in net.pipes:
+                next_sem_id = next_sem_id_by_source.setdefault(
+                    pipe.src.coords, first_source_local_sem_id
+                )
+                next_sem_id += 2
+                next_sem_id_by_source[pipe.src.coords] = next_sem_id
+                num_semaphores = max(num_semaphores, next_sem_id)
+        return num_semaphores
+
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
     """Row-major linearization matching sim's flatten_node_index.

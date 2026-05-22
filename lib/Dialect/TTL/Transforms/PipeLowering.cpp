@@ -18,7 +18,11 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+
+#include <algorithm>
+#include <tuple>
 
 namespace mlir::tt::ttl {
 
@@ -63,19 +67,32 @@ static int64_t getNocIndex(Operation *op) {
   return attr.getInt();
 }
 
-// Sender/receiver semaphore-index encoding is declared in PipeLowering.h
-// so kernel-side and host-side code share the same rule. Local wrappers
-// keep the call sites compact when the caller already has a PipeType.
-static int64_t getSenderSemIdx(PipeType pipeType) {
-  return getSenderSemIdx(pipeType.getPipeNetId());
-}
-
 static int64_t getReceiverSemIdx(PipeType pipeType) {
   return getReceiverSemIdx(pipeType.getPipeNetId());
 }
 
-static int64_t getMailboxSemIdx(PipeType pipeType) {
-  return getMailboxSemIdx(pipeType.getPipeNetId());
+static PipeKey getPipeKey(PipeType pipeType) {
+  return {pipeType.getSrcX(),      pipeType.getSrcY(),
+          pipeType.getDstStartX(), pipeType.getDstStartY(),
+          pipeType.getDstEndX(),   pipeType.getDstEndY(),
+          pipeType.getPipeNetId()};
+}
+
+static PipeKey getPipeSourceKey(PipeType pipeType) {
+  return {pipeType.getSrcX(), pipeType.getSrcY(), 0, 0, 0, 0, 0};
+}
+
+static FailureOr<PipeChannelLayout>
+lookupPipeChannelLayout(Operation *op, PipeType pipeType,
+                        const PipeRuntimeLayout *pipeRuntimeLayout) {
+  if (!pipeRuntimeLayout) {
+    return op->emitError("missing pipe runtime layout");
+  }
+  auto it = pipeRuntimeLayout->channels.find(getPipeKey(pipeType));
+  if (it == pipeRuntimeLayout->channels.end()) {
+    return op->emitError("pipe missing from runtime layout");
+  }
+  return it->second;
 }
 
 //===----------------------------------------------------------------------===//
@@ -129,9 +146,15 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
 /// destination address, then signal arrival.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,
+                            const PipeRuntimeLayout *pipeRuntimeLayout,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  FailureOr<PipeChannelLayout> pipeChannelLayout =
+      lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
+  if (failed(pipeChannelLayout)) {
+    return failure();
+  }
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
@@ -170,8 +193,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   }
 
   int64_t expectedSignals = pipeType.isUnicast() ? 1 : numDests;
-  auto senderSemIdx =
-      arith::ConstantIndexOp::create(rewriter, loc, getSenderSemIdx(pipeType));
+  auto senderSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, pipeChannelLayout->senderReadySemIdx);
   auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
   auto senderSemPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
@@ -227,14 +250,15 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
-  auto mailboxSemIdx =
-      arith::ConstantIndexOp::create(rewriter, loc, getMailboxSemIdx(pipeType));
+  auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                           rewriter.getI32IntegerAttr(0));
+
+  auto mailboxSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, pipeChannelLayout->mailboxSemIdxBase);
   auto mailboxSemAddr =
       ttk::GetSemaphoreOp::create(rewriter, loc, mailboxSemIdx);
   auto mailboxPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxSemAddr);
-  auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                           rewriter.getI32IntegerAttr(0));
   Value dstAddr =
       ttk::LoadFromL1Op::create(rewriter, loc, i32Ty, mailboxPtr, zeroI32);
 
@@ -327,9 +351,22 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 }
 
 LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
+                                const PipeRuntimeLayout *pipeRuntimeLayout,
                                 ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  FailureOr<PipeChannelLayout> pipeChannelLayout =
+      lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
+  if (failed(pipeChannelLayout)) {
+    return failure();
+  }
+  int64_t nocIdx = getNocIndex(op);
+  if (nocIdx >= pipeRuntimeLayout->numMailboxStagingSems) {
+    return op.emitError() << "pipe receive post uses NOC thread index "
+                          << nocIdx << ", but pipe runtime layout has only "
+                          << pipeRuntimeLayout->numMailboxStagingSems
+                          << " mailbox staging semaphores";
+  }
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -345,7 +382,17 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
     return rewriter.notifyMatchFailure(op, "failed to convert receiver DFB");
   }
 
-  int64_t nocIdx = getNocIndex(op);
+  auto receiverCBType = getTTLCBType(receiverCB);
+  if (!receiverCBType) {
+    return rewriter.notifyMatchFailure(op, "failed to get receiver DFB type");
+  }
+  auto tileType =
+      llvm::dyn_cast<ttcore::TileType>(receiverCBType.getElementType());
+  if (!tileType) {
+    return rewriter.notifyMatchFailure(
+        op, "receiver DFB element type must be tile");
+  }
+
   Value nocVal;
   if (nocIdx > 0) {
     nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
@@ -354,16 +401,39 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
 
   auto receiverWritePtr =
       ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
-  auto mailboxSemIdx =
-      arith::ConstantIndexOp::create(rewriter, loc, getMailboxSemIdx(pipeType));
-  auto mailboxSemAddr =
-      ttk::GetSemaphoreOp::create(rewriter, loc, mailboxSemIdx);
-  auto mailboxPtr =
-      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxSemAddr);
+  Value publishedAddress = receiverWritePtr;
+  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value localTileIndex = zeroIdx;
+  Value globalTileIndex =
+      utils::addSliceOffset(dst, localTileIndex, rewriter, loc);
+  if (globalTileIndex != localTileIndex) {
+    auto tileOffsetI32 =
+        arith::IndexCastOp::create(rewriter, loc, i32Ty, globalTileIndex);
+    auto pageSizeBytes = arith::ConstantOp::create(
+        rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr(tileType.getSizeBytes()));
+    auto byteOffset =
+        arith::MulIOp::create(rewriter, loc, tileOffsetI32, pageSizeBytes);
+    publishedAddress =
+        arith::AddIOp::create(rewriter, loc, receiverWritePtr, byteOffset);
+  }
+
+  // Multicast payload writes require one common destination address for the
+  // rectangle, so all receivers of a pipe publish to its source-local mailbox.
+  Value targetMailboxSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, pipeChannelLayout->mailboxSemIdxBase);
+  auto mailboxStagingSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, pipeRuntimeLayout->mailboxStagingSemIdxBase + nocIdx);
+  auto mailboxStagingSem =
+      ttk::GetSemaphoreOp::create(rewriter, loc, mailboxStagingSemIdx);
+  auto mailboxStagingPtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxStagingSem);
   auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
                                            rewriter.getI32IntegerAttr(0));
-  ttk::StoreToL1Op::create(rewriter, loc, receiverWritePtr, mailboxPtr,
+  ttk::StoreToL1Op::create(rewriter, loc, publishedAddress, mailboxStagingPtr,
                            zeroI32);
+  auto targetMailboxSem =
+      ttk::GetSemaphoreOp::create(rewriter, loc, targetMailboxSemIdx);
 
   auto srcXLogical =
       arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
@@ -374,13 +444,13 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, srcYLogical);
   auto senderMailboxNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, mailboxSemAddr);
-  ttk::RemoteSramWriteU32Op::create(rewriter, loc, mailboxSemAddr,
+      rewriter, loc, srcXTranslated, srcYTranslated, targetMailboxSem);
+  ttk::RemoteSramWriteU32Op::create(rewriter, loc, mailboxStagingSem,
                                     senderMailboxNocAddr.getResult(), nocVal);
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
-  auto senderSemIdx =
-      arith::ConstantIndexOp::create(rewriter, loc, getSenderSemIdx(pipeType));
+  auto senderSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, pipeChannelLayout->senderReadySemIdx);
   auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
   auto senderSemNocAddr = ttk::GetNocAddrOp::create(
       rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
@@ -689,6 +759,61 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
       }
     }
   });
+}
+
+void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
+                            PipeRuntimeLayout &layout) {
+  int64_t numPipeNets = 0;
+  for (const auto &[pipeNetId, pipes] : index) {
+    if (!pipes.empty()) {
+      numPipeNets = std::max(numPipeNets, pipeNetId + 1);
+    }
+  }
+
+  int64_t numMailboxStagingSems = 1;
+  mod.walk([&](func::FuncOp func) {
+    auto nocIndexAttr = func->getAttrOfType<IntegerAttr>("ttl.noc_index");
+    if (nocIndexAttr) {
+      numMailboxStagingSems =
+          std::max(numMailboxStagingSems, nocIndexAttr.getInt() + 1);
+    }
+  });
+
+  layout.mailboxStagingSemIdxBase = numPipeNets;
+  layout.numMailboxStagingSems = numMailboxStagingSems;
+  int64_t firstSourceLocalSemIdx = numPipeNets + numMailboxStagingSems;
+  llvm::DenseMap<PipeKey, int64_t> nextSemaphoreIdxBySource;
+  SmallVector<int64_t> sortedPipeNetIds;
+  sortedPipeNetIds.reserve(index.size());
+  for (const auto &[pipeNetId, pipes] : index) {
+    sortedPipeNetIds.push_back(pipeNetId);
+  }
+  llvm::sort(sortedPipeNetIds);
+
+  for (int64_t pipeNetId : sortedPipeNetIds) {
+    auto pipeNetIt = index.find(pipeNetId);
+    assert(pipeNetIt != index.end());
+    SmallVector<PipeType> pipes = pipeNetIt->second;
+    llvm::sort(pipes, [](PipeType lhs, PipeType rhs) {
+      return std::make_tuple(lhs.getSrcX(), lhs.getSrcY(), lhs.getDstStartX(),
+                             lhs.getDstStartY(), lhs.getDstEndX(),
+                             lhs.getDstEndY()) <
+             std::make_tuple(rhs.getSrcX(), rhs.getSrcY(), rhs.getDstStartX(),
+                             rhs.getDstStartY(), rhs.getDstEndX(),
+                             rhs.getDstEndY());
+    });
+
+    for (PipeType pipeType : pipes) {
+      PipeKey sourceKey = getPipeSourceKey(pipeType);
+      int64_t &nextSemaphoreIdx = nextSemaphoreIdxBySource[sourceKey];
+      if (nextSemaphoreIdx == 0) {
+        nextSemaphoreIdx = firstSourceLocalSemIdx;
+      }
+      PipeChannelLayout channelLayout{nextSemaphoreIdx++, nextSemaphoreIdx};
+      nextSemaphoreIdx += 1;
+      layout.channels[getPipeKey(pipeType)] = channelLayout;
+    }
+  }
 }
 
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,

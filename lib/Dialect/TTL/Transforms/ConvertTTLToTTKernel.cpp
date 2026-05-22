@@ -847,7 +847,10 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 };
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
-  using OpConversionPattern::OpConversionPattern;
+  CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
+               const PipeRuntimeLayout *pipeRuntimeLayout)
+      : OpConversionPattern(typeConverter, context),
+        pipeRuntimeLayout(pipeRuntimeLayout) {}
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -884,7 +887,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
                domInfo.dominates(user, op);
       });
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), isConsumerCB,
-                           rewriter);
+                           pipeRuntimeLayout, rewriter);
     }
     if (srcIsPipe && dstIsDFBAttachedTensor) {
       return op.emitError("pipe receive copy survived pipe receive expansion");
@@ -923,16 +926,26 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
                              NocCopyDirection::Write, rewriter, *typeConverter);
   }
+
+private:
+  const PipeRuntimeLayout *pipeRuntimeLayout;
 };
 
 struct PipeRecvPostLowering : OpConversionPattern<PipeRecvPostOp> {
-  using OpConversionPattern::OpConversionPattern;
+  PipeRecvPostLowering(const TypeConverter &typeConverter, MLIRContext *context,
+                       const PipeRuntimeLayout *pipeRuntimeLayout)
+      : OpConversionPattern(typeConverter, context),
+        pipeRuntimeLayout(pipeRuntimeLayout) {}
 
   LogicalResult
   matchAndRewrite(PipeRecvPostOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerPipeRecvPost(op, adaptor.getPipe(), op.getDst(), rewriter);
+    return lowerPipeRecvPost(op, adaptor.getPipe(), op.getDst(),
+                             pipeRuntimeLayout, rewriter);
   }
+
+private:
+  const PipeRuntimeLayout *pipeRuntimeLayout;
 };
 
 struct PipeRecvWaitLowering : OpConversionPattern<PipeRecvWaitOp> {
@@ -1139,10 +1152,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // don't walk the module per match.
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
+  PipeRuntimeLayout pipeRuntimeLayout;
+  buildPipeRuntimeLayout(mod, pipeNetIndex, pipeRuntimeLayout);
 
   RewritePatternSet patterns(&ctx);
-  patterns.add<CopyLowering>(typeConverter, &ctx);
-  patterns.add<PipeRecvPostLowering>(typeConverter, &ctx);
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeRuntimeLayout);
+  patterns.add<PipeRecvPostLowering>(typeConverter, &ctx, &pipeRuntimeLayout);
   patterns.add<PipeRecvWaitLowering>(typeConverter, &ctx, &pipeNetCounters);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
