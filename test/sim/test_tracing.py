@@ -21,9 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from python.sim import ttl, ttnn
-from python.sim.context import get_context, reset_context
-from python.sim.trace import ALL_CATEGORIES
+from sim import ttl, ttnn
+from sim.context import get_context, reset_context
+from sim.trace import ALL_CATEGORIES
 
 
 def _run_simple_kernel_with_tracing(

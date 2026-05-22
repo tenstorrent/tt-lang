@@ -127,6 +127,10 @@ def test_no_mutable_module_globals():
             "python.sim.ttnnsim",
             "_float32_promotion_enabled",
         ),  # Mutable flag toggled by set_disable_float32_promotion()
+        (
+            "python.sim.context",
+            "_current_context",
+        ),  # Single per-process SimulatorContext, swapped by reset_context() / set_context() at the start of each run
     }
 
     for module_name in simulator_modules:

@@ -64,7 +64,7 @@ def test_bfloat8_b_capacity_bytes_statistics():
       bfloat8_b: 4096 + ceil(4096 / 16)  = 4352 bytes  (4096 mantissa + 256 exponent)
     """
     import math as _math
-    from python.sim.dfb import DataflowBuffer
+    from sim.dfb import DataflowBuffer
 
     BLOCK_COUNT = 4
     TILE_SHAPE = (1, 1)

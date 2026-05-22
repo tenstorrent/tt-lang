@@ -21,7 +21,10 @@ import sys
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    import cProfile
 
 from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
@@ -345,6 +348,20 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--profile",
+        nargs="?",
+        const="",
+        metavar="FILE",
+        dest="profile",
+        help=(
+            "Run the script under cProfile and print the top 30 functions "
+            "(by cumulative and internal time) to stderr after the run. "
+            "If FILE is provided, the binary cProfile stats are also saved "
+            "to FILE for later inspection with python -m pstats."
+        ),
+    )
+
     if not argv:
         parser.print_help()
         sys.exit(1)
@@ -479,6 +496,14 @@ def main() -> None:
 
         get_context().config.trace_set = trace_set
 
+    # Optionally wrap the run in cProfile
+    profiler: Optional["cProfile.Profile"] = None
+    if args.profile is not None:
+        import cProfile
+
+        profiler = cProfile.Profile()
+        profiler.enable()
+
     # Run the target
     try:
         if not args.target.endswith(".py"):
@@ -486,11 +511,37 @@ def main() -> None:
             sys.exit(1)
         run_file(args.target, args.script_args)
     finally:
+        # Stop profiling first so we don't measure the trace/output code below
+        if profiler is not None:
+            profiler.disable()
+            _emit_profile_report(profiler, args.profile)
+
         # Write trace events to file if requested
         if args.trace:
             from .context import get_context
 
             _write_jsonl_trace(Path(args.trace), get_context().trace_events)
+
+
+def _emit_profile_report(profiler: "cProfile.Profile", output_file: str) -> None:
+    """Print top hotspots from a cProfile.Profile and optionally dump binary stats.
+
+    Always writes a top-30-by-cumulative and top-30-by-internal-time summary to
+    stderr.  When ``output_file`` is a non-empty path, also dumps the binary
+    cProfile stats there (loadable via ``python -m pstats FILE``).
+    """
+    import pstats
+
+    if output_file:
+        profiler.dump_stats(output_file)
+        print(
+            f"\n[ttlang-sim] cProfile stats written to {output_file}", file=sys.stderr
+        )
+
+    print("\n[ttlang-sim] === cProfile top 30 by cumulative time ===", file=sys.stderr)
+    pstats.Stats(profiler, stream=sys.stderr).sort_stats("cumulative").print_stats(30)
+    print("[ttlang-sim] === cProfile top 30 by internal time ===", file=sys.stderr)
+    pstats.Stats(profiler, stream=sys.stderr).sort_stats("tottime").print_stats(30)
 
 
 if __name__ == "__main__":
