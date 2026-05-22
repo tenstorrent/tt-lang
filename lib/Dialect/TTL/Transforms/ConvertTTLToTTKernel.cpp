@@ -915,6 +915,9 @@ struct PipeRecvPostLowering : OpConversionPattern<PipeRecvPostOp> {
   LogicalResult
   matchAndRewrite(PipeRecvPostOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // The receive destination is inspected for its TTL DFB provenance
+    // (`ttl.cb_reserve`, `ttl.attach_cb`, and slice offset), so this lowering
+    // must use the original SSA value rather than the converted adaptor value.
     return lowerPipeRecvPost(op, adaptor.getPipe(), op.getDst(),
                              pipeRuntimeLayout, rewriter);
   }

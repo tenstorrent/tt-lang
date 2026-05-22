@@ -192,10 +192,23 @@ struct WaitUse {
   int64_t cbIndex;
 };
 
-CopyOp findDefiningCopy(Value value) {
+bool isPipeReceiveCopy(CopyOp copyOp) {
+  return mlir::isa<PipeType>(copyOp.getSrc().getType()) &&
+         getAttachedCB(copyOp.getDst());
+}
+
+std::optional<CopyOp> findDefiningPipeReceiveCopy(Value value) {
   llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<CopyOp>(
-      value, [](Value source) { return source.getDefiningOp<CopyOp>(); }, seen);
+  return traceTransferHandleSource<std::optional<CopyOp>>(
+      value,
+      [](Value source) {
+        auto copyOp = source.getDefiningOp<CopyOp>();
+        if (copyOp && isPipeReceiveCopy(copyOp)) {
+          return std::optional<CopyOp>(copyOp);
+        }
+        return std::optional<CopyOp>();
+      },
+      seen);
 }
 
 enum class PipeEventKind { Send, ReceivePost, ReceiveWait };
@@ -303,6 +316,9 @@ struct ModuleState {
       event.domain = domainIntersect(domain, pipeSourceDomain(pipeType));
     } else if (auto pipeType =
                    mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
+      if (!isPipeReceiveCopy(copyOp)) {
+        return;
+      }
       event.pipeType = pipeType;
       event.kind = PipeEventKind::ReceivePost;
       event.domain = domainIntersect(domain, pipeDestinationDomain(pipeType));
@@ -321,14 +337,11 @@ struct ModuleState {
 
   void recordPipeWaitEvent(WaitOp waitOp, const Domain &domain,
                            Operation *unanalyzableOp) {
-    CopyOp copyOp = findDefiningCopy(waitOp.getXf());
-    if (!copyOp) {
+    std::optional<CopyOp> copyOp = findDefiningPipeReceiveCopy(waitOp.getXf());
+    if (!copyOp.has_value()) {
       return;
     }
-    auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType());
-    if (!pipeType) {
-      return;
-    }
+    auto pipeType = mlir::cast<PipeType>(copyOp->getSrc().getType());
 
     int64_t netId = pipeType.getPipeNetId();
     std::string name = netName(netId);
