@@ -149,6 +149,46 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
   return success();
 }
 
+const ReceiverCBInfo *PipeGraph::lookupReceiverCB(const PipeKey &key) const {
+  auto it = receiverCBs.find(key);
+  if (it == receiverCBs.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+static PipeKey getPipeKey(PipeType pipeType) {
+  return {pipeType.getSrcX(),      pipeType.getSrcY(),
+          pipeType.getDstStartX(), pipeType.getDstStartY(),
+          pipeType.getDstEndX(),   pipeType.getDstEndY(),
+          pipeType.getPipeNetId()};
+}
+
+static llvm::DenseMap<PipeKey, bool> collectMulticastPipeKinds(ModuleOp mod) {
+  llvm::DenseMap<int64_t, bool> netHasMulticast;
+  SmallVector<PipeType> pipeTypes;
+  mod.walk([&](CreatePipeOp op) {
+    auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
+    pipeTypes.push_back(pipeType);
+    if (pipeType.isMulticast()) {
+      netHasMulticast[pipeType.getPipeNetId()] = true;
+    } else {
+      (void)netHasMulticast.try_emplace(pipeType.getPipeNetId(), false);
+    }
+  });
+
+  llvm::DenseMap<PipeKey, bool> isMulticast;
+  for (PipeType pipeType : pipeTypes) {
+    bool pipeIsMulticast = pipeType.isMulticast();
+    auto netIt = netHasMulticast.find(pipeType.getPipeNetId());
+    if (netIt != netHasMulticast.end()) {
+      pipeIsMulticast |= netIt->second;
+    }
+    isMulticast[getPipeKey(pipeType)] = pipeIsMulticast;
+  }
+  return isMulticast;
+}
+
 static LogicalResult emitNonUniformMulticastReceiveAddress(Operation *op) {
   return op->emitError()
          << "multicast pipe receive posts publish non-uniform destination "
@@ -252,7 +292,8 @@ static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
 }
 
 static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
-                                     PipeType pipeType, Value dst) {
+                                     PipeType pipeType, bool isMulticast,
+                                     Value dst) {
   Value dstDFB = getAttachedCB(dst);
   if (!dstDFB) {
     return op->emitError("pipe receive destination is not attached to a DFB");
@@ -268,7 +309,7 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
   }
 
   int64_t staticTileOffset = 0;
-  if (pipeType.isMulticast()) {
+  if (isMulticast) {
     FailureOr<int64_t> offset = getStaticDestinationTileOffset(dst);
     if (failed(offset)) {
       return emitNonUniformMulticastReceiveAddress(op);
@@ -285,6 +326,8 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
+  llvm::DenseMap<PipeKey, bool> isMulticastPipe =
+      collectMulticastPipeKinds(mod);
 
   LogicalResult walkResult = success();
   mod.walk([&](Operation *op) {
@@ -293,7 +336,14 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
     }
     if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {
       auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
-      walkResult = addPipeReceiver(graph, op, pipeType, postOp.getDst());
+      PipeKey key = getPipeKey(pipeType);
+      bool isMulticast = pipeType.isMulticast();
+      auto kindIt = isMulticastPipe.find(key);
+      if (kindIt != isMulticastPipe.end()) {
+        isMulticast = kindIt->second;
+      }
+      walkResult =
+          addPipeReceiver(graph, op, pipeType, isMulticast, postOp.getDst());
       return;
     }
   });

@@ -127,8 +127,135 @@ def make_same_source_two_pipe_kernel():
     return same_source_two_pipe
 
 
+def make_loopback_multicast_aggregate_kernel():
+    bcast_pipe = ttl.Pipe(src=(0, 0), dst=(slice(0, 2), 0))
+    bcast_net = ttl.PipeNet([bcast_pipe])
+
+    @ttl.operation(grid=(2, 1))
+    def loopback_multicast_aggregate(inp, out):
+        _bcast_net = bcast_net
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if bcast_net.is_dst():
+                with recv_dfb.wait() as recv_blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(recv_blk)
+
+        @ttl.datamovement()
+        def post_receive_and_send():
+            if bcast_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(bcast_pipe, recv_blk)
+                    if bcast_net.is_src():
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 0], send_blk).wait()
+                            ttl.copy(send_blk, bcast_pipe).wait()
+                    recv_tx.wait()
+
+        @ttl.datamovement()
+        def write_output():
+            node_x, _node_y = ttl.node(dims=2)
+            if bcast_net.is_dst():
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(out_blk, out[0, node_x]).wait()
+
+    return loopback_multicast_aggregate
+
+
+def make_row_all_to_all_multicast_kernel():
+    grid_width = 4
+    pipe0 = ttl.Pipe(src=(0, 0), dst=(slice(0, grid_width), 0))
+    pipe1 = ttl.Pipe(src=(1, 0), dst=(slice(0, grid_width), 0))
+    pipe2 = ttl.Pipe(src=(2, 0), dst=(slice(0, grid_width), 0))
+    pipe3 = ttl.Pipe(src=(3, 0), dst=(slice(0, grid_width), 0))
+    all_to_all_net = ttl.PipeNet([pipe0, pipe1, pipe2, pipe3])
+
+    @ttl.operation(grid=(grid_width, 1))
+    def row_all_to_all_multicast(inp, out):
+        _all_to_all_net = all_to_all_net
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=4)
+        acc_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if all_to_all_net.is_dst():
+                with recv_dfb.wait() as recv_blk, acc_dfb.reserve() as acc_blk:
+                    acc_blk.store(recv_blk)
+                with (
+                    recv_dfb.wait() as recv_blk,
+                    acc_dfb.wait() as acc_blk,
+                    acc_dfb.reserve() as next_acc_blk,
+                ):
+                    next_acc_blk.store(acc_blk + recv_blk)
+                with (
+                    recv_dfb.wait() as recv_blk,
+                    acc_dfb.wait() as acc_blk,
+                    acc_dfb.reserve() as next_acc_blk,
+                ):
+                    next_acc_blk.store(acc_blk + recv_blk)
+                with (
+                    recv_dfb.wait() as recv_blk,
+                    acc_dfb.wait() as acc_blk,
+                    acc_dfb.reserve() as next_acc_blk,
+                ):
+                    next_acc_blk.store(acc_blk + recv_blk)
+                with acc_dfb.wait() as acc_blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(acc_blk)
+
+        @ttl.datamovement()
+        def post_receives_and_send():
+            node_x, _node_y = ttl.node(dims=2)
+            if all_to_all_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe0, recv_blk)
+                    if node_x == 0:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 0], send_blk).wait()
+                            ttl.copy(send_blk, pipe0).wait()
+                    recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe1, recv_blk)
+                    if node_x == 1:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 1], send_blk).wait()
+                            ttl.copy(send_blk, pipe1).wait()
+                    recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe2, recv_blk)
+                    if node_x == 2:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 2], send_blk).wait()
+                            ttl.copy(send_blk, pipe2).wait()
+                    recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe3, recv_blk)
+                    if node_x == 3:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 3], send_blk).wait()
+                            ttl.copy(send_blk, pipe3).wait()
+                    recv_tx.wait()
+
+        @ttl.datamovement()
+        def write_output():
+            node_x, _node_y = ttl.node(dims=2)
+            if all_to_all_net.is_dst():
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(out_blk, out[0, node_x]).wait()
+
+    return row_all_to_all_multicast
+
+
 posted_gather_kernel = make_two_net_posted_gather_kernel()
 same_source_two_pipe_kernel = make_same_source_two_pipe_kernel()
+loopback_multicast_aggregate_kernel = make_loopback_multicast_aggregate_kernel()
+row_all_to_all_multicast_kernel = make_row_all_to_all_multicast_kernel()
 
 
 def make_many_pipe_rendezvous_kernel():
@@ -422,21 +549,65 @@ def test_same_source_pipes_use_distinct_rendezvous_state(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_many_pipe_rendezvous_sites_report_hardware_semaphore_limit(device):
+def test_loopback_multicast_uses_aggregate_rendezvous(device):
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    loopback_multicast_aggregate_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    expected = torch.cat([inp_torch, inp_torch], dim=1)
+    assert_pcc(expected.float(), result.float())
+
+
+def test_row_all_to_all_multicast_reduces_all_sources(device):
+    inp_torch = torch.randn(TILE, 4 * TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, 4 * TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    row_all_to_all_multicast_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    source_sum = sum(
+        inp_torch[:, source_idx * TILE : (source_idx + 1) * TILE].float()
+        for source_idx in range(4)
+    )
+    expected = torch.cat([source_sum.to(torch.bfloat16)] * 4, dim=1)
+    assert_pcc(expected.float(), result.float())
+
+
+def test_row_all_to_all_multicast_semaphore_count_scales():
+    from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
+
+    width = 32
+    all_to_all_graph = OperationPipeNets()
+    all_to_all_graph.add_pipe_net(
+        PipeUse(
+            src=NodeCoord((source_idx, 0)),
+            dst=NodeRange((0, 0), (width, 1)),
+        )
+        for source_idx in range(width)
+    )
+
+    assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4
+
+
+def test_many_pipe_rendezvous_sites_fit_hardware_semaphore_limit(device):
     inp_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
 
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
 
-    with pytest.raises(
-        Exception,
-        match=(
-            "pipe rendezvous requires .* hardware semaphore ids, exceeding "
-            "TT hardware limit of 16; issue #619"
-        ),
-    ):
-        many_pipe_rendezvous_kernel(inp, out)
+    many_pipe_rendezvous_kernel(inp, out)
+    ttnn.synchronize_device(device)
 
 
 def test_multicast_receive_addresses_differ_by_destination_rejected(device):
