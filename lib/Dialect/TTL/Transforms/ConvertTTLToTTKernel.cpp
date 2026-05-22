@@ -1131,7 +1131,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
   PipeRuntimeLayout pipeRuntimeLayout;
-  buildPipeRuntimeLayout(mod, pipeNetIndex, pipeRuntimeLayout);
+  buildPipeRuntimeLayout(mod, pipeNetIndex, *pipeGraphOrErr,
+                         pipeRuntimeLayout);
   if (failed(verifyPipeRuntimeLayoutFitsHardware(mod, pipeRuntimeLayout))) {
     return failure();
   }

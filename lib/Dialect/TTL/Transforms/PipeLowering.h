@@ -13,16 +13,42 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/DenseMap.h"
 
+#include <optional>
+
 namespace mlir::tt::ttl {
 
 /// Receiver-arrival semaphores are indexed by PipeNet id. Sender-ready
-/// semaphores and mailbox words are per pipe because different pipes in one
-/// PipeNet can be posted and sent independently.
+/// semaphores are per pipe because different pipes in one PipeNet can be posted
+/// and sent independently. Posted-mailbox channels also need one source-local
+/// mailbox word per pipe.
 inline int64_t getReceiverSemIdx(int64_t pipeNetId) { return pipeNetId; }
+
+struct PipeInfo {
+  PipeType pipeType;
+  bool isMulticast;
+};
+
+enum class PipeChannelKind {
+  PostedMailbox,
+  AggregateRendezvous,
+};
+
+struct AggregateRendezvousInfo {
+  int64_t receiverCBIndex;
+  CircularBufferType receiverCBType;
+  int64_t staticTileOffset;
+};
 
 struct PipeChannelLayout {
   int64_t senderReadySemIdx;
-  int64_t mailboxSemIdxBase;
+  PipeChannelKind kind;
+  std::optional<int64_t> mailboxSemIdxBase;
+  std::optional<AggregateRendezvousInfo> aggregateInfo;
+
+  bool usesMailbox() const { return kind == PipeChannelKind::PostedMailbox; }
+  bool usesAggregateRendezvous() const {
+    return kind == PipeChannelKind::AggregateRendezvous;
+  }
 };
 
 /// Per-function map: pipeNetId -> kernel-local i32 counter for cumulative
@@ -30,16 +56,16 @@ struct PipeChannelLayout {
 using PipeNetCounterMap =
     llvm::DenseMap<func::FuncOp, llvm::DenseMap<int64_t, Value>>;
 
-/// pipeNetId -> deduplicated list of pipe types in that net. Built once
+/// pipeNetId -> deduplicated list of pipes in that net. Built once
 /// before lowering so is_src/is_dst/is_active patterns avoid walking the
 /// module per match.
-using PipeNetIndex = llvm::DenseMap<int64_t, SmallVector<PipeType>>;
+using PipeNetIndex = llvm::DenseMap<int64_t, SmallVector<PipeInfo>>;
 
 /// Static lookup table used by pipe lowering. Receiver-arrival semaphore
 /// indices are global. Receive posts use one local staging semaphore per NOC
 /// data-movement thread because remote SRAM writes read from local memory.
 /// Sender-ready and mailbox indices only need to be unique among pipes that
-/// share a source core.
+/// share a source core. Aggregate rendezvous channels omit the mailbox word.
 struct PipeRuntimeLayout {
   int64_t mailboxStagingSemIdxBase = 0;
   int64_t numMailboxStagingSems = 0;
@@ -53,6 +79,7 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
 /// Build the runtime semaphore layout used by pipe lowering.
 void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
+                            const PipeGraph &pipeGraph,
                             PipeRuntimeLayout &layout);
 
 /// Diagnose layouts that exceed the hardware semaphore id limit before

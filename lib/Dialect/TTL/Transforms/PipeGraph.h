@@ -100,6 +100,8 @@ public:
   /// DFB. Covers unicast gather and multicast overlap uniformly.
   LogicalResult verifyReceiverDFBBlockCounts() const;
 
+  const ReceiverCBInfo *lookupReceiverCB(const PipeKey &key) const;
+
 private:
   llvm::DenseMap<PipeKey, ReceiverDFBInfo> receiverDFBs;
 };
