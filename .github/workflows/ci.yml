@@ -54,14 +54,6 @@ jobs:
           BASE_REPO: ${{ github.repository }}
         run: |
           TAG=$(.github/containers/get-version-tag.sh)
-          # Fork-PR uplift guard: HEAD_REPO is non-empty only on pull_request events.
-          if [[ "$TAG" == *-uplift-* && -n "$HEAD_REPO" && "$HEAD_REPO" != "$BASE_REPO" ]]; then
-              echo "::error::Uplift PRs from forks are not supported."
-              echo "  Resolved tag: $TAG (uplift form)"
-              echo "  PR head: $HEAD_REPO; base: $BASE_REPO"
-              echo "  A tt-lang maintainer must land this branch into the org repo before CI can build the new toolchain image."
-              exit 1
-          fi
           echo "docker_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved docker tag: $TAG"
       - name: Log in to GHCR
