@@ -22,8 +22,8 @@ from test_utils import (
 )
 
 from sim import ttnn
-from sim.blockstate import ThreadType
-from sim.context import set_current_thread_type
+from sim.blockstate import KernelType
+from sim.context import set_current_kernel_type
 from sim.copy import copy
 from sim.dfb import Block, DataflowBuffer
 from sim.copyhandlers import (
@@ -41,12 +41,12 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def setup_scheduler_context(dm_thread_context):
+def setup_scheduler_context(dm_kernel_context):
     """Automatically set scheduler context for all copy handler tests.
 
-    Copy operations typically happen in DM threads.
+    Copy operations typically happen in DM kernels.
     """
-    # Use the shared dm_thread_context fixture
+    # Use the shared dm_kernel_context fixture
     pass
 
 
@@ -74,7 +74,7 @@ class TestCopyValidationErrors:
     def test_nd_tensor_tile_count_mismatch_to_block_fails(self) -> None:
         """Test that an N-D tensor with mismatched total tile count raises ValueError."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         # 3D tensor (2, 32, 32) has 2 total tiles; block (1, 1) has 1 total tile.
         torch_3d = torch.ones(2, 32, 32)
@@ -91,7 +91,7 @@ class TestCopyValidationErrors:
     def test_tile_count_mismatch_tensor_to_block(self) -> None:
         """Test that tile count mismatch raises ValueError (Tensor -> Block)."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         # 3 tiles in tensor but DFB expects 2 tiles
         source = make_rand_tensor(96, 32)  # 3x1 tiles
@@ -125,8 +125,8 @@ class TestPipeErrorHandling:
 
         try:
 
-            def test_thread() -> None:
-                set_current_thread_type(ThreadType.DM)
+            def test_kernel() -> None:
+                set_current_kernel_type(KernelType.DM)
 
                 # Use a unique pipe address to avoid interference
                 pipe = Pipe(9999, 10000)
@@ -138,7 +138,7 @@ class TestPipeErrorHandling:
                     tx = copy(pipe, block)
                     tx.wait()
 
-            scheduler.add_thread(KernelId(0, ThreadType.DM, "test-dm"), test_thread)
+            scheduler.add_kernel(KernelId(0, KernelType.DM, "test-dm"), test_kernel)
 
             # With scheduler, waiting on pipe with no sender is detected as deadlock
             with pytest.raises(RuntimeError, match="Deadlock detected"):
@@ -149,7 +149,7 @@ class TestPipeErrorHandling:
     def test_pipe_length_mismatch(self) -> None:
         """Test that pipe receive fails when Block length doesn't match sent data."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         pipe = Pipe(5000, 5001)
         src_dfb = DataflowBuffer(
@@ -188,10 +188,10 @@ class TestPipeMulticast:
     def test_pipe_multiple_receivers(self) -> None:
         """Test that pipe correctly handles multiple receivers."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
         grid = (100, 100)  # Set grid context for pipe operations
 
-        # Range covering 2 cores: (10,0) and (10,1)
+        # Range covering 2 nodes: (10,0) and (10,1)
         pipe = Pipe((10, 0), (10, slice(0, 2)))
 
         tile = make_full_tile(42.0)
@@ -241,7 +241,7 @@ class TestContextManagerHandlers:
     def test_tensor_to_reserve_context(self) -> None:
         """Test Tensor → ReserveContext handler delegation."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         source = make_full_tile(5.0)
         dfb = DataflowBuffer(
@@ -263,7 +263,7 @@ class TestContextManagerHandlers:
     def test_wait_context_to_tensor(self) -> None:
         """Test WaitContext → Tensor handler delegation."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         source = make_full_tile(7.0)
         dfb = DataflowBuffer(
@@ -286,7 +286,7 @@ class TestContextManagerHandlers:
     def test_pipe_to_reserve_context(self) -> None:
         """Test Pipe → ReserveContext handler delegation."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         pipe = Pipe(7000, 7001)
         tile = make_full_tile(9.0)
@@ -321,7 +321,7 @@ class TestContextManagerHandlers:
     def test_wait_context_to_pipe(self) -> None:
         """Test WaitContext → Pipe handler delegation."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         pipe = Pipe(8000, 8001)
         tile = make_full_tile(11.0)
@@ -356,7 +356,7 @@ class TestContextManagerHandlers:
     def test_reserve_context_to_pipe(self) -> None:
         """Test ReserveContext → Pipe handler delegation."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         pipe = Pipe(9000, 9001)
         tile = make_full_tile(13.0)
@@ -391,16 +391,16 @@ class TestContextManagerHandlers:
         assert tensors_equal(result, tile)
 
 
-class TestPipeCoreRangeTypes:
-    """Test pipe multicast with different dst_core_range types."""
+class TestPipeNodeRangeTypes:
+    """Test pipe multicast with different dst_node_range types."""
 
     def test_pipe_single_node_int(self) -> None:
-        """Test pipe with single 1D core (int)."""
+        """Test pipe with single 1D node (int)."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
-        # Single 1D core
-        pipe = Pipe(0, 1)  # src_core=0, dst_core_range=1 (single int)
+        # Single 1D node
+        pipe = Pipe(0, 1)  # src_node=0, dst_node_range=1 (single int)
 
         tile = make_full_tile(15.0)
         src_dfb = DataflowBuffer(
@@ -432,14 +432,14 @@ class TestPipeCoreRangeTypes:
         assert tensors_equal(result, tile)
 
     def test_pipe_single_node_tuple(self) -> None:
-        """Test pipe with single multi-dimensional core (tuple)."""
+        """Test pipe with single multi-dimensional node (tuple)."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
-        # Single 2D core
+        # Single 2D node
         pipe = Pipe(
             (0, 0), (1, 1)
-        )  # src_core=(0,0), dst_core_range=(1,1) (single tuple)
+        )  # src_node=(0,0), dst_node_range=(1,1) (single tuple)
 
         tile = make_full_tile(17.0)
         src_dfb = DataflowBuffer(
@@ -470,13 +470,13 @@ class TestPipeCoreRangeTypes:
 
         assert tensors_equal(result, tile)
 
-    def test_pipe_core_range(self) -> None:
-        """Test pipe with core range (2x2 = 4 receivers)."""
+    def test_pipe_node_range(self) -> None:
+        """Test pipe with node range (2x2 = 4 receivers)."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
         grid = (100, 100)  # Set grid context for pipe operations
 
-        # Core range: (20,20) to (21,21) = 2x2 = 4 cores
+        # Node range: (20,20) to (21,21) = 2x2 = 4 nodes
         pipe = Pipe((20, 20), (slice(20, 22), slice(20, 22)))
 
         tile = make_full_tile(19.0)
@@ -517,7 +517,7 @@ class TestCanWaitBehavior:
     def test_tensor_to_block_can_wait_immediate(self) -> None:
         """Test that Tensor → Block copy can_wait returns True immediately."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         source = make_ones_tile()
         dfb = DataflowBuffer(
@@ -533,7 +533,7 @@ class TestCanWaitBehavior:
     def test_block_to_tensor_can_wait_immediate(self) -> None:
         """Test that Block → Tensor copy can_wait returns True immediately."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         source = make_full_tile(21.0)
         dfb = DataflowBuffer(
@@ -556,7 +556,7 @@ class TestCanWaitBehavior:
     def test_block_to_pipe_can_wait_immediate(self) -> None:
         """Test that Block → Pipe copy can_wait returns True immediately."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         pipe = Pipe(11000, 11001)
         tile = make_full_tile(23.0)
@@ -579,7 +579,7 @@ class TestCanWaitBehavior:
     def test_pipe_to_block_can_wait_blocks_until_data(self) -> None:
         """Test that Pipe → Block copy can_wait blocks until data is available."""
 
-        set_current_thread_type(ThreadType.DM)
+        set_current_kernel_type(KernelType.DM)
 
         pipe = Pipe(12000, 12001)
         dst_dfb = DataflowBuffer(
@@ -591,7 +591,7 @@ class TestCanWaitBehavior:
             # can_wait should return False before data is sent
             assert tx_recv.can_wait() is False
 
-            # Now send data in a separate "thread" (simulated by just doing it)
+            # Now send data in a separate "kernel" (simulated by just doing it)
             src_dfb = DataflowBuffer(
                 likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
             )
@@ -710,12 +710,12 @@ class TestPipeKeywordConstruction:
         assert p1 == p2
 
     def test_keyword_with_slice_dst(self) -> None:
-        """Pipe(src=..., dst=...) works when dst is a CoreRange with slices."""
+        """Pipe(src=..., dst=...) works when dst is a NodeRange with slices."""
         positional = Pipe((0, 0), (slice(1, 4), 0))
         keyword = Pipe(src=(0, 0), dst=(slice(1, 4), 0))
         assert positional == keyword
 
-    def test_keyword_1d_cores(self) -> None:
+    def test_keyword_1d_nodes(self) -> None:
         """Pipe(src=int, dst=int) with keyword args works for 1-D grids."""
         positional = Pipe(0, 3)
         keyword = Pipe(src=0, dst=3)

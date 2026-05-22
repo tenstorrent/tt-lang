@@ -112,10 +112,10 @@ class OperationPipeNets:
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
-    """Row-major linearization matching sim's flatten_core_index.
+    """Row-major linearization matching sim's flatten_node_index.
 
     A 1D coord on a 2D grid is treated as an already-linear node index
-    (see `flatten_core_index`): the loop body uses `grid[i]` only for the
+    (see `flatten_node_index`): the loop body uses `grid[i]` only for the
     dims the coord actually has.
     """
     if len(coords) > len(grid):
@@ -139,7 +139,7 @@ def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
 
 def _validate_consistent_coord_rank(pipe_nets: List[PipeNetUse]) -> None:
     # _linearize treats a rank-1 coord as already-linear (matching sim's
-    # `flatten_core_index`), so mixing rank-1 and rank-2 srcs/dsts in one
+    # `flatten_node_index`), so mixing rank-1 and rank-2 srcs/dsts in one
     # graph would alias distinct nodes in `active_node_set`. Force a
     # single rank across the whole graph to make that aliasing impossible.
     ranks: Set[int] = set()

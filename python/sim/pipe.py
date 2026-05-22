@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Pipe and PipeNet implementation for core-to-core communication.
+Pipe and PipeNet implementation for node-to-node communication.
 
 This module provides:
-- Pipe: Description of a data transfer from source to destination core(s)
-- PipeNet: Network of pipes with conditional execution based on core role
+- Pipe: Description of a data transfer from source to destination node(s)
+- PipeNet: Network of pipes with conditional execution based on node role
 - PipeIdentity classes: Wrappers exposing pipe source/destination information
 """
 
@@ -24,16 +24,18 @@ from typing import (
     Union,
 )
 
-from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
+from ttl._pipenets import NodeCoord as PipeNodeCoord
+from ttl._pipenets import NodeRange as PipeNodeRange
+from ttl._pipenets import OperationPipeNets, PipeUse
 
-from .corecontext import node, flatten_core_index, grid_size
-from .typedefs import CoreCoord, CoreRange
+from .nodecontext import node, flatten_node_index, grid_size
+from .typedefs import NodeCoord, NodeRange
 
 # Type variable for Pipe destination type
-DstT = TypeVar("DstT", CoreCoord, CoreRange)
+DstT = TypeVar("DstT", NodeCoord, NodeRange)
 
 # Union of valid destination types for Pipe
-AnyDst = Union[CoreCoord, CoreRange]
+AnyDst = Union[NodeCoord, NodeRange]
 
 
 @dataclass(frozen=True)
@@ -41,25 +43,25 @@ class Pipe(Generic[DstT]):
     """
     Represents a pipe for NoC communication.
 
-    A pipe describes a data transfer from a source core to destination core(s).
+    A pipe describes a data transfer from a source node to destination node(s).
     Can be used for both unicast (single destination) and multicast (multiple destinations).
 
     Type Parameters:
-        DstT: The type of the destination - CoreCoord or CoreRange
+        DstT: The type of the destination - NodeCoord or NodeRange
 
     Attributes:
-        src: Core coordinates of the source/sender. Can be:
-             - Index: Single 1D core (e.g., 0, 1, 2)
-             - Tuple[Index, ...]: Multi-dimensional core (e.g., (0, 1), (1, 2, 3))
+        src: Node coordinates of the source/sender. Can be:
+             - Index: Single 1D node (e.g., 0, 1, 2)
+             - Tuple[Index, ...]: Multi-dimensional node (e.g., (0, 1), (1, 2, 3))
 
         dst: Destination specification. Can be:
-             - CoreCoord: Single destination core (unicast)
+             - NodeCoord: Single destination node (unicast)
                Example: 5 or (1, 2)
-             - CoreRange: Range of destination cores using slices (multicast)
-               Example: (0, slice(1, 4)) means cores (0,1), (0,2), (0,3)
+             - NodeRange: Range of destination nodes using slices (multicast)
+               Example: (0, slice(1, 4)) means nodes (0,1), (0,2), (0,3)
     """
 
-    src: CoreCoord
+    src: NodeCoord
     dst: DstT
 
     def __post_init__(self) -> None:
@@ -87,15 +89,15 @@ class Pipe(Generic[DstT]):
 
 
 # Union of Pipe instances with different destination types
-AnyPipe = Union[Pipe[CoreCoord], Pipe[CoreRange]]
+AnyPipe = Union[Pipe[NodeCoord], Pipe[NodeRange]]
 
 
 class SrcPipeIdentity(Generic[DstT]):
     """
-    Pipe identity for source cores.
+    Pipe identity for source nodes.
 
-    Provides access to destination information for pipes where the current core is the source.
-    When inside an `if_src()` condition body, you are already on the source core,
+    Provides access to destination information for pipes where the current node is the source.
+    When inside an `if_src()` condition body, you are already on the source node,
     so this identity only exposes the destination.
     """
 
@@ -109,7 +111,7 @@ class SrcPipeIdentity(Generic[DstT]):
 
     @property
     def dst(self) -> DstT:
-        """Get the destination core coordinate(s) or core range.
+        """Get the destination node coordinate(s) or node range.
 
         Returns:
             The destination specification from the pipe
@@ -118,15 +120,15 @@ class SrcPipeIdentity(Generic[DstT]):
 
 
 # Union of SrcPipeIdentity instances with different destination types
-AnySrcPipeIdentity = Union[SrcPipeIdentity[CoreCoord], SrcPipeIdentity[CoreRange]]
+AnySrcPipeIdentity = Union[SrcPipeIdentity[NodeCoord], SrcPipeIdentity[NodeRange]]
 
 
 class DstPipeIdentity:
     """
-    Pipe identity for destination cores.
+    Pipe identity for destination nodes.
 
-    Provides access to source information for pipes where the current core is a destination.
-    When inside an `if_dst()` condition body, you are already on a destination core,
+    Provides access to source information for pipes where the current node is a destination.
+    When inside an `if_dst()` condition body, you are already on a destination node,
     so this identity only exposes the source.
     """
 
@@ -139,30 +141,30 @@ class DstPipeIdentity:
         self.pipe = pipe
 
     @property
-    def src(self) -> CoreCoord:
-        """Get the source core coordinate.
+    def src(self) -> NodeCoord:
+        """Get the source node coordinate.
 
         Returns:
-            The source core coordinate from the pipe
+            The source node coordinate from the pipe
         """
         return self.pipe.src
 
 
-def expand_core_range(core_range: CoreRange) -> List[CoreCoord]:
-    """Expand a CoreRange with slices into a list of concrete core coordinates.
+def expand_node_range(node_range: NodeRange) -> List[NodeCoord]:
+    """Expand a NodeRange with slices into a list of concrete node coordinates.
 
     Args:
-        core_range: A tuple containing indices and/or slices
+        node_range: A tuple containing indices and/or slices
 
     Returns:
-        List of concrete core coordinate tuples
+        List of concrete node coordinate tuples
 
     Example:
-        expand_core_range((0, slice(1, 4))) -> [(0, 1), (0, 2), (0, 3)]
-        expand_core_range((slice(0, 2), slice(0, 2))) -> [(0, 0), (0, 1), (1, 0), (1, 1)]
+        expand_node_range((0, slice(1, 4))) -> [(0, 1), (0, 2), (0, 3)]
+        expand_node_range((slice(0, 2), slice(0, 2))) -> [(0, 0), (0, 1), (1, 0), (1, 1)]
     """
     # Get grid dimensions to determine slice bounds
-    dims = len(core_range)
+    dims = len(node_range)
     grid_shape = grid_size(dims=dims)
 
     # Convert to tuple if grid_size returned a single value
@@ -174,7 +176,7 @@ def expand_core_range(core_range: CoreRange) -> List[CoreCoord]:
 
     # Convert each dimension to a list of indices
     dim_ranges: List[List[int]] = []
-    for i, item in enumerate(core_range):
+    for i, item in enumerate(node_range):
         match item:
             case slice():
                 # Convert slice to range using grid bounds
@@ -187,7 +189,7 @@ def expand_core_range(core_range: CoreRange) -> List[CoreCoord]:
                 dim_ranges.append([item])
 
     # Generate all combinations (Cartesian product)
-    result: List[CoreCoord] = []
+    result: List[NodeCoord] = []
 
     def _cartesian_product(ranges: List[List[int]], current: List[int] = []) -> None:
         if not ranges:
@@ -204,39 +206,39 @@ def expand_core_range(core_range: CoreRange) -> List[CoreCoord]:
     return result
 
 
-def core_in_dst_range(
-    dst_core_range: AnyDst,
+def node_in_dst_range(
+    dst_node_range: AnyDst,
 ) -> bool:
-    """Check if the current core is within the destination range.
+    """Check if the current node is within the destination range.
 
     Args:
-        dst_core_range: Destination specification - can be:
-                       - Single CoreCoord (unicast)
-                       - CoreRange with slices (multicast)
+        dst_node_range: Destination specification - can be:
+                       - Single NodeCoord (unicast)
+                       - NodeRange with slices (multicast)
 
     Returns:
-        True if current core is in the range, False otherwise
+        True if current node is in the range, False otherwise
     """
-    match dst_core_range:
+    match dst_node_range:
         case int():
-            # Single 1D core - compare with 1D core index
-            current_core_linear = node(dims=1)
-            return current_core_linear == dst_core_range
+            # Single 1D node - compare with 1D node index
+            current_node_linear = node(dims=1)
+            return current_node_linear == dst_node_range
 
-        case tuple() if any(type(item) is slice for item in dst_core_range):
-            # CoreRange with slices - expand and check membership
-            dims = len(dst_core_range)
-            current_core_coords = node(dims=dims)
+        case tuple() if any(type(item) is slice for item in dst_node_range):
+            # NodeRange with slices - expand and check membership
+            dims = len(dst_node_range)
+            current_node_coords = node(dims=dims)
 
             # Convert single value to tuple for comparison
-            match current_core_coords:
+            match current_node_coords:
                 case tuple():
                     pass
                 case _:
-                    current_core_coords = (current_core_coords,)
+                    current_node_coords = (current_node_coords,)
 
             # Check each dimension
-            for i, item in enumerate(dst_core_range):
+            for i, item in enumerate(dst_node_range):
                 match item:
                     case slice():
                         # Get grid dimension to determine bounds
@@ -252,25 +254,25 @@ def core_in_dst_range(
                         step = item.step if item.step is not None else 1
 
                         if not (
-                            start <= current_core_coords[i] < stop
-                            and (current_core_coords[i] - start) % step == 0
+                            start <= current_node_coords[i] < stop
+                            and (current_node_coords[i] - start) % step == 0
                         ):
                             return False
                     case _:
                         # Fixed index
-                        if current_core_coords[i] != item:
+                        if current_node_coords[i] != item:
                             return False
             return True
 
         case tuple():
-            # Single multi-dimensional core - get coordinates matching the dimensionality
-            dims = len(dst_core_range)
-            current_core_coords = node(dims=dims)
-            return current_core_coords == dst_core_range
+            # Single multi-dimensional node - get coordinates matching the dimensionality
+            dims = len(dst_node_range)
+            current_node_coords = node(dims=dims)
+            return current_node_coords == dst_node_range
 
 
-def _coord_to_tuple(coord: CoreCoord) -> Tuple[int, ...]:
-    """Normalize a CoreCoord (int or tuple) to a tuple of ints."""
+def _coord_to_tuple(coord: NodeCoord) -> Tuple[int, ...]:
+    """Normalize a NodeCoord (int or tuple) to a tuple of ints."""
     if isinstance(coord, int):
         return (coord,)
     return tuple(coord)
@@ -328,13 +330,13 @@ def _pipe_to_pipe_use(pipe: "Pipe") -> PipeUse:
     rectangles are read directly from the `dst` slices without needing the
     operation grid.
     """
-    src = NodeCoord(coords=_coord_to_tuple(pipe.src))
+    src = PipeNodeCoord(coords=_coord_to_tuple(pipe.src))
     rect = _normalize_dst_rect(pipe.dst)
     if rect is None:
-        return PipeUse(src=src, dst=NodeCoord(coords=_coord_to_tuple(pipe.dst)))
+        return PipeUse(src=src, dst=PipeNodeCoord(coords=_coord_to_tuple(pipe.dst)))
     return PipeUse(
         src=src,
-        dst=NodeRange(
+        dst=PipeNodeRange(
             lo=tuple(lo for lo, _ in rect),
             hi=tuple(hi for _, hi in rect),
         ),
@@ -356,7 +358,7 @@ def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
     """Walk function closures and return unique PipeNet objects in encounter order.
 
     PipeNets are deduplicated by `id()` so the same captured net referenced
-    from multiple threads contributes one entry.
+    from multiple kernels contributes one entry.
     """
     seen: dict = {}
     for func in funcs:
@@ -390,10 +392,10 @@ def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
 
 class PipeNet(Generic[DstT]):
     """
-    A network of pipes for organizing core-to-core communication patterns.
+    A network of pipes for organizing node-to-node communication patterns.
 
     PipeNet groups multiple pipes and provides conditional execution based on
-    whether the current core is a source or destination in the network.
+    whether the current node is a source or destination in the network.
     """
 
     def __init__(self, pipes: "List[Pipe[DstT]]"):
@@ -411,53 +413,53 @@ class PipeNet(Generic[DstT]):
     def is_active(self) -> bool:
         """Return True if the current node participates in any pipe (source or destination).
 
-        Useful for early-exit when only PipeNet participants should run thread body code.
+        Useful for early-exit when only PipeNet participants should run kernel body code.
         Must be called within a kernel context.
 
         Returns:
-            True if the current core is a source or destination for at least one pipe.
+            True if the current node is a source or destination for at least one pipe.
         """
         return self.is_src() or self.is_dst()
 
     def is_src(self) -> bool:
         """Return True if the current node is the source of at least one pipe in this net."""
-        current_core_linear = node(dims=1)
+        current_node_linear = node(dims=1)
         for pipe in self._pipes:
-            if flatten_core_index(pipe.src) == current_core_linear:
+            if flatten_node_index(pipe.src) == current_node_linear:
                 return True
         return False
 
     def is_dst(self) -> bool:
         """Return True if the current node lies in the destination of at least one pipe."""
         for pipe in self._pipes:
-            if core_in_dst_range(pipe.dst):
+            if node_in_dst_range(pipe.dst):
                 return True
         return False
 
     def if_src(self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]) -> None:
-        """Execute condition function for each pipe where current core is source.
+        """Execute condition function for each pipe where current node is source.
 
         The condition function is called once for each pipe in the network where
-        the current core matches the pipe's source core.
+        the current node matches the pipe's source.
 
         Args:
             cond_fun: Function to execute with pipe identity as argument.
                      The function receives a SrcPipeIdentity that exposes the
                      destination via its .dst property.
         """
-        current_core_linear = node(dims=1)
+        current_node_linear = node(dims=1)
 
         for pipe in self._pipes:
-            pipe_src_linear = flatten_core_index(pipe.src)
-            if current_core_linear == pipe_src_linear:
+            pipe_src_linear = flatten_node_index(pipe.src)
+            if current_node_linear == pipe_src_linear:
                 identity = SrcPipeIdentity[DstT](pipe)
                 cond_fun(identity)
 
     def if_dst(self, cond_fun: Callable[[DstPipeIdentity], None]) -> None:
-        """Execute condition function for each pipe where current core is destination.
+        """Execute condition function for each pipe where current node is destination.
 
         The condition function is called once for each pipe in the network where
-        the current core is in the pipe's destination range.
+        the current node is in the pipe's destination range.
 
         Args:
             cond_fun: Function to execute with pipe identity as argument.
@@ -465,6 +467,6 @@ class PipeNet(Generic[DstT]):
                      source via its .dst property.
         """
         for pipe in self._pipes:
-            if core_in_dst_range(pipe.dst):
+            if node_in_dst_range(pipe.dst):
                 identity = DstPipeIdentity(pipe)
                 cond_fun(identity)

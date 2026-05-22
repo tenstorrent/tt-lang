@@ -2,15 +2,15 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# TT-Lang Simulator launcher (ttlang-sim)
+# TT-Lang Simulator launcher (tt-lang-sim)
 #
 # Runs tt-lang kernels on the simulator backend without code changes.
-# Usage: ttlang-sim <file.py|module> [args...]
+# Usage: tt-lang-sim <file.py|module> [args...]
 
 PYTHON="${PYTHON:-python}"
 
 # Resolve the repo/toolchain root from the script's own location so this works
-# when invoked as ./bin/ttlang-sim or from an arbitrary working directory.
+# when invoked as ./bin/tt-lang-sim or from an arbitrary working directory.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 
@@ -25,7 +25,7 @@ if [ -f "${_REPO_ROOT}/python_packages/ttl/sim/ttlang_sim.py" ]; then
     exec "$PYTHON" -m ttl.sim.ttlang_sim "$@"
 fi
 
-echo "ttlang-sim: cannot locate the sim package." >&2
+echo "tt-lang-sim: cannot locate the sim package." >&2
 echo "  checked: ${_REPO_ROOT}/python/sim/ttlang_sim.py (source tree)" >&2
 echo "  checked: ${_REPO_ROOT}/python_packages/ttl/sim/ttlang_sim.py (installed)" >&2
 exit 1

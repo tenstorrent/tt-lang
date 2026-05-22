@@ -34,7 +34,7 @@ from .pipe import (
 )
 from .trace import get_pipe_name, trace
 from .ttnnsim import Tensor, tile_count_from_tensor
-from .typedefs import CoreCoord
+from .typedefs import NodeCoord
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
 # CopyEndpointTypes: List[type] = [torch.Tensor, Block, Pipe]
@@ -160,35 +160,35 @@ class BlockToPipeHandler:
         pass
 
     def transfer(self, src: Block, dst: AnyPipe) -> None:
-        """Pipe send: store data in shared buffer accessible by all cores."""
+        """Pipe send: store data in shared buffer accessible by all nodes."""
         src_data = src.raw_tensor
 
         # Get or create pipe entry atomically
         entry = _get_or_create_pipe_entry(dst)
-        # Calculate number of receivers based on dst_core_range type
+        # Calculate number of receivers based on dst_node_range type
         num_receivers: int = 1
 
-        # dst_core_range can be either CoreCoord or CoreRange
-        dst_core_range: AnyDst = dst.dst
+        # dst_node_range can be either NodeCoord or NodeRange
+        dst_node_range: AnyDst = dst.dst
 
         # Helper predicate for pattern matching
         def has_slices(t: Any) -> bool:
             """Check if tuple contains any slice objects."""
             return len(t) > 0 and any(type(item) is slice for item in t)
 
-        # Match on the structure of dst_core_range
-        match dst_core_range:
+        # Match on the structure of dst_node_range
+        match dst_node_range:
             case int():
-                # Single 1D core
+                # Single 1D node
                 num_receivers = 1
-            case tuple() if has_slices(dst_core_range):
-                # CoreRange with slices: expand and count
-                from .pipe import expand_core_range
+            case tuple() if has_slices(dst_node_range):
+                # NodeRange with slices: expand and count
+                from .pipe import expand_node_range
 
-                expanded_cores: List[CoreCoord] = expand_core_range(dst_core_range)
-                num_receivers = len(expanded_cores)
+                expanded_nodes: List[NodeCoord] = expand_node_range(dst_node_range)
+                num_receivers = len(expanded_nodes)
             case tuple():
-                # Single multi-dimensional core
+                # Single multi-dimensional node
                 num_receivers = 1
 
         # Add to the queue with receiver count, message ID, and empty receiver set.
@@ -280,10 +280,10 @@ class PipeToBlockHandler:
         pass
 
     def can_wait(self, src: AnyPipe, dst: Block) -> bool:
-        """Pipe to Block copy can only proceed when pipe has data for this core.
+        """Pipe to Block copy can only proceed when pipe has data for this node.
 
         Returns True only when there is at least one queued message that the
-        current core has not yet received.  The greenlet scheduler polls this
+        current node has not yet received.  The greenlet scheduler polls this
         before calling transfer(), so transfer() can assume data is available.
         """
         pipe_buffer = get_context().copy_state.pipe_buffer
@@ -291,12 +291,12 @@ class PipeToBlockHandler:
         if entry is None or len(entry["queue"]) == 0:
             return False
 
-        # Check whether there is a message this core has not yet received.
+        # Check whether there is a message this node has not yet received.
         try:
-            from .corecontext import node
+            from .nodecontext import node
 
-            core_id = node(dims=1)
-            return any(core_id not in recv_set for _, _, _, recv_set in entry["queue"])
+            node_id = node(dims=1)
+            return any(node_id not in recv_set for _, _, _, recv_set in entry["queue"])
         except (ImportError, RuntimeError):
             # Non-kernel context: any queued message is receivable.
             return True
@@ -310,19 +310,19 @@ class PipeToBlockHandler:
         entry = _get_or_create_pipe_entry(src)
         queue = entry["queue"]
 
-        # Determine current core ID for per-core message tracking.
+        # Determine current node ID for per-node message tracking.
         try:
-            from .corecontext import node
+            from .nodecontext import node
 
-            core_id = node(dims=1)
-            core_id_available = True
+            node_id = node(dims=1)
+            node_id_available = True
         except (ImportError, RuntimeError):
-            core_id_available = False
-            core_id = None
+            node_id_available = False
+            node_id = None
 
-        # Find the first message this core has not yet received.
+        # Find the first message this node has not yet received.
         for idx, (msg_data, remaining_recv, msg_id, recv_set) in enumerate(queue):
-            if not core_id_available or core_id not in recv_set:
+            if not node_id_available or node_id not in recv_set:
                 if msg_data.shape != dst.raw_tensor.shape:
                     raise ValueError(
                         f"Destination Block shape {dst.raw_tensor.shape} "
@@ -336,12 +336,12 @@ class PipeToBlockHandler:
                     tiles=tile_count_from_tensor(msg_data),
                 )
 
-                if core_id_available:
-                    match core_id:
+                if node_id_available:
+                    match node_id:
                         case int():
-                            recv_set.add(core_id)
+                            recv_set.add(node_id)
                         case _:
-                            raise TypeError("core_id should be int when dims=1")
+                            raise TypeError("node_id should be int when dims=1")
 
                 remaining_recv -= 1
                 if remaining_recv == 0:

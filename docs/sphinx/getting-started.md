@@ -50,7 +50,7 @@ For finer control, `tt-lang-setup-host` runs only the sfpi step and
 Run a tutorial example:
 
 ```bash
-ttlang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulator (no compilation, runs on CPU)
+tt-lang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulator (no compilation, runs on CPU)
 python tutorials/elementwise/step_4_multinode_grid_auto.py        # compiles and runs on hardware
 ```
 
@@ -65,7 +65,7 @@ cd tt-lang
 cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
 cmake --build build
 source build/env/activate
-ttlang-sim examples/eltwise_add.py
+tt-lang-sim examples/eltwise_add.py
 ```
 
 ## Docker quick start
@@ -170,7 +170,7 @@ CMake options.
 TT-Lang includes a functional simulator that runs operations as pure Python without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
 
 ```bash
-ttlang-sim examples/eltwise_add.py
+tt-lang-sim examples/eltwise_add.py
 python -m pytest test/sim/
 ```
 

@@ -8,7 +8,7 @@ This document lists operation examples under `examples/`, how they are exercised
 
 | Mode | Command |
 | --- | --- |
-| Simulator CLI | `./bin/ttlang-sim examples/<name>.py` |
+| Simulator CLI | `./bin/tt-lang-sim examples/<name>.py` |
 | Simulator pytest | `python -m pytest test/sim/test_examples.py -v` |
 
 **Compiler and device (Docker):** run `python` inside the device container using the Docker toolchain venv (`build-docker/env/activate`), not `TTLANG_COMPILE_ONLY`. That mode skips operation execution and does not validate an example end-to-end.
@@ -37,7 +37,7 @@ The hardware CI batch (`.github/scripts/compile-and-run-examples.sh`) uses the s
 | `eltwise_add_3d.py` | real | yes | yes | |
 | `errors/eltwise_add_error.py` | real | negative test (expect failure) | skip | Demonstrates a bad copy; must not exit 0. |
 | `eltwise_pipe.py` | real | yes | yes | |
-| `eltwise_pipe_core3.py` | real | yes | yes | |
+| `eltwise_pipe_node3.py` | real | yes | yes | |
 | `matmul.py` | sim | yes | skip | Sim-backed; not in hardware batch until migrated (unlike `broadcast_demo.py`). |
 | `matmul_explicit_acc.py` | real | yes | yes | |
 | `singlecore_matmul.py` | real | yes | yes | |
@@ -68,7 +68,7 @@ They are tagged `skip-compiler` so the hardware batch does not treat failure as 
 
 ## Migrating sim-only examples
 
-Files that use `from sim import ttl, ttnn` run under `ttlang-sim` and pytest with the simulator shadowing real `ttnn`. `broadcast_demo.py` is kept on that import style and is included in the hardware compile-and-run batch. Other sim-backed examples (for example `matmul.py`) may still be migrated to match `examples/broadcast.py` (`import ttl`, `ttnn.open_device`, `ttnn.from_torch(..., device=..., memory_config=...)`, `ttnn.close_device` in `finally`) before dropping `skip-compiler`.
+Files that use `from sim import ttl, ttnn` run under `tt-lang-sim` and pytest with the simulator shadowing real `ttnn`. `broadcast_demo.py` is kept on that import style and is included in the hardware compile-and-run batch. Other sim-backed examples (for example `matmul.py`) may still be migrated to match `examples/broadcast.py` (`import ttl`, `ttnn.open_device`, `ttnn.from_torch(..., device=..., memory_config=...)`, `ttnn.close_device` in `finally`) before dropping `skip-compiler`.
 
 ## Metal examples
 
