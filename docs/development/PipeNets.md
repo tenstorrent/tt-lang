@@ -72,9 +72,61 @@ Pipe transfers have the following operational semantics:
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
 
-These synchronization rules matter most when the source is also a
-destination, or when a same-thread relay receives and forwards in one
-data-movement kernel.
+The receive transfer handle has this state machine:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "labelTextColor": "#cbd5e1", "edgeLabelBackground": "transparent", "fontSize": "14px"}}}%%
+stateDiagram-v2
+    state "No receive posted" as NoReceivePosted
+    state "Receive posted" as ReceivePosted
+    state "Receive complete" as ReceiveComplete
+    state "Receiver may use dst_blk" as ReceiverMayUseBlock
+
+    [*] --> NoReceivePosted
+    NoReceivePosted --> ReceivePosted: ttl.copy(pipe, dst_blk) publishes address
+    ReceivePosted --> ReceiveComplete: matching send writes payload and signals completion
+    ReceiveComplete --> ReceiverMayUseBlock: recv_tx.wait() returns
+    ReceivePosted --> ReceivePosted: recv_tx.wait() blocks
+
+    classDef pipeState fill:#1e3a8a,stroke:#93c5fd,color:#ffffff
+    class NoReceivePosted,ReceivePosted,ReceiveComplete,ReceiverMayUseBlock pipeState
+```
+
+If `recv_tx.wait()` runs in `ReceivePosted`, the calling kernel blocks
+until the matching send reaches `ReceiveComplete`.
+
+The send transfer handle has this state machine:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "labelTextColor": "#cbd5e1", "edgeLabelBackground": "transparent", "fontSize": "14px"}}}%%
+stateDiagram-v2
+    state "No send posted" as NoSendPosted
+    state "Waiting for destination addresses" as WaitingForDestinationAddresses
+    state "Payload write in progress" as PayloadWriteInProgress
+    state "Send complete" as SendComplete
+    state "Source block may be released" as SourceBlockMayBeReleased
+
+    [*] --> NoSendPosted
+    NoSendPosted --> WaitingForDestinationAddresses: ttl.copy(src_blk, pipe)
+    WaitingForDestinationAddresses --> PayloadWriteInProgress: all destinations have posted receive addresses
+    PayloadWriteInProgress --> SendComplete: payload write finishes and receivers are signaled
+    SendComplete --> SourceBlockMayBeReleased: send_tx.wait() returns
+    WaitingForDestinationAddresses --> WaitingForDestinationAddresses: send_tx.wait() blocks
+    PayloadWriteInProgress --> PayloadWriteInProgress: send_tx.wait() blocks
+
+    classDef pipeState fill:#1e3a8a,stroke:#93c5fd,color:#ffffff
+    class NoSendPosted,WaitingForDestinationAddresses,PayloadWriteInProgress,SendComplete,SourceBlockMayBeReleased pipeState
+```
+
+If `send_tx.wait()` runs before `SendComplete`, the calling kernel
+blocks. In particular, it can block in `WaitingForDestinationAddresses`
+if any required receive post has not run.
+
+When a single data-movement kernel executes both a send and a receive
+for the same PipeNet, program order in that kernel must satisfy the
+pipe synchronization order. In loopback multicast, the source core is
+also one of the destinations; in relay kernels, a core receives from
+one pipe and sends to another.
 
 For example, the loopback schedule below is invalid because the same thread
 tries to send before it posts its own receive address:
@@ -101,24 +153,24 @@ The send waits until every destination has published a reserved DFB slot
 address. In this same-thread loopback schedule, that publication is placed
 after the blocking send, so the thread can never reach it:
 
-```text
-same data-movement kernel (thread):
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "fontSize": "14px"}}}%%
+flowchart LR
+    send_wait["1. Send wait"]
+    recv_post["2. Receive post"]
 
-Kernel                 Send operation                  Receive post
-  |                          |                               |
-  | ttl.copy(src, pipe).wait()                               |
-  |------------------------->|                               |
-  |                          | waits for destination address |
-  |                          |------------------------------>|
-  |                          |                               |
-  | blocked here             |                               |
-  |                          |                               |
-  | ttl.copy(pipe, dst) would publish the address,           |
-  | but this later operation is never reached.               |
-  |                          |                               |
-  |                          |<------------------------------|
-  |                          | address publication needed    |
+    send_wait --> recv_post
+    recv_post -.-> send_wait
+
+    classDef pipeNode fill:#1e3a8a,stroke:#93c5fd,color:#ffffff
+    class send_wait,recv_post pipeNode
+    linkStyle 0 stroke:#94a3b8,stroke-width:2px
+    linkStyle 1 stroke:#ef4444,stroke-width:2px,stroke-dasharray:5 5
 ```
+
+The solid edge is same-kernel program order. The dashed edge is the
+wait-for dependency: `ttl.copy(src_blk, pipe).wait()` needs the
+destination address from `ttl.copy(pipe, dst_blk)`.
 
 Valid same-thread loopback schedules post the receive first, then post
 and wait for the send, then wait for receive completion.
@@ -142,19 +194,30 @@ def transfer():
             net.if_dst(recv)
 ```
 
-The soundness argument for the verifier is published as a
-[gist](https://gist.github.com/brnorris03/5c969f4359fa895c9055c00659074f9d).
+The receive post publishes the destination address before the send can
+block on that address. The receive wait runs only after the send has
+been posted:
 
-Three predicate ops - `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
-(the union of source and destination roles) - let user code carry
-per-PipeNet guards that the verifier recognizes structurally. Frontend
-methods `net.is_src()`, `net.is_dst()`, `net.is_active()` lower to
-these ops; coordinate comparisons over `ttl.node(dims=2)` against
-integer constants also work and are evaluated per coord.
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "fontSize": "14px"}}}%%
+flowchart LR
+    recv_post["1. Receive post"]
+    send_wait["2. Send wait"]
+    recv_wait["3. Receive wait"]
 
-The verifier requires a `ttl.launch_grid` module attribute (an i64
-array of length 2 with positive entries). The frontend stamps this
-from the resolved grid; lit tests must declare it explicitly.
+    recv_post --> send_wait
+    send_wait --> recv_wait
+
+    classDef pipeNode fill:#1e3a8a,stroke:#93c5fd,color:#ffffff
+    class recv_post,send_wait,recv_wait pipeNode
+    linkStyle 0 stroke:#94a3b8,stroke-width:2px
+    linkStyle 1 stroke:#94a3b8,stroke-width:2px
+```
+
+The program order satisfies both dependencies: the send sees the
+destination address from `ttl.copy(pipe, dst_blk)`, and
+`recv_tx.wait()` runs after `ttl.copy(src_blk, pipe).wait()` has posted
+the send that can complete the receive.
 
 ## Within-PipeNet receiver semantics
 
@@ -361,6 +424,10 @@ eraser at the same anchor.
 
 ## Analysis structure
 
+The verifier requires a `ttl.launch_grid` module attribute (an i64
+array of length 2 with positive entries). The frontend stamps this
+from the resolved grid; lit tests must declare it explicitly.
+
 `ttl-verify-pipenet-guards` is implemented as a
 `DenseForwardDataFlowAnalysis<DomainLattice>` over launch coordinates.
 The lattice value at each program point is the set of coordinates that
@@ -412,6 +479,13 @@ different kernel function.
 
 ## Predicate recognition
 
+Three predicate ops - `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
+(the union of source and destination roles) - let user code carry
+per-PipeNet guards that the verifier recognizes structurally. Frontend
+methods `net.is_src()`, `net.is_dst()`, `net.is_active()` lower to
+these ops; coordinate comparisons over `ttl.node(dims=2)` against
+integer constants also work and are evaluated per coord.
+
 `visitRegionBranchControlFlowTransfer` narrows the lattice on entry to
 each region according to the parent op:
 
@@ -447,6 +521,10 @@ For `affine.if`, the verifier builds an `AffineMap` from the
 IntegerSet's constraints (one result per constraint) and folds it per
 launch coord with `AffineMap::constantFold`, checking sign against
 each constraint's `isEq` flag.
+
+The soundness argument for the verifier is published as a
+[gist](https://gist.github.com/brnorris03/5c969f4359fa895c9055c00659074f9d).
+
 
 ## Diagnostics
 
