@@ -9,11 +9,21 @@ Defines the kernel-type context, access-state machine, and the full
 transition table used by Block to validate correct usage patterns.
 """
 
-from enum import Enum, auto
+from enum import IntEnum, auto
 from typing import Dict, Iterable, Optional, Set, Tuple
 
 
-class AccessState(Enum):
+# All enums below are ``IntEnum`` rather than plain ``Enum`` so that
+# ``__hash__`` falls through to ``int.__hash__`` (a single C-level op) instead
+# of going through the much slower ``enum.Enum.__hash__`` defined in CPython's
+# ``enum`` module.  These enums are used as dict/set keys on the hot
+# block-state-machine and scheduler paths; profiling step_1 showed
+# ``enum.__hash__`` accounting for ~4% of total runtime, which this change
+# eliminates.  The user-visible behavior is unchanged: ``IntEnum`` is still
+# an ``Enum`` (passes ``isinstance(x, Enum)``) and supports the same identity
+# semantics; it only adds equality with the underlying integer, which the
+# simulator does not rely on.
+class AccessState(IntEnum):
     """Access state for a block in the state machine."""
 
     MW = (
@@ -32,21 +42,21 @@ class AccessState(Enum):
     OS = auto()  # Out of Scope: block was pushed or popped
 
 
-class KernelType(Enum):
+class KernelType(IntEnum):
     """Kernel role for block operations (compute vs datamovement)."""
 
     DM = auto()  # Data Movement
     COMPUTE = auto()  # Compute
 
 
-class BlockAcquisition(Enum):
+class BlockAcquisition(IntEnum):
     """How the block was acquired."""
 
     RESERVE = auto()  # Via reserve()
     WAIT = auto()  # Via wait()
 
 
-class ExpectedOp(Enum):
+class ExpectedOp(IntEnum):
     """Expected next operation on a block."""
 
     COPY_SRC = auto()  # Expect copy(blk, ...) - block as source

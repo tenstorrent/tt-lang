@@ -9,7 +9,7 @@ yield transformations. Each compute or datamovement kernel runs in its own green
 and blocking operations (wait/reserve) switch back to the scheduler.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from greenlet import greenlet
@@ -40,6 +40,11 @@ class KernelId:
     linear_node: int
     kind: KernelType
     func_name: str
+    # Cached hash; populated in __post_init__ and returned by __hash__.  Declared
+    # as a non-init, non-repr, non-compare, non-hash field so the dataclass
+    # machinery ignores it for equality/representation but still recognises
+    # the attribute exists on instances.
+    _hash: int = field(default=0, init=False, repr=False, compare=False, hash=False)
 
     def __post_init__(self) -> None:
         if self.linear_node < 0:
@@ -48,6 +53,18 @@ class KernelId:
             )
         if not self.func_name:
             raise ValueError("func_name must be a non-empty string")
+        # ``KernelId`` is the key type for the scheduler's ``_active`` /
+        # ``_has_made_progress`` dicts and is hashed millions of times per
+        # simulation run; the dataclass-generated ``__hash__`` reconstructs
+        # and re-hashes the field tuple on every call.  Compute it once here
+        # and serve it from ``__hash__``.  ``object.__setattr__`` is needed
+        # because the dataclass is frozen.
+        object.__setattr__(
+            self, "_hash", hash((self.linear_node, self.kind, self.func_name))
+        )
+
+    def __hash__(self) -> int:
+        return self._hash
 
 
 def kernel_display_name(kernel_id: KernelId) -> str:
