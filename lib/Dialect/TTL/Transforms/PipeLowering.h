@@ -39,7 +39,11 @@ struct AggregateRendezvousInfo {
   int64_t staticTileOffset;
 };
 
-struct PipeChannelLayout {
+/// Lowering information for one logical pipe channel. The sender-ready counter
+/// is always present. Posted-mailbox channels also reserve one source-local
+/// mailbox word; aggregate channels instead record the uniform receiver DFB
+/// address information needed to avoid per-destination mailboxes.
+struct PipeChannelInfo {
   int64_t senderReadySemIdx;
   PipeChannelKind kind;
   std::optional<int64_t> mailboxSemIdxBase;
@@ -61,32 +65,32 @@ using PipeNetCounterMap =
 /// module per match.
 using PipeNetIndex = llvm::DenseMap<int64_t, SmallVector<PipeInfo>>;
 
-/// Static lookup table used by pipe lowering. Receiver-arrival semaphore
-/// indices are global. Receive posts use one local staging semaphore per NOC
+/// Static information used by pipe lowering. Receiver-arrival semaphore indices
+/// are global. Receive posts use one local staging semaphore per NOC
 /// data-movement thread because remote SRAM writes read from local memory.
 /// Sender-ready and mailbox indices only need to be unique among pipes that
 /// share a source core. Aggregate rendezvous channels omit the mailbox word.
-struct PipeRuntimeLayout {
+struct PipeChannelLoweringInfo {
   int64_t mailboxStagingSemIdxBase = 0;
   int64_t numMailboxStagingSems = 0;
-  llvm::DenseMap<PipeKey, PipeChannelLayout> channels;
+  llvm::DenseMap<PipeKey, PipeChannelInfo> channels;
 };
+
+/// Diagnose layouts that exceed the hardware semaphore id limit before
+/// emitting ttkernel.get_semaphore ops with invalid ids.
+LogicalResult
+verifyPipeChannelLoweringInfoFitsHardware(
+    ModuleOp mod, const PipeChannelLoweringInfo &info);
 
 /// Walk `mod` once and group every PipeType result by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
-/// Build the runtime semaphore layout used by pipe lowering.
-void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
-                            const PipeGraph &pipeGraph,
-                            PipeRuntimeLayout &layout);
-
-/// Diagnose layouts that exceed the hardware semaphore id limit before
-/// emitting ttkernel.get_semaphore ops with invalid ids.
-LogicalResult
-verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
-                                    const PipeRuntimeLayout &layout);
+/// Build the channel information used by pipe lowering.
+void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
+                                  const PipeGraph &pipeGraph,
+                                  PipeChannelLoweringInfo &info);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.
@@ -96,12 +100,12 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 /// addresses and signals destinations via semaphore.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,
-                            const PipeRuntimeLayout *pipeRuntimeLayout,
+                            const PipeChannelLoweringInfo *pipeChannelInfo,
                             ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive address publication.
 LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
-                                const PipeRuntimeLayout *pipeRuntimeLayout,
+                                const PipeChannelLoweringInfo *pipeChannelInfo,
                                 ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.

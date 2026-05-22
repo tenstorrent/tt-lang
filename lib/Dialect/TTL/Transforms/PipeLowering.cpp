@@ -92,44 +92,44 @@ static bool canUseAggregateRendezvous(PipeInfo pipeInfo) {
   return pipeInfo.isMulticast && pipeInfo.pipeType.srcInDstRange();
 }
 
-static FailureOr<PipeChannelLayout>
-lookupPipeChannelLayout(Operation *op, PipeType pipeType,
-                        const PipeRuntimeLayout *pipeRuntimeLayout) {
-  if (!pipeRuntimeLayout) {
-    return op->emitError("internal compiler error: missing pipe runtime "
-                         "layout");
+static FailureOr<PipeChannelInfo>
+lookupPipeChannelInfo(Operation *op, PipeType pipeType,
+                      const PipeChannelLoweringInfo *pipeChannelInfo) {
+  if (!pipeChannelInfo) {
+    return op->emitError("internal compiler error: missing pipe channel "
+                         "lowering info");
   }
-  auto it = pipeRuntimeLayout->channels.find(getPipeKey(pipeType));
-  if (it == pipeRuntimeLayout->channels.end()) {
-    return op->emitError("internal compiler error: pipe missing from runtime "
-                         "layout");
+  auto it = pipeChannelInfo->channels.find(getPipeKey(pipeType));
+  if (it == pipeChannelInfo->channels.end()) {
+    return op->emitError("internal compiler error: pipe missing from pipe "
+                         "channel lowering info");
   }
   return it->second;
 }
 
 static FailureOr<Value>
 getMailboxSemIdxValue(Operation *op, Location loc,
-                      const PipeChannelLayout &pipeChannelLayout,
+                      const PipeChannelInfo &channelInfo,
                       ConversionPatternRewriter &rewriter) {
-  if (!pipeChannelLayout.mailboxSemIdxBase) {
+  if (!channelInfo.mailboxSemIdxBase) {
     return op->emitError("internal compiler error: pipe channel has no mailbox "
                          "semaphore index");
   }
   return arith::ConstantIndexOp::create(rewriter, loc,
-                                        *pipeChannelLayout.mailboxSemIdxBase)
+                                        *channelInfo.mailboxSemIdxBase)
       .getResult();
 }
 
 static FailureOr<Value>
 buildAggregateDestinationAddress(Operation *op, Location loc,
-                                 const PipeChannelLayout &pipeChannelLayout,
+                                 const PipeChannelInfo &channelInfo,
                                  ConversionPatternRewriter &rewriter) {
-  if (!pipeChannelLayout.aggregateInfo) {
+  if (!channelInfo.aggregateInfo) {
     return op->emitError("internal compiler error: aggregate pipe channel has "
                          "no receiver DFB info");
   }
 
-  const AggregateRendezvousInfo &info = *pipeChannelLayout.aggregateInfo;
+  const AggregateRendezvousInfo &info = *channelInfo.aggregateInfo;
   auto tileType =
       llvm::dyn_cast<ttcore::TileType>(info.receiverCBType.getElementType());
   if (!tileType) {
@@ -202,13 +202,13 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
 /// destination address, then signal arrival.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,
-                            const PipeRuntimeLayout *pipeRuntimeLayout,
+                            const PipeChannelLoweringInfo *pipeChannelInfo,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
-  FailureOr<PipeChannelLayout> pipeChannelLayout =
-      lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
-  if (failed(pipeChannelLayout)) {
+  FailureOr<PipeChannelInfo> channelInfo =
+      lookupPipeChannelInfo(op, pipeType, pipeChannelInfo);
+  if (failed(channelInfo)) {
     return failure();
   }
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -250,7 +250,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   int64_t expectedSignals = pipeType.isUnicast() ? 1 : numDests;
   auto senderSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, pipeChannelLayout->senderReadySemIdx);
+      rewriter, loc, channelInfo->senderReadySemIdx);
   auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
   auto senderSemPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
@@ -310,16 +310,16 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                                            rewriter.getI32IntegerAttr(0));
 
   Value dstAddr;
-  if (pipeChannelLayout->usesAggregateRendezvous()) {
+  if (channelInfo->usesAggregateRendezvous()) {
     FailureOr<Value> aggregateDstAddr =
-        buildAggregateDestinationAddress(op, loc, *pipeChannelLayout, rewriter);
+        buildAggregateDestinationAddress(op, loc, *channelInfo, rewriter);
     if (failed(aggregateDstAddr)) {
       return failure();
     }
     dstAddr = *aggregateDstAddr;
   } else {
     FailureOr<Value> mailboxSemIdx =
-        getMailboxSemIdxValue(op, loc, *pipeChannelLayout, rewriter);
+        getMailboxSemIdxValue(op, loc, *channelInfo, rewriter);
     if (failed(mailboxSemIdx)) {
       return failure();
     }
@@ -420,21 +420,22 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 }
 
 LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
-                                const PipeRuntimeLayout *pipeRuntimeLayout,
+                                const PipeChannelLoweringInfo *pipeChannelInfo,
                                 ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
-  FailureOr<PipeChannelLayout> pipeChannelLayout =
-      lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
-  if (failed(pipeChannelLayout)) {
+  FailureOr<PipeChannelInfo> channelInfo =
+      lookupPipeChannelInfo(op, pipeType, pipeChannelInfo);
+  if (failed(channelInfo)) {
     return failure();
   }
   int64_t nocIdx = getNocIndex(op);
-  if (pipeChannelLayout->usesMailbox() &&
-      nocIdx >= pipeRuntimeLayout->numMailboxStagingSems) {
+  if (channelInfo->usesMailbox() &&
+      nocIdx >= pipeChannelInfo->numMailboxStagingSems) {
     return op.emitError() << "pipe receive post uses NOC thread index "
-                          << nocIdx << ", but pipe runtime layout has only "
-                          << pipeRuntimeLayout->numMailboxStagingSems
+                          << nocIdx
+                          << ", but pipe channel lowering info has only "
+                          << pipeChannelInfo->numMailboxStagingSems
                           << " mailbox staging semaphores";
   }
   auto indexTy = rewriter.getIndexType();
@@ -456,7 +457,7 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, srcYLogical);
 
-  if (pipeChannelLayout->usesMailbox()) {
+  if (channelInfo->usesMailbox()) {
     Value receiverCB = getAttachedCB(dst);
     if (!receiverCB) {
       return rewriter.notifyMatchFailure(
@@ -499,12 +500,12 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
     }
 
     FailureOr<Value> targetMailboxSemIdx =
-        getMailboxSemIdxValue(op, loc, *pipeChannelLayout, rewriter);
+        getMailboxSemIdxValue(op, loc, *channelInfo, rewriter);
     if (failed(targetMailboxSemIdx)) {
       return failure();
     }
     auto mailboxStagingSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, pipeRuntimeLayout->mailboxStagingSemIdxBase + nocIdx);
+        rewriter, loc, pipeChannelInfo->mailboxStagingSemIdxBase + nocIdx);
     auto mailboxStagingSem =
         ttk::GetSemaphoreOp::create(rewriter, loc, mailboxStagingSemIdx);
     auto mailboxStagingPtr =
@@ -524,7 +525,7 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   }
 
   auto senderSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, pipeChannelLayout->senderReadySemIdx);
+      rewriter, loc, channelInfo->senderReadySemIdx);
   auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
   auto senderSemNocAddr = ttk::GetNocAddrOp::create(
       rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
@@ -846,9 +847,9 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   }
 }
 
-void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
-                            const PipeGraph &pipeGraph,
-                            PipeRuntimeLayout &layout) {
+void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
+                                  const PipeGraph &pipeGraph,
+                                  PipeChannelLoweringInfo &info) {
   int64_t numPipeNets = 0;
   for (const auto &[pipeNetId, pipes] : index) {
     if (!pipes.empty()) {
@@ -865,8 +866,8 @@ void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
     }
   });
 
-  layout.mailboxStagingSemIdxBase = numPipeNets;
-  layout.numMailboxStagingSems = numMailboxStagingSems;
+  info.mailboxStagingSemIdxBase = numPipeNets;
+  info.numMailboxStagingSems = numMailboxStagingSems;
   int64_t firstSourceLocalSemIdx = numPipeNets + numMailboxStagingSems;
   llvm::DenseMap<PipeKey, int64_t> nextSemaphoreIdxBySource;
   SmallVector<int64_t> sortedPipeNetIds;
@@ -898,27 +899,27 @@ void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
           sourceKey, firstSourceLocalSemIdx);
       int64_t &nextSemaphoreIdx = emplaceResult.first->second;
       int64_t senderReadySemIdx = nextSemaphoreIdx++;
-      PipeChannelLayout channelLayout{};
-      channelLayout.senderReadySemIdx = senderReadySemIdx;
+      PipeChannelInfo channelInfo{};
+      channelInfo.senderReadySemIdx = senderReadySemIdx;
       const ReceiverCBInfo *receiverInfo =
           pipeGraph.lookupReceiverCB(getPipeKey(pipeType));
       if (receiverInfo && canUseAggregateRendezvous(pipeInfo)) {
-        channelLayout.kind = PipeChannelKind::AggregateRendezvous;
-        channelLayout.aggregateInfo =
+        channelInfo.kind = PipeChannelKind::AggregateRendezvous;
+        channelInfo.aggregateInfo =
             AggregateRendezvousInfo{receiverInfo->cbIndex, receiverInfo->cbType,
                                     receiverInfo->staticTileOffset};
       } else {
-        channelLayout.kind = PipeChannelKind::PostedMailbox;
-        channelLayout.mailboxSemIdxBase = nextSemaphoreIdx++;
+        channelInfo.kind = PipeChannelKind::PostedMailbox;
+        channelInfo.mailboxSemIdxBase = nextSemaphoreIdx++;
       }
-      layout.channels[getPipeKey(pipeType)] = channelLayout;
+      info.channels[getPipeKey(pipeType)] = channelInfo;
     }
   }
 }
 
 LogicalResult
-verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
-                                    const PipeRuntimeLayout &layout) {
+verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
+                                          const PipeChannelLoweringInfo &info) {
   enum class ResourceKind {
     ReceiverArrival,
     MailboxStaging,
@@ -940,17 +941,19 @@ verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
     }
   };
 
-  if (layout.mailboxStagingSemIdxBase > 0) {
-    observe(layout.mailboxStagingSemIdxBase - 1, ResourceKind::ReceiverArrival);
+  if (info.mailboxStagingSemIdxBase > 0) {
+    observe(info.mailboxStagingSemIdxBase - 1, ResourceKind::ReceiverArrival);
   }
-  if (layout.numMailboxStagingSems > 0) {
-    observe(layout.mailboxStagingSemIdxBase + layout.numMailboxStagingSems - 1,
+  if (info.numMailboxStagingSems > 0) {
+    observe(info.mailboxStagingSemIdxBase + info.numMailboxStagingSems - 1,
             ResourceKind::MailboxStaging);
   }
-  for (const auto &[pipe, channel] : layout.channels) {
+  for (const auto &[pipe, channel] : info.channels) {
     observe(channel.senderReadySemIdx, ResourceKind::SenderReady, pipe);
-    observe(channel.mailboxSemIdxBase, ResourceKind::PostedAddressMailbox,
-            pipe);
+    if (channel.mailboxSemIdxBase) {
+      observe(*channel.mailboxSemIdxBase, ResourceKind::PostedAddressMailbox,
+              pipe);
+    }
   }
 
   int64_t requiredSemaphoreIds = highest.index + 1;
