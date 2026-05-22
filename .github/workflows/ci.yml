@@ -123,11 +123,28 @@ jobs:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
-      # Build docs on any main-branch run (push, schedule, workflow_dispatch)
-      # to catch sphinx-build regressions outside of merge events. Only the
-      # push event deploys (see deploy-docs).
-      build_docs: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
+
+  build-docs:
+    name: Build documentation
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.10"
+      - name: Install documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r docs/requirements.txt
+      - name: Build documentation
+        run: sphinx-build -b html docs/sphinx build/docs/sphinx/_build/html
+      - name: Upload documentation artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ./build/docs/sphinx/_build/html
 
   build-wheels:
     needs: [resolve-docker-tag, build-docker]
@@ -163,8 +180,8 @@ jobs:
       dist_docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
 
   deploy-docs:
+    needs: build-docs
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -188,6 +205,7 @@ jobs:
       - dryrun-docker
       - changes
       - build
+      - build-docs
       - build-wheels
       - test-sim
       - test-scripts
@@ -197,5 +215,5 @@ jobs:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
-          allowed-skips: build-docker, dryrun-docker, test-dist-tutorials
+          allowed-skips: build-docker, dryrun-docker, build-docs, test-dist-tutorials
           jobs: ${{ toJSON(needs) }}
