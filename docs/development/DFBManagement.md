@@ -520,3 +520,37 @@ Index reuse is restricted to compiler-allocated DFBs. User-declared DFBs retain 
 Liveness is computed at function-level granularity. If a `CBPopOp` is inside a structured op (loop, compute region), it is projected to its enclosing operation at function-level. The infrastructure for this exists (`Block::findAncestorOpInBlock`) but is not currently exercised: all compiler-allocated DFB lifecycle ops remain at function-level because `InsertIntermediateDFBs` and `InsertCBSync` run before loop creation, and Python control flow unrolls at trace time.
 
 The type compatibility constraint prevents reuse across DFBs with different shapes or element types, even when L1 footprints happen to match. A size-based rather than type-based compatibility check could recover some reuse opportunities.
+
+## Scalar Element Access to DFBs
+
+`ttl.raw_element_read` and `ttl.raw_element_write` give data movement (noc)
+threads per-element L1 access to DFB slots. The existing DFB interface
+operates on whole blocks; these ops fill the gap for use cases like KV-cache
+updates, top-K, and element-level data manipulation in DM threads.
+
+```python
+val = ttl.raw_element_read(block, coord0, coord1, ...)
+ttl.raw_element_write(block, coord0, coord1, ..., val)
+```
+
+```mlir
+%v = ttl.raw_element_read %block[%i, %j] : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+ttl.raw_element_write %block[%i, %j], %v : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
+```
+
+Coordinates are flat scalar-element positions (one per tensor dimension).
+For tiled blocks, lowering will decompose each coordinate into tile index +
+intra-tile offset; for row-major blocks they map directly to memory offsets.
+Blocks of any rank are supported.
+
+The verifier (`verifyRawElementOp` in `TTLOps.cpp`) enforces:
+
+1. Enclosing function is a noc kernel thread.
+2. Coordinate count equals block tensor rank.
+3. Scalar type matches the block's element dtype (resolved through
+   `TileType` for tiled blocks).
+4. Only `f32` and `bf16` are accepted.
+
+Both ops carry `MemRead`/`MemWrite` side effects to prevent reordering
+across acquire/release boundaries. Lowering to TTKernel/EmitC is future
+work
