@@ -72,8 +72,14 @@ jobs:
         run: |
           python3.12 -m venv /tmp/test-venv-hw
           source /tmp/test-venv-hw/bin/activate
-          pip install dist/tt_lang-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir dist/tt_lang-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
           python .github/scripts/smoke-test-wheel.py
+
+      - name: Free disk space before tt-lang-sim wheel test
+        run: |
+          rm -rf /tmp/test-venv-hw /tmp/ttlang-prefix build dist-raw
+          python3.12 -m pip cache purge || true
+          df -h
 
       - name: Build tt-lang-sim wheel
         run: |
@@ -84,11 +90,11 @@ jobs:
         run: |
           python3.12 -m venv /tmp/test-venv-sim
           source /tmp/test-venv-sim/bin/activate
-          pip install dist/tt_lang_sim-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir dist/tt_lang_sim-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
           python .github/scripts/smoke-test-wheel.py
 
       - name: Report wheel sizes
-        run: ls -lh dist-raw/*.whl dist/*.whl
+        run: ls -lh dist/*.whl
 
       - name: Upload wheels
         uses: actions/upload-artifact@v6
