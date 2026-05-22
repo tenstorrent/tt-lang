@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List, Tuple, Union
 
 from ttl.dialects import arith
-from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type
+from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type, IndexType
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -755,6 +755,112 @@ def typecast(input: TensorBlock, dtype) -> TensorBlock:
     return ttl.typecast(result_type, input)
 
 
+def _get_block_scalar_type(block):
+    """Extract the scalar MLIR type from a block's tensor element type.
+
+    For tiled blocks (!ttcore.tile<H, W, dtype>), returns the corresponding
+    scalar type (f32 for Float32, bf16 for BFloat16).
+    For row-major blocks, returns the element type directly.
+    """
+    from ttl.dialects import ttcore
+    from ttl.ir import BF16Type
+
+    block_type = block.type
+    if not isinstance(block_type, RankedTensorType):
+        raise ValueError(f"Expected RankedTensorType block, got {block_type}")
+
+    elem_type = block_type.element_type
+    tile_type = ttcore.ir.TileType.maybe_downcast(elem_type)
+    if tile_type is not None:
+        dtype = ttcore.DataType(tile_type.data_type_as_int)
+        ctx = block_type.context
+        if dtype == ttcore.DataType.Float32:
+            return F32Type.get(ctx)
+        if dtype == ttcore.DataType.BFloat16:
+            return BF16Type.get(ctx)
+        raise ValueError(
+            f"raw element access only supports f32 and bf16, got tile dtype {dtype}"
+        )
+    if elem_type == F32Type.get(block_type.context):
+        return elem_type
+    if elem_type == BF16Type.get(block_type.context):
+        return elem_type
+    raise ValueError(
+        f"raw element access only supports f32 and bf16, got element type {elem_type}"
+    )
+
+
+@syntax("raw_element_read")
+def raw_element_read(block, *coords):
+    """Read a scalar element from a block at flat coordinates.
+
+    Coordinates are scalar-element positions within the block. The number
+    of coordinates must match the block tensor rank.
+
+    For tiled blocks, lowering decomposes them into tile + intra-tile offsets.
+
+    Only supported in data movement (noc) threads.
+
+    Args:
+        block: Block tensor (from cb.reserve() or cb.wait())
+        *coords: Index values matching the block tensor rank
+
+    Returns:
+        Scalar value matching the block's element dtype
+    """
+    if len(coords) < 1:
+        raise ValueError("raw_element_read requires at least one coordinate")
+    scalar_type = _get_block_scalar_type(block)
+    ctx = block.type.context
+    index_vals = []
+    for c in coords:
+        if isinstance(c, int):
+            index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
+        elif hasattr(c, "type") and isinstance(c.type, IndexType):
+            index_vals.append(c)
+        else:
+            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
+    return ttl.raw_element_read(scalar_type, block, index_vals)
+
+
+@syntax("raw_element_write")
+def raw_element_write(block, *args):
+    """Write a scalar value to a block at flat coordinates.
+
+    Coordinates are scalar-element positions within the block. The number
+    of coordinates must match the block tensor rank. The last argument
+    is the value to write; all preceding arguments are coordinates.
+
+    For tiled blocks, lowering decomposes them into tile + intra-tile offsets.
+
+    Only supported in data movement (noc) threads.
+
+    Args:
+        block: Block tensor (from cb.reserve() or cb.wait())
+        *args: N index values followed by the scalar value to write.
+
+    Example:
+        ttl.raw_element_write(block, row, col, val)
+    """
+
+    if len(args) < 2:
+        raise ValueError(
+            "raw_element_write requires at least one coordinate and a value"
+        )
+    coord_args = args[:-1]
+    val = args[-1]
+    ctx = block.type.context
+    index_vals = []
+    for c in coord_args:
+        if isinstance(c, int):
+            index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
+        elif hasattr(c, "type") and isinstance(c.type, IndexType):
+            index_vals.append(c)
+        else:
+            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
+    ttl.raw_element_write(block, index_vals, val)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -764,5 +870,7 @@ __all__ = [
     "signpost",
     "fill",
     "typecast",
+    "raw_element_read",
+    "raw_element_write",
     *_generated_all,
 ]

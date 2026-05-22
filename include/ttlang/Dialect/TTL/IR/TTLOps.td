@@ -1378,6 +1378,74 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// Raw element access operations (data movement threads only)
+//===----------------------------------------------------------------------===//
+
+def TTL_RawElementReadOp : TTL_Op<"raw_element_read",
+    [MemoryEffects<[MemRead]>, TTL_DataMovementOpTrait]> {
+  let summary = "Read a scalar element from a block at flat coordinates";
+  let description = [{
+    `ttl.raw_element_read` extracts a single scalar element from a block
+    (a tensor view acquired from `ttl.cb_wait` or `ttl.cb_reserve`) at
+    the given coordinates. Coordinates are flat scalar-element positions
+    regardless of layout: for tiled blocks, lowering decomposes them into
+    tile + intra-tile offsets; for row-major blocks, they index directly.
+
+    The result type must match the block's underlying scalar element type
+    (f32 for Float32, bf16 for BFloat16). Only f32 and bf16 are currently
+    supported.
+
+    This operation is restricted to data movement (noc) threads.
+
+    Example:
+    ```mlir
+    %val = ttl.raw_element_read %block[%i, %j]
+           : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$block,
+    Variadic<Index>:$coords
+  );
+  let results = (outs AnyTypeOf<[F32, BF16]>:$result);
+  let assemblyFormat =
+      "$block `[` $coords `]` attr-dict `:` type($block) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
+    [MemoryEffects<[MemRead, MemWrite]>, TTL_DataMovementOpTrait]> {
+  let summary = "Write a scalar value to a block at flat coordinates";
+  let description = [{
+    `ttl.raw_element_write` stores a single scalar value into a block
+    (a tensor view acquired from `ttl.cb_wait` or `ttl.cb_reserve`) at
+    the given coordinates. Coordinates are flat scalar-element positions
+    regardless of layout: for tiled blocks, lowering decomposes them into
+    tile + intra-tile offsets; for row-major blocks, they index directly.
+
+    The value type must match the block's underlying scalar element type
+    (f32 for Float32, bf16 for BFloat16). Only f32 and bf16 are currently
+    supported.
+
+    This operation is restricted to data movement (noc) threads.
+
+    Example:
+    ```mlir
+    ttl.raw_element_write %block[%i, %j], %val
+           : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$block,
+    Variadic<Index>:$coords,
+    AnyTypeOf<[F32, BF16]>:$value
+  );
+  let assemblyFormat =
+      "$block `[` $coords `]` `,` $value attr-dict `:` type($block) `,` type($value)";
+  let hasVerifier = 1;
+}
+
 def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait]> {
   let summary = "Store a tile into a circular buffer view";
   let description = [{
