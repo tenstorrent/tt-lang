@@ -4,7 +4,6 @@
 
 """Negative tests for pipe schedules that would deadlock at runtime."""
 
-
 import pytest
 import torch
 import ttl
@@ -122,14 +121,13 @@ def receive_wait_unanalyzable_guard_kernel(inp):
     @ttl.datamovement()
     def receive_wait_under_unsupported_coord_guard():
         node_x, _node_y = ttl.node(dims=2)
-        if node_x == 0:
+
+        def send(pipe):
             with send_cb.reserve() as send_blk:
                 ttl.copy(inp[0, 0], send_blk).wait()
+                ttl.copy(send_blk, pipe).wait()
 
-                def send(pipe):
-                    ttl.copy(send_blk, pipe).wait()
-
-                net.if_src(send)
+        net.if_src(send)
 
         def recv(pipe):
             with recv_cb.reserve() as recv_blk:

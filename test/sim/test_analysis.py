@@ -423,7 +423,7 @@ class TestCopyWaitAnalysis:
 
             send()
 
-        ips = analyze_thread_function(dm).injection_points
+        ips = analyze_kernel_function(dm).injection_points
         assert ips == ()
 
     def test_wait_before_assignment_does_not_suppress_injection(self):
