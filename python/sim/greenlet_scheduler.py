@@ -22,7 +22,7 @@ from .diagnostics import (
     is_simulator_frame,
     format_node_ranges,
 )
-from .trace import get_dfb_name, trace
+from .trace import trace
 
 
 @dataclass(frozen=True)
@@ -198,7 +198,7 @@ class GreenletScheduler:
         if self._main_greenlet is None:
             raise RuntimeError("Main greenlet not set")
 
-        trace("kernel_block", op=operation, on=get_dfb_name(blocking_obj))
+        trace("kernel_block", op=operation, on=blocking_obj._trace_name)
         self._main_greenlet.switch()
         trace("kernel_unblock")
 

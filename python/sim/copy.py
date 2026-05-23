@@ -87,6 +87,10 @@ class CopyTransaction:
         self._src = src
         self._dst = dst
         self._completed = False
+        # Stable trace label, computed once at construction so the scheduler
+        # can read it via direct attribute access from inside the hot
+        # block_current_kernel path instead of paying for a getattr/fallback.
+        self._trace_name: str = f"tx_{id(self) & 0xFFFF:04x}"
 
         # Lookup and store the handler for this type combination
         handler = self._lookup_handler(type(src), type(dst))

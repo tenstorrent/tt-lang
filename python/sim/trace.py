@@ -88,30 +88,6 @@ def trace(event: str, **data: Any) -> None:
     )
 
 
-def get_dfb_name(dfb: Any) -> str:
-    """Return a stable display name for a DataflowBuffer.
-
-    Checks for a registered stats name, then a numeric ID, then falls back
-    to a hex object-identity suffix. Does not mutate any counters.
-
-    Args:
-        dfb: A DataflowBuffer instance.
-
-    Returns:
-        A short string identifying the DFB.
-    """
-    name = getattr(dfb, "_stats_name", None)
-    if name:
-        return name
-    name = getattr(dfb, "_name", None)
-    if name:
-        return name
-    dfb_id = getattr(dfb, "_dfb_id", None)
-    if dfb_id is not None:
-        return f"dfb_{dfb_id}"
-    return f"dfb_{id(dfb) & 0xFFFF:04x}"
-
-
 def get_pipe_name(pipe: Any) -> str:
     """Return a stable display name for a Pipe, matching the stats naming convention.
 
