@@ -67,7 +67,6 @@ struct ReceiverDFBInfo {
   CircularBufferType dfbType; // Receiver DFB type
   int64_t staticTileOffset;   // Static destination tile offset within the DFB
   int64_t gatherSlotIdx;      // Slot index for overlap patterns (0 if none)
-  int64_t numReserveSlots;    // Number of static receiver slots for this DFB
   int64_t blockCount;         // DFB block_count
   Location loc;               // Source location for error reporting
 };
@@ -102,8 +101,8 @@ public:
   /// Assign per-pipe slot indices via greedy coloring keyed by
   /// (receiver, DFB index). Pipes sharing a receiver DFB get distinct
   /// slots so their writes do not overwrite each other in that receiver's
-  /// DFB. Slot assignment follows first receive-post order because non-loopback
-  /// aggregate sends use the slot to reconstruct the receiver DFB address.
+  /// DFB. Slot assignment is sorted by pipe coordinates for deterministic
+  /// results under user pipe reordering.
   void assignGatherSlotIndices();
 
   /// Each pipe needs `block_count >= gatherSlotIdx + 1` in its receiver
@@ -114,7 +113,6 @@ public:
 
 private:
   llvm::DenseMap<PipeKey, ReceiverDFBInfo> receiverDFBs;
-  SmallVector<PipeKey> receiverOrder;
 };
 
 } // namespace mlir::tt::ttl

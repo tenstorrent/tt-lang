@@ -51,8 +51,7 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
     return success();
   }
   receiverDFBs.insert(
-      {key, {dfbIndex, dfbType, staticTileOffset, 0, 0, blockCount, loc}});
-  receiverOrder.push_back(key);
+      {key, {dfbIndex, dfbType, staticTileOffset, 0, blockCount, loc}});
   return success();
 }
 
@@ -84,7 +83,19 @@ void PipeGraph::assignGatherSlotIndices() {
   llvm::DenseMap<ReceiverKey, llvm::SmallSet<int64_t, 4>, ReceiverKeyInfo>
       usedAtReceiver;
 
-  for (const PipeKey &pk : receiverOrder) {
+  SmallVector<PipeKey> sortedKeys;
+  sortedKeys.reserve(receiverDFBs.size());
+  for (const auto &entry : receiverDFBs) {
+    sortedKeys.push_back(entry.first);
+  }
+  llvm::sort(sortedKeys, [](const PipeKey &lhs, const PipeKey &rhs) {
+    return std::make_tuple(lhs.srcX, lhs.srcY, lhs.dstStartX, lhs.dstStartY,
+                           lhs.dstEndX, lhs.dstEndY, lhs.pipeNetId) <
+           std::make_tuple(rhs.srcX, rhs.srcY, rhs.dstStartX, rhs.dstStartY,
+                           rhs.dstEndX, rhs.dstEndY, rhs.pipeNetId);
+  });
+
+  for (const PipeKey &pk : sortedKeys) {
     auto it = receiverDFBs.find(pk);
     const int64_t dfbIndex = it->second.dfbIndex;
 
@@ -119,16 +130,6 @@ void PipeGraph::assignGatherSlotIndices() {
     }
   }
 
-  llvm::DenseMap<int64_t, int64_t> numReserveSlotsByDFB;
-  for (auto &entry : receiverDFBs) {
-    ReceiverDFBInfo &info = entry.second;
-    int64_t &numReserveSlots = numReserveSlotsByDFB[info.dfbIndex];
-    numReserveSlots = std::max(numReserveSlots, info.gatherSlotIdx + 1);
-  }
-  for (auto &entry : receiverDFBs) {
-    ReceiverDFBInfo &info = entry.second;
-    info.numReserveSlots = numReserveSlotsByDFB.lookup(info.dfbIndex);
-  }
 }
 
 LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {

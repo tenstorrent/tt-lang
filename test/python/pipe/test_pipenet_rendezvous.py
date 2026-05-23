@@ -204,12 +204,12 @@ def make_degenerate_multicast_aggregate_kernel():
     return degenerate_multicast_aggregate
 
 
-def make_non_loopback_multicast_aggregate_kernel():
+def make_non_loopback_multicast_kernel():
     bcast_pipe = ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))
     bcast_net = ttl.PipeNet([bcast_pipe])
 
     @ttl.operation(grid=(4, 1))
-    def non_loopback_multicast_aggregate(inp, out):
+    def non_loopback_multicast(inp, out):
         _bcast_net = bcast_net
 
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -241,7 +241,7 @@ def make_non_loopback_multicast_aggregate_kernel():
                 with out_dfb.wait() as out_blk:
                     ttl.copy(out_blk, out[0, node_x]).wait()
 
-    return non_loopback_multicast_aggregate
+    return non_loopback_multicast
 
 
 def make_row_all_to_all_multicast_kernel():
@@ -421,9 +421,7 @@ posted_gather_kernel = make_two_net_posted_gather_kernel()
 same_source_two_pipe_kernel = make_same_source_two_pipe_kernel()
 loopback_multicast_aggregate_kernel = make_loopback_multicast_aggregate_kernel()
 degenerate_multicast_aggregate_kernel = make_degenerate_multicast_aggregate_kernel()
-non_loopback_multicast_aggregate_kernel = (
-    make_non_loopback_multicast_aggregate_kernel()
-)
+non_loopback_multicast_kernel = make_non_loopback_multicast_kernel()
 row_all_to_all_multicast_kernel = make_row_all_to_all_multicast_kernel()
 grid_all_to_all_multicast_kernel = make_grid_all_to_all_multicast_kernel()
 
@@ -748,7 +746,7 @@ def test_degenerate_multicast_uses_aggregate_rendezvous(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_non_loopback_multicast_uses_aggregate_rendezvous(device):
+def test_non_loopback_multicast_uses_posted_mailbox_until_address_table(device):
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 4 * TILE, dtype=torch.bfloat16)
     expected = out_torch.clone()
@@ -757,7 +755,7 @@ def test_non_loopback_multicast_uses_aggregate_rendezvous(device):
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
 
-    non_loopback_multicast_aggregate_kernel(inp, out)
+    non_loopback_multicast_kernel(inp, out)
     ttnn.synchronize_device(device)
 
     result = ttnn.to_torch(out)

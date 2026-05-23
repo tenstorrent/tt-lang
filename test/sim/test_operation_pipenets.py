@@ -138,13 +138,13 @@ class TestPipeSyncSemaphores:
 
         assert graph.num_pipe_sync_semaphores(num_noc_threads=1) == 3
 
-    def test_single_non_loopback_multicast_uses_aggregate_rendezvous(self):
+    def test_single_non_loopback_multicast_keeps_posted_mailbox(self):
         graph = OperationPipeNets()
         graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng((1, 0), (4, 1)))])
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 5
 
-    def test_disjoint_non_loopback_multicast_uses_aggregate_rendezvous(self):
+    def test_disjoint_non_loopback_multicast_keeps_posted_mailbox(self):
         graph = OperationPipeNets()
         graph.add_pipe_net(
             [
@@ -153,7 +153,7 @@ class TestPipeSyncSemaphores:
             ]
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 5
 
     def test_overlapping_non_loopback_multicast_keeps_posted_mailbox(self):
         graph = OperationPipeNets()

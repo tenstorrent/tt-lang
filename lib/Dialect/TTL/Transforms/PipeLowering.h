@@ -28,33 +28,49 @@ struct PipeInfo {
   bool isMulticast;
 };
 
-enum class PipeChannelKind {
+enum class PipeAddressStorageKind {
   PostedMailbox,
-  AggregateRendezvous,
+  LocalReceiverDFB,
 };
 
-struct AggregateRendezvousInfo {
+struct LocalReceiverDFBAddressInfo {
   int64_t receiverCBIndex;
   CircularBufferType receiverCBType;
   int64_t staticTileOffset;
-  int64_t receiverReserveSlot;
-  int64_t numReceiverReserveSlots;
-  bool sourceInDestination;
 };
 
-/// Lowering information for one logical pipe channel. The sender-ready counter
-/// is always present. Posted-mailbox channels also reserve one source-local
-/// mailbox word; aggregate channels instead record the uniform receiver DFB
-/// address information needed to avoid per-destination mailboxes.
-struct PipeChannelInfo {
+struct PipeReadyCounterInfo {
   int64_t senderReadySemIdx;
-  PipeChannelKind kind;
-  std::optional<int64_t> mailboxSemIdxBase;
-  std::optional<AggregateRendezvousInfo> aggregateInfo;
+};
 
-  bool usesMailbox() const { return kind == PipeChannelKind::PostedMailbox; }
+/// Address storage used by one logical pipe channel. Posted-mailbox channels
+/// carry receiver-authored addresses in source-local storage. Local receiver
+/// DFB channels are limited to source-in-destination multicast, where the
+/// sender also executes the receive post and can read the receiver DFB address
+/// directly.
+struct PipeAddressStorageInfo {
+  PipeAddressStorageKind kind;
+  std::optional<int64_t> mailboxSemIdxBase;
+  std::optional<LocalReceiverDFBAddressInfo> localReceiverDFB;
+
+  bool usesMailbox() const {
+    return kind == PipeAddressStorageKind::PostedMailbox;
+  }
+  bool usesLocalReceiverDFB() const {
+    return kind == PipeAddressStorageKind::LocalReceiverDFB;
+  }
+};
+
+/// Lowering information for one logical pipe channel. This keeps address
+/// storage separate from readiness counting so later channel-table and
+/// GlobalSemaphore allocation can replace either resource independently.
+struct PipeChannelInfo {
+  PipeReadyCounterInfo readyCounter;
+  PipeAddressStorageInfo addressStorage;
+
+  bool usesMailbox() const { return addressStorage.usesMailbox(); }
   bool usesAggregateRendezvous() const {
-    return kind == PipeChannelKind::AggregateRendezvous;
+    return addressStorage.usesLocalReceiverDFB();
   }
 };
 
@@ -62,12 +78,6 @@ struct PipeChannelInfo {
 /// pipe receive wait_min progress.
 using PipeNetCounterMap =
     llvm::DenseMap<func::FuncOp, llvm::DenseMap<int64_t, Value>>;
-
-/// Per-function map: PipeKey -> kernel-local i32 counter for aggregate
-/// non-loopback sends. Source-in-destination multicast uses the source core's
-/// receiver DFB write pointer directly because the source also posts.
-using AggregateEpochCounterMap =
-    llvm::DenseMap<func::FuncOp, llvm::DenseMap<PipeKey, Value>>;
 
 /// pipeNetId -> deduplicated list of pipes in that net. Built once
 /// before lowering so is_src/is_dst/is_active patterns avoid walking the
@@ -105,18 +115,11 @@ void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
 /// pipeNetId used by a pipe receive.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
-/// At each function entry, emit one zero-initialized `memref<1xi32>` per
-/// non-loopback aggregate channel used by a sender.
-void allocateAggregateEpochCounters(ModuleOp mod,
-                                    const PipeChannelLoweringInfo &info,
-                                    AggregateEpochCounterMap &counters);
-
 /// Lower CB -> Pipe copy (sender side). Uses receiver-published destination
 /// addresses and signals destinations via semaphore.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,
                             const PipeChannelLoweringInfo *pipeChannelInfo,
-                            const AggregateEpochCounterMap *epochCounters,
                             ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive address publication.

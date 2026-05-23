@@ -237,11 +237,13 @@ slots; pipes whose ranges are disjoint may reuse slot 0.
 
 Each receive post identifies one concrete DFB write pointer. In
 mailbox-based cases, the receiver writes that address to sender-visible
-storage. In aggregate multicast cases, the compiler uses the static
-receiver slot and DFB metadata to reconstruct the same address at the
-sender. Overlapping arrivals are safe because the user reserves one DFB
-block per receive callback and slot assignment proves the receiver DFB
-has enough blocks.
+storage. Current aggregate multicast lowering is restricted to
+source-in-destination pipes; in that case the source core also executes
+a receive post and can read the local receiver DFB write pointer
+directly.
+Overlapping arrivals are safe because the user reserves one DFB block
+per receive callback and slot assignment proves the receiver DFB has
+enough blocks.
 
 This is the same mechanism unicast gather uses (N unicast pipes to one
 destination get slot indices `0..N-1`); the only difference is that
@@ -284,10 +286,11 @@ multicast. The proof tracks four points in the lowered IR:
    (`PipeGraph.cpp`) runs at compile time, assigns each pipe a slot
    index `0..N-1`, and verifies the receiver DFB has enough blocks for
    all concurrently live arrivals. Mailbox-based sends use the
-   receiver's posted write pointer; aggregate multicast sends derive
-   the same address from uniform receiver DFB metadata. Future batched
-   slot reuse could allow fewer receiver DFB blocks by scheduling
-   overlapping senders in capacity-bounded groups.
+   receiver's posted write pointer; current aggregate multicast sends
+   are source-in-destination and use the source core's local receiver
+   DFB write pointer. Future batched slot reuse could allow fewer
+   receiver DFB blocks by scheduling overlapping senders in
+   capacity-bounded groups.
 2. No inter-sender wait. Each sender waits only for its own receivers to
    publish destination addresses, performs its own NOC write, then
    increments the receiver completion semaphore. No sender reads a
@@ -808,8 +811,8 @@ runtime-observable.
 | 62 | Lowering: loopback mcast (sender in dst range) uses `noc_async_write_multicast_loopback_src` + local recvSem inc |  |  |  X  |
 | 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"multicast overlap"` (and `"gather"` for unicast) |  |  |  X  |
 | 64 | Lowering: aggregate multicast receive posts increment sender-ready count without publishing mailbox addresses |  |  |  X  |
-| 65 | Lowering: non-loopback aggregate multicast uses a sender-local epoch counter to reconstruct the receiver DFB address | X | | X |
-| 66 | Semaphore counting: non-loopback multicast aggregates when receiver slots are static, and keeps mailbox fallback for overlapping receivers | | X | |
+| 65 | Lowering: non-loopback multicast keeps posted-address mailbox until receiver-authored address tables exist | X | | X |
+| 66 | Semaphore counting: non-loopback multicast counts posted-address mailbox resources | | X | |
 | 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
 | 68 | Schedule verifier rejects same-thread send before receive address publication | X | | X |
 
@@ -843,38 +846,35 @@ destination in the multicast range to post before issuing the write.
 
 ### Posted-address mailbox
 
-Unicast and overlapping non-loopback multicast use the posted-address
-mailbox protocol. The receive post publishes the concrete receiver DFB
-address to a sender-visible mailbox and increments the sender-ready
-semaphore. The send waits for readiness, reads the mailbox address, and
-writes the payload to that receiver-owned DFB block. The current
+Unicast and non-loopback multicast use the posted-address mailbox
+protocol. The receive post publishes the concrete receiver DFB address
+to a sender-visible mailbox and increments the sender-ready semaphore.
+The send waits for readiness, reads the mailbox address, and writes the
+payload to that receiver-owned DFB block. The current
 implementation uses semaphore L1 words as mailbox storage and one local
 staging word per NOC data-movement thread before
 `remote_sram_write_u32`. Planned SRAM scratch lowering can replace
 those semaphore-backed mailbox words with explicit scratch allocation
 when that feature exists.
 
-Overlapping non-loopback multicast keeps this protocol because multiple
-receiver reserve slots can be live. The sender must use the address
-published by the specific receive post until channel lifetime and slot
-reuse are represented explicitly.
+Non-loopback multicast keeps this protocol because the sender does not
+execute the receiver post. It must consume a receiver-authored address
+instead of reconstructing receiver DFB state from sender-local counters.
 
 ### Aggregate multicast rendezvous
 
-Uniform multicast can avoid per-pipe mailbox storage. Each receiver
-post increments one sender-ready counter. The sender waits until the
-counter reaches the destination count, computes one proven-uniform DFB
-destination address, issues one multicast payload write, and signals
-receiver completion with the existing per-PipeNet completion counter.
+Source-in-destination uniform multicast can avoid per-pipe mailbox
+storage. Each receiver post increments one sender-ready counter. The
+sender waits until the counter reaches the destination count, reads the
+local receiver DFB address, issues one multicast payload write, and
+signals receiver completion with the existing per-PipeNet completion
+counter.
 
 Source-in-destination multicast computes the destination address from
 the local receiver DFB state, because the sender also executes a
-receive post. Non-loopback multicast has no local receiver post, so
-lowering allocates a sender-local epoch counter for each aggregate
-channel. The sender combines the epoch, the static receiver slot, and
-the receiver DFB layout to reconstruct the destination address that the
-receiver reserved. This aggregate form is used only when the receiver
-DFB has one static reserve slot.
+receive post. Non-loopback aggregate multicast requires an explicit
+receiver-authored address table; it is not lowered as aggregate by the
+current implementation.
 
 Until issue #617 adds per-destination multicast receive addresses, all
 receivers for one multicast pipe must publish equivalent DFB addresses.
