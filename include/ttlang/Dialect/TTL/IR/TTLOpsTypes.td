@@ -103,13 +103,18 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let assemblyFormat = "`<` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` `net` $pipeNetId `>`";
 
   let extraClassDeclaration = [{
-    /// Returns true if this is a unicast pipe (single destination).
-    bool isUnicast() const {
+    /// Returns true if this pipe has one receiver in its destination extent.
+    bool hasSingleReceiver() const {
       return getDstStartX() == getDstEndX() && getDstStartY() == getDstEndY();
     }
 
     /// Returns true if this pipe has more than one receiver.
-    bool hasMultipleReceivers() const { return !isUnicast(); }
+    bool hasMultipleReceivers() const { return !hasSingleReceiver(); }
+
+    LLVM_DEPRECATED("Use hasSingleReceiver instead", "hasSingleReceiver")
+    bool isUnicast() const { return hasSingleReceiver(); }
+
+    LLVM_DEPRECATED("Use hasMultipleReceivers instead", "hasMultipleReceivers")
     bool isMulticast() const { return hasMultipleReceivers(); }
 
     /// Returns the number of destination cores.

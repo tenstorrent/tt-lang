@@ -96,10 +96,10 @@ struct PipeSramScratchInfo {
   int64_t bytes = 0;
 };
 
-/// Static resource allocation used by pipe lowering. Receiver-completion semaphore
-/// indices are global. Sender-ready indices only need to be unique among pipes
-/// that share a source core. Address table offsets are global within the
-/// compiler-managed SRAM scratch allocation.
+/// Static resource allocation used by pipe lowering. Receiver-completion
+/// semaphore indices are global. Sender-ready indices only need to be unique
+/// among pipes that share a source core. Address table offsets are global
+/// within the compiler-managed SRAM scratch allocation.
 struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
@@ -108,17 +108,15 @@ struct PipeResourcePlan {
 
 /// Diagnose layouts that exceed the hardware semaphore id limit before
 /// emitting ttkernel.get_semaphore ops with invalid ids.
-LogicalResult
-verifyPipeResourcePlanFitsHardware(ModuleOp mod,
-                                   const PipeResourcePlan &info);
+LogicalResult verifyPipeResourcePlanFitsHardware(ModuleOp mod,
+                                                 const PipeResourcePlan &info);
 
 /// Return the number of semaphore ids referenced by the selected pipe lowering.
 int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info);
 
 /// Return the number of GlobalSemaphore descriptors referenced by pipe
 /// lowering.
-int64_t
-getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info);
+int64_t getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info);
 
 /// Return the per-core SRAM scratch bytes required by pipe address storage.
 int64_t getRequiredPipeSramScratchBytes(const PipeResourcePlan &info);

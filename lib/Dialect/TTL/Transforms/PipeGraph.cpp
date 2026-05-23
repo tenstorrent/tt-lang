@@ -137,9 +137,10 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
   for (auto &[pk, info] : receiverDFBs) {
     int64_t requiredBlocks = info.gatherSlotIdx + 1;
     if (info.blockCount < requiredBlocks) {
-      bool isUnicast = pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
+      bool hasSingleReceiver =
+          pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
       return emitError(info.loc)
-             << (isUnicast ? "gather" : "collective overlap")
+             << (hasSingleReceiver ? "gather" : "collective overlap")
              << " pipe receiver DFB has block_count=" << info.blockCount
              << " but slot " << info.gatherSlotIdx
              << " is assigned to this pipe; "
@@ -285,9 +286,10 @@ static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
   return linearOffset;
 }
 
-static LogicalResult
-addPipeReceiver(PipeGraph &graph, Operation *op, PipeType pipeType,
-                PipeTransferContract transferContract, Value dst) {
+static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
+                                     PipeType pipeType,
+                                     PipeTransferContract transferContract,
+                                     Value dst) {
   Value dstDFB = getAttachedCB(dst);
   if (!dstDFB) {
     return op->emitError("pipe receive destination is not attached to a DFB");
@@ -331,15 +333,15 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
     if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {
       auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
       PipeKey key = getPipeKey(pipeType);
-      PipeTransferContract contract =
-          pipeType.hasMultipleReceivers() ? PipeTransferContract::Collective
+      PipeTransferContract contract = pipeType.hasMultipleReceivers()
+                                          ? PipeTransferContract::Collective
                                           : PipeTransferContract::PointToPoint;
       auto contractIt = transferContracts.find(key);
       if (contractIt != transferContracts.end()) {
         contract = contractIt->second;
       }
-      walkResult = addPipeReceiver(graph, op, pipeType, contract,
-                                   postOp.getDst());
+      walkResult =
+          addPipeReceiver(graph, op, pipeType, contract, postOp.getDst());
       return;
     }
   });

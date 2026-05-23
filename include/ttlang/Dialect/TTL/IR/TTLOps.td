@@ -507,7 +507,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$pipeNetId,
     // Optional user-facing name for the owning PipeNet, used only to
     // render diagnostics in source-level terms (e.g.
-    // `mcast_a_net.is_active()` instead of `net_<id>.is_active()`).
+    // `a_pipe_net.is_active()` instead of `net_<id>.is_active()`).
     // No effect on op semantics.
     OptionalAttr<StrAttr>:$pipeNetName,
     OptionalAttr<BoolAttr>:$isCollective
@@ -519,7 +519,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let hasVerifier = 1;
 
   let builders = [
-    // Builder for unicast pipe (single destination, pipeNetId = 0)
+    // Builder for a single-receiver pipe with pipeNetId = 0.
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstX, "int64_t":$dstY), [{
       build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);

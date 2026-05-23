@@ -425,8 +425,8 @@ def copy(src, dst) -> CopyTransferHandler:
     For single-tile CBs (shape 1x1), use index syntax: tensor[0, 0]
 
     For pipe transfers:
-        ttl.copy(block, pipe) - send from CB to pipe (multicast write)
-        ttl.copy(pipe, block) - receive from pipe to CB (no-op, data arrives via multicast)
+        ttl.copy(block, pipe) - send from DFB block to pipe
+        ttl.copy(pipe, block) - receive from pipe to DFB block
     """
     # Check for pipe operands first
     src_is_pipe = _is_pipe(src)
@@ -438,7 +438,7 @@ def copy(src, dst) -> CopyTransferHandler:
             raise ValueError("copy() cannot transfer directly between two pipes")
 
         if dst_is_pipe:
-            # CB -> Pipe (send via multicast)
+            # DFB -> Pipe send.
             if not _is_block(src):
                 raise ValueError(
                     "copy() to pipe requires block src (from cb.reserve() or cb.wait())"
@@ -449,8 +449,7 @@ def copy(src, dst) -> CopyTransferHandler:
             xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
             return ttl.copy(xf_type, src_cb, pipe_val)
         else:
-            # Pipe -> CB (receive, data arrives via multicast from source)
-            # No transfer kind - data is already in CB after source's write barrier
+            # Pipe -> DFB receive. The sender writes into the receiver-owned block.
             if not _is_block(dst):
                 raise ValueError(
                     "copy() from pipe requires block dst (from cb.reserve() or cb.wait())"

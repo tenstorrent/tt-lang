@@ -219,8 +219,8 @@ buildAddressTableDestinationAddress(Operation *op, Location loc,
     return failure();
   }
   Value tableAddress = addByteOffset(
-      loc, *scratchBase, pipeResource.addressStorage.sramAddressTable.byteOffset,
-      rewriter);
+      loc, *scratchBase,
+      pipeResource.addressStorage.sramAddressTable.byteOffset, rewriter);
   // [Device 2.0] Address tables are compiler-managed SRAM state; only this
   // final load should depend on raw L1 pointer operations.
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -447,7 +447,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     return failure();
   }
 
-  if (pipeType.isUnicast()) {
+  if (pipeType.hasSingleReceiver()) {
     auto nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
                                              dstStartYVal, *dstAddr);
     ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr, nocAddr.getResult(),
@@ -474,7 +474,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
   // Signal that data has arrived.
-  if (pipeType.isUnicast()) {
+  if (pipeType.hasSingleReceiver()) {
     // Point-to-point: atomically increment destination's semaphore.
     auto semIdx = arith::ConstantIndexOp::create(
         rewriter, loc, completionInfo->receiverSemIdx);
@@ -909,10 +909,10 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
     }
     for (PipeInfo &pipeInfo : index[netId]) {
       PipeType existingType = pipeInfo.pipeType;
-      PipeKey existingKey{existingType.getSrcX(), existingType.getSrcY(),
-                          existingType.getDstStartX(),
-                          existingType.getDstStartY(),
-                          existingType.getDstEndX(), existingType.getDstEndY()};
+      PipeKey existingKey{
+          existingType.getSrcX(),      existingType.getSrcY(),
+          existingType.getDstStartX(), existingType.getDstStartY(),
+          existingType.getDstEndX(),   existingType.getDstEndY()};
       if (existingKey == key) {
         pipeInfo.transferContract = PipeTransferContract::Collective;
         break;
@@ -1032,8 +1032,7 @@ int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info) {
   return highestSemaphoreIdx + 1;
 }
 
-int64_t
-getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info) {
+int64_t getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info) {
   int64_t highestGlobalSemaphoreIndex = -1;
   for (const auto &[pipe, resource] : info.resources) {
     (void)pipe;
@@ -1050,9 +1049,8 @@ int64_t getRequiredPipeSramScratchBytes(const PipeResourcePlan &info) {
   return info.sramScratch.bytes;
 }
 
-LogicalResult
-verifyPipeResourcePlanFitsHardware(ModuleOp mod,
-                                   const PipeResourcePlan &info) {
+LogicalResult verifyPipeResourcePlanFitsHardware(ModuleOp mod,
+                                                 const PipeResourcePlan &info) {
   enum class ResourceKind {
     ReceiverCompletion,
     SenderReady,
@@ -1079,8 +1077,8 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod,
   }
   for (const auto &[pipe, resource] : info.resources) {
     if (resource.readyCounter.kind == PipeReadyCounterKind::LocalSemaphore) {
-      observe(resource.readyCounter.senderReadySemIdx, ResourceKind::SenderReady,
-              pipe);
+      observe(resource.readyCounter.senderReadySemIdx,
+              ResourceKind::SenderReady, pipe);
     }
   }
 

@@ -1431,10 +1431,10 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   state.sawError = true;
 }
 
-// Verify the hidden pipe synchronization introduced by receiver-advertised pipe lowering.
-// Receive-side ttl.copy publishes the address; ttl.wait on that handle waits
-// for completion. Modeling those as distinct events preserves async copy
-// semantics while rejecting wait-for cycles.
+// Verify the hidden pipe synchronization introduced by receiver-advertised pipe
+// lowering. Receive-side ttl.copy publishes the address; ttl.wait on that
+// handle waits for completion. Modeling those as distinct events preserves
+// async copy semantics while rejecting wait-for cycles.
 void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   SmallVector<PipeScheduleNode> nodes;
   SmallVector<std::pair<unsigned, PipeType>> sendNodes;

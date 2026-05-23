@@ -169,7 +169,7 @@ def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
 
 
 def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
-    """Yield each node coordinate covered by a unicast or multicast destination."""
+    """Yield each node coordinate covered by a pipe destination."""
     if isinstance(dst, NodeCoord):
         yield dst.coords
         return
@@ -199,12 +199,12 @@ def _validate_consistent_coord_rank(pipe_nets: List[PipeNetUse]) -> None:
 def _validate_no_mixed_kinds(pipes: Tuple[PipeUse, ...]) -> None:
     # Spec: `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]])`. The shared
     # type variable means every pipe in a PipeNet has the same destination
-    # type — all unicast or all multicast.
-    has_unicast = any(isinstance(p.dst, NodeCoord) for p in pipes)
-    has_multicast = any(isinstance(p.dst, NodeRange) for p in pipes)
-    if has_unicast and has_multicast:
+    # type, which also fixes the current transfer contract.
+    has_point_to_point = any(isinstance(p.dst, NodeCoord) for p in pipes)
+    has_collective = any(isinstance(p.dst, NodeRange) for p in pipes)
+    if has_point_to_point and has_collective:
         raise ValueError(
-            "PipeNet may not mix unicast and multicast pipes "
+            "PipeNet may not mix point-to-point and collective pipes "
             "(spec: PipeNet[DstT] requires all pipes to share DstT); "
             "use separate PipeNets."
         )
