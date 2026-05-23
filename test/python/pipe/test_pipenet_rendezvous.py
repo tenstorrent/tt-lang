@@ -204,13 +204,79 @@ def make_degenerate_multicast_aggregate_kernel():
     return degenerate_multicast_aggregate
 
 
-def make_non_loopback_multicast_kernel():
-    bcast_pipe = ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))
-    bcast_net = ttl.PipeNet([bcast_pipe])
+def _make_full_grid_fanout_pipes(grid_width, grid_height, recipient_count):
+    source_coord = (0, 0)
+    maximum_recipient_count = grid_width * grid_height - 1
+    if recipient_count < 1 or recipient_count > maximum_recipient_count:
+        raise ValueError(
+            f"recipient_count must be in [1, {maximum_recipient_count}], "
+            f"got {recipient_count}"
+        )
 
-    @ttl.operation(grid=(4, 1))
-    def non_loopback_multicast(inp, out):
-        _bcast_net = bcast_net
+    remaining_recipient_count = recipient_count
+    pipes = []
+    if grid_height > 1:
+        first_column_recipient_count = min(
+            remaining_recipient_count, grid_height - 1
+        )
+        pipes.append(
+            ttl.Pipe(
+                src=source_coord,
+                dst=(0, slice(1, first_column_recipient_count + 1)),
+            )
+        )
+        remaining_recipient_count -= first_column_recipient_count
+
+    if remaining_recipient_count == 0:
+        return pipes
+
+    full_column_count = remaining_recipient_count // grid_height
+    if full_column_count:
+        pipes.append(
+            ttl.Pipe(
+                src=source_coord,
+                dst=(slice(1, full_column_count + 1), slice(0, grid_height)),
+            )
+        )
+        remaining_recipient_count -= full_column_count * grid_height
+
+    if remaining_recipient_count:
+        pipes.append(
+            ttl.Pipe(
+                src=source_coord,
+                dst=(
+                    full_column_count + 1,
+                    slice(0, remaining_recipient_count),
+                ),
+            )
+        )
+
+    return pipes
+
+
+def _full_grid_fanout_recipient_coords(grid_width, grid_height, recipient_count):
+    coords = []
+    for column_index in range(grid_width):
+        for row_index in range(grid_height):
+            if column_index == 0 and row_index == 0:
+                continue
+            coords.append((column_index, row_index))
+            if len(coords) == recipient_count:
+                return coords
+    return coords
+
+
+def make_full_grid_fanout_kernel(recipient_count):
+    @ttl.operation(grid="full")
+    def full_grid_fanout(inp, out):
+        grid_width, grid_height = ttl.grid_size(dims=2)
+        fanout_net = ttl.PipeNet(
+            _make_full_grid_fanout_pipes(
+                grid_width,
+                grid_height,
+                recipient_count,
+            )
+        )
 
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
         recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -218,30 +284,36 @@ def make_non_loopback_multicast_kernel():
 
         @ttl.compute()
         def compute():
-            if bcast_net.is_dst():
+            if fanout_net.is_dst():
                 with recv_dfb.wait() as recv_blk, out_dfb.reserve() as out_blk:
                     out_blk.store(recv_blk)
 
         @ttl.datamovement()
         def post_receive_and_send():
-            if bcast_net.is_dst():
+            if fanout_net.is_dst():
                 with recv_dfb.reserve() as recv_blk:
-                    recv_tx = ttl.copy(bcast_pipe, recv_blk)
-                    recv_tx.wait()
+                    def recv(pipe):
+                        ttl.copy(pipe, recv_blk).wait()
 
-            if bcast_net.is_src():
+                    fanout_net.if_dst(recv)
+
+            if fanout_net.is_src():
                 with send_dfb.reserve() as send_blk:
                     ttl.copy(inp[0, 0], send_blk).wait()
-                    ttl.copy(send_blk, bcast_pipe).wait()
+
+                    def send(pipe):
+                        ttl.copy(send_blk, pipe).wait()
+
+                    fanout_net.if_src(send)
 
         @ttl.datamovement()
         def write_output():
-            node_x, _node_y = ttl.node(dims=2)
-            if bcast_net.is_dst():
+            node_x, node_y = ttl.node(dims=2)
+            if fanout_net.is_dst():
                 with out_dfb.wait() as out_blk:
-                    ttl.copy(out_blk, out[0, node_x]).wait()
+                    ttl.copy(out_blk, out[node_y, node_x]).wait()
 
-    return non_loopback_multicast
+    return full_grid_fanout
 
 
 def make_row_all_to_all_multicast_kernel():
@@ -421,7 +493,6 @@ posted_gather_kernel = make_two_net_posted_gather_kernel()
 same_source_two_pipe_kernel = make_same_source_two_pipe_kernel()
 loopback_multicast_aggregate_kernel = make_loopback_multicast_aggregate_kernel()
 degenerate_multicast_aggregate_kernel = make_degenerate_multicast_aggregate_kernel()
-non_loopback_multicast_kernel = make_non_loopback_multicast_kernel()
 row_all_to_all_multicast_kernel = make_row_all_to_all_multicast_kernel()
 grid_all_to_all_multicast_kernel = make_grid_all_to_all_multicast_kernel()
 
@@ -746,16 +817,45 @@ def test_degenerate_multicast_uses_aggregate_rendezvous(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_non_loopback_multicast_uses_sram_address_table(device):
+@pytest.mark.parametrize(
+    "recipient_case",
+    ["one", "few", "full-minus-source"],
+    ids=["one-recipient", "few-recipients", "full-minus-source"],
+)
+def test_full_grid_fanout_uses_sram_address_table(device, recipient_case):
+    device_grid = device.compute_with_storage_grid_size()
+    grid_width, grid_height = device_grid.x, device_grid.y
+    maximum_recipient_count = grid_width * grid_height - 1
+    recipient_counts = {
+        "one": 1,
+        "few": min(3, maximum_recipient_count),
+        "full-minus-source": maximum_recipient_count,
+    }
+    recipient_count = recipient_counts[recipient_case]
+
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    out_torch = torch.zeros(TILE, 4 * TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(
+        grid_height * TILE,
+        grid_width * TILE,
+        dtype=torch.bfloat16,
+    )
     expected = out_torch.clone()
-    expected[:, TILE:] = inp_torch.repeat(1, 3)
+    for recipient_col, recipient_row in _full_grid_fanout_recipient_coords(
+        grid_width,
+        grid_height,
+        recipient_count,
+    ):
+        row_start = recipient_row * TILE
+        row_end = row_start + TILE
+        col_start = recipient_col * TILE
+        col_end = col_start + TILE
+        expected[row_start:row_end, col_start:col_end] = inp_torch
 
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
 
-    non_loopback_multicast_kernel(inp, out)
+    fanout_kernel = make_full_grid_fanout_kernel(recipient_count)
+    fanout_kernel(inp, out)
     ttnn.synchronize_device(device)
 
     result = ttnn.to_torch(out)
