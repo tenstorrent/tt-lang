@@ -216,9 +216,7 @@ def _make_full_grid_fanout_pipes(grid_width, grid_height, recipient_count):
     remaining_recipient_count = recipient_count
     pipes = []
     if grid_height > 1:
-        first_column_recipient_count = min(
-            remaining_recipient_count, grid_height - 1
-        )
+        first_column_recipient_count = min(remaining_recipient_count, grid_height - 1)
         pipes.append(
             ttl.Pipe(
                 src=source_coord,
@@ -292,6 +290,7 @@ def make_full_grid_fanout_kernel(recipient_count):
         def post_receive_and_send():
             if fanout_net.is_dst():
                 with recv_dfb.reserve() as recv_blk:
+
                     def recv(pipe):
                         ttl.copy(pipe, recv_blk).wait()
 
