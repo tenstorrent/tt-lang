@@ -138,9 +138,15 @@ class TestPipeSyncSemaphores:
 
         assert graph.num_pipe_sync_semaphores(num_noc_threads=1) == 2
 
-    def test_single_non_loopback_multicast_uses_sram_address_table(self):
+    @pytest.mark.parametrize("recipient_count", [1, 2, 3, 50])
+    def test_single_source_fanout_uses_constant_semaphore_count(
+        self, recipient_count
+    ):
+        node_count = recipient_count + 1
         graph = OperationPipeNets()
-        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng((1, 0), (4, 1)))])
+        graph.add_pipe_net(
+            [PipeUse(src=_coord(0, 0), dst=_rng((1, 0), (node_count, 1)))]
+        )
 
         assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
 
