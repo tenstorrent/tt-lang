@@ -844,6 +844,13 @@ performs the NOC write directly to receiver-owned DFB storage, and
 signals receiver completion. A multicast send waits for every
 destination in the multicast range to post before issuing the write.
 
+Lowering models three resources separately:
+
+- address storage carries receiver-authored DFB addresses;
+- ready counting records how many receivers have posted a transfer;
+- completion wait records when receiver-owned DFB storage contains the
+  payload.
+
 ### Posted-address mailbox
 
 Unicast and non-loopback multicast use the posted-address mailbox
@@ -871,10 +878,10 @@ signals receiver completion with the existing per-PipeNet completion
 counter.
 
 Source-in-destination multicast computes the destination address from
-the local receiver DFB state, because the sender also executes a
-receive post. Non-loopback aggregate multicast requires an explicit
-receiver-authored address table; it is not lowered as aggregate by the
-current implementation.
+the local receiver DFB state when the sender kernel also executes a
+receive post. Non-loopback multicast and split NOC-thread multicast
+require an explicit receiver-authored address table; they are not
+lowered as aggregate by the current implementation.
 
 Until issue #617 adds per-destination multicast receive addresses, all
 receivers for one multicast pipe must publish equivalent DFB addresses.

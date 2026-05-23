@@ -1063,6 +1063,14 @@ def _extract_compiler_allocated_dfbs(module):
     return configs
 
 
+def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
+    """Read the semaphore count selected by pipe lowering."""
+    attr = module.operation.attributes.get("ttl.pipe_sync_semaphore_count", None)
+    if attr is None:
+        return None
+    return int(attr)
+
+
 def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
     """Merge compiler-allocated DFBs into the CB config list.
 
@@ -1614,6 +1622,11 @@ def _compile_kernel(
         # Merge compiler-allocated DFBs into the CB config list.
         compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
+        pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
+        if pipe_sync_semaphore_count is None:
+            pipe_sync_semaphore_count = pipenets.num_pipe_sync_semaphores(
+                num_noc_threads=noc_kernel_idx
+            )
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op.
         # `launch_grid` may be smaller than `grid` when grid="full" reduces
@@ -1631,9 +1644,7 @@ def _compile_kernel(
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
-            num_pipe_sync_semaphores=pipenets.num_pipe_sync_semaphores(
-                num_noc_threads=noc_kernel_idx
-            ),
+            num_pipe_sync_semaphores=pipe_sync_semaphore_count,
         )
         return compiled_kernel
 
