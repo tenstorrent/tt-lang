@@ -39,7 +39,7 @@ K_BLOCK = 8
 N_BLOCK = 8
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def matmul_l1_acc(a, b, out):
     Mt = a.shape[0] // TILE
     Kt = a.shape[1] // TILE

@@ -10,7 +10,7 @@ from utils.block_allocation import get_large_matmul_params
 from utils.correctness import assert_with_ulp
 
 
-@ttl.operation(grid=("auto"))
+@ttl.operation(grid="full")
 def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -61,7 +61,7 @@ def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
         out_col = per_node_N * node_x
         if (out_row < Mt) and (out_col < Nt):
             with out_dfb.reserve() as out_blk:  # per_node_M * per_node_N
-                acc = ttl.math.fill(out_blk, 0)
+                acc = ttl.block.fill(0, shape=out_blk.shape)
                 for _ in range(Kt // K_block_size):
                     with (
                         a_dfb.wait() as a_blk,
@@ -155,7 +155,7 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out_col = node_x
         if (out_row < Mt) and (out_col < Nt):
             with out_dfb.reserve() as out_blk:
-                acc = ttl.math.fill(out_blk, 0)
+                acc = ttl.block.fill(0, shape=out_blk.shape)
                 for _ in range(Kt):
                     with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                         acc += a_blk @ b_blk

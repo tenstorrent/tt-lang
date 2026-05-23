@@ -131,7 +131,9 @@ def flash_attention(
                         with alpha_dfb.reserve() as alpha:
                             alpha.store(ttl.math.exp(m_old - mn))
                         with m_bcast_dfb.reserve() as mn_bc:
-                            mn_bc.store(ttl.math.broadcast(mn, mn_bc, dims=[1]))
+                            mn_bc.store(
+                                ttl.block.broadcast(mn, dims=[1], shape=(1, KV_CHUNK))
+                            )
                         with m_dfb.reserve() as m_next:
                             m_next.store(mn)
 
@@ -156,7 +158,9 @@ def flash_attention(
                     with l_dfb.reserve() as l_new:
                         l_new.store(alph * l_old + cs)
                     with alpha_bcast_dfb.reserve() as ab:
-                        ab.store(ttl.math.broadcast(alph, ab, dims=[1]))
+                        ab.store(
+                            ttl.block.broadcast(alph, dims=[1], shape=(1, HD_TILES))
+                        )
                 with (
                     alpha_bcast_dfb.wait() as ab,
                     o_dfb.wait() as o_old,
@@ -175,7 +179,7 @@ def flash_attention(
                     o_new.store(oc + pv)
 
             with l_dfb.wait() as l_final, l_bcast_dfb.reserve() as lb:
-                lb.store(ttl.math.broadcast(l_final, lb, dims=[1]))
+                lb.store(ttl.block.broadcast(l_final, dims=[1], shape=(1, HD_TILES)))
             with (
                 o_dfb.wait() as o_final,
                 l_bcast_dfb.wait() as lb,

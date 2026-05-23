@@ -239,7 +239,7 @@ do_test_toolchain() {
     cmake --build "$test_build_dir" --target check-ttlang
 
     source "$test_build_dir/env/activate"
-    python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+    python examples/elementwise-tutorial/step_4_multinode_grid_full.py
 
     rm -rf "$test_build_dir"
 }

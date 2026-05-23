@@ -18,7 +18,7 @@ Features:
 - L1 tile 'c' held in outer scope, reused across 16 DRAM iterations
 - 20 fused ops across 3 outputs
 
-Also tests varying DFB granularity (1x1, 2x2) with ttl.math.broadcast op.
+Also tests varying DFB granularity (1x1, 2x2) with ttl.block.broadcast op.
 """
 
 import pytest
@@ -251,7 +251,7 @@ def test_bcast_multinode(device):
 def make_bcast_granularity_kernel(granularity: int):
     """Factory to create broadcast kernels with different DFB granularities.
 
-    Tests ttl.math.broadcast with varying DFB block sizes on multinode grid.
+    Tests ttl.block.broadcast with varying DFB block sizes on multinode grid.
     Uses row broadcast (dims=[0]) pattern.
     """
 
@@ -265,8 +265,10 @@ def make_bcast_granularity_kernel(granularity: int):
         rows_per_core = inp.shape[0] // TILE_SIZE // grid_x // block_rows
         cols_per_core = inp.shape[1] // TILE_SIZE // grid_y // block_cols
 
+        # Source DFB has a single row of tiles; the broadcast replicates it
+        # down to the full block_rows x block_cols output.
         inp_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(block_rows, block_cols), block_count=2
+            inp, shape=(1, block_cols), block_count=2
         )
         out_dfb = ttl.make_dataflow_buffer_like(
             out, shape=(block_rows, block_cols), block_count=2
@@ -277,7 +279,9 @@ def make_bcast_granularity_kernel(granularity: int):
             for _ in range(rows_per_core):
                 for _ in range(cols_per_core):
                     with inp_dfb.wait() as i, out_dfb.reserve() as o:
-                        result = ttl.math.broadcast(i, o, dims=[0])
+                        result = ttl.block.broadcast(
+                            i, dims=[0], shape=(block_rows, block_cols)
+                        )
                         o.store(result)
 
         @ttl.datamovement()
@@ -286,7 +290,7 @@ def make_bcast_granularity_kernel(granularity: int):
             for core_row in range(rows_per_core):
                 row = core_x * rows_per_core + core_row
                 start_row = row * block_rows
-                end_row = (row + 1) * block_rows
+                end_row = start_row + 1  # Only the source row of tiles
                 for core_col in range(cols_per_core):
                     col = core_y * cols_per_core + core_col
                     start_col = col * block_cols
@@ -341,7 +345,7 @@ _bcast_kernel_g2 = make_bcast_granularity_kernel(2)
     ids=["granularity_1x1", "granularity_2x2"],
 )
 def test_bcast_multinode_granularity(device, granularity, kernel):
-    """Test ttl.math.broadcast with different DFB granularities on 7x7 grid.
+    """Test ttl.block.broadcast with different DFB granularities on 7x7 grid.
 
     Validates that broadcast works correctly with varying DFB block sizes:
     - granularity=1: 1x1 tile blocks (baseline)

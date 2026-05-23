@@ -24,7 +24,7 @@ from sim.typedefs import Shape
 
 
 class TestDefaultGrid:
-    """Test default grid configuration for grid='auto'."""
+    """Test default grid configuration for grid='full'."""
 
     def test_get_default_grid_initial_value(self):
         """Test that get_default_grid returns initial default of (8, 8)."""
@@ -50,14 +50,14 @@ class TestDefaultGrid:
         finally:
             set_default_grid(original)
 
-    def test_kernel_auto_grid_uses_default(self):
-        """Test that kernel with grid='auto' uses the configured default grid."""
+    def test_kernel_full_grid_uses_default(self):
+        """Test that kernel with grid='full' uses the configured default grid."""
         original = get_default_grid()
         try:
             # Set custom default
             set_default_grid((3, 5))
 
-            @ttl.operation(grid="auto")
+            @ttl.operation(grid="full")
             def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
                 assert a is not None and b is not None
 
@@ -130,7 +130,7 @@ import ttl
 import ttnn
 import torch
 
-@ttl.operation(grid='auto')
+@ttl.operation(grid='full')
 def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
@@ -398,7 +398,7 @@ def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
         with cb0.reserve() as blk:
-            blk.store(ttl.math.fill(blk, 1.0))
+            blk.store(ttl.block.fill(1.0, shape=blk.shape))
         with cb0.wait() as a, {middle_cb}.reserve() as o:
             o.store(a)
         with {middle_cb}.wait() as a, {last_cb}.reserve() as o:
@@ -604,7 +604,7 @@ def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
         with cb0.reserve() as blk:
-            blk.store(ttl.math.fill(blk, 1.0))
+            blk.store(ttl.block.fill(1.0, shape=blk.shape))
         with cb0.wait() as inp, cb1.reserve() as o:
             o.store(inp)
         with cb1.wait() as inp, cb2.reserve() as o:
@@ -874,7 +874,7 @@ class TestSchedulerAlgorithmOption:
     def test_schedalg_option_greedy(self):
         """Test that --scheduler greedy is accepted."""
         examples_dir = Path(__file__).parent.parent.parent / "examples"
-        script_path = examples_dir / "broadcast_demo.py"
+        script_path = examples_dir / "eltwise_add.py"
 
         result = subprocess.run(
             [
@@ -895,7 +895,7 @@ class TestSchedulerAlgorithmOption:
     def test_schedalg_option_fair(self):
         """Test that --scheduler fair is accepted."""
         examples_dir = Path(__file__).parent.parent.parent / "examples"
-        script_path = examples_dir / "broadcast_demo.py"
+        script_path = examples_dir / "eltwise_add.py"
 
         result = subprocess.run(
             [

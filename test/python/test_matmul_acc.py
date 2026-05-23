@@ -247,7 +247,7 @@ def matmul_bcast_bias_kernel(a, b, bias, out):
         # Add broadcast bias: bcast(bias[1,Nt]) -> (Mt,Nt), then add with acc.
         with bias_dfb.wait() as bias_blk, acc_dfb.wait() as acc_blk:
             with out_dfb.reserve() as o:
-                bias_expanded = ttl.math.broadcast(bias_blk, o, dims=[0])
+                bias_expanded = ttl.block.broadcast(bias_blk, dims=[0], shape=(Mt, Nt))
                 o.store(bias_expanded + acc_blk)
 
     @ttl.datamovement()

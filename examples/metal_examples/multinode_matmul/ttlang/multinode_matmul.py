@@ -14,7 +14,7 @@ from utils.block_allocation import (
 )
 
 
-@ttl.operation(grid=("auto"))
+@ttl.operation(grid="full")
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -69,7 +69,7 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         node_id = ttl.node(dims=1)
         for _ in range(get_tiles_per_node(node_id)):
             with out_dfb.reserve() as out_blk:
-                acc = ttl.math.fill(out_blk, 0)
+                acc = ttl.block.fill(0, shape=out_blk.shape)
                 for _ in range(Kt):
                     with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                         acc += a_blk @ b_blk

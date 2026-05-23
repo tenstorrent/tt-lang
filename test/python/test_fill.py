@@ -31,7 +31,7 @@ def fill_kernel(out):
     @ttl.compute()
     def compute_fn():
         with out_dfb.reserve() as o:
-            o.store(ttl.math.fill(o, -3.0))
+            o.store(ttl.block.fill(-3.0, shape=o.shape))
 
     @ttl.datamovement()
     def dm_read():
@@ -53,7 +53,7 @@ def fill_add_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as x, out_dfb.reserve() as o:
-            filled = ttl.math.fill(o, 1.0)
+            filled = ttl.block.fill(1.0, shape=o.shape)
             o.store(x + filled)
 
     @ttl.datamovement()
@@ -90,4 +90,74 @@ def test_fill_fused_with_add(device):
     result = ttnn.to_torch(out)
 
     expected = inp_torch + 1.0
+    assert_allclose(result, expected, rtol=1e-2, atol=1e-2)
+
+
+@ttl.operation(grid=(1, 1))
+def fill_f32_kernel(out):
+    """Fill f32 dfb via explicit dtype kwarg (default is bf16)."""
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with out_dfb.reserve() as o:
+            o.store(ttl.block.fill(2.5, shape=o.shape, dtype=ttnn.float32))
+
+    @ttl.datamovement()
+    def dm_read():
+        pass
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            ttl.copy(blk, out[0, 0]).wait()
+
+
+def test_fill_f32_dtype_kwarg(device):
+    """Spec-form fill with dtype=ttnn.float32 produces f32 output matching the dfb."""
+    out = to_l1(torch.zeros((32, 32), dtype=torch.float32), device)
+
+    fill_f32_kernel(out)
+    result = ttnn.to_torch(out).float()
+
+    expected = torch.full((32, 32), 2.5, dtype=torch.float32)
+    assert_allclose(result, expected, rtol=1e-5, atol=1e-5)
+
+
+@ttl.operation(grid=(1, 1))
+def fill_shape_from_expr_kernel(inp, out):
+    """Use `.shape` on the result of a binary expression (non-Name receiver).
+
+    Exercises the AST extension that resolves `.shape` on tensor-typed
+    expressions, not only on bare identifiers.
+    """
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as x, out_dfb.reserve() as o:
+            sum_expr = x + x
+            o.store(ttl.block.fill(7.0, shape=sum_expr.shape))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            ttl.copy(inp[0, 0], blk).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            ttl.copy(blk, out[0, 0]).wait()
+
+
+def test_fill_shape_from_expression(device):
+    """`.shape` resolves on a tensor produced by an operator expression."""
+    inp = to_l1(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+    out = to_l1(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+
+    fill_shape_from_expr_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    expected = torch.full((32, 32), 7.0, dtype=torch.bfloat16)
     assert_allclose(result, expected, rtol=1e-2, atol=1e-2)

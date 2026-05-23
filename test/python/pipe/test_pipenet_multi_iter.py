@@ -66,14 +66,14 @@ def gather_multi_iter(out):
         node_col, _node_row = ttl.node(dims=2)
         for _ri in range(NUM_OF_STRIPES):
             with partial_cb.reserve() as partial_blk:
-                partial_blk.store(ttl.math.fill(partial_blk, 1.0))
+                partial_blk.store(ttl.block.fill(1.0, shape=partial_blk.shape))
             if node_col == 0:
                 blk = recv_cb.wait()
                 with out_cb.reserve() as out_blk:
                     out_blk.store(blk)
             else:
                 with out_cb.reserve() as out_blk:
-                    out_blk.store(ttl.math.fill(out_blk, 1.0))
+                    out_blk.store(ttl.block.fill(1.0, shape=out_blk.shape))
 
     @ttl.datamovement()
     def dm_read():
@@ -151,7 +151,7 @@ def gather_bcast_loop(out):
                 # col>0 (no matching wait) and deadlock past block_count
                 # iterations.
                 with partial_for_sum_cb.reserve() as p_sum_blk:
-                    p_sum_blk.store(ttl.math.fill(p_sum_blk, 1.0))
+                    p_sum_blk.store(ttl.block.fill(1.0, shape=p_sum_blk.shape))
                 partial_blk = partial_for_sum_cb.wait()
                 blk = recv_cb.wait()
                 sum_val = blk + partial_blk
@@ -166,7 +166,7 @@ def gather_bcast_loop(out):
                 # Produce the send-side partial only on the cores whose
                 # dm_read consumes it (col>0). Same rationale as above.
                 with partial_for_send_cb.reserve() as p_send_blk:
-                    p_send_blk.store(ttl.math.fill(p_send_blk, 1.0))
+                    p_send_blk.store(ttl.block.fill(1.0, shape=p_send_blk.shape))
                 blk = bcast_cb.wait()
                 with out_cb.reserve() as out_blk:
                     out_blk.store(blk)
@@ -258,7 +258,7 @@ def cross_dfb_multicast_loopback(out):
         for _ri in range(NUM_OF_STRIPES):
             if node_col == 0:
                 with src_cb.reserve() as src_blk:
-                    src_blk.store(ttl.math.fill(src_blk, 7.0))
+                    src_blk.store(ttl.block.fill(7.0, shape=src_blk.shape))
 
     @ttl.datamovement()
     def dm_read():

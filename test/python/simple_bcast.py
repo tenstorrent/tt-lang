@@ -37,7 +37,7 @@ def fused_bcast_kernel(a, b, c, out):
             c_dfb.wait() as c_tile,
             out_dfb.reserve() as o,
         ):
-            c_bcast = ttl.math.broadcast(c_tile, o, dims=[0])
+            c_bcast = ttl.block.broadcast(c_tile, dims=[0], shape=(1, 1))
             ab = a_tile * b_tile
             result = c_bcast + ab
             o.store(result)

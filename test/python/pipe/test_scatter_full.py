@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Scatter with grid="auto" -- the spec scatter example verbatim.
+Scatter with grid="full" -- the spec scatter example verbatim.
 
 Each column's row-0 core multicasts to all other rows in that column.
 Pipe construction uses ttl.grid_size() so it adapts to whatever
-device grid grid="auto" resolves to.
+device grid grid="full" resolves to.
 """
 
 # REQUIRES: ttnn
@@ -25,8 +25,8 @@ from ttlang_test_utils import assert_pcc, to_dram
 TILE = 32
 
 
-@ttl.operation(grid="auto")
-def scatter_auto(inp, out):
+@ttl.operation(grid="full")
+def scatter_full(inp, out):
     grid_x, grid_y = ttl.grid_size(dims=2)
 
     net = ttl.PipeNet(
@@ -68,8 +68,8 @@ def scatter_auto(inp, out):
             tx.wait()
 
 
-def test_scatter_auto(device):
-    """Scatter with grid='auto': row 0 multicasts down each column."""
+def test_scatter_full(device):
+    """Scatter with grid='full': row 0 multicasts down each column."""
     grid = device.compute_with_storage_grid_size()
     grid_x, grid_y = grid.x, grid.y
 
@@ -81,7 +81,7 @@ def test_scatter_auto(device):
         device,
     )
 
-    scatter_auto(inp_tt, out_tt)
+    scatter_full(inp_tt, out_tt)
 
     result = ttnn.to_torch(out_tt)
     # Each column's row-0 tile is broadcast to all rows, then abs applied.
