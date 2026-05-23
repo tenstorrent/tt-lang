@@ -558,9 +558,7 @@ def emit_runner_source(
 
     lines.append("    pipe_sram_scratch_tensors = []")
     lines.append("    if PIPE_SRAM_SCRATCH_BYTES > 0:")
-    lines.append(
-        "        aligned_bytes = ((PIPE_SRAM_SCRATCH_BYTES + 31) // 32) * 32"
-    )
+    lines.append("        aligned_bytes = ((PIPE_SRAM_SCRATCH_BYTES + 31) // 32) * 32")
     lines.append("        elements_per_core = max(1, aligned_bytes // 4)")
     lines.append("        num_cores = GRID_COLS * GRID_ROWS")
     lines.append("        shard_spec = ttnn.ShardSpec(")

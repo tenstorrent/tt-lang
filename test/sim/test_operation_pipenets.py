@@ -139,9 +139,7 @@ class TestPipeSyncSemaphores:
         assert graph.num_pipe_sync_semaphores(num_noc_threads=1) == 2
 
     @pytest.mark.parametrize("recipient_count", [1, 2, 3, 50])
-    def test_single_source_fanout_uses_constant_semaphore_count(
-        self, recipient_count
-    ):
+    def test_single_source_fanout_uses_constant_semaphore_count(self, recipient_count):
         node_count = recipient_count + 1
         graph = OperationPipeNets()
         graph.add_pipe_net(
@@ -161,7 +159,9 @@ class TestPipeSyncSemaphores:
 
         assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
 
-    def test_overlapping_non_loopback_multicast_needs_one_ready_id_per_source_pipe(self):
+    def test_overlapping_non_loopback_multicast_needs_one_ready_id_per_source_pipe(
+        self,
+    ):
         graph = OperationPipeNets()
         graph.add_pipe_net(
             [

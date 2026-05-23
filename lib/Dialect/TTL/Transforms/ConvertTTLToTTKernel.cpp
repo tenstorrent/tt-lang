@@ -1147,9 +1147,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   int64_t pipeSramScratchBytes =
       getRequiredPipeSramScratchBytes(pipeChannelInfo);
   if (pipeSramScratchBytes > 0) {
-    mod->setAttr("ttl.pipe_sram_scratch_bytes",
-                 IntegerAttr::get(IntegerType::get(&ctx, 64),
-                                  pipeSramScratchBytes));
+    mod->setAttr(
+        "ttl.pipe_sram_scratch_bytes",
+        IntegerAttr::get(IntegerType::get(&ctx, 64), pipeSramScratchBytes));
   }
 
   RewritePatternSet patterns(&ctx);

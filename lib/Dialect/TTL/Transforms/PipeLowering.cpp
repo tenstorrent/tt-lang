@@ -137,8 +137,8 @@ getPipeSramScratchBase(Operation *op, Location loc,
     return op->emitError("internal compiler error: pipe op is not inside a "
                          "function");
   }
-  auto argIndex =
-      arith::ConstantIndexOp::create(rewriter, loc, getNumTensorFunctionArgs(func));
+  auto argIndex = arith::ConstantIndexOp::create(
+      rewriter, loc, getNumTensorFunctionArgs(func));
   return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                         argIndex)
       .getResult();
@@ -149,9 +149,9 @@ static Value addByteOffset(Location loc, Value baseAddress, int64_t byteOffset,
   if (byteOffset == 0) {
     return baseAddress;
   }
-  auto offsetValue = arith::ConstantOp::create(
-      rewriter, loc, rewriter.getI32Type(),
-      rewriter.getI32IntegerAttr(byteOffset));
+  auto offsetValue =
+      arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
+                                rewriter.getI32IntegerAttr(byteOffset));
   return arith::AddIOp::create(rewriter, loc, baseAddress, offsetValue)
       .getResult();
 }
@@ -168,13 +168,12 @@ buildAddressTableDestinationAddress(Operation *op, Location loc,
   if (failed(scratchBase)) {
     return failure();
   }
-  Value tableAddress =
-      addByteOffset(loc, *scratchBase,
-                    channelInfo.addressStorage.sramAddressTable.byteOffset,
-                    rewriter);
+  Value tableAddress = addByteOffset(
+      loc, *scratchBase, channelInfo.addressStorage.sramAddressTable.byteOffset,
+      rewriter);
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
-  auto tablePtr = ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy,
-                                             tableAddress);
+  auto tablePtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, tableAddress);
   auto zeroI32 = arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
                                            rewriter.getI32IntegerAttr(0));
   return ttk::LoadFromL1Op::create(rewriter, loc, rewriter.getI32Type(),
@@ -521,16 +520,14 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   if (failed(scratchBase)) {
     return failure();
   }
-  Value tableAddress =
-      addByteOffset(loc, *scratchBase,
-                    channelInfo->addressStorage.sramAddressTable.byteOffset,
-                    rewriter);
+  Value tableAddress = addByteOffset(
+      loc, *scratchBase,
+      channelInfo->addressStorage.sramAddressTable.byteOffset, rewriter);
   auto senderTableNocAddr = ttk::GetNocAddrOp::create(
       rewriter, loc, srcXTranslated, srcYTranslated, tableAddress);
   auto byteEnableAll = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-  ttk::NocInlineDwWriteOp::create(rewriter, loc,
-                                  senderTableNocAddr.getResult(),
+  ttk::NocInlineDwWriteOp::create(rewriter, loc, senderTableNocAddr.getResult(),
                                   *publishedAddress, byteEnableAll,
                                   inlineNocId);
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
@@ -914,7 +911,8 @@ void buildPipeChannelLoweringInfo(ModuleOp, const PipeNetIndex &index,
       PipeChannelInfo channelInfo{};
       channelInfo.isMulticast = pipeInfo.isMulticast;
       channelInfo.readyCounter.senderReadySemIdx = senderReadySemIdx;
-      channelInfo.addressStorage.kind = PipeAddressStorageKind::SramAddressTable;
+      channelInfo.addressStorage.kind =
+          PipeAddressStorageKind::SramAddressTable;
       channelInfo.addressStorage.sramAddressTable =
           PipeSramAddressTableInfo{nextAddressTableByteOffset};
       nextAddressTableByteOffset += kPipeAddressWordBytes;
@@ -924,8 +922,7 @@ void buildPipeChannelLoweringInfo(ModuleOp, const PipeNetIndex &index,
   info.sramScratch.bytes =
       info.channels.empty()
           ? 0
-          : alignTo(nextAddressTableByteOffset,
-                    kPipeSramScratchAlignmentBytes);
+          : alignTo(nextAddressTableByteOffset, kPipeSramScratchAlignmentBytes);
 }
 
 int64_t getRequiredPipeSyncSemaphoreCount(const PipeChannelLoweringInfo &info) {
