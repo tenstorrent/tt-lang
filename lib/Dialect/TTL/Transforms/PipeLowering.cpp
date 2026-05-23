@@ -687,6 +687,42 @@ static void lowerToScfIf(Op op, Value cond,
   rewriter.eraseOp(op);
 }
 
+static Value buildSrcMatch(OpBuilder &builder, Location loc, Value coreX,
+                           Value coreY, PipeType pipeType) {
+  auto sourceX =
+      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcX());
+  auto sourceY =
+      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcY());
+  auto matchX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                      coreX, sourceX);
+  auto matchY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                      coreY, sourceY);
+  return arith::AndIOp::create(builder, loc, matchX, matchY);
+}
+
+static Value buildDstMatch(OpBuilder &builder, Location loc, Value coreX,
+                           Value coreY, PipeType pipeType) {
+  int64_t minX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
+  int64_t maxX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
+  int64_t minY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
+  int64_t maxY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
+  auto minXConst = arith::ConstantIndexOp::create(builder, loc, minX);
+  auto maxXConst = arith::ConstantIndexOp::create(builder, loc, maxX);
+  auto minYConst = arith::ConstantIndexOp::create(builder, loc, minY);
+  auto maxYConst = arith::ConstantIndexOp::create(builder, loc, maxY);
+  auto geMinX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge,
+                                      coreX, minXConst);
+  auto leMaxX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sle,
+                                      coreX, maxXConst);
+  auto geMinY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge,
+                                      coreY, minYConst);
+  auto leMaxY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sle,
+                                      coreY, maxYConst);
+  auto inRangeX = arith::AndIOp::create(builder, loc, geMinX, leMaxX);
+  auto inRangeY = arith::AndIOp::create(builder, loc, geMinY, leMaxY);
+  return arith::AndIOp::create(builder, loc, inRangeX, inRangeY);
+}
+
 struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -702,19 +738,7 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
     auto coreY =
         ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
 
-    // Get source coordinates from pipe type.
-    auto srcXConst =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
-    auto srcYConst =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
-
-    // Check if current core matches source coordinates.
-    auto matchX = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
-                                        coreX, srcXConst);
-    auto matchY = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
-                                        coreY, srcYConst);
-    auto isSrc = arith::AndIOp::create(rewriter, loc, matchX, matchY);
-
+    Value isSrc = buildSrcMatch(rewriter, loc, coreX, coreY, pipeType);
     lowerToScfIf(op, isSrc, rewriter);
     return success();
   }
@@ -735,68 +759,11 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
     auto coreY =
         ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
 
-    // Get destination range from pipe type.
-    int64_t dstMinX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
-    int64_t dstMaxX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
-    int64_t dstMinY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
-    int64_t dstMaxY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
-
-    auto minXConst = arith::ConstantIndexOp::create(rewriter, loc, dstMinX);
-    auto maxXConst = arith::ConstantIndexOp::create(rewriter, loc, dstMaxX);
-    auto minYConst = arith::ConstantIndexOp::create(rewriter, loc, dstMinY);
-    auto maxYConst = arith::ConstantIndexOp::create(rewriter, loc, dstMaxY);
-
-    // Check if current core is within destination range.
-    // coreX >= minX && coreX <= maxX && coreY >= minY && coreY <= maxY
-    auto geMinX = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::sge, coreX, minXConst);
-    auto leMaxX = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::sle, coreX, maxXConst);
-    auto geMinY = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::sge, coreY, minYConst);
-    auto leMaxY = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::sle, coreY, maxYConst);
-
-    auto inRangeX = arith::AndIOp::create(rewriter, loc, geMinX, leMaxX);
-    auto inRangeY = arith::AndIOp::create(rewriter, loc, geMinY, leMaxY);
-    auto isDst = arith::AndIOp::create(rewriter, loc, inRangeX, inRangeY);
-
+    Value isDst = buildDstMatch(rewriter, loc, coreX, coreY, pipeType);
     lowerToScfIf(op, isDst, rewriter);
     return success();
   }
 };
-
-static Value buildSrcMatch(OpBuilder &b, Location loc, Value coreX, Value coreY,
-                           PipeType pt) {
-  auto sx = arith::ConstantIndexOp::create(b, loc, pt.getSrcX());
-  auto sy = arith::ConstantIndexOp::create(b, loc, pt.getSrcY());
-  auto eqX = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, coreX, sx);
-  auto eqY = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, coreY, sy);
-  return arith::AndIOp::create(b, loc, eqX, eqY);
-}
-
-static Value buildDstMatch(OpBuilder &b, Location loc, Value coreX, Value coreY,
-                           PipeType pt) {
-  int64_t minX = std::min(pt.getDstStartX(), pt.getDstEndX());
-  int64_t maxX = std::max(pt.getDstStartX(), pt.getDstEndX());
-  int64_t minY = std::min(pt.getDstStartY(), pt.getDstEndY());
-  int64_t maxY = std::max(pt.getDstStartY(), pt.getDstEndY());
-  auto cMinX = arith::ConstantIndexOp::create(b, loc, minX);
-  auto cMaxX = arith::ConstantIndexOp::create(b, loc, maxX);
-  auto cMinY = arith::ConstantIndexOp::create(b, loc, minY);
-  auto cMaxY = arith::ConstantIndexOp::create(b, loc, maxY);
-  auto geX =
-      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreX, cMinX);
-  auto leX =
-      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, coreX, cMaxX);
-  auto geY =
-      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreY, cMinY);
-  auto leY =
-      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, coreY, cMaxY);
-  auto inX = arith::AndIOp::create(b, loc, geX, leX);
-  auto inY = arith::AndIOp::create(b, loc, geY, leY);
-  return arith::AndIOp::create(b, loc, inX, inY);
-}
 
 // Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
 // named PipeNet. `roleBuilder` produces the i1 match for one pipe.
@@ -921,8 +888,7 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   });
 }
 
-void buildPipeResourcePlan(ModuleOp, const PipeNetIndex &index,
-                           const PipeGraph &, PipeResourcePlan &info) {
+void buildPipeResourcePlan(const PipeNetIndex &index, PipeResourcePlan &info) {
   int64_t numPipeNets = 0;
   for (const auto &[pipeNetId, pipes] : index) {
     if (!pipes.empty()) {
