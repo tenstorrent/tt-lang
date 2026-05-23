@@ -72,11 +72,27 @@ struct ReceiverDFBInfo {
   Location loc;               // Source location for error reporting
 };
 
-inline bool isPipeSemanticallyMulticast(CreatePipeOp op) {
-  if (auto attr = op.getIsMulticastAttr()) {
-    return attr.getValue();
+enum class PipeTransferContract {
+  PointToPoint,
+  Collective,
+};
+
+inline bool isCollectiveTransfer(PipeTransferContract contract) {
+  return contract == PipeTransferContract::Collective;
+}
+
+/// Return the semantic transfer contract used by pipe synchronization. The
+/// frontend `isCollective` attr is authoritative when present because a
+/// degenerate one-receiver collective still requires collective pipe
+/// synchronization. This does not choose the physical NOC write instruction.
+inline PipeTransferContract getPipeTransferContract(CreatePipeOp op) {
+  if (auto attr = op.getIsCollectiveAttr()) {
+    return attr.getValue() ? PipeTransferContract::Collective
+                           : PipeTransferContract::PointToPoint;
   }
-  return mlir::cast<PipeType>(op.getResult().getType()).isMulticast();
+  return mlir::cast<PipeType>(op.getResult().getType()).hasMultipleReceivers()
+             ? PipeTransferContract::Collective
+             : PipeTransferContract::PointToPoint;
 }
 
 /// Graph tracking pipe connections and receiver DFB assignments.
@@ -107,7 +123,7 @@ public:
   void assignGatherSlotIndices();
 
   /// Each pipe needs `block_count >= gatherSlotIdx + 1` in its receiver
-  /// DFB. Covers unicast gather and multicast overlap uniformly.
+  /// DFB. Covers point-to-point gather and collective overlap uniformly.
   LogicalResult verifyReceiverDFBBlockCounts() const;
 
   const ReceiverDFBInfo *lookupReceiverDFB(const PipeKey &key) const;

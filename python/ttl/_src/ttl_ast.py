@@ -818,7 +818,7 @@ class TTLGenericCompiler(TTCompilerBase):
         if pipe_net_name:
             kwargs["pipe_net_name"] = pipe_net_name
         if pipe.is_multicast:
-            kwargs["is_multicast"] = True
+            kwargs["is_collective"] = True
         if source_file and source_line is not None:
             kwargs["loc"] = Location.file(source_file, source_line, 1, self.ctx)
         return ttl.create_pipe(

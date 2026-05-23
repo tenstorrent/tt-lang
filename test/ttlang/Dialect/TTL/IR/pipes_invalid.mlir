@@ -94,5 +94,5 @@ func.func @pipe_recv_wait_typed_handle_operand() {
 // -----
 
 // Test: explicit unicast metadata cannot contradict a multi-destination extent.
-// expected-error @+1 {{'ttl.create_pipe' op isMulticast=false is invalid for a multi-destination pipe}}
-%p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 {isMulticast = false} : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+// expected-error @+1 {{'ttl.create_pipe' op isCollective=false is invalid for a multi-receiver pipe}}
+%p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 {isCollective = false} : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>

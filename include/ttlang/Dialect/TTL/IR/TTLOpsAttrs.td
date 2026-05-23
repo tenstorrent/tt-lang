@@ -22,7 +22,7 @@ def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
   let description = [{
-    Encodes a Python slice(start, stop, step) for pipe multicast ranges.
+    Encodes a Python slice(start, stop, step) for pipe receiver sets.
     Half-open interval: [start, stop).
   }];
 }

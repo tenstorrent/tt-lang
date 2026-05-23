@@ -1370,8 +1370,8 @@ def test_multicast_receive_addresses_differ_by_destination_rejected(device):
     with pytest.raises(
         Exception,
         match=(
-            "multicast pipe receive posts publish non-uniform destination "
-            "addresses; per-destination multicast receive addresses are "
+            "collective pipe receive posts publish non-uniform destination "
+            "addresses; per-destination collective receive addresses are "
             "tracked by issue #617"
         ),
     ):

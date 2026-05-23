@@ -25,7 +25,7 @@ inline int64_t getReceiverCompletionSemIdx(int64_t pipeNetId) {
 
 struct PipeInfo {
   PipeType pipeType;
-  bool isMulticast;
+  PipeTransferContract transferContract;
 };
 
 enum class PipeAddressStorageKind {
@@ -73,7 +73,7 @@ struct PipeAddressStorageInfo {
 /// storage separate from readiness counting so physical allocation can choose
 /// local semaphores or GlobalSemaphore-backed counters independently.
 struct PipeResourceInfo {
-  bool isMulticast = false;
+  PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
   PipeReadyCounterInfo readyCounter;
   PipeAddressStorageInfo addressStorage;
 
