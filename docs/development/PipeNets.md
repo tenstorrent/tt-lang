@@ -849,6 +849,45 @@ Lowering models three resources separately:
 - completion wait records when receiver-owned DFB storage contains the
   payload.
 
+TTKernel conversion records the compiler-owned pipe resource plan with
+module attrs:
+
+- `ttl.pipe_sync_semaphore_count` for local pipe semaphores;
+- `ttl.pipe_global_semaphore_count` for GlobalSemaphore-backed ready
+  counters;
+- `ttl.pipe_sram_scratch_bytes` for receiver-authored address-table
+  storage.
+
+The host runtime allocates pipe resources from these attrs and passes
+the resulting addresses as common runtime arguments. [Device 2.0] This
+keeps pipe resource ownership in the compiler plan; future typed device
+APIs should change only the runtime binding mechanism, not the IR-level
+resource model.
+
+### Device API transition notes
+
+PipeNet IR and verifier rules describe receiver-owned payload storage,
+receiver-authored address publication, counted readiness, and completion
+waits. They do not depend on the current TTNN or TTKernel API spelling.
+The current lowering has four API-specific binding points:
+
+- [Device 2.0] Address-table storage is allocated today as host-created
+  SRAM scratch and passed to kernels by address. A typed device-local
+  scratch allocation API should replace that binding without changing
+  the address-table resource in the compiler plan.
+- [Device 2.0] Receive posts publish address-table entries with an
+  inline 32-bit NoC write. A typed remote SRAM write or address-table
+  API should replace the primitive call while preserving
+  receiver-authored publication.
+- [Device 2.0] Sender-ready counters use local semaphores or
+  TTNN-created GlobalSemaphores whose addresses are passed as common
+  runtime arguments. A typed semaphore object API should bind those
+  counters directly from the same compiler resource plan.
+- [Device 2.0] Receiver completion currently uses a per-PipeNet local
+  semaphore counter. A typed completion object can replace the local
+  semaphore binding, but completion remains separate from address
+  storage and sender-ready counting.
+
 ### Receiver-authored address table
 
 Unicast and multicast use a receiver-authored SRAM address table. The
@@ -861,7 +900,20 @@ Receive posts publish the address with an inline 32-bit NOC write.
 Table entries are per pipe on the source core. Address storage is
 ordinary SRAM, so it does not consume semaphore ids.
 
-### Aggregate multicast rendezvous
+### Ready-counter allocation
+
+Sender-ready counters are logical counted synchronization resources.
+Lowering uses local hardware semaphores when the resource plan fits the
+local semaphore-id budget. When source-local pipe count would exceed
+that budget, the compiler assigns GlobalSemaphore-backed ready counters
+and records the required count in `ttl.pipe_global_semaphore_count`.
+
+Receiver completion remains a per-PipeNet local counter in the current
+lowering. Address-table storage, ready counting, and completion wait
+are allocated independently so address publication does not consume
+local semaphore ids.
+
+### Aggregate multicast ready counting
 
 Uniform multicast uses the same receiver-authored address table but
 aggregates readiness. Each receiver post writes an equivalent address
@@ -906,7 +958,7 @@ posted that can complete it.
   DFB pushes, or other SPMD-over-the-full-device work. Only ops
   coupled to a PipeNet (pipe-typed copies, pipe-coupled DFB waits,
   `if_src` / `if_dst` bodies) require role containment.
-* Aggregate multicast rendezvous removes semaphore growth with
+* Aggregate multicast ready counting removes semaphore growth with
   destination count, but it does not remove receiver DFB capacity
   requirements for overlapping arrivals. A full-device all-to-all on
   a grid with more than the maximum supported DFB block count still

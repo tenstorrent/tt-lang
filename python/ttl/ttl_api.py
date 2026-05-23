@@ -550,6 +550,7 @@ class CompiledTTNNKernel:
         kernel_line_offsets=None,
         num_pipe_sync_semaphores=0,
         pipe_sram_scratch_bytes=0,
+        num_pipe_global_semaphores=0,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -571,6 +572,8 @@ class CompiledTTNNKernel:
                 semaphores used by this kernel
             pipe_sram_scratch_bytes: Per-core SRAM scratch bytes used by
                 PipeNet metadata.
+            num_pipe_global_semaphores: Number of GlobalSemaphore-backed
+                PipeNet ready counters used by this kernel.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -586,6 +589,8 @@ class CompiledTTNNKernel:
         self.kernel_line_offsets = kernel_line_offsets or {}
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
+        self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self._pipe_global_semaphore_lifetime = []
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -625,6 +630,8 @@ class CompiledTTNNKernel:
             program_hash=self.program_hash,
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
+            num_pipe_global_semaphores=self.num_pipe_global_semaphores,
+            pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
         )
 
 
@@ -702,6 +709,7 @@ def _compile_ttnn_kernel(
     kernel_line_offsets=None,
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -860,6 +868,7 @@ def _compile_ttnn_kernel(
         kernel_line_offsets=kernel_line_offsets,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+        num_pipe_global_semaphores=num_pipe_global_semaphores,
     )
 
     if verbose:
@@ -895,6 +904,7 @@ def _compile_ttnn_kernel(
             kernel_name="ttlang_kernel",
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+            num_pipe_global_semaphores=num_pipe_global_semaphores,
         )
 
     return compiled_kernel
@@ -1083,6 +1093,14 @@ def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
 def _extract_pipe_sram_scratch_bytes(module) -> int:
     """Read the per-core SRAM scratch bytes selected by pipe lowering."""
     attr = module.operation.attributes.get("ttl.pipe_sram_scratch_bytes", None)
+    if attr is None:
+        return 0
+    return int(attr)
+
+
+def _extract_pipe_global_semaphore_count(module) -> int:
+    """Read the GlobalSemaphore count selected by pipe lowering."""
+    attr = module.operation.attributes.get("ttl.pipe_global_semaphore_count", None)
     if attr is None:
         return 0
     return int(attr)
@@ -1645,6 +1663,7 @@ def _compile_kernel(
                 num_noc_threads=noc_kernel_idx
             )
         pipe_sram_scratch_bytes = _extract_pipe_sram_scratch_bytes(module)
+        pipe_global_semaphore_count = _extract_pipe_global_semaphore_count(module)
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op.
         # `launch_grid` may be smaller than `grid` when grid="full" reduces
@@ -1664,6 +1683,7 @@ def _compile_kernel(
             kernel_line_offsets=kernel_line_offsets,
             num_pipe_sync_semaphores=pipe_sync_semaphore_count,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+            num_pipe_global_semaphores=pipe_global_semaphore_count,
         )
         return compiled_kernel
 

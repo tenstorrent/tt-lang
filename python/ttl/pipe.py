@@ -61,7 +61,7 @@ class Pipe:
     """
     A pipe for core-to-core data transfer.
 
-    A pipe defines a communication channel from a source core to one or more
+    A pipe defines a communication edge from a source core to one or more
     destination cores. When dst is a single coordinate, it's unicast.
     When dst is a range (using slices), it's multicast.
 

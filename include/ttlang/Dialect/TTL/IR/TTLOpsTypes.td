@@ -76,7 +76,7 @@ def TTL_ReduceTypeAttr : EnumAttr<TTL_Dialect, TTL_ReduceType, "reduce_type">;
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Pipe for core-to-core data transfer";
   let description = [{
-    A pipe represents a communication channel from a source core to one or more
+    A pipe represents a communication edge from a source core to one or more
     destination cores. Used with `ttl.copy` for inter-core data movement.
 
     For unicast (single destination), dstStart == dstEnd.

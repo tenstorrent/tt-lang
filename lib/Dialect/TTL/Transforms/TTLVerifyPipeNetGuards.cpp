@@ -1431,7 +1431,7 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   state.sawError = true;
 }
 
-// Verify the hidden rendezvous introduced by receiver-advertised pipe lowering.
+// Verify the hidden pipe synchronization introduced by receiver-advertised pipe lowering.
 // Receive-side ttl.copy publishes the address; ttl.wait on that handle waits
 // for completion. Modeling those as distinct events preserves async copy
 // semantics while rejecting wait-for cycles.

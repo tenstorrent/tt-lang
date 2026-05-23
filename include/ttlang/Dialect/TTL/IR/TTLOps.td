@@ -481,7 +481,7 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let summary = "Create a pipe for core-to-core communication";
   let description = [{
-    Creates a pipe that defines a communication channel from a source core to
+    Creates a pipe that defines a communication edge from a source core to
     one or more destination cores.
 
     For unicast (single destination), only specify `dst(x, y)`.

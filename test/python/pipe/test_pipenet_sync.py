@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pipe rendezvous coverage for posted receives.
+"""Pipe synchronization coverage for posted receives.
 
 These tests cover cases where the receiver publishes one or more destination
 DFB addresses before waiting for the transfers to complete.
@@ -125,6 +125,237 @@ def make_same_source_two_pipe_kernel():
                     ttl.copy(out_blk, out[0, node_x - 1]).wait()
 
     return same_source_two_pipe
+
+
+def make_same_source_global_ready_kernel():
+    grid_width = 4
+    grid_height = 4
+    pipes = [
+        ttl.Pipe(src=(0, 0), dst=(dst_x, dst_y))
+        for dst_y in range(grid_height)
+        for dst_x in range(grid_width)
+    ]
+    loopback_pipe = pipes[0]
+    fanout_net = ttl.PipeNet(pipes)
+
+    @ttl.operation(grid=(grid_width, grid_height))
+    def same_source_global_ready(inp, out):
+        _fanout_net = fanout_net
+        _loopback_pipe = loopback_pipe
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if fanout_net.is_dst():
+                with recv_dfb.wait() as recv_blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(recv_blk)
+
+        @ttl.datamovement()
+        def post_receives_and_send():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0 and node_y == 0:
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(loopback_pipe, recv_blk)
+                    with send_dfb.reserve() as send_blk:
+                        ttl.copy(inp[0, 0], send_blk).wait()
+
+                        def send(pipe):
+                            ttl.copy(send_blk, pipe).wait()
+
+                        fanout_net.if_src(send)
+                    recv_tx.wait()
+            elif fanout_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+
+                    def recv(pipe):
+                        ttl.copy(pipe, recv_blk).wait()
+
+                    fanout_net.if_dst(recv)
+
+        @ttl.datamovement()
+        def write_output():
+            node_x, node_y = ttl.node(dims=2)
+            if fanout_net.is_dst():
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(
+                        out_blk,
+                        out[node_y : node_y + 1, node_x : node_x + 1],
+                    ).wait()
+
+    return same_source_global_ready
+
+
+def make_same_source_global_ready_two_round_kernel():
+    grid_width = 5
+    grid_height = 4
+    pipes = [
+        ttl.Pipe(src=(0, 0), dst=(dst_x, dst_y))
+        for dst_y in range(grid_height)
+        for dst_x in range(grid_width)
+        if dst_x != 0 or dst_y != 0
+    ]
+    fanout_net = ttl.PipeNet(pipes)
+
+    @ttl.operation(grid=(grid_width, grid_height))
+    def same_source_global_ready_two_round(inp, out):
+        _fanout_net = fanout_net
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        acc_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if fanout_net.is_dst():
+                with recv_dfb.wait() as first_recv_blk, acc_dfb.reserve() as acc_blk:
+                    acc_blk.store(first_recv_blk)
+                with (
+                    recv_dfb.wait() as second_recv_blk,
+                    acc_dfb.wait() as acc_blk,
+                    out_dfb.reserve() as out_blk,
+                ):
+                    out_blk.store(acc_blk + second_recv_blk)
+
+        @ttl.datamovement()
+        def post_receives():
+            if fanout_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+
+                    def recv(pipe):
+                        ttl.copy(pipe, recv_blk).wait()
+
+                    fanout_net.if_dst(recv)
+                with recv_dfb.reserve() as recv_blk:
+
+                    def recv(pipe):
+                        ttl.copy(pipe, recv_blk).wait()
+
+                    fanout_net.if_dst(recv)
+
+        @ttl.datamovement()
+        def send_rounds():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0 and node_y == 0:
+                with send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 0], send_blk).wait()
+
+                    def send(pipe):
+                        ttl.copy(send_blk, pipe).wait()
+
+                    fanout_net.if_src(send)
+                with send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 1], send_blk).wait()
+
+                    def send(pipe):
+                        ttl.copy(send_blk, pipe).wait()
+
+                    fanout_net.if_src(send)
+
+        @ttl.datamovement()
+        def write_output():
+            node_x, node_y = ttl.node(dims=2)
+            if fanout_net.is_dst():
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(
+                        out_blk,
+                        out[node_y : node_y + 1, node_x : node_x + 1],
+                    ).wait()
+
+    return same_source_global_ready_two_round
+
+
+def make_interleaved_global_ready_kernel():
+    grid_width = 4
+    grid_height = 4
+    fanout_pipes = [
+        ttl.Pipe(src=(0, 0), dst=(dst_x, dst_y))
+        for dst_y in range(grid_height)
+        for dst_x in range(grid_width)
+    ]
+    loopback_pipe = fanout_pipes[0]
+    fanout_net = ttl.PipeNet(fanout_pipes)
+    side_pipe = ttl.Pipe(src=(1, 0), dst=(2, 0))
+    side_net = ttl.PipeNet([side_pipe])
+
+    @ttl.operation(grid=(grid_width, grid_height))
+    def interleaved_global_ready(inp, out):
+        _fanout_net = fanout_net
+        _side_net = side_net
+        _loopback_pipe = loopback_pipe
+
+        fanout_send_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=(1, 1), block_count=2
+        )
+        side_send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        fanout_recv_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=(1, 1), block_count=2
+        )
+        side_recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        fanout_out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+        side_out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if fanout_net.is_dst():
+                with fanout_recv_dfb.wait() as recv_blk:
+                    with fanout_out_dfb.reserve() as out_blk:
+                        out_blk.store(recv_blk)
+            if side_net.is_dst():
+                with side_recv_dfb.wait() as recv_blk:
+                    with side_out_dfb.reserve() as out_blk:
+                        out_blk.store(recv_blk)
+
+        @ttl.datamovement()
+        def post_receives_and_send():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0 and node_y == 0:
+                with fanout_recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(loopback_pipe, recv_blk)
+                    with fanout_send_dfb.reserve() as send_blk:
+                        ttl.copy(inp[0, 0], send_blk).wait()
+
+                        def send(pipe):
+                            ttl.copy(send_blk, pipe).wait()
+
+                        fanout_net.if_src(send)
+                    recv_tx.wait()
+            elif fanout_net.is_dst():
+                with fanout_recv_dfb.reserve() as recv_blk:
+
+                    def recv(pipe):
+                        ttl.copy(pipe, recv_blk).wait()
+
+                    fanout_net.if_dst(recv)
+
+            if side_net.is_dst():
+                with side_recv_dfb.reserve() as recv_blk:
+                    ttl.copy(side_pipe, recv_blk).wait()
+            if side_net.is_src():
+                with side_send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 1], send_blk).wait()
+                    ttl.copy(send_blk, side_pipe).wait()
+
+        @ttl.datamovement()
+        def write_output():
+            node_x, node_y = ttl.node(dims=2)
+            if fanout_net.is_dst():
+                with fanout_out_dfb.wait() as out_blk:
+                    ttl.copy(
+                        out_blk,
+                        out[node_y : node_y + 1, node_x : node_x + 1],
+                    ).wait()
+            if side_net.is_dst():
+                with side_out_dfb.wait() as out_blk:
+                    ttl.copy(
+                        out_blk,
+                        out[grid_height : grid_height + 1, node_x : node_x + 1],
+                    ).wait()
+
+    return interleaved_global_ready
 
 
 def make_loopback_multicast_aggregate_kernel():
@@ -264,6 +495,17 @@ def _full_grid_fanout_recipient_coords(grid_width, grid_height, recipient_count)
     return coords
 
 
+def _make_full_grid_unicast_fanout_pipes(grid_width, grid_height, recipient_count):
+    return [
+        ttl.Pipe(src=(0, 0), dst=(recipient_col, recipient_row))
+        for recipient_col, recipient_row in _full_grid_fanout_recipient_coords(
+            grid_width,
+            grid_height,
+            recipient_count,
+        )
+    ]
+
+
 def make_full_grid_fanout_kernel(recipient_count):
     @ttl.operation(grid="full")
     def full_grid_fanout(inp, out):
@@ -313,6 +555,57 @@ def make_full_grid_fanout_kernel(recipient_count):
                     ttl.copy(out_blk, out[node_y, node_x]).wait()
 
     return full_grid_fanout
+
+
+def make_full_grid_unicast_global_ready_kernel(recipient_count):
+    @ttl.operation(grid="full")
+    def full_grid_unicast_global_ready(inp, out):
+        grid_width, grid_height = ttl.grid_size(dims=2)
+        fanout_net = ttl.PipeNet(
+            _make_full_grid_unicast_fanout_pipes(
+                grid_width,
+                grid_height,
+                recipient_count,
+            )
+        )
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if fanout_net.is_dst():
+                with recv_dfb.wait() as recv_blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(recv_blk)
+
+        @ttl.datamovement()
+        def post_receive_and_send():
+            if fanout_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+
+                    def recv(pipe):
+                        ttl.copy(pipe, recv_blk).wait()
+
+                    fanout_net.if_dst(recv)
+
+            if fanout_net.is_src():
+                with send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 0], send_blk).wait()
+
+                    def send(pipe):
+                        ttl.copy(send_blk, pipe).wait()
+
+                    fanout_net.if_src(send)
+
+        @ttl.datamovement()
+        def write_output():
+            node_x, node_y = ttl.node(dims=2)
+            if fanout_net.is_dst():
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(out_blk, out[node_y, node_x]).wait()
+
+    return full_grid_unicast_global_ready
 
 
 def make_row_all_to_all_multicast_kernel():
@@ -490,13 +783,18 @@ def make_grid_all_to_all_multicast_kernel():
 
 posted_gather_kernel = make_two_net_posted_gather_kernel()
 same_source_two_pipe_kernel = make_same_source_two_pipe_kernel()
+same_source_global_ready_kernel = make_same_source_global_ready_kernel()
+same_source_global_ready_two_round_kernel = (
+    make_same_source_global_ready_two_round_kernel()
+)
+interleaved_global_ready_kernel = make_interleaved_global_ready_kernel()
 loopback_multicast_aggregate_kernel = make_loopback_multicast_aggregate_kernel()
 degenerate_multicast_aggregate_kernel = make_degenerate_multicast_aggregate_kernel()
 row_all_to_all_multicast_kernel = make_row_all_to_all_multicast_kernel()
 grid_all_to_all_multicast_kernel = make_grid_all_to_all_multicast_kernel()
 
 
-def make_many_pipe_rendezvous_kernel():
+def make_many_pipe_sync_kernel():
     grid_dim = 2
     row_upper_net = ttl.PipeNet(
         [
@@ -536,7 +834,7 @@ def make_many_pipe_rendezvous_kernel():
     )
 
     @ttl.operation(grid=(grid_dim + 1, grid_dim), fp32_dest_acc_en=True)
-    def many_pipe_rendezvous(inp, out):
+    def many_pipe_sync(inp, out):
         _row_upper_net = row_upper_net
         _row_lower_net = row_lower_net
         _col_upper_net = col_upper_net
@@ -702,7 +1000,7 @@ def make_many_pipe_rendezvous_kernel():
         def write_output():
             pass
 
-    return many_pipe_rendezvous
+    return many_pipe_sync
 
 
 def make_non_uniform_multicast_receive_address_kernel():
@@ -753,7 +1051,7 @@ def make_non_uniform_multicast_receive_address_kernel():
 non_uniform_multicast_receive_address_kernel = (
     make_non_uniform_multicast_receive_address_kernel()
 )
-many_pipe_rendezvous_kernel = make_many_pipe_rendezvous_kernel()
+many_pipe_sync_kernel = make_many_pipe_sync_kernel()
 
 
 def test_posted_gather_uses_distinct_receiver_slots(device):
@@ -773,7 +1071,7 @@ def test_posted_gather_uses_distinct_receiver_slots(device):
     assert_pcc(expected.float(), result.float())
 
 
-def test_same_source_pipes_use_distinct_rendezvous_state(device):
+def test_same_source_pipes_use_distinct_sync_state(device):
     inp_torch = torch.randn(TILE, 2 * TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
 
@@ -787,7 +1085,74 @@ def test_same_source_pipes_use_distinct_rendezvous_state(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_loopback_multicast_uses_aggregate_rendezvous(device):
+def test_same_source_pipes_use_global_ready_counters(device):
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(4 * TILE, 4 * TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    same_source_global_ready_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    expected = torch.cat(
+        [torch.cat([inp_torch] * 4, dim=1)] * 4,
+        dim=0,
+    )
+    assert_pcc(expected.float(), result.float())
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Requires phased pipe transfer lowering (#623)",
+)
+def test_same_source_global_ready_counters_reuse_across_rounds(device):
+    inp_torch = torch.randn(TILE, 2 * TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(4 * TILE, 5 * TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    same_source_global_ready_two_round_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    expected_tile = (
+        inp_torch[:, 0:TILE].float() + inp_torch[:, TILE : 2 * TILE].float()
+    ).to(torch.bfloat16)
+    expected = out_torch.clone()
+    expected[0:TILE, TILE : 5 * TILE] = torch.cat([expected_tile] * 4, dim=1)
+    expected[TILE : 4 * TILE, 0 : 5 * TILE] = torch.cat(
+        [torch.cat([expected_tile] * 5, dim=1)] * 3,
+        dim=0,
+    )
+    assert_pcc(expected.float(), result.float())
+
+
+def test_interleaved_pipenets_use_global_ready_counters(device):
+    inp_torch = torch.randn(TILE, 2 * TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(5 * TILE, 4 * TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    interleaved_global_ready_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    expected = out_torch.clone()
+    fanout_tile = inp_torch[:, 0:TILE]
+    side_tile = inp_torch[:, TILE : 2 * TILE]
+    expected[0 : 4 * TILE, 0 : 4 * TILE] = torch.cat(
+        [torch.cat([fanout_tile] * 4, dim=1)] * 4,
+        dim=0,
+    )
+    expected[4 * TILE : 5 * TILE, 2 * TILE : 3 * TILE] = side_tile
+    assert_pcc(expected.float(), result.float())
+
+
+def test_loopback_multicast_uses_aggregate_ready_counting(device):
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
 
@@ -802,7 +1167,7 @@ def test_loopback_multicast_uses_aggregate_rendezvous(device):
     assert_pcc(expected.float(), result.float())
 
 
-def test_degenerate_multicast_uses_aggregate_rendezvous(device):
+def test_degenerate_multicast_uses_aggregate_ready_counting(device):
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
 
@@ -854,6 +1219,52 @@ def test_full_grid_fanout_uses_sram_address_table(device, recipient_case):
     out = to_dram(out_torch, device)
 
     fanout_kernel = make_full_grid_fanout_kernel(recipient_count)
+    fanout_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    assert_pcc(expected.float(), result.float())
+
+
+@pytest.mark.parametrize(
+    "recipient_case",
+    ["threshold-plus-one"],
+    ids=["threshold-plus-one"],
+)
+def test_full_grid_unicast_fanout_uses_global_ready_counters(device, recipient_case):
+    device_grid = device.compute_with_storage_grid_size()
+    grid_width, grid_height = device_grid.x, device_grid.y
+    maximum_recipient_count = grid_width * grid_height - 1
+    if maximum_recipient_count < 16:
+        pytest.skip("Global ready-counter coverage needs at least 16 recipients")
+
+    recipient_counts = {
+        "threshold-plus-one": 16,
+    }
+    recipient_count = recipient_counts[recipient_case]
+
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(
+        grid_height * TILE,
+        grid_width * TILE,
+        dtype=torch.bfloat16,
+    )
+    expected = out_torch.clone()
+    for recipient_col, recipient_row in _full_grid_fanout_recipient_coords(
+        grid_width,
+        grid_height,
+        recipient_count,
+    ):
+        row_start = recipient_row * TILE
+        row_end = row_start + TILE
+        col_start = recipient_col * TILE
+        col_end = col_start + TILE
+        expected[row_start:row_end, col_start:col_end] = inp_torch
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    fanout_kernel = make_full_grid_unicast_global_ready_kernel(recipient_count)
     fanout_kernel(inp, out)
     ttnn.synchronize_device(device)
 
@@ -938,14 +1349,14 @@ def test_grid_all_to_all_multicast_semaphore_count_scales():
     assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
 
 
-def test_many_pipe_rendezvous_sites_fit_hardware_semaphore_limit(device):
+def test_many_pipe_sync_sites_fit_hardware_semaphore_limit(device):
     inp_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
 
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
 
-    many_pipe_rendezvous_kernel(inp, out)
+    many_pipe_sync_kernel(inp, out)
     ttnn.synchronize_device(device)
 
 

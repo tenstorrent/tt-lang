@@ -824,9 +824,9 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
   CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
-               const PipeChannelLoweringInfo *pipeChannelInfo)
+               const PipeResourcePlan *pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
-        pipeChannelInfo(pipeChannelInfo) {}
+        pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -863,7 +863,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
                domInfo.dominates(user, op);
       });
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), isConsumerCB,
-                           pipeChannelInfo, rewriter);
+                           pipeResourcePlan, rewriter);
     }
     if (srcIsPipe && dstIsDFBAttachedTensor) {
       return op.emitError("internal compiler error: pipe receive copy "
@@ -905,14 +905,14 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
   }
 
 private:
-  const PipeChannelLoweringInfo *pipeChannelInfo;
+  const PipeResourcePlan *pipeResourcePlan;
 };
 
 struct PipeRecvPostLowering : OpConversionPattern<PipeRecvPostOp> {
   PipeRecvPostLowering(const TypeConverter &typeConverter, MLIRContext *context,
-                       const PipeChannelLoweringInfo *pipeChannelInfo)
+                       const PipeResourcePlan *pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
-        pipeChannelInfo(pipeChannelInfo) {}
+        pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(PipeRecvPostOp op, OpAdaptor adaptor,
@@ -921,30 +921,30 @@ struct PipeRecvPostLowering : OpConversionPattern<PipeRecvPostOp> {
     // (`ttl.cb_reserve`, `ttl.attach_cb`, and slice offset), so this lowering
     // must use the original SSA value rather than the converted adaptor value.
     return lowerPipeRecvPost(op, adaptor.getPipe(), op.getDst(),
-                             pipeChannelInfo, rewriter);
+                             pipeResourcePlan, rewriter);
   }
 
 private:
-  const PipeChannelLoweringInfo *pipeChannelInfo;
+  const PipeResourcePlan *pipeResourcePlan;
 };
 
 struct PipeRecvWaitLowering : OpConversionPattern<PipeRecvWaitOp> {
   PipeRecvWaitLowering(const TypeConverter &typeConverter, MLIRContext *context,
                        const PipeNetCounterMap *pipeNetCounters,
-                       const PipeChannelLoweringInfo *pipeChannelInfo)
+                       const PipeResourcePlan *pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
-        pipeNetCounters(pipeNetCounters), pipeChannelInfo(pipeChannelInfo) {}
+        pipeNetCounters(pipeNetCounters), pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(PipeRecvWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     return lowerPipeRecvWait(op, adaptor.getPipe(), op.getDst(),
-                             pipeNetCounters, pipeChannelInfo, rewriter);
+                             pipeNetCounters, pipeResourcePlan, rewriter);
   }
 
 private:
   const PipeNetCounterMap *pipeNetCounters;
-  const PipeChannelLoweringInfo *pipeChannelInfo;
+  const PipeResourcePlan *pipeResourcePlan;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
@@ -1119,8 +1119,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
-  // Validate receiver DFB consistency before lowering emits the rendezvous
-  // protocol.
+  // Validate receiver DFB consistency before lowering emits the pipe
+  // synchronization protocol.
   auto pipeGraphOrErr = PipeGraph::build(mod);
   if (failed(pipeGraphOrErr)) {
     return failure();
@@ -1134,29 +1134,39 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // don't walk the module per match.
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
-  PipeChannelLoweringInfo pipeChannelInfo;
-  buildPipeChannelLoweringInfo(mod, pipeNetIndex, *pipeGraphOrErr,
-                               pipeChannelInfo);
-  if (failed(verifyPipeChannelLoweringInfoFitsHardware(mod, pipeChannelInfo))) {
+  PipeResourcePlan pipeResourcePlan;
+  buildPipeResourcePlan(mod, pipeNetIndex, *pipeGraphOrErr, pipeResourcePlan);
+  if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan))) {
     return failure();
   }
   mod->setAttr(
       "ttl.pipe_sync_semaphore_count",
       IntegerAttr::get(IntegerType::get(&ctx, 64),
-                       getRequiredPipeSyncSemaphoreCount(pipeChannelInfo)));
+                       getRequiredPipeSyncSemaphoreCount(pipeResourcePlan)));
+  int64_t pipeGlobalSemaphoreCount =
+      getRequiredPipeGlobalSemaphoreCount(pipeResourcePlan);
+  if (pipeGlobalSemaphoreCount > 0) {
+    mod->setAttr(
+        "ttl.pipe_global_semaphore_count",
+        IntegerAttr::get(IntegerType::get(&ctx, 64), pipeGlobalSemaphoreCount));
+  }
   int64_t pipeSramScratchBytes =
-      getRequiredPipeSramScratchBytes(pipeChannelInfo);
+      getRequiredPipeSramScratchBytes(pipeResourcePlan);
   if (pipeSramScratchBytes > 0) {
     mod->setAttr(
         "ttl.pipe_sram_scratch_bytes",
         IntegerAttr::get(IntegerType::get(&ctx, 64), pipeSramScratchBytes));
   }
+  // [Device 2.0] The ttl.pipe_*_count and ttl.pipe_sram_scratch_bytes attrs
+  // form the current host/runtime ABI for pipe resources. Keep allocation
+  // driven by this explicit compiler plan, so future typed device APIs only
+  // change how the resources are bound at runtime.
 
   RewritePatternSet patterns(&ctx);
-  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeChannelInfo);
-  patterns.add<PipeRecvPostLowering>(typeConverter, &ctx, &pipeChannelInfo);
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeResourcePlan);
+  patterns.add<PipeRecvPostLowering>(typeConverter, &ctx, &pipeResourcePlan);
   patterns.add<PipeRecvWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
-                                     &pipeChannelInfo);
+                                     &pipeResourcePlan);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(

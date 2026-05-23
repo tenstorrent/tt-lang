@@ -34,6 +34,7 @@ enum class PipeAddressStorageKind {
 
 enum class PipeReadyCounterKind {
   LocalSemaphore,
+  GlobalSemaphore,
 };
 
 enum class PipeCompletionWaitKind {
@@ -46,7 +47,8 @@ struct PipeSramAddressTableInfo {
 
 struct PipeReadyCounterInfo {
   PipeReadyCounterKind kind = PipeReadyCounterKind::LocalSemaphore;
-  int64_t senderReadySemIdx;
+  int64_t senderReadySemIdx = -1;
+  int64_t globalSemaphoreIndex = -1;
 };
 
 struct PipeCompletionWaitInfo {
@@ -55,7 +57,7 @@ struct PipeCompletionWaitInfo {
   int64_t receiverSemIdx;
 };
 
-/// Address storage used by one logical pipe channel. Each receiver publishes
+/// Address storage used by one logical pipe. Each receiver publishes
 /// its DFB write address into the source core's SRAM table before incrementing
 /// the sender-ready counter.
 struct PipeAddressStorageInfo {
@@ -67,19 +69,16 @@ struct PipeAddressStorageInfo {
   }
 };
 
-/// Lowering information for one logical pipe channel. This keeps address
-/// storage separate from readiness counting so later channel-table and
-/// GlobalSemaphore allocation can replace either resource independently.
-struct PipeChannelInfo {
+/// Lowering information for one logical pipe. This keeps address
+/// storage separate from readiness counting so physical allocation can choose
+/// local semaphores or GlobalSemaphore-backed counters independently.
+struct PipeResourceInfo {
   bool isMulticast = false;
   PipeReadyCounterInfo readyCounter;
   PipeAddressStorageInfo addressStorage;
 
   bool usesSramAddressTable() const {
     return addressStorage.usesSramAddressTable();
-  }
-  bool usesAggregateRendezvous() const {
-    return isMulticast && usesSramAddressTable();
   }
 };
 
@@ -97,37 +96,41 @@ struct PipeSramScratchInfo {
   int64_t bytes = 0;
 };
 
-/// Static information used by pipe lowering. Receiver-completion semaphore
+/// Static resource allocation used by pipe lowering. Receiver-completion semaphore
 /// indices are global. Sender-ready indices only need to be unique among pipes
 /// that share a source core. Address table offsets are global within the
 /// compiler-managed SRAM scratch allocation.
-struct PipeChannelLoweringInfo {
+struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
-  llvm::MapVector<PipeKey, PipeChannelInfo> channels;
+  llvm::MapVector<PipeKey, PipeResourceInfo> resources;
 };
 
 /// Diagnose layouts that exceed the hardware semaphore id limit before
 /// emitting ttkernel.get_semaphore ops with invalid ids.
 LogicalResult
-verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
-                                          const PipeChannelLoweringInfo &info);
+verifyPipeResourcePlanFitsHardware(ModuleOp mod,
+                                   const PipeResourcePlan &info);
 
 /// Return the number of semaphore ids referenced by the selected pipe lowering.
-int64_t getRequiredPipeSyncSemaphoreCount(const PipeChannelLoweringInfo &info);
+int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info);
+
+/// Return the number of GlobalSemaphore descriptors referenced by pipe
+/// lowering.
+int64_t
+getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info);
 
 /// Return the per-core SRAM scratch bytes required by pipe address storage.
-int64_t getRequiredPipeSramScratchBytes(const PipeChannelLoweringInfo &info);
+int64_t getRequiredPipeSramScratchBytes(const PipeResourcePlan &info);
 
 /// Walk `mod` once and group every PipeType result by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
-/// Build the channel information used by pipe lowering.
-void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
-                                  const PipeGraph &pipeGraph,
-                                  PipeChannelLoweringInfo &info);
+/// Build the pipe resource plan used by pipe lowering.
+void buildPipeResourcePlan(ModuleOp mod, const PipeNetIndex &index,
+                           const PipeGraph &pipeGraph, PipeResourcePlan &info);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.
@@ -137,18 +140,18 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 /// addresses and signals destinations via semaphore.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,
-                            const PipeChannelLoweringInfo *pipeChannelInfo,
+                            const PipeResourcePlan *pipeResourcePlan,
                             ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive address publication.
 LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
-                                const PipeChannelLoweringInfo *pipeChannelInfo,
+                                const PipeResourcePlan *pipeResourcePlan,
                                 ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
 LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
                                 const PipeNetCounterMap *counters,
-                                const PipeChannelLoweringInfo *pipeChannelInfo,
+                                const PipeResourcePlan *pipeResourcePlan,
                                 ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.

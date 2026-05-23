@@ -104,7 +104,7 @@ func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // Two pipes in the same PipeNet with the same source need distinct ready
 // semaphores and SRAM address-table slots, otherwise posts for one pipe can
 // satisfy the other pipe's send.
-// CHECK-LABEL: func.func @same_source_two_pipes_use_distinct_rendezvous_state
+// CHECK-LABEL: func.func @same_source_two_pipes_use_distinct_sync_state
 // CHECK-DAG: %[[P0_READY_IDX:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[P1_READY_IDX:.*]] = arith.constant 2 : index
 // CHECK-DAG: %[[P1_TABLE_OFF:.*]] = arith.constant 4 : i32
@@ -126,7 +126,7 @@ func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
 // CHECK: arith.addi {{.*}}, %[[P1_TABLE_OFF]]
 // CHECK: ttkernel.load_from_l1
-func.func @same_source_two_pipes_use_distinct_rendezvous_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @same_source_two_pipes_use_distinct_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -141,6 +141,152 @@ func.func @same_source_two_pipes_use_distinct_rendezvous_state() attributes { "t
   ttl.wait %send1 : !ttl.transfer_handle<write>
   ttl.wait %post0 : !ttl.transfer_handle
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  ttl.wait %post1 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
+// Same-source pipe counts at the local semaphore boundary keep ready
+// counters in local hardware semaphores.
+// CHECK-LABEL: func.func @same_source_pipes_keep_local_ready_counters_at_limit
+// CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 1 : index
+// CHECK: %[[READY_POST:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]])
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: %[[READY_SEND:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
+// CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
+// CHECK: ttkernel.experimental::semaphore_wait(%[[READY_PTR]]
+func.func @same_source_pipes_keep_local_ready_counters_at_limit() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
+  %p2 = ttl.create_pipe src(0, 0) dst(3, 0) to(3, 0) net 0 : !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>
+  %p3 = ttl.create_pipe src(0, 0) dst(4, 0) to(4, 0) net 0 : !ttl.pipe<src(0, 0) dst(4, 0) to(4, 0) net 0>
+  %p4 = ttl.create_pipe src(0, 0) dst(5, 0) to(5, 0) net 0 : !ttl.pipe<src(0, 0) dst(5, 0) to(5, 0) net 0>
+  %p5 = ttl.create_pipe src(0, 0) dst(6, 0) to(6, 0) net 0 : !ttl.pipe<src(0, 0) dst(6, 0) to(6, 0) net 0>
+  %p6 = ttl.create_pipe src(0, 0) dst(7, 0) to(7, 0) net 0 : !ttl.pipe<src(0, 0) dst(7, 0) to(7, 0) net 0>
+  %p7 = ttl.create_pipe src(0, 0) dst(8, 0) to(8, 0) net 0 : !ttl.pipe<src(0, 0) dst(8, 0) to(8, 0) net 0>
+  %p8 = ttl.create_pipe src(0, 0) dst(9, 0) to(9, 0) net 0 : !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 0>
+  %p9 = ttl.create_pipe src(0, 0) dst(10, 0) to(10, 0) net 0 : !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 0>
+  %p10 = ttl.create_pipe src(0, 0) dst(11, 0) to(11, 0) net 0 : !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 0>
+  %p11 = ttl.create_pipe src(0, 0) dst(12, 0) to(12, 0) net 0 : !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 0>
+  %p12 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 0 : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 0>
+  %p13 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 0 : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 0>
+  %p14 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 0 : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 0>
+  %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post = ttl.copy %p0, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send = ttl.copy %src_cb, %p0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send : !ttl.transfer_handle<write>
+  ttl.wait %post : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
+// Same-source pipe counts that exceed local semaphore capacity use
+// GlobalSemaphore-backed ready counters passed after the SRAM scratch base in
+// common runtime args.
+// CHECK-LABEL: module attributes
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 16 : i64
+// CHECK-LABEL: func.func @same_source_pipes_use_global_ready_counters
+// CHECK-DAG: %[[SCRATCH_ARG_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[READY_ARG_IDX:.*]] = arith.constant 1 : index
+// CHECK: %[[SCRATCH_POST:.*]] = ttkernel.get_common_arg_val(%[[SCRATCH_ARG_IDX]])
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: %[[READY_POST:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_IDX]])
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]])
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: %[[READY_SEND:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_IDX]])
+// CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
+// CHECK: ttkernel.experimental::semaphore_wait(%[[READY_PTR]]
+// CHECK: ttkernel.noc_semaphore_set
+// CHECK: %[[SCRATCH_SEND:.*]] = ttkernel.get_common_arg_val(%[[SCRATCH_ARG_IDX]])
+// CHECK: ttkernel.reinterpret_cast{{.*}}(%[[SCRATCH_SEND]])
+// CHECK: ttkernel.load_from_l1
+// CHECK-NOT: ttkernel.get_semaphore(%[[READY_ARG_IDX]])
+func.func @same_source_pipes_use_global_ready_counters() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
+  %p2 = ttl.create_pipe src(0, 0) dst(3, 0) to(3, 0) net 0 : !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>
+  %p3 = ttl.create_pipe src(0, 0) dst(4, 0) to(4, 0) net 0 : !ttl.pipe<src(0, 0) dst(4, 0) to(4, 0) net 0>
+  %p4 = ttl.create_pipe src(0, 0) dst(5, 0) to(5, 0) net 0 : !ttl.pipe<src(0, 0) dst(5, 0) to(5, 0) net 0>
+  %p5 = ttl.create_pipe src(0, 0) dst(6, 0) to(6, 0) net 0 : !ttl.pipe<src(0, 0) dst(6, 0) to(6, 0) net 0>
+  %p6 = ttl.create_pipe src(0, 0) dst(7, 0) to(7, 0) net 0 : !ttl.pipe<src(0, 0) dst(7, 0) to(7, 0) net 0>
+  %p7 = ttl.create_pipe src(0, 0) dst(8, 0) to(8, 0) net 0 : !ttl.pipe<src(0, 0) dst(8, 0) to(8, 0) net 0>
+  %p8 = ttl.create_pipe src(0, 0) dst(9, 0) to(9, 0) net 0 : !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 0>
+  %p9 = ttl.create_pipe src(0, 0) dst(10, 0) to(10, 0) net 0 : !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 0>
+  %p10 = ttl.create_pipe src(0, 0) dst(11, 0) to(11, 0) net 0 : !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 0>
+  %p11 = ttl.create_pipe src(0, 0) dst(12, 0) to(12, 0) net 0 : !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 0>
+  %p12 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 0 : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 0>
+  %p13 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 0 : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 0>
+  %p14 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 0 : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 0>
+  %p15 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 0 : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 0>
+  %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post = ttl.copy %p0, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send = ttl.copy %src_cb, %p0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send : !ttl.transfer_handle<write>
+  ttl.wait %post : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
+// When any source-local pipe count exceeds local semaphore capacity, ready
+// counters use GlobalSemaphore addresses while per-PipeNet completion counters
+// remain local semaphores.
+// CHECK-LABEL: module attributes
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 17 : i64
+// CHECK-LABEL: func.func @interleaved_pipenets_use_global_ready_and_local_completion
+// CHECK-DAG: %[[SCRATCH_ARG_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[FIRST_READY_ARG_IDX:.*]] = arith.constant 1 : index
+// CHECK: %[[READY_POST:.*]] = ttkernel.get_common_arg_val(%[[FIRST_READY_ARG_IDX]])
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]])
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: %[[READY_SEND:.*]] = ttkernel.get_common_arg_val(%[[FIRST_READY_ARG_IDX]])
+// CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
+// CHECK: ttkernel.experimental::semaphore_wait(%[[READY_PTR]]
+// CHECK: ttkernel.get_common_arg_val(%[[SCRATCH_ARG_IDX]])
+// CHECK: ttkernel.load_from_l1
+// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]])
+// CHECK: ttkernel.noc_semaphore_inc
+func.func @interleaved_pipenets_use_global_ready_and_local_completion() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
+  %p2 = ttl.create_pipe src(0, 0) dst(3, 0) to(3, 0) net 0 : !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>
+  %p3 = ttl.create_pipe src(0, 0) dst(4, 0) to(4, 0) net 0 : !ttl.pipe<src(0, 0) dst(4, 0) to(4, 0) net 0>
+  %p4 = ttl.create_pipe src(0, 0) dst(5, 0) to(5, 0) net 0 : !ttl.pipe<src(0, 0) dst(5, 0) to(5, 0) net 0>
+  %p5 = ttl.create_pipe src(0, 0) dst(6, 0) to(6, 0) net 0 : !ttl.pipe<src(0, 0) dst(6, 0) to(6, 0) net 0>
+  %p6 = ttl.create_pipe src(0, 0) dst(7, 0) to(7, 0) net 0 : !ttl.pipe<src(0, 0) dst(7, 0) to(7, 0) net 0>
+  %p7 = ttl.create_pipe src(0, 0) dst(8, 0) to(8, 0) net 0 : !ttl.pipe<src(0, 0) dst(8, 0) to(8, 0) net 0>
+  %p8 = ttl.create_pipe src(0, 0) dst(9, 0) to(9, 0) net 0 : !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 0>
+  %p9 = ttl.create_pipe src(0, 0) dst(10, 0) to(10, 0) net 0 : !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 0>
+  %p10 = ttl.create_pipe src(0, 0) dst(11, 0) to(11, 0) net 0 : !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 0>
+  %p11 = ttl.create_pipe src(0, 0) dst(12, 0) to(12, 0) net 0 : !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 0>
+  %p12 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 0 : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 0>
+  %p13 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 0 : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 0>
+  %p14 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 0 : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 0>
+  %p15 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 0 : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 0>
+  %side = ttl.create_pipe src(1, 0) dst(17, 0) to(17, 0) net 1 : !ttl.pipe<src(1, 0) dst(17, 0) to(17, 0) net 1>
+  %recv0 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send0 = ttl.copy %src_cb, %p0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
+  %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post1 = ttl.copy %side, %recv1 : (!ttl.pipe<src(1, 0) dst(17, 0) to(17, 0) net 1>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send1 = ttl.copy %src_cb, %side : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(1, 0) dst(17, 0) to(17, 0) net 1>) -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  ttl.wait %post0 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
   ttl.wait %post1 : !ttl.transfer_handle
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
@@ -208,7 +354,7 @@ func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread"
 
 // Source-in-destination multicast uses the same receiver-authored SRAM address
 // table as non-loopback multicast.
-// CHECK-LABEL: func.func @loopback_multicast_aggregate_rendezvous
+// CHECK-LABEL: func.func @loopback_multicast_aggregate_ready_counting
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[POST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[POST_DFB]]
@@ -219,7 +365,7 @@ func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread"
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
 // CHECK: %[[MCAST_ADDR:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DST_ADDR]])
 // CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], %[[MCAST_ADDR]]
-func.func @loopback_multicast_aggregate_rendezvous() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @loopback_multicast_aggregate_ready_counting() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(0, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>
@@ -263,9 +409,9 @@ func.func @non_loopback_multicast_sram_address_table() attributes { "ttl.kernel_
 
 // -----
 
-// Degenerate multicast metadata preserves aggregate rendezvous when a
+// Degenerate multicast metadata preserves aggregate ready counting when a
 // slice-origin multicast covers one destination.
-// CHECK-LABEL: func.func @degenerate_multicast_aggregate_rendezvous
+// CHECK-LABEL: func.func @degenerate_multicast_aggregate_ready_counting
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[POST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[POST_DFB]]
@@ -276,7 +422,7 @@ func.func @non_loopback_multicast_sram_address_table() attributes { "ttl.kernel_
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
 // CHECK: %[[DST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_ADDR]])
 // CHECK: ttkernel.noc_async_write(%[[SRC_ADDR]], %[[DST_NOC]]
-func.func @degenerate_multicast_aggregate_rendezvous() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @degenerate_multicast_aggregate_ready_counting() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {isMulticast = true} : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
