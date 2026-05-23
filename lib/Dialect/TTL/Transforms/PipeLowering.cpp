@@ -20,7 +20,7 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SetVector.h"
 
 #include <algorithm>
 #include <optional>
@@ -71,10 +71,6 @@ static int64_t getNocIndex(Operation *op) {
   return attr.getInt();
 }
 
-static int64_t getReceiverSemIdx(PipeType pipeType) {
-  return getReceiverSemIdx(pipeType.getPipeNetId());
-}
-
 static PipeKey getPipeKey(PipeType pipeType) {
   return {pipeType.getSrcX(),      pipeType.getSrcY(),
           pipeType.getDstStartX(), pipeType.getDstStartY(),
@@ -86,8 +82,52 @@ static PipeKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY(), 0, 0, 0, 0, 0};
 }
 
-static bool canUseAggregateRendezvous(PipeInfo pipeInfo) {
-  return pipeInfo.isMulticast && pipeInfo.pipeType.srcInDstRange();
+static bool isPipeSendCopy(CopyOp op) {
+  return llvm::isa<CircularBufferType>(op.getSrc().getType()) &&
+         llvm::isa<PipeType>(op.getDst().getType());
+}
+
+using PipeCopyMap = llvm::MapVector<PipeKey, SmallVector<CopyOp>>;
+using PipeRecvPostMap = llvm::MapVector<PipeKey, SmallVector<PipeRecvPostOp>>;
+
+static bool hasReceivePostInSameFunc(CopyOp sendCopy,
+                                     ArrayRef<PipeRecvPostOp> receivePosts) {
+  FuncOp sendFunc = sendCopy->getParentOfType<FuncOp>();
+  if (!sendFunc) {
+    return false;
+  }
+
+  for (PipeRecvPostOp receivePost : receivePosts) {
+    if (receivePost->getParentOfType<FuncOp>() == sendFunc) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool canUseAggregateRendezvous(PipeInfo pipeInfo,
+                                      const PipeCopyMap &sendCopiesByPipe,
+                                      const PipeRecvPostMap &postsByPipe) {
+  // LocalReceiverDFB storage reads the receiver DFB write pointer in the
+  // sender kernel. Split NOC-thread programs need posted mailbox storage
+  // until source-local address tables carry receiver-authored addresses.
+  if (!pipeInfo.isMulticast || !pipeInfo.pipeType.srcInDstRange()) {
+    return false;
+  }
+
+  PipeKey key = getPipeKey(pipeInfo.pipeType);
+  auto sendIt = sendCopiesByPipe.find(key);
+  auto postIt = postsByPipe.find(key);
+  if (sendIt == sendCopiesByPipe.end() || postIt == postsByPipe.end()) {
+    return false;
+  }
+
+  for (CopyOp sendCopy : sendIt->second) {
+    if (!hasReceivePostInSameFunc(sendCopy, postIt->second)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static FailureOr<PipeChannelInfo>
@@ -105,6 +145,21 @@ lookupPipeChannelInfo(Operation *op, PipeType pipeType,
   return it->second;
 }
 
+static FailureOr<PipeCompletionWaitInfo>
+lookupPipeCompletionWaitInfo(Operation *op, PipeType pipeType,
+                             const PipeChannelLoweringInfo *pipeChannelInfo) {
+  if (!pipeChannelInfo) {
+    return op->emitError("internal compiler error: missing pipe channel "
+                         "lowering info");
+  }
+  auto it = pipeChannelInfo->completionWaits.find(pipeType.getPipeNetId());
+  if (it == pipeChannelInfo->completionWaits.end()) {
+    return op->emitError("internal compiler error: pipe net missing from pipe "
+                         "completion lowering info");
+  }
+  return it->second;
+}
+
 static FailureOr<Value>
 getMailboxSemIdxValue(Operation *op, Location loc,
                       const PipeChannelInfo &channelInfo,
@@ -113,9 +168,8 @@ getMailboxSemIdxValue(Operation *op, Location loc,
     return op->emitError("internal compiler error: pipe channel has no mailbox "
                          "semaphore index");
   }
-  return arith::ConstantIndexOp::create(rewriter, loc,
-                                        *channelInfo.addressStorage
-                                             .mailboxSemIdxBase)
+  return arith::ConstantIndexOp::create(
+             rewriter, loc, *channelInfo.addressStorage.mailboxSemIdxBase)
       .getResult();
 }
 
@@ -171,7 +225,7 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     // Collect unique pipeNetIds that have at least one receive in this
     // function. A runtime counter is required because receive waits may be
     // dynamically re-executed inside loops.
-    llvm::SmallSet<int64_t, 4> pipeNetIds;
+    llvm::SmallSetVector<int64_t, 4> pipeNetIds;
     func.walk([&](Operation *op) {
       if (auto post = mlir::dyn_cast<PipeRecvPostOp>(op)) {
         auto pipeTy = mlir::cast<PipeType>(post.getPipe().getType());
@@ -194,7 +248,9 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     Value zeroI32 =
         arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(0));
     auto &perFunc = counters[func];
-    for (int64_t pipeNetId : pipeNetIds) {
+    SmallVector<int64_t> sortedPipeNetIds(pipeNetIds.begin(), pipeNetIds.end());
+    llvm::sort(sortedPipeNetIds);
+    for (int64_t pipeNetId : sortedPipeNetIds) {
       auto alloca = memref::AllocaOp::create(b, loc, memrefTy);
       memref::StoreOp::create(b, loc, zeroI32, alloca, ValueRange{zeroIdx});
       perFunc[pipeNetId] = alloca.getResult();
@@ -215,6 +271,14 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   if (failed(channelInfo)) {
     return failure();
   }
+  FailureOr<PipeCompletionWaitInfo> completionInfo =
+      lookupPipeCompletionWaitInfo(op, pipeType, pipeChannelInfo);
+  if (failed(completionInfo)) {
+    return failure();
+  }
+  assert(channelInfo->readyCounter.kind ==
+         PipeReadyCounterKind::LocalSemaphore);
+  assert(completionInfo->kind == PipeCompletionWaitKind::LocalSemaphore);
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
@@ -315,9 +379,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   Value dstAddr;
   if (channelInfo->usesAggregateRendezvous()) {
-    FailureOr<Value> aggregateDstAddr =
-        buildAggregateDestinationAddress(op, loc, pipeType, *channelInfo,
-                                         rewriter);
+    FailureOr<Value> aggregateDstAddr = buildAggregateDestinationAddress(
+        op, loc, pipeType, *channelInfo, rewriter);
     if (failed(aggregateDstAddr)) {
       return failure();
     }
@@ -365,8 +428,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   // Signal that data has arrived.
   if (pipeType.isUnicast()) {
     // Point-to-point: atomically increment destination's semaphore.
-    auto semIdx = arith::ConstantIndexOp::create(rewriter, loc,
-                                                 getReceiverSemIdx(pipeType));
+    auto semIdx = arith::ConstantIndexOp::create(
+        rewriter, loc, completionInfo->receiverSemIdx);
     auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
     auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
     auto dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
@@ -378,7 +441,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     // Multicast: atomic inc on every receiver's recvSem. Receiver pairs
     // with cumulative wait_min via the per-PipeNet runtime counter.
     auto recvSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, getReceiverSemIdx(pipeType));
+        rewriter, loc, completionInfo->receiverSemIdx);
     auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
 
     // HW multicast auto-excludes the sender; num_dests counts only remote
@@ -434,6 +497,8 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   if (failed(channelInfo)) {
     return failure();
   }
+  assert(channelInfo->readyCounter.kind ==
+         PipeReadyCounterKind::LocalSemaphore);
   int64_t nocIdx = getNocIndex(op);
   if (channelInfo->usesMailbox() &&
       nocIdx >= pipeChannelInfo->numMailboxStagingSems) {
@@ -545,15 +610,22 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
 /// Lower the receiver completion wait with a per-PipeNet runtime counter.
 LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
                                 const PipeNetCounterMap *counters,
+                                const PipeChannelLoweringInfo *pipeChannelInfo,
                                 ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  FailureOr<PipeCompletionWaitInfo> completionInfo =
+      lookupPipeCompletionWaitInfo(op, pipeType, pipeChannelInfo);
+  if (failed(completionInfo)) {
+    return failure();
+  }
+  assert(completionInfo->kind == PipeCompletionWaitKind::LocalSemaphore);
   auto i32Ty = rewriter.getI32Type();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
   (void)dst;
 
-  auto recvSemIdx = arith::ConstantIndexOp::create(rewriter, loc,
-                                                   getReceiverSemIdx(pipeType));
+  auto recvSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, completionInfo->receiverSemIdx);
   auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
   auto recvSemPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
@@ -824,8 +896,8 @@ struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   using PipeKey =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
-  llvm::DenseMap<int64_t, llvm::SmallSet<PipeKey, 4>> seenPerNet;
-  llvm::DenseMap<int64_t, bool> netHasMulticast;
+  llvm::MapVector<int64_t, llvm::SmallSetVector<PipeKey, 4>> seenPerNet;
+  llvm::MapVector<int64_t, bool> netHasMulticast;
   mod.walk([&](CreatePipeOp op) {
     auto pt = mlir::cast<PipeType>(op.getResult().getType());
     int64_t netId = pt.getPipeNetId();
@@ -833,7 +905,7 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
                 pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
     bool pipeIsMulticast = isPipeSemanticallyMulticast(op);
     netHasMulticast[netId] |= pipeIsMulticast;
-    if (seenPerNet[netId].insert(key).second) {
+    if (seenPerNet[netId].insert(key)) {
       index[netId].push_back(PipeInfo{pt, pipeIsMulticast});
     }
   });
@@ -851,6 +923,22 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
 void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
                                   const PipeGraph &pipeGraph,
                                   PipeChannelLoweringInfo &info) {
+  PipeCopyMap sendCopiesByPipe;
+  PipeRecvPostMap postsByPipe;
+  mod.walk([&](Operation *op) {
+    if (auto sendCopy = mlir::dyn_cast<CopyOp>(op)) {
+      if (isPipeSendCopy(sendCopy)) {
+        auto pipeType = mlir::cast<PipeType>(sendCopy.getDst().getType());
+        sendCopiesByPipe[getPipeKey(pipeType)].push_back(sendCopy);
+      }
+      return;
+    }
+    if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {
+      auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
+      postsByPipe[getPipeKey(pipeType)].push_back(postOp);
+    }
+  });
+
   int64_t numPipeNets = 0;
   for (const auto &[pipeNetId, pipes] : index) {
     if (!pipes.empty()) {
@@ -867,16 +955,24 @@ void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
     }
   });
 
-  info.mailboxStagingSemIdxBase = numPipeNets;
-  info.numMailboxStagingSems = numMailboxStagingSems;
-  int64_t firstSourceLocalSemIdx = numPipeNets + numMailboxStagingSems;
-  llvm::DenseMap<PipeKey, int64_t> nextSemaphoreIdxBySource;
   SmallVector<int64_t> sortedPipeNetIds;
   sortedPipeNetIds.reserve(index.size());
   for (const auto &[pipeNetId, pipes] : index) {
-    sortedPipeNetIds.push_back(pipeNetId);
+    if (!pipes.empty()) {
+      sortedPipeNetIds.push_back(pipeNetId);
+    }
   }
   llvm::sort(sortedPipeNetIds);
+
+  info.mailboxStagingSemIdxBase = numPipeNets;
+  info.numMailboxStagingSems = numMailboxStagingSems;
+  for (int64_t pipeNetId : sortedPipeNetIds) {
+    info.completionWaits[pipeNetId] = PipeCompletionWaitInfo{
+        PipeCompletionWaitKind::LocalSemaphore, pipeNetId,
+        getReceiverCompletionSemIdx(pipeNetId)};
+  }
+  int64_t firstSourceLocalSemIdx = numPipeNets + numMailboxStagingSems;
+  llvm::MapVector<PipeKey, int64_t> nextSemaphoreIdxBySource;
 
   for (int64_t pipeNetId : sortedPipeNetIds) {
     auto pipeNetIt = index.find(pipeNetId);
@@ -904,13 +1000,14 @@ void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
       channelInfo.readyCounter.senderReadySemIdx = senderReadySemIdx;
       const ReceiverDFBInfo *receiverInfo =
           pipeGraph.lookupReceiverDFB(getPipeKey(pipeType));
-      if (receiverInfo && canUseAggregateRendezvous(pipeInfo)) {
+      if (receiverInfo &&
+          canUseAggregateRendezvous(pipeInfo, sendCopiesByPipe, postsByPipe)) {
         channelInfo.addressStorage.kind =
             PipeAddressStorageKind::LocalReceiverDFB;
         channelInfo.addressStorage.localReceiverDFB =
-            LocalReceiverDFBAddressInfo{
-                receiverInfo->dfbIndex, receiverInfo->dfbType,
-                receiverInfo->staticTileOffset};
+            LocalReceiverDFBAddressInfo{receiverInfo->dfbIndex,
+                                        receiverInfo->dfbType,
+                                        receiverInfo->staticTileOffset};
       } else {
         channelInfo.addressStorage.kind = PipeAddressStorageKind::PostedMailbox;
         channelInfo.addressStorage.mailboxSemIdxBase = nextSemaphoreIdx++;
@@ -920,11 +1017,37 @@ void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
   }
 }
 
+int64_t getRequiredPipeSyncSemaphoreCount(const PipeChannelLoweringInfo &info) {
+  int64_t highestSemaphoreIdx = -1;
+  auto observe = [&](int64_t index) {
+    highestSemaphoreIdx = std::max(highestSemaphoreIdx, index);
+  };
+
+  for (const auto &[pipeNetId, completion] : info.completionWaits) {
+    (void)pipeNetId;
+    assert(completion.kind == PipeCompletionWaitKind::LocalSemaphore);
+    observe(completion.receiverSemIdx);
+  }
+  if (info.numMailboxStagingSems > 0 &&
+      (!info.completionWaits.empty() || !info.channels.empty())) {
+    observe(info.mailboxStagingSemIdxBase + info.numMailboxStagingSems - 1);
+  }
+  for (const auto &[pipe, channel] : info.channels) {
+    (void)pipe;
+    assert(channel.readyCounter.kind == PipeReadyCounterKind::LocalSemaphore);
+    observe(channel.readyCounter.senderReadySemIdx);
+    if (channel.addressStorage.mailboxSemIdxBase) {
+      observe(*channel.addressStorage.mailboxSemIdxBase);
+    }
+  }
+  return highestSemaphoreIdx + 1;
+}
+
 LogicalResult
 verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
                                           const PipeChannelLoweringInfo &info) {
   enum class ResourceKind {
-    ReceiverArrival,
+    ReceiverCompletion,
     MailboxStaging,
     SenderReady,
     PostedAddressMailbox,
@@ -932,7 +1055,7 @@ verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
 
   struct HighestSemaphore {
     int64_t index = -1;
-    ResourceKind resource = ResourceKind::ReceiverArrival;
+    ResourceKind resource = ResourceKind::ReceiverCompletion;
     std::optional<PipeKey> pipe;
   };
 
@@ -944,14 +1067,18 @@ verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
     }
   };
 
-  if (info.mailboxStagingSemIdxBase > 0) {
-    observe(info.mailboxStagingSemIdxBase - 1, ResourceKind::ReceiverArrival);
+  for (const auto &[pipeNetId, completion] : info.completionWaits) {
+    (void)pipeNetId;
+    assert(completion.kind == PipeCompletionWaitKind::LocalSemaphore);
+    observe(completion.receiverSemIdx, ResourceKind::ReceiverCompletion);
   }
-  if (info.numMailboxStagingSems > 0) {
+  if (info.numMailboxStagingSems > 0 &&
+      (!info.completionWaits.empty() || !info.channels.empty())) {
     observe(info.mailboxStagingSemIdxBase + info.numMailboxStagingSems - 1,
             ResourceKind::MailboxStaging);
   }
   for (const auto &[pipe, channel] : info.channels) {
+    assert(channel.readyCounter.kind == PipeReadyCounterKind::LocalSemaphore);
     observe(channel.readyCounter.senderReadySemIdx, ResourceKind::SenderReady,
             pipe);
     if (channel.addressStorage.mailboxSemIdxBase) {
@@ -960,7 +1087,7 @@ verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
     }
   }
 
-  int64_t requiredSemaphoreIds = highest.index + 1;
+  int64_t requiredSemaphoreIds = getRequiredPipeSyncSemaphoreCount(info);
   if (requiredSemaphoreIds <= kMaxHardwarePipeSyncSemaphores) {
     return success();
   }
@@ -980,8 +1107,8 @@ verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
   };
 
   switch (highest.resource) {
-  case ResourceKind::ReceiverArrival:
-    note << "receiver-arrival counter";
+  case ResourceKind::ReceiverCompletion:
+    note << "receiver-completion counter";
     break;
   case ResourceKind::MailboxStaging:
     note << "mailbox staging";

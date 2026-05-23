@@ -37,7 +37,7 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/BitVector.h"
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
@@ -527,7 +527,7 @@ static LogicalResult expandPipeReceiveCopies(ModuleOp mod) {
     return failure();
   }
 
-  llvm::DenseMap<Operation *, PipeRecvPostOp> postByCopy;
+  llvm::MapVector<Operation *, PipeRecvPostOp> postByCopy;
   OpBuilder builder(mod.getContext());
   for (CopyOp copyOp : receiveCopies) {
     Operation *copyOperation = copyOp.getOperation();
@@ -541,8 +541,10 @@ static LogicalResult expandPipeReceiveCopies(ModuleOp mod) {
   }
 
   for (auto [waitOp, copyOperation] : receiveWaits) {
-    PipeRecvPostOp postOp = postByCopy.lookup(copyOperation);
-    assert(postOp && "pipe receive copy disappeared during expansion");
+    auto postIt = postByCopy.find(copyOperation);
+    assert(postIt != postByCopy.end() &&
+           "pipe receive copy disappeared during expansion");
+    PipeRecvPostOp postOp = postIt->second;
     builder.setInsertionPoint(waitOp);
     PipeRecvWaitOp::create(builder, waitOp.getLoc(), waitOp.getXf(),
                            postOp.getPipe(), postOp.getDst());
@@ -928,19 +930,21 @@ private:
 
 struct PipeRecvWaitLowering : OpConversionPattern<PipeRecvWaitOp> {
   PipeRecvWaitLowering(const TypeConverter &typeConverter, MLIRContext *context,
-                       const PipeNetCounterMap *pipeNetCounters)
+                       const PipeNetCounterMap *pipeNetCounters,
+                       const PipeChannelLoweringInfo *pipeChannelInfo)
       : OpConversionPattern(typeConverter, context),
-        pipeNetCounters(pipeNetCounters) {}
+        pipeNetCounters(pipeNetCounters), pipeChannelInfo(pipeChannelInfo) {}
 
   LogicalResult
   matchAndRewrite(PipeRecvWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     return lowerPipeRecvWait(op, adaptor.getPipe(), op.getDst(),
-                             pipeNetCounters, rewriter);
+                             pipeNetCounters, pipeChannelInfo, rewriter);
   }
 
 private:
   const PipeNetCounterMap *pipeNetCounters;
+  const PipeChannelLoweringInfo *pipeChannelInfo;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
@@ -1136,11 +1140,16 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   if (failed(verifyPipeChannelLoweringInfoFitsHardware(mod, pipeChannelInfo))) {
     return failure();
   }
+  mod->setAttr(
+      "ttl.pipe_sync_semaphore_count",
+      IntegerAttr::get(IntegerType::get(&ctx, 64),
+                       getRequiredPipeSyncSemaphoreCount(pipeChannelInfo)));
 
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx, &pipeChannelInfo);
   patterns.add<PipeRecvPostLowering>(typeConverter, &ctx, &pipeChannelInfo);
-  patterns.add<PipeRecvWaitLowering>(typeConverter, &ctx, &pipeNetCounters);
+  patterns.add<PipeRecvWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
+                                     &pipeChannelInfo);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(

@@ -11,17 +11,19 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 
 #include <optional>
 
 namespace mlir::tt::ttl {
 
-/// Receiver-arrival semaphores are indexed by PipeNet id. Sender-ready
+/// Receiver-completion semaphores are indexed by PipeNet id. Sender-ready
 /// semaphores are per pipe because different pipes in one PipeNet can be posted
 /// and sent independently. Posted-mailbox channels also need one source-local
 /// mailbox word per pipe.
-inline int64_t getReceiverSemIdx(int64_t pipeNetId) { return pipeNetId; }
+inline int64_t getReceiverCompletionSemIdx(int64_t pipeNetId) {
+  return pipeNetId;
+}
 
 struct PipeInfo {
   PipeType pipeType;
@@ -33,6 +35,14 @@ enum class PipeAddressStorageKind {
   LocalReceiverDFB,
 };
 
+enum class PipeReadyCounterKind {
+  LocalSemaphore,
+};
+
+enum class PipeCompletionWaitKind {
+  LocalSemaphore,
+};
+
 struct LocalReceiverDFBAddressInfo {
   int64_t receiverCBIndex;
   CircularBufferType receiverCBType;
@@ -40,7 +50,14 @@ struct LocalReceiverDFBAddressInfo {
 };
 
 struct PipeReadyCounterInfo {
+  PipeReadyCounterKind kind = PipeReadyCounterKind::LocalSemaphore;
   int64_t senderReadySemIdx;
+};
+
+struct PipeCompletionWaitInfo {
+  PipeCompletionWaitKind kind = PipeCompletionWaitKind::LocalSemaphore;
+  int64_t pipeNetId;
+  int64_t receiverSemIdx;
 };
 
 /// Address storage used by one logical pipe channel. Posted-mailbox channels
@@ -77,22 +94,23 @@ struct PipeChannelInfo {
 /// Per-function map: pipeNetId -> kernel-local i32 counter for cumulative
 /// pipe receive wait_min progress.
 using PipeNetCounterMap =
-    llvm::DenseMap<func::FuncOp, llvm::DenseMap<int64_t, Value>>;
+    llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
 
 /// pipeNetId -> deduplicated list of pipes in that net. Built once
 /// before lowering so is_src/is_dst/is_active patterns avoid walking the
 /// module per match.
-using PipeNetIndex = llvm::DenseMap<int64_t, SmallVector<PipeInfo>>;
+using PipeNetIndex = llvm::MapVector<int64_t, SmallVector<PipeInfo>>;
 
-/// Static information used by pipe lowering. Receiver-arrival semaphore indices
-/// are global. Receive posts use one local staging semaphore per NOC
+/// Static information used by pipe lowering. Receiver-completion semaphore
+/// indices are global. Receive posts use one local staging semaphore per NOC
 /// data-movement thread because remote SRAM writes read from local memory.
 /// Sender-ready and mailbox indices only need to be unique among pipes that
 /// share a source core. Aggregate rendezvous channels omit the mailbox word.
 struct PipeChannelLoweringInfo {
   int64_t mailboxStagingSemIdxBase = 0;
   int64_t numMailboxStagingSems = 0;
-  llvm::DenseMap<PipeKey, PipeChannelInfo> channels;
+  llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
+  llvm::MapVector<PipeKey, PipeChannelInfo> channels;
 };
 
 /// Diagnose layouts that exceed the hardware semaphore id limit before
@@ -100,6 +118,9 @@ struct PipeChannelLoweringInfo {
 LogicalResult
 verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
                                           const PipeChannelLoweringInfo &info);
+
+/// Return the number of semaphore ids referenced by the selected pipe lowering.
+int64_t getRequiredPipeSyncSemaphoreCount(const PipeChannelLoweringInfo &info);
 
 /// Walk `mod` once and group every PipeType result by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on
@@ -130,6 +151,7 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
 /// Lower the receiver-side pipe receive completion wait.
 LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
                                 const PipeNetCounterMap *counters,
+                                const PipeChannelLoweringInfo *pipeChannelInfo,
                                 ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.

@@ -11,7 +11,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SetVector.h"
 
 namespace mlir::tt::ttl {
 
@@ -80,8 +80,10 @@ void PipeGraph::assignGatherSlotIndices() {
       return lhs == rhs;
     }
   };
-  llvm::DenseMap<ReceiverKey, llvm::SmallSet<int64_t, 4>, ReceiverKeyInfo>
-      usedAtReceiver;
+  using ReceiverSlotMap =
+      llvm::MapVector<ReceiverKey, llvm::SmallSetVector<int64_t, 4>,
+                      llvm::DenseMap<ReceiverKey, unsigned, ReceiverKeyInfo>>;
+  ReceiverSlotMap usedAtReceiver;
 
   SmallVector<PipeKey> sortedKeys;
   sortedKeys.reserve(receiverDFBs.size());
@@ -101,7 +103,7 @@ void PipeGraph::assignGatherSlotIndices() {
 
     // Slots taken by earlier pipes at any of this pipe's receivers
     // (destination range is inclusive on both ends).
-    llvm::SmallSet<int64_t, 4> taken;
+    llvm::SmallSetVector<int64_t, 4> taken;
     for (int64_t dstY = pk.dstStartY; dstY <= pk.dstEndY; ++dstY) {
       for (int64_t dstX = pk.dstStartX; dstX <= pk.dstEndX; ++dstX) {
         auto receiverIt =
@@ -129,7 +131,6 @@ void PipeGraph::assignGatherSlotIndices() {
       }
     }
   }
-
 }
 
 LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
@@ -163,8 +164,8 @@ static PipeKey getPipeKey(PipeType pipeType) {
           pipeType.getPipeNetId()};
 }
 
-static llvm::DenseMap<PipeKey, bool> collectMulticastPipeKinds(ModuleOp mod) {
-  llvm::DenseMap<int64_t, bool> netHasMulticast;
+static llvm::MapVector<PipeKey, bool> collectMulticastPipeKinds(ModuleOp mod) {
+  llvm::MapVector<int64_t, bool> netHasMulticast;
   SmallVector<std::pair<PipeType, bool>> pipeTypes;
   mod.walk([&](CreatePipeOp op) {
     auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
@@ -177,7 +178,7 @@ static llvm::DenseMap<PipeKey, bool> collectMulticastPipeKinds(ModuleOp mod) {
     }
   });
 
-  llvm::DenseMap<PipeKey, bool> isMulticast;
+  llvm::MapVector<PipeKey, bool> isMulticast;
   for (auto [pipeType, pipeIsMulticast] : pipeTypes) {
     auto netIt = netHasMulticast.find(pipeType.getPipeNetId());
     if (netIt != netHasMulticast.end()) {
@@ -325,7 +326,7 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
-  llvm::DenseMap<PipeKey, bool> isMulticastPipe =
+  llvm::MapVector<PipeKey, bool> isMulticastPipe =
       collectMulticastPipeKinds(mod);
 
   LogicalResult walkResult = success();

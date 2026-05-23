@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir::tt::ttl {
@@ -112,7 +113,7 @@ public:
   const ReceiverDFBInfo *lookupReceiverDFB(const PipeKey &key) const;
 
 private:
-  llvm::DenseMap<PipeKey, ReceiverDFBInfo> receiverDFBs;
+  llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
 };
 
 } // namespace mlir::tt::ttl
