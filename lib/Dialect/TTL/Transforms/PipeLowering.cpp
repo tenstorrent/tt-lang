@@ -86,17 +86,8 @@ static PipeKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY(), 0, 0, 0, 0, 0};
 }
 
-static bool canUseAggregateRendezvous(PipeInfo pipeInfo,
-                                      const ReceiverDFBInfo &receiverInfo) {
-  if (!pipeInfo.isMulticast) {
-    return false;
-  }
-  if (pipeInfo.pipeType.srcInDstRange()) {
-    return true;
-  }
-  // Non-loopback senders do not execute the receiver post. They can reconstruct
-  // the receiver DFB address only when this DFB has one static reserve slot.
-  return receiverInfo.numReserveSlots == 1;
+static bool canUseAggregateRendezvous(PipeInfo pipeInfo) {
+  return pipeInfo.isMulticast && pipeInfo.pipeType.srcInDstRange();
 }
 
 static FailureOr<PipeChannelInfo>
@@ -118,26 +109,31 @@ static FailureOr<Value>
 getMailboxSemIdxValue(Operation *op, Location loc,
                       const PipeChannelInfo &channelInfo,
                       ConversionPatternRewriter &rewriter) {
-  if (!channelInfo.mailboxSemIdxBase) {
+  if (!channelInfo.addressStorage.mailboxSemIdxBase) {
     return op->emitError("internal compiler error: pipe channel has no mailbox "
                          "semaphore index");
   }
   return arith::ConstantIndexOp::create(rewriter, loc,
-                                        *channelInfo.mailboxSemIdxBase)
+                                        *channelInfo.addressStorage
+                                             .mailboxSemIdxBase)
       .getResult();
 }
 
 static FailureOr<Value>
 buildAggregateDestinationAddress(Operation *op, Location loc, PipeType pipeType,
                                  const PipeChannelInfo &channelInfo,
-                                 const AggregateEpochCounterMap *epochCounters,
                                  ConversionPatternRewriter &rewriter) {
-  if (!channelInfo.aggregateInfo) {
+  if (!channelInfo.addressStorage.localReceiverDFB) {
     return op->emitError("internal compiler error: aggregate pipe channel has "
                          "no receiver DFB info");
   }
+  if (!pipeType.srcInDstRange()) {
+    return op->emitError("internal compiler error: non-loopback aggregate "
+                         "multicast requires receiver-authored address table");
+  }
 
-  const AggregateRendezvousInfo &info = *channelInfo.aggregateInfo;
+  const LocalReceiverDFBAddressInfo &info =
+      *channelInfo.addressStorage.localReceiverDFB;
   auto tileType =
       llvm::dyn_cast<ttcore::TileType>(info.receiverCBType.getElementType());
   if (!tileType) {
@@ -151,76 +147,13 @@ buildAggregateDestinationAddress(Operation *op, Location loc, PipeType pipeType,
   Value receiverCB = ttk::GetCompileArgValOp::create(
       rewriter, loc, cbType, static_cast<int32_t>(info.receiverCBIndex));
   Value dstAddr = ttk::GetWritePtrOp::create(rewriter, loc, receiverCB);
-  if (info.sourceInDestination && info.staticTileOffset == 0) {
+  if (info.staticTileOffset == 0) {
     return dstAddr;
   }
 
   auto i32Ty = rewriter.getI32Type();
-  Value tileOffset;
-  if (info.sourceInDestination) {
-    tileOffset = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(info.staticTileOffset));
-  } else {
-    if (!epochCounters) {
-      return op->emitError("internal compiler error: missing aggregate epoch "
-                           "counters");
-    }
-    FuncOp func = op->getParentOfType<FuncOp>();
-    auto funcIt = epochCounters->find(func);
-    if (funcIt == epochCounters->end()) {
-      return op->emitError("internal compiler error: missing aggregate epoch "
-                           "counter for function");
-    }
-    auto counterIt = funcIt->second.find(getPipeKey(pipeType));
-    if (counterIt == funcIt->second.end()) {
-      return op->emitError("internal compiler error: missing aggregate epoch "
-                           "counter for pipe");
-    }
-
-    auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value epoch =
-        memref::LoadOp::create(rewriter, loc, counterIt->second,
-                               ValueRange{zeroIdx});
-    auto oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                            rewriter.getI32IntegerAttr(1));
-    Value nextEpoch = arith::AddIOp::create(rewriter, loc, epoch, oneI32);
-    memref::StoreOp::create(rewriter, loc, nextEpoch, counterIt->second,
-                            ValueRange{zeroIdx});
-
-    auto numReserveSlots = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(info.numReceiverReserveSlots));
-    auto reserveSlot = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(info.receiverReserveSlot));
-    Value reserveOffset =
-        arith::MulIOp::create(rewriter, loc, epoch, numReserveSlots);
-    reserveOffset =
-        arith::AddIOp::create(rewriter, loc, reserveOffset, reserveSlot);
-    auto blockCount = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(info.receiverCBType.getBlockCount()));
-    Value blockSlot =
-        arith::RemUIOp::create(rewriter, loc, reserveOffset, blockCount);
-
-    int64_t blockTileCount = 1;
-    for (int64_t dim : info.receiverCBType.getShape()) {
-      blockTileCount *= dim;
-    }
-    auto blockTileCountValue = arith::ConstantOp::create(
-        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(blockTileCount));
-    tileOffset =
-        arith::MulIOp::create(rewriter, loc, blockSlot, blockTileCountValue);
-    if (info.staticTileOffset != 0) {
-      auto staticTileOffset = arith::ConstantOp::create(
-          rewriter, loc, i32Ty,
-          rewriter.getI32IntegerAttr(info.staticTileOffset));
-      tileOffset =
-          arith::AddIOp::create(rewriter, loc, tileOffset, staticTileOffset);
-    }
-  }
-
+  Value tileOffset = arith::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(info.staticTileOffset));
   auto pageSizeBytes = arith::ConstantOp::create(
       rewriter, loc, i32Ty,
       rewriter.getI32IntegerAttr(tileType.getSizeBytes()));
@@ -269,55 +202,11 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
   });
 }
 
-void allocateAggregateEpochCounters(ModuleOp mod,
-                                    const PipeChannelLoweringInfo &info,
-                                    AggregateEpochCounterMap &counters) {
-  mod.walk([&](FuncOp func) {
-    SmallVector<PipeKey> pipeKeys;
-    func.walk([&](CopyOp copyOp) {
-      auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType());
-      if (!pipeType) {
-        return;
-      }
-      PipeKey pipeKey = getPipeKey(pipeType);
-      auto channelIt = info.channels.find(pipeKey);
-      if (channelIt == info.channels.end() ||
-          !channelIt->second.aggregateInfo ||
-          channelIt->second.aggregateInfo->sourceInDestination) {
-        return;
-      }
-      if (!llvm::is_contained(pipeKeys, pipeKey)) {
-        pipeKeys.push_back(pipeKey);
-      }
-    });
-    if (pipeKeys.empty()) {
-      return;
-    }
-
-    OpBuilder builder(func.getContext());
-    builder.setInsertionPointToStart(&func.getBody().front());
-    Location loc = func.getLoc();
-    auto memrefType = MemRefType::get({1}, builder.getI32Type());
-    auto i32Type = builder.getI32Type();
-    Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
-    Value zeroI32 = arith::ConstantOp::create(
-        builder, loc, i32Type, builder.getI32IntegerAttr(0));
-    auto &perFunc = counters[func];
-    for (const PipeKey &pipeKey : pipeKeys) {
-      auto alloca = memref::AllocaOp::create(builder, loc, memrefType);
-      memref::StoreOp::create(builder, loc, zeroI32, alloca,
-                              ValueRange{zeroIdx});
-      perFunc[pipeKey] = alloca.getResult();
-    }
-  });
-}
-
 /// Lower CB -> Pipe copy: write source DFB data to the receiver-published
 /// destination address, then signal arrival.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,
                             const PipeChannelLoweringInfo *pipeChannelInfo,
-                            const AggregateEpochCounterMap *epochCounters,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
@@ -365,7 +254,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   int64_t expectedSignals = pipeType.isUnicast() ? 1 : numDests;
   auto senderSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, channelInfo->senderReadySemIdx);
+      rewriter, loc, channelInfo->readyCounter.senderReadySemIdx);
   auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
   auto senderSemPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
@@ -428,7 +317,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   if (channelInfo->usesAggregateRendezvous()) {
     FailureOr<Value> aggregateDstAddr =
         buildAggregateDestinationAddress(op, loc, pipeType, *channelInfo,
-                                         epochCounters, rewriter);
+                                         rewriter);
     if (failed(aggregateDstAddr)) {
       return failure();
     }
@@ -641,7 +530,7 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   }
 
   auto senderSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, channelInfo->senderReadySemIdx);
+      rewriter, loc, channelInfo->readyCounter.senderReadySemIdx);
   auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
   auto senderSemNocAddr = ttk::GetNocAddrOp::create(
       rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
@@ -1012,18 +901,19 @@ void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
       int64_t &nextSemaphoreIdx = emplaceResult.first->second;
       int64_t senderReadySemIdx = nextSemaphoreIdx++;
       PipeChannelInfo channelInfo{};
-      channelInfo.senderReadySemIdx = senderReadySemIdx;
+      channelInfo.readyCounter.senderReadySemIdx = senderReadySemIdx;
       const ReceiverDFBInfo *receiverInfo =
           pipeGraph.lookupReceiverDFB(getPipeKey(pipeType));
-      if (receiverInfo && canUseAggregateRendezvous(pipeInfo, *receiverInfo)) {
-        channelInfo.kind = PipeChannelKind::AggregateRendezvous;
-        channelInfo.aggregateInfo = AggregateRendezvousInfo{
-            receiverInfo->dfbIndex, receiverInfo->dfbType,
-            receiverInfo->staticTileOffset, receiverInfo->gatherSlotIdx,
-            receiverInfo->numReserveSlots, pipeType.srcInDstRange()};
+      if (receiverInfo && canUseAggregateRendezvous(pipeInfo)) {
+        channelInfo.addressStorage.kind =
+            PipeAddressStorageKind::LocalReceiverDFB;
+        channelInfo.addressStorage.localReceiverDFB =
+            LocalReceiverDFBAddressInfo{
+                receiverInfo->dfbIndex, receiverInfo->dfbType,
+                receiverInfo->staticTileOffset};
       } else {
-        channelInfo.kind = PipeChannelKind::PostedMailbox;
-        channelInfo.mailboxSemIdxBase = nextSemaphoreIdx++;
+        channelInfo.addressStorage.kind = PipeAddressStorageKind::PostedMailbox;
+        channelInfo.addressStorage.mailboxSemIdxBase = nextSemaphoreIdx++;
       }
       info.channels[getPipeKey(pipeType)] = channelInfo;
     }
@@ -1062,10 +952,11 @@ verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
             ResourceKind::MailboxStaging);
   }
   for (const auto &[pipe, channel] : info.channels) {
-    observe(channel.senderReadySemIdx, ResourceKind::SenderReady, pipe);
-    if (channel.mailboxSemIdxBase) {
-      observe(*channel.mailboxSemIdxBase, ResourceKind::PostedAddressMailbox,
-              pipe);
+    observe(channel.readyCounter.senderReadySemIdx, ResourceKind::SenderReady,
+            pipe);
+    if (channel.addressStorage.mailboxSemIdxBase) {
+      observe(*channel.addressStorage.mailboxSemIdxBase,
+              ResourceKind::PostedAddressMailbox, pipe);
     }
   }
 

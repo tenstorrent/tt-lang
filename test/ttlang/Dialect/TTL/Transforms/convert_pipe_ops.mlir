@@ -238,30 +238,24 @@ func.func @loopback_multicast_aggregate_rendezvous() attributes { "ttl.kernel_th
 
 // -----
 
-// Non-loopback multicast uses aggregate rendezvous when the receiver DFB has a
-// single static reserve slot. The sender tracks its local channel epoch because
-// it does not execute the receiver post.
-// CHECK-LABEL: func.func @non_loopback_multicast_aggregate_rendezvous
-// CHECK: %[[EPOCH:.*]] = memref.alloca
+// Non-loopback multicast keeps the receiver-posted mailbox protocol until
+// aggregate lowering has a receiver-authored address table.
+// CHECK-LABEL: func.func @non_loopback_multicast_posted_mailbox
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[POST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[POST_DFB]]
-// CHECK-NOT: ttkernel.store_to_l1
-// CHECK-NOT: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.store_to_l1
+// CHECK: ttkernel.remote_sram_write_u32
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental::semaphore_wait
-// CHECK-NOT: ttkernel.load_from_l1
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[AGG_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[DST_BASE:.*]] = ttkernel.get_write_ptr(%[[AGG_DFB]])
-// CHECK: %[[EPOCH_VAL:.*]] = memref.load %[[EPOCH]]
-// CHECK: memref.store
-// CHECK: arith.remui
-// CHECK: %[[DST_ADDR:.*]] = arith.addi %[[DST_BASE]]
+// CHECK: %[[MAILBOX_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: %[[MAILBOX_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[MAILBOX_SEM]])
+// CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1(%[[MAILBOX_PTR]]
 // CHECK: %[[MCAST_ADDR:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DST_ADDR]])
 // CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR]], %[[MCAST_ADDR]]
 // CHECK-NOT: ttkernel.noc_async_write_multicast_loopback_src
-func.func @non_loopback_multicast_aggregate_rendezvous() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @non_loopback_multicast_posted_mailbox() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -307,16 +301,18 @@ func.func @degenerate_multicast_aggregate_rendezvous() attributes { "ttl.kernel_
 
 // -----
 
-// Pipe -> DFB (multicast receiver): per-PipeNet counter ++, wait_min on
-// recvSem. With one pipe the counter walks 0->1; with N overlapping
-// pipes a receiver walks 1..N.
+// Pipe -> DFB (non-loopback multicast receiver): publish the destination
+// address through the posted mailbox, then wait on the per-PipeNet counter.
 // CHECK-LABEL: func.func @copy_pipe_to_cb_multicast
 // CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[CTR]]
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
-// CHECK-NOT: ttkernel.store_to_l1
-// CHECK-NOT: ttkernel.remote_sram_write_u32
+// CHECK: %[[DST_ADDR:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
+// CHECK: %[[MAILBOX_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: %[[MAILBOX_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[MAILBOX_SEM]])
+// CHECK: ttkernel.store_to_l1(%[[DST_ADDR]], %[[MAILBOX_PTR]]
+// CHECK: ttkernel.remote_sram_write_u32(%[[MAILBOX_SEM]]
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]])
 // CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]]
