@@ -509,9 +509,6 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     // `mcast_a_net.is_active()` instead of `net_<id>.is_active()`).
     // No effect on op semantics.
     OptionalAttr<StrAttr>:$pipeNetName,
-    // True when the source program used a multicast destination form. This
-    // preserves degenerate slice-origin multicasts whose coordinate extent
-    // covers one destination.
     OptionalAttr<BoolAttr>:$isMulticast
   );
   let results = (outs TTL_Pipe:$result);
