@@ -8,6 +8,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/Support/LogicalResult.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
@@ -69,6 +70,13 @@ struct ReceiverDFBInfo {
   int64_t blockCount;         // DFB block_count
   Location loc;               // Source location for error reporting
 };
+
+inline bool isPipeSemanticallyMulticast(CreatePipeOp op) {
+  if (auto attr = op.getIsMulticastAttr()) {
+    return attr.getValue();
+  }
+  return mlir::cast<PipeType>(op.getResult().getType()).isMulticast();
+}
 
 /// Graph tracking pipe connections and receiver DFB assignments.
 /// Built after pipe receive copies have been expanded to receive-post ops.

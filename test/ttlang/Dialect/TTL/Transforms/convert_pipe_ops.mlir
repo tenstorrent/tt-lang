@@ -238,6 +238,37 @@ func.func @loopback_multicast_aggregate_rendezvous() attributes { "ttl.kernel_th
 
 // -----
 
+// Degenerate multicast metadata preserves aggregate rendezvous when a
+// slice-origin multicast covers one destination.
+// CHECK-LABEL: func.func @degenerate_multicast_aggregate_rendezvous
+// CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[POST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.cb_reserve_back(%[[POST_DFB]]
+// CHECK-NOT: ttkernel.store_to_l1
+// CHECK-NOT: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK: %[[AGG_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: %[[DST_ADDR:.*]] = ttkernel.get_write_ptr(%[[AGG_DFB]])
+// CHECK: %[[DST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_ADDR]])
+// CHECK: ttkernel.noc_async_write(%[[SRC_ADDR]], %[[DST_NOC]]
+func.func @degenerate_multicast_aggregate_rendezvous() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {isMulticast = true} : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send = ttl.copy %src_cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send : !ttl.transfer_handle<write>
+  ttl.wait %post : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
 // Pipe -> DFB (multicast receiver): per-PipeNet counter ++, wait_min on
 // recvSem. With one pipe the counter walks 0->1; with N overlapping
 // pipes a receiver walks 1..N.

@@ -90,3 +90,9 @@ func.func @pipe_recv_wait_typed_handle_operand() {
 // Test: dst start must not exceed dst end on y.
 // expected-error @+1 {{'ttl.create_pipe' op destination start must not exceed destination end on any axis}}
 %p = ttl.create_pipe src(0, 0) dst(0, 5) to(0, 2) net 0 : !ttl.pipe<src(0, 0) dst(0, 5) to(0, 2) net 0>
+
+// -----
+
+// Test: explicit unicast metadata cannot contradict a multi-destination extent.
+// expected-error @+1 {{'ttl.create_pipe' op isMulticast=false is invalid for a multi-destination pipe}}
+%p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 {isMulticast = false} : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>

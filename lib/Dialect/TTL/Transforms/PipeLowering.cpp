@@ -821,19 +821,15 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
   llvm::DenseMap<int64_t, llvm::SmallSet<PipeKey, 4>> seenPerNet;
   llvm::DenseMap<int64_t, bool> netHasMulticast;
-  mod.walk([&](Operation *o) {
-    for (Type t : o->getResultTypes()) {
-      auto pt = mlir::dyn_cast<PipeType>(t);
-      if (!pt) {
-        continue;
-      }
-      int64_t netId = pt.getPipeNetId();
-      PipeKey key{pt.getSrcX(),      pt.getSrcY(),    pt.getDstStartX(),
-                  pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
-      netHasMulticast[netId] |= pt.isMulticast();
-      if (seenPerNet[netId].insert(key).second) {
-        index[netId].push_back(PipeInfo{pt, pt.isMulticast()});
-      }
+  mod.walk([&](CreatePipeOp op) {
+    auto pt = mlir::cast<PipeType>(op.getResult().getType());
+    int64_t netId = pt.getPipeNetId();
+    PipeKey key{pt.getSrcX(),      pt.getSrcY(),    pt.getDstStartX(),
+                pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
+    bool pipeIsMulticast = isPipeSemanticallyMulticast(op);
+    netHasMulticast[netId] |= pipeIsMulticast;
+    if (seenPerNet[netId].insert(key).second) {
+      index[netId].push_back(PipeInfo{pt, pipeIsMulticast});
     }
   });
 

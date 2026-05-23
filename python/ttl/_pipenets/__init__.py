@@ -119,16 +119,15 @@ class OperationPipeNets:
         next_sem_id_by_source = {}
         num_semaphores = first_source_local_sem_id
         for net in self.pipe_nets:
-            net_has_multicast_extent = any(
-                isinstance(pipe.dst, NodeRange) and _range_num_dests(pipe.dst) > 1
-                for pipe in net.pipes
+            net_has_multicast_kind = any(
+                isinstance(pipe.dst, NodeRange) for pipe in net.pipes
             )
             for pipe in net.pipes:
                 next_sem_id = next_sem_id_by_source.setdefault(
                     pipe.src.coords, first_source_local_sem_id
                 )
                 if (
-                    net_has_multicast_extent
+                    net_has_multicast_kind
                     and isinstance(pipe.dst, NodeRange)
                     and _coord_in_range(pipe.src, pipe.dst)
                 ):
@@ -164,13 +163,6 @@ def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
         yield dst.coords
         return
     yield from itertools.product(*(range(lo, hi) for lo, hi in zip(dst.lo, dst.hi)))
-
-
-def _range_num_dests(dst: NodeRange) -> int:
-    count = 1
-    for lo, hi in zip(dst.lo, dst.hi):
-        count *= hi - lo
-    return count
 
 
 def _coord_in_range(coord: NodeCoord, dst: NodeRange) -> bool:
