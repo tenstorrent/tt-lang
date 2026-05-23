@@ -1013,22 +1013,36 @@ def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_BcastOp : TTL_Op<"bcast", [
+def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
-  let summary = "Broadcast a row/column/scalar tensor to full tiles";
+  let summary = "Broadcast a block over specified dimensions to a target shape";
   let description = [{
-    Broadcasts the input tensor to full tiles based on bcast_type.
-    Reads from CB, writes result to DST then packs to output CB.
-    Both input and output must be CB-attached tensors.
+    Broadcasts `$input` over each dimension listed in `$dims` to produce a
+    result of shape `$shape`. For every dimension `d` in `$dims` the
+    corresponding `input.shape[d]` must equal 1; for every dimension not in
+    `$dims` the input dimension must equal `shape[d]`.
 
-    bcast_type specifies the broadcast dimension:
-    - Row: broadcast first row to all rows
-    - Col: broadcast first column to all columns
-    - Scalar: broadcast single value to all elements
+    For tiled blocks broadcast happens in two steps: intra-tile scalar
+    broadcast for any innermost dimension listed in `$dims`, and inter-tile
+    broadcast for every other dimension where the target shape is greater
+    than 1. Row-major blocks are not supported.
+
+    Example:
+    ```mlir
+    %r = ttl.block.broadcast %a dims = [1], shape = [4, 8]
+           : tensor<4x1x!ttcore.tile<32x32, f32>>
+          -> tensor<4x8x!ttcore.tile<32x32, f32>>
+    ```
   }];
-  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
-  let results = (outs AnyType:$result);
-  let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+  let arguments = (ins AnyRankedTensor:$input,
+                       DenseI64ArrayAttr:$dims,
+                       DenseI64ArrayAttr:$shape);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = [{
+    $input `dims` `=` $dims `,` `shape` `=` $shape attr-dict `:`
+    type($input) `->` type($result)
+  }];
+  let hasVerifier = 1;
 }
 
 def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
@@ -1137,8 +1151,9 @@ def TTL_FillOp : TTL_Op<"fill", [Pure]> {
     The output CB is determined by the ttl.store on this op's result.
   }];
   let arguments = (ins F32Attr:$value);
-  let results = (outs AnyType:$result);
+  let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$value attr-dict `:` type($result)";
+  let hasVerifier = 1;
 }
 
 def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {

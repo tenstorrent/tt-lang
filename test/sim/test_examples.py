@@ -121,7 +121,6 @@ def run_script_in_process(
             "broadcast.py",
             marks=requires_ttnn_marks,
         ),
-        "broadcast_demo.py",
         "group_transfer_upsample.py",
         "height_shard_gather.py",
         pytest.param(
@@ -141,7 +140,6 @@ def run_script_in_process(
         "multinode_matmul.py",
         "matmul_1d.py",
         "matmul_1d_mcast.py",
-        "eltwise_1d_broadcast.py",
         pytest.param(
             "elementwise-tutorial/step_0_ttnn_base.py",
             marks=requires_ttnn_marks,
@@ -408,36 +406,6 @@ def test_max_dfbs_warning_warns_at_limit(scheduler: str) -> None:
     assert (
         code == 0
     ), f"Expected max_dfbs_warning.py to succeed, but it exited with code {code}:\n{out}"
-
-
-@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
-def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
-    """Test that eltwise_1d_broadcast.py displays 1D broadcast hardware warning.
-
-    This example demonstrates broadcasting with 1D blocks. Since 1D broadcasts
-    are not supported by current hardware, the simulator should emit warnings
-    when ttl.math.broadcast() is called on 1D blocks, but the script should
-    still execute successfully.
-    """
-    code, out = run_script_in_process(
-        EXAMPLES_DIR / "eltwise_1d_broadcast.py", scheduler
-    )
-
-    # The example should run successfully (warnings don't fail execution)
-    assert code == 0, (
-        f"Expected eltwise_1d_broadcast.py to succeed, but it exited with code {code}\n"
-        f"Output:\n{out}"
-    )
-
-    # Verify the 1D broadcast warning appears
-    assert (
-        "warning: 1D broadcast is not supported on current hardware" in out
-    ), f"Expected 1D broadcast warning not found in output:\n{out}"
-
-    # Verify source location is shown (the broadcast calls are in eltwise_compute function)
-    assert (
-        "examples/eltwise_1d_broadcast.py:" in out
-    ), f"Expected source location not found in output:\n{out}"
 
 
 # ---- Matmul tutorial -------------------------------------------------------

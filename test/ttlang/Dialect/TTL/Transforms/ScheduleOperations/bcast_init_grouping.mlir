@@ -78,9 +78,9 @@ func.func @bcast_init_grouping()
   %out = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   %out_cb = ttl.attach_cb %out, %cb3 : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 
-  %a_bcast = ttl.bcast %a_cb, %out_cb 1 : i32 : (tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-  %b_bcast = ttl.bcast %b_cb, %out_cb 2 : i32 : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-  %c_bcast = ttl.bcast %c_cb, %out_cb 3 : i32 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %a_bcast = ttl.block.broadcast %a_cb dims = [-1], shape = [2, 2] : tensor<2x1x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %b_bcast = ttl.block.broadcast %b_cb dims = [-2], shape = [2, 2] : tensor<1x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %c_bcast = ttl.block.broadcast %c_cb dims = [-2, -1], shape = [2, 2] : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   %prod = ttl.mul %a_bcast, %b_bcast : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   %sum = ttl.add %prod, %c_bcast : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   ttl.store %sum, %out : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>

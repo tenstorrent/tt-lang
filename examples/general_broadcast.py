@@ -63,30 +63,25 @@ def __demo_kernel(a, b, c, y):
                     c_dfb.wait() as c_blk,
                     y_dfb.reserve() as y_blk,
                 ):
-                    # Handle broadcasting based on actual shapes
-                    # If b or c have size 1 in any dimension, broadcast them
-                    b_expr = b_blk
-                    c_expr = c_blk
+                    y_shape = y_blk.shape
 
-                    # Check if b needs broadcasting
-                    if b_row_tiles == 1 and row_tiles_per_block > 1:
-                        b_expr = ttl.math.broadcast(b_blk, y_blk, dims=[0])
-                    if b_col_tiles == 1 and col_tiles_per_block > 1:
-                        b_expr = ttl.math.broadcast(
-                            b_expr if b_expr != b_blk else b_blk,
-                            y_blk,
-                            dims=[-1] if b_row_tiles > 1 else [0, 1],
-                        )
+                    b_dims = (
+                        [0] if b_row_tiles == 1 and row_tiles_per_block > 1 else []
+                    ) + ([-1] if b_col_tiles == 1 and col_tiles_per_block > 1 else [])
+                    b_expr = (
+                        ttl.block.broadcast(b_blk, dims=b_dims, shape=y_shape)
+                        if b_dims
+                        else b_blk
+                    )
 
-                    # Check if c needs broadcasting
-                    if c_row_tiles == 1 and row_tiles_per_block > 1:
-                        c_expr = ttl.math.broadcast(c_blk, y_blk, dims=[0])
-                    if c_col_tiles == 1 and col_tiles_per_block > 1:
-                        c_expr = ttl.math.broadcast(
-                            c_expr if c_expr != c_blk else c_blk,
-                            y_blk,
-                            dims=[-1] if c_row_tiles > 1 else [0, 1],
-                        )
+                    c_dims = (
+                        [0] if c_row_tiles == 1 and row_tiles_per_block > 1 else []
+                    ) + ([-1] if c_col_tiles == 1 and col_tiles_per_block > 1 else [])
+                    c_expr = (
+                        ttl.block.broadcast(c_blk, dims=c_dims, shape=y_shape)
+                        if c_dims
+                        else c_blk
+                    )
 
                     y_blk.store(a_blk * b_expr + c_expr)
 

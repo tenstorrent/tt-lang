@@ -79,7 +79,7 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
                     for local_nb in range(n_blocks_per_node):
                         nb = node_n * n_blocks_per_node + local_nb
                         with out_cb.reserve() as out_blk:
-                            out_blk.store(ttl.math.fill(out_blk, 0))
+                            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
                             for _ in range(K_BLOCKS):
                                 a_blk = a_cb.wait()
                                 b_blk = b_cb.wait()
@@ -185,7 +185,7 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
                     for local_nb in range(n_blocks_per_node):
                         nb = node_n * n_blocks_per_node + local_nb
                         with out_cb.reserve() as out_blk:
-                            out_blk.store(ttl.math.fill(out_blk, 0))
+                            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
                             for _ in range(K_BLOCKS):
                                 a_blk = a_cb.wait()
                                 b_blk = b_cb.wait()
@@ -295,7 +295,7 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
                     for local_nb in range(n_blocks_per_node):
                         nb = node_n * n_blocks_per_node + local_nb
                         with acc_cb.reserve() as init:
-                            init.store(ttl.math.fill(init, 0))
+                            init.store(ttl.block.fill(0, shape=init.shape))
                         for kb in range(K_BLOCKS):
                             with (
                                 a_cb.wait() as a_blk,

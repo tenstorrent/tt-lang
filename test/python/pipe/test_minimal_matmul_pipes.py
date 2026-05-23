@@ -107,7 +107,7 @@ def minimal_matmul_kernel(a, b, out):
             for local_mb in range(m_blocks_per_node):
                 for local_nb in range(n_blocks_per_node):
                     with out_cb.reserve() as out_blk:
-                        out_blk.store(ttl.math.fill(out_blk, 0))
+                        out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
                         for _ in range(K_BLOCKS):
                             a_blk = a_cb.wait()
                             b_blk = b_cb.wait()

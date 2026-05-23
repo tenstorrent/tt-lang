@@ -28,8 +28,16 @@ def eltwise_pipe(
     assert a_in.shape == b_in.shape == out.shape
     assert a_in.shape[0] % granularity == 0
 
-    # Check that c_in is 1x1 and expand it to tile shape (1, 1) -> (1, 1, 32, 32) -> (32, 32)
-    assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
+    # c_in is one tile (32x32).  The compute kernel below uses
+    # ``ttl.block.broadcast(c_block, dims=[0], shape=a_block.shape)`` which,
+    # per spec step (1), takes only row 0 of the source tile and replicates
+    # it across the remaining rows before tiling across the grid - so only
+    # row 0 of c_in contributes to the output.
+    tile_h, tile_w = ttl.TILE_SHAPE
+    assert c_in.shape == (
+        tile_h,
+        tile_w,
+    ), f"c_in must be one tile ({tile_h}x{tile_w}), got {c_in.shape}"
 
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
@@ -86,8 +94,10 @@ def eltwise_pipe(
                 out_block = out_dfb.reserve()  # blocking
 
                 # Use store() to properly populate the Block with computed results
-                # Broadcast c_block along dimension 0 (rows) to match a_block/b_block shape
-                result = a_block * b_block + ttl.math.broadcast(c_block, dims=[0])
+                # Broadcast c_block along dim 0 (rows) to match a_block/b_block shape
+                result = a_block * b_block + ttl.block.broadcast(
+                    c_block, dims=[0], shape=a_block.shape
+                )
                 out_block.store(result)
 
                 # finalize push, this advances the dfb pointers, the writing happened at the line above
@@ -166,14 +176,23 @@ def eltwise_pipe(
 
 def main() -> None:
     dim = 128
+    tile_h, tile_w = 32, 32
     a_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
     b_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
-    c_in = ttnn.rand((1, 1), dtype=ttnn.float32)
+    c_in = ttnn.rand((tile_h, tile_w), dtype=ttnn.float32)
     out = ttnn.empty((dim, dim), dtype=ttnn.float32)
 
     eltwise_pipe(a_in, b_in, c_in, out)
 
-    golden = a_in * b_in + c_in
+    # Golden: per spec, ``broadcast(c_block, dims=[0], shape=a_block.shape)``
+    # broadcasts row 0 of the source tile across the rest of the rows (step 1)
+    # then replicates the resulting tile across the grid (step 2).  The
+    # effective per-element c contribution is therefore ``c_in[0, j % tile_w]``
+    # regardless of the row; rows 1..31 of the random ``c_in`` tile are not
+    # visible in the output.
+    c_row = ttnn.to_torch(c_in)[0:1, :]
+    c_full = ttnn.from_torch(c_row.repeat(dim, dim // tile_w))
+    golden = a_in * b_in + c_full
     assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out))
 
 

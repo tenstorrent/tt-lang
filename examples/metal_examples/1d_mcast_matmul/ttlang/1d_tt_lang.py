@@ -72,7 +72,7 @@ def matmul_1d(
         for block_m in range(num_blocks_m):
             for block_n in range(blocks_per_node_n):
                 with out_dfb.reserve() as out_blk:
-                    acc = ttl.math.fill(out_blk, 0)
+                    acc = ttl.block.fill(0, shape=out_blk.shape)
                     for block_k in range(num_blocks_k):
                         with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                             acc += a_blk @ b_blk

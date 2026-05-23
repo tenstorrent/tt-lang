@@ -122,6 +122,25 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   return mlir::Value();
 }
 
+/// Normalize a Python-style dim (allowing negative indices) against `rank`
+/// into a non-negative index. Negative dims wrap from the end (-1 is the
+/// last dim). Does not bounds-check; callers should validate the result is
+/// in `[0, rank)`.
+inline int64_t normalizeDim(int64_t dim, int64_t rank) {
+  return dim < 0 ? dim + rank : dim;
+}
+
+/// Normalize a list of Python-style dims into a set of non-negative indices
+/// against `rank`. Duplicates after normalization collapse.
+inline llvm::SmallDenseSet<int64_t>
+normalizeDimsToSet(mlir::ArrayRef<int64_t> dims, int64_t rank) {
+  llvm::SmallDenseSet<int64_t> result;
+  for (int64_t d : dims) {
+    result.insert(normalizeDim(d, rank));
+  }
+  return result;
+}
+
 /// True for arithmetic/math tile ops (add, mul, exp, ...); false for data
 /// movement and DST lifecycle ops.
 inline bool isTileComputeOp(mlir::Operation *op) {

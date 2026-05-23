@@ -123,7 +123,7 @@ kernel.
 for _ in range(m_tiles):
     for _ in range(n_tiles):
         with acc_dfb.reserve() as acc_blk:
-            acc_blk.store(ttl.math.fill(acc_blk, 0))  # zero the accumulator
+            acc_blk.store(ttl.block.fill(0, shape=acc_blk.shape))  # zero the accumulator
 
         for _ in range(k_tiles):
             with (
@@ -139,8 +139,8 @@ for _ in range(m_tiles):
                 y_blk.store(ttl.math.relu(c_blk + acc_blk))
 ```
 
-`ttl.math.fill(acc_blk, 0)` produces a block expression that fills a block
-with a scalar value; `store()` materializes the expression. `wait()` blocks
+`ttl.block.fill(0, shape=acc_blk.shape)` produces a block expression that fills
+a block with a scalar value; `store()` materializes the expression. `wait()` blocks
 until the reader has pushed a filled tile. `reserve()` blocks until the writer
 has freed an entry. The `with` block automatically calls `pop()` on inputs and
 `push()` on the output when the scope exits.
