@@ -79,8 +79,8 @@ struct PipeChannelLoweringInfo {
 /// Diagnose layouts that exceed the hardware semaphore id limit before
 /// emitting ttkernel.get_semaphore ops with invalid ids.
 LogicalResult
-verifyPipeChannelLoweringInfoFitsHardware(
-    ModuleOp mod, const PipeChannelLoweringInfo &info);
+verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
+                                          const PipeChannelLoweringInfo &info);
 
 /// Walk `mod` once and group every PipeType result by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on

@@ -252,10 +252,98 @@ def make_row_all_to_all_multicast_kernel():
     return row_all_to_all_multicast
 
 
+def make_grid_all_to_all_multicast_kernel():
+    grid_width = 2
+    grid_height = 2
+    pipe00 = ttl.Pipe(src=(0, 0), dst=(slice(0, grid_width), slice(0, grid_height)))
+    pipe10 = ttl.Pipe(src=(1, 0), dst=(slice(0, grid_width), slice(0, grid_height)))
+    pipe01 = ttl.Pipe(src=(0, 1), dst=(slice(0, grid_width), slice(0, grid_height)))
+    pipe11 = ttl.Pipe(src=(1, 1), dst=(slice(0, grid_width), slice(0, grid_height)))
+    all_to_all_net = ttl.PipeNet([pipe00, pipe10, pipe01, pipe11])
+
+    @ttl.operation(grid=(grid_width, grid_height))
+    def grid_all_to_all_multicast(inp, out):
+        _all_to_all_net = all_to_all_net
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=4)
+        acc_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if all_to_all_net.is_dst():
+                with recv_dfb.wait() as recv_blk, acc_dfb.reserve() as acc_blk:
+                    acc_blk.store(recv_blk)
+                with (
+                    recv_dfb.wait() as recv_blk,
+                    acc_dfb.wait() as acc_blk,
+                    acc_dfb.reserve() as next_acc_blk,
+                ):
+                    next_acc_blk.store(acc_blk + recv_blk)
+                with (
+                    recv_dfb.wait() as recv_blk,
+                    acc_dfb.wait() as acc_blk,
+                    acc_dfb.reserve() as next_acc_blk,
+                ):
+                    next_acc_blk.store(acc_blk + recv_blk)
+                with (
+                    recv_dfb.wait() as recv_blk,
+                    acc_dfb.wait() as acc_blk,
+                    acc_dfb.reserve() as next_acc_blk,
+                ):
+                    next_acc_blk.store(acc_blk + recv_blk)
+                with acc_dfb.wait() as acc_blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(acc_blk)
+
+        @ttl.datamovement()
+        def post_receives_and_send():
+            node_x, node_y = ttl.node(dims=2)
+            if all_to_all_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe00, recv_blk)
+                    if node_x == 0 and node_y == 0:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 0], send_blk).wait()
+                            ttl.copy(send_blk, pipe00).wait()
+                    recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe10, recv_blk)
+                    if node_x == 1 and node_y == 0:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 1], send_blk).wait()
+                            ttl.copy(send_blk, pipe10).wait()
+                    recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe01, recv_blk)
+                    if node_x == 0 and node_y == 1:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[1, 0], send_blk).wait()
+                            ttl.copy(send_blk, pipe01).wait()
+                    recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe11, recv_blk)
+                    if node_x == 1 and node_y == 1:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[1, 1], send_blk).wait()
+                            ttl.copy(send_blk, pipe11).wait()
+                    recv_tx.wait()
+
+        @ttl.datamovement()
+        def write_output():
+            node_x, node_y = ttl.node(dims=2)
+            if all_to_all_net.is_dst():
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(out_blk, out[node_y, node_x]).wait()
+
+    return grid_all_to_all_multicast
+
+
 posted_gather_kernel = make_two_net_posted_gather_kernel()
 same_source_two_pipe_kernel = make_same_source_two_pipe_kernel()
 loopback_multicast_aggregate_kernel = make_loopback_multicast_aggregate_kernel()
 row_all_to_all_multicast_kernel = make_row_all_to_all_multicast_kernel()
+grid_all_to_all_multicast_kernel = make_grid_all_to_all_multicast_kernel()
 
 
 def make_many_pipe_rendezvous_kernel():
@@ -583,6 +671,30 @@ def test_row_all_to_all_multicast_reduces_all_sources(device):
     assert_pcc(expected.float(), result.float())
 
 
+def test_grid_all_to_all_multicast_reduces_all_sources(device):
+    inp_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    grid_all_to_all_multicast_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    source_sum = (
+        inp_torch[0:TILE, 0:TILE].float()
+        + inp_torch[0:TILE, TILE : 2 * TILE].float()
+        + inp_torch[TILE : 2 * TILE, 0:TILE].float()
+        + inp_torch[TILE : 2 * TILE, TILE : 2 * TILE].float()
+    )
+    expected_row = torch.cat(
+        [source_sum.to(torch.bfloat16), source_sum.to(torch.bfloat16)], dim=1
+    )
+    expected = torch.cat([expected_row, expected_row], dim=0)
+    assert_pcc(expected.float(), result.float())
+
+
 def test_row_all_to_all_multicast_semaphore_count_scales():
     from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
 
@@ -594,6 +706,24 @@ def test_row_all_to_all_multicast_semaphore_count_scales():
             dst=NodeRange((0, 0), (width, 1)),
         )
         for source_idx in range(width)
+    )
+
+    assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4
+
+
+def test_grid_all_to_all_multicast_semaphore_count_scales():
+    from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
+
+    width = 32
+    height = 16
+    all_to_all_graph = OperationPipeNets()
+    all_to_all_graph.add_pipe_net(
+        PipeUse(
+            src=NodeCoord((source_x, source_y)),
+            dst=NodeRange((0, 0), (width, height)),
+        )
+        for source_y in range(height)
+        for source_x in range(width)
     )
 
     assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4

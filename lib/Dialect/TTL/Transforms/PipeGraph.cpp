@@ -166,11 +166,12 @@ static PipeKey getPipeKey(PipeType pipeType) {
 
 static llvm::DenseMap<PipeKey, bool> collectMulticastPipeKinds(ModuleOp mod) {
   llvm::DenseMap<int64_t, bool> netHasMulticast;
-  SmallVector<PipeType> pipeTypes;
+  SmallVector<std::pair<PipeType, bool>> pipeTypes;
   mod.walk([&](CreatePipeOp op) {
     auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
-    pipeTypes.push_back(pipeType);
-    if (pipeType.isMulticast()) {
+    bool pipeIsMulticast = isPipeSemanticallyMulticast(op);
+    pipeTypes.push_back({pipeType, pipeIsMulticast});
+    if (pipeIsMulticast) {
       netHasMulticast[pipeType.getPipeNetId()] = true;
     } else {
       (void)netHasMulticast.try_emplace(pipeType.getPipeNetId(), false);
@@ -178,8 +179,7 @@ static llvm::DenseMap<PipeKey, bool> collectMulticastPipeKinds(ModuleOp mod) {
   });
 
   llvm::DenseMap<PipeKey, bool> isMulticast;
-  for (PipeType pipeType : pipeTypes) {
-    bool pipeIsMulticast = pipeType.isMulticast();
+  for (auto [pipeType, pipeIsMulticast] : pipeTypes) {
     auto netIt = netHasMulticast.find(pipeType.getPipeNetId());
     if (netIt != netHasMulticast.end()) {
       pipeIsMulticast |= netIt->second;

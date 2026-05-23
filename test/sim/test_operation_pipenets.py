@@ -129,3 +129,29 @@ class TestValidate:
         )
         with pytest.raises(ValueError, match="coordinate ranks must be consistent"):
             graph.validate()
+
+
+class TestPipeSyncSemaphores:
+    def test_degenerate_multicast_counts_as_multicast_kind(self):
+        graph = OperationPipeNets()
+        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng((0, 0), (1, 1)))])
+
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=1) == 3
+
+    def test_non_loopback_multicast_keeps_posted_mailbox(self):
+        graph = OperationPipeNets()
+        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng((1, 0), (4, 1)))])
+
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 5
+
+    def test_two_dimensional_all_to_all_multicast_count_is_constant(self):
+        width = 32
+        height = 16
+        graph = OperationPipeNets()
+        graph.add_pipe_net(
+            PipeUse(src=_coord(src_x, src_y), dst=_rng((0, 0), (width, height)))
+            for src_y in range(height)
+            for src_x in range(width)
+        )
+
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4
