@@ -1144,6 +1144,13 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       "ttl.pipe_sync_semaphore_count",
       IntegerAttr::get(IntegerType::get(&ctx, 64),
                        getRequiredPipeSyncSemaphoreCount(pipeChannelInfo)));
+  int64_t pipeSramScratchBytes =
+      getRequiredPipeSramScratchBytes(pipeChannelInfo);
+  if (pipeSramScratchBytes > 0) {
+    mod->setAttr("ttl.pipe_sram_scratch_bytes",
+                 IntegerAttr::get(IntegerType::get(&ctx, 64),
+                                  pipeSramScratchBytes));
+  }
 
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx, &pipeChannelInfo);

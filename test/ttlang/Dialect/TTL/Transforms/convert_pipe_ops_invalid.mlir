@@ -98,12 +98,13 @@ func.func @multicast_receive_address_dynamic_offset_rejected(%offset: index)
 
 // -----
 
-// Eight unicast pipes from one source require one receiver-arrival semaphore,
-// one mailbox-staging semaphore, and two source-local semaphore ids per pipe.
-// This exceeds the hardware semaphore id limit.
+// Sixteen unicast pipes from one source require one receiver-completion
+// semaphore and sixteen source-local sender-ready semaphore ids. This exceeds
+// the hardware semaphore id limit even though receiver-authored addresses use
+// SRAM address-table entries.
 
-// expected-error @below {{pipe rendezvous requires 18 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable rendezvous allocation}}
-// expected-note @below {{highest allocated semaphore id is 17 for posted-address mailbox for pipe net 0 src(0, 0) dst(8, 0) to(8, 0)}}
+// expected-error @below {{pipe rendezvous requires 17 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable rendezvous allocation}}
+// expected-note @below {{highest allocated semaphore id is 16 for sender-ready counter for pipe net 0 src(0, 0) dst(16, 0) to(16, 0)}}
 module {
   func.func @unicast_rendezvous_exceeds_hardware_semaphore_limit()
       attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -125,6 +126,22 @@ module {
         : !ttl.pipe<src(0, 0) dst(7, 0) to(7, 0) net 0>
     %p8 = ttl.create_pipe src(0, 0) dst(8, 0) to(8, 0) net 0
         : !ttl.pipe<src(0, 0) dst(8, 0) to(8, 0) net 0>
+    %p9 = ttl.create_pipe src(0, 0) dst(9, 0) to(9, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 0>
+    %p10 = ttl.create_pipe src(0, 0) dst(10, 0) to(10, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 0>
+    %p11 = ttl.create_pipe src(0, 0) dst(11, 0) to(11, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 0>
+    %p12 = ttl.create_pipe src(0, 0) dst(12, 0) to(12, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 0>
+    %p13 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 0>
+    %p14 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 0>
+    %p15 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 0>
+    %p16 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 0>
     %recv1 = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>

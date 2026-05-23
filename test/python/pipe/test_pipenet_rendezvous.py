@@ -746,7 +746,7 @@ def test_degenerate_multicast_uses_aggregate_rendezvous(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_non_loopback_multicast_uses_posted_mailbox_until_address_table(device):
+def test_non_loopback_multicast_uses_sram_address_table(device):
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 4 * TILE, dtype=torch.bfloat16)
     expected = out_torch.clone()
@@ -818,7 +818,7 @@ def test_row_all_to_all_multicast_semaphore_count_scales():
         for source_idx in range(width)
     )
 
-    assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4
+    assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
 
 
 def test_grid_all_to_all_multicast_semaphore_count_scales():
@@ -836,7 +836,7 @@ def test_grid_all_to_all_multicast_semaphore_count_scales():
         for source_x in range(width)
     )
 
-    assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4
+    assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
 
 
 def test_many_pipe_rendezvous_sites_fit_hardware_semaphore_limit(device):

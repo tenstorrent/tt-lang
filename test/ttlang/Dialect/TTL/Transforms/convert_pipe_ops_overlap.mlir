@@ -15,8 +15,7 @@
 // First Pipe->DFB receive publishes slot 0 at the raw DFB write pointer.
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
-// CHECK: ttkernel.store_to_l1(%[[WP1]]
-// CHECK: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP1]]
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast
 // CHECK: %[[V1:.*]] = memref.load %[[CTR]]
@@ -29,8 +28,7 @@
 // the first slot, so the raw DFB write pointer is correct for the next post.
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
-// CHECK: ttkernel.store_to_l1(%[[WP2]]
-// CHECK: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP2]]
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast
 // CHECK: %[[V2:.*]] = memref.load %[[CTR]]
@@ -90,7 +88,7 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
 //===----------------------------------------------------------------------===//
 // Two senders to the same destination range use receiver-published
 // addresses. Each send reads the posted destination address from the
-// sender-visible mailbox before issuing its multicast write.
+// sender-visible SRAM address table before issuing its multicast write.
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @overlap_distinct_slots
@@ -98,10 +96,10 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[POSTED_ADDR1:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
-// CHECK: ttkernel.store_to_l1(%[[POSTED_ADDR1]]
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[POSTED_ADDR1]]
 // CHECK: %[[POSTED_BASE2:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
 // CHECK: %[[POSTED_ADDR2:.*]] = arith.addi %[[POSTED_BASE2]]
-// CHECK: ttkernel.store_to_l1(%[[POSTED_ADDR2]]
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[POSTED_ADDR2]]
 // CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[LOADED_ADDR1:.*]] = ttkernel.load_from_l1
 // CHECK: %[[MCAST_ADDR1:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR1]])
@@ -142,10 +140,10 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[POSTED_ADDR1:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
-// CHECK: ttkernel.store_to_l1(%[[POSTED_ADDR1]]
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[POSTED_ADDR1]]
 // CHECK: %[[POSTED_BASE2:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
 // CHECK: %[[POSTED_ADDR2:.*]] = arith.addi %[[POSTED_BASE2]]
-// CHECK: ttkernel.store_to_l1(%[[POSTED_ADDR2]]
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[POSTED_ADDR2]]
 // CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[LOADED_ADDR1:.*]] = ttkernel.load_from_l1
 // CHECK: %[[MCAST_ADDR1:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[LOADED_ADDR1]])

@@ -132,19 +132,19 @@ class TestValidate:
 
 
 class TestPipeSyncSemaphores:
-    def test_degenerate_multicast_counts_as_multicast_kind(self):
+    def test_degenerate_multicast_uses_sram_address_table(self):
         graph = OperationPipeNets()
         graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng((0, 0), (1, 1)))])
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=1) == 3
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=1) == 2
 
-    def test_single_non_loopback_multicast_keeps_posted_mailbox(self):
+    def test_single_non_loopback_multicast_uses_sram_address_table(self):
         graph = OperationPipeNets()
         graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng((1, 0), (4, 1)))])
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 5
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
 
-    def test_disjoint_non_loopback_multicast_keeps_posted_mailbox(self):
+    def test_disjoint_non_loopback_multicast_reuses_source_local_ids(self):
         graph = OperationPipeNets()
         graph.add_pipe_net(
             [
@@ -153,9 +153,9 @@ class TestPipeSyncSemaphores:
             ]
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 5
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
 
-    def test_overlapping_non_loopback_multicast_keeps_posted_mailbox(self):
+    def test_overlapping_non_loopback_multicast_needs_one_ready_id_per_source_pipe(self):
         graph = OperationPipeNets()
         graph.add_pipe_net(
             [
@@ -164,7 +164,7 @@ class TestPipeSyncSemaphores:
             ]
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 7
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 3
 
     def test_two_dimensional_all_to_all_multicast_count_is_constant(self):
         width = 32
@@ -176,4 +176,4 @@ class TestPipeSyncSemaphores:
             for src_x in range(width)
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 4
+        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
