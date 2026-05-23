@@ -906,6 +906,11 @@ posted that can complete it.
   DFB pushes, or other SPMD-over-the-full-device work. Only ops
   coupled to a PipeNet (pipe-typed copies, pipe-coupled DFB waits,
   `if_src` / `if_dst` bodies) require role containment.
+* Aggregate multicast rendezvous removes semaphore growth with
+  destination count, but it does not remove receiver DFB capacity
+  requirements for overlapping arrivals. A full-device all-to-all on
+  a grid with more than the maximum supported DFB block count still
+  requires receive-slot batching or another explicit reuse mechanism.
 * Domain representation is `std::set<Coord>` over the launch grid.
   Sufficient for current 2D grids (<= ~200 nodes); revisit when grids
   grow to 3D or thousands of nodes.
