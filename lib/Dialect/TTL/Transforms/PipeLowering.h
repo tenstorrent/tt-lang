@@ -13,14 +13,12 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
 
-#include <optional>
-
 namespace mlir::tt::ttl {
 
 /// Receiver-completion semaphores are indexed by PipeNet id. Sender-ready
 /// semaphores are per pipe because different pipes in one PipeNet can be posted
-/// and sent independently. Posted-mailbox channels also need one source-local
-/// mailbox word per pipe.
+/// and sent independently. Receiver-authored destination addresses live in
+/// ordinary SRAM so they do not consume semaphore ids.
 inline int64_t getReceiverCompletionSemIdx(int64_t pipeNetId) {
   return pipeNetId;
 }
@@ -31,8 +29,7 @@ struct PipeInfo {
 };
 
 enum class PipeAddressStorageKind {
-  PostedMailbox,
-  LocalReceiverDFB,
+  SramAddressTable,
 };
 
 enum class PipeReadyCounterKind {
@@ -43,10 +40,8 @@ enum class PipeCompletionWaitKind {
   LocalSemaphore,
 };
 
-struct LocalReceiverDFBAddressInfo {
-  int64_t receiverCBIndex;
-  CircularBufferType receiverCBType;
-  int64_t staticTileOffset;
+struct PipeSramAddressTableInfo {
+  int64_t byteOffset;
 };
 
 struct PipeReadyCounterInfo {
@@ -60,21 +55,15 @@ struct PipeCompletionWaitInfo {
   int64_t receiverSemIdx;
 };
 
-/// Address storage used by one logical pipe channel. Posted-mailbox channels
-/// carry receiver-authored addresses in source-local storage. Local receiver
-/// DFB channels are limited to source-in-destination multicast, where the
-/// sender also executes the receive post and can read the receiver DFB address
-/// directly.
+/// Address storage used by one logical pipe channel. Each receiver publishes
+/// its DFB write address into the source core's SRAM table before incrementing
+/// the sender-ready counter.
 struct PipeAddressStorageInfo {
-  PipeAddressStorageKind kind;
-  std::optional<int64_t> mailboxSemIdxBase;
-  std::optional<LocalReceiverDFBAddressInfo> localReceiverDFB;
+  PipeAddressStorageKind kind = PipeAddressStorageKind::SramAddressTable;
+  PipeSramAddressTableInfo sramAddressTable;
 
-  bool usesMailbox() const {
-    return kind == PipeAddressStorageKind::PostedMailbox;
-  }
-  bool usesLocalReceiverDFB() const {
-    return kind == PipeAddressStorageKind::LocalReceiverDFB;
+  bool usesSramAddressTable() const {
+    return kind == PipeAddressStorageKind::SramAddressTable;
   }
 };
 
@@ -82,12 +71,15 @@ struct PipeAddressStorageInfo {
 /// storage separate from readiness counting so later channel-table and
 /// GlobalSemaphore allocation can replace either resource independently.
 struct PipeChannelInfo {
+  bool isMulticast = false;
   PipeReadyCounterInfo readyCounter;
   PipeAddressStorageInfo addressStorage;
 
-  bool usesMailbox() const { return addressStorage.usesMailbox(); }
+  bool usesSramAddressTable() const {
+    return addressStorage.usesSramAddressTable();
+  }
   bool usesAggregateRendezvous() const {
-    return addressStorage.usesLocalReceiverDFB();
+    return isMulticast && usesSramAddressTable();
   }
 };
 
@@ -101,14 +93,16 @@ using PipeNetCounterMap =
 /// module per match.
 using PipeNetIndex = llvm::MapVector<int64_t, SmallVector<PipeInfo>>;
 
+struct PipeSramScratchInfo {
+  int64_t bytes = 0;
+};
+
 /// Static information used by pipe lowering. Receiver-completion semaphore
-/// indices are global. Receive posts use one local staging semaphore per NOC
-/// data-movement thread because remote SRAM writes read from local memory.
-/// Sender-ready and mailbox indices only need to be unique among pipes that
-/// share a source core. Aggregate rendezvous channels omit the mailbox word.
+/// indices are global. Sender-ready indices only need to be unique among pipes
+/// that share a source core. Address table offsets are global within the
+/// compiler-managed SRAM scratch allocation.
 struct PipeChannelLoweringInfo {
-  int64_t mailboxStagingSemIdxBase = 0;
-  int64_t numMailboxStagingSems = 0;
+  PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
   llvm::MapVector<PipeKey, PipeChannelInfo> channels;
 };
@@ -121,6 +115,9 @@ verifyPipeChannelLoweringInfoFitsHardware(ModuleOp mod,
 
 /// Return the number of semaphore ids referenced by the selected pipe lowering.
 int64_t getRequiredPipeSyncSemaphoreCount(const PipeChannelLoweringInfo &info);
+
+/// Return the per-core SRAM scratch bytes required by pipe address storage.
+int64_t getRequiredPipeSramScratchBytes(const PipeChannelLoweringInfo &info);
 
 /// Walk `mod` once and group every PipeType result by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on

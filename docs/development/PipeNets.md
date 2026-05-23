@@ -235,12 +235,13 @@ pipes within one PipeNet, those pipes get slot indices `0..N-1`. Two
 pipes whose destination ranges intersect on even one node get distinct
 slots; pipes whose ranges are disjoint may reuse slot 0.
 
-Each receive post identifies one concrete DFB write pointer. In
-mailbox-based cases, the receiver writes that address to sender-visible
-storage. Current aggregate multicast lowering is restricted to
-source-in-destination pipes; in that case the source core also executes
-a receive post and can read the local receiver DFB write pointer
-directly.
+Each receive post identifies one concrete DFB write pointer. The
+receiver writes that address to a sender-visible SRAM address-table
+entry before incrementing the sender-ready counter. Uniform multicast
+uses one table entry per pipe because every destination must publish an
+equivalent DFB address until issue #617 adds explicit per-destination
+addresses.
+
 Overlapping arrivals are safe because the user reserves one DFB block
 per receive callback and slot assignment proves the receiver DFB has
 enough blocks.
@@ -285,22 +286,19 @@ multicast. The proof tracks four points in the lowered IR:
 1. Slot assignment is static. `assignGatherSlotIndices`
    (`PipeGraph.cpp`) runs at compile time, assigns each pipe a slot
    index `0..N-1`, and verifies the receiver DFB has enough blocks for
-   all concurrently live arrivals. Mailbox-based sends use the
-   receiver's posted write pointer; current aggregate multicast sends
-   are source-in-destination and use the source core's local receiver
-   DFB write pointer. Future batched slot reuse could allow fewer
-   receiver DFB blocks by scheduling overlapping senders in
-   capacity-bounded groups.
+   all concurrently live arrivals. Sends use the receiver-published
+   DFB write pointer recorded in the source core's SRAM address table.
+   Future batched slot reuse could allow fewer receiver DFB blocks by
+   scheduling overlapping senders in capacity-bounded groups.
 2. No inter-sender wait. Each sender waits only for its own receivers to
    publish destination addresses, performs its own NOC write, then
    increments the receiver completion semaphore. No sender reads a
    semaphore signaled by another sender.
 3. Receiver completion semaphores are per-PipeNet. Sender-ready
-   semaphores and mailbox words are per pipe on the source core, so two
-   distinct pipes from one source can be posted and sent independently.
-   Receive-post staging words are per NOC data-movement thread, so
-   concurrent receiver posts from the two DM kernels do not overwrite
-   each other's mailbox payload before the remote write completes.
+   semaphores and address-table entries are per pipe on the source
+   core, so two distinct pipes from one source can be posted and sent
+   independently. Receive posts publish DFB addresses with inline
+   32-bit NOC writes, so address publication writes the value directly.
 4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
    for a count of total arrivals, not for specific senders. Senders
    bump the counter in any order; the receiver only cares about the
@@ -392,7 +390,7 @@ the enclosing-scope capture rule.
 
 Operation-local ids keep `ttl.create_pipe` ids stable across
 invocations, anchor receiver completion semaphore indices, and keep
-the sender-ready/mailbox layout deterministic. The `OperationPipeNets`
+the sender-ready/address-table layout deterministic. The `OperationPipeNets`
 instance is built and validated before MLIR emission on the compiler
 side and before `Program(...)` runs on the simulator side.
 `PipeNet.__init__` also builds a one-PipeNet `OperationPipeNets` and
@@ -810,9 +808,9 @@ runtime-observable.
 | 61 | Lowering: two receives at one core share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
 | 62 | Lowering: loopback mcast (sender in dst range) uses `noc_async_write_multicast_loopback_src` + local recvSem inc |  |  |  X  |
 | 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"multicast overlap"` (and `"gather"` for unicast) |  |  |  X  |
-| 64 | Lowering: aggregate multicast receive posts increment sender-ready count without publishing mailbox addresses |  |  |  X  |
-| 65 | Lowering: non-loopback multicast keeps posted-address mailbox until receiver-authored address tables exist | X | | X |
-| 66 | Semaphore counting: non-loopback multicast counts posted-address mailbox resources | | X | |
+| 64 | Lowering: aggregate multicast receive posts publish address-table entries and increment one sender-ready count |  |  |  X  |
+| 65 | Lowering: non-loopback multicast uses receiver-authored SRAM address tables | X | | X |
+| 66 | Semaphore counting: multicast does not allocate semaphore ids for address storage | | X | |
 | 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
 | 68 | Schedule verifier rejects same-thread send before receive address publication | X | | X |
 
@@ -851,37 +849,27 @@ Lowering models three resources separately:
 - completion wait records when receiver-owned DFB storage contains the
   payload.
 
-### Posted-address mailbox
+### Receiver-authored address table
 
-Unicast and non-loopback multicast use the posted-address mailbox
-protocol. The receive post publishes the concrete receiver DFB address
-to a sender-visible mailbox and increments the sender-ready semaphore.
-The send waits for readiness, reads the mailbox address, and writes the
-payload to that receiver-owned DFB block. The current
-implementation uses semaphore L1 words as mailbox storage and one local
-staging word per NOC data-movement thread before
-`remote_sram_write_u32`. Planned SRAM scratch lowering can replace
-those semaphore-backed mailbox words with explicit scratch allocation
-when that feature exists.
+Unicast and multicast use a receiver-authored SRAM address table. The
+receive post publishes the concrete receiver DFB address to one
+source-core table entry and increments the sender-ready semaphore. The
+send waits for readiness, reads the table entry, and writes the
+payload to that receiver-owned DFB block.
 
-Non-loopback multicast keeps this protocol because the sender does not
-execute the receiver post. It must consume a receiver-authored address
-instead of reconstructing receiver DFB state from sender-local counters.
+Receive posts publish the address with an inline 32-bit NOC write.
+Table entries are per pipe on the source core. Address storage is
+ordinary SRAM, so it does not consume semaphore ids.
 
 ### Aggregate multicast rendezvous
 
-Source-in-destination uniform multicast can avoid per-pipe mailbox
-storage. Each receiver post increments one sender-ready counter. The
-sender waits until the counter reaches the destination count, reads the
-local receiver DFB address, issues one multicast payload write, and
+Uniform multicast uses the same receiver-authored address table but
+aggregates readiness. Each receiver post writes an equivalent address
+to the source-core table entry and increments one sender-ready counter.
+The sender waits until the counter reaches the destination count, reads
+one DFB address from the table, issues one multicast payload write, and
 signals receiver completion with the existing per-PipeNet completion
 counter.
-
-Source-in-destination multicast computes the destination address from
-the local receiver DFB state when the sender kernel also executes a
-receive post. Non-loopback multicast and split NOC-thread multicast
-require an explicit receiver-authored address table; they are not
-lowered as aggregate by the current implementation.
 
 Until issue #617 adds per-destination multicast receive addresses, all
 receivers for one multicast pipe must publish equivalent DFB addresses.
@@ -1022,8 +1010,9 @@ posted that can complete it.
 
   Out of scope for parametric PipeNets: per-iteration dynamic routing
   decided inside a kernel function. The TTKernel multicast handshake
-  allocates receiver completion semaphores per PipeNet and sender-ready
-  / mailbox words per pipe at kernel compile time. Reconfiguring an
+  allocates receiver-completion semaphores per PipeNet and
+  sender-ready counters plus address-table entries per pipe at kernel
+  compile time. Reconfiguring an
   mcast group mid-kernel is not a tt-metal-supported operation; data-
   dependent routing would be expressed as point-to-point unicast with
   runtime destination, not as a PipeNet.

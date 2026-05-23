@@ -50,9 +50,9 @@ func.func @if_dst_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // CHECK: ttkernel.experimental::semaphore_wait(%[[ADDR_READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[ADDR_READY_PTR]]
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[MAILBOX_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[MAILBOX_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[MAILBOX_SEM]])
-// CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1(%[[MAILBOX_PTR]]
+// CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
+// CHECK: %[[TABLE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[SCRATCH]])
+// CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1(%[[TABLE_PTR]]
 // CHECK: %[[DST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_ADDR]])
 // CHECK: ttkernel.noc_async_write(%[[SRC_ADDR]], %[[DST_NOC]]
 // CHECK: ttkernel.noc_async_write_barrier
@@ -76,12 +76,9 @@ func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
-// CHECK: %[[STAGING_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[STAGING_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[STAGING_SEM]])
-// CHECK: ttkernel.store_to_l1(%[[DST_ADDR]], %[[STAGING_PTR]]
-// CHECK: %[[MAILBOX_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[MAILBOX_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[MAILBOX_SEM]])
-// CHECK: ttkernel.remote_sram_write_u32(%[[STAGING_SEM]], %[[MAILBOX_NOC]])
+// CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
+// CHECK: %[[TABLE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH]])
+// CHECK: ttkernel.noc_inline_dw_write(%[[TABLE_NOC]], %[[DST_ADDR]]
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]])
 // CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]]
@@ -105,28 +102,30 @@ func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // -----
 
 // Two pipes in the same PipeNet with the same source need distinct ready
-// semaphores and mailbox words, otherwise posts for one pipe can satisfy the
-// other pipe's send.
+// semaphores and SRAM address-table slots, otherwise posts for one pipe can
+// satisfy the other pipe's send.
 // CHECK-LABEL: func.func @same_source_two_pipes_use_distinct_rendezvous_state
-// CHECK-DAG: %[[STAGING_IDX:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[P0_READY_IDX:.*]] = arith.constant 2 : index
-// CHECK-DAG: %[[P0_MAILBOX_IDX:.*]] = arith.constant 3 : index
-// CHECK-DAG: %[[P1_READY_IDX:.*]] = arith.constant 4 : index
-// CHECK-DAG: %[[P1_MAILBOX_IDX:.*]] = arith.constant 5 : index
-// First receive post publishes to p0 mailbox and increments p0 ready sem.
-// CHECK: ttkernel.get_semaphore(%[[STAGING_IDX]])
-// CHECK: %[[P0_MAILBOX:.*]] = ttkernel.get_semaphore(%[[P0_MAILBOX_IDX]])
+// CHECK-DAG: %[[P0_READY_IDX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[P1_READY_IDX:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[P1_TABLE_OFF:.*]] = arith.constant 4 : i32
+// First receive post publishes to p0 table slot and increments p0 ready sem.
+// CHECK: %[[SCRATCH0:.*]] = ttkernel.get_common_arg_val
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH0]])
+// CHECK: ttkernel.noc_inline_dw_write
 // CHECK: %[[P0_READY:.*]] = ttkernel.get_semaphore(%[[P0_READY_IDX]])
-// Second receive post publishes to p1 mailbox and increments p1 ready sem.
-// CHECK: ttkernel.get_semaphore(%[[STAGING_IDX]])
-// CHECK: %[[P1_MAILBOX:.*]] = ttkernel.get_semaphore(%[[P1_MAILBOX_IDX]])
+// Second receive post publishes to p1 table slot and increments p1 ready sem.
+// CHECK: %[[SCRATCH1:.*]] = ttkernel.get_common_arg_val
+// CHECK: arith.addi %[[SCRATCH1]], %[[P1_TABLE_OFF]]
+// CHECK: ttkernel.noc_inline_dw_write
 // CHECK: %[[P1_READY:.*]] = ttkernel.get_semaphore(%[[P1_READY_IDX]])
-// First send waits on p0 ready sem and reads p0 mailbox.
+// First send waits on p0 ready sem and reads p0 table slot.
 // CHECK: ttkernel.get_semaphore(%[[P0_READY_IDX]])
-// CHECK: ttkernel.get_semaphore(%[[P0_MAILBOX_IDX]])
-// Second send waits on p1 ready sem and reads p1 mailbox.
+// CHECK: ttkernel.reinterpret_cast{{.*}}(%{{.*}})
+// CHECK: ttkernel.load_from_l1
+// Second send waits on p1 ready sem and reads p1 table slot.
 // CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
-// CHECK: ttkernel.get_semaphore(%[[P1_MAILBOX_IDX]])
+// CHECK: arith.addi {{.*}}, %[[P1_TABLE_OFF]]
+// CHECK: ttkernel.load_from_l1
 func.func @same_source_two_pipes_use_distinct_rendezvous_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -207,20 +206,17 @@ func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread"
 
 // -----
 
-// Source-in-destination multicast uses aggregate rendezvous: each receiver post
-// increments the sender-ready count, and no mailbox address is published.
+// Source-in-destination multicast uses the same receiver-authored SRAM address
+// table as non-loopback multicast.
 // CHECK-LABEL: func.func @loopback_multicast_aggregate_rendezvous
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[POST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[POST_DFB]]
-// CHECK-NOT: ttkernel.store_to_l1
-// CHECK-NOT: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental::semaphore_wait
-// CHECK-NOT: ttkernel.load_from_l1
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[AGG_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[DST_ADDR:.*]] = ttkernel.get_write_ptr(%[[AGG_DFB]])
+// CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
 // CHECK: %[[MCAST_ADDR:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DST_ADDR]])
 // CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], %[[MCAST_ADDR]]
 func.func @loopback_multicast_aggregate_rendezvous() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -238,24 +234,21 @@ func.func @loopback_multicast_aggregate_rendezvous() attributes { "ttl.kernel_th
 
 // -----
 
-// Non-loopback multicast keeps the receiver-posted mailbox protocol until
-// aggregate lowering has a receiver-authored address table.
-// CHECK-LABEL: func.func @non_loopback_multicast_posted_mailbox
+// Non-loopback multicast publishes receiver-authored addresses through the
+// SRAM address table and uses one aggregate ready count.
+// CHECK-LABEL: func.func @non_loopback_multicast_sram_address_table
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[POST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[POST_DFB]]
-// CHECK: ttkernel.store_to_l1
-// CHECK: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental::semaphore_wait
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[MAILBOX_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[MAILBOX_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[MAILBOX_SEM]])
-// CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1(%[[MAILBOX_PTR]]
+// CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
 // CHECK: %[[MCAST_ADDR:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DST_ADDR]])
 // CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR]], %[[MCAST_ADDR]]
 // CHECK-NOT: ttkernel.noc_async_write_multicast_loopback_src
-func.func @non_loopback_multicast_posted_mailbox() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @non_loopback_multicast_sram_address_table() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -276,14 +269,11 @@ func.func @non_loopback_multicast_posted_mailbox() attributes { "ttl.kernel_thre
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[POST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[POST_DFB]]
-// CHECK-NOT: ttkernel.store_to_l1
-// CHECK-NOT: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental::semaphore_wait
-// CHECK-NOT: ttkernel.load_from_l1
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[AGG_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[DST_ADDR:.*]] = ttkernel.get_write_ptr(%[[AGG_DFB]])
+// CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
 // CHECK: %[[DST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_ADDR]])
 // CHECK: ttkernel.noc_async_write(%[[SRC_ADDR]], %[[DST_NOC]]
 func.func @degenerate_multicast_aggregate_rendezvous() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -301,18 +291,17 @@ func.func @degenerate_multicast_aggregate_rendezvous() attributes { "ttl.kernel_
 
 // -----
 
-// Pipe -> DFB (non-loopback multicast receiver): publish the destination
-// address through the posted mailbox, then wait on the per-PipeNet counter.
+// Pipe -> DFB (multicast receiver): publish the destination address through
+// the SRAM address table, then wait on the per-PipeNet counter.
 // CHECK-LABEL: func.func @copy_pipe_to_cb_multicast
 // CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[CTR]]
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
-// CHECK: %[[MAILBOX_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[MAILBOX_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[MAILBOX_SEM]])
-// CHECK: ttkernel.store_to_l1(%[[DST_ADDR]], %[[MAILBOX_PTR]]
-// CHECK: ttkernel.remote_sram_write_u32(%[[MAILBOX_SEM]]
+// CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
+// CHECK: %[[TABLE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH]])
+// CHECK: ttkernel.noc_inline_dw_write(%[[TABLE_NOC]], %[[DST_ADDR]]
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]])
 // CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]]

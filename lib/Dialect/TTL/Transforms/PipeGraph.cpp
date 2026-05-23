@@ -218,8 +218,8 @@ static LogicalResult addStaticCoordinates(ArrayRef<OpFoldResult> mixedOffsets,
 }
 
 /// Return the static tile offset within the receiver DFB for a receive
-/// destination. Multicast lowering has one sender-visible mailbox address per
-/// pipe, so each destination must publish the same static DFB address until
+/// destination. Multicast lowering has one sender-visible address-table entry
+/// per pipe, so each destination must publish the same static DFB address until
 /// issue #617 adds explicit per-destination addresses.
 static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
   Value view = traceUnrealizedCasts(dst);
