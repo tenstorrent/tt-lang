@@ -166,6 +166,84 @@ def make_loopback_multicast_aggregate_kernel():
     return loopback_multicast_aggregate
 
 
+def make_degenerate_multicast_aggregate_kernel():
+    bcast_pipe = ttl.Pipe(src=(0, 0), dst=(slice(0, 1), 0))
+    bcast_net = ttl.PipeNet([bcast_pipe])
+
+    @ttl.operation(grid=(1, 1))
+    def degenerate_multicast_aggregate(inp, out):
+        _bcast_net = bcast_net
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if bcast_net.is_dst():
+                with recv_dfb.wait() as recv_blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(recv_blk)
+
+        @ttl.datamovement()
+        def post_receive_and_send():
+            if bcast_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(bcast_pipe, recv_blk)
+                    if bcast_net.is_src():
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 0], send_blk).wait()
+                            ttl.copy(send_blk, bcast_pipe).wait()
+                    recv_tx.wait()
+
+        @ttl.datamovement()
+        def write_output():
+            if bcast_net.is_dst():
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(out_blk, out[0, 0]).wait()
+
+    return degenerate_multicast_aggregate
+
+
+def make_non_loopback_multicast_aggregate_kernel():
+    bcast_pipe = ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))
+    bcast_net = ttl.PipeNet([bcast_pipe])
+
+    @ttl.operation(grid=(4, 1))
+    def non_loopback_multicast_aggregate(inp, out):
+        _bcast_net = bcast_net
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            if bcast_net.is_dst():
+                with recv_dfb.wait() as recv_blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(recv_blk)
+
+        @ttl.datamovement()
+        def post_receive_and_send():
+            if bcast_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(bcast_pipe, recv_blk)
+                    recv_tx.wait()
+
+            if bcast_net.is_src():
+                with send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 0], send_blk).wait()
+                    ttl.copy(send_blk, bcast_pipe).wait()
+
+        @ttl.datamovement()
+        def write_output():
+            node_x, _node_y = ttl.node(dims=2)
+            if bcast_net.is_dst():
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(out_blk, out[0, node_x]).wait()
+
+    return non_loopback_multicast_aggregate
+
+
 def make_row_all_to_all_multicast_kernel():
     grid_width = 4
     pipe0 = ttl.Pipe(src=(0, 0), dst=(slice(0, grid_width), 0))
@@ -342,6 +420,10 @@ def make_grid_all_to_all_multicast_kernel():
 posted_gather_kernel = make_two_net_posted_gather_kernel()
 same_source_two_pipe_kernel = make_same_source_two_pipe_kernel()
 loopback_multicast_aggregate_kernel = make_loopback_multicast_aggregate_kernel()
+degenerate_multicast_aggregate_kernel = make_degenerate_multicast_aggregate_kernel()
+non_loopback_multicast_aggregate_kernel = (
+    make_non_loopback_multicast_aggregate_kernel()
+)
 row_all_to_all_multicast_kernel = make_row_all_to_all_multicast_kernel()
 grid_all_to_all_multicast_kernel = make_grid_all_to_all_multicast_kernel()
 
@@ -649,6 +731,36 @@ def test_loopback_multicast_uses_aggregate_rendezvous(device):
 
     result = ttnn.to_torch(out)
     expected = torch.cat([inp_torch, inp_torch], dim=1)
+    assert_pcc(expected.float(), result.float())
+
+
+def test_degenerate_multicast_uses_aggregate_rendezvous(device):
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    degenerate_multicast_aggregate_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    assert_pcc(inp_torch.float(), result.float())
+
+
+def test_non_loopback_multicast_uses_aggregate_rendezvous(device):
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, 4 * TILE, dtype=torch.bfloat16)
+    expected = out_torch.clone()
+    expected[:, TILE:] = inp_torch.repeat(1, 3)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    non_loopback_multicast_aggregate_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
     assert_pcc(expected.float(), result.float())
 
 

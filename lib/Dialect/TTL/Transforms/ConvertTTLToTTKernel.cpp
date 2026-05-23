@@ -822,9 +822,11 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
   CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
-               const PipeChannelLoweringInfo *pipeChannelInfo)
+               const PipeChannelLoweringInfo *pipeChannelInfo,
+               const AggregateEpochCounterMap *aggregateEpochCounters)
       : OpConversionPattern(typeConverter, context),
-        pipeChannelInfo(pipeChannelInfo) {}
+        pipeChannelInfo(pipeChannelInfo),
+        aggregateEpochCounters(aggregateEpochCounters) {}
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -861,7 +863,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
                domInfo.dominates(user, op);
       });
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), isConsumerCB,
-                           pipeChannelInfo, rewriter);
+                           pipeChannelInfo, aggregateEpochCounters, rewriter);
     }
     if (srcIsPipe && dstIsDFBAttachedTensor) {
       return op.emitError("internal compiler error: pipe receive copy "
@@ -904,6 +906,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 
 private:
   const PipeChannelLoweringInfo *pipeChannelInfo;
+  const AggregateEpochCounterMap *aggregateEpochCounters;
 };
 
 struct PipeRecvPostLowering : OpConversionPattern<PipeRecvPostOp> {
@@ -1137,8 +1140,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
+  AggregateEpochCounterMap aggregateEpochCounters;
+  allocateAggregateEpochCounters(mod, pipeChannelInfo, aggregateEpochCounters);
+
   RewritePatternSet patterns(&ctx);
-  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeChannelInfo);
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeChannelInfo,
+                             &aggregateEpochCounters);
   patterns.add<PipeRecvPostLowering>(typeConverter, &ctx, &pipeChannelInfo);
   patterns.add<PipeRecvWaitLowering>(typeConverter, &ctx, &pipeNetCounters);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
