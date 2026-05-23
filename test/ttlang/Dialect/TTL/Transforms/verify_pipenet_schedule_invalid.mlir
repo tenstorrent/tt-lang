@@ -44,7 +44,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// A send can be separated from the matching receive address publication by
+// A send can be separated from the matching destination address publication by
 // other pipe events. The verifier should still report the real protocol
 // violation instead of the intermediate program-order edge.
 
@@ -81,7 +81,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
           : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
              !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-note @below {{this receive address publication is ordered after the send in the same data-movement thread}}
+      // expected-note @below {{this destination address publication is ordered after the send in the same data-movement thread}}
       %recv = ttl.copy %loopback_pipe, %recv_view
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -123,7 +123,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
           : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
              !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-note @below {{this receive address publication is ordered after the send in the same data-movement thread}}
+      // expected-note @below {{this destination address publication is ordered after the send in the same data-movement thread}}
       %recv = ttl.copy %pipe, %recv_view
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)

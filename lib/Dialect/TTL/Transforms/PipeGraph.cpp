@@ -31,9 +31,9 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
          existing->second.dfbType != dfbType ||
          existing->second.staticTileOffset != staticTileOffset)) {
       auto diag = emitError(loc)
-                  << "collective pipe receive posts publish non-uniform "
-                     "destination addresses; per-destination collective "
-                     "receive addresses are tracked by issue #617";
+                  << "collective pipe receive posts publish different "
+                     "destination addresses; per-receiver destination "
+                     "addresses are tracked by issue #617";
       diag.attachNote(existing->second.loc)
           << "previous collective receive post for this pipe was here";
       return failure();
@@ -177,6 +177,8 @@ collectPipeTransferContracts(ModuleOp mod) {
       contracts.insert({key, contract});
       return;
     }
+    // Duplicate create_pipe ops for the same PipeKey can arise from cloned
+    // regions. Collective is the stronger contract and must be preserved.
     if (isCollectiveTransfer(contract)) {
       existing->second = PipeTransferContract::Collective;
     }
@@ -184,10 +186,11 @@ collectPipeTransferContracts(ModuleOp mod) {
   return contracts;
 }
 
-static LogicalResult emitNonUniformCollectiveReceiveAddress(Operation *op) {
+static LogicalResult
+emitUntraceableCollectiveDestinationAddress(Operation *op) {
   return op->emitError()
-         << "collective pipe receive posts publish non-uniform destination "
-            "addresses; per-destination collective receive addresses are "
+         << "collective pipe destination address could not be "
+            "determined statically; per-receiver destination addresses are "
             "tracked by issue #617";
 }
 
@@ -308,7 +311,7 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
   if (isCollectiveTransfer(transferContract)) {
     FailureOr<int64_t> offset = getStaticDestinationTileOffset(dst);
     if (failed(offset)) {
-      return emitNonUniformCollectiveReceiveAddress(op);
+      return emitUntraceableCollectiveDestinationAddress(op);
     }
     staticTileOffset = *offset;
   }
@@ -328,15 +331,14 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   WalkResult walkResult = mod.walk([&](PipeRecvPostOp postOp) {
     auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
     PipeKey key = getPipeKey(pipeType);
-    PipeTransferContract contract = pipeType.hasMultipleReceivers()
-                                        ? PipeTransferContract::Collective
-                                        : PipeTransferContract::PointToPoint;
     auto contractIt = transferContracts.find(key);
-    if (contractIt != transferContracts.end()) {
-      contract = contractIt->second;
+    if (contractIt == transferContracts.end()) {
+      postOp.emitError("pipe receive must use a ttl.create_pipe result");
+      return WalkResult::interrupt();
     }
-    if (failed(
-            addPipeReceiver(graph, postOp, pipeType, contract, postOp.getDst()))) {
+    PipeTransferContract contract = contractIt->second;
+    if (failed(addPipeReceiver(graph, postOp, pipeType, contract,
+                               postOp.getDst()))) {
       return WalkResult::interrupt();
     }
     return WalkResult::advance();

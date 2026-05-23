@@ -135,14 +135,14 @@ class TestPipeSyncSemaphores:
     def test_empty_graph_uses_no_pipe_resources(self):
         graph = OperationPipeNets()
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=1) == 0
+        assert graph.num_pipe_sync_semaphores() == 0
         assert graph.num_pipe_global_semaphores() == 0
 
     def test_degenerate_multicast_uses_sram_address_table(self):
         graph = OperationPipeNets()
         graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng((0, 0), (1, 1)))])
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=1) == 2
+        assert graph.num_pipe_sync_semaphores() == 2
         assert graph.num_pipe_global_semaphores() == 0
 
     @pytest.mark.parametrize("recipient_count", [1, 2, 3, 50])
@@ -153,7 +153,7 @@ class TestPipeSyncSemaphores:
             [PipeUse(src=_coord(0, 0), dst=_rng((1, 0), (node_count, 1)))]
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
+        assert graph.num_pipe_sync_semaphores() == 2
         assert graph.num_pipe_global_semaphores() == 0
 
     def test_disjoint_non_loopback_multicast_reuses_source_local_ids(self):
@@ -165,7 +165,7 @@ class TestPipeSyncSemaphores:
             ]
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
+        assert graph.num_pipe_sync_semaphores() == 2
         assert graph.num_pipe_global_semaphores() == 0
 
     def test_overlapping_non_loopback_multicast_needs_one_ready_id_per_source_pipe(
@@ -179,7 +179,7 @@ class TestPipeSyncSemaphores:
             ]
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 3
+        assert graph.num_pipe_sync_semaphores() == 3
         assert graph.num_pipe_global_semaphores() == 0
 
     def test_same_source_pipes_use_global_ready_counters_when_local_ids_exhaust(
@@ -190,7 +190,7 @@ class TestPipeSyncSemaphores:
             PipeUse(src=_coord(0, 0), dst=_coord(dst_x, 0)) for dst_x in range(1, 17)
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 1
+        assert graph.num_pipe_sync_semaphores() == 1
         assert graph.num_pipe_global_semaphores() == 16
 
     def test_same_source_pipes_keep_local_ready_counters_at_limit(self):
@@ -199,7 +199,7 @@ class TestPipeSyncSemaphores:
             PipeUse(src=_coord(0, 0), dst=_coord(dst_x, 0)) for dst_x in range(1, 16)
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 16
+        assert graph.num_pipe_sync_semaphores() == 16
         assert graph.num_pipe_global_semaphores() == 0
 
     def test_multiple_pipenets_affect_global_ready_counter_threshold(self):
@@ -209,12 +209,12 @@ class TestPipeSyncSemaphores:
         )
         graph.add_pipe_net([PipeUse(src=_coord(1, 0), dst=_coord(2, 0))])
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 16
+        assert graph.num_pipe_sync_semaphores() == 16
         assert graph.num_pipe_global_semaphores() == 0
 
         graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(15, 0))])
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 3
+        assert graph.num_pipe_sync_semaphores() == 3
         assert graph.num_pipe_global_semaphores() == 16
 
     def test_global_ready_plan_counts_all_pipes(self):
@@ -229,7 +229,7 @@ class TestPipeSyncSemaphores:
             ]
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
+        assert graph.num_pipe_sync_semaphores() == 2
         assert graph.num_pipe_global_semaphores() == 18
 
     def test_distinct_sources_keep_ready_counters_local(self):
@@ -238,7 +238,7 @@ class TestPipeSyncSemaphores:
             PipeUse(src=_coord(src_x, 0), dst=_coord(0, 0)) for src_x in range(1, 17)
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
+        assert graph.num_pipe_sync_semaphores() == 2
         assert graph.num_pipe_global_semaphores() == 0
 
     def test_two_dimensional_all_to_all_multicast_count_is_constant(self):
@@ -251,5 +251,5 @@ class TestPipeSyncSemaphores:
             for src_x in range(width)
         )
 
-        assert graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
+        assert graph.num_pipe_sync_semaphores() == 2
         assert graph.num_pipe_global_semaphores() == 0

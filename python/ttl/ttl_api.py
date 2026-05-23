@@ -37,6 +37,7 @@ def _ensure_ttnn():
 
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
+from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
 from ttl.dialects import ttkernel
 from ttl.ir import *
@@ -1084,7 +1085,7 @@ def _extract_compiler_allocated_dfbs(module):
 
 def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
     """Read the semaphore count selected by pipe lowering."""
-    attr = module.operation.attributes.get("ttl.pipe_sync_semaphore_count", None)
+    attr = module.operation.attributes.get(_ttl_ir.PIPE_SYNC_SEMAPHORE_COUNT_ATTR, None)
     if attr is None:
         return None
     return int(attr)
@@ -1092,7 +1093,7 @@ def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
 
 def _extract_pipe_sram_scratch_bytes(module) -> int:
     """Read the per-core SRAM scratch bytes selected by pipe lowering."""
-    attr = module.operation.attributes.get("ttl.pipe_sram_scratch_bytes", None)
+    attr = module.operation.attributes.get(_ttl_ir.PIPE_SRAM_SCRATCH_BYTES_ATTR, None)
     if attr is None:
         return 0
     return int(attr)
@@ -1100,7 +1101,9 @@ def _extract_pipe_sram_scratch_bytes(module) -> int:
 
 def _extract_pipe_global_semaphore_count(module) -> int:
     """Read the GlobalSemaphore count selected by pipe lowering."""
-    attr = module.operation.attributes.get("ttl.pipe_global_semaphore_count", None)
+    attr = module.operation.attributes.get(
+        _ttl_ir.PIPE_GLOBAL_SEMAPHORE_COUNT_ATTR, None
+    )
     if attr is None:
         return 0
     return int(attr)
@@ -1659,8 +1662,9 @@ def _compile_kernel(
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
         if pipe_sync_semaphore_count is None:
-            pipe_sync_semaphore_count = pipenets.num_pipe_sync_semaphores(
-                num_noc_threads=noc_kernel_idx
+            raise RuntimeError(
+                "compiled module is missing "
+                f"{_ttl_ir.PIPE_SYNC_SEMAPHORE_COUNT_ATTR}"
             )
         pipe_sram_scratch_bytes = _extract_pipe_sram_scratch_bytes(module)
         pipe_global_semaphore_count = _extract_pipe_global_semaphore_count(module)

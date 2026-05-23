@@ -10,11 +10,15 @@ from ttl import kernel_runner
 
 
 class _FakeTensor:
-    def __init__(self, device):
+    def __init__(self, device, address=0x2000):
         self._device = device
+        self._address = address
 
     def device(self):
         return self._device
+
+    def buffer_address(self):
+        return self._address
 
 
 class _FakeTensorWithoutDevice:
@@ -57,6 +61,21 @@ class _FakeTTNN:
             self.kernels = kernels
             self.cbs = cbs
             self.semaphores = semaphores
+
+    class KernelDescriptor:
+        def __init__(
+            self,
+            kernel_source,
+            core_ranges,
+            compile_time_args,
+            common_runtime_args,
+            config,
+        ):
+            self.kernel_source = kernel_source
+            self.core_ranges = core_ranges
+            self.compile_time_args = compile_time_args
+            self.common_runtime_args = common_runtime_args
+            self.config = config
 
     @staticmethod
     def generic_op(tensors, program):
@@ -143,6 +162,46 @@ def test_build_pipe_global_semaphores_requires_device(monkeypatch):
             tensors=[],
             core_ranges=object(),
             count=1,
+        )
+
+
+def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+    )
+    tensor = _FakeTensor(object(), address=0x2000)
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+        extra_common_runtime_args=[0x3000, 0x3020],
+        expected_extra_common_runtime_args=2,
+    )
+
+    assert descriptors[0].common_runtime_args == [0x2000, 0x3000, 0x3020]
+    with pytest.raises(
+        RuntimeError,
+        match="pipe resource plan expected 2 extra common runtime args, got 1",
+    ):
+        kernel_runner.build_kernel_descriptors(
+            kernel_specs=[spec],
+            tensors=[tensor],
+            tensor_accessor_args=[],
+            core_ranges=object(),
+            grid_cols=1,
+            grid_rows=1,
+            num_cbs=0,
+            extra_common_runtime_args=[0x3000],
+            expected_extra_common_runtime_args=2,
         )
 
 
