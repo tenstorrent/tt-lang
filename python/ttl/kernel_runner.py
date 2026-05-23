@@ -404,9 +404,9 @@ def run_kernel_on_device(
             PipeNet metadata.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             ready counters allocated by the compiler.
-        pipe_global_semaphore_lifetime: Optional list used by cached kernels to
-            keep GlobalSemaphore objects alive while device work may reference
-            their raw L1 addresses.
+        pipe_global_semaphore_lifetime: Optional list replaced with the current
+            call's GlobalSemaphore objects. Cached kernels keep this bounded
+            owner list so repeated calls do not retain old semaphore objects.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -449,7 +449,7 @@ def run_kernel_on_device(
     ]
     extra_common_runtime_args.extend(pipe_global_semaphore_addresses)
     if pipe_global_semaphore_lifetime is not None:
-        pipe_global_semaphore_lifetime.extend(pipe_global_semaphores)
+        pipe_global_semaphore_lifetime[:] = pipe_global_semaphores
 
     # Build kernel descriptors.
     kernel_descriptors = build_kernel_descriptors(
@@ -732,7 +732,6 @@ def emit_runner_source(
     lines.append("")
     lines.append("    io_tensors = list(tensors) + pipe_sram_scratch_tensors")
     lines.append("    result = ttnn.generic_op(io_tensors, program)")
-    lines.append("    del pipe_global_semaphores")
     lines.append("    return result")
     lines.append("")
 

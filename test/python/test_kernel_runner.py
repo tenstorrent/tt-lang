@@ -163,6 +163,29 @@ def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     assert result["program"].semaphores == []
 
 
+def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    tensor = _FakeTensor(object())
+    lifetime = []
+
+    for _ in range(2):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[tensor],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_global_semaphores=2,
+            pipe_global_semaphore_lifetime=lifetime,
+        )
+
+    assert len(fake_ttnn.create_calls) == 4
+    assert lifetime == fake_ttnn.create_calls[-2:]
+
+
 def test_emit_runner_source_allocates_global_semaphores():
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
