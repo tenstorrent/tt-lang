@@ -325,28 +325,24 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   llvm::MapVector<PipeKey, PipeTransferContract> transferContracts =
       collectPipeTransferContracts(mod);
 
-  LogicalResult walkResult = success();
-  mod.walk([&](Operation *op) {
-    if (failed(walkResult)) {
-      return;
+  WalkResult walkResult = mod.walk([&](PipeRecvPostOp postOp) {
+    auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
+    PipeKey key = getPipeKey(pipeType);
+    PipeTransferContract contract = pipeType.hasMultipleReceivers()
+                                        ? PipeTransferContract::Collective
+                                        : PipeTransferContract::PointToPoint;
+    auto contractIt = transferContracts.find(key);
+    if (contractIt != transferContracts.end()) {
+      contract = contractIt->second;
     }
-    if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {
-      auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
-      PipeKey key = getPipeKey(pipeType);
-      PipeTransferContract contract = pipeType.hasMultipleReceivers()
-                                          ? PipeTransferContract::Collective
-                                          : PipeTransferContract::PointToPoint;
-      auto contractIt = transferContracts.find(key);
-      if (contractIt != transferContracts.end()) {
-        contract = contractIt->second;
-      }
-      walkResult =
-          addPipeReceiver(graph, op, pipeType, contract, postOp.getDst());
-      return;
+    if (failed(
+            addPipeReceiver(graph, postOp, pipeType, contract, postOp.getDst()))) {
+      return WalkResult::interrupt();
     }
+    return WalkResult::advance();
   });
 
-  if (failed(walkResult)) {
+  if (walkResult.wasInterrupted()) {
     return failure();
   }
 

@@ -130,31 +130,27 @@ static int64_t getNumTensorFunctionArgs(FuncOp func) {
 }
 
 /// Pipe kernels receive common runtime args for tensor buffer addresses first,
-/// followed by compiler-managed pipe resources. `pipeRuntimeArgIndex` indexes
-/// that pipe-resource suffix.
+/// followed by compiler-managed pipe resources. The returned index is checked
+/// before rewrite mutation so resource-plan failures do not leave partial IR.
 /// [Device 2.0] Keep this as a resource-plan lookup so the final device API
 /// lowering can replace common-arg plumbing without changing pipe semantics.
-static FailureOr<Value>
-getPipeRuntimeCommonArg(Operation *op, Location loc,
-                        ConversionPatternRewriter &rewriter,
-                        int64_t pipeRuntimeArgIndex) {
+static FailureOr<int64_t>
+getPipeRuntimeCommonArgIndex(Operation *op, int64_t pipeRuntimeArgIndex) {
   FuncOp func = op->getParentOfType<FuncOp>();
   if (!func) {
     return op->emitError("internal compiler error: pipe op is not inside a "
                          "function");
   }
-  auto argIndex = arith::ConstantIndexOp::create(
-      rewriter, loc, getNumTensorFunctionArgs(func) + pipeRuntimeArgIndex);
+  return getNumTensorFunctionArgs(func) + pipeRuntimeArgIndex;
+}
+
+static Value buildPipeRuntimeCommonArg(Location loc,
+                                       ConversionPatternRewriter &rewriter,
+                                       int64_t commonArgIndex) {
+  auto argIndex = arith::ConstantIndexOp::create(rewriter, loc, commonArgIndex);
   return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                         argIndex)
       .getResult();
-}
-
-/// Return the L1 base address of the compiler-managed pipe SRAM table.
-static FailureOr<Value>
-getPipeSramScratchBase(Operation *op, Location loc,
-                       ConversionPatternRewriter &rewriter) {
-  return getPipeRuntimeCommonArg(op, loc, rewriter, 0);
 }
 
 /// Return the first pipe-resource runtime arg index used for GlobalSemaphore
@@ -166,26 +162,48 @@ getFirstPipeGlobalSemaphoreArgOffset(const PipeResourcePlan &info) {
   return info.sramScratch.bytes > 0 ? 1 : 0;
 }
 
-static FailureOr<Value>
-buildReadyCounterAddress(Operation *op, Location loc,
-                         const PipeResourceInfo &pipeResource,
-                         const PipeResourcePlan &pipeResourcePlan,
+struct ReadyCounterAddressInfo {
+  PipeReadyCounterKind kind = PipeReadyCounterKind::LocalSemaphore;
+  int64_t senderReadySemIdx = -1;
+  int64_t runtimeCommonArgIndex = -1;
+};
+
+static FailureOr<ReadyCounterAddressInfo>
+getReadyCounterAddressInfo(Operation *op,
+                           const PipeResourceInfo &pipeResource,
+                           const PipeResourcePlan &pipeResourcePlan) {
+  ReadyCounterAddressInfo info;
+  info.kind = pipeResource.readyCounter.kind;
+  info.senderReadySemIdx = pipeResource.readyCounter.senderReadySemIdx;
+
+  if (pipeResource.readyCounter.kind == PipeReadyCounterKind::GlobalSemaphore) {
+    FailureOr<int64_t> argIndex = getPipeRuntimeCommonArgIndex(
+        op, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) +
+                pipeResource.readyCounter.globalSemaphoreIndex);
+    if (failed(argIndex)) {
+      return failure();
+    }
+    info.runtimeCommonArgIndex = *argIndex;
+  }
+  return info;
+}
+
+static Value
+buildReadyCounterAddress(Location loc,
+                         const ReadyCounterAddressInfo &info,
                          ConversionPatternRewriter &rewriter) {
   // Lowering consumes both local and GlobalSemaphore ready counters as L1
   // addresses; only address construction differs between the two kinds.
   // [Device 2.0] This should become a typed semaphore-object lookup when the
   // device API exposes Semaphore/GlobalSemaphore objects directly.
-  switch (pipeResource.readyCounter.kind) {
+  switch (info.kind) {
   case PipeReadyCounterKind::LocalSemaphore: {
     auto senderSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, pipeResource.readyCounter.senderReadySemIdx);
+        rewriter, loc, info.senderReadySemIdx);
     return ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx).getResult();
   }
   case PipeReadyCounterKind::GlobalSemaphore:
-    return getPipeRuntimeCommonArg(
-        op, loc, rewriter,
-        getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) +
-            pipeResource.readyCounter.globalSemaphoreIndex);
+    return buildPipeRuntimeCommonArg(loc, rewriter, info.runtimeCommonArgIndex);
   }
   llvm_unreachable("unknown pipe ready counter kind");
 }
@@ -204,23 +222,40 @@ static Value addByteOffset(Location loc, Value baseAddress, int64_t byteOffset,
       .getResult();
 }
 
-/// Load the receiver-published destination DFB address from this pipe's
-/// source-core SRAM address-table entry.
-static FailureOr<Value>
-buildAddressTableDestinationAddress(Operation *op, Location loc,
-                                    const PipeResourceInfo &pipeResource,
-                                    ConversionPatternRewriter &rewriter) {
+struct AddressTableInfo {
+  int64_t scratchRuntimeCommonArgIndex = -1;
+  int64_t byteOffset = 0;
+};
+
+static FailureOr<AddressTableInfo>
+getAddressTableInfo(Operation *op, const PipeResourceInfo &pipeResource) {
   if (!pipeResource.usesSramAddressTable()) {
     return op->emitError("internal compiler error: pipe has no SRAM address "
                          "table");
   }
-  FailureOr<Value> scratchBase = getPipeSramScratchBase(op, loc, rewriter);
-  if (failed(scratchBase)) {
+  FailureOr<int64_t> scratchArgIndex = getPipeRuntimeCommonArgIndex(op, 0);
+  if (failed(scratchArgIndex)) {
     return failure();
   }
-  Value tableAddress = addByteOffset(
-      loc, *scratchBase,
-      pipeResource.addressStorage.sramAddressTable.byteOffset, rewriter);
+  return AddressTableInfo{
+      *scratchArgIndex, pipeResource.addressStorage.sramAddressTable.byteOffset};
+}
+
+static Value buildAddressTableAddress(Location loc,
+                                      const AddressTableInfo &info,
+                                      ConversionPatternRewriter &rewriter) {
+  Value scratchBase =
+      buildPipeRuntimeCommonArg(loc, rewriter, info.scratchRuntimeCommonArgIndex);
+  return addByteOffset(loc, scratchBase, info.byteOffset, rewriter);
+}
+
+/// Load the receiver-published destination DFB address from this pipe's
+/// source-core SRAM address-table entry.
+static Value
+buildAddressTableDestinationAddress(Location loc,
+                                    const AddressTableInfo &info,
+                                    ConversionPatternRewriter &rewriter) {
+  Value tableAddress = buildAddressTableAddress(loc, info, rewriter);
   // [Device 2.0] Address tables are compiler-managed SRAM state; only this
   // final load should depend on raw L1 pointer operations.
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -233,32 +268,43 @@ buildAddressTableDestinationAddress(Operation *op, Location loc,
       .getResult();
 }
 
-/// Compute the exact DFB address selected by ttl.copy(pipe, dst). Receivers
-/// publish this address so senders do not infer receiver DFB state.
-static FailureOr<Value>
-buildReceiverPublishedAddress(Operation *op, Value dst, Location loc,
-                              ConversionPatternRewriter &rewriter) {
-  Value receiverCB = getAttachedCB(dst);
-  if (!receiverCB) {
+struct ReceiverPublishedAddressInfo {
+  Value receiverDFB;
+  ttcore::TileType tileType;
+};
+
+static FailureOr<ReceiverPublishedAddressInfo>
+getReceiverPublishedAddressInfo(Operation *op, Value dst,
+                                    ConversionPatternRewriter &rewriter) {
+  Value receiverDFB = getAttachedCB(dst);
+  if (!receiverDFB) {
     return rewriter.notifyMatchFailure(
         op, "pipe receive destination is not attached to a DFB");
   }
-  auto receiverCBConverted =
-      utils::convertTTLCBToTTKernel(receiverCB, rewriter, loc);
-  if (failed(receiverCBConverted)) {
-    return rewriter.notifyMatchFailure(op, "failed to convert receiver DFB");
-  }
 
-  auto receiverCBType = getTTLCBType(receiverCB);
-  if (!receiverCBType) {
+  auto receiverDFBType = getTTLCBType(receiverDFB);
+  if (!receiverDFBType) {
     return rewriter.notifyMatchFailure(op, "failed to get receiver DFB type");
   }
   auto tileType =
-      llvm::dyn_cast<ttcore::TileType>(receiverCBType.getElementType());
+      llvm::dyn_cast<ttcore::TileType>(receiverDFBType.getElementType());
   if (!tileType) {
-    return rewriter.notifyMatchFailure(
-        op, "receiver DFB element type must be tile");
+    return rewriter.notifyMatchFailure(op,
+                                       "receiver DFB element type must be tile");
   }
+
+  return ReceiverPublishedAddressInfo{receiverDFB, tileType};
+}
+
+/// Compute the exact DFB address selected by ttl.copy(pipe, dst). Receivers
+/// publish this address so senders do not infer receiver DFB state.
+static Value buildReceiverPublishedAddress(
+    Value dst, Location loc, const ReceiverPublishedAddressInfo &info,
+    ConversionPatternRewriter &rewriter) {
+  auto receiverCBConverted =
+      utils::convertTTLCBToTTKernel(info.receiverDFB, rewriter, loc);
+  assert(succeeded(receiverCBConverted) &&
+         "preflight checked receiver DFB type");
 
   auto receiverWritePtr =
       ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
@@ -275,7 +321,7 @@ buildReceiverPublishedAddress(Operation *op, Value dst, Location loc,
       rewriter, loc, rewriter.getI32Type(), globalTileIndex);
   auto pageSizeBytes = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI32Type(),
-      rewriter.getI32IntegerAttr(tileType.getSizeBytes()));
+      rewriter.getI32IntegerAttr(info.tileType.getSizeBytes()));
   auto byteOffset =
       arith::MulIOp::create(rewriter, loc, tileOffsetI32, pageSizeBytes);
   return arith::AddIOp::create(rewriter, loc, receiverWritePtr, byteOffset)
@@ -305,20 +351,21 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     }
     // Allocas + zero-stores at function entry dominate every receive post,
     // including posts inside scf.if from `if_dst`.
-    OpBuilder b(func.getContext());
-    b.setInsertionPointToStart(&func.getBody().front());
+    OpBuilder builder(func.getContext());
+    builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
-    auto memrefTy = MemRefType::get({1}, b.getI32Type());
-    auto i32Ty = b.getI32Type();
-    Value zeroIdx = arith::ConstantIndexOp::create(b, loc, 0);
-    Value zeroI32 =
-        arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(0));
+    auto memrefTy = MemRefType::get({1}, builder.getI32Type());
+    auto i32Ty = builder.getI32Type();
+    Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value zeroI32 = arith::ConstantOp::create(
+        builder, loc, i32Ty, builder.getI32IntegerAttr(0));
     auto &perFunc = counters[func];
     SmallVector<int64_t> sortedPipeNetIds(pipeNetIds.begin(), pipeNetIds.end());
     llvm::sort(sortedPipeNetIds);
     for (int64_t pipeNetId : sortedPipeNetIds) {
-      auto alloca = memref::AllocaOp::create(b, loc, memrefTy);
-      memref::StoreOp::create(b, loc, zeroI32, alloca, ValueRange{zeroIdx});
+      auto alloca = memref::AllocaOp::create(builder, loc, memrefTy);
+      memref::StoreOp::create(builder, loc, zeroI32, alloca,
+                              ValueRange{zeroIdx});
       perFunc[pipeNetId] = alloca.getResult();
     }
   });
@@ -345,11 +392,6 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   assert(completionInfo->kind == PipeCompletionWaitKind::LocalSemaphore);
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
-  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
-  if (failed(cbConverted)) {
-    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
-  }
-
   auto cbType = getTTLCBType(srcCB);
   if (!cbType) {
     return rewriter.notifyMatchFailure(op, "failed to get CB type");
@@ -363,6 +405,17 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   }
   int64_t pageSizeBytes = tileType.getSizeBytes();
 
+  FailureOr<ReadyCounterAddressInfo> readyCounterInfo =
+      getReadyCounterAddressInfo(op, *pipeResource, *pipeResourcePlan);
+  if (failed(readyCounterInfo)) {
+    return failure();
+  }
+  FailureOr<AddressTableInfo> addressTableInfo =
+      getAddressTableInfo(op, *pipeResource);
+  if (failed(addressTableInfo)) {
+    return failure();
+  }
+
   int64_t dstStartX = pipeType.getDstStartX();
   int64_t dstStartY = pipeType.getDstStartY();
   int64_t dstEndX = pipeType.getDstEndX();
@@ -371,6 +424,9 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
+
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
+  assert(succeeded(cbConverted) && "preflight checked source DFB type");
 
   // Build optional NOC index value for ops that accept a noc parameter.
   int64_t nocIdx = getNocIndex(op);
@@ -382,13 +438,10 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   int64_t expectedSignals =
       isCollectiveTransfer(pipeResource->transferContract) ? numDests : 1;
-  FailureOr<Value> senderSemAddr = buildReadyCounterAddress(
-      op, loc, *pipeResource, *pipeResourcePlan, rewriter);
-  if (failed(senderSemAddr)) {
-    return failure();
-  }
+  Value senderSemAddr =
+      buildReadyCounterAddress(loc, *readyCounterInfo, rewriter);
   auto senderSemPtr =
-      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, *senderSemAddr);
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
   auto expectedVal = arith::ConstantOp::create(
       rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(expectedSignals));
   ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedVal);
@@ -397,8 +450,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
   int64_t cbNumTiles = 1;
-  for (int64_t d : cbBounds) {
-    cbNumTiles *= d;
+  for (int64_t dimension : cbBounds) {
+    cbNumTiles *= dimension;
   }
   // Producer source address is at the source DFB's write_ptr (data is staged
   // there before push_back); consumer source address is at its read_ptr.
@@ -441,21 +494,18 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
-  FailureOr<Value> dstAddr =
-      buildAddressTableDestinationAddress(op, loc, *pipeResource, rewriter);
-  if (failed(dstAddr)) {
-    return failure();
-  }
+  Value dstAddr =
+      buildAddressTableDestinationAddress(loc, *addressTableInfo, rewriter);
 
   if (pipeType.hasSingleReceiver()) {
     auto nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
-                                             dstStartYVal, *dstAddr);
+                                             dstStartYVal, dstAddr);
     ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr, nocAddr.getResult(),
                                  totalSizeVal);
   } else {
     auto mcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
         rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-        *dstAddr, nocVal);
+        dstAddr, nocVal);
     if (pipeType.srcInDstRange()) {
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
           rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
@@ -545,6 +595,22 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   if (failed(pipeResource)) {
     return failure();
   }
+  FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
+      getReceiverPublishedAddressInfo(op, dst, rewriter);
+  if (failed(publishedAddressInfo)) {
+    return failure();
+  }
+  FailureOr<AddressTableInfo> addressTableInfo =
+      getAddressTableInfo(op, *pipeResource);
+  if (failed(addressTableInfo)) {
+    return failure();
+  }
+  FailureOr<ReadyCounterAddressInfo> readyCounterInfo =
+      getReadyCounterAddressInfo(op, *pipeResource, *pipeResourcePlan);
+  if (failed(readyCounterInfo)) {
+    return failure();
+  }
+
   int64_t nocIdx = getNocIndex(op);
   auto indexTy = rewriter.getIndexType();
 
@@ -564,18 +630,10 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, srcYLogical);
 
-  FailureOr<Value> publishedAddress =
-      buildReceiverPublishedAddress(op, dst, loc, rewriter);
-  if (failed(publishedAddress)) {
-    return failure();
-  }
-  FailureOr<Value> scratchBase = getPipeSramScratchBase(op, loc, rewriter);
-  if (failed(scratchBase)) {
-    return failure();
-  }
-  Value tableAddress = addByteOffset(
-      loc, *scratchBase,
-      pipeResource->addressStorage.sramAddressTable.byteOffset, rewriter);
+  Value publishedAddress = buildReceiverPublishedAddress(
+      dst, loc, *publishedAddressInfo, rewriter);
+  Value tableAddress =
+      buildAddressTableAddress(loc, *addressTableInfo, rewriter);
   // [Device 2.0] This is a receiver-authored write to a typed address table;
   // only this lowering should select the current inline NoC write primitive.
   auto senderTableNocAddr = ttk::GetNocAddrOp::create(
@@ -583,17 +641,13 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   auto byteEnableAll = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
   ttk::NocInlineDwWriteOp::create(rewriter, loc, senderTableNocAddr.getResult(),
-                                  *publishedAddress, byteEnableAll,
-                                  inlineNocId);
+                                  publishedAddress, byteEnableAll, inlineNocId);
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
-  FailureOr<Value> senderSemAddr = buildReadyCounterAddress(
-      op, loc, *pipeResource, *pipeResourcePlan, rewriter);
-  if (failed(senderSemAddr)) {
-    return failure();
-  }
+  Value senderSemAddr =
+      buildReadyCounterAddress(loc, *readyCounterInfo, rewriter);
   auto senderSemNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, *senderSemAddr);
+      rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
   auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
   ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
                                  readyIncr, nocVal, /*posted=*/BoolAttr());
@@ -615,17 +669,7 @@ LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
     return failure();
   }
   assert(completionInfo->kind == PipeCompletionWaitKind::LocalSemaphore);
-  auto i32Ty = rewriter.getI32Type();
-  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
   (void)dst;
-
-  auto recvSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, completionInfo->receiverSemIdx);
-  auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
-  // [Device 2.0] Completion waits should consume the allocated completion
-  // object directly once device APIs expose typed semaphore waits.
-  auto recvSemPtr =
-      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
 
   Value counter;
   if (counters) {
@@ -648,6 +692,17 @@ LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
                  "convert-ttl-to-ttkernel");
     return failure();
   }
+
+  auto i32Ty = rewriter.getI32Type();
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+
+  auto recvSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, completionInfo->receiverSemIdx);
+  auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
+  // [Device 2.0] Completion waits should consume the allocated completion
+  // object directly once device APIs expose typed semaphore waits.
+  auto recvSemPtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
 
   auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
   auto loaded =
@@ -829,10 +884,11 @@ struct IsActiveLowering : IsRoleLoweringBase<IsActiveOp> {
                   ConversionPatternRewriter &rewriter) const override {
     return lowerRolePredicate(
         op, rewriter, *pipeNetIndex,
-        [](OpBuilder &b, Location loc, Value cx, Value cy, PipeType pt) {
-          Value src = buildSrcMatch(b, loc, cx, cy, pt);
-          Value dst = buildDstMatch(b, loc, cx, cy, pt);
-          return Value(arith::OrIOp::create(b, loc, src, dst));
+        [](OpBuilder &builder, Location loc, Value coreX, Value coreY,
+           PipeType pipeType) {
+          Value isSrc = buildSrcMatch(builder, loc, coreX, coreY, pipeType);
+          Value isDst = buildDstMatch(builder, loc, coreX, coreY, pipeType);
+          return Value(arith::OrIOp::create(builder, loc, isSrc, isDst));
         });
   }
 };
@@ -862,13 +918,14 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
   llvm::MapVector<int64_t, llvm::SmallSetVector<PipeKey, 4>> seenPerNet;
   mod.walk([&](CreatePipeOp op) {
-    auto pt = mlir::cast<PipeType>(op.getResult().getType());
-    int64_t netId = pt.getPipeNetId();
-    PipeKey key{pt.getSrcX(),      pt.getSrcY(),    pt.getDstStartX(),
-                pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
+    auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
+    int64_t netId = pipeType.getPipeNetId();
+    PipeKey key{pipeType.getSrcX(),      pipeType.getSrcY(),
+                pipeType.getDstStartX(), pipeType.getDstStartY(),
+                pipeType.getDstEndX(),   pipeType.getDstEndY()};
     PipeTransferContract contract = getPipeTransferContract(op);
     if (seenPerNet[netId].insert(key)) {
-      index[netId].push_back(PipeInfo{pt, contract});
+      index[netId].push_back(PipeInfo{pipeType, contract});
       return;
     }
     if (!isCollectiveTransfer(contract)) {

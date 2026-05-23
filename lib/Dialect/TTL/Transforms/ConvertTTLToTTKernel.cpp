@@ -143,14 +143,9 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
 
 /// Get the L1 buffer address from runtime args for a tensor function argument.
 /// Runtime args are indexed by the tensor's function argument position.
-static FailureOr<Value>
-getBufferAddressFromRuntimeArg(Value tensor, Location loc,
-                               ConversionPatternRewriter &rewriter) {
-  auto argIdx = getTensorFuncArgIndex(tensor);
-  if (failed(argIdx)) {
-    return failure();
-  }
-  auto idxConst = arith::ConstantIndexOp::create(rewriter, loc, *argIdx);
+static Value getBufferAddressFromRuntimeArg(unsigned argIdx, Location loc,
+                                            ConversionPatternRewriter &rewriter) {
+  auto idxConst = arith::ConstantIndexOp::create(rewriter, loc, argIdx);
   return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                         idxConst)
       .getResult();
@@ -615,32 +610,48 @@ static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
   return tileType.getSizeBytes();
 }
 
-/// Create a TensorAccessor from a tensor type, bank base address, and
-/// pre-validated page size. The bankBase should come from runtime args via
-/// getBufferAddressFromRuntimeArg; pageSizeBytes from getValidatedPageSize.
-static FailureOr<Value>
-materializeTensorAccessor(Value tensor, Value bankBase, int64_t pageSizeBytes,
-                          Operation *op, ConversionPatternRewriter &rewriter) {
-  auto argIdx = getTensorFuncArgIndex(tensor);
-  if (failed(argIdx)) {
-    // Callers (lowerTensorCBCopy) already guard this via
-    // getBufferAddressFromRuntimeArg, so this is unreachable.
-    llvm_unreachable("tensor must be a function argument");
+struct TensorAccessorInfo {
+  unsigned argIdx = 0;
+  int32_t baseCTA = 0;
+  int32_t globalTensorIdx = 0;
+  int64_t pageSizeBytes = 0;
+};
+
+static FailureOr<TensorAccessorInfo>
+getTensorAccessorInfo(Value tensor, Operation *op,
+                          ConversionPatternRewriter &rewriter) {
+  FailureOr<int64_t> pageSizeBytes = getValidatedPageSize(tensor, op);
+  if (failed(pageSizeBytes)) {
+    return failure();
   }
-
-  auto loc = tensor.getLoc();
-
-  auto ctaInfo = getBaseCTAAndGlobalTensorIdx(*argIdx, op);
+  FailureOr<unsigned> argIdx = getTensorFuncArgIndex(tensor);
+  if (failed(argIdx)) {
+    return rewriter.notifyMatchFailure(
+        op, "tensor must be a function argument for runtime arg mapping");
+  }
+  FailureOr<std::pair<int32_t, int32_t>> ctaInfo =
+      getBaseCTAAndGlobalTensorIdx(*argIdx, op);
   if (failed(ctaInfo)) {
     return failure();
   }
   auto [baseCTA, globalTensorIdx] = *ctaInfo;
+  return TensorAccessorInfo{*argIdx, baseCTA, globalTensorIdx,
+                                *pageSizeBytes};
+}
 
-  auto pageSize =
-      arith::ConstantIntOp::create(rewriter, loc, pageSizeBytes, 32);
+/// Create a TensorAccessor after all validation checks that can fail have run.
+static Value
+materializeTensorAccessor(Value tensor, Value bankBase,
+                          const TensorAccessorInfo &info,
+                          ConversionPatternRewriter &rewriter) {
+  auto loc = tensor.getLoc();
 
-  return buildTensorAccessor(loc, rewriter, baseCTA, globalTensorIdx,
-                             static_cast<int32_t>(*argIdx), bankBase, pageSize);
+  auto pageSize = arith::ConstantIntOp::create(
+      rewriter, loc, info.pageSizeBytes, 32);
+
+  return buildTensorAccessor(loc, rewriter, info.baseCTA, info.globalTensorIdx,
+                             static_cast<int32_t>(info.argIdx), bankBase,
+                             pageSize);
 }
 
 /// Extract tile grid shape from a Value with a static ranked tensor type.
@@ -663,7 +674,8 @@ static void emitTileLoop(
     llvm::function_ref<void(OpBuilder &, Location, ValueRange)> emitBody) {
   auto zero = arith::ConstantIndexOp::create(builder, loc, 0);
 
-  bool allOne = llvm::all_of(tileBounds, [](int64_t d) { return d == 1; });
+  bool allOne =
+      llvm::all_of(tileBounds, [](int64_t dimension) { return dimension == 1; });
   if (allOne) {
     SmallVector<Value> zeros(tileBounds.size(), zero);
     emitBody(builder, loc, zeros);
@@ -679,8 +691,9 @@ static void emitTileLoop(
   }
 
   scf::buildLoopNest(builder, loc, lbs, ubs, steps,
-                     [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
-                       emitBody(b, bodyLoc, ivs);
+                     [&](OpBuilder &nestedBuilder, Location bodyLoc,
+                         ValueRange inductionVars) {
+                       emitBody(nestedBuilder, bodyLoc, inductionVars);
                      });
 }
 
@@ -698,45 +711,21 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   Value tensor = sliceOp.getTensor();
   auto startIndices = sliceOp.getIndices();
 
-  // Validate layout and get page size once.
-  auto pageSizeBytes = getValidatedPageSize(tensor, op);
-  if (failed(pageSizeBytes)) {
+  FailureOr<TensorAccessorInfo> accessorInfo =
+      getTensorAccessorInfo(tensor, op, rewriter);
+  if (failed(accessorInfo)) {
     return failure();
   }
 
-  auto bankBase = getBufferAddressFromRuntimeArg(tensor, loc, rewriter);
-  if (failed(bankBase)) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must be a function argument for runtime arg mapping");
-  }
-
-  auto accessor = materializeTensorAccessor(tensor, *bankBase, *pageSizeBytes,
-                                            op, rewriter);
-  if (failed(accessor)) {
-    return failure();
-  }
-
-  auto cbConverted = utils::convertTTLCBToTTKernel(cb, rewriter, loc);
-  if (failed(cbConverted)) {
-    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
-  }
-
-  bool isRead = direction == NocCopyDirection::Read;
-  Value cbPtr =
-      isRead
-          ? ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted).getResult()
-          : ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted).getResult();
-
-  // Get CB shape for loop bounds.
   auto cbType = getTTLCBType(cb);
   if (!cbType) {
     return rewriter.notifyMatchFailure(op, "failed to get CB type");
   }
-  auto cbShape = cbType.getShape();
 
-  // Tensor grid shape for linearization.
-  auto tensorGridShape = getTileGridShapeFromValue(tensor);
+  SmallVector<int64_t> tensorGridShape = getTileGridShapeFromValue(tensor);
   unsigned tensorRank = tensorGridShape.size();
+
+  auto cbShape = cbType.getShape();
 
   if (startIndices.size() != tensorRank) {
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
@@ -752,52 +741,69 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
     });
   }
 
+  Value bankBase =
+      getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
+  Value accessor =
+      materializeTensorAccessor(tensor, bankBase, *accessorInfo, rewriter);
+
+  auto cbConverted = utils::convertTTLCBToTTKernel(cb, rewriter, loc);
+  assert(succeeded(cbConverted) && "preflight checked DFB type");
+
+  bool isRead = direction == NocCopyDirection::Read;
+  Value cbPtr =
+      isRead
+          ? ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted).getResult()
+          : ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted).getResult();
+
   auto indexTy = rewriter.getIndexType();
   auto cbPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbPtr);
-  auto pageSizeIdx =
-      arith::ConstantIndexOp::create(rewriter, loc, *pageSizeBytes);
+  auto pageSizeIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, accessorInfo->pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
   emitTileLoop(
       rewriter, loc, cbBounds,
-      [&](OpBuilder &b, Location bodyLoc, ValueRange cbIVs) {
+      [&](OpBuilder &loopBuilder, Location bodyLoc, ValueRange cbIVs) {
         // Tensor coordinates: start index + CB loop IV for each dimension.
         SmallVector<Value> tensorCoords;
-        for (unsigned d = 0; d < tensorRank; ++d) {
-          Value coord =
-              arith::AddIOp::create(b, bodyLoc, startIndices[d], cbIVs[d]);
+        for (unsigned dimension = 0; dimension < tensorRank; ++dimension) {
+          Value coord = arith::AddIOp::create(
+              loopBuilder, bodyLoc, startIndices[dimension], cbIVs[dimension]);
           tensorCoords.push_back(coord);
         }
 
         auto tensorTileIdxOp = affine::AffineLinearizeIndexOp::create(
-            b, bodyLoc, tensorCoords, tensorGridShape);
-        tensorTileIdxOp->setAttr(kExpandLinearizeIndexAttr, b.getUnitAttr());
+            loopBuilder, bodyLoc, tensorCoords, tensorGridShape);
+        tensorTileIdxOp->setAttr(kExpandLinearizeIndexAttr,
+                                 loopBuilder.getUnitAttr());
         Value tensorTileIdx = tensorTileIdxOp.getResult();
 
-        auto cbTileIdxOp =
-            affine::AffineLinearizeIndexOp::create(b, bodyLoc, cbIVs, cbBounds);
-        cbTileIdxOp->setAttr(kExpandLinearizeIndexAttr, b.getUnitAttr());
+        auto cbTileIdxOp = affine::AffineLinearizeIndexOp::create(
+            loopBuilder, bodyLoc, cbIVs, cbBounds);
+        cbTileIdxOp->setAttr(kExpandLinearizeIndexAttr,
+                             loopBuilder.getUnitAttr());
         Value cbTileIdx = cbTileIdxOp.getResult();
 
         // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =
-            arith::MulIOp::create(b, bodyLoc, cbTileIdx, pageSizeIdx);
+            arith::MulIOp::create(loopBuilder, bodyLoc, cbTileIdx, pageSizeIdx);
         Value cbAddrIdx =
-            arith::AddIOp::create(b, bodyLoc, cbPtrIdx, byteOffset);
+            arith::AddIOp::create(loopBuilder, bodyLoc, cbPtrIdx, byteOffset);
 
         // Cast to i32 for NOC operation.
-        Value tensorTileIdx32 =
-            arith::IndexCastOp::create(b, bodyLoc, i32Ty, tensorTileIdx);
-        Value cbAddr = arith::IndexCastOp::create(b, bodyLoc, i32Ty, cbAddrIdx);
+        Value tensorTileIdx32 = arith::IndexCastOp::create(
+            loopBuilder, bodyLoc, i32Ty, tensorTileIdx);
+        Value cbAddr =
+            arith::IndexCastOp::create(loopBuilder, bodyLoc, i32Ty, cbAddrIdx);
 
         if (isRead) {
-          ttk::NocAsyncReadTileOp::create(b, bodyLoc, tensorTileIdx32,
-                                          *accessor, cbAddr);
+          ttk::NocAsyncReadTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
+                                          accessor, cbAddr);
         } else {
-          ttk::NocAsyncWriteTileOp::create(b, bodyLoc, tensorTileIdx32,
-                                           *accessor, cbAddr);
+          ttk::NocAsyncWriteTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
+                                           accessor, cbAddr);
         }
       });
 
