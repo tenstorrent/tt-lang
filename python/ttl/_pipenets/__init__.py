@@ -122,14 +122,17 @@ class OperationPipeNets:
             net_has_multicast_kind = any(
                 isinstance(pipe.dst, NodeRange) for pipe in net.pipes
             )
-            for pipe in net.pipes:
+            for pipe_index, pipe in enumerate(net.pipes):
                 next_sem_id = next_sem_id_by_source.setdefault(
                     pipe.src.coords, first_source_local_sem_id
                 )
                 if (
                     net_has_multicast_kind
                     and isinstance(pipe.dst, NodeRange)
-                    and _coord_in_range(pipe.src, pipe.dst)
+                    and (
+                        _coord_in_range(pipe.src, pipe.dst)
+                        or not _range_overlaps_other_pipe(pipe_index, net.pipes)
+                    )
                 ):
                     next_sem_id += 1
                 else:
@@ -167,6 +170,27 @@ def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
 
 def _coord_in_range(coord: NodeCoord, dst: NodeRange) -> bool:
     return all(lo <= value < hi for value, lo, hi in zip(coord.coords, dst.lo, dst.hi))
+
+
+def _ranges_overlap(lhs: NodeRange, rhs: NodeRange) -> bool:
+    return all(
+        lhs_lo < rhs_hi and rhs_lo < lhs_hi
+        for lhs_lo, lhs_hi, rhs_lo, rhs_hi in zip(lhs.lo, lhs.hi, rhs.lo, rhs.hi)
+    )
+
+
+def _range_overlaps_other_pipe(
+    pipe_index: int, pipes: Tuple[PipeUse, ...]
+) -> bool:
+    pipe = pipes[pipe_index]
+    if not isinstance(pipe.dst, NodeRange):
+        return False
+    for other_index, other in enumerate(pipes):
+        if other_index == pipe_index or not isinstance(other.dst, NodeRange):
+            continue
+        if _ranges_overlap(pipe.dst, other.dst):
+            return True
+    return False
 
 
 def _validate_consistent_coord_rank(pipe_nets: List[PipeNetUse]) -> None:

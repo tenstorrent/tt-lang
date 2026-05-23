@@ -51,14 +51,15 @@ Pipe transfers have the following operational semantics:
 
 - A pipe has no hidden in-transit DFB. The destination storage is the DFB
   block the user reserves in the receiver callback.
-- `ttl.copy(pipe, dst_blk)` posts a receive. It publishes `dst_blk`'s
-  current write pointer to the sender and returns a transfer handle.
+- `ttl.copy(pipe, dst_blk)` posts a receive. It makes `dst_blk`'s
+  current write pointer the destination storage for the matching send
+  and returns a transfer handle.
 - Waiting on the receive transfer handle waits for the sender's
   completion signal for that posted receive.
 - `ttl.copy(src_blk, pipe)` posts a send. The send waits until every
-  destination in the pipe has posted a destination address, writes
-  `src_blk` directly to those addresses, then signals completion to the
-  receivers.
+  destination in the pipe has posted a receive, writes `src_blk`
+  directly to the receiver-owned DFB storage, then signals completion
+  to the receivers.
 - Waiting on the send transfer handle waits until the send has
   completed and the source block can be released.
 - The compiler uses the user's DFB reserve and wait structure for pipe
@@ -227,19 +228,20 @@ sender's data lands in its own slot of the receiver's dataflow buffer.
 
 ### Data layout: slot per sender
 
-`PipeGraph::assignGatherSlotIndices` walks the pipes in a stable order
-(sorted by `(srcX, srcY, dstStartX, dstStartY, pipeNetId)`) and assigns
-each pipe the lowest slot index not yet taken at any of its receivers.
-For a receiver that lies in the destination range of `N` pipes within
-one PipeNet, those pipes get slot indices `0..N-1`. Two pipes whose
-destination ranges intersect on even one node get distinct slots; pipes
-whose ranges are disjoint may reuse slot 0.
+`PipeGraph::assignGatherSlotIndices` walks receiver posts in IR order
+and assigns each pipe the lowest slot index not yet taken at any of its
+receivers. For a receiver that lies in the destination range of `N`
+pipes within one PipeNet, those pipes get slot indices `0..N-1`. Two
+pipes whose destination ranges intersect on even one node get distinct
+slots; pipes whose ranges are disjoint may reuse slot 0.
 
-The receiver publishes the concrete DFB write pointer for each receive
-post. The slot assignment is therefore a compile-time capacity proof,
-not a sender-side address computation: overlapping arrivals are safe
-because the user reserves one DFB block per receive callback and the
-lowering writes to the address published by that specific post.
+Each receive post identifies one concrete DFB write pointer. In
+mailbox-based cases, the receiver writes that address to sender-visible
+storage. In aggregate multicast cases, the compiler uses the static
+receiver slot and DFB metadata to reconstruct the same address at the
+sender. Overlapping arrivals are safe because the user reserves one DFB
+block per receive callback and slot assignment proves the receiver DFB
+has enough blocks.
 
 This is the same mechanism unicast gather uses (N unicast pipes to one
 destination get slot indices `0..N-1`); the only difference is that
@@ -281,10 +283,11 @@ multicast. The proof tracks four points in the lowered IR:
 1. Slot assignment is static. `assignGatherSlotIndices`
    (`PipeGraph.cpp`) runs at compile time, assigns each pipe a slot
    index `0..N-1`, and verifies the receiver DFB has enough blocks for
-   all concurrently live arrivals. The lowered address still comes from
-   the receiver's posted write pointer. Future batched slot reuse could
-   allow fewer receiver DFB blocks by scheduling overlapping senders in
-   capacity-bounded groups.
+   all concurrently live arrivals. Mailbox-based sends use the
+   receiver's posted write pointer; aggregate multicast sends derive
+   the same address from uniform receiver DFB metadata. Future batched
+   slot reuse could allow fewer receiver DFB blocks by scheduling
+   overlapping senders in capacity-bounded groups.
 2. No inter-sender wait. Each sender waits only for its own receivers to
    publish destination addresses, performs its own NOC write, then
    increments the receiver completion semaphore. No sender reads a
@@ -804,8 +807,11 @@ runtime-observable.
 | 61 | Lowering: two receives at one core share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
 | 62 | Lowering: loopback mcast (sender in dst range) uses `noc_async_write_multicast_loopback_src` + local recvSem inc |  |  |  X  |
 | 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"multicast overlap"` (and `"gather"` for unicast) |  |  |  X  |
-| 64 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
-| 65 | Schedule verifier rejects same-thread send before receive address publication | X | | X |
+| 64 | Lowering: aggregate multicast receive posts increment sender-ready count without publishing mailbox addresses |  |  |  X  |
+| 65 | Lowering: non-loopback aggregate multicast uses a sender-local epoch counter to reconstruct the receiver DFB address | X | | X |
+| 66 | Semaphore counting: non-loopback multicast aggregates when receiver slots are static, and keeps mailbox fallback for overlapping receivers | | X | |
+| 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
+| 68 | Schedule verifier rejects same-thread send before receive address publication | X | | X |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -821,31 +827,60 @@ strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `matmul_1d_mcast` example uses them. The test asserts the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
-## Lowering: receiver-published destination addresses
+## Lowering: receiver-owned destination storage
 
 `PipeLowering.cpp::lowerPipeRecvPost` lowers `ttl.copy(pipe, dst_blk)`
 as the receive post. It reads the receiver DFB write pointer for the
-user-reserved block, publishes that address to the sender-visible
-mailbox, and increments the sender ready semaphore. This operation does
-not create or reserve any DFB block; it uses the block already reserved
-by the user. The current implementation uses semaphore L1 words as the
-mailbox storage and uses one local staging word per NOC data-movement
-thread before `remote_sram_write_u32`. Planned SRAM scratch lowering can
-replace those semaphore-backed mailbox words with explicit scratch
-allocation when that feature exists.
+user-reserved block and records receiver readiness for the matching
+send. This operation does not create or reserve any DFB block; it uses
+the block already reserved by the user.
 
 `PipeLowering.cpp::lowerCBToPipe` lowers `ttl.copy(src_blk, pipe)` as
-the send. The sender waits until all destinations have published their
-addresses, reads the mailbox address, performs the NOC write directly
-to that receiver-owned DFB block, and signals receiver completion. A
-multicast send waits for every destination in the multicast range to
-post before issuing the write.
+the send. The sender waits until all destinations have posted receives,
+performs the NOC write directly to receiver-owned DFB storage, and
+signals receiver completion. A multicast send waits for every
+destination in the multicast range to post before issuing the write.
 
-Multicast lowering has one sender-visible posted-address mailbox per
-pipe. Until issue #617 adds per-destination multicast receive
-addresses, all receivers for one multicast pipe must publish equivalent
-DFB addresses; the lowering rejects non-uniform or untraceable receive
-addresses.
+### Posted-address mailbox
+
+Unicast and overlapping non-loopback multicast use the posted-address
+mailbox protocol. The receive post publishes the concrete receiver DFB
+address to a sender-visible mailbox and increments the sender-ready
+semaphore. The send waits for readiness, reads the mailbox address, and
+writes the payload to that receiver-owned DFB block. The current
+implementation uses semaphore L1 words as mailbox storage and one local
+staging word per NOC data-movement thread before
+`remote_sram_write_u32`. Planned SRAM scratch lowering can replace
+those semaphore-backed mailbox words with explicit scratch allocation
+when that feature exists.
+
+Overlapping non-loopback multicast keeps this protocol because multiple
+receiver reserve slots can be live. The sender must use the address
+published by the specific receive post until channel lifetime and slot
+reuse are represented explicitly.
+
+### Aggregate multicast rendezvous
+
+Uniform multicast can avoid per-pipe mailbox storage. Each receiver
+post increments one sender-ready counter. The sender waits until the
+counter reaches the destination count, computes one proven-uniform DFB
+destination address, issues one multicast payload write, and signals
+receiver completion with the existing per-PipeNet completion counter.
+
+Source-in-destination multicast computes the destination address from
+the local receiver DFB state, because the sender also executes a
+receive post. Non-loopback multicast has no local receiver post, so
+lowering allocates a sender-local epoch counter for each aggregate
+channel. The sender combines the epoch, the static receiver slot, and
+the receiver DFB layout to reconstruct the destination address that the
+receiver reserved. This aggregate form is used only when the receiver
+DFB has one static reserve slot.
+
+Until issue #617 adds per-destination multicast receive addresses, all
+receivers for one multicast pipe must publish equivalent DFB addresses.
+`PipeGraph` validates the receiver DFB index, DFB type, and static tile
+offset for every multicast receive post; non-uniform or untraceable
+receive addresses are rejected before TTKernel lowering.
 
 `PipeLowering.cpp::lowerPipeRecvWait` lowers a wait on the receive
 handle to a per-PipeNet cumulative wait. The receiver keeps a local
@@ -854,10 +889,10 @@ and multicast receives in loops advance across iterations without
 reusing stale completion state.
 
 This protocol fixes the multi-iteration write-pointer issue by making
-the receiver's published write pointer authoritative. It also makes
-same-thread loopback schedules explicit: the receive post must run
-before the dependent send, and the receive wait must run after a send
-has been posted that can complete it.
+the receiver-owned DFB address authoritative. It also makes same-thread
+loopback schedules explicit: the receive post must run before the
+dependent send, and the receive wait must run after a send has been
+posted that can complete it.
 
 ## Limitations
 

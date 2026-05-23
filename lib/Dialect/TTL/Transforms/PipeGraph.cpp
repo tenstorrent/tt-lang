@@ -51,7 +51,8 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
     return success();
   }
   receiverDFBs.insert(
-      {key, {dfbIndex, dfbType, staticTileOffset, 0, blockCount, loc}});
+      {key, {dfbIndex, dfbType, staticTileOffset, 0, 0, blockCount, loc}});
+  receiverOrder.push_back(key);
   return success();
 }
 
@@ -83,21 +84,7 @@ void PipeGraph::assignGatherSlotIndices() {
   llvm::DenseMap<ReceiverKey, llvm::SmallSet<int64_t, 4>, ReceiverKeyInfo>
       usedAtReceiver;
 
-  // Order by the complete PipeKey so the greedy coloring is independent of
-  // DenseMap iteration order.
-  SmallVector<PipeKey> orderedPipes;
-  orderedPipes.reserve(receiverDFBs.size());
-  for (auto &[key, info] : receiverDFBs) {
-    orderedPipes.push_back(key);
-  }
-  llvm::sort(orderedPipes, [](const PipeKey &lhs, const PipeKey &rhs) {
-    return std::tie(lhs.srcX, lhs.srcY, lhs.dstStartX, lhs.dstStartY,
-                    lhs.dstEndX, lhs.dstEndY, lhs.pipeNetId) <
-           std::tie(rhs.srcX, rhs.srcY, rhs.dstStartX, rhs.dstStartY,
-                    rhs.dstEndX, rhs.dstEndY, rhs.pipeNetId);
-  });
-
-  for (const PipeKey &pk : orderedPipes) {
+  for (const PipeKey &pk : receiverOrder) {
     auto it = receiverDFBs.find(pk);
     const int64_t dfbIndex = it->second.dfbIndex;
 
@@ -130,6 +117,17 @@ void PipeGraph::assignGatherSlotIndices() {
         usedAtReceiver[ReceiverKey{dstX, dstY, dfbIndex}].insert(slot);
       }
     }
+  }
+
+  llvm::DenseMap<int64_t, int64_t> numReserveSlotsByDFB;
+  for (auto &entry : receiverDFBs) {
+    ReceiverDFBInfo &info = entry.second;
+    int64_t &numReserveSlots = numReserveSlotsByDFB[info.dfbIndex];
+    numReserveSlots = std::max(numReserveSlots, info.gatherSlotIdx + 1);
+  }
+  for (auto &entry : receiverDFBs) {
+    ReceiverDFBInfo &info = entry.second;
+    info.numReserveSlots = numReserveSlotsByDFB.lookup(info.dfbIndex);
   }
 }
 

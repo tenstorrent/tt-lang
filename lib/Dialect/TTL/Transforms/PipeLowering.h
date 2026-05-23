@@ -37,6 +37,9 @@ struct AggregateRendezvousInfo {
   int64_t receiverCBIndex;
   CircularBufferType receiverCBType;
   int64_t staticTileOffset;
+  int64_t receiverReserveSlot;
+  int64_t numReceiverReserveSlots;
+  bool sourceInDestination;
 };
 
 /// Lowering information for one logical pipe channel. The sender-ready counter
@@ -59,6 +62,12 @@ struct PipeChannelInfo {
 /// pipe receive wait_min progress.
 using PipeNetCounterMap =
     llvm::DenseMap<func::FuncOp, llvm::DenseMap<int64_t, Value>>;
+
+/// Per-function map: PipeKey -> kernel-local i32 counter for aggregate
+/// non-loopback sends. Source-in-destination multicast uses the source core's
+/// receiver DFB write pointer directly because the source also posts.
+using AggregateEpochCounterMap =
+    llvm::DenseMap<func::FuncOp, llvm::DenseMap<PipeKey, Value>>;
 
 /// pipeNetId -> deduplicated list of pipes in that net. Built once
 /// before lowering so is_src/is_dst/is_active patterns avoid walking the
@@ -96,11 +105,18 @@ void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
 /// pipeNetId used by a pipe receive.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
+/// At each function entry, emit one zero-initialized `memref<1xi32>` per
+/// non-loopback aggregate channel used by a sender.
+void allocateAggregateEpochCounters(ModuleOp mod,
+                                    const PipeChannelLoweringInfo &info,
+                                    AggregateEpochCounterMap &counters);
+
 /// Lower CB -> Pipe copy (sender side). Uses receiver-published destination
 /// addresses and signals destinations via semaphore.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,
                             const PipeChannelLoweringInfo *pipeChannelInfo,
+                            const AggregateEpochCounterMap *epochCounters,
                             ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive address publication.
