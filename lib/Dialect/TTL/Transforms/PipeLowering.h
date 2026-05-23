@@ -127,8 +127,7 @@ int64_t getRequiredPipeSramScratchBytes(const PipeResourcePlan &info);
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
 /// Build the pipe resource plan used by pipe lowering.
-void buildPipeResourcePlan(ModuleOp mod, const PipeNetIndex &index,
-                           const PipeGraph &pipeGraph, PipeResourcePlan &info);
+void buildPipeResourcePlan(const PipeNetIndex &index, PipeResourcePlan &info);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.
