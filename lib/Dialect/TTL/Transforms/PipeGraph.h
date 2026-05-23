@@ -61,13 +61,13 @@ struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
 namespace mlir::tt::ttl {
 
 /// Receiver DFB information for a pipe.
-struct ReceiverCBInfo {
-  int64_t cbIndex;           // DFB index (0-31) used by receiver
-  CircularBufferType cbType; // Receiver DFB type
-  int64_t staticTileOffset;  // Static destination tile offset within the DFB
-  int64_t gatherSlotIdx;     // Slot index for overlap patterns (0 if none)
-  int64_t blockCount;        // DFB block_count
-  Location loc;              // Source location for error reporting
+struct ReceiverDFBInfo {
+  int64_t dfbIndex;           // DFB index (0-31) used by receiver
+  CircularBufferType dfbType; // Receiver DFB type
+  int64_t staticTileOffset;   // Static destination tile offset within the DFB
+  int64_t gatherSlotIdx;      // Slot index for overlap patterns (0 if none)
+  int64_t blockCount;         // DFB block_count
+  Location loc;               // Source location for error reporting
 };
 
 /// Graph tracking pipe connections and receiver DFB assignments.
@@ -75,33 +75,33 @@ struct ReceiverCBInfo {
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.
-  /// Returns failure if validation detects an error (e.g., gather CB too
+  /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
   static FailureOr<PipeGraph> build(ModuleOp mod);
 
   /// Check if any pipes were found.
-  bool hasPipes() const { return !receiverCBs.empty(); }
+  bool hasPipes() const { return !receiverDFBs.empty(); }
 
-  /// Add a receiver CB mapping for a pipe.
-  LogicalResult addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
-                              int64_t dstStartY, int64_t dstEndX,
-                              int64_t dstEndY, int64_t pipeNetId,
-                              int64_t cbIndex, CircularBufferType cbType,
-                              int64_t staticTileOffset, int64_t blockCount,
-                              Location loc);
+  /// Add a receiver DFB mapping for a pipe.
+  LogicalResult addReceiverDFB(int64_t srcX, int64_t srcY, int64_t dstStartX,
+                               int64_t dstStartY, int64_t dstEndX,
+                               int64_t dstEndY, int64_t pipeNetId,
+                               int64_t dfbIndex, CircularBufferType dfbType,
+                               int64_t staticTileOffset, int64_t blockCount,
+                               Location loc);
 
   /// Assign per-pipe slot indices via greedy coloring keyed by
-  /// (receiver, cbIndex). Pipes sharing a receiver+cbIndex get distinct
+  /// (receiver, DFB index). Pipes sharing a receiver DFB get distinct
   /// slots so their writes do not overwrite each other in that receiver's
   /// DFB. Pipes ordered by (srcX, srcY) for reproducibility.
   void assignGatherSlotIndices();
 
   /// Each pipe needs `block_count >= gatherSlotIdx + 1` in its receiver
-  /// CB. Covers unicast gather and multicast overlap uniformly.
-  LogicalResult verifyGatherBlockCounts() const;
+  /// DFB. Covers unicast gather and multicast overlap uniformly.
+  LogicalResult verifyReceiverDFBBlockCounts() const;
 
 private:
-  llvm::DenseMap<PipeKey, ReceiverCBInfo> receiverCBs;
+  llvm::DenseMap<PipeKey, ReceiverDFBInfo> receiverDFBs;
 };
 
 } // namespace mlir::tt::ttl

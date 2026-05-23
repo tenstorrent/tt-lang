@@ -15,20 +15,20 @@
 
 namespace mlir::tt::ttl {
 
-LogicalResult PipeGraph::addReceiverCB(int64_t srcX, int64_t srcY,
-                                       int64_t dstStartX, int64_t dstStartY,
-                                       int64_t dstEndX, int64_t dstEndY,
-                                       int64_t pipeNetId, int64_t cbIndex,
-                                       CircularBufferType cbType,
-                                       int64_t staticTileOffset,
-                                       int64_t blockCount, Location loc) {
+LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
+                                        int64_t dstStartX, int64_t dstStartY,
+                                        int64_t dstEndX, int64_t dstEndY,
+                                        int64_t pipeNetId, int64_t dfbIndex,
+                                        CircularBufferType dfbType,
+                                        int64_t staticTileOffset,
+                                        int64_t blockCount, Location loc) {
   PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
-  auto existing = receiverCBs.find(key);
+  auto existing = receiverDFBs.find(key);
   bool isMulticast = dstStartX != dstEndX || dstStartY != dstEndY;
-  if (existing != receiverCBs.end()) {
+  if (existing != receiverDFBs.end()) {
     if (isMulticast &&
-        (existing->second.cbIndex != cbIndex ||
-         existing->second.cbType != cbType ||
+        (existing->second.dfbIndex != dfbIndex ||
+         existing->second.dfbType != dfbType ||
          existing->second.staticTileOffset != staticTileOffset)) {
       auto diag = emitError(loc)
                   << "multicast pipe receive posts publish non-uniform "
@@ -39,8 +39,8 @@ LogicalResult PipeGraph::addReceiverCB(int64_t srcX, int64_t srcY,
       return failure();
     }
 
-    if (existing->second.cbIndex != cbIndex ||
-        existing->second.cbType != cbType ||
+    if (existing->second.dfbIndex != dfbIndex ||
+        existing->second.dfbType != dfbType ||
         existing->second.blockCount != blockCount) {
       auto diag = emitError(loc)
                   << "conflicting receiver DFBs for the same pipe";
@@ -50,33 +50,34 @@ LogicalResult PipeGraph::addReceiverCB(int64_t srcX, int64_t srcY,
     }
     return success();
   }
-  receiverCBs.insert(
-      {key, {cbIndex, cbType, staticTileOffset, 0, blockCount, loc}});
+  receiverDFBs.insert(
+      {key, {dfbIndex, dfbType, staticTileOffset, 0, blockCount, loc}});
   return success();
 }
 
 void PipeGraph::assignGatherSlotIndices() {
-  // (receiver, cbIndex) -> slots already taken at that receiver.
+  // (receiver, DFB index) -> slots already taken at that receiver.
   struct ReceiverKey {
-    int64_t recvX, recvY, cbIndex;
-    bool operator==(const ReceiverKey &o) const {
-      return recvX == o.recvX && recvY == o.recvY && cbIndex == o.cbIndex;
+    int64_t recvX, recvY, dfbIndex;
+    bool operator==(const ReceiverKey &other) const {
+      return recvX == other.recvX && recvY == other.recvY &&
+             dfbIndex == other.dfbIndex;
     }
   };
   struct ReceiverKeyInfo {
     static ReceiverKey getEmptyKey() {
-      int64_t s = llvm::DenseMapInfo<int64_t>::getEmptyKey();
-      return {s, s, s};
+      int64_t sentinel = llvm::DenseMapInfo<int64_t>::getEmptyKey();
+      return {sentinel, sentinel, sentinel};
     }
     static ReceiverKey getTombstoneKey() {
-      int64_t s = llvm::DenseMapInfo<int64_t>::getTombstoneKey();
-      return {s, s, s};
+      int64_t sentinel = llvm::DenseMapInfo<int64_t>::getTombstoneKey();
+      return {sentinel, sentinel, sentinel};
     }
-    static unsigned getHashValue(const ReceiverKey &k) {
-      return llvm::hash_combine(k.recvX, k.recvY, k.cbIndex);
+    static unsigned getHashValue(const ReceiverKey &key) {
+      return llvm::hash_combine(key.recvX, key.recvY, key.dfbIndex);
     }
-    static bool isEqual(const ReceiverKey &a, const ReceiverKey &b) {
-      return a == b;
+    static bool isEqual(const ReceiverKey &lhs, const ReceiverKey &rhs) {
+      return lhs == rhs;
     }
   };
   llvm::DenseMap<ReceiverKey, llvm::SmallSet<int64_t, 4>, ReceiverKeyInfo>
@@ -85,32 +86,33 @@ void PipeGraph::assignGatherSlotIndices() {
   // Order by the complete PipeKey so the greedy coloring is independent of
   // DenseMap iteration order.
   SmallVector<PipeKey> orderedPipes;
-  orderedPipes.reserve(receiverCBs.size());
-  for (auto &[key, info] : receiverCBs) {
+  orderedPipes.reserve(receiverDFBs.size());
+  for (auto &[key, info] : receiverDFBs) {
     orderedPipes.push_back(key);
   }
-  llvm::sort(orderedPipes, [](const PipeKey &a, const PipeKey &b) {
-    return std::tie(a.srcX, a.srcY, a.dstStartX, a.dstStartY, a.dstEndX,
-                    a.dstEndY, a.pipeNetId) <
-           std::tie(b.srcX, b.srcY, b.dstStartX, b.dstStartY, b.dstEndX,
-                    b.dstEndY, b.pipeNetId);
+  llvm::sort(orderedPipes, [](const PipeKey &lhs, const PipeKey &rhs) {
+    return std::tie(lhs.srcX, lhs.srcY, lhs.dstStartX, lhs.dstStartY,
+                    lhs.dstEndX, lhs.dstEndY, lhs.pipeNetId) <
+           std::tie(rhs.srcX, rhs.srcY, rhs.dstStartX, rhs.dstStartY,
+                    rhs.dstEndX, rhs.dstEndY, rhs.pipeNetId);
   });
 
   for (const PipeKey &pk : orderedPipes) {
-    auto it = receiverCBs.find(pk);
-    const int64_t cbIndex = it->second.cbIndex;
+    auto it = receiverDFBs.find(pk);
+    const int64_t dfbIndex = it->second.dfbIndex;
 
     // Slots taken by earlier pipes at any of this pipe's receivers
     // (destination range is inclusive on both ends).
     llvm::SmallSet<int64_t, 4> taken;
-    for (int64_t y = pk.dstStartY; y <= pk.dstEndY; ++y) {
-      for (int64_t x = pk.dstStartX; x <= pk.dstEndX; ++x) {
-        auto rIt = usedAtReceiver.find(ReceiverKey{x, y, cbIndex});
-        if (rIt == usedAtReceiver.end()) {
+    for (int64_t dstY = pk.dstStartY; dstY <= pk.dstEndY; ++dstY) {
+      for (int64_t dstX = pk.dstStartX; dstX <= pk.dstEndX; ++dstX) {
+        auto receiverIt =
+            usedAtReceiver.find(ReceiverKey{dstX, dstY, dfbIndex});
+        if (receiverIt == usedAtReceiver.end()) {
           continue;
         }
-        for (int64_t s : rIt->second) {
-          taken.insert(s);
+        for (int64_t slotIndex : receiverIt->second) {
+          taken.insert(slotIndex);
         }
       }
     }
@@ -123,16 +125,16 @@ void PipeGraph::assignGatherSlotIndices() {
     it->second.gatherSlotIdx = slot;
 
     // Reserve this slot at every receiver.
-    for (int64_t y = pk.dstStartY; y <= pk.dstEndY; ++y) {
-      for (int64_t x = pk.dstStartX; x <= pk.dstEndX; ++x) {
-        usedAtReceiver[ReceiverKey{x, y, cbIndex}].insert(slot);
+    for (int64_t dstY = pk.dstStartY; dstY <= pk.dstEndY; ++dstY) {
+      for (int64_t dstX = pk.dstStartX; dstX <= pk.dstEndX; ++dstX) {
+        usedAtReceiver[ReceiverKey{dstX, dstY, dfbIndex}].insert(slot);
       }
     }
   }
 }
 
-LogicalResult PipeGraph::verifyGatherBlockCounts() const {
-  for (auto &[pk, info] : receiverCBs) {
+LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
+  for (auto &[pk, info] : receiverDFBs) {
     int64_t requiredBlocks = info.gatherSlotIdx + 1;
     if (info.blockCount < requiredBlocks) {
       bool isUnicast = pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
@@ -251,17 +253,17 @@ static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
 
 static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
                                      PipeType pipeType, Value dst) {
-  Value dstCB = getAttachedCB(dst);
-  if (!dstCB) {
+  Value dstDFB = getAttachedCB(dst);
+  if (!dstDFB) {
     return op->emitError("pipe receive destination is not attached to a DFB");
   }
-  auto cbType = mlir::dyn_cast<CircularBufferType>(dstCB.getType());
-  if (!cbType) {
+  auto dfbType = mlir::dyn_cast<CircularBufferType>(dstDFB.getType());
+  if (!dfbType) {
     return op->emitError("pipe receive destination is not attached to a DFB");
   }
 
-  std::optional<int64_t> cbIndex = getCBIndex(dstCB);
-  if (!cbIndex.has_value()) {
+  std::optional<int64_t> dfbIndex = getCBIndex(dstDFB);
+  if (!dfbIndex.has_value()) {
     return op->emitError("could not trace pipe receiver to a DFB binding");
   }
 
@@ -274,11 +276,11 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
     staticTileOffset = *offset;
   }
 
-  return graph.addReceiverCB(
+  return graph.addReceiverDFB(
       pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
       pipeType.getDstStartY(), pipeType.getDstEndX(), pipeType.getDstEndY(),
-      pipeType.getPipeNetId(), *cbIndex, cbType, staticTileOffset,
-      cbType.getBlockCount(), op->getLoc());
+      pipeType.getPipeNetId(), *dfbIndex, dfbType, staticTileOffset,
+      dfbType.getBlockCount(), op->getLoc());
 }
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
@@ -302,7 +304,7 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
 
   graph.assignGatherSlotIndices();
 
-  if (failed(graph.verifyGatherBlockCounts())) {
+  if (failed(graph.verifyReceiverDFBBlockCounts())) {
     return failure();
   }
 
