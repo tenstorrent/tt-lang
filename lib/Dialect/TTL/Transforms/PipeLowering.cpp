@@ -897,12 +897,13 @@ void buildPipeChannelLoweringInfo(ModuleOp mod, const PipeNetIndex &index,
       int64_t senderReadySemIdx = nextSemaphoreIdx++;
       PipeChannelInfo channelInfo{};
       channelInfo.senderReadySemIdx = senderReadySemIdx;
-      const ReceiverCBInfo *receiverInfo =
-          pipeGraph.lookupReceiverCB(getPipeKey(pipeType));
+      const ReceiverDFBInfo *receiverInfo =
+          pipeGraph.lookupReceiverDFB(getPipeKey(pipeType));
       if (receiverInfo && canUseAggregateRendezvous(pipeInfo)) {
         channelInfo.kind = PipeChannelKind::AggregateRendezvous;
         channelInfo.aggregateInfo =
-            AggregateRendezvousInfo{receiverInfo->cbIndex, receiverInfo->cbType,
+            AggregateRendezvousInfo{receiverInfo->dfbIndex,
+                                    receiverInfo->dfbType,
                                     receiverInfo->staticTileOffset};
       } else {
         channelInfo.kind = PipeChannelKind::PostedMailbox;

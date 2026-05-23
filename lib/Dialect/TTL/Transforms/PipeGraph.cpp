@@ -149,9 +149,9 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
   return success();
 }
 
-const ReceiverCBInfo *PipeGraph::lookupReceiverCB(const PipeKey &key) const {
-  auto it = receiverCBs.find(key);
-  if (it == receiverCBs.end()) {
+const ReceiverDFBInfo *PipeGraph::lookupReceiverDFB(const PipeKey &key) const {
+  auto it = receiverDFBs.find(key);
+  if (it == receiverDFBs.end()) {
     return nullptr;
   }
   return &it->second;
