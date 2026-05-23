@@ -95,10 +95,10 @@ def test_pipe_dst_slice_step_must_be_one():
     ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 1), 0))
 
 
-def test_mixed_unicast_multicast_in_one_pipenet_rejected():
+def test_mixed_point_to_point_collective_in_one_pipenet_rejected():
     # Spec types `PipeNet[DstT](pipes: List[Pipe[DstT]])` so every pipe
     # shares one destination type; runtime validator pins the same rule.
-    with pytest.raises(ValueError, match="may not mix unicast and multicast"):
+    with pytest.raises(ValueError, match="may not mix point-to-point and collective"):
         ttl.PipeNet(
             [
                 ttl.Pipe(src=(3, 0), dst=(0, 0)),

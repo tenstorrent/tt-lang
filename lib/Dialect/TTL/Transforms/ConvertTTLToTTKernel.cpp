@@ -851,7 +851,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 
     // Pipe transfers: CB <-> Pipe
     if (srcIsCB && dstIsPipe) {
-      // CB -> Pipe: source core multicasts data to destination cores
+      // DFB -> Pipe: source core sends data to the pipe receivers.
       // Determine CB access context: consumer (cb_wait/cb_pop) vs producer
       // (cb_reserve/cb_push). This controls whether we read from the CB's
       // read pointer or write pointer for the pipe source address.

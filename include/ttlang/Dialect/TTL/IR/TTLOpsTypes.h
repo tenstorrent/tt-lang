@@ -8,6 +8,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
+#include "llvm/Support/Compiler.h"
 
 #include <algorithm>
 #include <cstdlib>
