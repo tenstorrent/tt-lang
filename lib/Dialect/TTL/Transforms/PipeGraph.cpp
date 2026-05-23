@@ -24,18 +24,18 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
                                         int64_t blockCount, Location loc) {
   PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
   auto existing = receiverDFBs.find(key);
-  bool isMulticast = dstStartX != dstEndX || dstStartY != dstEndY;
+  bool hasMultipleReceivers = dstStartX != dstEndX || dstStartY != dstEndY;
   if (existing != receiverDFBs.end()) {
-    if (isMulticast &&
+    if (hasMultipleReceivers &&
         (existing->second.dfbIndex != dfbIndex ||
          existing->second.dfbType != dfbType ||
          existing->second.staticTileOffset != staticTileOffset)) {
       auto diag = emitError(loc)
-                  << "multicast pipe receive posts publish non-uniform "
-                     "destination addresses; per-destination multicast "
+                  << "collective pipe receive posts publish non-uniform "
+                     "destination addresses; per-destination collective "
                      "receive addresses are tracked by issue #617";
       diag.attachNote(existing->second.loc)
-          << "previous multicast receive post for this pipe was here";
+          << "previous collective receive post for this pipe was here";
       return failure();
     }
 
@@ -139,7 +139,7 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
     if (info.blockCount < requiredBlocks) {
       bool isUnicast = pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
       return emitError(info.loc)
-             << (isUnicast ? "gather" : "multicast overlap")
+             << (isUnicast ? "gather" : "collective overlap")
              << " pipe receiver DFB has block_count=" << info.blockCount
              << " but slot " << info.gatherSlotIdx
              << " is assigned to this pipe; "
@@ -164,35 +164,29 @@ static PipeKey getPipeKey(PipeType pipeType) {
           pipeType.getPipeNetId()};
 }
 
-static llvm::MapVector<PipeKey, bool> collectMulticastPipeKinds(ModuleOp mod) {
-  llvm::MapVector<int64_t, bool> netHasMulticast;
-  SmallVector<std::pair<PipeType, bool>> pipeTypes;
+static llvm::MapVector<PipeKey, PipeTransferContract>
+collectPipeTransferContracts(ModuleOp mod) {
+  llvm::MapVector<PipeKey, PipeTransferContract> contracts;
   mod.walk([&](CreatePipeOp op) {
     auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
-    bool pipeIsMulticast = isPipeSemanticallyMulticast(op);
-    pipeTypes.push_back({pipeType, pipeIsMulticast});
-    if (pipeIsMulticast) {
-      netHasMulticast[pipeType.getPipeNetId()] = true;
-    } else {
-      (void)netHasMulticast.try_emplace(pipeType.getPipeNetId(), false);
+    PipeTransferContract contract = getPipeTransferContract(op);
+    PipeKey key = getPipeKey(pipeType);
+    auto existing = contracts.find(key);
+    if (existing == contracts.end()) {
+      contracts.insert({key, contract});
+      return;
+    }
+    if (isCollectiveTransfer(contract)) {
+      existing->second = PipeTransferContract::Collective;
     }
   });
-
-  llvm::MapVector<PipeKey, bool> isMulticast;
-  for (auto [pipeType, pipeIsMulticast] : pipeTypes) {
-    auto netIt = netHasMulticast.find(pipeType.getPipeNetId());
-    if (netIt != netHasMulticast.end()) {
-      pipeIsMulticast |= netIt->second;
-    }
-    isMulticast[getPipeKey(pipeType)] = pipeIsMulticast;
-  }
-  return isMulticast;
+  return contracts;
 }
 
-static LogicalResult emitNonUniformMulticastReceiveAddress(Operation *op) {
+static LogicalResult emitNonUniformCollectiveReceiveAddress(Operation *op) {
   return op->emitError()
-         << "multicast pipe receive posts publish non-uniform destination "
-            "addresses; per-destination multicast receive addresses are "
+         << "collective pipe receive posts publish non-uniform destination "
+            "addresses; per-destination collective receive addresses are "
             "tracked by issue #617";
 }
 
@@ -218,7 +212,7 @@ static LogicalResult addStaticCoordinates(ArrayRef<OpFoldResult> mixedOffsets,
 }
 
 /// Return the static tile offset within the receiver DFB for a receive
-/// destination. Multicast lowering has one sender-visible address-table entry
+/// destination. Collective lowering has one sender-visible address-table entry
 /// per pipe, so each destination must publish the same static DFB address until
 /// issue #617 adds explicit per-destination addresses.
 static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
@@ -291,9 +285,9 @@ static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
   return linearOffset;
 }
 
-static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
-                                     PipeType pipeType, bool isMulticast,
-                                     Value dst) {
+static LogicalResult
+addPipeReceiver(PipeGraph &graph, Operation *op, PipeType pipeType,
+                PipeTransferContract transferContract, Value dst) {
   Value dstDFB = getAttachedCB(dst);
   if (!dstDFB) {
     return op->emitError("pipe receive destination is not attached to a DFB");
@@ -309,10 +303,10 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
   }
 
   int64_t staticTileOffset = 0;
-  if (isMulticast) {
+  if (isCollectiveTransfer(transferContract)) {
     FailureOr<int64_t> offset = getStaticDestinationTileOffset(dst);
     if (failed(offset)) {
-      return emitNonUniformMulticastReceiveAddress(op);
+      return emitNonUniformCollectiveReceiveAddress(op);
     }
     staticTileOffset = *offset;
   }
@@ -326,8 +320,8 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
-  llvm::MapVector<PipeKey, bool> isMulticastPipe =
-      collectMulticastPipeKinds(mod);
+  llvm::MapVector<PipeKey, PipeTransferContract> transferContracts =
+      collectPipeTransferContracts(mod);
 
   LogicalResult walkResult = success();
   mod.walk([&](Operation *op) {
@@ -337,13 +331,15 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
     if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {
       auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
       PipeKey key = getPipeKey(pipeType);
-      bool isMulticast = pipeType.isMulticast();
-      auto kindIt = isMulticastPipe.find(key);
-      if (kindIt != isMulticastPipe.end()) {
-        isMulticast = kindIt->second;
+      PipeTransferContract contract =
+          pipeType.hasMultipleReceivers() ? PipeTransferContract::Collective
+                                          : PipeTransferContract::PointToPoint;
+      auto contractIt = transferContracts.find(key);
+      if (contractIt != transferContracts.end()) {
+        contract = contractIt->second;
       }
-      walkResult =
-          addPipeReceiver(graph, op, pipeType, isMulticast, postOp.getDst());
+      walkResult = addPipeReceiver(graph, op, pipeType, contract,
+                                   postOp.getDst());
       return;
     }
   });

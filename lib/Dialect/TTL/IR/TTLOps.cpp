@@ -1478,11 +1478,12 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
            << "destination start must not exceed destination end on any axis";
   }
 
-  bool extentIsMulticast = dstStartX != dstEndX || dstStartY != dstEndY;
-  if (auto isMulticastAttr = getIsMulticastAttr();
-      isMulticastAttr && !isMulticastAttr.getValue() && extentIsMulticast) {
+  bool hasMultipleReceivers = dstStartX != dstEndX || dstStartY != dstEndY;
+  if (auto isCollectiveAttr = getIsCollectiveAttr();
+      isCollectiveAttr && !isCollectiveAttr.getValue() &&
+      hasMultipleReceivers) {
     return emitOpError()
-           << "isMulticast=false is invalid for a multi-destination pipe";
+           << "isCollective=false is invalid for a multi-receiver pipe";
   }
 
   return success();

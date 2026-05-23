@@ -380,7 +380,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                                        rewriter.getI8IntegerAttr(nocIdx));
   }
 
-  int64_t expectedSignals = pipeResource->isMulticast ? numDests : 1;
+  int64_t expectedSignals =
+      isCollectiveTransfer(pipeResource->transferContract) ? numDests : 1;
   FailureOr<Value> senderSemAddr = buildReadyCounterAddress(
       op, loc, *pipeResource, *pipeResourcePlan, rewriter);
   if (failed(senderSemAddr)) {
@@ -410,7 +411,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
   }
 
-  // Destination coordinates for multicast - convert logical to virtual coords
+  // Hardware multicast destination coordinates use translated NOC coords.
   auto dstStartXLogical =
       arith::ConstantIndexOp::create(rewriter, loc, dstStartX);
   auto dstStartYLogical =
@@ -893,27 +894,31 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   using PipeKey =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
   llvm::MapVector<int64_t, llvm::SmallSetVector<PipeKey, 4>> seenPerNet;
-  llvm::MapVector<int64_t, bool> netHasMulticast;
   mod.walk([&](CreatePipeOp op) {
     auto pt = mlir::cast<PipeType>(op.getResult().getType());
     int64_t netId = pt.getPipeNetId();
     PipeKey key{pt.getSrcX(),      pt.getSrcY(),    pt.getDstStartX(),
                 pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
-    bool pipeIsMulticast = isPipeSemanticallyMulticast(op);
-    netHasMulticast[netId] |= pipeIsMulticast;
+    PipeTransferContract contract = getPipeTransferContract(op);
     if (seenPerNet[netId].insert(key)) {
-      index[netId].push_back(PipeInfo{pt, pipeIsMulticast});
+      index[netId].push_back(PipeInfo{pt, contract});
+      return;
+    }
+    if (!isCollectiveTransfer(contract)) {
+      return;
+    }
+    for (PipeInfo &pipeInfo : index[netId]) {
+      PipeType existingType = pipeInfo.pipeType;
+      PipeKey existingKey{existingType.getSrcX(), existingType.getSrcY(),
+                          existingType.getDstStartX(),
+                          existingType.getDstStartY(),
+                          existingType.getDstEndX(), existingType.getDstEndY()};
+      if (existingKey == key) {
+        pipeInfo.transferContract = PipeTransferContract::Collective;
+        break;
+      }
     }
   });
-
-  for (auto &[pipeNetId, pipeInfos] : index) {
-    if (!netHasMulticast[pipeNetId]) {
-      continue;
-    }
-    for (PipeInfo &pipeInfo : pipeInfos) {
-      pipeInfo.isMulticast = true;
-    }
-  }
 }
 
 void buildPipeResourcePlan(ModuleOp, const PipeNetIndex &index,
@@ -984,7 +989,7 @@ void buildPipeResourcePlan(ModuleOp, const PipeNetIndex &index,
       int64_t &nextSemaphoreIdx = emplaceResult.first->second;
       int64_t senderReadySemIdx = nextSemaphoreIdx++;
       PipeResourceInfo pipeResource{};
-      pipeResource.isMulticast = pipeInfo.isMulticast;
+      pipeResource.transferContract = pipeInfo.transferContract;
       if (useGlobalReadyCounters) {
         pipeResource.readyCounter.kind = PipeReadyCounterKind::GlobalSemaphore;
         pipeResource.readyCounter.globalSemaphoreIndex =
