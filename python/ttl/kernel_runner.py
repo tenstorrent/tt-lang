@@ -191,13 +191,14 @@ def _first_device(tensors: List[Any]) -> Any:
             device = tensor.device()
             if device is not None:
                 return device
-    raise ValueError("pipe SRAM scratch allocation requires a device tensor")
+    raise ValueError("pipe runtime resource allocation requires a device tensor")
 
 
 def build_pipe_sram_scratch_tensors(
     tensors: List[Any],
     core_ranges: Any,
     scratch_bytes: int,
+    device: Optional[Any] = None,
 ) -> List[Any]:
     """Allocate per-core SRAM scratch tensors used by PipeNet metadata."""
     if scratch_bytes <= 0:
@@ -211,7 +212,9 @@ def build_pipe_sram_scratch_tensors(
     elements_per_core = max(1, aligned_bytes // 4)
     grid_size = core_ranges.bounding_box().grid_size()
     num_cores = grid_size.x * grid_size.y
-    device = _first_device(tensors)
+    device = device if device is not None else _first_device(tensors)
+    # [Device 2.0] This encodes compiler SRAM as a sharded TTNN tensor because
+    # current generic_op has no typed device-side scratch allocation object.
     shard_spec = ttnn.ShardSpec(
         core_ranges,
         (1, elements_per_core),
@@ -230,6 +233,37 @@ def build_pipe_sram_scratch_tensors(
         memory_config=memory_config,
     )
     return [scratch_tensor]
+
+
+def build_pipe_global_semaphores(
+    tensors: List[Any],
+    core_ranges: Any,
+    count: int,
+    device: Optional[Any] = None,
+) -> Tuple[List[Any], List[int]]:
+    """Allocate GlobalSemaphores used by PipeNet ready counters.
+
+    PipeNet coordinates are per-device core coordinates. When tensors live on
+    a TTNN MeshDevice, the same intra-chip PipeNet program is replicated across
+    device shards; this allocates one MeshDevice GlobalSemaphore object whose
+    address is passed to that replicated program. It does not create an
+    inter-chip PipeNet or assign per-mesh-coordinate pipe synchronization state.
+    """
+    if count <= 0:
+        return [], []
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    device = device if device is not None else _first_device(tensors)
+    # [Device 2.0] Keep this allocation behind the pipe resource plan so future
+    # typed semaphore objects replace only this host/runtime binding.
+    semaphores = [
+        ttnn.create_global_semaphore(device, core_ranges, 0) for _ in range(count)
+    ]
+    addresses = [int(ttnn.get_global_semaphore_address(sem)) for sem in semaphores]
+    return semaphores, addresses
 
 
 def build_cb_descriptors(
@@ -345,6 +379,8 @@ def run_kernel_on_device(
     program_hash: int = None,
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
+    pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -366,6 +402,11 @@ def run_kernel_on_device(
             allocated by the compiler.
         pipe_sram_scratch_bytes: Per-core SRAM scratch bytes required by
             PipeNet metadata.
+        num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
+            ready counters allocated by the compiler.
+        pipe_global_semaphore_lifetime: Optional list used by cached kernels to
+            keep GlobalSemaphore objects alive while device work may reference
+            their raw L1 addresses.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -381,15 +422,34 @@ def run_kernel_on_device(
     grid_size = core_ranges.bounding_box().grid_size()
     grid_cols = grid_size.x
     grid_rows = grid_size.y
+    pipe_resource_device = None
+    if pipe_sram_scratch_bytes > 0 or num_pipe_global_semaphores > 0:
+        pipe_resource_device = _first_device(tensors)
 
     pipe_sram_scratch_tensors = build_pipe_sram_scratch_tensors(
         tensors=tensors,
         core_ranges=core_ranges,
         scratch_bytes=pipe_sram_scratch_bytes,
+        device=pipe_resource_device,
     )
+    pipe_global_semaphores, pipe_global_semaphore_addresses = (
+        build_pipe_global_semaphores(
+            tensors=tensors,
+            core_ranges=core_ranges,
+            count=num_pipe_global_semaphores,
+            device=pipe_resource_device,
+        )
+    )
+    # Keep this order in sync with PipeLowering.cpp: optional SRAM scratch base,
+    # then GlobalSemaphore ready-counter addresses.
+    # [Device 2.0] This is the current ABI for pipe resource records; future
+    # typed resource handles should preserve the same compiler-selected order.
     extra_common_runtime_args = [
         tensor.buffer_address() for tensor in pipe_sram_scratch_tensors
     ]
+    extra_common_runtime_args.extend(pipe_global_semaphore_addresses)
+    if pipe_global_semaphore_lifetime is not None:
+        pipe_global_semaphore_lifetime.extend(pipe_global_semaphores)
 
     # Build kernel descriptors.
     kernel_descriptors = build_kernel_descriptors(
@@ -475,6 +535,7 @@ def emit_runner_source(
     kernel_name: str = "kernel",
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -498,6 +559,7 @@ def emit_runner_source(
     lines.append(f"NUM_TENSORS = {num_tensors}")
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
+    lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
     lines.append("")
 
     lines.append("KERNEL_PATHS = [")
@@ -561,6 +623,9 @@ def emit_runner_source(
     lines.append("        aligned_bytes = ((PIPE_SRAM_SCRATCH_BYTES + 31) // 32) * 32")
     lines.append("        elements_per_core = max(1, aligned_bytes // 4)")
     lines.append("        num_cores = GRID_COLS * GRID_ROWS")
+    lines.append(
+        "        # [Device 2.0] Current generic_op uses a sharded tensor for pipe SRAM scratch."
+    )
     lines.append("        shard_spec = ttnn.ShardSpec(")
     lines.append("            core_ranges,")
     lines.append("            (1, elements_per_core),")
@@ -583,6 +648,20 @@ def emit_runner_source(
     lines.append(
         "    extra_common_runtime_args = [tensor.buffer_address() for tensor in pipe_sram_scratch_tensors]"
     )
+    lines.append("    pipe_global_semaphores = []")
+    lines.append("    if NUM_PIPE_GLOBAL_SEMAPHORES > 0:")
+    lines.append(
+        "        # [Device 2.0] Replace this with typed semaphore-resource binding."
+    )
+    lines.append("        for _ in range(NUM_PIPE_GLOBAL_SEMAPHORES):")
+    lines.append("            pipe_global_semaphores.append(")
+    lines.append("                ttnn.create_global_semaphore(device, core_ranges, 0)")
+    lines.append("            )")
+    lines.append("        extra_common_runtime_args.extend(")
+    lines.append(
+        "            int(ttnn.get_global_semaphore_address(sem)) for sem in pipe_global_semaphores"
+    )
+    lines.append("        )")
     lines.append("")
 
     lines.append("    cb_descriptors = []")
@@ -652,7 +731,9 @@ def emit_runner_source(
     lines.append("    )")
     lines.append("")
     lines.append("    io_tensors = list(tensors) + pipe_sram_scratch_tensors")
-    lines.append("    return ttnn.generic_op(io_tensors, program)")
+    lines.append("    result = ttnn.generic_op(io_tensors, program)")
+    lines.append("    del pipe_global_semaphores")
+    lines.append("    return result")
     lines.append("")
 
     lines.append("")
@@ -673,6 +754,7 @@ def emit_runner_file(
     kernel_name: str = "kernel",
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -690,6 +772,7 @@ def emit_runner_file(
         kernel_name=kernel_name,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+        num_pipe_global_semaphores=num_pipe_global_semaphores,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -706,6 +789,7 @@ __all__ = [
     "build_kernel_descriptors",
     "build_cb_descriptors",
     "build_pipe_sram_scratch_tensors",
+    "build_pipe_global_semaphores",
     "run_kernel_on_device",
     "emit_runner_source",
     "emit_runner_file",

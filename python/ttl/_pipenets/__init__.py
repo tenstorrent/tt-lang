@@ -22,6 +22,8 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Set, Tuple, Union
 
+from ttl.constants import MAX_HARDWARE_SEMAPHORE_IDS
+
 
 @dataclass(frozen=True)
 class NodeCoord:
@@ -117,17 +119,35 @@ class OperationPipeNets:
             return 0
 
         first_source_local_sem_id = len(self.pipe_nets)
-        next_sem_id_by_source = {}
-        num_semaphores = first_source_local_sem_id
+        max_pipes_per_source = self._max_pipes_per_source()
+        if (
+            first_source_local_sem_id + max_pipes_per_source
+            > MAX_HARDWARE_SEMAPHORE_IDS
+        ):
+            return first_source_local_sem_id
+        return first_source_local_sem_id + max_pipes_per_source
+
+    def num_pipe_global_semaphores(self) -> int:
+        """Return the GlobalSemaphore count required by pipe lowering."""
+        if not self.pipe_nets:
+            return 0
+        first_source_local_sem_id = len(self.pipe_nets)
+        max_pipes_per_source = self._max_pipes_per_source()
+        if (
+            first_source_local_sem_id + max_pipes_per_source
+            <= MAX_HARDWARE_SEMAPHORE_IDS
+        ):
+            return 0
+        return sum(len(net.pipes) for net in self.pipe_nets)
+
+    def _max_pipes_per_source(self) -> int:
+        pipe_count_by_source = {}
         for net in self.pipe_nets:
             for pipe in net.pipes:
-                next_sem_id = next_sem_id_by_source.setdefault(
-                    pipe.src.coords, first_source_local_sem_id
+                pipe_count_by_source[pipe.src.coords] = (
+                    pipe_count_by_source.get(pipe.src.coords, 0) + 1
                 )
-                next_sem_id += 1
-                next_sem_id_by_source[pipe.src.coords] = next_sem_id
-                num_semaphores = max(num_semaphores, next_sem_id)
-        return num_semaphores
+        return max(pipe_count_by_source.values(), default=0)
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:

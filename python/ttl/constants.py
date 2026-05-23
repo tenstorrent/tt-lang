@@ -6,6 +6,8 @@
 
 DEFAULT_TILE_SIZE = 32
 SUPPORTED_MEMORY_SPACES = frozenset(["L1", "DRAM"])
+# TT kernel hardware semaphore id capacity.
+MAX_HARDWARE_SEMAPHORE_IDS: int = 16
 
 # Per-core static CB region budget (bytes) when IR has no system descriptor:
 # Wormhole and Blackhole total L1 (1464 KiB) minus reserved kernel space (128 KiB)

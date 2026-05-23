@@ -1,6 +1,6 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -convert-ttl-to-ttkernel
 
-// Summary: Negative tests for pipe receiver DFB validation and rendezvous
+// Summary: Negative tests for pipe receiver DFB validation and pipe synchronization
 // resource diagnostics in ttl-convert-ttl-to-ttkernel.
 
 // Two unicast pipes converging on node (1, 0) need distinct slots in the
@@ -98,15 +98,14 @@ func.func @multicast_receive_address_dynamic_offset_rejected(%offset: index)
 
 // -----
 
-// Sixteen unicast pipes from one source require one receiver-completion
-// semaphore and sixteen source-local sender-ready semaphore ids. This exceeds
-// the hardware semaphore id limit even though receiver-authored addresses use
-// SRAM address-table entries.
+// Receiver completion still uses local semaphore ids. A PipeNet id above the
+// local limit is rejected even when sender-ready counters use GlobalSemaphore
+// allocation.
 
-// expected-error @below {{pipe rendezvous requires 17 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable rendezvous allocation}}
-// expected-note @below {{highest allocated semaphore id is 16 for sender-ready counter for pipe net 0 src(0, 0) dst(16, 0) to(16, 0)}}
+// expected-error @below {{pipe synchronization requires 17 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable pipe synchronization allocation}}
+// expected-note @below {{highest allocated semaphore id is 16 for receiver-completion counter}}
 module {
-  func.func @unicast_rendezvous_exceeds_hardware_semaphore_limit()
+  func.func @unicast_pipe_sync_exceeds_hardware_semaphore_limit()
       attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -140,8 +139,8 @@ module {
         : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 0>
     %p15 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 0
         : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 0>
-    %p16 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 0>
+    %p16 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 16
+        : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 16>
     %recv1 = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>

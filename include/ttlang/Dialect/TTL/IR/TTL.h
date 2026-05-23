@@ -21,6 +21,8 @@ namespace mlir::tt::ttl {
 inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
 inline constexpr int32_t kMaxCircularBuffers = 32;
+/// TT kernel hardware semaphore id capacity.
+inline constexpr int64_t kMaxHardwareSemaphoreIds = 16;
 
 /// Tag for tile-level operations to enable identity checks without type
 /// inspection.
