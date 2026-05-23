@@ -841,6 +841,12 @@ to that receiver-owned DFB block, and signals receiver completion. A
 multicast send waits for every destination in the multicast range to
 post before issuing the write.
 
+Multicast lowering has one sender-visible posted-address mailbox per
+pipe. Until issue #617 adds per-destination multicast receive
+addresses, all receivers for one multicast pipe must publish equivalent
+DFB addresses; the lowering rejects non-uniform or untraceable receive
+addresses.
+
 `PipeLowering.cpp::lowerPipeRecvWait` lowers a wait on the receive
 handle to a per-PipeNet cumulative wait. The receiver keeps a local
 runtime counter and waits for `recvSem >= counter`, so repeated unicast

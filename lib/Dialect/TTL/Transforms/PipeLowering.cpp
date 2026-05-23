@@ -9,6 +9,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -22,12 +23,15 @@
 #include "llvm/ADT/SmallSet.h"
 
 #include <algorithm>
+#include <optional>
 #include <tuple>
 
 namespace mlir::tt::ttl {
 
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
+
+static constexpr int64_t kMaxHardwarePipeSyncSemaphores = 16;
 
 //===----------------------------------------------------------------------===//
 // Helpers
@@ -810,6 +814,84 @@ void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
       layout.channels[getPipeKey(pipeType)] = channelLayout;
     }
   }
+}
+
+LogicalResult
+verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
+                                    const PipeRuntimeLayout &layout) {
+  enum class ResourceKind {
+    ReceiverArrival,
+    MailboxStaging,
+    SenderReady,
+    PostedAddressMailbox,
+  };
+
+  struct HighestSemaphore {
+    int64_t index = -1;
+    ResourceKind resource = ResourceKind::ReceiverArrival;
+    std::optional<PipeKey> pipe;
+  };
+
+  HighestSemaphore highest;
+  auto observe = [&](int64_t index, ResourceKind resource,
+                     std::optional<PipeKey> pipe = std::nullopt) {
+    if (index > highest.index) {
+      highest = HighestSemaphore{index, resource, pipe};
+    }
+  };
+
+  if (layout.mailboxStagingSemIdxBase > 0) {
+    observe(layout.mailboxStagingSemIdxBase - 1, ResourceKind::ReceiverArrival);
+  }
+  if (layout.numMailboxStagingSems > 0) {
+    observe(layout.mailboxStagingSemIdxBase + layout.numMailboxStagingSems - 1,
+            ResourceKind::MailboxStaging);
+  }
+  for (const auto &[pipe, channel] : layout.channels) {
+    observe(channel.senderReadySemIdx, ResourceKind::SenderReady, pipe);
+    observe(channel.mailboxSemIdxBase, ResourceKind::PostedAddressMailbox,
+            pipe);
+  }
+
+  int64_t requiredSemaphoreIds = highest.index + 1;
+  if (requiredSemaphoreIds <= kMaxHardwarePipeSyncSemaphores) {
+    return success();
+  }
+
+  auto diag = mod.emitError()
+              << "pipe rendezvous requires " << requiredSemaphoreIds
+              << " hardware semaphore ids, exceeding TT hardware limit of "
+              << kMaxHardwarePipeSyncSemaphores
+              << "; issue #619 tracks scalable rendezvous allocation";
+  Diagnostic &note = diag.attachNote(mod.getLoc())
+                     << "highest allocated semaphore id is " << highest.index
+                     << " for ";
+  auto appendPipe = [&](const PipeKey &pipe) {
+    note << "pipe net " << pipe.pipeNetId << " src(" << pipe.srcX << ", "
+         << pipe.srcY << ") dst(" << pipe.dstStartX << ", " << pipe.dstStartY
+         << ") to(" << pipe.dstEndX << ", " << pipe.dstEndY << ")";
+  };
+
+  switch (highest.resource) {
+  case ResourceKind::ReceiverArrival:
+    note << "receiver-arrival counter";
+    break;
+  case ResourceKind::MailboxStaging:
+    note << "mailbox staging";
+    break;
+  case ResourceKind::SenderReady:
+    note << "sender-ready counter for ";
+    assert(highest.pipe && "sender-ready resource must have a pipe");
+    appendPipe(*highest.pipe);
+    break;
+  case ResourceKind::PostedAddressMailbox:
+    note << "posted-address mailbox for ";
+    assert(highest.pipe && "mailbox resource must have a pipe");
+    appendPipe(*highest.pipe);
+    break;
+  }
+
+  return failure();
 }
 
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,

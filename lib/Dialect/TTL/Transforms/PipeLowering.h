@@ -55,6 +55,12 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
                             PipeRuntimeLayout &layout);
 
+/// Diagnose layouts that exceed the hardware semaphore id limit before
+/// emitting ttkernel.get_semaphore ops with invalid ids.
+LogicalResult
+verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
+                                    const PipeRuntimeLayout &layout);
+
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);

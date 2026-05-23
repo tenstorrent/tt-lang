@@ -4,6 +4,8 @@
 
 #include "PipeGraph.h"
 
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -17,11 +19,28 @@ LogicalResult PipeGraph::addReceiverCB(int64_t srcX, int64_t srcY,
                                        int64_t dstStartX, int64_t dstStartY,
                                        int64_t dstEndX, int64_t dstEndY,
                                        int64_t pipeNetId, int64_t cbIndex,
+                                       CircularBufferType cbType,
+                                       int64_t staticTileOffset,
                                        int64_t blockCount, Location loc) {
   PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
   auto existing = receiverCBs.find(key);
+  bool isMulticast = dstStartX != dstEndX || dstStartY != dstEndY;
   if (existing != receiverCBs.end()) {
+    if (isMulticast &&
+        (existing->second.cbIndex != cbIndex ||
+         existing->second.cbType != cbType ||
+         existing->second.staticTileOffset != staticTileOffset)) {
+      auto diag = emitError(loc)
+                  << "multicast pipe receive posts publish non-uniform "
+                     "destination addresses; per-destination multicast "
+                     "receive addresses are tracked by issue #617";
+      diag.attachNote(existing->second.loc)
+          << "previous multicast receive post for this pipe was here";
+      return failure();
+    }
+
     if (existing->second.cbIndex != cbIndex ||
+        existing->second.cbType != cbType ||
         existing->second.blockCount != blockCount) {
       auto diag = emitError(loc)
                   << "conflicting receiver DFBs for the same pipe";
@@ -31,7 +50,8 @@ LogicalResult PipeGraph::addReceiverCB(int64_t srcX, int64_t srcY,
     }
     return success();
   }
-  receiverCBs.insert({key, {cbIndex, 0, blockCount, loc}});
+  receiverCBs.insert(
+      {key, {cbIndex, cbType, staticTileOffset, 0, blockCount, loc}});
   return success();
 }
 
@@ -127,6 +147,108 @@ LogicalResult PipeGraph::verifyGatherBlockCounts() const {
   return success();
 }
 
+static LogicalResult emitNonUniformMulticastReceiveAddress(Operation *op) {
+  return op->emitError()
+         << "multicast pipe receive posts publish non-uniform destination "
+            "addresses; per-destination multicast receive addresses are "
+            "tracked by issue #617";
+}
+
+static LogicalResult addStaticCoordinates(ArrayRef<OpFoldResult> mixedOffsets,
+                                          SmallVectorImpl<int64_t> &coordinates,
+                                          unsigned rank) {
+  if (coordinates.empty()) {
+    coordinates.assign(rank, 0);
+  }
+  if (coordinates.size() != rank || mixedOffsets.size() != rank) {
+    return failure();
+  }
+
+  for (auto [coordinate, mixedOffset] :
+       llvm::zip_equal(coordinates, mixedOffsets)) {
+    std::optional<int64_t> offset = getConstantIntValue(mixedOffset);
+    if (!offset.has_value()) {
+      return failure();
+    }
+    coordinate += *offset;
+  }
+  return success();
+}
+
+/// Return the static tile offset within the receiver DFB for a receive
+/// destination. Multicast lowering has one sender-visible mailbox address per
+/// pipe, so each destination must publish the same static DFB address until
+/// issue #617 adds explicit per-destination addresses.
+static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
+  Value view = traceUnrealizedCasts(dst);
+  SmallVector<int64_t> coordinates;
+  RankedTensorType rootType;
+  bool sawOffset = false;
+
+  while (true) {
+    view = traceUnrealizedCasts(view);
+    if (auto extract = view.getDefiningOp<tensor::ExtractOp>()) {
+      auto tensorType =
+          mlir::dyn_cast<RankedTensorType>(extract.getTensor().getType());
+      if (!tensorType) {
+        return failure();
+      }
+      SmallVector<OpFoldResult> mixedIndices;
+      for (Value index : extract.getIndices()) {
+        mixedIndices.push_back(index);
+      }
+      if (failed(addStaticCoordinates(mixedIndices, coordinates,
+                                      tensorType.getRank()))) {
+        return failure();
+      }
+      sawOffset = true;
+      view = extract.getTensor();
+      continue;
+    }
+    if (auto attach = view.getDefiningOp<AttachCBOp>()) {
+      view = attach.getTensor();
+      continue;
+    }
+
+    auto slice = view.getDefiningOp<tensor::ExtractSliceOp>();
+    if (!slice) {
+      rootType = mlir::dyn_cast<RankedTensorType>(view.getType());
+      break;
+    }
+
+    auto sourceType =
+        mlir::dyn_cast<RankedTensorType>(slice.getSource().getType());
+    if (!sourceType) {
+      return failure();
+    }
+
+    if (failed(addStaticCoordinates(slice.getMixedOffsets(), coordinates,
+                                    sourceType.getRank()))) {
+      return failure();
+    }
+    sawOffset = true;
+    view = slice.getSource();
+  }
+
+  if (!sawOffset) {
+    return 0;
+  }
+  if (!rootType ||
+      rootType.getRank() != static_cast<int64_t>(coordinates.size())) {
+    return failure();
+  }
+
+  int64_t linearOffset = 0;
+  for (auto [coordinate, dim] :
+       llvm::zip_equal(coordinates, rootType.getShape())) {
+    if (dim == ShapedType::kDynamic) {
+      return failure();
+    }
+    linearOffset = linearOffset * dim + coordinate;
+  }
+  return linearOffset;
+}
+
 static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
                                      PipeType pipeType, Value dst) {
   Value dstCB = getAttachedCB(dst);
@@ -143,10 +265,20 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
     return op->emitError("could not trace pipe receiver to a DFB binding");
   }
 
+  int64_t staticTileOffset = 0;
+  if (pipeType.isMulticast()) {
+    FailureOr<int64_t> offset = getStaticDestinationTileOffset(dst);
+    if (failed(offset)) {
+      return emitNonUniformMulticastReceiveAddress(op);
+    }
+    staticTileOffset = *offset;
+  }
+
   return graph.addReceiverCB(
       pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
       pipeType.getDstStartY(), pipeType.getDstEndX(), pipeType.getDstEndY(),
-      pipeType.getPipeNetId(), *cbIndex, cbType.getBlockCount(), op->getLoc());
+      pipeType.getPipeNetId(), *cbIndex, cbType, staticTileOffset,
+      cbType.getBlockCount(), op->getLoc());
 }
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {

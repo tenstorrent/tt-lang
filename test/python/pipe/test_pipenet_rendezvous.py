@@ -349,7 +349,10 @@ def make_non_uniform_multicast_receive_address_kernel():
         _bcast_net = bcast_net
 
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), block_count=2)
+        first_recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        second_recv_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=(1, 1), block_count=2
+        )
 
         @ttl.compute()
         def compute():
@@ -362,26 +365,22 @@ def make_non_uniform_multicast_receive_address_kernel():
                 with send_dfb.reserve() as send_blk:
                     ttl.copy(inp[0, 0], send_blk).wait()
                     ttl.copy(send_blk, bcast_pipe).wait()
-            if node_x == 1 or node_x == 2:
-                with recv_dfb.reserve() as recv_blk:
-
-                    def recv(pipe):
-                        if node_x == 1:
-                            ttl.copy(pipe, recv_blk[0:1, 0:1]).wait()
-                        if node_x == 2:
-                            ttl.copy(pipe, recv_blk[0:1, 1:2]).wait()
-
-                    bcast_net.if_dst(recv)
+            if node_x == 1:
+                with first_recv_dfb.reserve() as recv_blk:
+                    ttl.copy(bcast_pipe, recv_blk).wait()
+            if node_x == 2:
+                with second_recv_dfb.reserve() as recv_blk:
+                    ttl.copy(bcast_pipe, recv_blk).wait()
 
         @ttl.datamovement()
         def write_output():
             node_x, _node_y = ttl.node(dims=2)
             if node_x == 1:
-                with recv_dfb.wait() as recv_blk:
-                    ttl.copy(recv_blk[0:1, 0:1], out[0, 0]).wait()
+                with first_recv_dfb.wait() as recv_blk:
+                    ttl.copy(recv_blk, out[0, 0]).wait()
             if node_x == 2:
-                with recv_dfb.wait() as recv_blk:
-                    ttl.copy(recv_blk[0:1, 1:2], out[0, 1]).wait()
+                with second_recv_dfb.wait() as recv_blk:
+                    ttl.copy(recv_blk, out[0, 1]).wait()
 
     return non_uniform_multicast_receive_address
 
@@ -423,41 +422,36 @@ def test_same_source_pipes_use_distinct_rendezvous_state(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-@pytest.mark.xfail(
-    reason=(
-        "issue #619: PipeNet lowering can exceed the hardware semaphore limit "
-        "for valid multi-PipeNet schedules"
-    ),
-    strict=True,
-)
-def test_many_pipe_rendezvous_sites_fit_hardware_semaphore_limit(device):
+def test_many_pipe_rendezvous_sites_report_hardware_semaphore_limit(device):
     inp_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
 
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
 
-    many_pipe_rendezvous_kernel(inp, out)
-    ttnn.synchronize_device(device)
+    with pytest.raises(
+        Exception,
+        match=(
+            "pipe rendezvous requires .* hardware semaphore ids, exceeding "
+            "TT hardware limit of 16; issue #619"
+        ),
+    ):
+        many_pipe_rendezvous_kernel(inp, out)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "issue #617: multicast lowering assumes all destinations publish the "
-        "same receive address"
-    ),
-    strict=True,
-)
-def test_multicast_receive_addresses_can_differ_by_destination(device):
+def test_multicast_receive_addresses_differ_by_destination_rejected(device):
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
 
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
 
-    non_uniform_multicast_receive_address_kernel(inp, out)
-    ttnn.synchronize_device(device)
-
-    result = ttnn.to_torch(out)
-    expected = inp_torch.repeat(1, 2)
-    assert_pcc(expected.float(), result.float())
+    with pytest.raises(
+        Exception,
+        match=(
+            "multicast pipe receive posts publish non-uniform destination "
+            "addresses; per-destination multicast receive addresses are "
+            "tracked by issue #617"
+        ),
+    ):
+        non_uniform_multicast_receive_address_kernel(inp, out)

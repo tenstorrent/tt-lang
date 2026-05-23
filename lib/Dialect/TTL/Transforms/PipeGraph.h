@@ -62,10 +62,12 @@ namespace mlir::tt::ttl {
 
 /// Receiver DFB information for a pipe.
 struct ReceiverCBInfo {
-  int64_t cbIndex;       // DFB index (0-31) used by receiver
-  int64_t gatherSlotIdx; // Slot index for overlap patterns (0 if none)
-  int64_t blockCount;    // DFB block_count
-  Location loc;          // Source location for error reporting
+  int64_t cbIndex;           // DFB index (0-31) used by receiver
+  CircularBufferType cbType; // Receiver DFB type
+  int64_t staticTileOffset;  // Static destination tile offset within the DFB
+  int64_t gatherSlotIdx;     // Slot index for overlap patterns (0 if none)
+  int64_t blockCount;        // DFB block_count
+  Location loc;              // Source location for error reporting
 };
 
 /// Graph tracking pipe connections and receiver DFB assignments.
@@ -84,7 +86,8 @@ public:
   LogicalResult addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
                               int64_t dstStartY, int64_t dstEndX,
                               int64_t dstEndY, int64_t pipeNetId,
-                              int64_t cbIndex, int64_t blockCount,
+                              int64_t cbIndex, CircularBufferType cbType,
+                              int64_t staticTileOffset, int64_t blockCount,
                               Location loc);
 
   /// Assign per-pipe slot indices via greedy coloring keyed by

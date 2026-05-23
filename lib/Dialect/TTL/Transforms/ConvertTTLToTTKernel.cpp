@@ -1132,6 +1132,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   buildPipeNetIndex(mod, pipeNetIndex);
   PipeRuntimeLayout pipeRuntimeLayout;
   buildPipeRuntimeLayout(mod, pipeNetIndex, pipeRuntimeLayout);
+  if (failed(verifyPipeRuntimeLayoutFitsHardware(mod, pipeRuntimeLayout))) {
+    return failure();
+  }
 
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx, &pipeRuntimeLayout);
