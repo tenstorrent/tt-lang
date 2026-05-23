@@ -1003,12 +1003,12 @@ def make_many_pipe_sync_kernel():
     return many_pipe_sync
 
 
-def make_non_uniform_multicast_receive_address_kernel():
+def make_non_uniform_multicast_destination_address_kernel():
     bcast_pipe = ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0))
     bcast_net = ttl.PipeNet([bcast_pipe])
 
     @ttl.operation(grid=(3, 1))
-    def non_uniform_multicast_receive_address(inp, out):
+    def non_uniform_multicast_destination_address(inp, out):
         _bcast_net = bcast_net
 
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -1045,11 +1045,11 @@ def make_non_uniform_multicast_receive_address_kernel():
                 with second_recv_dfb.wait() as recv_blk:
                     ttl.copy(recv_blk, out[0, 1]).wait()
 
-    return non_uniform_multicast_receive_address
+    return non_uniform_multicast_destination_address
 
 
-non_uniform_multicast_receive_address_kernel = (
-    make_non_uniform_multicast_receive_address_kernel()
+non_uniform_multicast_destination_address_kernel = (
+    make_non_uniform_multicast_destination_address_kernel()
 )
 many_pipe_sync_kernel = make_many_pipe_sync_kernel()
 
@@ -1328,7 +1328,7 @@ def test_row_all_to_all_multicast_semaphore_count_scales():
         for source_idx in range(width)
     )
 
-    assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
+    assert all_to_all_graph.num_pipe_sync_semaphores() == 2
 
 
 def test_grid_all_to_all_multicast_semaphore_count_scales():
@@ -1346,7 +1346,7 @@ def test_grid_all_to_all_multicast_semaphore_count_scales():
         for source_x in range(width)
     )
 
-    assert all_to_all_graph.num_pipe_sync_semaphores(num_noc_threads=2) == 2
+    assert all_to_all_graph.num_pipe_sync_semaphores() == 2
 
 
 def test_many_pipe_sync_sites_fit_hardware_semaphore_limit(device):
@@ -1360,7 +1360,7 @@ def test_many_pipe_sync_sites_fit_hardware_semaphore_limit(device):
     ttnn.synchronize_device(device)
 
 
-def test_multicast_receive_addresses_differ_by_destination_rejected(device):
+def test_multicast_destination_addresses_differ_by_destination_rejected(device):
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
 
@@ -1370,9 +1370,9 @@ def test_multicast_receive_addresses_differ_by_destination_rejected(device):
     with pytest.raises(
         Exception,
         match=(
-            "collective pipe receive posts publish non-uniform destination "
-            "addresses; per-destination collective receive addresses are "
+            "collective pipe receive posts publish different destination "
+            "addresses; per-receiver destination addresses are "
             "tracked by issue #617"
         ),
     ):
-        non_uniform_multicast_receive_address_kernel(inp, out)
+        non_uniform_multicast_destination_address_kernel(inp, out)

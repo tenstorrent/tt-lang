@@ -18,6 +18,15 @@ func.func @create_pipe_collective() {
 
 // -----
 
+// CHECK-LABEL: func.func @create_pipe_single_receiver_collective
+// CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 {isCollective = true} : <src(0, 0) dst(1, 0) to(1, 0) net 0>
+func.func @create_pipe_single_receiver_collective() {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 {isCollective = true} : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  func.return
+}
+
+// -----
+
 // CHECK-LABEL: func.func @create_pipe_2d_grid
 // CHECK: ttl.create_pipe src(0, 0) dst(0, 1) to(2, 3) net 0 : <src(0, 0) dst(0, 1) to(2, 3) net 0>
 func.func @create_pipe_2d_grid() {

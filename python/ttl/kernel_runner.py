@@ -126,6 +126,7 @@ def build_kernel_descriptors(
     grid_rows: int,
     num_cbs: int,
     extra_common_runtime_args: Optional[List[int]] = None,
+    expected_extra_common_runtime_args: Optional[int] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -140,6 +141,10 @@ def build_kernel_descriptors(
         grid_cols: Number of grid columns (x dimension).
         grid_rows: Number of grid rows (y dimension).
         num_cbs: Total number of circular buffers (including intermediate CBs).
+        extra_common_runtime_args: Compiler-managed common runtime args appended
+            after tensor buffer addresses.
+        expected_extra_common_runtime_args: Expected number of compiler-managed
+            pipe runtime args from the compiled resource plan.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -152,6 +157,16 @@ def build_kernel_descriptors(
 
     # CB indices are 0, 1, 2, ... for each CB (including intermediate CBs).
     cb_indices = list(range(num_cbs))
+    extra_args = list(extra_common_runtime_args or [])
+    if (
+        expected_extra_common_runtime_args is not None
+        and len(extra_args) != expected_extra_common_runtime_args
+    ):
+        raise RuntimeError(
+            "pipe resource plan expected "
+            f"{expected_extra_common_runtime_args} extra common runtime args, "
+            f"got {len(extra_args)}"
+        )
 
     for spec in kernel_specs:
         # Build common_runtime_args using tensor_indices.
@@ -159,8 +174,7 @@ def build_kernel_descriptors(
         common_runtime_args = [
             tensors[idx].buffer_address() for idx in spec.tensor_indices
         ]
-        if extra_common_runtime_args:
-            common_runtime_args.extend(extra_common_runtime_args)
+        common_runtime_args.extend(extra_args)
 
         # Compute kernels only need CB indices.
         # DM kernels need CB indices + TensorAccessorArgs config.
@@ -448,6 +462,9 @@ def run_kernel_on_device(
         tensor.buffer_address() for tensor in pipe_sram_scratch_tensors
     ]
     extra_common_runtime_args.extend(pipe_global_semaphore_addresses)
+    expected_extra_common_runtime_args = (
+        len(pipe_sram_scratch_tensors) + num_pipe_global_semaphores
+    )
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_global_semaphores
 
@@ -461,6 +478,7 @@ def run_kernel_on_device(
         grid_rows=grid_rows,
         num_cbs=len(cb_configs),
         extra_common_runtime_args=extra_common_runtime_args,
+        expected_extra_common_runtime_args=expected_extra_common_runtime_args,
     )
 
     # Build CB descriptors.
@@ -662,6 +680,18 @@ def emit_runner_source(
         "            int(ttnn.get_global_semaphore_address(sem)) for sem in pipe_global_semaphores"
     )
     lines.append("        )")
+    lines.append(
+        "    expected_extra_common_runtime_args = len(pipe_sram_scratch_tensors) + NUM_PIPE_GLOBAL_SEMAPHORES"
+    )
+    lines.append(
+        "    if len(extra_common_runtime_args) != expected_extra_common_runtime_args:"
+    )
+    lines.append(
+        "        raise RuntimeError("
+        "\"pipe resource plan expected \""
+        " f\"{expected_extra_common_runtime_args} extra common runtime args, \""
+        " f\"got {len(extra_common_runtime_args)}\")"
+    )
     lines.append("")
 
     lines.append("    cb_descriptors = []")

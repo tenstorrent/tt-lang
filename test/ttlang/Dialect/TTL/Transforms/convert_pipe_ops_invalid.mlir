@@ -38,9 +38,9 @@ func.func @gather_block_count_too_small()
 // -----
 
 // A collective pipe cannot publish different receiver DFB slice offsets until
-// per-destination collective receive addresses are implemented.
+// per-receiver destination addresses are implemented.
 
-func.func @collective_receive_addresses_differ_by_destination()
+func.func @collective_destination_addresses_differ_by_destination()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
@@ -61,7 +61,7 @@ func.func @collective_receive_addresses_differ_by_destination()
   %recv1 = tensor.extract_slice %recv_group[0, 1] [1, 1] [1, 1]
       : tensor<1x2x!ttcore.tile<32x32, f32>>
       to tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{collective pipe receive posts publish non-uniform destination addresses; per-destination collective receive addresses are tracked by issue #617}}
+  // expected-error @below {{collective pipe receive posts publish different destination addresses; per-receiver destination addresses are tracked by issue #617}}
   %xf1 = ttl.copy %p, %recv1
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -72,10 +72,10 @@ func.func @collective_receive_addresses_differ_by_destination()
 
 // -----
 
-// Multicast receive addresses must be statically traceable until
-// per-destination receive addresses are represented explicitly.
+// Collective destination addresses must be statically traceable until
+// per-receiver destination addresses are represented explicitly.
 
-func.func @collective_receive_address_dynamic_offset_rejected(%offset: index)
+func.func @collective_destination_address_dynamic_offset_rejected(%offset: index)
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
@@ -87,7 +87,7 @@ func.func @collective_receive_address_dynamic_offset_rejected(%offset: index)
   %recv = tensor.extract_slice %recv_group[0, %offset] [1, 1] [1, 1]
       : tensor<1x2x!ttcore.tile<32x32, f32>>
       to tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{collective pipe receive posts publish non-uniform destination addresses; per-destination collective receive addresses are tracked by issue #617}}
+  // expected-error @below {{collective pipe destination address could not be determined statically; per-receiver destination addresses are tracked by issue #617}}
   %xf = ttl.copy %p, %recv
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)

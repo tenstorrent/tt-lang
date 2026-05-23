@@ -12,6 +12,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
+#include <variant>
 
 namespace mlir::tt::ttl {
 
@@ -28,31 +29,22 @@ struct PipeInfo {
   PipeTransferContract transferContract;
 };
 
-enum class PipeAddressStorageKind {
-  SramAddressTable,
-};
-
-enum class PipeReadyCounterKind {
-  LocalSemaphore,
-  GlobalSemaphore,
-};
-
-enum class PipeCompletionWaitKind {
-  LocalSemaphore,
-};
-
 struct PipeSramAddressTableInfo {
   int64_t byteOffset;
 };
 
-struct PipeReadyCounterInfo {
-  PipeReadyCounterKind kind = PipeReadyCounterKind::LocalSemaphore;
-  int64_t senderReadySemIdx = -1;
-  int64_t globalSemaphoreIndex = -1;
+struct PipeLocalReadyCounterInfo {
+  int64_t senderReadySemIdx = 0;
 };
 
+struct PipeGlobalReadyCounterInfo {
+  int64_t globalSemaphoreIndex = 0;
+};
+
+using PipeReadyCounterInfo =
+    std::variant<PipeLocalReadyCounterInfo, PipeGlobalReadyCounterInfo>;
+
 struct PipeCompletionWaitInfo {
-  PipeCompletionWaitKind kind = PipeCompletionWaitKind::LocalSemaphore;
   int64_t pipeNetId;
   int64_t receiverSemIdx;
 };
@@ -61,12 +53,7 @@ struct PipeCompletionWaitInfo {
 /// its DFB write address into the source core's SRAM table before incrementing
 /// the sender-ready counter.
 struct PipeAddressStorageInfo {
-  PipeAddressStorageKind kind = PipeAddressStorageKind::SramAddressTable;
   PipeSramAddressTableInfo sramAddressTable;
-
-  bool usesSramAddressTable() const {
-    return kind == PipeAddressStorageKind::SramAddressTable;
-  }
 };
 
 /// Lowering information for one logical pipe. This keeps address
@@ -76,10 +63,6 @@ struct PipeResourceInfo {
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
   PipeReadyCounterInfo readyCounter;
   PipeAddressStorageInfo addressStorage;
-
-  bool usesSramAddressTable() const {
-    return addressStorage.usesSramAddressTable();
-  }
 };
 
 /// Per-function map: pipeNetId -> kernel-local i32 counter for cumulative
@@ -140,7 +123,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             const PipeResourcePlan *pipeResourcePlan,
                             ConversionPatternRewriter &rewriter);
 
-/// Lower the receiver-side pipe receive address publication.
+/// Lower the receiver-side pipe destination address publication.
 LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
                                 const PipeResourcePlan *pipeResourcePlan,
                                 ConversionPatternRewriter &rewriter);

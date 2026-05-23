@@ -110,7 +110,7 @@ stateDiagram-v2
 
     [*] --> NoSendPosted
     NoSendPosted --> WaitingForDestinationAddresses: ttl.copy(src_blk, pipe)
-    WaitingForDestinationAddresses --> PayloadWriteInProgress: all destinations have posted receive addresses
+    WaitingForDestinationAddresses --> PayloadWriteInProgress: all destinations have posted destination addresses
     PayloadWriteInProgress --> SendComplete: payload write finishes and receivers are signaled
     SendComplete --> SourceBlockMayBeReleased: send_tx.wait() returns
     WaitingForDestinationAddresses --> WaitingForDestinationAddresses: send_tx.wait() blocks
@@ -131,7 +131,7 @@ is also one of the destinations; in relay kernels, a core receives from
 one pipe and sends to another.
 
 For example, the loopback schedule below is invalid because the same thread
-tries to send before it posts its own receive address:
+tries to send before it posts its own destination address:
 
 ```python
 @ttl.datamovement()
@@ -229,12 +229,14 @@ sender's data lands in its own slot of the receiver's dataflow buffer.
 
 ### Data layout: slot per sender
 
-`PipeGraph::assignGatherSlotIndices` walks receiver posts in IR order
-and assigns each pipe the lowest slot index not yet taken at any of its
-receivers. For a receiver that lies in the destination range of `N`
-pipes within one PipeNet, those pipes get slot indices `0..N-1`. Two
-pipes whose destination ranges intersect on even one node get distinct
-slots; pipes whose ranges are disjoint may reuse slot 0.
+`PipeGraph::assignGatherSlotIndices` walks pipes in deterministic sorted
+order by `(srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY,
+pipeNetId)` and assigns each pipe the lowest slot index not yet taken at
+any of its receivers. User IR order does not affect slot assignment. For
+a receiver that lies in the destination range of `N` pipes within one
+PipeNet, those pipes get slot indices `0..N-1`. Two pipes whose
+destination ranges intersect on even one node get distinct slots; pipes
+whose ranges are disjoint may reuse slot 0.
 
 Each receive post identifies one concrete DFB write pointer. The
 receiver writes that address to a sender-visible SRAM address-table
@@ -815,7 +817,7 @@ runtime-observable.
 | 65 | Lowering: non-loopback collective uses receiver-authored SRAM address tables | X | | X |
 | 66 | Semaphore counting: collective address storage does not allocate semaphore ids | | X | |
 | 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
-| 68 | Schedule verifier rejects same-thread send before receive address publication | X | | X |
+| 68 | Schedule verifier rejects same-thread send before destination address publication | X | | X |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -902,11 +904,11 @@ one DFB address from the table, issues one multicast payload write, and
 signals receiver completion with the existing per-PipeNet completion
 counter.
 
-Until issue #617 adds per-destination multicast receive addresses, all
+Until issue #617 adds per-receiver destination addresses, all
 receivers for one collective pipe must publish equivalent DFB addresses.
 `PipeGraph` validates the receiver DFB index, DFB type, and static tile
 offset for every collective receive post; non-uniform or untraceable
-receive addresses are rejected before TTKernel lowering.
+destination addresses are rejected before TTKernel lowering.
 
 `PipeLowering.cpp::lowerPipeRecvWait` lowers a wait on the receive
 handle to a per-PipeNet cumulative wait. The receiver keeps a local

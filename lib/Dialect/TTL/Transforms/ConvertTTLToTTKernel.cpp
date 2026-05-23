@@ -143,8 +143,9 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
 
 /// Get the L1 buffer address from runtime args for a tensor function argument.
 /// Runtime args are indexed by the tensor's function argument position.
-static Value getBufferAddressFromRuntimeArg(unsigned argIdx, Location loc,
-                                            ConversionPatternRewriter &rewriter) {
+static Value
+getBufferAddressFromRuntimeArg(unsigned argIdx, Location loc,
+                               ConversionPatternRewriter &rewriter) {
   auto idxConst = arith::ConstantIndexOp::create(rewriter, loc, argIdx);
   return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                         idxConst)
@@ -619,7 +620,7 @@ struct TensorAccessorInfo {
 
 static FailureOr<TensorAccessorInfo>
 getTensorAccessorInfo(Value tensor, Operation *op,
-                          ConversionPatternRewriter &rewriter) {
+                      ConversionPatternRewriter &rewriter) {
   FailureOr<int64_t> pageSizeBytes = getValidatedPageSize(tensor, op);
   if (failed(pageSizeBytes)) {
     return failure();
@@ -635,19 +636,17 @@ getTensorAccessorInfo(Value tensor, Operation *op,
     return failure();
   }
   auto [baseCTA, globalTensorIdx] = *ctaInfo;
-  return TensorAccessorInfo{*argIdx, baseCTA, globalTensorIdx,
-                                *pageSizeBytes};
+  return TensorAccessorInfo{*argIdx, baseCTA, globalTensorIdx, *pageSizeBytes};
 }
 
 /// Create a TensorAccessor after all validation checks that can fail have run.
-static Value
-materializeTensorAccessor(Value tensor, Value bankBase,
-                          const TensorAccessorInfo &info,
-                          ConversionPatternRewriter &rewriter) {
+static Value materializeTensorAccessor(Value tensor, Value bankBase,
+                                       const TensorAccessorInfo &info,
+                                       ConversionPatternRewriter &rewriter) {
   auto loc = tensor.getLoc();
 
-  auto pageSize = arith::ConstantIntOp::create(
-      rewriter, loc, info.pageSizeBytes, 32);
+  auto pageSize =
+      arith::ConstantIntOp::create(rewriter, loc, info.pageSizeBytes, 32);
 
   return buildTensorAccessor(loc, rewriter, info.baseCTA, info.globalTensorIdx,
                              static_cast<int32_t>(info.argIdx), bankBase,
@@ -674,8 +673,8 @@ static void emitTileLoop(
     llvm::function_ref<void(OpBuilder &, Location, ValueRange)> emitBody) {
   auto zero = arith::ConstantIndexOp::create(builder, loc, 0);
 
-  bool allOne =
-      llvm::all_of(tileBounds, [](int64_t dimension) { return dimension == 1; });
+  bool allOne = llvm::all_of(tileBounds,
+                             [](int64_t dimension) { return dimension == 1; });
   if (allOne) {
     SmallVector<Value> zeros(tileBounds.size(), zero);
     emitBody(builder, loc, zeros);
@@ -802,8 +801,8 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
           ttk::NocAsyncReadTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
                                           accessor, cbAddr);
         } else {
-          ttk::NocAsyncWriteTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
-                                           accessor, cbAddr);
+          ttk::NocAsyncWriteTileOp::create(loopBuilder, bodyLoc,
+                                           tensorTileIdx32, accessor, cbAddr);
         }
       });
 
@@ -1146,27 +1145,28 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
   mod->setAttr(
-      "ttl.pipe_sync_semaphore_count",
+      kPipeSyncSemaphoreCountAttrName,
       IntegerAttr::get(IntegerType::get(&ctx, 64),
                        getRequiredPipeSyncSemaphoreCount(pipeResourcePlan)));
   int64_t pipeGlobalSemaphoreCount =
       getRequiredPipeGlobalSemaphoreCount(pipeResourcePlan);
   if (pipeGlobalSemaphoreCount > 0) {
     mod->setAttr(
-        "ttl.pipe_global_semaphore_count",
+        kPipeGlobalSemaphoreCountAttrName,
         IntegerAttr::get(IntegerType::get(&ctx, 64), pipeGlobalSemaphoreCount));
   }
   int64_t pipeSramScratchBytes =
       getRequiredPipeSramScratchBytes(pipeResourcePlan);
   if (pipeSramScratchBytes > 0) {
     mod->setAttr(
-        "ttl.pipe_sram_scratch_bytes",
+        kPipeSramScratchBytesAttrName,
         IntegerAttr::get(IntegerType::get(&ctx, 64), pipeSramScratchBytes));
   }
-  // [Device 2.0] The ttl.pipe_*_count and ttl.pipe_sram_scratch_bytes attrs
-  // form the current host/runtime ABI for pipe resources. Keep allocation
-  // driven by this explicit compiler plan, so future typed device APIs only
-  // change how the resources are bound at runtime.
+  // [Device 2.0] The kPipeSyncSemaphoreCountAttrName,
+  // kPipeGlobalSemaphoreCountAttrName, and kPipeSramScratchBytesAttrName attrs
+  // are the current host/runtime ABI for pipe resource binding. Keep the
+  // allocation decision in this compiler plan so future typed device APIs only
+  // change runtime binding code.
 
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx, &pipeResourcePlan);

@@ -112,9 +112,8 @@ class OperationPipeNets:
             _validate_no_mixed_kinds(net.pipes)
         _validate_consistent_coord_rank(self.pipe_nets)
 
-    def num_pipe_sync_semaphores(self, num_noc_threads: int = 1) -> int:
+    def num_pipe_sync_semaphores(self) -> int:
         """Return the total semaphore count required by pipe lowering."""
-        del num_noc_threads
         if not self.pipe_nets:
             return 0
 
