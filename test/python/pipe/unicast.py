@@ -93,8 +93,8 @@ def unicast_pipe(inp, out):
 # Receiver side: publish the reserved DFB address, then wait for sender
 # completion.
 # CHECK-CPP: reserve_back(
-# CHECK-CPP: get_write_ptr()
-# CHECK-CPP: noc_semaphore_set_remote(
+# CHECK-CPP: noc_inline_dw_write
+# CHECK-CPP-SAME: get_write_ptr()
 # CHECK-CPP: noc_semaphore_inc(
 # CHECK-CPP: experimental::semaphore_wait_min(
 # CHECK-CPP: push_back(
