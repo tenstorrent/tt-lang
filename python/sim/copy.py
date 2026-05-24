@@ -9,19 +9,22 @@ enabling data transfer operations between tensors and Blocks in the
 DataflowBuffer system.
 """
 
+import math
+import sys
 from typing import Optional, Tuple
 
-from .dfb import Block
+from .context import get_context
 from .copyhandlers import (
     CopyEndpoint,
     CopyEndpointType,
     CopyTransferHandler,
     HANDLER_REGISTRY,
 )
-from .ttnnsim import Tensor, tile_count_from_tensor
+from .dfb import Block
+from .greenlet_scheduler import block_if_needed
 from .sharding import try_count_locality
 from .trace import TRACE, trace
-import math
+from .ttnnsim import Tensor, tile_count_from_tensor
 
 
 def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
@@ -168,9 +171,6 @@ class CopyTransaction:
             return
 
         # Block if copy cannot proceed
-        from .greenlet_scheduler import block_if_needed
-        from .context import get_context
-
         block_if_needed(self, "wait")
 
         # Transfer - let exceptions propagate to scheduler for context.
@@ -307,8 +307,6 @@ def copy(
     # helper, which ``find_user_code_location`` would also surface since both
     # are non-simulator frames).  Reused immediately below for the auto-wait
     # call-site lookup.
-    import sys
-
     frame = sys._getframe(1)
     user_location: Tuple[str, int] = (frame.f_code.co_filename, frame.f_lineno)
 
@@ -319,8 +317,6 @@ def copy(
     # and registers their (caller_code, abs_lineno) in context.auto_wait_copy_lines.
     # Using equality-based set lookup so that code objects from different files
     # with identical bodies are still matched correctly.
-    from .context import get_context
-
     ctx = get_context()
     if (
         ctx.auto_wait_copy_lines

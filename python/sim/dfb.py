@@ -26,6 +26,7 @@ from typing import (
 )
 
 import torch
+from greenlet import getcurrent
 
 from pydantic import validate_call
 
@@ -47,6 +48,7 @@ from .ttnnsim import (
     ROW_MAJOR_LAYOUT,
     TILE_LAYOUT,
     Tensor,
+    check_count_match,
     tile_count_from_tensor,
     tile_shape_from_tensor,
 )
@@ -638,8 +640,6 @@ class Block:
                 f"but block has layout {self.layout.name}"
             )
 
-        from .ttnnsim import check_count_match
-
         check_count_match(
             tile_count_from_tensor(tensor),
             math.prod(self._shape),
@@ -1090,8 +1090,6 @@ class DataflowBuffer:
         if self._pending_waited_block is not None:
             self.auto_pop_block()
 
-        from .greenlet_scheduler import block_if_needed
-
         if TRACE.enabled:
             trace("dfb_wait_begin", dfb=self._trace_name)
         block_if_needed(self, "wait")
@@ -1113,8 +1111,6 @@ class DataflowBuffer:
         )
         block.dfb = self
         self._pending_waited_block = block
-        from greenlet import getcurrent
-
         self._pending_waited_greenlet = getcurrent()
 
         if TRACE.enabled:
@@ -1217,8 +1213,6 @@ class DataflowBuffer:
         block.dfb_slot_idx = slot_idx
 
         self._pending_reserved_block = block
-        from greenlet import getcurrent
-
         self._pending_reserved_greenlet = getcurrent()
 
         if TRACE.enabled:
@@ -1293,8 +1287,6 @@ class DataflowBuffer:
         """
         if self._pending_reserved_block is None:
             return
-        from greenlet import getcurrent
-
         if self._pending_reserved_greenlet is not getcurrent():
             return
         self.push_block()
@@ -1307,8 +1299,6 @@ class DataflowBuffer:
         """
         if self._pending_waited_block is None:
             return
-        from greenlet import getcurrent
-
         if self._pending_waited_greenlet is not getcurrent():
             return
         self.pop_block()
