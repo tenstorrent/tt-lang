@@ -104,7 +104,7 @@ int64_t getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info);
 /// Return the per-core SRAM scratch bytes required by pipe address storage.
 int64_t getRequiredPipeSramScratchBytes(const PipeResourcePlan &info);
 
-/// Walk `mod` once and group every PipeType result by its net id.
+/// Walk `mod` once and group every pipe transfer by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
@@ -116,23 +116,23 @@ void buildPipeResourcePlan(const PipeNetIndex &index, PipeResourcePlan &info);
 /// pipeNetId used by a pipe receive.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
-/// Lower CB -> Pipe copy (sender side). Uses receiver-published destination
+/// Lower the sender-side pipe transfer. Uses receiver-published destination
 /// addresses and signals destinations via semaphore.
-LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
-                            bool isConsumerCB,
-                            const PipeResourcePlan *pipeResourcePlan,
-                            ConversionPatternRewriter &rewriter);
+LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
+                                    bool isConsumerCB,
+                                    const PipeResourcePlan *pipeResourcePlan,
+                                    ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe destination address publication.
-LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
-                                const PipeResourcePlan *pipeResourcePlan,
-                                ConversionPatternRewriter &rewriter);
+LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
+                                    const PipeResourcePlan *pipeResourcePlan,
+                                    ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
-LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
-                                const PipeNetCounterMap *counters,
-                                const PipeResourcePlan *pipeResourcePlan,
-                                ConversionPatternRewriter &rewriter);
+LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
+                                    const PipeNetCounterMap *counters,
+                                    const PipeResourcePlan *pipeResourcePlan,
+                                    ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.
 /// `pipeNetIndex` is borrowed and must outlive `patterns`; the is_src /
