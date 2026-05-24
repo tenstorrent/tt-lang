@@ -28,6 +28,44 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
+/// Derive the hardware tile-level BcastType from the normalized broadcast
+/// dims. Returns std::nullopt when no innermost dimension is broadcast (the
+/// broadcast is then purely inter-tile and the body just passes the input
+/// tile through).
+static std::optional<BcastType>
+deriveTileBcastType(const llvm::SmallDenseSet<int64_t> &broadcastDims,
+                    int64_t rank) {
+  bool bcastInnermost = rank >= 1 && broadcastDims.contains(rank - 1);
+  bool bcastSecondInnermost = rank >= 2 && broadcastDims.contains(rank - 2);
+  if (bcastInnermost && bcastSecondInnermost) {
+    return BcastType::Scalar;
+  }
+  if (bcastSecondInnermost) {
+    return BcastType::Row;
+  }
+  if (bcastInnermost) {
+    return BcastType::Col;
+  }
+  return std::nullopt;
+}
+
+/// Build the N-dim input affine map for a broadcast: identity in
+/// non-broadcast dimensions and constant 0 in broadcast dimensions.
+static AffineMap
+buildBcastInputMap(MLIRContext *ctx, int64_t rank,
+                   const llvm::SmallDenseSet<int64_t> &broadcastDims) {
+  SmallVector<AffineExpr, 4> exprs;
+  exprs.reserve(rank);
+  for (int64_t i = 0; i < rank; ++i) {
+    if (broadcastDims.contains(i)) {
+      exprs.push_back(getAffineConstantExpr(0, ctx));
+    } else {
+      exprs.push_back(getAffineDimExpr(i, ctx));
+    }
+  }
+  return AffineMap::get(rank, 0, exprs, ctx);
+}
+
 static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                              Value exemplar) {
   SmallVector<Value> dynDims;
@@ -552,14 +590,24 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
     Value tileResult;
 
-    // BcastOp reads from CB and writes to DST; emits TileBcastOp.
-    if (auto bcastOp = dyn_cast<BcastOp>(op)) {
+    // BlockBroadcastOp reads from CB and writes to DST; emits TileBcastOp
+    // when the broadcast touches an innermost dim, otherwise passes the
+    // input tile through (inter-tile-only replication handled by the input
+    // affine map of the surrounding compute op).
+    if (auto bcastOp = dyn_cast<BlockBroadcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
-      Value outputTile = body->getArguments().back(); // output block arg
-      auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
-          rewriter, loc, tileType, inputTile, outputTile,
-          bcastOp.getBcastTypeAttr());
-      tileResult = bcastTileOp;
+      auto inputTensorType = getTensorType(bcastOp.getInput());
+      int64_t rank = inputTensorType ? inputTensorType.getRank() : 0;
+      auto bcastDims = normalizeDimsToSet(bcastOp.getDims(), rank);
+      auto tileBcast = deriveTileBcastType(bcastDims, rank);
+      if (tileBcast) {
+        Value outputTile = body->getArguments().back();
+        auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
+            rewriter, loc, tileType, inputTile, outputTile, *tileBcast);
+        tileResult = bcastTileOp;
+      } else {
+        tileResult = inputTile;
+      }
     } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
       Value lhsTile = tensorToTile[matmulOp.getLhs()];
       Value rhsTile = tensorToTile[matmulOp.getRhs()];
@@ -869,31 +917,8 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Bcast Lowering Pattern
+// Block Broadcast Lowering Pattern
 //===----------------------------------------------------------------------===//
-
-/// Build affine map for bcast shape expansion.
-/// For col bcast (N,1) -> (N,M): returns (i,j) -> (i,0)
-/// For row bcast (1,M) -> (N,M): returns (i,j) -> (0,j)
-/// For scalar bcast (1,1) -> (N,M): returns (i,j) -> (0,0)
-/// For no expansion: returns identity map.
-static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
-                                    bool expandCols) {
-  if (expandRows && expandCols) {
-    return AffineMap::get(
-        2, 0, {getAffineConstantExpr(0, ctx), getAffineConstantExpr(0, ctx)},
-        ctx);
-  }
-  if (expandCols) {
-    return AffineMap::get(
-        2, 0, {getAffineDimExpr(0, ctx), getAffineConstantExpr(0, ctx)}, ctx);
-  }
-  if (expandRows) {
-    return AffineMap::get(
-        2, 0, {getAffineConstantExpr(0, ctx), getAffineDimExpr(1, ctx)}, ctx);
-  }
-  return AffineMap::getMultiDimIdentityMap(2, ctx);
-}
 
 static FailureOr<ttkernel::ReduceDim> computeReduceDim(ArrayRef<int64_t> dims,
                                                        int64_t rank);
@@ -905,14 +930,13 @@ static FailureOr<ttkernel::ReduceDim> computeReduceDim(ArrayRef<int64_t> dims,
 ///   bcast input -> attach_cb -> cb_wait [CB] <- cb_push <- store <- reduce
 /// and returns the ReduceDim of the producing reduce.
 ///
-/// The correct hardware BroadcastType depends on the tile data layout left
-/// by the producing reduce (tt-metal llk_unpack_AB.h L72-114):
+/// The correct hardware BcastType depends on the tile data layout left by
+/// the producing reduce (tt-metal llk_unpack_AB.h L72-114):
 ///   REDUCE_SCALAR -> valid data at element [0,0]
 ///   REDUCE_COL    -> valid data in row 0
 ///   REDUCE_ROW    -> valid data in column 0
-/// The frontend sets BcastType based on broadcast dims alone. This function
-/// provides the reduce dim so the lowering can select the correct hardware
-/// unpack type. A mismatch replicates garbage (#444).
+/// The derived BcastType is used to select the correct hardware unpack type;
+/// a mismatch with the producing reduce replicates garbage (#444).
 ///
 /// TODO(#449): replace this tracing with a structured approach (e.g.,
 /// propagate reduce dim as an attribute during lowering).
@@ -969,9 +993,9 @@ static std::optional<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
   return *reduceDim;
 }
 
-/// Validate a single BcastOp. Called from runOnOperation() before patterns
-/// run, so emitOpError is safe (not inside a pattern rewriter).
-static LogicalResult validateBcastOp(BcastOp op) {
+/// Validate a single BlockBroadcastOp. Called from runOnOperation() before
+/// patterns run, so emitOpError is safe (not inside a pattern rewriter).
+static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op) {
   auto outputType = getTensorType(op.getResult());
   auto inputType = getTensorType(op.getInput());
   if (!outputType || !inputType) {
@@ -984,61 +1008,40 @@ static LogicalResult validateBcastOp(BcastOp op) {
         "an elementwise result; move the broadcast to its own compute block "
         "or make it the first operation in a fused sequence");
   }
-  if (!getAttachedCB(op.getOutput())) {
-    return op.emitOpError("output must be attached to a circular buffer");
-  }
 
-  if (inputType.getRank() != 2 || outputType.getRank() != 2) {
-    return op.emitOpError("requires rank-2 tensors");
-  }
+  int64_t rank = inputType.getRank();
+  auto broadcastDims = normalizeDimsToSet(op.getDims(), rank);
 
-  auto inputShape = inputType.getShape();
-  auto outputShape = outputType.getShape();
-  bool expandRows = inputShape[0] != outputShape[0];
-  bool expandCols = inputShape[1] != outputShape[1];
-
-  if (expandRows && inputShape[0] != 1) {
-    return op.emitOpError("row expansion requires input dim 0 to be 1");
-  }
-  if (expandCols && inputShape[1] != 1) {
-    return op.emitOpError("col expansion requires input dim 1 to be 1");
-  }
-
-  auto bcastType = op.getBcastType();
-  if (bcastType != BcastType::Scalar) {
-    if (expandRows && expandCols) {
-      return op.emitOpError("row+col expansion requires scalar bcast type");
-    }
-    if (expandCols && bcastType != BcastType::Col) {
-      return op.emitOpError("col expansion requires col or scalar bcast type");
-    }
-    if (expandRows && bcastType != BcastType::Row) {
-      return op.emitOpError("row expansion requires row or scalar bcast type");
-    }
-  }
-
-  // Validate broadcast dims vs. producing reduce (#444).
+  // Validate broadcast dims vs. producing reduce (#444). The derived
+  // BcastType determines the hardware unpack type and must agree with the
+  // tile layout left by any directly-producing reduce.
   if (auto reduceDim = getInputReduceDim(op.getInput())) {
+    auto tileBcastType = deriveTileBcastType(broadcastDims, rank);
+    if (!tileBcastType) {
+      return op.emitOpError(
+          "broadcast feeds an inter-tile-only pattern from a reduce result; "
+          "the innermost dims must participate in the broadcast");
+    }
     BcastType requiredBcastType;
     StringRef requiredKind, requiredDims;
     switch (*reduceDim) {
     case ttkernel::ReduceDim::Scalar:
       requiredBcastType = BcastType::Scalar;
       requiredKind = "scalar";
-      requiredDims = "[0, 1]";
+      requiredDims = "[-2, -1]";
       break;
     case ttkernel::ReduceDim::Col:
       requiredBcastType = BcastType::Row;
       requiredKind = "row";
-      requiredDims = "[0]";
+      requiredDims = "[-2]";
       break;
     case ttkernel::ReduceDim::Row:
       requiredBcastType = BcastType::Col;
       requiredKind = "column";
-      requiredDims = "[1]";
+      requiredDims = "[-1]";
       break;
     }
-    if (bcastType != requiredBcastType) {
+    if (*tileBcastType != requiredBcastType) {
       return op.emitOpError("broadcast dims are incompatible with the "
                             "producing reduce; need ")
              << requiredKind << " broadcast (dims=" << requiredDims << ")";
@@ -1048,12 +1051,14 @@ static LogicalResult validateBcastOp(BcastOp op) {
   return success();
 }
 
-/// Pattern for bcast op: TTL tensor op -> ttl.compute with tile_bcast.
-/// Supports shape expansion where input CB can be smaller than output CB.
-struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
-  using OpRewritePattern<BcastOp>::OpRewritePattern;
+/// Pattern for block broadcast: TTL tensor op -> ttl.compute body. Supports
+/// arbitrary rank; inter-tile broadcast is handled by constant-0 entries in
+/// the input affine map, and intra-tile broadcast on the innermost two dims
+/// is handled by ttl.tile_bcast in the body.
+struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
+  using OpRewritePattern<BlockBroadcastOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(BcastOp op,
+  LogicalResult matchAndRewrite(BlockBroadcastOp op,
                                 PatternRewriter &rewriter) const override {
     auto outputType = getTensorType(op.getResult());
     auto inputType = getTensorType(op.getInput());
@@ -1061,62 +1066,76 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
       return failure();
     }
 
-    // Preconditions validated by validateBcastOp in runOnOperation().
     Value inputCb = getAttachedCB(op.getInput());
-    Value outCb = getAttachedCB(op.getOutput());
-    if (!inputCb || !outCb) {
-      return rewriter.notifyMatchFailure(op, "input/output not CB-attached");
+    if (!inputCb) {
+      return rewriter.notifyMatchFailure(op, "input not CB-attached");
     }
-    if (inputType.getRank() != 2 || outputType.getRank() != 2) {
-      return rewriter.notifyMatchFailure(op, "requires rank-2 tensors");
+    Value outCb;
+    for (OpOperand &use : op.getResult().getUses()) {
+      if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
+        if (Value cb = getAttachedCB(storeOp.getView())) {
+          outCb = cb;
+          break;
+        }
+      }
+    }
+    if (!outCb) {
+      return rewriter.notifyMatchFailure(
+          op, "no direct CB-attached store user (handled by fusion path)");
     }
 
-    auto inputShape = inputType.getShape();
-    auto outputShape = outputType.getShape();
-    bool expandRows = inputShape[0] != outputShape[0];
-    bool expandCols = inputShape[1] != outputShape[1];
+    int64_t rank = inputType.getRank();
+    auto broadcastDims = normalizeDimsToSet(op.getDims(), rank);
+    auto tileBcastType = deriveTileBcastType(broadcastDims, rank);
 
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
 
-    AffineMap outputMap = AffineMap::getMultiDimIdentityMap(2, ctx);
-    AffineMap inputMap = buildBcastInputMap(ctx, expandRows, expandCols);
+    AffineMap outputMap = AffineMap::getMultiDimIdentityMap(rank, ctx);
+    AffineMap inputMap = buildBcastInputMap(ctx, rank, broadcastDims);
 
     SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
-                                   AffineMapAttr::get(outputMap),
                                    AffineMapAttr::get(outputMap)};
 
-    SmallVector<Attribute> iterTypes(outputType.getRank(),
-                                     rewriter.getStringAttr("parallel"));
-
-    auto bcastType = op.getBcastType();
+    SmallVector<Attribute> iterTypes(rank, rewriter.getStringAttr("parallel"));
 
     // Position compute after all reserves by inserting before the last store.
     if (findLastStore(op)) {
       insertAtLastStore(rewriter, op);
     }
 
-    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getInput());
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
     auto computeOp = ComputeOp::create(
-        rewriter, loc, TypeRange{outputType},
-        ValueRange{op.getInput(), op.getOutput()}, ValueRange{initAttached},
-        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+        rewriter, loc, TypeRange{outputType}, ValueRange{op.getInput()},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
     Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc);
+    // Body arguments: input tile, init/output tile.
     body->addArgument(tileType, loc);
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToStart(body);
-    auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
-        rewriter, loc, tileType, body->getArgument(0), body->getArgument(1),
-        bcastType);
-    emitTileStores(rewriter, loc, bcastTileOp, op.getOperation());
+    Value bodyResult;
+    if (tileBcastType) {
+      // tile_bcast needs an output operand to carry the output CB for
+      // PACK reconfig at init time. The init tensor's attach_cb provides it.
+      auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
+          rewriter, loc, tileType, body->getArgument(0), body->getArgument(1),
+          *tileBcastType);
+      bodyResult = bcastTileOp;
+    } else {
+      // Inter-tile-only broadcast: the input affine map replicates the source
+      // tile across outer iterations. Each iteration copies the loaded tile
+      // through DST into the output CB via tile_store.
+      bodyResult = body->getArgument(0);
+    }
+    emitTileStores(rewriter, loc, bodyResult, op.getOperation());
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
@@ -1319,7 +1338,7 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
       // cryptic "failed to legalize" message pointing at the wrong op.
       Operation *defOp = op.getInput().getDefiningOp();
       if (defOp && (isElementwiseOp(defOp) || isa<MatmulOp>(defOp) ||
-                    isa<BcastOp>(defOp) || isa<FillOp>(defOp))) {
+                    isa<BlockBroadcastOp>(defOp) || isa<FillOp>(defOp))) {
         op.emitError("elementwise operations feeding into reduce cannot be "
                      "fused yet; store the intermediate result to a dataflow "
                      "buffer before passing it to reduce (see issue #474)");
@@ -1589,8 +1608,8 @@ struct TTLConvertTTLToComputePass
     // Validate bcast ops before running patterns. Emitting errors here
     // (outside a pattern rewriter) is safe for the Python bindings.
     bool hasErrors = false;
-    func.walk([&](BcastOp op) {
-      if (failed(validateBcastOp(op))) {
+    func.walk([&](BlockBroadcastOp op) {
+      if (failed(validateBlockBroadcastOp(op))) {
         hasErrors = true;
       }
     });
@@ -1627,7 +1646,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  patterns.add<LowerBcastToCompute>(ctx);
+  patterns.add<LowerBlockBroadcastToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);
   patterns.add<LowerMulUnaryConstToCompute>(ctx);

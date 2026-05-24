@@ -37,7 +37,7 @@ def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) 
                 # The reserved block is automatically initialized with zeros
                 with out_dfb.reserve() as out_blk:
                     # Accumulate over K dimension
-                    acc = ttl.math.fill(out_blk, 0)
+                    acc = ttl.block.fill(0, shape=out_blk.shape)
                     for _ in range(Kt):
                         with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                             acc += a_blk @ b_blk

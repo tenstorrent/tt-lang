@@ -126,7 +126,7 @@ def add_then_bcast_kernel(a, b, out):
             # add produces a non-CB-attached value; broadcast needs
             # CB-attached input. Compiler inserts intermediate DFB.
             added = ttl.add(av, bv)
-            result = ttl.math.broadcast(added, o, dims=[0, 1])
+            result = ttl.block.broadcast(added, dims=[0, 1], shape=(1, 1))
             o.store(result)
 
     @ttl.datamovement()
@@ -216,7 +216,7 @@ def reduce_then_bcast_kernel(inp, out):
             # reduce_sum produces non-CB-attached result; broadcast needs
             # CB-attached input. Compiler inserts intermediate DFB between them.
             reduced = ttl.math.reduce_sum(x, dims=[0, 1])
-            o.store(ttl.math.broadcast(reduced, o, dims=[0, 1]))
+            o.store(ttl.block.broadcast(reduced, dims=[0, 1], shape=(1, 1)))
 
     @ttl.datamovement()
     def dm_read():
@@ -258,7 +258,7 @@ def mixed_consumers_kernel(inp, out):
             ex = ttl.exp(x)
             # ex feeds reduce_sum (needs DFB) and also mul (should fuse).
             sm = ttl.math.reduce_sum(ex, dims=[0, 1])
-            inv = ttl.recip(ttl.math.broadcast(sm, ex, dims=[0, 1]))
+            inv = ttl.recip(ttl.block.broadcast(sm, dims=[0, 1], shape=(1, 1)))
             o.store(ttl.mul(ex, inv))
 
     @ttl.datamovement()

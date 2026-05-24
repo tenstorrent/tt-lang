@@ -474,7 +474,7 @@ def row_rings_kernel(inp, out):
                 ttl.copy(blk, out[y, x]).wait()
 
 
-def test_row_rings_auto(device):
+def test_row_rings_full(device):
     """USE_Y parallel forward rings on a USE_Y x USE_X subgrid of the device
     compute grid (USE_X = min(grid_x, RING_X), USE_Y = min(grid_y, RING_Y)).
     Each active receiver computes

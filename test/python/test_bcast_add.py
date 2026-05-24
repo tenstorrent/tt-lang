@@ -45,7 +45,7 @@ def bcast_col_add_1x1_kernel(a, b, out):
             a_dfb.wait() as a_tile,
             out_dfb.reserve() as o,
         ):
-            b_bcast = ttl.math.broadcast(b_tile, o, dims=[1])
+            b_bcast = ttl.block.broadcast(b_tile, dims=[1], shape=(1, 1))
             result = b_bcast + a_tile
             o.store(result)
 
@@ -71,9 +71,9 @@ def bcast_col_add_1x1_kernel(a, b, out):
 
 @ttl.operation(grid=(1, 1))
 def bcast_col_add_2x2_kernel(a, b, out):
-    """Compute bcast_col(b) + a on a 2x2 tile grid."""
+    """Compute bcast_col(b) + a on a 2x2 tile grid; b is a (2, 1) source column."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), block_count=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
@@ -83,7 +83,7 @@ def bcast_col_add_2x2_kernel(a, b, out):
             a_dfb.wait() as a_tile,
             out_dfb.reserve() as o,
         ):
-            b_bcast = ttl.math.broadcast(b_tile, o, dims=[1])
+            b_bcast = ttl.block.broadcast(b_tile, dims=[1], shape=(2, 2))
             result = b_bcast + a_tile
             o.store(result)
 
@@ -95,7 +95,7 @@ def bcast_col_add_2x2_kernel(a, b, out):
         a_blk.push()
 
         b_blk = b_dfb.reserve()
-        tx_b = ttl.copy(b[0:2, 0:2], b_blk)
+        tx_b = ttl.copy(b[0:2, 0:1], b_blk)
         tx_b.wait()
         b_blk.push()
 
@@ -109,9 +109,9 @@ def bcast_col_add_2x2_kernel(a, b, out):
 
 @ttl.operation(grid=(1, 1))
 def bcast_col_add_4x4_kernel(a, b, out):
-    """Compute bcast_col(b) + a on a 4x4 tile grid (requires DST subblocking)."""
+    """Compute bcast_col(b) + a on a 4x4 tile grid; b is a (4, 1) source column."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(4, 4), block_count=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(4, 4), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(4, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), block_count=2)
 
     @ttl.compute()
@@ -121,7 +121,7 @@ def bcast_col_add_4x4_kernel(a, b, out):
             a_dfb.wait() as a_tile,
             out_dfb.reserve() as o,
         ):
-            b_bcast = ttl.math.broadcast(b_tile, o, dims=[1])
+            b_bcast = ttl.block.broadcast(b_tile, dims=[1], shape=(4, 4))
             result = b_bcast + a_tile
             o.store(result)
 
@@ -133,7 +133,7 @@ def bcast_col_add_4x4_kernel(a, b, out):
         a_blk.push()
 
         b_blk = b_dfb.reserve()
-        tx_b = ttl.copy(b[0:4, 0:4], b_blk)
+        tx_b = ttl.copy(b[0:4, 0:1], b_blk)
         tx_b.wait()
         b_blk.push()
 
@@ -152,18 +152,20 @@ def bcast_col_add_4x4_kernel(a, b, out):
 
 def col_broadcast_add_golden(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """
-    Compute golden for tile_bcast col + tile_add.
+    Compute golden for spec-form col broadcast + add.
 
-    tile_bcast col broadcasts column 0 of each 32x32 tile across all 32
-    columns of that tile. The result is then added element-wise with A.
+    b provides a single source column of tiles (shape (rows, 32)). For each
+    output tile (i, j), the broadcast replicates b's tile at row i across all
+    output tile columns; tile_bcast col additionally broadcasts column 0 of
+    that source tile across all 32 columns within the tile.
     """
     result = a.clone()
     tile_h, tile_w = 32, 32
     rows, cols = a.shape
     for tr in range(0, rows, tile_h):
+        b_col = b[tr : tr + tile_h, 0:1]  # (32, 1) from b's single source column
+        b_bcast = b_col.expand(tile_h, tile_w)  # (32, 32)
         for tc in range(0, cols, tile_w):
-            b_col = b[tr : tr + tile_h, tc : tc + 1]  # (32, 1)
-            b_bcast = b_col.expand(tile_h, tile_w)  # (32, 32)
             result[tr : tr + tile_h, tc : tc + tile_w] = (
                 a[tr : tr + tile_h, tc : tc + tile_w] + b_bcast
             )

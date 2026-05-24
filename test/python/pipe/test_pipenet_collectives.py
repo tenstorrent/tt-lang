@@ -2,18 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device pytests for collective patterns under grid="auto" with launch
+"""Device pytests for collective patterns under grid="full" with launch
 extent larger than work extent.
 
 `test/python/pipe/test_pipe_patterns.py` already covers the basic
 gather, scatter, scatter-gather, and ring forward kernels with launch
 extent equal to work extent. The cases here cover regimes the
-`ttl-verify-pipenet-guards` verifier exercises under `grid="auto"`:
+`ttl-verify-pipenet-guards` verifier exercises under `grid="full"`:
 
-* Scatter on a subgrid (`grid="auto"`, work = 4 nodes in row 0):
+* Scatter on a subgrid (`grid="full"`, work = 4 nodes in row 0):
   single PipeNet, single multicast pipe, dst rectangle smaller than the
   launch grid.
-* Per-row scatter (`grid="auto"`, work = ROWS x COLS): single PipeNet
+* Per-row scatter (`grid="full"`, work = ROWS x COLS): single PipeNet
   with multiple pipes whose destination rectangles do not overlap
   (different rows). 2D active set.
 * Two PipeNets with overlapping destinations: a single cross-PipeNet
@@ -49,7 +49,7 @@ TILE = 32
 N_SCATTER = 4
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def scatter_subgrid_kernel(inp, out):
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, N_SCATTER), 0))])
 
@@ -87,7 +87,7 @@ def scatter_subgrid_kernel(inp, out):
 
 
 def test_scatter_subgrid(device):
-    """Scatter from (0, 0) to (slice(1, 4), 0) under grid="auto".
+    """Scatter from (0, 0) to (slice(1, 4), 0) under grid="full".
 
     Active set: {(0,0), (1,0), (2,0), (3,0)}. The launch extent equals
     the active set, so every launched node carries a PipeNet role and
@@ -117,7 +117,7 @@ PR_ROWS = 3
 PR_COLS = 4
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def per_row_scatter_kernel(inp, out):
     net = ttl.PipeNet(
         [ttl.Pipe(src=(0, r), dst=(slice(1, PR_COLS), r)) for r in range(PR_ROWS)]
@@ -193,7 +193,7 @@ def test_per_row_scatter(device):
 # ---------------------------------------------------------------------------
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def overlapping_pipenets_kernel(inp, out):
     net_a = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0))])
     net_b = ttl.PipeNet([ttl.Pipe(src=(3, 0), dst=(slice(1, 3), 0))])
@@ -309,7 +309,7 @@ def test_overlapping_pipenets(device):
 # ---------------------------------------------------------------------------
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def nested_if_callbacks_kernel(inp, out):
     net_a = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
     net_b = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(2, 0))])
@@ -374,7 +374,7 @@ def nested_if_callbacks_kernel(inp, out):
 N_LB = 4
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def loopback_multicast_kernel(inp, out):
     # src=(0,0); dst column 0 rows 0..3 (includes source).
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, slice(0, N_LB)))])

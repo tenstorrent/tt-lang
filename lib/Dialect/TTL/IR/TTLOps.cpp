@@ -1081,8 +1081,8 @@ mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
 }
 
 llvm::SmallVector<unsigned>
-mlir::tt::ttl::BcastOp::getDFBInputOperandIndices() {
-  return {0, 1}; // input and output both require CB-attached values
+mlir::tt::ttl::BlockBroadcastOp::getDFBInputOperandIndices() {
+  return {0}; // input is the only operand; output CB is resolved downstream
 }
 
 llvm::SmallVector<unsigned>
@@ -1258,6 +1258,109 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
                          << inputType.getElementType();
   }
 
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// BlockBroadcastOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::BlockBroadcastOp::verify() {
+  auto inputType = mlir::cast<RankedTensorType>(getInput().getType());
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (!isa<ttcore::TileType>(inputType.getElementType())) {
+    return emitOpError()
+           << "row-major broadcast is not supported; input element type must "
+              "be !ttcore.tile";
+  }
+
+  if (!inputType.hasStaticShape() || !resultType.hasStaticShape()) {
+    return emitOpError() << "all operands must have static shapes";
+  }
+
+  ArrayRef<int64_t> dims = getDims();
+  ArrayRef<int64_t> shape = getShape();
+
+  int64_t rank = inputType.getRank();
+  if (static_cast<int64_t>(shape.size()) != rank) {
+    return emitOpError() << "shape size " << shape.size()
+                         << " does not match input rank " << rank;
+  }
+  if (resultType.getRank() != rank) {
+    return emitOpError() << "result rank " << resultType.getRank()
+                         << " does not match input rank " << rank;
+  }
+
+  if (dims.empty()) {
+    return emitOpError() << "dims must be non-empty";
+  }
+
+  llvm::SmallDenseSet<int64_t> normDims;
+  for (int64_t d : dims) {
+    int64_t normalized = normalizeDim(d, rank);
+    if (normalized < 0 || normalized >= rank) {
+      return emitOpError() << "dim " << d << " is out of range for rank "
+                           << rank;
+    }
+    if (!normDims.insert(normalized).second) {
+      return emitOpError() << "duplicate dim " << d;
+    }
+  }
+
+  for (int64_t i = 0; i < rank; ++i) {
+    if (normDims.contains(i)) {
+      if (shape[i] <= 0) {
+        return emitOpError()
+               << "shape[" << i << "] = " << shape[i] << " must be positive";
+      }
+      if (inputType.getDimSize(i) != 1) {
+        return emitOpError()
+               << "input dim " << i << " is " << inputType.getDimSize(i)
+               << " but must be 1 for broadcast dim " << i;
+      }
+    } else if (inputType.getDimSize(i) != shape[i]) {
+      return emitOpError() << "input dim " << i << " is "
+                           << inputType.getDimSize(i)
+                           << " but must match shape[" << i
+                           << "] = " << shape[i] << " for non-broadcast dim";
+    }
+    if (resultType.getDimSize(i) != shape[i]) {
+      return emitOpError() << "result dim " << i << " is "
+                           << resultType.getDimSize(i) << " but expected shape["
+                           << i << "] = " << shape[i];
+    }
+  }
+
+  if (inputType.getElementType() != resultType.getElementType()) {
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
+                         << " must match input element type "
+                         << inputType.getElementType();
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// FillOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::FillOp::verify() {
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+  if (!isa<ttcore::TileType>(resultType.getElementType())) {
+    return emitOpError() << "result element type must be !ttcore.tile, got "
+                         << resultType.getElementType();
+  }
+  if (!resultType.hasStaticShape()) {
+    return emitOpError() << "result must have a static shape";
+  }
+  for (auto [i, dim] : llvm::enumerate(resultType.getShape())) {
+    if (dim <= 0) {
+      return emitOpError() << "result shape[" << i << "] = " << dim
+                           << " must be positive";
+    }
+  }
   return success();
 }
 
