@@ -688,9 +688,9 @@ def emit_runner_source(
     )
     lines.append(
         "        raise RuntimeError("
-        "\"pipe resource plan expected \""
-        " f\"{expected_extra_common_runtime_args} extra common runtime args, \""
-        " f\"got {len(extra_common_runtime_args)}\")"
+        '"pipe resource plan expected "'
+        ' f"{expected_extra_common_runtime_args} extra common runtime args, "'
+        ' f"got {len(extra_common_runtime_args)}")'
     )
     lines.append("")
 
