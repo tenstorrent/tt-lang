@@ -226,8 +226,20 @@ class Block:
             return self._pending_copy_src_location
         return None
 
-    def mark_copy_as_source(self) -> None:
-        """Mark that this block is being used as a copy source."""
+    def mark_copy_as_source(
+        self, user_location: Optional[Tuple[str, int]] = None
+    ) -> None:
+        """Mark that this block is being used as a copy source.
+
+        Args:
+            user_location: Pre-captured ``(filename, lineno)`` for the user
+                code that initiated this copy.  When provided (the hot path
+                from :func:`sim.copy.copy`), stored directly without a stack
+                walk.  When ``None`` (direct ``CopyTransaction(...)``
+                construction from tests), falls back to
+                :func:`find_user_code_location` for backwards-compatible
+                behaviour.
+        """
         pending = self._pending_copy_site_for_errors()
         self._sm.transition(
             "copy_src",
@@ -235,13 +247,21 @@ class Block:
             ExpectedOp.COPY_SRC,
             pending_copy_location=pending,
         )
-        try:
-            self._pending_copy_src_location = find_user_code_location()
-        except RuntimeError:
-            self._pending_copy_src_location = None
+        if user_location is not None:
+            self._pending_copy_src_location = user_location
+        else:
+            try:
+                self._pending_copy_src_location = find_user_code_location()
+            except RuntimeError:
+                self._pending_copy_src_location = None
 
-    def mark_copy_as_dest(self) -> None:
-        """Mark that this block is being used as a copy destination."""
+    def mark_copy_as_dest(
+        self, user_location: Optional[Tuple[str, int]] = None
+    ) -> None:
+        """Mark that this block is being used as a copy destination.
+
+        See :meth:`mark_copy_as_source` for ``user_location`` semantics.
+        """
         pending = self._pending_copy_site_for_errors()
         self._sm.transition(
             "copy_dst",
@@ -249,10 +269,13 @@ class Block:
             ExpectedOp.COPY_DST,
             pending_copy_location=pending,
         )
-        try:
-            self._pending_copy_dest_location = find_user_code_location()
-        except RuntimeError:
-            self._pending_copy_dest_location = None
+        if user_location is not None:
+            self._pending_copy_dest_location = user_location
+        else:
+            try:
+                self._pending_copy_dest_location = find_user_code_location()
+            except RuntimeError:
+                self._pending_copy_dest_location = None
 
     def mark_tx_wait_complete(self) -> None:
         """Mark that tx.wait() has completed for a copy operation."""
