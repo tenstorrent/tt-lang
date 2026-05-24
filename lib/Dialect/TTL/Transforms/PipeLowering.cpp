@@ -20,6 +20,8 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "llvm/ADT/DenseMapInfo.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 
@@ -81,7 +83,37 @@ static PipeKey getPipeKey(PipeType pipeType) {
           pipeType.getPipeNetId()};
 }
 
-using PipeSourceKey = std::pair<int64_t, int64_t>;
+struct PipeSourceKey {
+  int64_t srcX;
+  int64_t srcY;
+
+  bool operator==(const PipeSourceKey &other) const {
+    return srcX == other.srcX && srcY == other.srcY;
+  }
+};
+
+} // namespace mlir::tt::ttl
+
+namespace llvm {
+template <>
+struct DenseMapInfo<mlir::tt::ttl::PipeSourceKey> {
+  using Key = mlir::tt::ttl::PipeSourceKey;
+  static Key getEmptyKey() {
+    int64_t sentinel = DenseMapInfo<int64_t>::getEmptyKey();
+    return {sentinel, sentinel};
+  }
+  static Key getTombstoneKey() {
+    int64_t sentinel = DenseMapInfo<int64_t>::getTombstoneKey();
+    return {sentinel, sentinel};
+  }
+  static unsigned getHashValue(const Key &sourceKey) {
+    return hash_combine(sourceKey.srcX, sourceKey.srcY);
+  }
+  static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
+};
+} // namespace llvm
+
+namespace mlir::tt::ttl {
 
 static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
@@ -921,9 +953,8 @@ void buildPipeResourcePlan(const PipeNetIndex &index, PipeResourcePlan &info) {
   llvm::sort(sortedPipeNetIds);
 
   for (int64_t pipeNetId : sortedPipeNetIds) {
-    info.completionWaits[pipeNetId] =
-        PipeCompletionWaitInfo{pipeNetId,
-                               getReceiverCompletionSemIdx(pipeNetId)};
+    info.completionWaits[pipeNetId] = PipeCompletionWaitInfo{
+        pipeNetId, getReceiverCompletionSemIdx(pipeNetId)};
   }
   int64_t firstSourceLocalSemIdx = numPipeNets;
 

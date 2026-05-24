@@ -117,25 +117,19 @@ class OperationPipeNets:
         if not self.pipe_nets:
             return 0
 
-        first_source_local_sem_id = len(self.pipe_nets)
+        num_pipe_nets = len(self.pipe_nets)
         max_pipes_per_source = self._max_pipes_per_source()
-        if (
-            first_source_local_sem_id + max_pipes_per_source
-            > MAX_HARDWARE_SEMAPHORE_IDS
-        ):
-            return first_source_local_sem_id
-        return first_source_local_sem_id + max_pipes_per_source
+        if _uses_global_ready_counters(num_pipe_nets, max_pipes_per_source):
+            return num_pipe_nets
+        return num_pipe_nets + max_pipes_per_source
 
     def num_pipe_global_semaphores(self) -> int:
         """Return the GlobalSemaphore count required by pipe lowering."""
         if not self.pipe_nets:
             return 0
-        first_source_local_sem_id = len(self.pipe_nets)
+        num_pipe_nets = len(self.pipe_nets)
         max_pipes_per_source = self._max_pipes_per_source()
-        if (
-            first_source_local_sem_id + max_pipes_per_source
-            <= MAX_HARDWARE_SEMAPHORE_IDS
-        ):
+        if not _uses_global_ready_counters(num_pipe_nets, max_pipes_per_source):
             return 0
         return sum(len(net.pipes) for net in self.pipe_nets)
 
@@ -147,6 +141,10 @@ class OperationPipeNets:
                     pipe_count_by_source.get(pipe.src.coords, 0) + 1
                 )
         return max(pipe_count_by_source.values(), default=0)
+
+
+def _uses_global_ready_counters(num_pipe_nets: int, max_pipes_per_source: int) -> bool:
+    return num_pipe_nets + max_pipes_per_source > MAX_HARDWARE_SEMAPHORE_IDS
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:

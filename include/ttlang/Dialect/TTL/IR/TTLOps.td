@@ -487,6 +487,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     A point-to-point pipe has one receiver. A collective pipe has a receiver
     set. The receiver-set syntax records the collective transfer contract; it
     does not determine which TTKernel NOC operation is emitted later.
+    `isCollective = true` records a collective transfer contract when the
+    receiver set contains a single point.
 
     Example:
     ```mlir
