@@ -205,6 +205,14 @@ module {
            tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.transfer_handle
     ttl.wait %xf8 : !ttl.transfer_handle
+    %recv16 = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf16 = ttl.copy %p16, %recv16
+        : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 16>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf16 : !ttl.transfer_handle
     func.return
   }
 }

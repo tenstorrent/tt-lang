@@ -240,10 +240,13 @@ whose ranges are disjoint may reuse slot 0.
 
 Each receive post identifies one concrete DFB write pointer. The
 receiver writes that address to a sender-visible SRAM address-table
-entry before incrementing the sender-ready counter. Uniform collective
-uses one table entry per pipe because every destination must publish an
-equivalent DFB address until issue #617 adds explicit per-destination
-addresses.
+entry before incrementing the sender-ready counter. Lowering allocates
+table entries and sender-ready counters from the live transfer
+intervals described below. Uniform collective uses one table entry per
+live transfer interval because TT-Metal NoC multicast writes to the
+same destination L1 address on every receiver. If receivers publish
+different destination addresses, lowering must split the transfer into
+separate writes or reject the collective before TTKernel lowering.
 
 Overlapping arrivals are safe because the user reserves one DFB block
 per receive callback and slot assignment proves the receiver DFB has
@@ -299,10 +302,11 @@ collective. The proof tracks four points in the lowered IR:
    increments the receiver completion semaphore. No sender reads a
    semaphore signaled by another sender.
 3. Receiver completion semaphores are per-PipeNet. Sender-ready
-   semaphores and address-table entries are per pipe on the source
-   core, so two distinct pipes from one source can be posted and sent
-   independently. Receive posts publish DFB addresses with inline
-   32-bit NOC writes, so address publication writes the value directly.
+   semaphores and address-table entries are per source-core transfer
+   interval, so two same-source transfers that overlap get distinct
+   state and non-overlapping same-source transfers can reuse state.
+   Receive posts publish DFB addresses with inline 32-bit NOC writes,
+   so address publication writes the value directly.
 4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
    for a count of total arrivals, not for specific senders. Senders
    bump the counter in any order; the receiver only cares about the
@@ -818,6 +822,8 @@ runtime-observable.
 | 66 | Semaphore counting: collective address storage does not allocate semaphore ids | | X | |
 | 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
 | 68 | Schedule verifier rejects same-thread send before destination address publication | X | | X |
+| 69 | Lowering: overlapping same-source transfers allocate distinct ready counters and address-table slots |  |  |  X  |
+| 70 | Lowering: non-overlapping same-source transfers reuse ready counters and address-table slots |  |  |  X  |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -871,6 +877,27 @@ keeps pipe resource ownership in the compiler plan; future typed device
 APIs should change only the runtime binding mechanism, not the IR-level
 resource model.
 
+### Pipe transfer resource terms
+
+A pipe transfer is the internal `ttl.pipe_transfer` value created from
+one logical pipe use. Public `ttl.copy(pipe, dst_blk)` and
+`ttl.copy(src_blk, pipe)` operations expand to transfer operations
+before TTKernel lowering.
+
+A transfer phase is one dynamic receive-post/send instance for a pipe
+transfer. A live transfer phase is a posted phase whose address
+publication and sender-ready count can still be consumed by a sender. A
+live interval is the conservative operation range from the receive post
+that publishes a destination address through the send that consumes that
+address.
+
+Queue depth is the maximum number of simultaneously live phases for one
+pipe transfer. The current lowering has queue depth 1: a later phase for
+the same pipe transfer cannot post before the current phase's
+sender-ready counter and address-table entry have been consumed by the
+send. This invariant allows the send to reset the sender-ready counter
+after consumption.
+
 ### Receiver-authored address table
 
 Point-to-point and collective transfers use a receiver-authored SRAM
@@ -880,21 +907,75 @@ semaphore. The send waits for readiness, reads the table entry, and
 writes the payload to that receiver-owned DFB block.
 
 Receive posts publish the address with an inline 32-bit NOC write.
-Table entries are per pipe on the source core. Address storage is
-ordinary SRAM, so it does not consume semaphore ids.
+Table entries are allocated per source core from transfer live
+intervals. Same-source transfer intervals that overlap get distinct
+entries; non-overlapping same-source intervals can reuse the same entry.
+When multiple static transfer operations reference the same logical
+pipe, lowering unions their intervals into one allocation unit so
+repeated uses preserve the existing per-pipe protocol state.
+Address storage is ordinary SRAM, so it does not consume semaphore ids.
 
 ### Ready-counter allocation
 
 Sender-ready counters are logical counted synchronization resources.
-Lowering uses local hardware semaphores when the resource plan fits the
-local semaphore-id budget. When source-local pipe count would exceed
-that budget, the compiler assigns GlobalSemaphore-backed ready counters
-and records the required count in `ttl.pipe_global_semaphore_count`.
+Lowering allocates them per source core from the same live intervals as
+the address table. Same-source transfer intervals that overlap get
+distinct ready counters; non-overlapping same-source intervals can reuse
+one ready counter. Repeated static transfer operations for one logical
+pipe use the same unioned allocation unit as the address table.
+
+Lowering uses local hardware semaphores when the live-interval resource
+plan fits the local semaphore-id budget. When the receiver-completion
+counter range plus the maximum source-local ready-counter count would
+exceed that budget, the compiler assigns GlobalSemaphore-backed ready
+counters for the module and records the required count in
+`ttl.pipe_global_semaphore_count`.
 
 Receiver completion remains a per-PipeNet local counter in the current
 lowering. Address-table storage, ready counting, and completion wait
 are allocated independently so address publication does not consume
 local semaphore ids.
+
+### Relation to upstream designs
+
+TT-Lang uses dedicated `ttl.pipe_transfer` IR instead of lowering
+PipeNets directly to MLIR `async` because generic async tokens describe
+dependency ordering, not PipeNet resource ownership. PipeNet lowering
+must preserve source/destination coordinates, receiver-authored DFB
+address publication, expected receiver counts, aggregate collective
+constraints, source-core address-table offsets, and local-vs-global
+ready-counter selection.
+
+Upstream MLIR and IREE use the same broad design principle: explicit
+dependency values or explicit synchronization objects make ordering and
+reuse analyzable before target lowering.
+
+- MLIR `async` provides generic `async.token` / `async.value`
+  dependencies, `async.execute`, groups, and `async.await`; it does not
+  assign target synchronization resources.
+- MLIR `gpu` provides GPU-level execution and async token abstractions
+  for launch and device ordering.
+- MLIR `nvgpu` models target-specific asynchronous copies with
+  `nvgpu.device_async_copy`, groups pending copies with
+  `nvgpu.device_async_create_group`, and waits for completion with
+  `nvgpu.device_async_wait`. The optional `numGroups` wait attribute
+  represents a bounded number of in-flight async-copy groups.
+- MLIR `nvgpu.mbarrier` models synchronization as a memory-backed
+  barrier object with explicit initialization, arrivals, and phase
+  waits.
+- IREE GPU uses `iree_gpu.async_dma` to keep asynchronous data movement
+  explicit until barrier placement and pipelining decisions are made.
+  Its pipeline options include `prefetch_num_stages`, where values above
+  one enable software-pipelined shared-memory prefetching.
+- IREE Stream uses `!stream.timepoint` values to maintain explicit
+  wait-on and signal-to behavior, and it has allocation refinement
+  passes that make resource reuse legal only when resource semantics and
+  ordering allow it.
+
+The TT-Lang analogue is source-core live-interval allocation. The
+allocator consumes explicit post/send operations and assigns physical
+address-table slots and ready counters only for transfer intervals that
+can be live concurrently.
 
 ### Aggregate collective ready counting
 
@@ -906,11 +987,12 @@ one DFB address from the table, issues one multicast payload write, and
 signals receiver completion with the existing per-PipeNet completion
 counter.
 
-Until issue #617 adds per-receiver destination addresses, all
-receivers for one collective pipe must publish equivalent DFB addresses.
-`PipeGraph` validates the receiver DFB index, DFB type, and static tile
-offset for every collective receive post; non-uniform or untraceable
-destination addresses are rejected before TTKernel lowering.
+TT-Metal NoC multicast has one destination L1 address for all
+receivers. All receivers for one collective pipe must therefore publish
+equivalent DFB addresses. `PipeGraph` validates the receiver DFB index,
+DFB type, and static tile offset for every collective receive post;
+non-uniform or untraceable destination addresses are rejected before
+TTKernel lowering. Issue #617 tracks this compiler constraint.
 
 `ttl.wait` on a receive handle expands to `ttl.pipe_transfer.wait`, and
 `PipeLowering.cpp::lowerPipeTransferWait` lowers that op to a

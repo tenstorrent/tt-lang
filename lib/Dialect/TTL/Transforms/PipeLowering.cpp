@@ -10,6 +10,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -131,12 +132,12 @@ static FailureOr<PipeTransferCreateOp> getPipeTransferCreate(Operation *op,
 }
 
 static PipeResourceInfo
-lookupPipeResourceInfo(PipeType pipeType,
+lookupPipeResourceInfo(PipeTransferCreateOp createOp,
                        const PipeResourcePlan *pipeResourcePlan) {
   assert(pipeResourcePlan && "missing pipe resource plan");
-  auto it = pipeResourcePlan->resources.find(getPipeKey(pipeType));
+  auto it = pipeResourcePlan->resources.find(createOp.getOperation());
   assert(it != pipeResourcePlan->resources.end() &&
-         "pipe missing from pipe resource plan");
+         "pipe transfer missing from pipe resource plan");
   return it->second;
 }
 
@@ -416,7 +417,7 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   }
   auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
   PipeResourceInfo pipeResource =
-      lookupPipeResourceInfo(pipeType, pipeResourcePlan);
+      lookupPipeResourceInfo(*createOp, pipeResourcePlan);
   PipeCompletionWaitInfo completionInfo =
       lookupPipeCompletionWaitInfo(pipeType, pipeResourcePlan);
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -618,7 +619,7 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   }
   auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
   PipeResourceInfo pipeResource =
-      lookupPipeResourceInfo(pipeType, pipeResourcePlan);
+      lookupPipeResourceInfo(*createOp, pipeResourcePlan);
   FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
       getReceiverPublishedAddressInfo(op, dst, rewriter);
   if (failed(publishedAddressInfo)) {
@@ -965,93 +966,313 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   });
 }
 
-void buildPipeResourcePlan(const PipeNetIndex &index, PipeResourcePlan &info) {
-  int64_t numPipeNets = 0;
-  for (const auto &[pipeNetId, pipes] : index) {
-    if (!pipes.empty()) {
-      numPipeNets = std::max(numPipeNets, pipeNetId + 1);
-    }
+namespace {
+
+struct PipeTransferAllocationUnit {
+  SmallVector<Operation *> transferCreateOps;
+  PipeKey pipe;
+  PipeType pipeType;
+  PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
+  int64_t ordinal = 0;
+  Operation *intervalStart = nullptr;
+  Operation *intervalEnd = nullptr;
+  bool hasPost = false;
+  bool hasSend = false;
+  bool unbounded = false;
+  int64_t resourceColor = 0;
+};
+
+} // namespace
+
+static void updateIntervalStart(PipeTransferAllocationUnit &unit, Operation *op,
+                                const DominanceInfo &dominanceInfo) {
+  if (!unit.intervalStart ||
+      dominanceInfo.properlyDominates(op, unit.intervalStart)) {
+    unit.intervalStart = op;
+    return;
+  }
+  if (!dominanceInfo.dominates(unit.intervalStart, op)) {
+    unit.unbounded = true;
+  }
+}
+
+static void updateIntervalEnd(PipeTransferAllocationUnit &unit, Operation *op,
+                              const DominanceInfo &dominanceInfo) {
+  if (!unit.intervalEnd) {
+    unit.intervalEnd = op;
+    return;
+  }
+  if (dominanceInfo.properlyDominates(unit.intervalEnd, op)) {
+    unit.intervalEnd = op;
+    return;
+  }
+  if (!dominanceInfo.dominates(op, unit.intervalEnd)) {
+    unit.unbounded = true;
+  }
+}
+
+static void finalizeInterval(PipeTransferAllocationUnit &unit,
+                             const DominanceInfo &dominanceInfo,
+                             const PostDominanceInfo &postDominanceInfo) {
+  if (!unit.hasPost || !unit.hasSend || !unit.intervalStart ||
+      !unit.intervalEnd) {
+    unit.unbounded = true;
+    return;
   }
 
-  SmallVector<int64_t> sortedPipeNetIds;
-  sortedPipeNetIds.reserve(index.size());
-  for (const auto &[pipeNetId, pipes] : index) {
-    if (!pipes.empty()) {
-      sortedPipeNetIds.push_back(pipeNetId);
-    }
+  // MLIR value liveness tracks SSA lifetime. Sender-ready counters and
+  // address-table slots become reusable at the send that consumes the posted
+  // address, even when the transfer value or receive token remains live.
+  if (!dominanceInfo.dominates(unit.intervalStart, unit.intervalEnd) ||
+      !postDominanceInfo.postDominates(unit.intervalEnd, unit.intervalStart)) {
+    unit.unbounded = true;
   }
+}
+
+static bool intervalsOverlap(const PipeTransferAllocationUnit &lhs,
+                             const PipeTransferAllocationUnit &rhs,
+                             const DominanceInfo &dominanceInfo) {
+  if (lhs.unbounded || rhs.unbounded || !lhs.intervalStart ||
+      !lhs.intervalEnd || !rhs.intervalStart || !rhs.intervalEnd) {
+    return true;
+  }
+  return !(
+      dominanceInfo.properlyDominates(lhs.intervalEnd, rhs.intervalStart) ||
+      dominanceInfo.properlyDominates(rhs.intervalEnd, lhs.intervalStart));
+}
+
+static FailureOr<SmallVector<PipeTransferAllocationUnit>>
+collectPipeTransferAllocationUnits(ModuleOp mod,
+                                   const DominanceInfo &dominanceInfo,
+                                   const PostDominanceInfo &postDominanceInfo) {
+  SmallVector<PipeTransferAllocationUnit> units;
+  llvm::MapVector<Operation *, unsigned> indexByTransferCreateOp;
+  llvm::MapVector<PipeKey, unsigned> indexByPipe;
+  int64_t nextOrdinal = 0;
+
+  auto getOrCreateUnit =
+      [&](Operation *protocolOp,
+          Value transfer) -> FailureOr<PipeTransferAllocationUnit *> {
+    FailureOr<PipeTransferCreateOp> createOp =
+        getPipeTransferCreate(protocolOp, transfer);
+    if (failed(createOp)) {
+      return failure();
+    }
+
+    Operation *transferCreateOp = (*createOp).getOperation();
+    auto existing = indexByTransferCreateOp.find(transferCreateOp);
+    if (existing != indexByTransferCreateOp.end()) {
+      return &units[existing->second];
+    }
+
+    auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
+    PipeKey pipe = getPipeKey(pipeType);
+    PipeTransferContract transferContract = getPipeTransferContract(*createOp);
+    auto existingPipe = indexByPipe.find(pipe);
+    if (existingPipe != indexByPipe.end()) {
+      PipeTransferAllocationUnit &unit = units[existingPipe->second];
+      unit.transferCreateOps.push_back(transferCreateOp);
+      if (isCollectiveTransfer(transferContract)) {
+        unit.transferContract = PipeTransferContract::Collective;
+      }
+      indexByTransferCreateOp.insert({transferCreateOp, existingPipe->second});
+      return &unit;
+    }
+
+    PipeTransferAllocationUnit unit;
+    unit.transferCreateOps.push_back(transferCreateOp);
+    unit.pipe = pipe;
+    unit.pipeType = pipeType;
+    unit.transferContract = transferContract;
+    unit.ordinal = nextOrdinal++;
+    indexByTransferCreateOp.insert({transferCreateOp, units.size()});
+    indexByPipe.insert({pipe, units.size()});
+    units.push_back(unit);
+    return &units.back();
+  };
+
+  WalkResult walkResult = mod.walk([&](Operation *op) {
+    if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
+      FailureOr<PipeTransferAllocationUnit *> unit =
+          getOrCreateUnit(op, postOp.getTransfer());
+      if (failed(unit)) {
+        return WalkResult::interrupt();
+      }
+      (*unit)->hasPost = true;
+      updateIntervalStart(**unit, op, dominanceInfo);
+      return WalkResult::advance();
+    }
+
+    if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
+      FailureOr<PipeTransferAllocationUnit *> unit =
+          getOrCreateUnit(op, sendOp.getTransfer());
+      if (failed(unit)) {
+        return WalkResult::interrupt();
+      }
+      (*unit)->hasSend = true;
+      updateIntervalEnd(**unit, op, dominanceInfo);
+      return WalkResult::advance();
+    }
+
+    return WalkResult::advance();
+  });
+  if (walkResult.wasInterrupted()) {
+    return failure();
+  }
+
+  for (PipeTransferAllocationUnit &unit : units) {
+    finalizeInterval(unit, dominanceInfo, postDominanceInfo);
+  }
+
+  return units;
+}
+
+static bool
+isBeforeForDeterministicAllocation(const PipeTransferAllocationUnit &lhs,
+                                   const PipeTransferAllocationUnit &rhs) {
+  return std::make_tuple(lhs.pipe.srcX, lhs.pipe.srcY, lhs.pipe.pipeNetId,
+                         lhs.pipe.dstStartX, lhs.pipe.dstStartY,
+                         lhs.pipe.dstEndX, lhs.pipe.dstEndY, lhs.ordinal) <
+         std::make_tuple(rhs.pipe.srcX, rhs.pipe.srcY, rhs.pipe.pipeNetId,
+                         rhs.pipe.dstStartX, rhs.pipe.dstStartY,
+                         rhs.pipe.dstEndX, rhs.pipe.dstEndY, rhs.ordinal);
+}
+
+using SourceColorMap =
+    llvm::MapVector<PipeSourceKey, SmallVector<SmallVector<unsigned>>>;
+
+static SourceColorMap
+assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
+                         const DominanceInfo &dominanceInfo) {
+  SmallVector<unsigned> sortedUnitIndices;
+  sortedUnitIndices.reserve(units.size());
+  for (unsigned index = 0, size = units.size(); index < size; ++index) {
+    sortedUnitIndices.push_back(index);
+  }
+  llvm::sort(sortedUnitIndices, [&](unsigned lhsIndex, unsigned rhsIndex) {
+    return isBeforeForDeterministicAllocation(units[lhsIndex], units[rhsIndex]);
+  });
+
+  SourceColorMap colorUsersBySource;
+  for (unsigned unitIndex : sortedUnitIndices) {
+    PipeTransferAllocationUnit &unit = units[unitIndex];
+    SmallVector<SmallVector<unsigned>> &colorUsers =
+        colorUsersBySource[getPipeSourceKey(unit.pipeType)];
+
+    unsigned selectedColor = 0;
+    for (;; ++selectedColor) {
+      if (selectedColor == colorUsers.size()) {
+        colorUsers.push_back({});
+        break;
+      }
+      bool hasConflict = llvm::any_of(
+          colorUsers[selectedColor], [&](unsigned assignedUnitIndex) {
+            return intervalsOverlap(unit, units[assignedUnitIndex],
+                                    dominanceInfo);
+          });
+      if (!hasConflict) {
+        break;
+      }
+    }
+
+    unit.resourceColor = selectedColor;
+    colorUsers[selectedColor].push_back(unitIndex);
+  }
+
+  return colorUsersBySource;
+}
+
+LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
+  DominanceInfo dominanceInfo(mod);
+  PostDominanceInfo postDominanceInfo(mod);
+  FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
+      collectPipeTransferAllocationUnits(mod, dominanceInfo, postDominanceInfo);
+  if (failed(maybeUnits)) {
+    return failure();
+  }
+  SmallVector<PipeTransferAllocationUnit> &units = *maybeUnits;
+  SourceColorMap colorUsersBySource =
+      assignLiveIntervalColors(units, dominanceInfo);
+
+  llvm::SmallSetVector<int64_t, 4> activePipeNetIds;
+  for (const PipeTransferAllocationUnit &unit : units) {
+    activePipeNetIds.insert(unit.pipe.pipeNetId);
+  }
+
+  SmallVector<int64_t> sortedPipeNetIds(activePipeNetIds.begin(),
+                                        activePipeNetIds.end());
   llvm::sort(sortedPipeNetIds);
 
+  int64_t firstSourceLocalSemIdx = 0;
   for (int64_t pipeNetId : sortedPipeNetIds) {
-    info.completionWaits[pipeNetId] = PipeCompletionWaitInfo{
-        pipeNetId, getReceiverCompletionSemIdx(pipeNetId)};
+    int64_t receiverSemIdx = getReceiverCompletionSemIdx(pipeNetId);
+    info.completionWaits[pipeNetId] =
+        PipeCompletionWaitInfo{pipeNetId, receiverSemIdx};
+    firstSourceLocalSemIdx =
+        std::max(firstSourceLocalSemIdx, receiverSemIdx + 1);
   }
-  int64_t firstSourceLocalSemIdx = numPipeNets;
 
-  llvm::MapVector<PipeSourceKey, int64_t> pipeCountBySource;
-  for (int64_t pipeNetId : sortedPipeNetIds) {
-    auto pipeNetIt = index.find(pipeNetId);
-    assert(pipeNetIt != index.end());
-    for (PipeInfo pipeInfo : pipeNetIt->second) {
-      ++pipeCountBySource[getPipeSourceKey(pipeInfo.pipeType)];
-    }
-  }
-  int64_t maxPipesPerSource = 0;
-  for (const auto &[sourceKey, count] : pipeCountBySource) {
+  int64_t maxReadyCountersPerSource = 0;
+  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
     (void)sourceKey;
-    maxPipesPerSource = std::max(maxPipesPerSource, count);
+    maxReadyCountersPerSource =
+        std::max<int64_t>(maxReadyCountersPerSource, colorUsers.size());
   }
+
   // Use one ready-counter kind per kernel so host allocation has one compact
-  // descriptor layout. Liveness allocation can make this per source later.
+  // descriptor layout.
   bool useGlobalReadyCounters =
-      firstSourceLocalSemIdx + maxPipesPerSource > kMaxHardwareSemaphoreIds;
+      firstSourceLocalSemIdx + maxReadyCountersPerSource >
+      kMaxHardwareSemaphoreIds;
 
-  llvm::MapVector<PipeSourceKey, int64_t> nextSemaphoreIdxBySource;
+  llvm::MapVector<PipeSourceKey, SmallVector<int64_t>> globalIndexBySourceColor;
   int64_t nextGlobalSemaphoreIndex = 0;
-  int64_t nextAddressTableByteOffset = 0;
-
-  for (int64_t pipeNetId : sortedPipeNetIds) {
-    auto pipeNetIt = index.find(pipeNetId);
-    assert(pipeNetIt != index.end());
-    SmallVector<PipeInfo> pipes = pipeNetIt->second;
-    llvm::sort(pipes, [](PipeInfo lhs, PipeInfo rhs) {
-      PipeType lhsType = lhs.pipeType;
-      PipeType rhsType = rhs.pipeType;
-      return std::make_tuple(lhsType.getSrcX(), lhsType.getSrcY(),
-                             lhsType.getDstStartX(), lhsType.getDstStartY(),
-                             lhsType.getDstEndX(), lhsType.getDstEndY()) <
-             std::make_tuple(rhsType.getSrcX(), rhsType.getSrcY(),
-                             rhsType.getDstStartX(), rhsType.getDstStartY(),
-                             rhsType.getDstEndX(), rhsType.getDstEndY());
-    });
-
-    for (PipeInfo pipeInfo : pipes) {
-      PipeType pipeType = pipeInfo.pipeType;
-      PipeResourceInfo pipeResource{};
-      pipeResource.transferContract = pipeInfo.transferContract;
-      if (useGlobalReadyCounters) {
-        pipeResource.readyCounter =
-            PipeGlobalReadyCounterInfo{nextGlobalSemaphoreIndex++};
-      } else {
-        PipeSourceKey sourceKey = getPipeSourceKey(pipeType);
-        auto emplaceResult = nextSemaphoreIdxBySource.try_emplace(
-            sourceKey, firstSourceLocalSemIdx);
-        int64_t &nextSemaphoreIdx = emplaceResult.first->second;
-        pipeResource.readyCounter =
-            PipeLocalReadyCounterInfo{nextSemaphoreIdx++};
+  if (useGlobalReadyCounters) {
+    for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
+      SmallVector<int64_t> &indices = globalIndexBySourceColor[sourceKey];
+      indices.reserve(colorUsers.size());
+      for (unsigned color = 0, colorCount = colorUsers.size();
+           color < colorCount; ++color) {
+        indices.push_back(nextGlobalSemaphoreIndex++);
       }
-      pipeResource.addressStorage.sramAddressTable =
-          PipeSramAddressTableInfo{nextAddressTableByteOffset};
-      // Offsets are global within the per-core pipe SRAM allocation; the same
-      // layout is instantiated independently on each source core.
-      nextAddressTableByteOffset += kPipeAddressWordBytes;
-      info.resources[getPipeKey(pipeType)] = pipeResource;
     }
   }
+
+  int64_t maxAddressTableBytes = 0;
+  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
+    (void)sourceKey;
+    maxAddressTableBytes = std::max<int64_t>(
+        maxAddressTableBytes, colorUsers.size() * kPipeAddressWordBytes);
+  }
+
+  for (const PipeTransferAllocationUnit &unit : units) {
+    PipeResourceInfo pipeResource{};
+    pipeResource.pipe = unit.pipe;
+    pipeResource.transferContract = unit.transferContract;
+    PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
+    if (useGlobalReadyCounters) {
+      auto globalIt = globalIndexBySourceColor.find(sourceKey);
+      assert(globalIt != globalIndexBySourceColor.end());
+      assert(unit.resourceColor <
+             static_cast<int64_t>(globalIt->second.size()));
+      pipeResource.readyCounter =
+          PipeGlobalReadyCounterInfo{globalIt->second[unit.resourceColor]};
+    } else {
+      pipeResource.readyCounter = PipeLocalReadyCounterInfo{
+          firstSourceLocalSemIdx + unit.resourceColor};
+    }
+    pipeResource.addressStorage.sramAddressTable =
+        PipeSramAddressTableInfo{unit.resourceColor * kPipeAddressWordBytes};
+    for (Operation *transferCreateOp : unit.transferCreateOps) {
+      info.resources[transferCreateOp] = pipeResource;
+    }
+  }
+
   info.sramScratch.bytes =
-      info.resources.empty()
+      maxAddressTableBytes == 0
           ? 0
-          : alignTo(nextAddressTableByteOffset, kPipeSramScratchAlignmentBytes);
+          : alignTo(maxAddressTableBytes, kPipeSramScratchAlignmentBytes);
+  return success();
 }
 
 int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info) {
@@ -1064,8 +1285,8 @@ int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info) {
     (void)pipeNetId;
     observe(completion.receiverSemIdx);
   }
-  for (const auto &[pipe, resource] : info.resources) {
-    (void)pipe;
+  for (const auto &[transferCreateOp, resource] : info.resources) {
+    (void)transferCreateOp;
     if (auto *localCounter =
             std::get_if<PipeLocalReadyCounterInfo>(&resource.readyCounter)) {
       observe(localCounter->senderReadySemIdx);
@@ -1076,8 +1297,8 @@ int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info) {
 
 int64_t getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info) {
   int64_t highestGlobalSemaphoreIndex = -1;
-  for (const auto &[pipe, resource] : info.resources) {
-    (void)pipe;
+  for (const auto &[transferCreateOp, resource] : info.resources) {
+    (void)transferCreateOp;
     if (auto *globalCounter =
             std::get_if<PipeGlobalReadyCounterInfo>(&resource.readyCounter)) {
       highestGlobalSemaphoreIndex = std::max(
@@ -1116,10 +1337,12 @@ LogicalResult verifyPipeResourcePlanFitsHardware(ModuleOp mod,
     (void)pipeNetId;
     observe(completion.receiverSemIdx, ResourceKind::ReceiverCompletion);
   }
-  for (const auto &[pipe, resource] : info.resources) {
+  for (const auto &[transferCreateOp, resource] : info.resources) {
+    (void)transferCreateOp;
     if (auto *localCounter =
             std::get_if<PipeLocalReadyCounterInfo>(&resource.readyCounter)) {
-      observe(localCounter->senderReadySemIdx, ResourceKind::SenderReady, pipe);
+      observe(localCounter->senderReadySemIdx, ResourceKind::SenderReady,
+              resource.pipe);
     }
   }
 
