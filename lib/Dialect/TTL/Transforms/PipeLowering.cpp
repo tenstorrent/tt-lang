@@ -119,6 +119,16 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
+static FailureOr<PipeTransferCreateOp> getPipeTransferCreate(Operation *op,
+                                                             Value transfer) {
+  auto createOp = transfer.getDefiningOp<PipeTransferCreateOp>();
+  if (!createOp) {
+    return op->emitError() << op->getName()
+                           << " must use a ttl.pipe_transfer.create result";
+  }
+  return createOp;
+}
+
 static PipeResourceInfo
 lookupPipeResourceInfo(PipeType pipeType,
                        const PipeResourcePlan *pipeResourcePlan) {
@@ -357,8 +367,11 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     // dynamically re-executed inside loops.
     llvm::SmallSetVector<int64_t, 4> pipeNetIds;
     func.walk([&](Operation *op) {
-      if (auto post = mlir::dyn_cast<PipeRecvPostOp>(op)) {
-        auto pipeTy = mlir::cast<PipeType>(post.getPipe().getType());
+      if (auto post = mlir::dyn_cast<PipeTransferPostOp>(op)) {
+        auto createOp =
+            post.getTransfer().getDefiningOp<PipeTransferCreateOp>();
+        assert(createOp && "pipe transfer post missing create op");
+        auto pipeTy = mlir::cast<PipeType>(createOp.getPipe().getType());
         if (getAttachedCB(post.getDst())) {
           pipeNetIds.insert(pipeTy.getPipeNetId());
         }
@@ -391,12 +404,17 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
 
 /// Lower CB -> Pipe copy: write source DFB data to the receiver-published
 /// destination address, then signal arrival.
-LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
-                            bool isConsumerCB,
-                            const PipeResourcePlan *pipeResourcePlan,
-                            ConversionPatternRewriter &rewriter) {
+LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
+                                    bool isConsumerCB,
+                                    const PipeResourcePlan *pipeResourcePlan,
+                                    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  FailureOr<PipeTransferCreateOp> createOp =
+      getPipeTransferCreate(op, op.getTransfer());
+  if (failed(createOp)) {
+    return failure();
+  }
+  auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(pipeType, pipeResourcePlan);
   PipeCompletionWaitInfo completionInfo =
@@ -589,11 +607,16 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   return success();
 }
 
-LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
-                                const PipeResourcePlan *pipeResourcePlan,
-                                ConversionPatternRewriter &rewriter) {
+LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
+                                    const PipeResourcePlan *pipeResourcePlan,
+                                    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  FailureOr<PipeTransferCreateOp> createOp =
+      getPipeTransferCreate(op, op.getTransfer());
+  if (failed(createOp)) {
+    return failure();
+  }
+  auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(pipeType, pipeResourcePlan);
   FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
@@ -646,27 +669,31 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
                                  readyIncr, nocVal, /*posted=*/BoolAttr());
 
-  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  auto token = UnrealizedConversionCastOp::create(
+      rewriter, loc, op.getToken().getType(), ValueRange{});
+  rewriter.replaceOp(op, token.getResult(0));
   return success();
 }
 
 /// Lower the receiver completion wait with a per-PipeNet runtime counter.
-LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
-                                const PipeNetCounterMap *counters,
-                                const PipeResourcePlan *pipeResourcePlan,
-                                ConversionPatternRewriter &rewriter) {
+LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
+                                    const PipeNetCounterMap *counters,
+                                    const PipeResourcePlan *pipeResourcePlan,
+                                    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  auto pipeType = mlir::cast<PipeType>(pipe.getType());
-  PipeCompletionWaitInfo completionInfo =
-      lookupPipeCompletionWaitInfo(pipeType, pipeResourcePlan);
-  (void)dst;
+  auto tokenType = mlir::cast<PipeTokenType>(op.getToken().getType());
+  auto completionIt =
+      pipeResourcePlan->completionWaits.find(tokenType.getPipeNetId());
+  assert(completionIt != pipeResourcePlan->completionWaits.end() &&
+         "pipe net missing from pipe completion info");
+  PipeCompletionWaitInfo completionInfo = completionIt->second;
 
   Value counter;
   if (counters) {
     auto func = op->getParentOfType<func::FuncOp>();
     auto fIt = counters->find(func);
     if (fIt != counters->end()) {
-      auto pIt = fIt->second.find(pipeType.getPipeNetId());
+      auto pIt = fIt->second.find(tokenType.getPipeNetId());
       if (pIt != fIt->second.end()) {
         counter = pIt->second;
       }
@@ -907,8 +934,8 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   using PipeKey =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
   llvm::MapVector<int64_t, llvm::SmallSetVector<PipeKey, 4>> seenPerNet;
-  mod.walk([&](CreatePipeOp op) {
-    auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
+  mod.walk([&](PipeTransferCreateOp op) {
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
     int64_t netId = pipeType.getPipeNetId();
     PipeKey key{pipeType.getSrcX(),      pipeType.getSrcY(),
                 pipeType.getDstStartX(), pipeType.getDstStartY(),

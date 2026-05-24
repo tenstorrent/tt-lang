@@ -57,6 +57,29 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let assemblyFormat = "(`<` $kind^ `>`)?";
 }
 
+def TTL_PipeTransfer : TTL_Type<"PipeTransfer", "pipe_transfer"> {
+  let summary = "Pipe transfer contract";
+  let description = [{
+    Represents one logical receiver-posted pipe transfer before physical
+    synchronization resources are assigned. The transfer value identifies the
+    source/receiver relation and the point-to-point or collective contract; it
+    is not a TTKernel semaphore, SRAM table, GlobalSemaphore, or DFB slot.
+  }];
+}
+
+def TTL_PipeToken : TTL_Type<"PipeToken", "pipe_token"> {
+  let summary = "Pipe receive completion token";
+  let description = [{
+    Names the receiver-side completion dependency produced by a pipe receive
+    post. Waiting on the token makes the receiver-owned destination DFB slot
+    safe to consume.
+  }];
+  let parameters = (ins
+    "int64_t":$pipeNetId
+  );
+  let assemblyFormat = "`<` `net` $pipeNetId `>`";
+}
+
 def TTL_DSTRegister : TTL_Type<"DSTRegister", "dst"> {
   let summary = "Handle representing a tile resident in a DST register";
   let description = [{

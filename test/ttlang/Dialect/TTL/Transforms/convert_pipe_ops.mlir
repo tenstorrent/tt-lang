@@ -101,6 +101,34 @@ func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // -----
 
+// Explicit Pipe Transfer IR lowers through the same receiver-authored
+// address publication, sender-ready wait, payload write, and completion wait.
+// CHECK-LABEL: func.func @explicit_pipe_transfer_ir
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK: ttkernel.noc_async_write
+// CHECK: ttkernel.experimental::semaphore_wait_min
+// CHECK-NOT: ttl.pipe_transfer
+func.func @explicit_pipe_transfer_ir() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+  %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token = ttl.pipe_transfer.post %transfer, %recv
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+  %send = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+  ttl.wait %send : !ttl.transfer_handle<write>
+  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
 // Two pipes in the same PipeNet with the same source need distinct ready
 // semaphores and SRAM address-table slots, otherwise posts for one pipe can
 // satisfy the other pipe's send.
