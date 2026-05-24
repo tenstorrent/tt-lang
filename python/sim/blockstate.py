@@ -10,7 +10,14 @@ transition table used by Block to validate correct usage patterns.
 """
 
 from enum import IntEnum, auto
-from typing import Dict, Iterable, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, Optional, Set, Tuple
+
+# Type alias for the lazy callsite used in error messages.  Block-level access
+# transitions are on the simulator's hottest path; passing a callable instead
+# of an already-resolved ``(file, line)`` tuple lets ``validate()`` skip the
+# state-machine bookkeeping for ``_pending_copy_site_for_errors`` entirely on
+# the happy path -- the lookup only runs when an error is about to be raised.
+PendingCopyLocationProvider = Callable[[], Optional[Tuple[str, int]]]
 
 
 # All enums below are ``IntEnum`` rather than plain ``Enum`` so that
@@ -494,20 +501,24 @@ class BlockStateMachine:
         self,
         operation: str,
         expected_op: ExpectedOp,
-        pending_copy_location: Optional[Tuple[str, int]] = None,
+        pending_copy_location: Optional[PendingCopyLocationProvider] = None,
     ) -> None:
         """Raise RuntimeError if expected_op is not currently allowed.
 
         Args:
             operation: Human-readable operation name for error messages.
             expected_op: The operation being attempted.
-            pending_copy_location: User (file, line) of copy(...) involving this block while NAW/ROR, if known.
+            pending_copy_location: Zero-arg callable that resolves the user
+                ``(file, line)`` of the copy(...) involving this block while
+                NAW/ROR, if known.  Invoked only on the error path so the
+                happy path pays no resolution cost.
         """
         if not self._expected_ops:
             raise RuntimeError(
                 format_block_finished_error(operation, self._access_state)
             )
         if expected_op not in self._expected_ops:
+            loc = pending_copy_location() if pending_copy_location else None
             raise RuntimeError(
                 format_validate_mismatch(
                     operation,
@@ -516,7 +527,7 @@ class BlockStateMachine:
                     self._access_state,
                     self._acquisition,
                     self._kernel_type,
-                    pending_copy_location=pending_copy_location,
+                    pending_copy_location=loc,
                 )
             )
 
@@ -529,7 +540,7 @@ class BlockStateMachine:
         operation_key: str,
         operation_display: str,
         expected_op: ExpectedOp,
-        pending_copy_location: Optional[Tuple[str, int]] = None,
+        pending_copy_location: Optional[PendingCopyLocationProvider] = None,
     ) -> None:
         """Execute a state-machine transition.
 
@@ -541,7 +552,9 @@ class BlockStateMachine:
             operation_key: Table lookup key (e.g. "copy_src", "tx_wait").
             operation_display: Human-readable name used in error messages.
             expected_op: The operation being attempted (for validation).
-            pending_copy_location: User callsite for copy involving this block (NAW/ROR), if known.
+            pending_copy_location: Zero-arg callable resolving the user
+                callsite for copy involving this block (NAW/ROR), if known.
+                Forwarded to :meth:`validate` and only invoked on errors.
         """
         self.validate(operation_display, expected_op, pending_copy_location)
 
@@ -586,7 +599,7 @@ class BlockStateMachine:
 
     def transition_push(
         self,
-        pending_copy_location: Optional[Tuple[str, int]] = None,
+        pending_copy_location: Optional[PendingCopyLocationProvider] = None,
     ) -> None:
         """Validate and execute the push() transition (RESERVE blocks only).
 
@@ -618,7 +631,7 @@ class BlockStateMachine:
 
     def transition_pop(
         self,
-        pending_copy_location: Optional[Tuple[str, int]] = None,
+        pending_copy_location: Optional[PendingCopyLocationProvider] = None,
     ) -> None:
         """Validate and execute the pop() transition (WAIT blocks only).
 

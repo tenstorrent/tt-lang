@@ -235,12 +235,11 @@ class Block:
                 :func:`find_user_code_location` for backwards-compatible
                 behaviour.
         """
-        pending = self._pending_copy_site_for_errors()
         self._sm.transition(
             "copy_src",
             "copy (as source)",
             ExpectedOp.COPY_SRC,
-            pending_copy_location=pending,
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
         if user_location is not None:
             self._pending_copy_src_location = user_location
@@ -257,12 +256,11 @@ class Block:
 
         See :meth:`mark_copy_as_source` for ``user_location`` semantics.
         """
-        pending = self._pending_copy_site_for_errors()
         self._sm.transition(
             "copy_dst",
             "copy (as destination)",
             ExpectedOp.COPY_DST,
-            pending_copy_location=pending,
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
         if user_location is not None:
             self._pending_copy_dest_location = user_location
@@ -274,12 +272,11 @@ class Block:
 
     def mark_tx_wait_complete(self) -> None:
         """Mark that tx.wait() has completed for a copy operation."""
-        pending = self._pending_copy_site_for_errors()
         self._sm.transition(
             "tx_wait",
             "tx.wait()",
             ExpectedOp.TX_WAIT,
-            pending_copy_location=pending,
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
         self._pending_copy_dest_location = None
         if self._access_state != AccessState.ROR:
@@ -314,7 +311,7 @@ class Block:
                 "store_src",
                 "store (as source)",
                 ExpectedOp.STORE_SRC,
-                pending_copy_location=self._pending_copy_site_for_errors(),
+                pending_copy_location=self._pending_copy_site_for_errors,
             )
         self._store_confirmation_pending = False
         if self.dfb is not None:
@@ -326,19 +323,19 @@ class Block:
             "store_dst",
             "store()",
             ExpectedOp.STORE,
-            pending_copy_location=self._pending_copy_site_for_errors(),
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
 
     def mark_push_complete(self) -> None:
         """Mark that push() has completed (RESERVE blocks only)."""
         self._sm.transition_push(
-            pending_copy_location=self._pending_copy_site_for_errors(),
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
 
     def mark_pop_complete(self) -> None:
         """Mark that pop() has completed (WAIT blocks only)."""
         self._sm.transition_pop(
-            pending_copy_location=self._pending_copy_site_for_errors(),
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
 
     def __len__(self) -> Size:
