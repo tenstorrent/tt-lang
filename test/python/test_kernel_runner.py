@@ -165,6 +165,23 @@ def test_build_pipe_global_semaphores_requires_device(monkeypatch):
         )
 
 
+def test_build_pipe_runtime_resources_appends_global_semaphore_args(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensor = _FakeTensor(object())
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[tensor],
+        core_ranges=object(),
+        num_pipe_global_semaphores=2,
+    )
+
+    assert resources.scratch_tensors == []
+    assert resources.global_semaphores == fake_ttnn.create_calls
+    assert resources.extra_common_runtime_args == [0x1000, 0x1020]
+    assert resources.expected_extra_common_runtime_args == 2
+
+
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     spec = kernel_runner.KernelSpec(
@@ -222,6 +239,15 @@ def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     assert result["program"].semaphores == []
 
 
+def test_build_generic_op_io_tensors_duplicates_single_output():
+    tensor = _FakeTensorWithoutDevice()
+
+    assert kernel_runner.build_generic_op_io_tensors([tensor], []) == [
+        tensor,
+        tensor,
+    ]
+
+
 def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -245,7 +271,7 @@ def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
     assert lifetime == fake_ttnn.create_calls[-2:]
 
 
-def test_emit_runner_source_allocates_global_semaphores():
+def test_emit_runner_source_uses_shared_pipe_resource_helpers():
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[],
@@ -256,6 +282,8 @@ def test_emit_runner_source_allocates_global_semaphores():
     )
 
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
-    assert "ttnn.create_global_semaphore(device, core_ranges, 0)" in source
-    assert "ttnn.get_global_semaphore_address(sem)" in source
-    assert "common_runtime_args.extend(extra_common_runtime_args)" in source
+    assert "build_pipe_runtime_resources(" in source
+    assert "build_kernel_descriptors(" in source
+    assert "build_pipe_sync_semaphore_descriptors(" in source
+    assert "build_generic_op_io_tensors(" in source
+    assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
