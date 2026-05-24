@@ -129,6 +129,13 @@ class GreenletScheduler:
         # below, which fires at most once per run.  When a deadlock is detected
         # we recover the location lazily from each blocked greenlet's
         # ``gr_frame`` instead.
+        # In ``fair`` scheduling mode, ``_active`` is *kept* in
+        # least-recently-run-first order: each successful switch moves its
+        # kernel to the end of the dict (O(1) ``pop`` + reinsert).  That makes
+        # ``list(self._active.keys())`` the fair candidate list with no
+        # per-round sort -- replacing what used to be an O(N log N) call per
+        # outer loop iteration on the simulator's hottest scheduling path.
+        # In ``greedy`` mode we simply leave insertion order alone.
         self._active: Dict[KernelId, _KernelState] = {}
         # Completed greenlets (internal bookkeeping)
         self._completed: List[KernelId] = []
@@ -145,9 +152,7 @@ class GreenletScheduler:
         # boundary; read by ``block_current_kernel`` from the kernel side to
         # mutate ``blocking_obj`` / ``operation`` without a dict lookup.
         self._current_state: Optional[_KernelState] = None
-        # Last run timestamp for fair scheduling (kernel_id -> timestamp)
-        self._last_run: Dict[KernelId, int] = {}
-        # Global timestamp counter
+        # Global timestamp counter; only used for the ``tick`` property.
         self._timestamp: int = 0
         # Track if kernel has ever made progress (passed at least one block_if_needed check)
         self._has_made_progress: Dict[KernelId, bool] = {}
@@ -194,8 +199,6 @@ class GreenletScheduler:
         # Initially not blocked (will start when scheduled).  ``_KernelState``
         # defaults ``blocking_obj=None`` and ``operation=""``.
         self._active[kernel_id] = _KernelState(g, kernel_id.kind)
-        # Initialize last run time to 0 (never run)
-        self._last_run[kernel_id] = 0
         # Kernel hasn't made progress yet
         self._has_made_progress[kernel_id] = False
 
@@ -239,9 +242,6 @@ class GreenletScheduler:
         if kernel_id in self._active:
             del self._active[kernel_id]
         self._completed.append(kernel_id)
-        # Clean up last run time
-        if kernel_id in self._last_run:
-            del self._last_run[kernel_id]
 
     def mark_kernel_progress(self) -> None:
         """Mark that the current scheduled kernel has made progress.
@@ -375,10 +375,13 @@ class GreenletScheduler:
                 if state.g.dead:
                     self._mark_completed(kernel_id)
                 elif made_progress:
-                    # Kernel passed one or more block_if_needed checks - give it a timestamp
+                    # Kernel passed one or more block_if_needed checks - bump
+                    # the logical clock and promote it to the end of
+                    # ``_active`` so that the next round's iteration order is
+                    # least-recently-run-first without re-sorting.
                     self._timestamp += 1
-                    self._last_run[kernel_id] = self._timestamp
-                # Kernels that blocked on their first check keep ts=0
+                    self._active[kernel_id] = self._active.pop(kernel_id)
+                # Kernels that blocked on their first check stay at the front
 
             except Exception as e:
                 # Kernel raised an error during initialization
@@ -394,32 +397,21 @@ class GreenletScheduler:
         self._current_kernel_id = None
         self._current_state = None
 
-    def _get_fair_kernel_order(self) -> List[KernelId]:
-        """Get kernels sorted by least recently run.
+    def _seed_fair_order(self) -> None:
+        """Establish the initial ``_active`` order for fair scheduling.
 
-        Kernels that can potentially make progress (not blocked or can unblock)
-        are sorted by their last run timestamp in ascending order.
-
-        Returns:
-            List of kernel ids in least-recently-run order
+        Sorts ``_active`` by ``(linear_node, kind.value, func_name)`` -- the
+        tie-break key that used to be applied per round inside
+        ``_get_fair_kernel_order``.  Called once at the start of ``run()``
+        before the initialization phase; from then on the invariant is
+        maintained incrementally by moving each just-run kernel to the end
+        of ``_active``.
         """
-        # Get all active kernels with their last run times
-        kernel_times: List[Tuple[int, KernelId]] = []
-        for kernel_id in self._active.keys():
-            last_run = self._last_run.get(kernel_id, 0)
-            kernel_times.append((last_run, kernel_id))
-
-        # Sort by timestamp (ascending), then by node, kind, and name for stability
-        kernel_times.sort(
-            key=lambda x: (
-                x[0],
-                x[1].linear_node,
-                x[1].kind.value,
-                x[1].func_name,
-            )
+        ordered = sorted(
+            self._active.items(),
+            key=lambda kv: (kv[0].linear_node, kv[0].kind.value, kv[0].func_name),
         )
-
-        return [tid for _, tid in kernel_times]
+        self._active = {kid: state for kid, state in ordered}
 
     def run(self) -> None:
         """Run all kernels until completion or deadlock is detected."""
@@ -431,10 +423,15 @@ class GreenletScheduler:
 
         # Determine scheduling algorithm
         algorithm = get_scheduler_algorithm()
+        fair = algorithm == "fair"
 
         # Phase 1: Initialization - run all kernels until they first block
         # This ensures all kernels have blocking_obj set so can_{operation}() checks work
-        if algorithm == "fair":
+        if fair:
+            # Seed ``_active`` in deterministic tie-break order so that the
+            # initialization phase (and the first main-loop round) iterate
+            # in the same order the old per-round sort would have produced.
+            self._seed_fair_order()
             self._initialization_phase()
 
         # Phase 2: Main scheduling loop with fairness
@@ -442,13 +439,10 @@ class GreenletScheduler:
         while self._active:
             any_progress = False
 
-            # Select kernels to try based on algorithm
-            if algorithm == "fair":
-                # Fair: Try kernels in order of least recently run
-                kernel_candidates = self._get_fair_kernel_order()
-            else:
-                # Greedy: Try kernels in arbitrary order (as they appear in dict)
-                kernel_candidates = list(self._active.keys())
+            # Both modes simply iterate ``_active`` in its current order; in
+            # ``fair`` mode that order is the least-recently-run-first
+            # sequence maintained by the move-to-end below.
+            kernel_candidates = list(self._active.keys())
 
             # Try to advance each kernel in the selected order
             for kernel_id in kernel_candidates:
@@ -486,15 +480,23 @@ class GreenletScheduler:
                     state.g.switch()
                     any_progress = True
 
-                    # Always update timestamp after kernel runs
-                    # The pre-check already prevented kernels that can't make progress from running
+                    # Always update timestamp after kernel runs.  The
+                    # pre-check above already filtered out kernels that
+                    # could not make progress.
                     self._timestamp += 1
-                    self._last_run[kernel_id] = self._timestamp
 
-                    # If greenlet is dead, it completed
-                    if state.g.dead and kernel_id in self._active:
-                        # Should have been marked by wrapped_func, but double-check
-                        self._mark_completed(kernel_id)
+                    # If greenlet is dead, it completed.  ``wrapped_func``
+                    # usually removes the kernel from ``_active`` already; if
+                    # not, finish the cleanup here.
+                    if state.g.dead:
+                        if kernel_id in self._active:
+                            self._mark_completed(kernel_id)
+                    elif fair:
+                        # Promote to the end of ``_active`` so this kernel
+                        # is last in the next round's iteration order.  O(1)
+                        # on CPython dicts; replaces the per-round
+                        # ``_get_fair_kernel_order`` sort.
+                        self._active[kernel_id] = self._active.pop(kernel_id)
                 except Exception as e:
                     # Kernel raised an error - preserve traceback for debugging
                     clear_current_kernel_type()
