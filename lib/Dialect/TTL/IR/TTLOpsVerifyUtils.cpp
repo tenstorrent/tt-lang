@@ -44,7 +44,8 @@ mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
     return mlir::success();
   }
 
-  return op->emitOpError() << "expects operand to be derived from ttl.copy.";
+  return op->emitOpError() << "expects operand to be derived from ttl.copy or "
+                              "ttl.pipe_transfer.send.";
 }
 
 } // namespace mlir::tt::ttl::verify

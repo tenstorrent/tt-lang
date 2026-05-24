@@ -109,6 +109,31 @@ traceTransferHandleSource(mlir::Value value, MatchFn match,
   return ResultT();
 }
 
+/// Trace a pipe transfer value through casts, tensor containers, and
+/// loop-carried values to the transfer creation op.
+inline PipeTransferCreateOp
+findPipeTransferCreateForTransfer(mlir::Value transfer) {
+  llvm::SmallPtrSet<mlir::Value, 16> seen;
+  return traceTransferHandleSource<PipeTransferCreateOp>(
+      transfer,
+      [](mlir::Value source) {
+        return source.getDefiningOp<PipeTransferCreateOp>();
+      },
+      seen);
+}
+
+/// Trace a pipe token through casts, tensor containers, and loop-carried values
+/// to the receive post that created it.
+inline PipeTransferPostOp findPipeTransferPostForToken(mlir::Value token) {
+  llvm::SmallPtrSet<mlir::Value, 16> seen;
+  return traceTransferHandleSource<PipeTransferPostOp>(
+      token,
+      [](mlir::Value source) {
+        return source.getDefiningOp<PipeTransferPostOp>();
+      },
+      seen);
+}
+
 /// Walk through `tensor.extract_slice` ops and return the underlying
 /// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
