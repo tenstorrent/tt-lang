@@ -22,7 +22,7 @@ from .diagnostics import (
     is_simulator_frame,
     format_node_ranges,
 )
-from .trace import trace
+from .trace import TRACE, trace
 
 
 @dataclass(frozen=True)
@@ -153,9 +153,11 @@ class GreenletScheduler:
 
         # Create greenlet that wraps the function
         def wrapped_func() -> None:
-            trace("kernel_start")
+            if TRACE.enabled:
+                trace("kernel_start")
             func()
-            trace("kernel_end")
+            if TRACE.enabled:
+                trace("kernel_end")
             # Kernel completed successfully
             self._mark_completed(kernel_id)
 
@@ -198,9 +200,11 @@ class GreenletScheduler:
         if self._main_greenlet is None:
             raise RuntimeError("Main greenlet not set")
 
-        trace("kernel_block", op=operation, on=blocking_obj._trace_name)
+        if TRACE.enabled:
+            trace("kernel_block", op=operation, on=blocking_obj._trace_name)
         self._main_greenlet.switch()
-        trace("kernel_unblock")
+        if TRACE.enabled:
+            trace("kernel_unblock")
 
     def _mark_completed(self, kernel_id: KernelId) -> None:
         """Mark a kernel as completed and remove from active set.

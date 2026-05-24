@@ -50,8 +50,9 @@ from .ttnnsim import (
     tile_count_from_tensor,
     tile_shape_from_tensor,
 )
-from .trace import trace
+from .trace import TRACE, trace
 from .typedefs import Index, IndexType, PositiveInt, Shape, Size
+from .greenlet_scheduler import block_if_needed
 
 
 def _is_dry_run() -> bool:
@@ -1184,7 +1185,8 @@ class DataflowBuffer:
 
         from .greenlet_scheduler import block_if_needed
 
-        trace("dfb_wait_begin", dfb=self._trace_name)
+        if TRACE.enabled:
+            trace("dfb_wait_begin", dfb=self._trace_name)
         block_if_needed(self, "wait")
 
         state = self._state
@@ -1208,8 +1210,14 @@ class DataflowBuffer:
 
         self._pending_waited_greenlet = getcurrent()
 
-        tiles = math.prod(state.shape)
-        trace("dfb_wait_end", dfb=self._trace_name, occupied=state.visible, tiles=tiles)
+        if TRACE.enabled:
+            tiles = math.prod(state.shape)
+            trace(
+                "dfb_wait_end",
+                dfb=self._trace_name,
+                occupied=state.visible,
+                tiles=tiles,
+            )
 
         return block
 
@@ -1253,9 +1261,8 @@ class DataflowBuffer:
         if self._pending_reserved_block is not None:
             self.auto_push_block()
 
-        from .greenlet_scheduler import block_if_needed
-
-        trace("dfb_reserve_begin", dfb=self._trace_name)
+        if TRACE.enabled:
+            trace("dfb_reserve_begin", dfb=self._trace_name)
         block_if_needed(self, "reserve")
 
         state = self._state
@@ -1296,13 +1303,14 @@ class DataflowBuffer:
 
         self._pending_reserved_greenlet = getcurrent()
 
-        tiles = math.prod(state.shape)
-        trace(
-            "dfb_reserve_end",
-            dfb=self._trace_name,
-            occupied=state.visible + state.reserved,
-            tiles=tiles,
-        )
+        if TRACE.enabled:
+            tiles = math.prod(state.shape)
+            trace(
+                "dfb_reserve_end",
+                dfb=self._trace_name,
+                occupied=state.visible + state.reserved,
+                tiles=tiles,
+            )
 
         return block
 
@@ -1333,7 +1341,8 @@ class DataflowBuffer:
         state.reserved -= 1
         state.visible += 1
 
-        trace("dfb_push", dfb=self._trace_name, occupied=state.visible)
+        if TRACE.enabled:
+            trace("dfb_push", dfb=self._trace_name, occupied=state.visible)
 
     def pop_block(self) -> None:
         """Free the consumed slot, advancing the read pointer.
@@ -1355,7 +1364,8 @@ class DataflowBuffer:
         state.head = (state.head + 1) % state.cap
         state.visible -= 1
 
-        trace("dfb_pop", dfb=self._trace_name, occupied=state.visible)
+        if TRACE.enabled:
+            trace("dfb_pop", dfb=self._trace_name, occupied=state.visible)
 
     def auto_push_block(self) -> None:
         """Push the reserved block if one is pending for the current greenlet.

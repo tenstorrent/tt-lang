@@ -33,7 +33,7 @@ from .analysis import (
 )
 from .diagnostics import print_diagnostic_error
 from .debug_print import ttlang_print
-from .trace import trace
+from .trace import TRACE, trace
 
 
 def set_max_dfbs(limit: int) -> None:
@@ -335,8 +335,9 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                 running_nodes = [n for n in range(total_nodes) if _is_active(n)]
 
                 # Emit operation_start for each node before the scheduler runs.
-                for n in running_nodes:
-                    trace("operation_start", node=n)
+                if TRACE.enabled:
+                    for n in running_nodes:
+                        trace("operation_start", node=n)
 
                 # Run scheduler; if any kernel raises, the exception propagates
                 # immediately and the validation below is intentionally skipped.
@@ -345,8 +346,9 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                 scheduler.run()
 
                 # Emit operation_end for each node now that all kernels completed.
-                for n in running_nodes:
-                    trace("operation_end", node=n)
+                if TRACE.enabled:
+                    for n in running_nodes:
+                        trace("operation_end", node=n)
 
                 # Validate all DataflowBuffers have no pending blocks.
                 # Only reached on normal exit from the scheduler.

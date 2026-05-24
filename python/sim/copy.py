@@ -18,7 +18,7 @@ from .copyhandlers import (
 )
 from .ttnnsim import Tensor, tile_count_from_tensor
 from .sharding import try_count_locality
-from .trace import trace
+from .trace import TRACE, trace
 import math
 
 
@@ -112,12 +112,13 @@ class CopyTransaction:
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
 
-        trace(
-            "copy_start",
-            src=type(src).__name__,
-            dst=type(dst).__name__,
-            **_copy_trace_fields(src, dst),
-        )
+        if TRACE.enabled:
+            trace(
+                "copy_start",
+                src=type(src).__name__,
+                dst=type(dst).__name__,
+                **_copy_trace_fields(src, dst),
+            )
 
     @staticmethod
     def _lookup_handler(
@@ -184,12 +185,13 @@ class CopyTransaction:
             case _:
                 pass
 
-        trace(
-            "copy_end",
-            src=type(self._src).__name__,
-            dst=type(self._dst).__name__,
-            **_copy_trace_fields(self._src, self._dst),
-        )
+        if TRACE.enabled:
+            trace(
+                "copy_end",
+                src=type(self._src).__name__,
+                dst=type(self._dst).__name__,
+                **_copy_trace_fields(self._src, self._dst),
+            )
 
     def can_wait(self) -> bool:
         """

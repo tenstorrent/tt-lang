@@ -466,8 +466,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.trace:
-        from .trace import ALL_CATEGORIES
-        from .context import get_context
+        from .trace import ALL_CATEGORIES, set_tracing
 
         if args.trace_events:
             cats = {c.strip() for c in args.trace_events.split(",")}
@@ -494,7 +493,7 @@ def main() -> None:
         else:
             trace_set = ALL_CATEGORIES
 
-        get_context().config.trace_set = trace_set
+        set_tracing(trace_set)
 
     # Optionally wrap the run in cProfile
     profiler: Optional["cProfile.Profile"] = None

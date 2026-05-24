@@ -184,6 +184,7 @@ device = ttnn.open_device(device_id=0)
 try:
     M, K, N = 8192, 8192, 8192
     M, K, N = 2048, 2048, 2048
+    M, K, N = 4096, 4096, 4096
     a = torch.randn((M, K), dtype=torch.bfloat16)
     b = torch.randn((K, N), dtype=torch.bfloat16)
     c = torch.randn((M, N), dtype=torch.bfloat16)

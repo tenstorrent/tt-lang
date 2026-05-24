@@ -32,7 +32,7 @@ from .pipe import (
     Pipe,
     SrcPipeIdentity,
 )
-from .trace import get_pipe_name, trace
+from .trace import TRACE, get_pipe_name, trace
 from .ttnnsim import Tensor, tile_count_from_tensor
 from .typedefs import NodeCoord
 
@@ -196,9 +196,12 @@ class BlockToPipeHandler:
         entry["next_msg_id"] += 1
         entry["queue"].append((src_data, num_receivers, msg_id, set[int]()))
 
-        trace(
-            "pipe_send", pipe=get_pipe_name(dst), tiles=tile_count_from_tensor(src_data)
-        )
+        if TRACE.enabled:
+            trace(
+                "pipe_send",
+                pipe=get_pipe_name(dst),
+                tiles=tile_count_from_tensor(src_data),
+            )
 
     def can_wait(self, src: Block, dst: AnyPipe) -> bool:
         """Block to Pipe copy completes immediately on wait()."""
@@ -330,11 +333,12 @@ class PipeToBlockHandler:
                     )
 
                 dst.copy_as_dest(msg_data)
-                trace(
-                    "pipe_recv",
-                    pipe=get_pipe_name(src),
-                    tiles=tile_count_from_tensor(msg_data),
-                )
+                if TRACE.enabled:
+                    trace(
+                        "pipe_recv",
+                        pipe=get_pipe_name(src),
+                        tiles=tile_count_from_tensor(msg_data),
+                    )
 
                 if node_id_available:
                     match node_id:

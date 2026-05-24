@@ -67,6 +67,14 @@ def reset_context() -> None:
     ``tt-lang-sim`` at process startup so each run begins with default
     state.  Also releases the ``sys.monitoring`` tool slot used for
     copy-wait injection so the next run can re-register its callbacks.
+
+    Trace configuration lives on the ``trace`` module's own singleton
+    (see :mod:`.trace`) and is *not* reset here, both because it has no
+    place on the context and because importing trace from here would
+    introduce a module-level cycle.  Callers that want a clean trace
+    slate between runs (the pytest autouse fixture; the CLI when
+    bootstrapping a fresh process) call :func:`trace.set_tracing`
+    explicitly.
     """
     import sys
 

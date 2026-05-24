@@ -38,16 +38,22 @@ from sim.greenlet_scheduler import (
     set_scheduler,
     set_scheduler_algorithm,
 )
+from sim.trace import set_tracing
 
 
 @pytest.fixture(autouse=True)
 def reset_simulator_context():
     """Reset simulator context before each test to ensure test isolation.
 
-    This ensures that modifications to context config (e.g., max_dfbs) or
-    state in one test don't leak into other tests when running in parallel.
+    Resets both the simulator context (config, scheduler, registry, trace
+    events) and the trace module's process-wide configuration so that
+    modifications in one test do not leak into others when running in
+    parallel.  Trace state is reset here rather than inside
+    ``reset_context()`` to keep ``context.py`` free of trace imports
+    (see the docstring on :func:`sim.context.reset_context`).
     """
     reset_context()
+    set_tracing(frozenset())
     yield
 
 
