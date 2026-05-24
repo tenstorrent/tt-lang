@@ -1276,13 +1276,24 @@ class DataflowBuffer:
         #   copy and comparison operations stay type-consistent with other tensors;
         # - declared _dtype is propagated so element_size and size_in_bytes report
         #   the correct hardware byte count for L1 accounting.
-        slot = Tensor(
-            torch.zeros(
-                self._element_shape, dtype=self.likeness_tensor.underlying_dtype
-            ),
-            self.likeness_tensor.layout,
-            dtype=self.likeness_tensor.dtype,
-        )
+        #
+        # In dry-run we skip the ``torch.zeros`` + ``Tensor`` wrap entirely:
+        # the slot's bytes are never read because every downstream operation
+        # (``Block.store``, ``__matmul__``, ``ttl.math.*``, ``ttl.copy``) is
+        # itself dry-run-guarded and returns its own sentinel.  Same precedent
+        # as ``Block.__call__`` at the ``_DRY_RUN_SENTINEL if _is_dry_run()``
+        # site above.  Removes ~6 M ``torch.zeros`` calls and ~6 M ``Tensor``
+        # constructions per matmul step_1 dry-run.
+        if _is_dry_run():
+            slot = _DRY_RUN_SENTINEL
+        else:
+            slot = Tensor(
+                torch.zeros(
+                    self._element_shape, dtype=self.likeness_tensor.underlying_dtype
+                ),
+                self.likeness_tensor.layout,
+                dtype=self.likeness_tensor.dtype,
+            )
         state.buf[slot_idx] = slot
         state.reserved += 1
 
