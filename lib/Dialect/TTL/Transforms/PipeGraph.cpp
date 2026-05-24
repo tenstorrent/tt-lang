@@ -329,10 +329,11 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
       collectPipeTransferContracts(mod);
 
   WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
-    auto createOp = postOp.getTransfer().getDefiningOp<PipeTransferCreateOp>();
+    auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
     if (!createOp) {
       postOp.emitError(
-          "pipe transfer post must use a ttl.pipe_transfer.create result");
+          "pipe transfer post must reference a transfer derived from "
+          "ttl.pipe_transfer.create");
       return WalkResult::interrupt();
     }
     auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());

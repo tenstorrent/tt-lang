@@ -121,10 +121,11 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
 
 static FailureOr<PipeTransferCreateOp> getPipeTransferCreate(Operation *op,
                                                              Value transfer) {
-  auto createOp = transfer.getDefiningOp<PipeTransferCreateOp>();
+  auto createOp = findPipeTransferCreateForTransfer(transfer);
   if (!createOp) {
     return op->emitError() << op->getName()
-                           << " must use a ttl.pipe_transfer.create result";
+                           << " must use a transfer derived from "
+                              "ttl.pipe_transfer.create";
   }
   return createOp;
 }
@@ -368,9 +369,8 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     llvm::SmallSetVector<int64_t, 4> pipeNetIds;
     func.walk([&](Operation *op) {
       if (auto post = mlir::dyn_cast<PipeTransferPostOp>(op)) {
-        auto createOp =
-            post.getTransfer().getDefiningOp<PipeTransferCreateOp>();
-        assert(createOp && "pipe transfer post missing create op");
+        auto createOp = findPipeTransferCreateForTransfer(post.getTransfer());
+        assert(createOp && "pipe transfer post missing traced create op");
         auto pipeTy = mlir::cast<PipeType>(createOp.getPipe().getType());
         if (getAttachedCB(post.getDst())) {
           pipeNetIds.insert(pipeTy.getPipeNetId());
@@ -684,8 +684,11 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
   auto tokenType = mlir::cast<PipeTokenType>(op.getToken().getType());
   auto completionIt =
       pipeResourcePlan->completionWaits.find(tokenType.getPipeNetId());
-  assert(completionIt != pipeResourcePlan->completionWaits.end() &&
-         "pipe net missing from pipe completion info");
+  if (completionIt == pipeResourcePlan->completionWaits.end()) {
+    op.emitError("pipe transfer wait references PipeNet ")
+        << tokenType.getPipeNetId() << " with no completion resource";
+    return failure();
+  }
   PipeCompletionWaitInfo completionInfo = completionIt->second;
 
   Value counter;

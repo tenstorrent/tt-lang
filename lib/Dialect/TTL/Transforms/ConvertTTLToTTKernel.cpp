@@ -502,65 +502,99 @@ static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
                                         : PipeTransferKind::PointToPoint;
 }
 
-static LogicalResult
-lookupPipeTransfer(Operation *op, Value pipe,
-                   const llvm::MapVector<Value, Value> &transferByPipe,
-                   Value &transfer) {
-  Value key = traceUnrealizedCasts(pipe);
-  auto it = transferByPipe.find(key);
-  if (it == transferByPipe.end()) {
-    return op->emitError()
-           << "pipe transfer expansion requires a ttl.create_pipe result";
+static CreatePipeOp findCreatePipeForPipeValue(Value pipe) {
+  llvm::SmallPtrSet<Value, 16> seen;
+  return traceTransferHandleSource<CreatePipeOp>(
+      pipe, [](Value source) { return source.getDefiningOp<CreatePipeOp>(); },
+      seen);
+}
+
+static PipeTransferContract getPipeTransferContractForPipeValue(Value pipe) {
+  if (CreatePipeOp createPipe = findCreatePipeForPipeValue(pipe)) {
+    return getPipeTransferContract(createPipe);
   }
-  transfer = it->second;
-  return success();
+  // Function and block arguments do not carry CreatePipeOp attrs; use the
+  // PipeType-derived contract only when no defining pipe op can be traced.
+  auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
+  return pipeType.hasMultipleReceivers() ? PipeTransferContract::Collective
+                                         : PipeTransferContract::PointToPoint;
+}
+
+static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder, Location loc,
+                                               Value pipe) {
+  auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
+  PipeTransferContract contract = getPipeTransferContractForPipeValue(pipe);
+  auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
+                                            getPipeTransferKind(contract));
+  auto expectedReceiversAttr =
+      builder.getI64IntegerAttr(pipeType.getNumDests());
+  return PipeTransferCreateOp::create(
+      builder, loc, PipeTransferType::get(builder.getContext()), pipe, kindAttr,
+      expectedReceiversAttr);
+}
+
+static Value getOrCreatePipeTransfer(
+    OpBuilder &builder, Location loc, Value pipe,
+    llvm::MapVector<Value, Value> &transferByDirectCreatePipe) {
+  Value key = traceUnrealizedCasts(pipe);
+  if (auto createPipe = key.getDefiningOp<CreatePipeOp>()) {
+    auto it = transferByDirectCreatePipe.find(key);
+    if (it != transferByDirectCreatePipe.end()) {
+      return it->second;
+    }
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(createPipe);
+    auto transferOp = createPipeTransfer(builder, createPipe.getLoc(), key);
+    transferByDirectCreatePipe[key] = transferOp.getTransfer();
+    return transferOp.getTransfer();
+  }
+
+  // Non-direct pipe values can be block arguments or region results. A shared
+  // cached transfer for those values would need dominance analysis; creating it
+  // at the use site keeps the transfer local to the post/send that consumes it.
+  return createPipeTransfer(builder, loc, pipe).getTransfer();
+}
+
+static LogicalResult verifyPipeTransferWaits(ModuleOp mod) {
+  LogicalResult result = success();
+  mod.walk(
+      [&](PipeTransferWaitOp waitOp) {
+        PipeTransferPostOp postOp =
+            findPipeTransferPostForToken(waitOp.getToken());
+        if (!postOp) {
+          waitOp.emitError()
+              << "requires token derived from ttl.pipe_transfer.post";
+          result = failure();
+          return;
+        }
+        auto waitTokenType =
+            mlir::cast<PipeTokenType>(waitOp.getToken().getType());
+        auto postTokenType =
+            mlir::cast<PipeTokenType>(postOp.getToken().getType());
+        if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
+          waitOp.emitError()
+              << "token pipeNetId must match pipe transfer post pipeNetId";
+          result = failure();
+        }
+      });
+  return result;
 }
 
 static LogicalResult expandPipeTransferOps(ModuleOp mod) {
   SmallVector<CreatePipeOp> createPipes;
-  llvm::MapVector<Value, CreatePipeOp> createPipeByResult;
-  mod.walk([&](CreatePipeOp op) {
-    createPipes.push_back(op);
-    createPipeByResult[op.getResult()] = op;
-  });
-
-  llvm::MapVector<Value, Value> transferByPipe;
-  mod.walk([&](PipeTransferCreateOp op) {
-    transferByPipe[traceUnrealizedCasts(op.getPipe())] = op.getTransfer();
-  });
-
-  auto validatePipeValue = [&](Operation *op, Value pipe) -> LogicalResult {
-    Value key = traceUnrealizedCasts(pipe);
-    if (createPipeByResult.find(key) == createPipeByResult.end()) {
-      return op->emitError()
-             << "pipe transfer expansion requires a ttl.create_pipe result";
-    }
-    return success();
-  };
+  mod.walk([&](CreatePipeOp op) { createPipes.push_back(op); });
 
   SmallVector<CopyOp> receiveCopies;
   SmallVector<CopyOp> sendCopies;
-  LogicalResult preflight = success();
   mod.walk([&](CopyOp op) {
     if (isPipeReceiveCopy(op)) {
-      if (failed(validatePipeValue(op, op.getSrc()))) {
-        preflight = failure();
-        return;
-      }
       receiveCopies.push_back(op);
       return;
     }
     if (isPipeSendCopy(op)) {
-      if (failed(validatePipeValue(op, op.getDst()))) {
-        preflight = failure();
-        return;
-      }
       sendCopies.push_back(op);
     }
   });
-  if (failed(preflight)) {
-    return failure();
-  }
 
   struct ReceiveWaitExpansion {
     WaitOp waitOp;
@@ -592,33 +626,21 @@ static LogicalResult expandPipeTransferOps(ModuleOp mod) {
   }
 
   OpBuilder builder(mod.getContext());
+  llvm::MapVector<Value, Value> transferByDirectCreatePipe;
   for (CreatePipeOp createPipe : createPipes) {
-    if (transferByPipe.find(createPipe.getResult()) != transferByPipe.end()) {
-      continue;
-    }
     builder.setInsertionPointAfter(createPipe);
-    auto pipeType = mlir::cast<PipeType>(createPipe.getResult().getType());
-    PipeTransferContract contract = getPipeTransferContract(createPipe);
-    auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
-                                              getPipeTransferKind(contract));
-    auto expectedReceiversAttr =
-        builder.getI64IntegerAttr(pipeType.getNumDests());
-    auto transferOp = PipeTransferCreateOp::create(
-        builder, createPipe.getLoc(),
-        PipeTransferType::get(builder.getContext()), createPipe.getResult(),
-        kindAttr, expectedReceiversAttr);
-    transferByPipe[createPipe.getResult()] = transferOp.getTransfer();
+    auto transferOp = createPipeTransfer(builder, createPipe.getLoc(),
+                                         createPipe.getResult());
+    transferByDirectCreatePipe[createPipe.getResult()] =
+        transferOp.getTransfer();
   }
 
   for (CopyOp copyOp : receiveCopies) {
-    Value transfer;
-    if (failed(lookupPipeTransfer(copyOp, copyOp.getSrc(), transferByPipe,
-                                  transfer))) {
-      return failure();
-    }
     auto pipeType =
         mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
     builder.setInsertionPoint(copyOp);
+    Value transfer = getOrCreatePipeTransfer(
+        builder, copyOp.getLoc(), copyOp.getSrc(), transferByDirectCreatePipe);
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
         PipeTokenType::get(builder.getContext(), pipeType.getPipeNetId()),
@@ -631,12 +653,9 @@ static LogicalResult expandPipeTransferOps(ModuleOp mod) {
   }
 
   for (CopyOp copyOp : sendCopies) {
-    Value transfer;
-    if (failed(lookupPipeTransfer(copyOp, copyOp.getDst(), transferByPipe,
-                                  transfer))) {
-      return failure();
-    }
     builder.setInsertionPoint(copyOp);
+    Value transfer = getOrCreatePipeTransfer(
+        builder, copyOp.getLoc(), copyOp.getDst(), transferByDirectCreatePipe);
     auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
                                              copyOp.getResult().getType(),
                                              transfer, copyOp.getSrc());
@@ -1245,7 +1264,16 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
+  // Validate explicit transfer IR before expansion mutates public pipe copies.
+  if (failed(verifyPipeTransferWaits(mod))) {
+    return failure();
+  }
   if (failed(expandPipeTransferOps(mod))) {
+    return failure();
+  }
+  // Expansion creates pipe_transfer.wait from public ttl.wait; validate those
+  // token chains before graph and resource planning.
+  if (failed(verifyPipeTransferWaits(mod))) {
     return failure();
   }
 
@@ -1325,7 +1353,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     op.erase();
   }
 
-  // Apply post-conversion cleanup patterns (e.g., barrier deduplication).
+  // Greedy cleanup also erases dead unrealized casts used as temporary
+  // transfer-token materializations.
   RewritePatternSet cleanupPatterns(&ctx);
   ttkernel::populateTTKernelCleanupPatterns(cleanupPatterns);
   cleanupPatterns.add<ExpandMarkedLinearizeIndex>(&ctx);

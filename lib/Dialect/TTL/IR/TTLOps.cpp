@@ -281,10 +281,10 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
   if (!findCBReserveForPipeReceive(getDst())) {
     return emitOpError() << "requires a cb_reserve destination";
   }
-  auto createOp = getTransfer().getDefiningOp<PipeTransferCreateOp>();
+  auto createOp = findPipeTransferCreateForTransfer(getTransfer());
   if (!createOp) {
     return emitOpError()
-           << "requires a ttl.pipe_transfer.create transfer operand";
+           << "requires transfer derived from ttl.pipe_transfer.create";
   }
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   auto tokenType = mlir::cast<PipeTokenType>(getToken().getType());
@@ -296,9 +296,9 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
-  if (!getTransfer().getDefiningOp<PipeTransferCreateOp>()) {
+  if (!findPipeTransferCreateForTransfer(getTransfer())) {
     return emitOpError()
-           << "requires a ttl.pipe_transfer.create transfer operand";
+           << "requires transfer derived from ttl.pipe_transfer.create";
   }
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
   if (!handleType || handleType.getKind() != TransferKind::write) {
@@ -309,6 +309,20 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeTransferWaitOp::verify() {
+  mlir::tt::ttl::PipeTransferPostOp postOp =
+      mlir::tt::ttl::findPipeTransferPostForToken(getToken());
+  if (!postOp) {
+    return emitOpError()
+           << "requires token derived from ttl.pipe_transfer.post";
+  }
+  auto waitTokenType =
+      mlir::cast<mlir::tt::ttl::PipeTokenType>(getToken().getType());
+  auto postTokenType =
+      mlir::cast<mlir::tt::ttl::PipeTokenType>(postOp.getToken().getType());
+  if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
+    return emitOpError()
+           << "token pipeNetId must match pipe transfer post pipeNetId";
+  }
   return success();
 }
 

@@ -23,6 +23,17 @@ func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
 
 // -----
 
+// Test: internal pipe transfer expected receiver count must be positive.
+func.func @pipe_transfer_expected_receiver_count_positive() {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @+1 {{'ttl.pipe_transfer.create' op requires positive expectedReceivers}}
+  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 0 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+  func.return
+}
+
+// -----
+
 // Test: internal pipe transfer expected receiver count must match the pipe.
 func.func @pipe_transfer_expected_receiver_count_mismatch() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -75,6 +86,16 @@ func.func @pipe_transfer_send_requires_write_handle() {
   %xf = ttl.pipe_transfer.send %transfer, %cb
       : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
       -> !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
+// Test: pipe transfer wait requires a token produced by a post.
+func.func @pipe_transfer_wait_requires_post_token() {
+  %token = builtin.unrealized_conversion_cast to !ttl.pipe_token<net 0>
+  // expected-error @+1 {{'ttl.pipe_transfer.wait' op requires token derived from ttl.pipe_transfer.post}}
+  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
   func.return
 }
 
