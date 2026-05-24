@@ -1293,7 +1293,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
   PipeResourcePlan pipeResourcePlan;
-  buildPipeResourcePlan(pipeNetIndex, pipeResourcePlan);
+  if (failed(buildPipeResourcePlan(mod, pipeResourcePlan))) {
+    return failure();
+  }
   if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan))) {
     return failure();
   }
