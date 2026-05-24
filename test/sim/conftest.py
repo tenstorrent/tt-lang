@@ -35,6 +35,7 @@ from sim.context import set_current_kernel_type, reset_context
 from sim.greenlet_scheduler import (
     GreenletScheduler,
     KernelId,
+    _KernelState,
     set_scheduler,
     set_scheduler_algorithm,
 )
@@ -76,8 +77,12 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
     # Set kernel context
     set_current_kernel_type(kernel_type)
 
-    # Set the main greenlet to the current greenlet (for switching back)
+    # Set the main greenlet to the current greenlet (for switching back) and
+    # cache its bound ``.switch`` method the same way ``GreenletScheduler.run``
+    # does, so any test that drives ``block_current_kernel`` directly has the
+    # fast-path slot populated.
     scheduler._main_greenlet = greenlet.getcurrent()
+    scheduler._main_switch = scheduler._main_greenlet.switch
 
     # Simulate being within node 0 with a valid KernelId so that
     # get_current_node_id() returns "node0" and shard-locality stats work in tests.
@@ -85,13 +90,10 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
     # for readable display in any test diagnostics.
     test_greenlet = greenlet(lambda: None)
     tid = KernelId(0, kernel_type, kernel_type.name.lower())
+    state = _KernelState(test_greenlet, kernel_type)
     scheduler._current_kernel_id = tid
-    scheduler._active[tid] = (
-        test_greenlet,
-        None,  # blocking_obj
-        "",  # operation
-        kernel_type,
-    )
+    scheduler._current_state = state
+    scheduler._active[tid] = state
     scheduler._has_made_progress[tid] = False
 
     return scheduler

@@ -88,6 +88,29 @@ def get_scheduler_algorithm() -> str:
     return get_context().config.scheduler_algorithm
 
 
+class _KernelState:
+    """Per-kernel scheduler entry.
+
+    Splits the stable bits ((greenlet, kernel_type) -- set once at
+    ``add_kernel()`` and never mutated) from the ephemeral bits
+    (``blocking_obj``, ``operation`` -- updated on every block/unblock)
+    so the hot ``block_current_kernel`` path can mutate slots in place
+    rather than allocating a fresh 4-tuple and doing two dict operations
+    on ``_active`` per call.
+
+    At >16 M blocks per dry-run that was ~1 GB of tuple garbage and
+    ~34 M dict hash/store operations on ``KernelId``.
+    """
+
+    __slots__ = ("g", "kernel_type", "blocking_obj", "operation")
+
+    def __init__(self, g: greenlet, kernel_type: KernelType) -> None:
+        self.g: greenlet = g
+        self.kernel_type: KernelType = kernel_type
+        self.blocking_obj: Any = None
+        self.operation: str = ""
+
+
 class GreenletScheduler:
     """
     Cooperative scheduler using greenlets for per-node kernel execution.
@@ -99,23 +122,29 @@ class GreenletScheduler:
 
     def __init__(self) -> None:
         """Initialize the scheduler."""
-        # Active greenlets: kernel_id -> (greenlet, blocking_obj, operation, kernel_type).
-        # The block location is intentionally NOT stored here: capturing
-        # (filename, lineno) on every block adds ~5-6s/run for step_1 worth
-        # of stack-walking and string formatting, and the only consumer is
-        # the deadlock diagnostic below, which fires at most once per run.
-        # When a deadlock is detected we recover the location lazily from each
-        # blocked greenlet's ``gr_frame`` instead.
-        self._active: Dict[
-            KernelId,
-            Tuple[greenlet, Any, str, KernelType],
-        ] = {}
+        # Per-kernel scheduling state: see ``_KernelState``.  The block location
+        # is intentionally NOT stored here: capturing (filename, lineno) on
+        # every block adds ~5-6s/run for step_1 worth of stack-walking and
+        # string formatting, and the only consumer is the deadlock diagnostic
+        # below, which fires at most once per run.  When a deadlock is detected
+        # we recover the location lazily from each blocked greenlet's
+        # ``gr_frame`` instead.
+        self._active: Dict[KernelId, _KernelState] = {}
         # Completed greenlets (internal bookkeeping)
         self._completed: List[KernelId] = []
         # Main greenlet for the scheduler
         self._main_greenlet: Optional[greenlet] = None
+        # Cached bound method ``self._main_greenlet.switch``; set in ``run()``
+        # so the hot ``block_current_kernel`` path avoids one attribute load
+        # per block.
+        self._main_switch: Optional[Callable[[], Any]] = None
         # Currently executing scheduled kernel
         self._current_kernel_id: Optional[KernelId] = None
+        # Cached ``_active`` entry for the currently switched-in kernel.  Set
+        # right before each ``g.switch()`` from this side of the cooperative
+        # boundary; read by ``block_current_kernel`` from the kernel side to
+        # mutate ``blocking_obj`` / ``operation`` without a dict lookup.
+        self._current_state: Optional[_KernelState] = None
         # Last run timestamp for fair scheduling (kernel_id -> timestamp)
         self._last_run: Dict[KernelId, int] = {}
         # Global timestamp counter
@@ -162,8 +191,9 @@ class GreenletScheduler:
             self._mark_completed(kernel_id)
 
         g = greenlet(wrapped_func)
-        # Initially not blocked (will start when scheduled)
-        self._active[kernel_id] = (g, None, "", kernel_id.kind)
+        # Initially not blocked (will start when scheduled).  ``_KernelState``
+        # defaults ``blocking_obj=None`` and ``operation=""``.
+        self._active[kernel_id] = _KernelState(g, kernel_id.kind)
         # Initialize last run time to 0 (never run)
         self._last_run[kernel_id] = 0
         # Kernel hasn't made progress yet
@@ -173,36 +203,30 @@ class GreenletScheduler:
         """Block the current scheduled kernel on an operation.
 
         This is called by wait()/reserve() operations to yield control back
-        to the scheduler.
+        to the scheduler.  This is the single hottest path in the simulator
+        (16-17 M calls per dry-run); see ``_KernelState`` and ``run()`` for
+        the supporting design that keeps the body to two slot writes and one
+        greenlet switch.
 
         Args:
             blocking_obj: Object being waited on (DataflowBuffer or CopyTransaction)
             operation: Operation name ("wait" or "reserve")
         """
-        if self._current_kernel_id is None:
-            raise RuntimeError(
-                "block_current_kernel called outside of scheduler context "
-                "(no kernel is currently scheduled)"
-            )
-
-        # Update active entry with blocking info.  The source location of the
-        # blocking call is not captured here -- see the comment on
-        # ``self._active`` in ``__init__``.
-        g, _, _, kernel_type = self._active[self._current_kernel_id]
-        self._active[self._current_kernel_id] = (
-            g,
-            blocking_obj,
-            operation,
-            kernel_type,
-        )
-
-        # Switch back to scheduler
-        if self._main_greenlet is None:
-            raise RuntimeError("Main greenlet not set")
+        # ``_current_state`` and ``_main_switch`` are set by ``run()`` (and
+        # ``_initialization_phase()``) immediately before each ``g.switch()``;
+        # both are guaranteed to be live whenever a kernel is executing.  The
+        # ``Optional`` type on the declarations is just bootstrap state -- we
+        # suppress the resulting pyright warnings here rather than pay an
+        # ``if is None`` check per call on the simulator's hottest path.
+        # The source location of the blocking call is not captured here --
+        # see the comment on ``self._active`` in ``__init__``.
+        state = self._current_state
+        state.blocking_obj = blocking_obj  # pyright: ignore[reportOptionalMemberAccess]
+        state.operation = operation  # pyright: ignore[reportOptionalMemberAccess]
 
         if TRACE.enabled:
             trace("kernel_block", op=operation, on=blocking_obj._trace_name)
-        self._main_greenlet.switch()
+        self._main_switch()  # pyright: ignore[reportOptionalCall]
         if TRACE.enabled:
             trace("kernel_unblock")
 
@@ -324,28 +348,31 @@ class GreenletScheduler:
         """
 
         for kernel_id in list(self._active.keys()):
-            g, blocking_obj, _, kernel_type = self._active[kernel_id]
+            state = self._active[kernel_id]
 
             # All kernels should start unblocked in init phase
-            if blocking_obj is not None:
+            if state.blocking_obj is not None:
                 label = kernel_display_name(kernel_id)
                 raise RuntimeError(
                     f"Kernel {label!r} is already blocked at init phase start. "
                     "This indicates a bug in the scheduler."
                 )
 
-            # Set current kernel context
+            # Set current kernel context.  ``_current_state`` is read from the
+            # kernel side by ``block_current_kernel``; setting it here keeps
+            # that hot path free of dict lookups.
             self._current_kernel_id = kernel_id
-            set_current_kernel_type(kernel_type)
+            self._current_state = state
+            set_current_kernel_type(state.kernel_type)
 
             try:
                 # Run kernel until it blocks or completes
-                g.switch()
+                state.g.switch()
 
                 # Update timestamp only if kernel made progress
                 made_progress = self._has_made_progress.get(kernel_id, False)
 
-                if g.dead:
+                if state.g.dead:
                     self._mark_completed(kernel_id)
                 elif made_progress:
                     # Kernel passed one or more block_if_needed checks - give it a timestamp
@@ -357,6 +384,7 @@ class GreenletScheduler:
                 # Kernel raised an error during initialization
                 clear_current_kernel_type()
                 self._current_kernel_id = None
+                self._current_state = None
 
                 # Format and raise error with source location
                 self._format_and_raise_kernel_error(kernel_display_name(kernel_id), e)
@@ -364,6 +392,7 @@ class GreenletScheduler:
             clear_current_kernel_type()
 
         self._current_kernel_id = None
+        self._current_state = None
 
     def _get_fair_kernel_order(self) -> List[KernelId]:
         """Get kernels sorted by least recently run.
@@ -394,8 +423,11 @@ class GreenletScheduler:
 
     def run(self) -> None:
         """Run all kernels until completion or deadlock is detected."""
-        # Store main greenlet for switching back from kernels
+        # Store main greenlet for switching back from kernels.  Cache the
+        # bound ``.switch`` method so the hot ``block_current_kernel`` path
+        # avoids one attribute load per block.
         self._main_greenlet = greenlet.getcurrent()
+        self._main_switch = self._main_greenlet.switch
 
         # Determine scheduling algorithm
         algorithm = get_scheduler_algorithm()
@@ -420,37 +452,38 @@ class GreenletScheduler:
 
             # Try to advance each kernel in the selected order
             for kernel_id in kernel_candidates:
-                if kernel_id not in self._active:
+                state = self._active.get(kernel_id)
+                if state is None:
                     # Kernel may have completed during this iteration
                     continue
 
-                g, blocking_obj, blocked_op, kernel_type = self._active[kernel_id]
-
                 # If kernel is blocked, check if it can proceed
+                blocking_obj = state.blocking_obj
                 if blocking_obj is not None:
-                    can_method = getattr(blocking_obj, f"can_{blocked_op}", None)
+                    can_method = getattr(blocking_obj, f"can_{state.operation}", None)
                     if can_method is None or not can_method():
                         # Still blocked
                         continue
 
-                    # Unblocked! Clear blocking state
-                    self._active[kernel_id] = (g, None, "", kernel_type)
+                    # Unblocked! Clear blocking state in place (no tuple churn).
+                    state.blocking_obj = None
+                    state.operation = ""
 
                 # Set current kernel for block_current_kernel()
                 self._current_kernel_id = kernel_id
+                self._current_state = state
 
                 # Run kernel until it blocks or completes
-
-                set_current_kernel_type(kernel_type)
+                set_current_kernel_type(state.kernel_type)
                 try:
-                    if g.dead:
+                    if state.g.dead:
                         # Kernel already completed (marked by wrapped_func)
                         if kernel_id in self._active:
                             del self._active[kernel_id]
                         continue
 
                     # Switch to the greenlet
-                    g.switch()
+                    state.g.switch()
                     any_progress = True
 
                     # Always update timestamp after kernel runs
@@ -459,13 +492,14 @@ class GreenletScheduler:
                     self._last_run[kernel_id] = self._timestamp
 
                     # If greenlet is dead, it completed
-                    if g.dead and kernel_id in self._active:
+                    if state.g.dead and kernel_id in self._active:
                         # Should have been marked by wrapped_func, but double-check
                         self._mark_completed(kernel_id)
                 except Exception as e:
                     # Kernel raised an error - preserve traceback for debugging
                     clear_current_kernel_type()
                     self._current_kernel_id = None
+                    self._current_state = None
 
                     # Format and raise error with source location
                     # Include full traceback for main loop errors (more debugging info)
@@ -478,6 +512,7 @@ class GreenletScheduler:
                     clear_current_kernel_type()
 
                 self._current_kernel_id = None
+                self._current_state = None
 
             # Deadlock detection
             if not any_progress and self._active:
@@ -496,21 +531,16 @@ class GreenletScheduler:
                     tuple[str, str, str], Optional[Tuple[str, int]]
                 ] = {}
 
-                for kernel_id, (
-                    g,
-                    blocking_obj,
-                    op,
-                    _,
-                ) in self._active.items():
-                    obj_desc = self._get_obj_description(blocking_obj)
+                for kernel_id, state in self._active.items():
+                    obj_desc = self._get_obj_description(state.blocking_obj)
                     raw_loc: Optional[Tuple[str, int]] = None
-                    if g.gr_frame is not None:
+                    if state.g.gr_frame is not None:
                         try:
-                            raw_loc = find_user_code_location(g.gr_frame)
+                            raw_loc = find_user_code_location(state.g.gr_frame)
                         except RuntimeError:
                             raw_loc = None
                     location = f" at {raw_loc[0]}:{raw_loc[1]}" if raw_loc else ""
-                    key = (op, obj_desc, location)
+                    key = (state.operation, obj_desc, location)
                     node_id = f"node{kernel_id.linear_node}"
                     blocked_groups[key].append(node_id)
                     if key not in blocked_raw_locs:
