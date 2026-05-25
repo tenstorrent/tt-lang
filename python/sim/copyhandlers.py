@@ -9,7 +9,9 @@ New transfer types can be added by creating a new handler and decorating it with
 @register_copy_handler.
 """
 
+import math
 from collections import deque
+from functools import cache
 from typing import (
     Any,
     Dict,
@@ -33,8 +35,13 @@ from .pipe import (
     SrcPipeIdentity,
 )
 from .trace import TRACE, get_pipe_name, trace
-from .ttnnsim import Tensor, tile_count_from_tensor
-from .typedefs import NodeCoord
+from .ttnnsim import (
+    Tensor,
+    check_count_match,
+    tile_count_from_shape,
+    tile_count_from_tensor,
+)
+from .typedefs import IndexType, NodeCoord, Shape
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
 # CopyEndpointTypes: List[type] = [torch.Tensor, Block, Pipe]
@@ -125,6 +132,63 @@ HANDLER_REGISTRY: Final[
 ] = {}
 
 
+# ---------------------------------------------------------------------------
+# Cached shape/layout validators.
+#
+# Tensor/Block copy validation is a pure function of the two layouts and two
+# shapes; the matmul-tutorial dry run hits the same handful of combinations
+# roughly four million times.  Memoising on the four primitive arguments via
+# functools.cache lets repeat calls reduce to a single dict lookup inside the
+# decorator, with no per-handler bookkeeping.  Only successful results are
+# cached (exceptions are not memoised by functools.cache), so the failure
+# message is regenerated every call -- which is what we want.
+# ---------------------------------------------------------------------------
+
+
+@cache
+def _validate_tensor_to_block_shapes(
+    src_layout: IndexType,
+    src_shape: Shape,
+    dst_layout: IndexType,
+    dst_shape: Shape,
+) -> None:
+    if src_layout != dst_layout:
+        raise ValueError(
+            f"Layout mismatch in Tensor -> Block copy: "
+            f"source tensor has layout {src_layout.name}, "
+            f"but block has layout {dst_layout.name}"
+        )
+    check_count_match(
+        tile_count_from_shape(src_layout, src_shape),
+        math.prod(dst_shape),
+        src_layout,
+        f"Tensor shape {src_shape}",
+        f"Block shape {dst_shape}",
+    )
+
+
+@cache
+def _validate_block_to_tensor_shapes(
+    src_layout: IndexType,
+    src_shape: Shape,
+    dst_layout: IndexType,
+    dst_shape: Shape,
+) -> None:
+    if src_layout != dst_layout:
+        raise ValueError(
+            f"Layout mismatch in Block -> Tensor copy: "
+            f"source block has layout {src_layout.name}, "
+            f"but destination tensor has layout {dst_layout.name}"
+        )
+    check_count_match(
+        math.prod(src_shape),
+        tile_count_from_shape(dst_layout, dst_shape),
+        src_layout,
+        f"Block shape {src_shape}",
+        f"Tensor shape {dst_shape}",
+    )
+
+
 def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType):
     """
     Decorator to register a copy transfer handler for a specific (src_type, dst_type) pair.
@@ -213,24 +277,7 @@ class TensorToBlockHandler:
     """Handler for TTNN.Tensor -> Block transfers using tile-level indexing."""
 
     def validate(self, src: Tensor, dst: Block) -> None:
-        from .dfb import tile_count_from_tensor
-        from .ttnnsim import check_count_match
-        import math
-
-        if src.layout != dst.layout:
-            raise ValueError(
-                f"Layout mismatch in Tensor -> Block copy: "
-                f"source tensor has layout {src.layout.name}, "
-                f"but block has layout {dst.layout.name}"
-            )
-
-        check_count_match(
-            tile_count_from_tensor(src),
-            math.prod(dst.shape),
-            src.layout,
-            f"Tensor shape {src.shape}",
-            f"Block shape {dst.shape}",
-        )
+        _validate_tensor_to_block_shapes(src.layout, src.shape, dst.layout, dst.shape)
 
     def transfer(self, src: Tensor, dst: Block) -> None:
         """Transfer tensor data into Block."""
@@ -245,24 +292,7 @@ class BlockToTensorHandler:
     """Handler for Block -> TTNN.Tensor transfers using tile-level indexing."""
 
     def validate(self, src: Block, dst: Tensor) -> None:
-        from .dfb import tile_count_from_tensor
-        from .ttnnsim import check_count_match
-        import math
-
-        if src.layout != dst.layout:
-            raise ValueError(
-                f"Layout mismatch in Block -> Tensor copy: "
-                f"source block has layout {src.layout.name}, "
-                f"but destination tensor has layout {dst.layout.name}"
-            )
-
-        check_count_match(
-            math.prod(src.shape),
-            tile_count_from_tensor(dst),
-            src.layout,
-            f"Block shape {src.shape}",
-            f"Tensor shape {dst.shape}",
-        )
+        _validate_block_to_tensor_shapes(src.layout, src.shape, dst.layout, dst.shape)
 
     def transfer(self, src: Block, dst: Tensor) -> None:
         """Transfer Block data into tensor."""

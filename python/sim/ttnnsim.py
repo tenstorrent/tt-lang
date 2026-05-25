@@ -1125,39 +1125,50 @@ class ConcatMeshToTensor:
         pass
 
 
-def tile_shape_from_tensor(t: "Tensor") -> Shape:
-    """Return the tile-grid shape of a tensor.
+def tile_shape_from_shape(shape: Shape) -> Shape:
+    """Tile-grid shape derived purely from an element-space ``shape``.
 
-    For tiled tensors the last two element dimensions are divided by TILE_SHAPE
-    (treating H==1 or W==1 as degenerate single-tile dimensions); leading
-    dimensions are returned as-is.  For 1-D tensors the single element dimension
-    is divided by TILE_SHAPE[0].
+    Pure function of the input shape (no Tensor instance required) so callers
+    can memoise it.  Always interprets ``shape`` as a tiled layout: for >=2-D
+    inputs the last two dimensions are divided by ``TILE_SHAPE`` (with H==1
+    or W==1 treated as degenerate single-tile dimensions) and leading
+    dimensions pass through; for 1-D inputs the single dimension is divided
+    by ``TILE_SHAPE[0]``.
     """
-    s = t.shape
-    if len(s) == 1:
-        w = s[0]
+    if len(shape) == 1:
+        w = shape[0]
         tk = 1 if w == 1 else w // TILE_SHAPE[0]
         return (tk,)
-    h, w = s[-2], s[-1]
+    h, w = shape[-2], shape[-1]
     tm = 1 if h == 1 else h // TILE_SHAPE[0]
     tk = 1 if w == 1 else w // TILE_SHAPE[1]
-    if len(s) > 2:
-        return (*s[:-2], tm, tk)
+    if len(shape) > 2:
+        return (*shape[:-2], tm, tk)
     return (tm, tk)
 
 
-def tile_count_from_tensor(t: "Tensor") -> int:
-    """Return the number of logical units a Tensor represents.
+def tile_count_from_shape(layout: IndexType, shape: Shape) -> int:
+    """Layout-aware logical unit count derived purely from primitives.
 
-    For row-major tensors each scalar is a unit, so the count equals the total
-    number of elements: math.prod(shape).
-
-    For tiled tensors, delegates to :func:`tile_shape_from_tensor` and
-    multiplies the resulting tile-grid dimensions.
+    ROW_MAJOR_LAYOUT counts every element; TILE_LAYOUT counts tile-grid
+    cells.  Pure function so callers (e.g. copy-handler validation) can
+    safely cache the result.
     """
-    if t.layout == ROW_MAJOR_LAYOUT:
-        return math.prod(t.shape)
-    return math.prod(tile_shape_from_tensor(t))
+    if layout == ROW_MAJOR_LAYOUT:
+        return math.prod(shape)
+    return math.prod(tile_shape_from_shape(shape))
+
+
+def tile_shape_from_tensor(t: "Tensor") -> Shape:
+    """Return the tile-grid shape of a tensor (thin wrapper over
+    :func:`tile_shape_from_shape`)."""
+    return tile_shape_from_shape(t.shape)
+
+
+def tile_count_from_tensor(t: "Tensor") -> int:
+    """Return the number of logical units a Tensor represents (thin wrapper
+    over :func:`tile_count_from_shape`)."""
+    return tile_count_from_shape(t.layout, t.shape)
 
 
 def check_count_match(

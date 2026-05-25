@@ -53,6 +53,13 @@ def is_acceptable_module_attribute(name: str, obj: Any) -> tuple[bool, str]:
     if inspect.isfunction(obj) or inspect.ismethod(obj):
         return True, "function/method"
 
+    # functools.cache / functools.lru_cache wrappers are acceptable.  They are
+    # callable, expose the standard cache_info/cache_clear interface, and back
+    # an append-only memoisation table whose entries are pure-function results.
+    # Treated as a function-equivalent idiom rather than a mutable global.
+    if callable(obj) and hasattr(obj, "cache_info") and hasattr(obj, "cache_clear"):
+        return True, "functools cache wrapper"
+
     # Classes (including dataclasses, enums, protocols) are acceptable
     if inspect.isclass(obj):
         return True, "class/type"
