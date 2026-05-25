@@ -1250,6 +1250,19 @@ class Tensor:
         self.mesh_shard_info: Optional[MeshShardInfo] = None
         # _dtype is the declared/logical type; defaults to the tensor's native dtype.
         self._dtype: Any = dtype if dtype is not None else tensor.dtype
+        # Cached results of _to_element_key() keyed by the raw user key.
+        # Indexing patterns in hot loops (e.g. matmul kernels slicing a tile
+        # grid) reuse a small set of integer/slice keys millions of times;
+        # memoising the element-key conversion eliminates repeated tuple
+        # construction, slice arithmetic, and validation work.  Falls back
+        # transparently on TypeError for unhashable keys (e.g. older Python
+        # without hashable slices).
+        self._ek_cache: Dict[Tuple[Selector, ...], Tuple[Selector, ...]] = {}
+        # Tile-alignment validation is a per-tensor invariant: once the shape
+        # passes, it always passes.  We defer the first check until the first
+        # tile-style access (preserving the original error timing) and then
+        # latch the result so subsequent _to_element_key() calls skip it.
+        self._tile_alignment_checked: bool = False
 
     @property
     def shape(self) -> Shape:
@@ -1386,6 +1399,10 @@ class Tensor:
         by TILE_SHAPE to convert from tile-space to element-space.  Batch
         slices are left as-is (implicit tile size 1).
 
+        Results are memoised per ``Tensor`` instance.  Hot loops slice the
+        same tile coordinates millions of times; the cache turns the second
+        and subsequent calls into a single dict lookup.
+
         Args:
             key: Tuple whose length must exactly match the tensor's rank.
                 For a 1-D tensor: 1 element.  For an N-D tensor (N >= 2): N
@@ -1399,6 +1416,25 @@ class Tensor:
                 is not tile-aligned (tiled only), or a tile slice has missing
                 or stepped bounds.
         """
+        cache = self._ek_cache
+        try:
+            cached = cache.get(key)
+        except TypeError:
+            # Unhashable key (e.g. legacy Python where ``slice`` is not
+            # hashable).  Skip the cache entirely on this call.
+            return self._compute_element_key(key)
+        if cached is not None:
+            return cached
+        result = self._compute_element_key(key)
+        cache[key] = result
+        return result
+
+    def _compute_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
+        """Uncached body of :meth:`_to_element_key`.
+
+        Split out so the cached fast path stays a few bytecode ops; this
+        method is invoked only on cache misses.
+        """
         ndim = len(self._tensor.shape)
         if len(key) != ndim:
             raise ValueError(
@@ -1406,13 +1442,16 @@ class Tensor:
                 f"expected exactly {ndim} element(s)"
             )
 
-        normalized = tuple(self._normalize_index(k) for k in key)
+        normalized = tuple(normalize_selector_to_slice(k) for k in key)
 
         if self._layout == ROW_MAJOR_LAYOUT:
             # Element-space indexing: no tile scaling needed.
             return normalized
 
-        self._validate_tile_alignment()
+        # Tile alignment is a per-tensor invariant; check once and latch.
+        if not self._tile_alignment_checked:
+            self._validate_tile_alignment()
+            self._tile_alignment_checked = True
         if ndim == 1:
             self._validate_tile_slice(normalized[0], "col")
             return (
@@ -1454,28 +1493,34 @@ class Tensor:
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
-        match key:
-            case tuple():
-                normalized: Tuple[Selector, ...] = key
-            case _:
-                normalized = (key,)
-        result = Tensor(
-            self._tensor[cast(Any, self._to_element_key(normalized))], self._layout
-        )
+        normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
+        ek = self._to_element_key(normalized)
+        result = Tensor(self._tensor[cast(Any, ek)], self._layout)
         if hasattr(self, "_name"):
             result._name = self._name  # type: ignore
         result.memory_config = self.memory_config
-        # Accumulate the element-space origin so locality analysis can find the
-        # position of this slice within the original (root) sharded tensor.
-        # Open-ended slices (e.g. tensor[:]) have no computable start, so fall
-        # back to the parent's origin (which is correct when selecting the full extent).
+        # Accumulate the element-space origin so locality analysis can find
+        # the position of this slice within the original (root) sharded
+        # tensor.  ``ek`` was just computed above so derive starts directly
+        # instead of calling ``element_slice_starts(normalized)`` which would
+        # re-invoke ``_to_element_key``.  Open-ended slices (e.g.
+        # ``tensor[:]``) have no computable start, so fall back to the
+        # parent's origin (which is correct when selecting the full extent).
         parent_origin: Tuple[int, ...] = getattr(
             self, "_element_origin", (0,) * len(self.shape)
         )
-        try:
-            slice_origin = self.element_slice_starts(normalized)
-            result._element_origin = tuple(p + s for p, s in zip(parent_origin, slice_origin))  # type: ignore[attr-defined]
-        except ValueError:
+        starts: list[int] = []
+        valid = True
+        for s in ek:
+            if not isinstance(s, slice) or s.start is None:
+                valid = False
+                break
+            starts.append(s.start)
+        if valid:
+            result._element_origin = tuple(  # type: ignore[attr-defined]
+                p + s for p, s in zip(parent_origin, starts)
+            )
+        else:
             result._element_origin = parent_origin  # type: ignore[attr-defined]
         return result
 
