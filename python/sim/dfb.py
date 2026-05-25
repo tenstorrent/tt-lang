@@ -139,27 +139,6 @@ class Block:
         else:
             self._sm.set_unrestricted()
 
-    # ------------------------------------------------------------------
-    # Property proxies onto the state machine (used by dfb.py internals,
-    # tests, and the public API properties further below).
-    # ------------------------------------------------------------------
-
-    @property
-    def _acquisition(self) -> BlockAcquisition:
-        return self._sm.acquisition
-
-    @property
-    def _kernel_type(self) -> KernelType:
-        return self._sm.kernel_type
-
-    @property
-    def _access_state(self) -> AccessState:
-        return self._sm.access_state
-
-    @property
-    def _expected_ops(self) -> set[ExpectedOp]:
-        return self._sm.expected_ops
-
     def __enter__(self) -> "Block":
         """Context manager entry - returns self for use in with statement."""
         return self
@@ -181,21 +160,21 @@ class Block:
         # Only perform cleanup if no exception occurred
         if exc_type is None and self.dfb is not None:
             # Block came from DFB - perform appropriate cleanup
-            if self._acquisition == BlockAcquisition.RESERVE:
+            if self._sm.acquisition == BlockAcquisition.RESERVE:
                 self.push()
-            elif self._acquisition == BlockAcquisition.WAIT:
+            elif self._sm.acquisition == BlockAcquisition.WAIT:
                 self.pop()
 
     def __repr__(self) -> str:
-        acq = self._acquisition.name
-        expected = {op.name for op in self._expected_ops}
+        acq = self._sm.acquisition.name
+        expected = {op.name for op in self._sm.expected_ops}
         return (
             f"Block("
             f"shape={self._shape}, "
             f"data={repr(self._buf.to_torch())}, "
             f"acq={acq}, "
-            f"kernel={self._kernel_type.name}, "
-            f"access={self._access_state.name}, "
+            f"kernel={self._sm.kernel_type.name}, "
+            f"access={self._sm.access_state.name}, "
             f"expected={expected})"
         )
 
@@ -215,9 +194,9 @@ class Block:
 
     def _pending_copy_site_for_errors(self) -> Optional[Tuple[str, int]]:
         """User callsite for copy(...) involving this block while NAW or ROR (for error messages)."""
-        if self._access_state == AccessState.NAW:
+        if self._sm.access_state == AccessState.NAW:
             return self._pending_copy_dest_location
-        if self._access_state == AccessState.ROR:
+        if self._sm.access_state == AccessState.ROR:
             return self._pending_copy_src_location
         return None
 
@@ -279,7 +258,7 @@ class Block:
             pending_copy_location=self._pending_copy_site_for_errors,
         )
         self._pending_copy_dest_location = None
-        if self._access_state != AccessState.ROR:
+        if self._sm.access_state != AccessState.ROR:
             self._pending_copy_src_location = None
 
     def mark_assign_src_complete(self) -> None:
@@ -357,21 +336,21 @@ class Block:
             return
 
         # State machine check
-        if self._access_state == AccessState.MW:
+        if self._sm.access_state == AccessState.MW:
             raise RuntimeError(
                 format_cannot_read_block(
-                    self._access_state,
-                    self._expected_ops,
+                    self._sm.access_state,
+                    self._sm.expected_ops,
                     self.acquisition,
                     self.name,
                     pending_copy_location=self._pending_copy_site_for_errors(),
                 )
             )
-        if self._access_state in (AccessState.NAW, AccessState.OS):
+        if self._sm.access_state in (AccessState.NAW, AccessState.OS):
             raise RuntimeError(
                 format_cannot_read_block(
-                    self._access_state,
-                    self._expected_ops,
+                    self._sm.access_state,
+                    self._sm.expected_ops,
                     self.acquisition,
                     self.name,
                     pending_copy_location=self._pending_copy_site_for_errors(),
@@ -390,20 +369,20 @@ class Block:
             return
 
         # State machine check
-        if self._access_state == AccessState.NAW:
+        if self._sm.access_state == AccessState.NAW:
             raise RuntimeError(
                 format_cannot_write_block(
-                    self._access_state,
-                    self._expected_ops,
+                    self._sm.access_state,
+                    self._sm.expected_ops,
                     self.name,
                     pending_copy_location=self._pending_copy_site_for_errors(),
                 )
             )
-        if self._access_state in (AccessState.ROR, AccessState.OS):
+        if self._sm.access_state in (AccessState.ROR, AccessState.OS):
             raise RuntimeError(
                 format_cannot_write_block(
-                    self._access_state,
-                    self._expected_ops,
+                    self._sm.access_state,
+                    self._sm.expected_ops,
                     self.name,
                     pending_copy_location=self._pending_copy_site_for_errors(),
                 )
@@ -672,16 +651,16 @@ class Block:
         source_blocks_to_mark: List["Block"] = []
         # Track wait() Compute source blocks for state machine
         if (
-            items._acquisition == BlockAcquisition.WAIT
-            and items._kernel_type == KernelType.COMPUTE
-            and ExpectedOp.STORE_SRC in items._expected_ops
+            items._sm.acquisition == BlockAcquisition.WAIT
+            and items._sm.kernel_type == KernelType.COMPUTE
+            and ExpectedOp.STORE_SRC in items._sm.expected_ops
         ):
             source_blocks_to_mark.append(items)
         elif items._is_temporary and items._source_blocks:
             source_blocks_to_mark.extend(
                 blk
                 for blk in items._source_blocks
-                if ExpectedOp.STORE_SRC in blk._expected_ops
+                if ExpectedOp.STORE_SRC in blk._sm.expected_ops
                 or blk._store_confirmation_pending
             )
 
@@ -734,15 +713,15 @@ class Block:
         for source in sources:
             if (
                 not source._is_temporary
-                and source._acquisition == BlockAcquisition.WAIT
-                and source._kernel_type == KernelType.COMPUTE
+                and source._sm.acquisition == BlockAcquisition.WAIT
+                and source._sm.kernel_type == KernelType.COMPUTE
             ):
                 result_block._source_blocks.append(source)
                 # Fire assign_src so pop() is allowed when the 'with' context exits,
                 # even though store() on the result block may come later.
                 # The block is registered as pending store confirmation and cleared
                 # by mark_store_read_complete() when store() eventually fires.
-                if ExpectedOp.STORE_SRC in source._expected_ops:
+                if ExpectedOp.STORE_SRC in source._sm.expected_ops:
                     source.mark_assign_src_complete()
             elif source._is_temporary:
                 result_block._source_blocks.extend(source._source_blocks)
@@ -890,17 +869,17 @@ class Block:
     @property
     def acquisition(self) -> BlockAcquisition:
         """Get the acquisition method (reserve or wait) of this block."""
-        return self._acquisition
+        return self._sm.acquisition
 
     @property
     def kernel_type(self) -> KernelType:
         """Get the kernel role (DM or Compute) that acquired this block."""
-        return self._kernel_type
+        return self._sm.kernel_type
 
     @property
     def access_state(self) -> AccessState:
         """Get the current access state of this block."""
-        return self._access_state
+        return self._sm.access_state
 
     @property
     def raw_tensor(self) -> Tensor:
@@ -910,7 +889,7 @@ class Block:
     @property
     def expected_ops(self) -> set[ExpectedOp]:
         """Get the set of expected operations for this block."""
-        return self._expected_ops
+        return self._sm.expected_ops
 
     @property
     def name(self) -> Optional[str]:

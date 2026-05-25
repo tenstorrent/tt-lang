@@ -279,10 +279,10 @@ class TestRORState:
     def test_ror_entered_on_first_copy(self) -> None:
         """First copy_src transitions the block from MR to ROR(N=1)."""
         block = self._make_wait_block()
-        assert block._access_state.name == "MR"
+        assert block.access_state.name == "MR"
 
         tx = copy(block, make_rand_tensor(64, 32))
-        assert block._access_state.name == "ROR"
+        assert block.access_state.name == "ROR"
         assert block._sm.ror_count == 1
 
         tx.wait()
@@ -295,11 +295,11 @@ class TestRORState:
         assert block._sm.ror_count == 1
 
         tx2 = copy(block, make_rand_tensor(64, 32))
-        assert block._access_state.name == "ROR"
+        assert block.access_state.name == "ROR"
         assert block._sm.ror_count == 2
 
         tx3 = copy(block, make_rand_tensor(64, 32))
-        assert block._access_state.name == "ROR"
+        assert block.access_state.name == "ROR"
         assert block._sm.ror_count == 3
 
         tx1.wait()
@@ -337,16 +337,16 @@ class TestRORState:
         assert block._sm.ror_count == 3
 
         tx1.wait()
-        assert block._access_state.name == "ROR"
+        assert block.access_state.name == "ROR"
         assert block._sm.ror_count == 2
 
         tx2.wait()
-        assert block._access_state.name == "ROR"
+        assert block.access_state.name == "ROR"
         assert block._sm.ror_count == 1
 
         # Last wait must transition to RW
         tx3.wait()
-        assert block._access_state.name == "RW"
+        assert block.access_state.name == "RW"
 
     def test_last_wait_transitions_to_rw(self) -> None:
         """When the final outstanding copy completes, the block enters RW."""
@@ -356,10 +356,10 @@ class TestRORState:
         tx2 = copy(block, make_rand_tensor(64, 32))
 
         tx1.wait()
-        assert block._access_state.name == "ROR"
+        assert block.access_state.name == "ROR"
 
         tx2.wait()
-        assert block._access_state.name == "RW"
+        assert block.access_state.name == "RW"
 
     def test_can_launch_another_copy_after_partial_waits(self) -> None:
         """New copies can be launched from ROR while other copies are still in flight."""
@@ -374,14 +374,14 @@ class TestRORState:
 
         # Launch another copy while the first has completed but tx2 is still pending
         tx3 = copy(block, make_rand_tensor(64, 32))
-        assert block._access_state.name == "ROR"
+        assert block.access_state.name == "ROR"
         assert block._sm.ror_count == 2
 
         tx2.wait()
         assert block._sm.ror_count == 1
 
         tx3.wait()
-        assert block._access_state.name == "RW"
+        assert block.access_state.name == "RW"
 
 
 # ---------------------------------------------------------------------------

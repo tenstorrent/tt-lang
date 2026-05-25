@@ -429,40 +429,28 @@ class BlockStateMachine:
     instance and delegates to it.
     """
 
+    # The four publicly-readable fields below are plain slots rather than
+    # ``@property``-wrapped privates because they are read on every Block
+    # operation on the simulator's hottest path.  Replacing the property
+    # descriptors with direct slot access avoids one CPython method call per
+    # read; combined with the corresponding change in ``Block`` it eliminates
+    # a two- or three-deep property chain that profiling showed cost several
+    # seconds per matmul-tutorial dry run.  ``_ror_count`` stays private
+    # because it is touched only by transition bookkeeping.
     __slots__ = (
-        "_acquisition",
-        "_kernel_type",
-        "_access_state",
-        "_expected_ops",
+        "acquisition",
+        "kernel_type",
+        "access_state",
+        "expected_ops",
         "_ror_count",
     )
 
     def __init__(self, acquisition: BlockAcquisition, kernel_type: KernelType) -> None:
-        self._acquisition: BlockAcquisition = acquisition
-        self._kernel_type: KernelType = kernel_type
-        self._access_state: AccessState = AccessState.OS
-        self._expected_ops: Set[ExpectedOp] = set()
+        self.acquisition: BlockAcquisition = acquisition
+        self.kernel_type: KernelType = kernel_type
+        self.access_state: AccessState = AccessState.OS
+        self.expected_ops: Set[ExpectedOp] = set()
         self._ror_count: int = 0
-
-    # ------------------------------------------------------------------
-    # Read-only properties
-    # ------------------------------------------------------------------
-
-    @property
-    def acquisition(self) -> BlockAcquisition:
-        return self._acquisition
-
-    @property
-    def kernel_type(self) -> KernelType:
-        return self._kernel_type
-
-    @property
-    def access_state(self) -> AccessState:
-        return self._access_state
-
-    @property
-    def expected_ops(self) -> Set[ExpectedOp]:
-        return self._expected_ops
 
     @property
     def ror_count(self) -> int:
@@ -475,23 +463,23 @@ class BlockStateMachine:
 
     def initialize(self) -> None:
         """Set the initial state based on acquisition method and kernel role."""
-        if self._acquisition == BlockAcquisition.RESERVE:
-            self._access_state = AccessState.MW
-            if self._kernel_type == KernelType.DM:
-                self._expected_ops = {ExpectedOp.COPY_DST}
+        if self.acquisition == BlockAcquisition.RESERVE:
+            self.access_state = AccessState.MW
+            if self.kernel_type == KernelType.DM:
+                self.expected_ops = {ExpectedOp.COPY_DST}
             else:
-                self._expected_ops = {ExpectedOp.STORE}
-        elif self._acquisition == BlockAcquisition.WAIT:
-            self._access_state = AccessState.MR
-            if self._kernel_type == KernelType.DM:
-                self._expected_ops = {ExpectedOp.COPY_SRC}
+                self.expected_ops = {ExpectedOp.STORE}
+        elif self.acquisition == BlockAcquisition.WAIT:
+            self.access_state = AccessState.MR
+            if self.kernel_type == KernelType.DM:
+                self.expected_ops = {ExpectedOp.COPY_SRC}
             else:
-                self._expected_ops = {ExpectedOp.STORE_SRC}
+                self.expected_ops = {ExpectedOp.STORE_SRC}
 
     def set_unrestricted(self) -> None:
         """Set to RW with no expected-ops restrictions (used for temporary blocks)."""
-        self._access_state = AccessState.RW
-        self._expected_ops = set()
+        self.access_state = AccessState.RW
+        self.expected_ops = set()
 
     # ------------------------------------------------------------------
     # Validation
@@ -513,20 +501,20 @@ class BlockStateMachine:
                 NAW/ROR, if known.  Invoked only on the error path so the
                 happy path pays no resolution cost.
         """
-        if not self._expected_ops:
+        if not self.expected_ops:
             raise RuntimeError(
-                format_block_finished_error(operation, self._access_state)
+                format_block_finished_error(operation, self.access_state)
             )
-        if expected_op not in self._expected_ops:
+        if expected_op not in self.expected_ops:
             loc = pending_copy_location() if pending_copy_location else None
             raise RuntimeError(
                 format_validate_mismatch(
                     operation,
                     expected_op,
-                    self._expected_ops,
-                    self._access_state,
-                    self._acquisition,
-                    self._kernel_type,
+                    self.expected_ops,
+                    self.access_state,
+                    self.acquisition,
+                    self.kernel_type,
                     pending_copy_location=loc,
                 )
             )
@@ -561,41 +549,41 @@ class BlockStateMachine:
         # ROR(N) in-state transitions: copy_src increments N; tx_wait
         # decrements N.  Only the final tx_wait (N == 1) falls through to the
         # table, which maps (tx_wait, ROR) -> RW.
-        if self._access_state == AccessState.ROR:
+        if self.access_state == AccessState.ROR:
             if operation_key == "copy_src":
                 self._ror_count += 1
-                self._expected_ops = _ROR_EXPECTED
+                self.expected_ops = _ROR_EXPECTED
                 return
             if operation_key == "tx_wait" and self._ror_count > 1:
                 self._ror_count -= 1
-                self._expected_ops = _ROR_EXPECTED
+                self.expected_ops = _ROR_EXPECTED
                 return
 
-        context_key = (self._acquisition, self._kernel_type)
+        context_key = (self.acquisition, self.kernel_type)
         context_transitions = STATE_TRANSITIONS.get(context_key)
 
         if context_transitions is None:
             raise RuntimeError(
                 f"No state-machine table for this acquisition/kernel role (simulator bug).\n\n"
-                f"Details: acquisition={self._acquisition.name}, kernel={self._kernel_type.name}."
+                f"Details: acquisition={self.acquisition.name}, kernel={self.kernel_type.name}."
             )
 
-        transition_key = (operation_key, self._access_state)
+        transition_key = (operation_key, self.access_state)
         transition = context_transitions.get(transition_key)
 
         if transition is None:
             raise RuntimeError(
-                f"Invalid transition: {operation_display!r} in access={self._access_state.name} for "
-                f"{self._acquisition.name}/{self._kernel_type.name} (internal inconsistency: validate() should have "
+                f"Invalid transition: {operation_display!r} in access={self.access_state.name} for "
+                f"{self.acquisition.name}/{self.kernel_type.name} (internal inconsistency: validate() should have "
                 f"failed first; file a repro).\n\n"
-                f"Details: operation_key={operation_key!r}, access={self._access_state.name}."
+                f"Details: operation_key={operation_key!r}, access={self.access_state.name}."
             )
 
         new_access_state, new_expected_ops = transition
-        self._access_state = new_access_state
+        self.access_state = new_access_state
         if new_access_state == AccessState.ROR:
             self._ror_count = 1
-        self._expected_ops = new_expected_ops
+        self.expected_ops = new_expected_ops
 
     def transition_push(
         self,
@@ -607,14 +595,14 @@ class BlockStateMachine:
             RuntimeError: If PUSH is not expected, or if this is not a RESERVE block.
         """
         self.validate("push()", ExpectedOp.PUSH, pending_copy_location)
-        if self._acquisition != BlockAcquisition.RESERVE:
+        if self.acquisition != BlockAcquisition.RESERVE:
             raise RuntimeError(
                 f"push() only for reserve() blocks; wait() blocks use pop() on the consumer.\n\n"
-                f"Details: acquisition={self._acquisition.name}, kernel={self._kernel_type.name}, "
-                f"access={self._access_state.name}."
+                f"Details: acquisition={self.acquisition.name}, kernel={self.kernel_type.name}, "
+                f"access={self.access_state.name}."
             )
-        self._access_state = AccessState.OS
-        self._expected_ops = set()
+        self.access_state = AccessState.OS
+        self.expected_ops = set()
 
     def transition_assign_src(self) -> None:
         """Fire the assign_src transition (WAIT/COMPUTE blocks only).
@@ -642,16 +630,16 @@ class BlockStateMachine:
                 or if the current access state is not MR / RW / A.
         """
         self.validate("pop()", ExpectedOp.POP, pending_copy_location)
-        if self._acquisition != BlockAcquisition.WAIT:
+        if self.acquisition != BlockAcquisition.WAIT:
             raise RuntimeError(
                 f"pop() only for wait() blocks; reserve() blocks use push() on the producer.\n\n"
-                f"Details: acquisition={self._acquisition.name}, kernel={self._kernel_type.name}, "
-                f"access={self._access_state.name}."
+                f"Details: acquisition={self.acquisition.name}, kernel={self.kernel_type.name}, "
+                f"access={self.access_state.name}."
             )
-        if self._access_state not in (AccessState.MR, AccessState.RW):
+        if self.access_state not in (AccessState.MR, AccessState.RW):
             raise RuntimeError(
-                f"pop() only from MR or RW; current access is {self._access_state.name}.\n\n"
+                f"pop() only from MR or RW; current access is {self.access_state.name}.\n\n"
                 f"Details: need MR (unused as source) or RW (read at least once)."
             )
-        self._access_state = AccessState.OS
-        self._expected_ops = set()
+        self.access_state = AccessState.OS
+        self.expected_ops = set()
