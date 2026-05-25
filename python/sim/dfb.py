@@ -14,6 +14,7 @@ import math
 import operator as _op
 from itertools import product as _product
 from typing import (
+    AbstractSet,
     Any,
     Callable,
     Dict,
@@ -124,7 +125,13 @@ class Block:
         self._store_confirmation_pending: bool = (
             False  # Set by assign_src; cleared by mark_store_read_complete
         )
-        self._source_blocks: List["Block"] = []  # Track source wait() blocks
+        # Lazy-init: stays ``None`` until a wait()/COMPUTE source actually
+        # needs tracking.  Most Blocks (~17M per matmul-tutorial dry run)
+        # never accumulate sources, so deferring the list allocation
+        # eliminates ~17M short-lived empty lists.  Readers must treat
+        # ``None`` as "no sources" (the existing falsy-check on the list
+        # still works because ``None`` is also falsy).
+        self._source_blocks: Optional[List["Block"]] = None
         self.dfb = dfb  # Reference to DataflowBuffer for context manager support
         self.dfb_state: Optional[DFBState] = None
         self.dfb_slot_idx: int = -1
@@ -716,6 +723,8 @@ class Block:
                 and source._sm.acquisition == BlockAcquisition.WAIT
                 and source._sm.kernel_type == KernelType.COMPUTE
             ):
+                if result_block._source_blocks is None:
+                    result_block._source_blocks = []
                 result_block._source_blocks.append(source)
                 # Fire assign_src so pop() is allowed when the 'with' context exits,
                 # even though store() on the result block may come later.
@@ -723,7 +732,9 @@ class Block:
                 # by mark_store_read_complete() when store() eventually fires.
                 if ExpectedOp.STORE_SRC in source._sm.expected_ops:
                     source.mark_assign_src_complete()
-            elif source._is_temporary:
+            elif source._is_temporary and source._source_blocks:
+                if result_block._source_blocks is None:
+                    result_block._source_blocks = []
                 result_block._source_blocks.extend(source._source_blocks)
 
     def _create_temporary_result(
@@ -887,8 +898,14 @@ class Block:
         return self._buf
 
     @property
-    def expected_ops(self) -> set[ExpectedOp]:
-        """Get the set of expected operations for this block."""
+    def expected_ops(self) -> AbstractSet[ExpectedOp]:
+        """Get the set of expected operations for this block.
+
+        Returns an ``AbstractSet`` because the state machine now stores
+        shared frozensets (rather than per-Block mutable sets) on the hot
+        path to avoid millions of short-lived ``set`` allocations.  Callers
+        treat the result as read-only.
+        """
         return self._sm.expected_ops
 
     @property
@@ -1468,9 +1485,19 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
             and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
             and getattr(block, "kernel_type", None) == KernelType.COMPUTE
         ):
-            source_blocks = getattr(result_block, "_source_blocks", None)
-            if source_blocks is not None:
-                source_blocks.append(block)
+            # ``_source_blocks`` is now lazy-init on Block (``None`` until
+            # the first source append) to skip ~17M empty-list allocations
+            # in the hot path; ``getattr`` keeps this function loose-typed
+            # for tests that pass mock blocks.
+            existing = getattr(result_block, "_source_blocks", None)
+            if existing is None:
+                # ``hasattr`` guards against mock objects without the slot.
+                if hasattr(result_block, "_source_blocks"):
+                    result_block._source_blocks = [
+                        block
+                    ]  # pyright: ignore[reportPrivateUsage]
+            else:
+                existing.append(block)
             # Fire assign_src so pop() is allowed when the 'with' context exits.
             # MR means the block has not yet been consumed as an arithmetic source.
             # The block is registered as pending store confirmation and cleared
@@ -1479,9 +1506,15 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
                 block.mark_assign_src_complete()
         elif is_temporary:
             actual_source = getattr(block, "_source_blocks", None)
-            result_source = getattr(result_block, "_source_blocks", None)
-            if actual_source is not None and result_source is not None:
-                result_source.extend(actual_source)
+            if actual_source:
+                existing = getattr(result_block, "_source_blocks", None)
+                if existing is None:
+                    if hasattr(result_block, "_source_blocks"):
+                        result_block._source_blocks = list(
+                            actual_source
+                        )  # pyright: ignore[reportPrivateUsage]
+                else:
+                    existing.extend(actual_source)
 
 
 def check_same_layout(*blocks: Block) -> None:

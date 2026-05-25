@@ -10,7 +10,7 @@ transition table used by Block to validate correct usage patterns.
 """
 
 from enum import IntEnum, auto
-from typing import Callable, Dict, Iterable, Optional, Set, Tuple
+from typing import AbstractSet, Callable, Dict, FrozenSet, Iterable, Optional, Tuple
 
 # Type alias for the lazy callsite used in error messages.  Block-level access
 # transitions are on the simulator's hottest path; passing a callable instead
@@ -100,7 +100,7 @@ _EXPECTED_OP_GUIDANCE: Dict[ExpectedOp, str] = {
 }
 
 
-def _guidance_for_expected_ops(ops: Set[ExpectedOp]) -> str:
+def _guidance_for_expected_ops(ops: AbstractSet[ExpectedOp]) -> str:
     parts = [
         _EXPECTED_OP_GUIDANCE[o]
         for o in sorted(ops, key=lambda x: x.name)
@@ -115,7 +115,7 @@ def _guidance_for_expected_ops(ops: Set[ExpectedOp]) -> str:
 
 def _validate_mismatch_hint(
     attempted: ExpectedOp,
-    expected_ops: Set[ExpectedOp],
+    expected_ops: AbstractSet[ExpectedOp],
     access: AccessState,
     acquisition: BlockAcquisition,
     kernel: KernelType,
@@ -160,7 +160,7 @@ def _validate_mismatch_hint(
 def format_validate_mismatch(
     operation: str,
     attempted: ExpectedOp,
-    expected_ops: Set[ExpectedOp],
+    expected_ops: AbstractSet[ExpectedOp],
     access: AccessState,
     acquisition: BlockAcquisition,
     kernel: KernelType,
@@ -232,7 +232,7 @@ def _pending_copy_where_line(
 
 def format_cannot_read_block(
     access: AccessState,
-    expected_ops: Set[ExpectedOp],
+    expected_ops: AbstractSet[ExpectedOp],
     acquisition: BlockAcquisition,
     block_name: Optional[str] = None,
     pending_copy_location: Optional[Tuple[str, int]] = None,
@@ -265,7 +265,7 @@ def format_cannot_read_block(
 
 def format_cannot_write_block(
     access: AccessState,
-    expected_ops: Set[ExpectedOp],
+    expected_ops: AbstractSet[ExpectedOp],
     block_name: Optional[str] = None,
     pending_copy_location: Optional[Tuple[str, int]] = None,
 ) -> str:
@@ -299,6 +299,45 @@ def format_cannot_write_block(
     return f"{lead}. Details: state={access.name}, next allowed [{exp}]."
 
 
+# Module-level frozensets for ``expected_ops`` -- assigning these
+# immutable singletons rather than constructing fresh ``set()`` literals on
+# every state machine init / transition avoids 16.9M short-lived ``set``
+# allocations per matmul-tutorial dry run.  ``frozenset`` is safe to share
+# across all Blocks because callers only read it (``in`` / iteration /
+# truthy) and always replace the field rather than mutating it.
+_EMPTY_OPS: FrozenSet[ExpectedOp] = frozenset()
+_INIT_RESERVE_DM: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.COPY_DST})
+_INIT_RESERVE_COMPUTE: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.STORE})
+_INIT_WAIT_DM: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.COPY_SRC})
+_INIT_WAIT_COMPUTE: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.STORE_SRC})
+
+# Transition table values, also shared frozensets so a transition is just
+# a dict lookup + reference assignment with zero allocation.
+_OPS_TX_AND_COPY_SRC: FrozenSet[ExpectedOp] = frozenset(
+    {ExpectedOp.TX_WAIT, ExpectedOp.COPY_SRC}
+)
+_OPS_TX: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.TX_WAIT})
+_OPS_COPY_DST_SRC_POP: FrozenSet[ExpectedOp] = frozenset(
+    {ExpectedOp.COPY_DST, ExpectedOp.COPY_SRC, ExpectedOp.POP}
+)
+_OPS_COPY_SRC: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.COPY_SRC})
+_OPS_PUSH_AND_COPY_SRC: FrozenSet[ExpectedOp] = frozenset(
+    {ExpectedOp.PUSH, ExpectedOp.COPY_SRC}
+)
+_OPS_COPY_DST_SRC_PUSH: FrozenSet[ExpectedOp] = frozenset(
+    {ExpectedOp.COPY_DST, ExpectedOp.COPY_SRC, ExpectedOp.PUSH}
+)
+_OPS_STORE_RW_POP: FrozenSet[ExpectedOp] = frozenset(
+    {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP}
+)
+_OPS_STORE_SRC: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.STORE_SRC})
+_OPS_STORE_RW_PUSH: FrozenSet[ExpectedOp] = frozenset(
+    {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.PUSH}
+)
+_OPS_STORE_SRC_PUSH: FrozenSet[ExpectedOp] = frozenset(
+    {ExpectedOp.STORE_SRC, ExpectedOp.PUSH}
+)
+
 # State machine transition table
 # Organized by (acquisition, kernel_type) -> {(operation, access_state): (new_access_state, new_expected_ops)}
 # This structure makes it easy to see all transitions for a particular acquisition/kernel-role combination
@@ -306,119 +345,59 @@ STATE_TRANSITIONS: Dict[
     Tuple[BlockAcquisition, KernelType],
     Dict[
         Tuple[str, AccessState],
-        Tuple[AccessState, set[ExpectedOp]],
+        Tuple[AccessState, FrozenSet[ExpectedOp]],
     ],
 ] = {
     # DM kernel, WAIT acquisition
     (BlockAcquisition.WAIT, KernelType.DM): {
         # Copy as source: MR/RW -> ROR; further copies and tx_wait both expected
-        ("copy_src", AccessState.MR): (
-            AccessState.ROR,
-            {ExpectedOp.TX_WAIT, ExpectedOp.COPY_SRC},
-        ),
-        ("copy_src", AccessState.RW): (
-            AccessState.ROR,
-            {ExpectedOp.TX_WAIT, ExpectedOp.COPY_SRC},
-        ),
+        ("copy_src", AccessState.MR): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
+        ("copy_src", AccessState.RW): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
         # Copy as destination: RW -> NAW + TX_WAIT
-        ("copy_dst", AccessState.RW): (
-            AccessState.NAW,
-            {ExpectedOp.TX_WAIT},
-        ),
+        ("copy_dst", AccessState.RW): (AccessState.NAW, _OPS_TX),
         # TX wait complete from ROR (N==1) -> RW with copy + pop ops
-        ("tx_wait", AccessState.ROR): (
-            AccessState.RW,
-            {ExpectedOp.COPY_DST, ExpectedOp.COPY_SRC, ExpectedOp.POP},
-        ),
+        ("tx_wait", AccessState.ROR): (AccessState.RW, _OPS_COPY_DST_SRC_POP),
         # TX wait complete from NAW -> MR with copy_src only
-        ("tx_wait", AccessState.NAW): (
-            AccessState.MR,
-            {ExpectedOp.COPY_SRC},
-        ),
+        ("tx_wait", AccessState.NAW): (AccessState.MR, _OPS_COPY_SRC),
     },
     # DM kernel, RESERVE acquisition
     (BlockAcquisition.RESERVE, KernelType.DM): {
         # Copy as source: MR/RW -> ROR; further copies and tx_wait both expected
-        ("copy_src", AccessState.MR): (
-            AccessState.ROR,
-            {ExpectedOp.TX_WAIT, ExpectedOp.COPY_SRC},
-        ),
-        ("copy_src", AccessState.RW): (
-            AccessState.ROR,
-            {ExpectedOp.TX_WAIT, ExpectedOp.COPY_SRC},
-        ),
+        ("copy_src", AccessState.MR): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
+        ("copy_src", AccessState.RW): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
         # Copy as destination: MW/RW -> NAW + TX_WAIT
-        ("copy_dst", AccessState.MW): (
-            AccessState.NAW,
-            {ExpectedOp.TX_WAIT},
-        ),
-        ("copy_dst", AccessState.RW): (
-            AccessState.NAW,
-            {ExpectedOp.TX_WAIT},
-        ),
+        ("copy_dst", AccessState.MW): (AccessState.NAW, _OPS_TX),
+        ("copy_dst", AccessState.RW): (AccessState.NAW, _OPS_TX),
         # TX wait complete from NAW -> MR with push + copy_src
-        ("tx_wait", AccessState.NAW): (
-            AccessState.MR,
-            {ExpectedOp.PUSH, ExpectedOp.COPY_SRC},
-        ),
+        ("tx_wait", AccessState.NAW): (AccessState.MR, _OPS_PUSH_AND_COPY_SRC),
         # TX wait complete from ROR (N==1) -> RW with all copy ops + push
-        ("tx_wait", AccessState.ROR): (
-            AccessState.RW,
-            {ExpectedOp.COPY_DST, ExpectedOp.COPY_SRC, ExpectedOp.PUSH},
-        ),
+        ("tx_wait", AccessState.ROR): (AccessState.RW, _OPS_COPY_DST_SRC_PUSH),
     },
     # COMPUTE kernel, WAIT acquisition
     (BlockAcquisition.WAIT, KernelType.COMPUTE): {
         # Assign as arithmetic source: MR/RW -> RW; POP now allowed but store
         # confirmation is deferred and tracked until program termination.
-        ("assign_src", AccessState.MR): (
-            AccessState.RW,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP},
-        ),
-        ("assign_src", AccessState.RW): (
-            AccessState.RW,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP},
-        ),
+        ("assign_src", AccessState.MR): (AccessState.RW, _OPS_STORE_RW_POP),
+        ("assign_src", AccessState.RW): (AccessState.RW, _OPS_STORE_RW_POP),
         # Store read complete: MR/RW -> RW with store ops + pop
-        ("store_src", AccessState.MR): (
-            AccessState.RW,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP},
-        ),
-        ("store_src", AccessState.RW): (
-            AccessState.RW,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP},
-        ),
+        ("store_src", AccessState.MR): (AccessState.RW, _OPS_STORE_RW_POP),
+        ("store_src", AccessState.RW): (AccessState.RW, _OPS_STORE_RW_POP),
         # Store complete: RW -> MR with store_src only
-        ("store_dst", AccessState.RW): (
-            AccessState.MR,
-            {ExpectedOp.STORE_SRC},
-        ),
+        ("store_dst", AccessState.RW): (AccessState.MR, _OPS_STORE_SRC),
     },
     # COMPUTE kernel, RESERVE acquisition
     (BlockAcquisition.RESERVE, KernelType.COMPUTE): {
         # Store read complete: MR/RW -> RW with store ops + push
-        ("store_src", AccessState.MR): (
-            AccessState.RW,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.PUSH},
-        ),
-        ("store_src", AccessState.RW): (
-            AccessState.RW,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.PUSH},
-        ),
+        ("store_src", AccessState.MR): (AccessState.RW, _OPS_STORE_RW_PUSH),
+        ("store_src", AccessState.RW): (AccessState.RW, _OPS_STORE_RW_PUSH),
         # Store complete: MW/RW -> MR with store_src + push
-        ("store_dst", AccessState.MW): (
-            AccessState.MR,
-            {ExpectedOp.STORE_SRC, ExpectedOp.PUSH},
-        ),
-        ("store_dst", AccessState.RW): (
-            AccessState.MR,
-            {ExpectedOp.STORE_SRC, ExpectedOp.PUSH},
-        ),
+        ("store_dst", AccessState.MW): (AccessState.MR, _OPS_STORE_SRC_PUSH),
+        ("store_dst", AccessState.RW): (AccessState.MR, _OPS_STORE_SRC_PUSH),
     },
 }
 
 # ROR expected-ops set, shared by all in-state ROR transitions.
-_ROR_EXPECTED: Set[ExpectedOp] = {ExpectedOp.TX_WAIT, ExpectedOp.COPY_SRC}
+_ROR_EXPECTED: FrozenSet[ExpectedOp] = _OPS_TX_AND_COPY_SRC
 
 
 class BlockStateMachine:
@@ -443,14 +422,37 @@ class BlockStateMachine:
         "access_state",
         "expected_ops",
         "_ror_count",
+        # Cached reference to STATE_TRANSITIONS[(acquisition, kernel_type)].
+        # Looked up once in __init__ so the per-call ``transition()`` body
+        # avoids one ``dict.get`` (23M+ removed lookups per matmul-tutorial
+        # dry run) and one tuple allocation for the ``(acquisition,
+        # kernel_type)`` key.
+        "_ctx_transitions",
     )
 
     def __init__(self, acquisition: BlockAcquisition, kernel_type: KernelType) -> None:
         self.acquisition: BlockAcquisition = acquisition
         self.kernel_type: KernelType = kernel_type
         self.access_state: AccessState = AccessState.OS
-        self.expected_ops: Set[ExpectedOp] = set()
+        # Module-level shared frozenset; ``initialize()`` / transitions
+        # overwrite this with another shared frozenset, so no per-instance
+        # set allocation is ever made.
+        self.expected_ops: AbstractSet[ExpectedOp] = _EMPTY_OPS
         self._ror_count: int = 0
+        # Look up the per-(acquisition, kernel_type) transition table once
+        # at construction so transition() avoids one dict.get + one tuple
+        # allocation per call.  Surfacing the bug at construction (rather
+        # than per-call) is fine: every Block uses one of the four
+        # combinations the table covers.
+        ctx = STATE_TRANSITIONS.get((acquisition, kernel_type))
+        if ctx is None:
+            raise RuntimeError(
+                f"No state-machine table for this acquisition/kernel role (simulator bug).\n\n"
+                f"Details: acquisition={acquisition.name}, kernel={kernel_type.name}."
+            )
+        self._ctx_transitions: Dict[
+            Tuple[str, AccessState], Tuple[AccessState, FrozenSet[ExpectedOp]]
+        ] = ctx
 
     @property
     def ror_count(self) -> int:
@@ -466,20 +468,20 @@ class BlockStateMachine:
         if self.acquisition == BlockAcquisition.RESERVE:
             self.access_state = AccessState.MW
             if self.kernel_type == KernelType.DM:
-                self.expected_ops = {ExpectedOp.COPY_DST}
+                self.expected_ops = _INIT_RESERVE_DM
             else:
-                self.expected_ops = {ExpectedOp.STORE}
+                self.expected_ops = _INIT_RESERVE_COMPUTE
         elif self.acquisition == BlockAcquisition.WAIT:
             self.access_state = AccessState.MR
             if self.kernel_type == KernelType.DM:
-                self.expected_ops = {ExpectedOp.COPY_SRC}
+                self.expected_ops = _INIT_WAIT_DM
             else:
-                self.expected_ops = {ExpectedOp.STORE_SRC}
+                self.expected_ops = _INIT_WAIT_COMPUTE
 
     def set_unrestricted(self) -> None:
         """Set to RW with no expected-ops restrictions (used for temporary blocks)."""
         self.access_state = AccessState.RW
-        self.expected_ops = set()
+        self.expected_ops = _EMPTY_OPS
 
     # ------------------------------------------------------------------
     # Validation
@@ -493,6 +495,12 @@ class BlockStateMachine:
     ) -> None:
         """Raise RuntimeError if expected_op is not currently allowed.
 
+        Note: the body is also inlined at the top of :meth:`transition`,
+        :meth:`transition_push`, and :meth:`transition_pop` to avoid a
+        function call on the simulator's hot path (~35M call frames per
+        matmul-tutorial dry run).  This method is kept for external callers
+        and tests; keep the inlined copies in sync with the logic here.
+
         Args:
             operation: Human-readable operation name for error messages.
             expected_op: The operation being attempted.
@@ -501,17 +509,18 @@ class BlockStateMachine:
                 NAW/ROR, if known.  Invoked only on the error path so the
                 happy path pays no resolution cost.
         """
-        if not self.expected_ops:
+        expected_ops = self.expected_ops
+        if not expected_ops:
             raise RuntimeError(
                 format_block_finished_error(operation, self.access_state)
             )
-        if expected_op not in self.expected_ops:
+        if expected_op not in expected_ops:
             loc = pending_copy_location() if pending_copy_location else None
             raise RuntimeError(
                 format_validate_mismatch(
                     operation,
                     expected_op,
-                    self.expected_ops,
+                    expected_ops,
                     self.access_state,
                     self.acquisition,
                     self.kernel_type,
@@ -544,12 +553,33 @@ class BlockStateMachine:
                 callsite for copy involving this block (NAW/ROR), if known.
                 Forwarded to :meth:`validate` and only invoked on errors.
         """
-        self.validate(operation_display, expected_op, pending_copy_location)
+        # Inlined ``validate()`` body: the simulator fires this method
+        # ~23M times per matmul-tutorial dry run; folding the validation
+        # avoids one function-call frame per transition.
+        access_state = self.access_state
+        expected_ops = self.expected_ops
+        if not expected_ops:
+            raise RuntimeError(
+                format_block_finished_error(operation_display, access_state)
+            )
+        if expected_op not in expected_ops:
+            loc = pending_copy_location() if pending_copy_location else None
+            raise RuntimeError(
+                format_validate_mismatch(
+                    operation_display,
+                    expected_op,
+                    expected_ops,
+                    access_state,
+                    self.acquisition,
+                    self.kernel_type,
+                    pending_copy_location=loc,
+                )
+            )
 
         # ROR(N) in-state transitions: copy_src increments N; tx_wait
         # decrements N.  Only the final tx_wait (N == 1) falls through to the
         # table, which maps (tx_wait, ROR) -> RW.
-        if self.access_state == AccessState.ROR:
+        if access_state == AccessState.ROR:
             if operation_key == "copy_src":
                 self._ror_count += 1
                 self.expected_ops = _ROR_EXPECTED
@@ -559,24 +589,16 @@ class BlockStateMachine:
                 self.expected_ops = _ROR_EXPECTED
                 return
 
-        context_key = (self.acquisition, self.kernel_type)
-        context_transitions = STATE_TRANSITIONS.get(context_key)
-
-        if context_transitions is None:
-            raise RuntimeError(
-                f"No state-machine table for this acquisition/kernel role (simulator bug).\n\n"
-                f"Details: acquisition={self.acquisition.name}, kernel={self.kernel_type.name}."
-            )
-
-        transition_key = (operation_key, self.access_state)
-        transition = context_transitions.get(transition_key)
-
+        # ``_ctx_transitions`` was cached at construction so we skip the
+        # per-call STATE_TRANSITIONS lookup plus its (acquisition,
+        # kernel_type) tuple allocation.
+        transition = self._ctx_transitions.get((operation_key, access_state))
         if transition is None:
             raise RuntimeError(
-                f"Invalid transition: {operation_display!r} in access={self.access_state.name} for "
+                f"Invalid transition: {operation_display!r} in access={access_state.name} for "
                 f"{self.acquisition.name}/{self.kernel_type.name} (internal inconsistency: validate() should have "
                 f"failed first; file a repro).\n\n"
-                f"Details: operation_key={operation_key!r}, access={self.access_state.name}."
+                f"Details: operation_key={operation_key!r}, access={access_state.name}."
             )
 
         new_access_state, new_expected_ops = transition
@@ -594,15 +616,32 @@ class BlockStateMachine:
         Raises:
             RuntimeError: If PUSH is not expected, or if this is not a RESERVE block.
         """
-        self.validate("push()", ExpectedOp.PUSH, pending_copy_location)
+        # Inlined ``validate()`` body; see :meth:`transition` for rationale.
+        access_state = self.access_state
+        expected_ops = self.expected_ops
+        if not expected_ops:
+            raise RuntimeError(format_block_finished_error("push()", access_state))
+        if ExpectedOp.PUSH not in expected_ops:
+            loc = pending_copy_location() if pending_copy_location else None
+            raise RuntimeError(
+                format_validate_mismatch(
+                    "push()",
+                    ExpectedOp.PUSH,
+                    expected_ops,
+                    access_state,
+                    self.acquisition,
+                    self.kernel_type,
+                    pending_copy_location=loc,
+                )
+            )
         if self.acquisition != BlockAcquisition.RESERVE:
             raise RuntimeError(
                 f"push() only for reserve() blocks; wait() blocks use pop() on the consumer.\n\n"
                 f"Details: acquisition={self.acquisition.name}, kernel={self.kernel_type.name}, "
-                f"access={self.access_state.name}."
+                f"access={access_state.name}."
             )
         self.access_state = AccessState.OS
-        self.expected_ops = set()
+        self.expected_ops = _EMPTY_OPS
 
     def transition_assign_src(self) -> None:
         """Fire the assign_src transition (WAIT/COMPUTE blocks only).
@@ -629,17 +668,34 @@ class BlockStateMachine:
             RuntimeError: If POP is not expected, if this is not a WAIT block,
                 or if the current access state is not MR / RW / A.
         """
-        self.validate("pop()", ExpectedOp.POP, pending_copy_location)
+        # Inlined ``validate()`` body; see :meth:`transition` for rationale.
+        access_state = self.access_state
+        expected_ops = self.expected_ops
+        if not expected_ops:
+            raise RuntimeError(format_block_finished_error("pop()", access_state))
+        if ExpectedOp.POP not in expected_ops:
+            loc = pending_copy_location() if pending_copy_location else None
+            raise RuntimeError(
+                format_validate_mismatch(
+                    "pop()",
+                    ExpectedOp.POP,
+                    expected_ops,
+                    access_state,
+                    self.acquisition,
+                    self.kernel_type,
+                    pending_copy_location=loc,
+                )
+            )
         if self.acquisition != BlockAcquisition.WAIT:
             raise RuntimeError(
                 f"pop() only for wait() blocks; reserve() blocks use push() on the producer.\n\n"
                 f"Details: acquisition={self.acquisition.name}, kernel={self.kernel_type.name}, "
-                f"access={self.access_state.name}."
+                f"access={access_state.name}."
             )
-        if self.access_state not in (AccessState.MR, AccessState.RW):
+        if access_state not in (AccessState.MR, AccessState.RW):
             raise RuntimeError(
-                f"pop() only from MR or RW; current access is {self.access_state.name}.\n\n"
+                f"pop() only from MR or RW; current access is {access_state.name}.\n\n"
                 f"Details: need MR (unused as source) or RW (read at least once)."
             )
         self.access_state = AccessState.OS
-        self.expected_ops = set()
+        self.expected_ops = _EMPTY_OPS
