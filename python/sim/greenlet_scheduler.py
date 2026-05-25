@@ -250,20 +250,21 @@ class GreenletScheduler:
         past a blocking check without actually blocking.
 
         Raises:
-            RuntimeError: If no kernel is scheduled or the name is missing from progress tracking
+            RuntimeError: If no kernel is scheduled.
         """
-        if self._current_kernel_id is None:
+        # Hot path: ~17M calls per matmul-tutorial dry run.  Hoist
+        # ``_current_kernel_id`` into a local (saves two repeated attribute
+        # lookups) and write directly to ``_has_made_progress``.  The key
+        # is guaranteed to exist because every active kernel is registered
+        # via ``add_kernel()`` which initialises the entry; the previous
+        # ``not in`` check was defensive and redundant.
+        kid = self._current_kernel_id
+        if kid is None:
             raise RuntimeError(
                 "mark_kernel_progress called but no kernel is currently scheduled. "
                 "This indicates a bug in the scheduler."
             )
-        if self._current_kernel_id not in self._has_made_progress:
-            label = kernel_display_name(self._current_kernel_id)
-            raise RuntimeError(
-                f"Kernel {label!r} not found in progress tracking. "
-                "This indicates a bug in the scheduler."
-            )
-        self._has_made_progress[self._current_kernel_id] = True
+        self._has_made_progress[kid] = True
 
     def get_current_kernel_id(self) -> Optional[KernelId]:
         """Return the identity of the currently executing kernel, if any."""
@@ -659,13 +660,35 @@ def block_if_needed(obj: Any, operation: str) -> None:
 
     Args:
         obj: Object with can_{operation}() method to check
-        operation: Operation name (e.g., "wait", "reserve")
+        operation: Operation name (must be "wait" or "reserve")
     """
-    can_method = getattr(obj, f"can_{operation}")
-    scheduler = get_scheduler()
-    algorithm = get_scheduler_algorithm()
+    # Fetch scheduler + algorithm through a single context lookup; both come
+    # from the same ``SimulatorContext`` and this function is called ~17M
+    # times per matmul-tutorial dry run, so collapsing the two helpers'
+    # frames + the redundant ``get_context()`` saves measurable wall time.
+    ctx = get_context()
+    scheduler = ctx.scheduler
+    if scheduler is None:
+        raise RuntimeError(
+            "No active scheduler. This should only be called from within a kernel."
+        )
+    # Explicit dispatch instead of ``getattr(obj, f"can_{operation}")``:
+    # the f-string + attribute lookup costs ~300 ns each call, vs ~30 ns
+    # for an ``==`` test and a single attribute load.  ``operation`` is
+    # only ever ``"wait"`` or ``"reserve"`` (enforced by the only three
+    # call sites: DataflowBuffer.wait/reserve and CopyTransaction.wait).
+    # Bind the bound method (not the result) so the fair path can re-check
+    # after yielding without re-running the dispatch.
+    if operation == "wait":
+        can_method = obj.can_wait
+    elif operation == "reserve":
+        can_method = obj.can_reserve
+    else:
+        raise ValueError(
+            f"block_if_needed: operation must be 'wait' or 'reserve', got {operation!r}"
+        )
 
-    if algorithm == "fair":
+    if ctx.config.scheduler_algorithm == "fair":
         # Fair scheduler: always yield at synchronization points
         scheduler.mark_kernel_progress()
         # Always yield to give other kernels a chance
