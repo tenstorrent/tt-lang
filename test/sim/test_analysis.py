@@ -1080,9 +1080,9 @@ class TestComplexControlFlow:
             def compute():
                 # Fill slot 0 with 7.0, slot 1 with 8.0.
                 with out_cb.reserve() as v:
-                    v.store(ttl.math.fill(v, 7.0))
+                    v.store(ttl.block.fill(7.0, shape=v.shape))
                 with out_cb.reserve() as v:
-                    v.store(ttl.math.fill(v, 8.0))
+                    v.store(ttl.block.fill(8.0, shape=v.shape))
 
             @ttl.datamovement()
             def dm_read():

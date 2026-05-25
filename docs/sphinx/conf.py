@@ -1,11 +1,30 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
+import os
+from pathlib import Path
 from typing import Any
 
-project = "tt-lang"
+project = "TT-Lang"
 copyright = "2025 Tenstorrent AI ULC"
 author = "TT-Lang Team"
 release = ""
+
+_docs_dir = Path(__file__).resolve().parent
+_repo_root = _docs_dir.parent.parent
+
+# Use Tenstorrent docsite shared theme when building inside tenstorrent.github.io.
+_local_static = _docs_dir / "_static"
+_shared_dir = _repo_root.parent.parent / "shared"
+if _shared_dir.is_dir():
+    _theme_static_paths = [str(_shared_dir / "_static"), str(_local_static)]
+    _theme_templates = str(_shared_dir / "_templates")
+    _theme_logo = str(_shared_dir / "images" / "tt_logo.svg")
+    _theme_favicon = str(_shared_dir / "images" / "favicon.png")
+else:
+    _theme_static_paths = [str(_local_static)]
+    _theme_templates = str(_docs_dir / "_templates")
+    _theme_logo = str(_local_static / "images" / "tt_logo.svg")
+    _theme_favicon = str(_local_static / "images" / "favicon.png")
 
 extensions = [
     "myst_parser",
@@ -43,17 +62,17 @@ autosummary_generate = True
 
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
-html_theme = "furo"
-html_theme_options = {
-    "announcement": (
-        "This project is under active development. See the "
-        '<a href="/tt-lang/specs/TTLangSpecification.html#appendix-d-functionality-matrix">'
-        "functionality matrix</a> for current simulator and compiler support."
-    ),
+html_theme = "sphinx_rtd_theme"
+html_logo = _theme_logo
+html_favicon = _theme_favicon
+html_static_path = _theme_static_paths
+templates_path = [_theme_templates]
+html_last_updated_fmt = "%b %d, %Y"
+
+html_context = {
+    "versions": None,
+    "logo_link_url": os.environ.get("homepage", "https://docs.tenstorrent.com/"),
 }
-templates_path = ["_templates"]
-html_static_path = ["_static"]
-html_favicon = "_static/favicon.svg"
 
 
 def autodoc_skip_member(
@@ -64,8 +83,6 @@ def autodoc_skip_member(
     return skip
 
 
-html_css_files = ["custom.css"]
-
-
 def setup(app: Any) -> None:
+    app.add_css_file("tt_theme.css")
     app.connect("autodoc-skip-member", autodoc_skip_member)

@@ -50,8 +50,8 @@ For finer control, `tt-lang-setup-host` runs only the sfpi step and
 Run a tutorial example:
 
 ```bash
-tt-lang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulator (no compilation, runs on CPU)
-python tutorials/elementwise/step_4_multinode_grid_auto.py        # compiles and runs on hardware
+tt-lang-sim tutorials/elementwise/step_4_multinode_grid_full.py    # simulator (no compilation, runs on CPU)
+python tutorials/elementwise/step_4_multinode_grid_full.py        # compiles and runs on hardware
 ```
 
 ## Build from source for the simulator only
@@ -98,7 +98,7 @@ docker exec -it $USER-dist /bin/bash
 The environment activates automatically on login. Run an example immediately:
 
 ```bash
-python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_full.py
 ```
 
 ### Building from source (ird image)
@@ -133,7 +133,7 @@ Verify the build and run an example:
 
 ```bash
 ninja -C build check-ttlang-all
-python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+python examples/elementwise-tutorial/step_4_multinode_grid_full.py
 ```
 
 ## Building without Docker

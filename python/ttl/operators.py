@@ -6,10 +6,18 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 from ttl.dialects import arith
-from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type
+from ttl.ir import (
+    Context,
+    F32Type,
+    FloatAttr,
+    IndexType,
+    IntegerAttr,
+    RankedTensorType,
+    Type,
+)
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -19,39 +27,74 @@ from ttl.dialects import ttl
 from .pipe import Pipe
 
 
-def _get_constant_int(val):
-    """Extract Python int from MLIR arith.ConstantOp or return as-is if already int."""
+def _arith_constant_op(val):
+    """If val is (or is the result of) an arith.constant, return the typed ConstantOp."""
+    if isinstance(val, arith.ConstantOp):
+        return val
+    owner = getattr(val, "owner", None)
+    if owner is None:
+        return None
+    if isinstance(owner, arith.ConstantOp):
+        return owner
+    if getattr(owner, "name", None) == "arith.constant":
+        return arith.ConstantOp(owner)
+    return None
+
+
+def get_constant_int_value(val) -> Optional[int]:
+    """Python analog of mlir::getConstantIntValue.
+
+    Returns the underlying Python int when val is a Python int, an IntegerAttr,
+    an arith.ConstantOp, or a Value defined by arith.constant; otherwise None.
+    """
+    if isinstance(val, bool):
+        return None
     if isinstance(val, int):
         return val
-    if isinstance(val, arith.ConstantOp):
-        return val.literal_value
-    raise ValueError(f"Expected int or arith.ConstantOp, got {type(val)}")
+    if isinstance(val, IntegerAttr):
+        return val.value
+    op = _arith_constant_op(val)
+    if op is not None:
+        return op.literal_value
+    return None
+
+
+def get_constant_float_value(val) -> Optional[float]:
+    """Python analog of mlir::getConstantIntValue for floats.
+
+    Returns the underlying Python float when val is a Python int/float, a
+    FloatAttr, an arith.ConstantOp, or a Value defined by arith.constant;
+    otherwise None.
+    """
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (float, int)):
+        return float(val)
+    if isinstance(val, FloatAttr):
+        return float(val.value)
+    op = _arith_constant_op(val)
+    if op is not None:
+        return float(op.literal_value)
+    return None
 
 
 def _as_host_scalar(val):
-    """Return `val` as a Python float if it is a Python int/float, an
-    arith.ConstantOp, or an MLIR Value defined by arith.ConstantOp.
-    Otherwise return None. Torch 0-dim tensors are not recognized."""
-    if isinstance(val, (int, float)):
-        return float(val)
-    const_op = val if isinstance(val, arith.ConstantOp) else None
-    if const_op is None and isinstance(getattr(val, "owner", None), arith.ConstantOp):
-        const_op = val.owner
-    if const_op is None:
-        return None
-    try:
-        return float(const_op.literal_value)
-    except (TypeError, ValueError):
-        return None
+    """Return val as a Python float for host-side scalar constants."""
+    return get_constant_float_value(val)
 
 
-def _get_constant_float(val):
-    """Extract Python float from `val` (Python int/float or arith.ConstantOp).
-    Raises ValueError if `val` is not a recognized host scalar."""
-    result = _as_host_scalar(val)
-    if result is None:
-        raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
-    return result
+def _get_constant_int(val) -> int:
+    v = get_constant_int_value(val)
+    if v is None:
+        raise ValueError(f"Expected constant int, got {type(val).__name__}")
+    return v
+
+
+def _get_constant_float(val) -> float:
+    v = get_constant_float_value(val)
+    if v is None:
+        raise ValueError(f"Expected constant float, got {type(val).__name__}")
+    return v
 
 
 # Type aliases for common patterns
@@ -544,64 +587,76 @@ def signpost(name: str):
 
 
 @syntax("broadcast")
-def broadcast(
-    input: TensorBlock, output: TensorBlock, *, dims: List[int]
-) -> TensorBlock:
+def broadcast(input: TensorBlock, *, dims: List[int], shape) -> TensorBlock:
     """
-    Broadcast over specified dimensions.
+    Broadcast a block over specified dimensions to a target shape.
 
-    Only 2D tensors are supported for broadcast (hardware constraint).
+    Matches the spec form ``ttl.block.broadcast(expr, dims, shape)``. For
+    tiled blocks, broadcast happens in two steps: intra-tile scalar broadcast
+    for any innermost dimension listed in ``dims``, and inter-tile broadcast
+    for every other dimension where the target shape is greater than 1.
 
-    ``dims`` uses the same indexing as PyTorch ``dim`` arguments: each index must
-    lie in ``[-ndim, ndim - 1]`` for ``ndim == 2`` (outermost is ``0`` or ``-2``,
-    innermost is ``1`` or ``-1``). Duplicate indices after normalization are
-    allowed (e.g. ``[0, -2]`` is row broadcast).
+    ``dims`` uses Python-style indexing: each index must lie in
+    ``[-rank, rank-1]``. Every dimension ``d`` in ``dims`` must have
+    ``input.shape[d] == 1``; every dimension not in ``dims`` must equal the
+    corresponding ``shape`` entry.
 
     Args:
         input: Input tensor (CB-attached)
-        output: Output tensor (CB-attached, used for output CB tracking)
         dims: Dimensions to broadcast over
+        shape: Target shape of the result
 
     Returns:
         Result tensor with broadcast values
     """
-    from ttl.ir import IntegerAttr, IntegerType
+    from ttl.ir import DenseI64ArrayAttr
 
-    if isinstance(input.type, RankedTensorType) and input.type.rank != 2:
-        raise ValueError(
-            f"broadcast only supports 2D tensors, got rank {input.type.rank}. "
-            "Use 2D tensors for broadcast operations."
-        )
-
-    rank = 2
     if not dims:
         raise ValueError("dims must be a non-empty list of dimension indices")
 
+    if not isinstance(input.type, RankedTensorType):
+        raise ValueError(f"broadcast input must be a ranked tensor, got {input.type}")
+
+    rank = input.type.rank
+    # Inside @ttl.compute(), int literals in a tuple come through as
+    # arith.ConstantOp values; unwrap to Python ints for verifier checks
+    # and the DenseI64ArrayAttr.
+    shape_list = [_get_constant_int(s) for s in shape]
+    if len(shape_list) != rank:
+        raise ValueError(
+            f"shape size {len(shape_list)} does not match input rank {rank}"
+        )
+
+    norm_dims = set()
     for d in dims:
         if d < -rank or d >= rank:
             raise ValueError(
                 f"Invalid broadcast dimension {d}: for rank-{rank} tensors, "
-                f"each index must satisfy {-rank} <= dim <= {rank - 1} "
-                "(PyTorch-style dim indexing)"
+                f"each index must satisfy {-rank} <= dim <= {rank - 1}"
+            )
+        norm_dims.add(d + rank if d < 0 else d)
+
+    input_shape = list(input.type.shape)
+    for i in range(rank):
+        if i in norm_dims:
+            if input_shape[i] != 1:
+                raise ValueError(
+                    f"broadcast dim {i} requires input shape 1, got "
+                    f"{input_shape[i]}"
+                )
+        elif input_shape[i] != shape_list[i]:
+            raise ValueError(
+                f"non-broadcast dim {i}: input has {input_shape[i]} but shape "
+                f"has {shape_list[i]}"
             )
 
-    dims_set = {d % rank for d in dims}
-    if dims_set == {0}:
-        bcast_val = 2  # Row
-    elif dims_set == {1}:
-        bcast_val = 1  # Col
-    elif dims_set == {0, 1}:
-        bcast_val = 3  # Scalar
-    else:
-        raise ValueError(
-            f"Invalid dims: {dims}. After normalization, expect row [0]/[-2], "
-            f"col [1]/[-1], or both for scalar broadcast (e.g. [0,1] or [-2,-1])"
-        )
+    result_type = RankedTensorType.get(
+        shape_list, input.type.element_type, input.type.encoding
+    )
 
-    ctx = input.type.context
-    i32_type = IntegerType.get_signless(32, ctx)
-    bcast_attr = IntegerAttr.get(i32_type, bcast_val)
-    return ttl.bcast(output.type, input, output, bcast_attr)
+    dims_attr = DenseI64ArrayAttr.get(list(dims))
+    shape_attr = DenseI64ArrayAttr.get(shape_list)
+    return ttl.block_broadcast(result_type, input, dims_attr, shape_attr)
 
 
 def _reduce_impl(
@@ -679,12 +734,37 @@ def transpose(input: TensorBlock) -> TensorBlock:
 
 
 @syntax("fill")
-def fill(output: TensorBlock, value) -> TensorBlock:
-    """Fill a tensor with a constant f32 value."""
+def fill(value, *, shape, dtype=None) -> TensorBlock:
+    """Produce a block of ``shape`` filled with a constant value.
+
+    Matches the spec form ``ttl.block.fill(value, shape)``. ``dtype`` selects
+    the per-element tile dtype and defaults to bf16, matching the simulator's
+    spec-form default. Accepts ``ttcore.DataType``, a torch dtype, or a ttnn
+    dtype. The downstream ``ttl.store`` determines the output CB used during
+    lowering; no output operand is required.
+    """
+    from ttl.dialects import ttcore
+    from .dtype_utils import tensor_dtype_to_ttcore_datatype
+
     fill_val = _get_constant_float(value)
-    ctx = output.type.context
+    shape_list = [_get_constant_int(s) for s in shape]
+    if not shape_list:
+        raise ValueError("fill requires a non-empty shape")
+    if any(s <= 0 for s in shape_list):
+        raise ValueError(f"fill shape must be all-positive, got {tuple(shape_list)}")
+
+    if dtype is None:
+        ttcore_dtype = ttcore.DataType.BFloat16
+    elif isinstance(dtype, ttcore.DataType):
+        ttcore_dtype = dtype
+    else:
+        ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
+
+    ctx = Context.current
+    tile_type = ttcore.ir.TileType.get(ctx, 32, 32, ttcore_dtype)
+    result_type = RankedTensorType.get(shape_list, tile_type)
     value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
-    return ttl.fill(output.type, value_attr)
+    return ttl.fill(result_type, value_attr)
 
 
 def _is_supported_typecast_dtype(ttcore_dtype) -> bool:
@@ -755,6 +835,112 @@ def typecast(input: TensorBlock, dtype) -> TensorBlock:
     return ttl.typecast(result_type, input)
 
 
+def _get_block_scalar_type(block):
+    """Extract the scalar MLIR type from a block's tensor element type.
+
+    For tiled blocks (!ttcore.tile<H, W, dtype>), returns the corresponding
+    scalar type (f32 for Float32, bf16 for BFloat16).
+    For row-major blocks, returns the element type directly.
+    """
+    from ttl.dialects import ttcore
+    from ttl.ir import BF16Type
+
+    block_type = block.type
+    if not isinstance(block_type, RankedTensorType):
+        raise ValueError(f"Expected RankedTensorType block, got {block_type}")
+
+    elem_type = block_type.element_type
+    tile_type = ttcore.ir.TileType.maybe_downcast(elem_type)
+    if tile_type is not None:
+        dtype = ttcore.DataType(tile_type.data_type_as_int)
+        ctx = block_type.context
+        if dtype == ttcore.DataType.Float32:
+            return F32Type.get(ctx)
+        if dtype == ttcore.DataType.BFloat16:
+            return BF16Type.get(ctx)
+        raise ValueError(
+            f"raw element access only supports f32 and bf16, got tile dtype {dtype}"
+        )
+    if elem_type == F32Type.get(block_type.context):
+        return elem_type
+    if elem_type == BF16Type.get(block_type.context):
+        return elem_type
+    raise ValueError(
+        f"raw element access only supports f32 and bf16, got element type {elem_type}"
+    )
+
+
+@syntax("raw_element_read")
+def raw_element_read(block, *coords):
+    """Read a scalar element from a block at flat coordinates.
+
+    Coordinates are scalar-element positions within the block. The number
+    of coordinates must match the block tensor rank.
+
+    For tiled blocks, lowering decomposes them into tile + intra-tile offsets.
+
+    Only supported in data movement (noc) threads.
+
+    Args:
+        block: Block tensor (from cb.reserve() or cb.wait())
+        *coords: Index values matching the block tensor rank
+
+    Returns:
+        Scalar value matching the block's element dtype
+    """
+    if len(coords) < 1:
+        raise ValueError("raw_element_read requires at least one coordinate")
+    scalar_type = _get_block_scalar_type(block)
+    ctx = block.type.context
+    index_vals = []
+    for c in coords:
+        if isinstance(c, int):
+            index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
+        elif hasattr(c, "type") and isinstance(c.type, IndexType):
+            index_vals.append(c)
+        else:
+            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
+    return ttl.raw_element_read(scalar_type, block, index_vals)
+
+
+@syntax("raw_element_write")
+def raw_element_write(block, *args):
+    """Write a scalar value to a block at flat coordinates.
+
+    Coordinates are scalar-element positions within the block. The number
+    of coordinates must match the block tensor rank. The last argument
+    is the value to write; all preceding arguments are coordinates.
+
+    For tiled blocks, lowering decomposes them into tile + intra-tile offsets.
+
+    Only supported in data movement (noc) threads.
+
+    Args:
+        block: Block tensor (from cb.reserve() or cb.wait())
+        *args: N index values followed by the scalar value to write.
+
+    Example:
+        ttl.raw_element_write(block, row, col, val)
+    """
+
+    if len(args) < 2:
+        raise ValueError(
+            "raw_element_write requires at least one coordinate and a value"
+        )
+    coord_args = args[:-1]
+    val = args[-1]
+    ctx = block.type.context
+    index_vals = []
+    for c in coord_args:
+        if isinstance(c, int):
+            index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
+        elif hasattr(c, "type") and isinstance(c.type, IndexType):
+            index_vals.append(c)
+        else:
+            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
+    ttl.raw_element_write(block, index_vals, val)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -764,5 +950,7 @@ __all__ = [
     "signpost",
     "fill",
     "typecast",
+    "raw_element_read",
+    "raw_element_write",
     *_generated_all,
 ]

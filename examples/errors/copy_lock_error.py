@@ -12,7 +12,7 @@ from utils.correctness import assert_with_ulp
 
 
 @ttl.operation(
-    grid="auto",  # NOTE: allow compiler to choose grid
+    grid="full",  # NOTE: use full device grid
 )
 def eltwise_add(
     a_in: ttnn.Tensor,

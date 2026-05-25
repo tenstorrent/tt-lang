@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test that grid='auto' resolves to device compute grid dimensions.
+Test that grid='full' resolves to device compute grid dimensions.
 """
 
 import pytest
@@ -18,7 +18,7 @@ from ttlang_test_utils import to_dram
 TILE_SIZE = 32
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def auto_grid_kernel(a, out):
     """Simple kernel using automatic grid sizing."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
@@ -44,8 +44,8 @@ def auto_grid_kernel(a, out):
             tx.wait()
 
 
-def test_grid_auto(device):
-    """Verify grid='auto' resolves to full device compute grid."""
+def test_grid_full(device):
+    """Verify grid='full' resolves to full device compute grid."""
     device_grid = device.compute_with_storage_grid_size()
     expected_cols, expected_rows = device_grid.x, device_grid.y
 

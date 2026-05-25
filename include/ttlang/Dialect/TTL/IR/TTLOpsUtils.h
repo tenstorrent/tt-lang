@@ -81,6 +81,21 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   return std::nullopt;
 }
 
+/// Return true when `tensor` was directly acquired from a CB via
+/// ttl.cb_wait or ttl.cb_reserve (the only two ViewLikeOpInterface
+/// implementations whose view source is a CircularBufferType).
+/// Unlike getAttachedCB, this rejects ttl.attach_cb, tensor.extract, and
+/// tensor.extract_slice chains -- it only traces through unrealized
+/// conversion casts.
+inline bool isCBAcquireView(mlir::Value tensor) {
+  tensor = traceUnrealizedCasts(tensor);
+  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+    mlir::Value source = viewLike.getViewSource();
+    return mlir::isa<CircularBufferType>(source.getType());
+  }
+  return false;
+}
+
 /// Return the circular buffer attached to `tensor`, or null if none.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
   tensor = traceUnrealizedCasts(tensor);
@@ -105,6 +120,25 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   }
 
   return mlir::Value();
+}
+
+/// Normalize a Python-style dim (allowing negative indices) against `rank`
+/// into a non-negative index. Negative dims wrap from the end (-1 is the
+/// last dim). Does not bounds-check; callers should validate the result is
+/// in `[0, rank)`.
+inline int64_t normalizeDim(int64_t dim, int64_t rank) {
+  return dim < 0 ? dim + rank : dim;
+}
+
+/// Normalize a list of Python-style dims into a set of non-negative indices
+/// against `rank`. Duplicates after normalization collapse.
+inline llvm::SmallDenseSet<int64_t>
+normalizeDimsToSet(mlir::ArrayRef<int64_t> dims, int64_t rank) {
+  llvm::SmallDenseSet<int64_t> result;
+  for (int64_t d : dims) {
+    result.insert(normalizeDim(d, rank));
+  }
+  return result;
 }
 
 /// True for arithmetic/math tile ops (add, mul, exp, ...); false for data

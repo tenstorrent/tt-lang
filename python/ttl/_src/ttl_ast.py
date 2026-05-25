@@ -565,14 +565,42 @@ class TTLGenericCompiler(TTCompilerBase):
             and node.value.attr == "math"
         )
 
+    def _is_ttl_block_access(self, node):
+        """Check if node is ttl.block.XXX access pattern."""
+        return (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "ttl"
+            and node.value.attr == "block"
+        )
+
+    # Spec change-log 0.17 (TTLangSpecification.md) moved these names from
+    # ttl.math/ttl to the ttl.block namespace. Each entry restricts the names
+    # to the listed namespace; calls under another namespace raise a clear
+    # error pointing at the correct one.
+    _NAMESPACE_OVERRIDES = {
+        "broadcast": "ttl.block",
+        "fill": "ttl.block",
+    }
+
     def _resolve_ttl_function(self, node, func_args, kwargs):
-        """Resolve and call a ttl.XXX or ttl.math.XXX function."""
+        """Resolve and call a ttl.XXX, ttl.math.XXX, or ttl.block.XXX function."""
         if self._is_ttl_module_access(node):
             namespace = "ttl"
         elif self._is_ttl_math_access(node):
             namespace = "ttl.math"
+        elif self._is_ttl_block_access(node):
+            namespace = "ttl.block"
         else:
             return None
+
+        required_namespace = self._NAMESPACE_OVERRIDES.get(node.attr)
+        if required_namespace is not None and namespace != required_namespace:
+            self._raise_error(
+                node,
+                f"{namespace}.{node.attr} is not available; use "
+                f"{required_namespace}.{node.attr}",
+            )
 
         fn = self._fn_map.get(node.attr)
         if fn is None:
@@ -596,8 +624,26 @@ class TTLGenericCompiler(TTCompilerBase):
         with self._loc_for_node(node):
             try:
                 # Handle ttl.XXX and ttl.math.XXX attribute access
-                if self._is_ttl_module_access(node) or self._is_ttl_math_access(node):
+                if (
+                    self._is_ttl_module_access(node)
+                    or self._is_ttl_math_access(node)
+                    or self._is_ttl_block_access(node)
+                ):
                     return self._resolve_ttl_function(node, func_args, kwargs)
+                # Tensor-typed .shape: return the value's grid shape as a
+                # Python tuple of ints. Lets users write `y_blk.shape` inside
+                # @ttl.compute / @ttl.datamovement to derive shape kwargs for
+                # spec-form ops like ttl.block.broadcast(..., shape=y_blk.shape).
+                # Resolved before the chained-call and module-attribute branches
+                # so it also works on call expressions whose result is a ranked
+                # tensor. Non-tensor receivers fall through to the existing
+                # handlers and surface their normal diagnostic.
+                if not func_args and not kwargs and node.attr == "shape":
+                    value = self.visit(node.value)
+                    if value is not None and hasattr(value, "type"):
+                        tensor_ty = RankedTensorType.maybe_downcast(value.type)
+                        if tensor_ty is not None:
+                            return tuple(tensor_ty.shape)
                 # Handle chained method calls: expr().method()
                 if isinstance(node.value, ast.Call):
                     return self._resolve_chained_method_call(node, func_args, kwargs)

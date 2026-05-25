@@ -51,7 +51,7 @@ The hardware CI batch (`.github/scripts/compile-and-run-examples.sh`) uses the s
 | `elementwise-tutorial/step_1_single_node_single_tile_block.py` | real | yes (needs ttnn) | yes | |
 | `elementwise-tutorial/step_2_single_node_multitile_block.py` | real | yes (needs ttnn) | yes | |
 | `elementwise-tutorial/step_3_multinode.py` | real | yes (needs ttnn) | yes | |
-| `elementwise-tutorial/step_4_multinode_grid_auto.py` | real | yes (needs ttnn) | yes | |
+| `elementwise-tutorial/step_4_multinode_grid_full.py` | real | yes (needs ttnn) | yes | |
 | `tutorial/single_node_broadcast_single_tile_block.py` | real | yes (needs ttnn) | yes | |
 | `tutorial/single_node_broadcast_multitile_blocks.py` | real | yes (needs ttnn) | yes | |
 

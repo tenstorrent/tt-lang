@@ -49,7 +49,7 @@ class TestPipeNetPredicates:
             def dm1() -> None:
                 pass
 
-        x = make_zeros_tensor(4, 4)
+        x = make_zeros_tensor(32, 32)
         op(x, x)
 
     def test_multicast_src_and_multiple_dst(self) -> None:
@@ -78,7 +78,7 @@ class TestPipeNetPredicates:
             def dm1() -> None:
                 pass
 
-        x = make_zeros_tensor(4, 4)
+        x = make_zeros_tensor(32, 32)
         op(x, x)
 
     def test_two_pipes_union_for_is_active(self) -> None:
@@ -114,7 +114,7 @@ class TestPipeNetPredicates:
             def dm1() -> None:
                 pass
 
-        x = make_zeros_tensor(4, 4)
+        x = make_zeros_tensor(32, 32)
         op(x, x)
 
     def test_is_src_and_is_dst_disjoint_roles_unicast(self) -> None:
@@ -141,7 +141,7 @@ class TestPipeNetPredicates:
             def dm1() -> None:
                 pass
 
-        x = make_zeros_tensor(4, 4)
+        x = make_zeros_tensor(32, 32)
         op(x, x)
 
 

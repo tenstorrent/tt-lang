@@ -46,7 +46,7 @@ TILE = 32
 
 
 def _make_hang_kernel():
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def hang_kernel(inp, out):
         grid_cols, _ = ttl.grid_size(dims=2)
         seq_tiles = inp.shape[0] // TILE
