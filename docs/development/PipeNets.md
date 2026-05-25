@@ -893,6 +893,17 @@ live interval is the conservative operation range from the receive post
 that publishes a destination address through the send that consumes that
 address.
 
+The source-core address-table entry and sender-ready counter do not
+remain live until the public transfer handle is waited on. They carry
+only the pre-send rendezvous state: the receiver-published DFB address
+and the count proving that the required receivers have posted. Once the
+send has waited for readiness, read the address-table entry, issued the
+payload write, and reset the ready counter, those source-core resources
+no longer contain state needed by that transfer. Receive completion is
+tracked separately by the per-PipeNet receiver-completion counter, so
+the receive handle can remain live until `ttl.wait` without extending
+the source-core address-table or sender-ready-counter lifetime.
+
 Queue depth is the maximum number of simultaneously live phases for one
 pipe transfer. The current lowering has queue depth 1: a later phase for
 the same pipe transfer cannot post before the current phase's
