@@ -926,11 +926,10 @@ distinct ready counters; non-overlapping same-source intervals can reuse
 one ready counter. Repeated static transfer operations for one logical
 pipe use the same unioned allocation unit as the address table.
 
-Lowering uses local hardware semaphores when the live-interval resource
-plan fits the local semaphore-id budget. When the receiver-completion
-counter range plus the maximum source-local ready-counter count would
-exceed that budget, the compiler assigns GlobalSemaphore-backed ready
-counters for the module and records the required count in
+Sender-ready counters use local hardware semaphores if every source-core
+ready-counter color fits after the receiver-completion semaphore ids.
+Otherwise all sender-ready counters in the module use GlobalSemaphore-backed
+counters, and the compiler records the required count in
 `ttl.pipe_global_semaphore_count`.
 
 Receiver completion remains a per-PipeNet local counter in the current

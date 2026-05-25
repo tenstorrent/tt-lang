@@ -37,8 +37,26 @@ struct OperationLiveInterval {
   Operation *start = nullptr;
   Operation *end = nullptr;
   int64_t startOrdinal = std::numeric_limits<int64_t>::max();
-  bool unbounded = false;
+  enum class State {
+    Bounded,
+    MissingEndpoint,
+    IncomparableStarts,
+    IncomparableEnds,
+    NonPostDominatingEnd,
+  };
+  State state = State::Bounded;
 };
+
+inline void setUnbounded(OperationLiveInterval &interval,
+                         OperationLiveInterval::State state) {
+  if (interval.state == OperationLiveInterval::State::Bounded) {
+    interval.state = state;
+  }
+}
+
+inline bool isUnbounded(const OperationLiveInterval &interval) {
+  return interval.state != OperationLiveInterval::State::Bounded;
+}
 
 inline void updateIntervalStart(OperationLiveInterval &interval, Operation *op,
                                 int64_t opOrdinal,
@@ -49,7 +67,7 @@ inline void updateIntervalStart(OperationLiveInterval &interval, Operation *op,
     return;
   }
   if (!dominanceInfo.dominates(interval.start, op)) {
-    interval.unbounded = true;
+    setUnbounded(interval, OperationLiveInterval::State::IncomparableStarts);
   }
 }
 
@@ -64,7 +82,7 @@ inline void updateIntervalEnd(OperationLiveInterval &interval, Operation *op,
     return;
   }
   if (!dominanceInfo.dominates(op, interval.end)) {
-    interval.unbounded = true;
+    setUnbounded(interval, OperationLiveInterval::State::IncomparableEnds);
   }
 }
 
@@ -72,21 +90,21 @@ inline void finalizeInterval(OperationLiveInterval &interval, bool hasStart,
                              bool hasEnd, const DominanceInfo &dominanceInfo,
                              const PostDominanceInfo &postDominanceInfo) {
   if (!hasStart || !hasEnd || !interval.start || !interval.end) {
-    interval.unbounded = true;
+    setUnbounded(interval, OperationLiveInterval::State::MissingEndpoint);
     return;
   }
 
   if (!dominanceInfo.dominates(interval.start, interval.end) ||
       !postDominanceInfo.postDominates(interval.end, interval.start)) {
-    interval.unbounded = true;
+    setUnbounded(interval, OperationLiveInterval::State::NonPostDominatingEnd);
   }
 }
 
 inline bool intervalsOverlap(const OperationLiveInterval &lhs,
                              const OperationLiveInterval &rhs,
                              const DominanceInfo &dominanceInfo) {
-  if (lhs.unbounded || rhs.unbounded || !lhs.start || !lhs.end || !rhs.start ||
-      !rhs.end) {
+  if (isUnbounded(lhs) || isUnbounded(rhs) || !lhs.start || !lhs.end ||
+      !rhs.start || !rhs.end) {
     return true;
   }
   return !(dominanceInfo.properlyDominates(lhs.end, rhs.start) ||

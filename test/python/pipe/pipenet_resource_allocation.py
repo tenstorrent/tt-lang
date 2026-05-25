@@ -311,6 +311,8 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
     return ksplit_resource_allocation
 
 
+# The expected synchronization layout uses local semaphore ids 0..9 for
+# receiver-completion counters and id 10 for the reused sender-ready counter.
 # FINAL-LABEL: module attributes
 # FINAL-SAME: ttl.pipe_sram_scratch_bytes = 64 : i64
 # FINAL-SAME: ttl.pipe_sync_semaphore_count = 11 : i64

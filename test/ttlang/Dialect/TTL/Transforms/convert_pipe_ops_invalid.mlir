@@ -120,7 +120,7 @@ func.func @same_pipe_two_posts_before_send_rejected()
   %recv1 = ttl.cb_reserve %dst_cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 2>
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{pipe transfer for pipe net 0 src(0, 0) dst(1, 0) to(1, 0) requires queue depth greater than 1; current lowering supports one live receive post per pipe before each send}}
+  // expected-error @below {{pipe transfer for pipe net 0 src(0, 0) dst(1, 0) to(1, 0) requires queue depth greater than 1; current lowering supports one live receive post per pipe before each send in a linear block}}
   %post1 = ttl.copy %p, %recv1
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
