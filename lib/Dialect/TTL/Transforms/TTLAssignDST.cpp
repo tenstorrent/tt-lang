@@ -246,11 +246,9 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
 
 /// Build live intervals for all tile values in the compute body.
 /// Also performs in-place merging: in-place op input and output share DST.
-static void buildLiveIntervals(Block *body,
-                               llvm::MapVector<Value, ValueLiveInterval>
-                                   &intervals,
-                               MergedClasses &merged,
-                               DenseMap<Operation *, int64_t> &opIndex) {
+static void buildLiveIntervals(
+    Block *body, llvm::MapVector<Value, ValueLiveInterval> &intervals,
+    MergedClasses &merged, DenseMap<Operation *, int64_t> &opIndex) {
   // Number operations
   int64_t idx = 0;
   for (Operation &op : *body) {
@@ -468,10 +466,10 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
   for (auto &[value, interval] : intervals) {
     sortedIntervals.push_back(&interval);
   }
-  llvm::sort(sortedIntervals, [](ValueLiveInterval *lhs,
-                                 ValueLiveInterval *rhs) {
-    return lhs->start < rhs->start;
-  });
+  llvm::sort(sortedIntervals,
+             [](ValueLiveInterval *lhs, ValueLiveInterval *rhs) {
+               return lhs->start < rhs->start;
+             });
 
   SmallVector<ValueLiveInterval *> active;
   DenseSet<Value> processedRoots;

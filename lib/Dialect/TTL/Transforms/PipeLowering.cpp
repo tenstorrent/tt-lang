@@ -1017,10 +1017,10 @@ validateSingleLivePostPerLinearBlock(const PipeTransferAllocationUnit &unit) {
       continue;
     }
 
-    llvm::sort(events, [](const PipeTransferEvent &lhs,
-                          const PipeTransferEvent &rhs) {
-      return lhs.op->isBeforeInBlock(rhs.op);
-    });
+    llvm::sort(events,
+               [](const PipeTransferEvent &lhs, const PipeTransferEvent &rhs) {
+                 return lhs.op->isBeforeInBlock(rhs.op);
+               });
 
     int64_t livePosts = 0;
     for (const PipeTransferEvent &event : events) {
@@ -1146,12 +1146,12 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
 static bool
 isBeforeForDeterministicAllocation(const PipeTransferAllocationUnit &lhs,
                                    const PipeTransferAllocationUnit &rhs) {
-  return std::make_tuple(lhs.interval.startOrdinal, lhs.pipe.srcX, lhs.pipe.srcY,
-                         lhs.pipe.pipeNetId, lhs.pipe.dstStartX,
+  return std::make_tuple(lhs.interval.startOrdinal, lhs.pipe.srcX,
+                         lhs.pipe.srcY, lhs.pipe.pipeNetId, lhs.pipe.dstStartX,
                          lhs.pipe.dstStartY, lhs.pipe.dstEndX, lhs.pipe.dstEndY,
                          lhs.ordinal) <
-         std::make_tuple(rhs.interval.startOrdinal, rhs.pipe.srcX, rhs.pipe.srcY,
-                         rhs.pipe.pipeNetId, rhs.pipe.dstStartX,
+         std::make_tuple(rhs.interval.startOrdinal, rhs.pipe.srcX,
+                         rhs.pipe.srcY, rhs.pipe.pipeNetId, rhs.pipe.dstStartX,
                          rhs.pipe.dstStartY, rhs.pipe.dstEndX, rhs.pipe.dstEndY,
                          rhs.ordinal);
 }
