@@ -44,9 +44,6 @@ static constexpr int64_t kPipeSramScratchAlignmentBytes = 32;
 // Helpers
 //===----------------------------------------------------------------------===//
 
-// TODO: move getTTLCBType and makeZeroI32 to a shared location if more
-// lowering files need them.
-
 static CircularBufferType getTTLCBType(Value cb) {
   if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
     return ttlCbTy;
@@ -992,7 +989,7 @@ emitUnsupportedQueueDepth(Operation *op,
          << unit.pipe.dstStartX << ", " << unit.pipe.dstStartY << ") to("
          << unit.pipe.dstEndX << ", " << unit.pipe.dstEndY
          << ") requires queue depth greater than 1; current lowering supports "
-            "one live receive post per pipe before each send";
+            "one live receive post per pipe before each send in a linear block";
 }
 
 static LogicalResult
@@ -1038,9 +1035,9 @@ validateSingleLivePostPerLinearBlock(const PipeTransferAllocationUnit &unit) {
   return success();
 }
 
-static bool intervalsOverlap(const PipeTransferAllocationUnit &lhs,
-                             const PipeTransferAllocationUnit &rhs,
-                             const DominanceInfo &dominanceInfo) {
+static bool pipeTransferIntervalsOverlap(const PipeTransferAllocationUnit &lhs,
+                                         const PipeTransferAllocationUnit &rhs,
+                                         const DominanceInfo &dominanceInfo) {
   return intervalsOverlap(lhs.interval, rhs.interval, dominanceInfo);
 }
 
@@ -1110,7 +1107,6 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
     }
 
     if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
-      ++nextEventOrdinal;
       FailureOr<PipeTransferAllocationUnit *> unit =
           getOrCreateUnit(op, sendOp.getTransfer());
       if (failed(unit)) {
@@ -1132,9 +1128,6 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
     if (failed(validateSingleLivePostPerLinearBlock(unit))) {
       return failure();
     }
-    // MLIR value liveness tracks SSA lifetime. Sender-ready counters and
-    // address-table slots become reusable at the send that consumes the posted
-    // address, even when the transfer value or receive token remains live.
     finalizeInterval(unit.interval, unit.hasPost, unit.hasSend, dominanceInfo,
                      postDominanceInfo);
   }
@@ -1177,8 +1170,8 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
                                                         units[rhsIndex]);
             },
             [&](unsigned lhsIndex, unsigned rhsIndex) {
-              return intervalsOverlap(units[lhsIndex], units[rhsIndex],
-                                      dominanceInfo);
+              return pipeTransferIntervalsOverlap(
+                  units[lhsIndex], units[rhsIndex], dominanceInfo);
             });
 
     for (auto indexedColor : llvm::enumerate(colorUsers)) {

@@ -274,6 +274,98 @@ func.func @same_source_sequential_transfers_reuse_sync_state() attributes { "ttl
 
 // -----
 
+// Repeated create_pipe ops with the same PipeKey share one transfer-allocation
+// unit so repeated uses preserve the current per-pipe protocol state.
+// CHECK-LABEL: func.func @same_pipe_key_transfer_creates_share_sync_state
+// CHECK-NOT: arith.constant 4 : i32
+// CHECK: %[[READY_IDX:.*]] = arith.constant 1 : index
+// CHECK-NOT: arith.constant 4 : i32
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
+// CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
+// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK-NOT: arith.constant 4 : i32
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
+// CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
+// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK-NOT: arith.constant 4 : i32
+// CHECK: return
+func.func @same_pipe_key_transfer_creates_share_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %recv0 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send0 = ttl.copy %src_cb, %p0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  ttl.wait %post0 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send1 = ttl.copy %src_cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  ttl.wait %post1 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
+// Transfer intervals that are not bounded by dominance conservatively conflict
+// with other same-source intervals, so they receive distinct ready state.
+// CHECK-LABEL: func.func @same_source_control_flow_interval_uses_distinct_sync_state
+// CHECK-DAG: %[[P0_READY_IDX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[P1_READY_IDX:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[P1_TABLE_OFF:.*]] = arith.constant 4 : i32
+// CHECK: scf.if
+// CHECK: ttkernel.get_semaphore(%[[P0_READY_IDX]])
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.get_semaphore(%[[P0_READY_IDX]])
+// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK: arith.addi {{.*}}, %[[P1_TABLE_OFF]]
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
+// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK: arith.addi {{.*}}, %[[P1_TABLE_OFF]]
+// CHECK: ttkernel.noc_async_write
+func.func @same_source_control_flow_interval_uses_distinct_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cond = arith.constant true
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
+  %transfer0 = ttl.pipe_transfer.create %p0 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+  %recv0 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  scf.if %cond {
+    %then_token = ttl.pipe_transfer.post %transfer0, %recv0
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+  } else {
+    %else_token = ttl.pipe_transfer.post %transfer0, %recv0
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+  }
+  %send0 = ttl.pipe_transfer.send %transfer0, %src_cb
+      : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %transfer1 = ttl.pipe_transfer.create %p1 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
+  %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token1 = ttl.pipe_transfer.post %transfer1, %recv1
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+  %send1 = ttl.pipe_transfer.send %transfer1, %src_cb
+      : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  ttl.pipe_transfer.wait %token1 : !ttl.pipe_token<net 0>
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
 // Unused same-source pipe declarations do not allocate ready counters; the
 // active transfer keeps its ready counter in a local hardware semaphore.
 // CHECK-LABEL: func.func @same_source_pipes_keep_local_ready_counters_below_limit

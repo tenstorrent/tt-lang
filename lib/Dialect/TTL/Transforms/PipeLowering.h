@@ -16,9 +16,7 @@
 
 namespace mlir::tt::ttl {
 
-/// Receiver-completion semaphores are indexed by PipeNet id. Sender-ready
-/// semaphores and address-table slots are allocated from source-local transfer
-/// intervals because non-overlapping transfers can reuse the same state.
+/// Receiver-completion semaphores are indexed by PipeNet id.
 inline int64_t getReceiverCompletionSemIdx(int64_t pipeNetId) {
   return pipeNetId;
 }
@@ -48,16 +46,17 @@ struct PipeCompletionWaitInfo {
   int64_t receiverSemIdx;
 };
 
-/// Address storage used by one active pipe transfer. Each receiver publishes
-/// its DFB write address into the source core's SRAM table before incrementing
-/// the sender-ready counter.
+/// Address storage used by one transfer-allocation unit. Each receiver
+/// publishes its DFB write address into the source core's SRAM table before
+/// incrementing the sender-ready counter.
 struct PipeAddressStorageInfo {
   PipeSramAddressTableInfo sramAddressTable;
 };
 
-/// Lowering information for one active pipe transfer. This keeps address
-/// storage separate from readiness counting so physical allocation can choose
-/// local semaphores or GlobalSemaphore-backed counters independently.
+/// Lowering information for a set of ttl.pipe_transfer.create ops sharing one
+/// PipeKey. This keeps address storage separate from readiness counting so
+/// physical allocation can choose local semaphores or GlobalSemaphore-backed
+/// counters independently.
 struct PipeResourceInfo {
   PipeKey pipe;
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
@@ -109,7 +108,9 @@ int64_t getRequiredPipeSramScratchBytes(const PipeResourcePlan &info);
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
-/// Build the pipe resource plan used by pipe lowering.
+/// Build the pipe resource plan used by pipe lowering. Transfer intervals that
+/// cannot be bounded by dominance are conservatively treated as conflicting
+/// with every other transfer interval from the same source core.
 LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
