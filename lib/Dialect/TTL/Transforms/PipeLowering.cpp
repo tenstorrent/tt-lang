@@ -17,6 +17,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
@@ -27,7 +28,6 @@
 #include "llvm/ADT/SetVector.h"
 
 #include <algorithm>
-#include <limits>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -983,12 +983,9 @@ struct PipeTransferAllocationUnit {
   PipeType pipeType;
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
   int64_t ordinal = 0;
-  int64_t intervalStartOrdinal = std::numeric_limits<int64_t>::max();
-  Operation *intervalStart = nullptr;
-  Operation *intervalEnd = nullptr;
+  OperationLiveInterval interval;
   bool hasPost = false;
   bool hasSend = false;
-  bool unbounded = false;
   int64_t resourceColor = 0;
 };
 
@@ -1049,63 +1046,10 @@ validateSingleLivePostPerLinearBlock(const PipeTransferAllocationUnit &unit) {
   return success();
 }
 
-static void updateIntervalStart(PipeTransferAllocationUnit &unit, Operation *op,
-                                int64_t opOrdinal,
-                                const DominanceInfo &dominanceInfo) {
-  if (!unit.intervalStart ||
-      dominanceInfo.properlyDominates(op, unit.intervalStart)) {
-    unit.intervalStart = op;
-    unit.intervalStartOrdinal = opOrdinal;
-    return;
-  }
-  if (!dominanceInfo.dominates(unit.intervalStart, op)) {
-    unit.unbounded = true;
-  }
-}
-
-static void updateIntervalEnd(PipeTransferAllocationUnit &unit, Operation *op,
-                              const DominanceInfo &dominanceInfo) {
-  if (!unit.intervalEnd) {
-    unit.intervalEnd = op;
-    return;
-  }
-  if (dominanceInfo.properlyDominates(unit.intervalEnd, op)) {
-    unit.intervalEnd = op;
-    return;
-  }
-  if (!dominanceInfo.dominates(op, unit.intervalEnd)) {
-    unit.unbounded = true;
-  }
-}
-
-static void finalizeInterval(PipeTransferAllocationUnit &unit,
-                             const DominanceInfo &dominanceInfo,
-                             const PostDominanceInfo &postDominanceInfo) {
-  if (!unit.hasPost || !unit.hasSend || !unit.intervalStart ||
-      !unit.intervalEnd) {
-    unit.unbounded = true;
-    return;
-  }
-
-  // MLIR value liveness tracks SSA lifetime. Sender-ready counters and
-  // address-table slots become reusable at the send that consumes the posted
-  // address, even when the transfer value or receive token remains live.
-  if (!dominanceInfo.dominates(unit.intervalStart, unit.intervalEnd) ||
-      !postDominanceInfo.postDominates(unit.intervalEnd, unit.intervalStart)) {
-    unit.unbounded = true;
-  }
-}
-
 static bool intervalsOverlap(const PipeTransferAllocationUnit &lhs,
                              const PipeTransferAllocationUnit &rhs,
                              const DominanceInfo &dominanceInfo) {
-  if (lhs.unbounded || rhs.unbounded || !lhs.intervalStart ||
-      !lhs.intervalEnd || !rhs.intervalStart || !rhs.intervalEnd) {
-    return true;
-  }
-  return !(
-      dominanceInfo.properlyDominates(lhs.intervalEnd, rhs.intervalStart) ||
-      dominanceInfo.properlyDominates(rhs.intervalEnd, lhs.intervalStart));
+  return intervalsOverlap(lhs.interval, rhs.interval, dominanceInfo);
 }
 
 static FailureOr<SmallVector<PipeTransferAllocationUnit>>
@@ -1169,7 +1113,7 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
       }
       (*unit)->hasPost = true;
       (*unit)->events.push_back({op, PipeTransferEventKind::Post});
-      updateIntervalStart(**unit, op, eventOrdinal, dominanceInfo);
+      updateIntervalStart((*unit)->interval, op, eventOrdinal, dominanceInfo);
       return WalkResult::advance();
     }
 
@@ -1182,7 +1126,7 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
       }
       (*unit)->hasSend = true;
       (*unit)->events.push_back({op, PipeTransferEventKind::Send});
-      updateIntervalEnd(**unit, op, dominanceInfo);
+      updateIntervalEnd((*unit)->interval, op, dominanceInfo);
       return WalkResult::advance();
     }
 
@@ -1196,7 +1140,11 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
     if (failed(validateSingleLivePostPerLinearBlock(unit))) {
       return failure();
     }
-    finalizeInterval(unit, dominanceInfo, postDominanceInfo);
+    // MLIR value liveness tracks SSA lifetime. Sender-ready counters and
+    // address-table slots become reusable at the send that consumes the posted
+    // address, even when the transfer value or receive token remains live.
+    finalizeInterval(unit.interval, unit.hasPost, unit.hasSend, dominanceInfo,
+                     postDominanceInfo);
   }
 
   return units;
@@ -1205,11 +1153,11 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
 static bool
 isBeforeForDeterministicAllocation(const PipeTransferAllocationUnit &lhs,
                                    const PipeTransferAllocationUnit &rhs) {
-  return std::make_tuple(lhs.intervalStartOrdinal, lhs.pipe.srcX, lhs.pipe.srcY,
+  return std::make_tuple(lhs.interval.startOrdinal, lhs.pipe.srcX, lhs.pipe.srcY,
                          lhs.pipe.pipeNetId, lhs.pipe.dstStartX,
                          lhs.pipe.dstStartY, lhs.pipe.dstEndX, lhs.pipe.dstEndY,
                          lhs.ordinal) <
-         std::make_tuple(rhs.intervalStartOrdinal, rhs.pipe.srcX, rhs.pipe.srcY,
+         std::make_tuple(rhs.interval.startOrdinal, rhs.pipe.srcX, rhs.pipe.srcY,
                          rhs.pipe.pipeNetId, rhs.pipe.dstStartX,
                          rhs.pipe.dstStartY, rhs.pipe.dstEndX, rhs.pipe.dstEndY,
                          rhs.ordinal);
@@ -1221,39 +1169,33 @@ using SourceColorMap =
 static SourceColorMap
 assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
                          const DominanceInfo &dominanceInfo) {
-  SmallVector<unsigned> sortedUnitIndices;
-  sortedUnitIndices.reserve(units.size());
+  llvm::MapVector<PipeSourceKey, SmallVector<unsigned>> unitIndicesBySource;
   for (unsigned index = 0, size = units.size(); index < size; ++index) {
-    sortedUnitIndices.push_back(index);
+    unitIndicesBySource[getPipeSourceKey(units[index].pipeType)].push_back(
+        index);
   }
-  llvm::sort(sortedUnitIndices, [&](unsigned lhsIndex, unsigned rhsIndex) {
-    return isBeforeForDeterministicAllocation(units[lhsIndex], units[rhsIndex]);
-  });
 
   SourceColorMap colorUsersBySource;
-  for (unsigned unitIndex : sortedUnitIndices) {
-    PipeTransferAllocationUnit &unit = units[unitIndex];
-    SmallVector<SmallVector<unsigned>> &colorUsers =
-        colorUsersBySource[getPipeSourceKey(unit.pipeType)];
+  for (auto &entry : unitIndicesBySource) {
+    SmallVector<SmallVector<unsigned>> colorUsers =
+        assignGreedyIntervalColors<unsigned>(
+            entry.second,
+            [&](unsigned lhsIndex, unsigned rhsIndex) {
+              return isBeforeForDeterministicAllocation(units[lhsIndex],
+                                                        units[rhsIndex]);
+            },
+            [&](unsigned lhsIndex, unsigned rhsIndex) {
+              return intervalsOverlap(units[lhsIndex], units[rhsIndex],
+                                      dominanceInfo);
+            });
 
-    unsigned selectedColor = 0;
-    for (;; ++selectedColor) {
-      if (selectedColor == colorUsers.size()) {
-        colorUsers.push_back({});
-        break;
-      }
-      bool hasConflict = llvm::any_of(
-          colorUsers[selectedColor], [&](unsigned assignedUnitIndex) {
-            return intervalsOverlap(unit, units[assignedUnitIndex],
-                                    dominanceInfo);
-          });
-      if (!hasConflict) {
-        break;
+    for (auto indexedColor : llvm::enumerate(colorUsers)) {
+      for (unsigned unitIndex : indexedColor.value()) {
+        units[unitIndex].resourceColor = indexedColor.index();
       }
     }
 
-    unit.resourceColor = selectedColor;
-    colorUsers[selectedColor].push_back(unitIndex);
+    colorUsersBySource.insert({entry.first, std::move(colorUsers)});
   }
 
   return colorUsersBySource;
