@@ -54,10 +54,10 @@ inline bool intervalsOverlap(const ValueLiveInterval &lhs,
 /// Operation-bounded interval for resources whose lifetime is defined by IR
 /// operations rather than by SSA use-def lifetime.
 ///
-/// A bounded interval has a start operation that dominates its end operation and
-/// an end operation that post-dominates its start operation. If those conditions
-/// cannot be proven, the interval is marked unbounded. Unbounded intervals
-/// conservatively conflict with every other operation interval.
+/// A bounded interval has a start operation that dominates its end operation
+/// and an end operation that post-dominates its start operation. If those
+/// conditions cannot be proven, the interval is marked unbounded. Unbounded
+/// intervals conservatively conflict with every other operation interval.
 struct OperationLiveInterval {
   Operation *start = nullptr;
   Operation *end = nullptr;
