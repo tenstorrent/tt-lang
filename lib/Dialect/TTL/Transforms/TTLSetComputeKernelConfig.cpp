@@ -112,11 +112,13 @@ static std::optional<int64_t> getF32FPUSrcCBIndex(Operation *op, Value operand,
 /// FPU consumers (reduce, matmul, and FPU-eligible add/sub/mul) read via
 /// SRCA/SRCB and must remain in `Default` unpack mode; the two modes are
 /// mutually exclusive on a given CB. When a CB is consumed by both
-/// strategies the SFPU consumer's full-precision request is dropped (the CB
-/// is left in `Default` so the FPU consumer keeps working) and a warning is
-/// emitted on the FPU op so the user can rework the kernel if precision
-/// matters.
-static llvm::SmallSetVector<int64_t, 4>
+/// strategies the kernel cannot be configured without dropping f32
+/// precision for the SFPU consumer, so a hard error is reported instead of
+/// silently degrading precision.
+///
+/// Returns failure when a conflict is detected; the caller must propagate
+/// the failure (typically via `signalPassFailure`).
+static FailureOr<llvm::SmallSetVector<int64_t, 4>>
 collectF32SFPUInputCBs(ComputeOp computeOp) {
   llvm::SmallSetVector<int64_t, 4> sfpuCBs;
   llvm::SmallDenseMap<int64_t, Operation *> fpuCBs;
@@ -140,19 +142,22 @@ collectF32SFPUInputCBs(ComputeOp computeOp) {
     }
   }
 
-  llvm::SmallVector<int64_t, 2> conflicts;
+  bool failed = false;
   for (int64_t cb : sfpuCBs) {
-    if (fpuCBs.contains(cb)) {
-      conflicts.push_back(cb);
+    if (!fpuCBs.contains(cb)) {
+      continue;
     }
-  }
-  for (int64_t cb : conflicts) {
-    fpuCBs[cb]->emitWarning()
+    fpuCBs[cb]->emitOpError()
         << "f32 input from CB " << cb
-        << " is consumed by both FPU and SFPU strategies; leaving the CB in "
-           "default unpack mode so the FPU consumer works, but the SFPU "
-           "consumer will lose precision";
-    sfpuCBs.remove(cb);
+        << " is consumed by both FPU and SFPU strategies; the FPU consumer "
+           "requires default unpack mode while the SFPU consumer needs "
+           "UnpackToDestFp32, and the two modes are mutually exclusive on a "
+           "given CB. Split the source into separate CBs (one per strategy) "
+           "so the SFPU consumer keeps full f32 precision";
+    failed = true;
+  }
+  if (failed) {
+    return failure();
   }
 
   return sfpuCBs;
@@ -245,11 +250,20 @@ struct TTLSetComputeKernelConfigPass
                     BoolAttr::get(funcOp.getContext(), enableFPUBinaryOps));
 
     llvm::SmallSetVector<int64_t, 4> unpackFp32CBs;
-    funcOp->walk([&](ComputeOp computeOp) {
-      for (int64_t cb : collectF32SFPUInputCBs(computeOp)) {
+    WalkResult walkResult = funcOp->walk([&](ComputeOp computeOp) {
+      auto cbs = collectF32SFPUInputCBs(computeOp);
+      if (failed(cbs)) {
+        return WalkResult::interrupt();
+      }
+      for (int64_t cb : *cbs) {
         unpackFp32CBs.insert(cb);
       }
+      return WalkResult::advance();
     });
+    if (walkResult.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
 
     if (!unpackFp32CBs.empty() && !funcOp->hasAttr(kUnpackToDestFp32AttrName)) {
       SmallVector<int64_t> sortedCBs(unpackFp32CBs.begin(),

@@ -1,17 +1,13 @@
 // Summary: Diagnose CB conflicts when an f32 input is consumed by both FPU
 // and SFPU strategies in the same compute body. Default and UnpackToDestFp32
-// modes are mutually exclusive on a given CB, so the SFPU consumer's
-// full-precision request is dropped and a warning is emitted; the conflicting
-// CB is left out of the `ttl.unpack_to_dest_fp32` array attribute.
+// modes are mutually exclusive on a given CB, so silently dropping one
+// strategy's request would lose f32 precision. The pass instead emits a hard
+// error so the kernel author can split the source into per-strategy CBs.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file --verify-diagnostics | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file --verify-diagnostics
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK-LABEL: func.func @f32_cb1_used_by_both_fpu_and_sfpu
-// The conflicting CB1 is dropped, no `ttl.unpack_to_dest_fp32` attribute is
-// produced (only CB1 had an SFPU consumer; CB0/CB2 do not).
-// CHECK-NOT: ttl.unpack_to_dest_fp32
 func.func @f32_cb1_used_by_both_fpu_and_sfpu(
     %a: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -56,7 +52,7 @@ func.func @f32_cb1_used_by_both_fpu_and_sfpu(
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
       // FPU path: CB0 + CB1 through SRCA/SRCB.
-      // expected-warning @below {{f32 input from CB 1 is consumed by both FPU and SFPU strategies}}
+      // expected-error @below {{f32 input from CB 1 is consumed by both FPU and SFPU strategies}}
       %sum = ttl.tile_add %a_tile, %b_tile_fpu into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
       // SFPU path: same b on CB1 read straight to DST via tile_exp.
       %ex = ttl.tile_exp %b_tile_sfpu into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>

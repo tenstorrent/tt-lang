@@ -584,12 +584,19 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
     Value tileResult;
 
-    // BcastOp reads from CB and writes to DST; emits TileBcastOp.
+    // BcastOp reads from CB and writes to DST; emits TileBcastOp. The result
+    // tile dtype must follow the bcast's own tensor result, not the final
+    // sink type, so a downstream `ttl.typecast` can perform the conversion.
     if (auto bcastOp = dyn_cast<BcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back(); // output block arg
+      Type bcastTileType = getFusedResultTileType(bcastOp);
+      if (!bcastTileType) {
+        return rewriter.notifyMatchFailure(
+            op, "fusion failed: cannot derive tile type for bcast");
+      }
       auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
-          rewriter, loc, outputTileType, inputTile, outputTile,
+          rewriter, loc, bcastTileType, inputTile, outputTile,
           bcastOp.getBcastTypeAttr());
       tileResult = bcastTileOp;
     } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
@@ -606,9 +613,14 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         }
       }
       if (!deferred) {
+        Type matmulTileType = getFusedResultTileType(matmulOp);
+        if (!matmulTileType) {
+          return rewriter.notifyMatchFailure(
+              op, "fusion failed: cannot derive tile type for matmul");
+        }
         auto matmulTileOp =
             createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
-                rewriter, loc, outputTileType, lhsTile, rhsTile, Value());
+                rewriter, loc, matmulTileType, lhsTile, rhsTile, Value());
         tileResult = matmulTileOp;
       }
     } else {
@@ -625,10 +637,18 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           if (!accTile) {
             return nullptr;
           }
+          // The folded matmul's tile result represents the AddOp's result,
+          // so derive the tile type from the add op rather than the final
+          // sink type. This keeps mid-chain accumulator dtype distinct from
+          // any later `ttl.typecast`.
+          Type addTileType = getFusedResultTileType(op);
+          if (!addTileType) {
+            return nullptr;
+          }
           deferredMatmul.erase(dfIt);
           auto foldedMatmul =
               createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
-                  rewriter, loc, outputTileType, mmLhs, mmRhs, accTile);
+                  rewriter, loc, addTileType, mmLhs, mmRhs, accTile);
           return foldedMatmul;
         };
         Value folded = tryFold(operands[0], operands[1]);
@@ -643,15 +663,20 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
       // If the matmul+add fold did not apply (e.g., matmul+sub, or both
       // operands are matmul results), emit deferred matmuls as 2-operand
-      // tile_matmul_block so the elementwise path can resolve them.
+      // tile_matmul_block so the elementwise path can resolve them. Each
+      // emitted matmul keeps the dtype of its own tensor result (from the
+      // map key) so that intermediates do not get the final sink dtype.
       if (!tileResult) {
         for (Value operand : getElementwiseOperands(op)) {
           auto dfIt = deferredMatmul.find(operand);
           if (dfIt != deferredMatmul.end()) {
             auto [mmLhs, mmRhs] = dfIt->second;
+            auto matmulTensor = cast<RankedTensorType>(operand.getType());
+            Type matmulTileType =
+                ttcore::TileType::get(matmulTensor.getElementType());
             auto mmTileOp =
                 createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
-                    rewriter, loc, outputTileType, mmLhs, mmRhs, Value());
+                    rewriter, loc, matmulTileType, mmLhs, mmRhs, Value());
             tensorToTile[operand] = mmTileOp;
             deferredMatmul.erase(dfIt);
           }
