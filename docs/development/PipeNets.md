@@ -245,8 +245,10 @@ table entries and sender-ready counters from the live transfer
 intervals described below. Uniform collective uses one table entry per
 live transfer interval because TT-Metal NoC multicast writes to the
 same destination L1 address on every receiver. If receivers publish
-different destination addresses, lowering must split the transfer into
-separate writes or reject the collective before TTKernel lowering.
+different destination addresses, the transfer is not a legal multicast.
+Current lowering rejects that form before TTKernel lowering. Future
+support would need to decompose the operation into separate writes or
+groups with uniform destination addresses.
 
 Overlapping arrivals are safe because the user reserves one DFB block
 per receive callback and slot assignment proves the receiver DFB has
@@ -258,8 +260,8 @@ the only difference is that collective overlap uses the hardware
 multicast completion signal (`noc_semaphore_inc_multicast`; see
 `PipeOptimizations.md`, section 2) rather than per-destination
 `noc_semaphore_inc`. The `block_count` requirement is identical and
-checked by the same code: `PipeGraph::verifyGatherBlockCounts` errors
-at compile time if any receiver DFB's `block_count` is less than
+checked by the same code: `PipeGraph::verifyReceiverDFBBlockCounts`
+errors at compile time if any receiver DFB's `block_count` is less than
 `max(gatherSlotIdx) + 1` for its pipes, with diagnostic prefix
 `"collective overlap"` (vs `"gather"` for point-to-point). There is
 no synchronous serialization between senders: they run concurrently
@@ -337,7 +339,7 @@ still pays one multicast NoC op for its data plus one for its signal,
 exactly like a non-overlapping collective. The only resource the slot
 mechanism trades for overlap is receiver DFB capacity
 (`N * page_size * cb_num_tiles` of receiver SRAM instead of one block),
-which the compile-time `verifyGatherBlockCounts` makes the user
+which the compile-time `verifyReceiverDFBBlockCounts` makes the user
 acknowledge by sizing `block_count >= N`.
 
 #### Example timeline
@@ -992,7 +994,8 @@ receivers. All receivers for one collective pipe must therefore publish
 equivalent DFB addresses. `PipeGraph` validates the receiver DFB index,
 DFB type, and static tile offset for every collective receive post;
 non-uniform or untraceable destination addresses are rejected before
-TTKernel lowering. Issue #617 tracks this compiler constraint.
+TTKernel lowering. Per-receiver destination addresses are not a multicast
+feature in the current TT-Metal NoC architecture.
 
 `ttl.wait` on a receive handle expands to `ttl.pipe_transfer.wait`, and
 `PipeLowering.cpp::lowerPipeTransferWait` lowers that op to a

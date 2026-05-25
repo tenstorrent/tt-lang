@@ -27,6 +27,7 @@
 #include "llvm/ADT/SetVector.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -965,12 +966,24 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
 
 namespace {
 
+enum class PipeTransferEventKind {
+  Post,
+  Send,
+};
+
+struct PipeTransferEvent {
+  Operation *op;
+  PipeTransferEventKind kind;
+};
+
 struct PipeTransferAllocationUnit {
   SmallVector<Operation *> transferCreateOps;
+  SmallVector<PipeTransferEvent> events;
   PipeKey pipe;
   PipeType pipeType;
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
   int64_t ordinal = 0;
+  int64_t intervalStartOrdinal = std::numeric_limits<int64_t>::max();
   Operation *intervalStart = nullptr;
   Operation *intervalEnd = nullptr;
   bool hasPost = false;
@@ -981,11 +994,68 @@ struct PipeTransferAllocationUnit {
 
 } // namespace
 
+static LogicalResult
+emitUnsupportedQueueDepth(Operation *op,
+                          const PipeTransferAllocationUnit &unit) {
+  return op->emitError()
+         << "pipe transfer for pipe net " << unit.pipe.pipeNetId << " src("
+         << unit.pipe.srcX << ", " << unit.pipe.srcY << ") dst("
+         << unit.pipe.dstStartX << ", " << unit.pipe.dstStartY << ") to("
+         << unit.pipe.dstEndX << ", " << unit.pipe.dstEndY
+         << ") requires queue depth greater than 1; current lowering supports "
+            "one live receive post per pipe before each send";
+}
+
+static LogicalResult
+validateSingleLivePostPerLinearBlock(const PipeTransferAllocationUnit &unit) {
+  if (unit.events.size() <= 2) {
+    return success();
+  }
+
+  llvm::MapVector<Block *, SmallVector<PipeTransferEvent>> eventsByBlock;
+  for (const PipeTransferEvent &event : unit.events) {
+    eventsByBlock[event.op->getBlock()].push_back(event);
+  }
+
+  for (auto &entry : eventsByBlock) {
+    SmallVector<PipeTransferEvent> &events = entry.second;
+    if (events.size() <= 2) {
+      continue;
+    }
+
+    llvm::sort(events, [](const PipeTransferEvent &lhs,
+                          const PipeTransferEvent &rhs) {
+      return lhs.op->isBeforeInBlock(rhs.op);
+    });
+
+    int64_t livePosts = 0;
+    for (const PipeTransferEvent &event : events) {
+      switch (event.kind) {
+      case PipeTransferEventKind::Post:
+        ++livePosts;
+        if (livePosts > 1) {
+          return emitUnsupportedQueueDepth(event.op, unit);
+        }
+        break;
+      case PipeTransferEventKind::Send:
+        if (livePosts > 0) {
+          --livePosts;
+        }
+        break;
+      }
+    }
+  }
+
+  return success();
+}
+
 static void updateIntervalStart(PipeTransferAllocationUnit &unit, Operation *op,
+                                int64_t opOrdinal,
                                 const DominanceInfo &dominanceInfo) {
   if (!unit.intervalStart ||
       dominanceInfo.properlyDominates(op, unit.intervalStart)) {
     unit.intervalStart = op;
+    unit.intervalStartOrdinal = opOrdinal;
     return;
   }
   if (!dominanceInfo.dominates(unit.intervalStart, op)) {
@@ -1046,6 +1116,7 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
   llvm::MapVector<Operation *, unsigned> indexByTransferCreateOp;
   llvm::MapVector<PipeKey, unsigned> indexByPipe;
   int64_t nextOrdinal = 0;
+  int64_t nextEventOrdinal = 0;
 
   auto getOrCreateUnit =
       [&](Operation *protocolOp,
@@ -1090,23 +1161,27 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
 
   WalkResult walkResult = mod.walk([&](Operation *op) {
     if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
+      int64_t eventOrdinal = nextEventOrdinal++;
       FailureOr<PipeTransferAllocationUnit *> unit =
           getOrCreateUnit(op, postOp.getTransfer());
       if (failed(unit)) {
         return WalkResult::interrupt();
       }
       (*unit)->hasPost = true;
-      updateIntervalStart(**unit, op, dominanceInfo);
+      (*unit)->events.push_back({op, PipeTransferEventKind::Post});
+      updateIntervalStart(**unit, op, eventOrdinal, dominanceInfo);
       return WalkResult::advance();
     }
 
     if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
+      ++nextEventOrdinal;
       FailureOr<PipeTransferAllocationUnit *> unit =
           getOrCreateUnit(op, sendOp.getTransfer());
       if (failed(unit)) {
         return WalkResult::interrupt();
       }
       (*unit)->hasSend = true;
+      (*unit)->events.push_back({op, PipeTransferEventKind::Send});
       updateIntervalEnd(**unit, op, dominanceInfo);
       return WalkResult::advance();
     }
@@ -1118,6 +1193,9 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
   }
 
   for (PipeTransferAllocationUnit &unit : units) {
+    if (failed(validateSingleLivePostPerLinearBlock(unit))) {
+      return failure();
+    }
     finalizeInterval(unit, dominanceInfo, postDominanceInfo);
   }
 
@@ -1127,12 +1205,14 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
 static bool
 isBeforeForDeterministicAllocation(const PipeTransferAllocationUnit &lhs,
                                    const PipeTransferAllocationUnit &rhs) {
-  return std::make_tuple(lhs.pipe.srcX, lhs.pipe.srcY, lhs.pipe.pipeNetId,
-                         lhs.pipe.dstStartX, lhs.pipe.dstStartY,
-                         lhs.pipe.dstEndX, lhs.pipe.dstEndY, lhs.ordinal) <
-         std::make_tuple(rhs.pipe.srcX, rhs.pipe.srcY, rhs.pipe.pipeNetId,
-                         rhs.pipe.dstStartX, rhs.pipe.dstStartY,
-                         rhs.pipe.dstEndX, rhs.pipe.dstEndY, rhs.ordinal);
+  return std::make_tuple(lhs.intervalStartOrdinal, lhs.pipe.srcX, lhs.pipe.srcY,
+                         lhs.pipe.pipeNetId, lhs.pipe.dstStartX,
+                         lhs.pipe.dstStartY, lhs.pipe.dstEndX, lhs.pipe.dstEndY,
+                         lhs.ordinal) <
+         std::make_tuple(rhs.intervalStartOrdinal, rhs.pipe.srcX, rhs.pipe.srcY,
+                         rhs.pipe.pipeNetId, rhs.pipe.dstStartX,
+                         rhs.pipe.dstStartY, rhs.pipe.dstEndX, rhs.pipe.dstEndY,
+                         rhs.ordinal);
 }
 
 using SourceColorMap =
