@@ -239,16 +239,18 @@ func.func @same_source_two_pipes_use_distinct_sync_state() attributes { "ttl.ker
 // the same ready semaphore and SRAM address-table slot.
 // CHECK-LABEL: func.func @same_source_sequential_transfers_reuse_sync_state
 // CHECK-NOT: arith.constant 4 : i32
-// CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 1 : index
+// CHECK: %[[READY_IDX:.*]] = arith.constant 1 : index
 // CHECK-NOT: arith.constant 4 : i32
 // CHECK: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.experimental::semaphore_wait
+// CHECK-NOT: arith.constant 4 : i32
 // CHECK: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.experimental::semaphore_wait
+// CHECK-NOT: arith.constant 4 : i32
 // CHECK: return
 func.func @same_source_sequential_transfers_reuse_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
