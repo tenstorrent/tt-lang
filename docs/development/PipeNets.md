@@ -1,30 +1,17 @@
 # PipeNets
 
-This document describes how PipeNets are owned, validated, lowered, and
-scheduled in tt-lang. Both the compiler and the simulator consume the
-same operation-level PipeNet collection; this document covers the data
-flow, PipeNet verification, simulator launch semantics, and test
-coverage.
+This document describes PipeNet semantics, verification, lowering,
+scheduling, simulator behavior, and test coverage in tt-lang. Both the
+compiler and the simulator consume the same operation-level PipeNet
+collection described in [Operation PipeNets](#operation-pipenets).
 
-The launch grid (the grid that `@ttl.operation(grid=...)` schedules
-onto) is decoupled from the *work extent* described by the user's
-PipeNets - the per-axis bounding box of every pipe coordinate. The
-`grid=` argument selects the launch:
-
-- `grid="full"` (and `grid="auto"`, which is currently an alias for
-  `"full"`) launches on the device compute grid. The user must guard
-  pipe-coupled regions with `net.is_src()` / `net.is_dst()` /
-  `net.is_active()` (or equivalent coordinate predicates) so that
-  nodes outside the work extent skip the pipe-coupled work; the
-  verifier rejects any pipe-coupled op that is reachable from a node
-  outside its declared role.
-- An explicit tuple is used verbatim; the verifier still requires
-  guards on any pipe-coupled op reachable from a non-role node.
-
-Whenever the launch is wider than the active set, the verifier
-rejects unguarded pipe-coupled ops with a diagnostic that names the
-offending op, an example offending coordinate, the contributing
-PipeNet(s), and a suggested guard.
+A node is one execution coordinate in the launched device grid. A
+dataflow buffer (DFB) is the user-visible payload buffer used by
+producer, consumer, and pipe transfer code. A pipe-coupled operation is
+an operation whose legality depends on a PipeNet role, such as a
+pipe-typed `ttl.copy` or a DFB wait whose producer is PipeNet-routed.
+NoC refers to TT-Metal network-on-chip operations used for remote SRAM
+writes and semaphore increments.
 
 ## Overview
 
@@ -38,6 +25,26 @@ nodes, the kernel reads out-of-bounds tensor regions and corrupts the
 pipe synchronization protocol; this failure mode is the one the
 verifier guards against (see issue #541).
 
+The launch grid is the grid that `@ttl.operation(grid=...)` schedules
+onto. The work extent is the per-axis bounding box of every pipe
+coordinate in the user's PipeNets. The launch grid and work extent are
+separate: the launch may cover more nodes than the communication uses.
+The `grid=` argument selects the launch:
+
+- `grid="full"` launches on the device compute grid.
+- `grid="auto"` is currently an alias for `"full"`.
+- An explicit tuple is used verbatim.
+
+A PipeNet's active nodes are the union of its source and destination
+coordinates. This is the node set tested by `net.is_active()`. Whenever
+the launch is wider than those active nodes, the user must guard
+pipe-coupled regions with `net.is_src()`, `net.is_dst()`,
+`net.is_active()`, or coordinate predicates that express the same role
+tests. The verifier rejects any pipe-coupled operation reachable from a
+node outside its declared role. The diagnostic names the offending
+operation, an example offending coordinate, the contributing PipeNet or
+PipeNets, and a suggested guard.
+
 The compiler verifies user-written guards: each pipe-coupled operation
 must be reachable only from the nodes permitted by its role
 (`ttl.copy(buffer, pipe)` only from `pipe.src`;
@@ -50,8 +57,8 @@ program.
 
 Pipe transfers have the following operational semantics:
 
-- A pipe has no hidden in-transit DFB. The destination storage is the DFB
-  block the user reserves in the receiver callback.
+- A pipe has no hidden in-transit buffer. The destination storage is the
+  DFB block the user reserves in the receiver callback.
 - `ttl.copy(pipe, dst_blk)` posts a receive. It makes `dst_blk`'s
   current write pointer the destination storage for the matching send
   and returns a transfer handle.
@@ -74,8 +81,8 @@ Pipe transfers have the following operational semantics:
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
 
-The transfer handle returned by `ttl.copy(pipe, dst_blk)` has this state
-machine:
+The receive transfer created by `ttl.copy(pipe, dst_blk)` moves through
+these states:
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "labelTextColor": "#cbd5e1", "edgeLabelBackground": "transparent", "fontSize": "14px"}}}%%
@@ -98,8 +105,8 @@ stateDiagram-v2
 If `recv_tx.wait()` runs in `ReceivePosted`, the calling kernel blocks
 until the matching send reaches `ReceiveComplete`.
 
-The transfer handle returned by `ttl.copy(src_blk, pipe)` has this state
-machine:
+The send transfer created by `ttl.copy(src_blk, pipe)` moves through
+these states:
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "labelTextColor": "#cbd5e1", "edgeLabelBackground": "transparent", "fontSize": "14px"}}}%%
@@ -225,19 +232,29 @@ the send that can complete the receive.
 
 ## Pipe transfer resource model and TTKernel lowering
 
-`ttl.copy(pipe, dst_blk)` expands to `ttl.pipe_transfer.post`, and
-`PipeLowering.cpp::lowerPipeTransferPost` lowers that op as the receive
-post. It reads the receiver DFB write pointer for the user-reserved
-block and records receiver readiness for the matching send. This
-operation does not create or reserve any DFB block; it uses the block
-already reserved by the user.
+Pipe lowering first expands public pipe operations to Pipe Transfer IR:
 
-`ttl.copy(src_blk, pipe)` expands to `ttl.pipe_transfer.send`, and
-`PipeLowering.cpp::lowerPipeTransferSend` lowers that op as the send.
-The sender waits until all destinations have posted receives, performs
-the NOC write directly to receiver-owned DFB storage, and signals
-receiver completion. A collective send waits for every destination in
-the receiver set to post before issuing the write.
+- `ttl.copy(pipe, dst_blk)` expands to `ttl.pipe_transfer.post`.
+- `ttl.copy(src_blk, pipe)` expands to `ttl.pipe_transfer.send`.
+- `ttl.wait` on a pipe transfer handle expands to
+  `ttl.pipe_transfer.wait`.
+
+A pipe transfer is the compiler representation for one communication
+instance derived from a `ttl.create_pipe` result. A transfer phase is one
+dynamic receive-post/send instance for that transfer. A live transfer
+phase is a posted phase whose destination address and sender-ready count
+can still be consumed by a sender. A live interval is the conservative
+compiler operation span from the receive post that publishes a
+destination address through the send that consumes that address.
+
+A receive post reads the receiver DFB write pointer for the
+user-reserved `dst_blk` and records receiver readiness for the matching
+send. It does not create or reserve a DFB block; it uses the block
+already reserved by the user. A send waits until all required
+destinations have posted receives, performs the NoC write directly to
+receiver-owned DFB storage, and signals receiver completion. A
+collective send waits for every destination in the receiver set to post
+before issuing the write.
 
 Lowering to TTKernel models these resources separately.
 
@@ -247,16 +264,15 @@ Table 1. Pipe transfer resources, backing storage, and allocation scale.
 | --- | --- | --- |
 | Source payload block (`src_blk`) | User-reserved DFB block on the source node. | User DFB reserve depth. |
 | Destination payload block (`dst_blk`) | User-reserved DFB block on the destination node. | User DFB reserve depth. |
-| Address table | Compiler-managed SRAM scratch on each source node. | Per source node: one entry per concurrently live transfer sourced by that node. |
+| Address table | Compiler-managed SRAM scratch on each source node; 4 bytes per entry, with the total table allocation rounded up to 32-byte alignment. | Per source node: one entry per concurrently live transfer sourced by that node. |
 | Sender-ready counter | Source-node 4-byte SRAM semaphore slot or GlobalSemaphore-backed SRAM semaphore. | Per source node: one counter per concurrently live transfer sourced by that node. |
 | Receiver-completion counter | Destination-node 4-byte SRAM semaphore slot. | One counter per PipeNet. |
 
-Here, source-node coordinate means the source coordinate in the pipe
-type, not a static pipe occurrence. Many transfers sourced by the same
-coordinate reuse the same allocation slot unless their live intervals
-overlap. The number of distinct source-node coordinates is bounded by
-the nodes in the launched device grid, not by the number of static
-pipes.
+Here, source node means a physical node in the launched device grid. It
+does not mean one allocation per static pipe. Many transfers from the
+same source node reuse the same allocation slot unless their live
+intervals overlap. The number of source nodes is bounded by the launched
+device grid, not by the number of static pipes.
 
 The address table and semaphore-backed counters both use SRAM, but
 they are allocated through different mechanisms: the address table uses
@@ -278,26 +294,12 @@ keeps pipe resource ownership in the compiler plan; future typed device
 APIs should change only the runtime binding mechanism, not the IR-level
 resource model.
 
-### Pipe transfer resource terms
-
-A pipe transfer is the internal `ttl.pipe_transfer` value created from
-one logical pipe use. Public `ttl.copy(pipe, dst_blk)` and
-`ttl.copy(src_blk, pipe)` operations expand to transfer operations
-before TTKernel lowering.
-
-A transfer phase is one dynamic receive-post/send instance for a pipe
-transfer. A live transfer phase is a posted phase whose address
-publication and sender-ready count can still be consumed by a sender. A
-live interval is the conservative operation range from the receive post
-that publishes a destination address through the send that consumes that
-address.
-
 The source-node address-table entry and sender-ready counter do not
 remain live until the public transfer handle is waited on. They carry
 only the pre-send rendezvous state: the receiver-published DFB address
-and the count proving that the required receivers have posted. Once the
-send has waited for readiness, reset the ready counter, and read the
-address-table entry to issue the payload write, those source-node
+and the count proving that the required receivers have posted. After
+the send waits for readiness, resets the ready counter, and reads the
+address-table entry used for the payload write, those source-node
 resources no longer contain state needed by that transfer. Receive
 completion is tracked separately by the per-PipeNet receiver-completion
 counter, so the transfer handle returned by `ttl.copy(pipe, dst_blk)`
@@ -353,7 +355,7 @@ source-node table entry and signals the sender-ready counter. The send
 waits for readiness, reads the table entry, and writes the payload to
 that receiver-owned DFB block.
 
-Receive posts publish the address with an inline 32-bit NOC write.
+Receive posts publish the address with an inline 32-bit NoC write.
 The address write is ordered before the sender-ready increment, so the
 source cannot observe the post count before the address table entry is
 valid.
@@ -374,11 +376,11 @@ non-overlapping same-source intervals can reuse one ready counter.
 Repeated static transfer operations for one logical pipe use the same
 unioned allocation unit as the address table.
 
-Sender-ready counters use local hardware semaphores if every source-node
-ready-counter color fits after the receiver-completion semaphore ids.
-Otherwise all sender-ready counters in the module use GlobalSemaphore-backed
-counters, and the compiler records the required count in
-`ttl.pipe_global_semaphore_count`.
+Sender-ready counters use local hardware semaphores when the assigned
+ready-counter indices fit after the receiver-completion semaphore ids.
+Otherwise all sender-ready counters in the module use
+GlobalSemaphore-backed counters, and the compiler records the required
+count in `ttl.pipe_global_semaphore_count`.
 
 Receiver completion uses the per-PipeNet local semaphore in Table 1. It
 is cumulative for one program execution: sends increment it, and waits
@@ -390,31 +392,37 @@ Address-table storage, ready counting, and completion wait are allocated
 independently so address publication does not consume local semaphore
 ids.
 
+Here, `wait_min` means the receiver waits until the semaphore value is at
+least the expected count; it does not require the semaphore to equal that
+count exactly.
+
 ### Aggregate collective ready counting
 
-Uniform collective transfer uses the same receiver-authored address table but
-aggregates readiness. Each receiver post writes an equivalent address
-to the source-node table entry and increments one sender-ready counter.
-The sender waits until the counter reaches the destination count, reads
-one DFB address from the table, issues one multicast payload write, and
-signals receiver completion with the existing per-PipeNet completion
-counter.
+Uniform collective transfer uses the same receiver-authored address
+table but aggregates readiness. Each receiver post writes the local SRAM
+address of its `dst_blk` to the source-node table entry and increments
+one sender-ready counter. For one collective transfer, those posted
+addresses must all be the same value because the NoC multicast write
+has only one destination address operand. The sender waits until the
+counter reaches the destination count, reads that one destination
+address from the table, issues one multicast payload write, and signals
+receiver completion with the existing per-PipeNet completion counter.
 
 TT-Metal NoC multicast has one destination SRAM address for all
 receivers. All receivers for one collective pipe must therefore publish
-equivalent DFB addresses. `PipeGraph` validates the receiver DFB index,
-DFB type, and static tile offset for every collective receive post;
-non-uniform or untraceable destination addresses are rejected before
-TTKernel lowering. Per-receiver destination addresses are not a multicast
-feature in the current TT-Metal NoC architecture.
+the same destination SRAM address value. The compiler proves that by
+validating the receiver DFB index, DFB type, and static tile offset for
+every collective receive post. Non-uniform or untraceable destination
+addresses are rejected before TTKernel lowering. Per-receiver
+destination addresses are not a multicast feature in the current
+TT-Metal NoC architecture.
 
 `ttl.wait` on the transfer handle returned by `ttl.copy(pipe, dst_blk)`
-expands to `ttl.pipe_transfer.wait`, and
-`PipeLowering.cpp::lowerPipeTransferWait` lowers that op to a per-PipeNet
-cumulative wait. The receiver keeps a local runtime counter and waits for
-`recvSem >= counter`, so repeated point-to-point and collective receives
-in loops advance across iterations without reusing stale completion
-state.
+expands to `ttl.pipe_transfer.wait`. TTKernel lowering implements that
+wait as a per-PipeNet cumulative completion wait. The receiver keeps a
+local runtime counter and waits for `recvSem >= counter`, so repeated
+point-to-point and collective receives in loops advance across
+iterations without reusing stale completion state.
 
 This protocol fixes the multi-iteration write-pointer issue by making
 the receiver-owned DFB address authoritative. It also makes same-thread
@@ -430,14 +438,14 @@ sender's data lands in its own slot of the receiver's dataflow buffer.
 
 ### Data layout: slot per sender
 
-`PipeGraph::assignGatherSlotIndices` walks pipes in deterministic sorted
-order by `(srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY,
-pipeNetId)` and assigns each pipe the lowest slot index not yet taken at
-any of its receivers. User IR order does not affect slot assignment. For
-a receiver that lies in the destination range of `N` pipes within one
-PipeNet, those pipes get slot indices `0..N-1`. Two pipes whose
-destination ranges intersect on even one node get distinct slots; pipes
-whose ranges are disjoint may reuse slot 0.
+Slot assignment is deterministic. The compiler sorts pipes by `(srcX,
+srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId)` and assigns
+each pipe the lowest slot index not yet taken at any of its receivers.
+User IR order does not affect slot assignment. For a receiver that lies
+in the destination range of `N` pipes within one PipeNet, those pipes
+get slot indices `0..N-1`. Two pipes whose destination ranges intersect
+on even one node get distinct slots; pipes whose ranges are disjoint may
+reuse slot 0.
 
 Each receive post identifies one concrete DFB write pointer. The
 receiver writes that address to a sender-visible SRAM address-table
@@ -455,25 +463,24 @@ Overlapping arrivals are safe because the user reserves one DFB block
 per receive callback and slot assignment proves the receiver DFB has
 enough blocks.
 
-This is the same mechanism point-to-point gather uses (N
-point-to-point pipes to one destination get slot indices `0..N-1`);
-the only difference is that collective overlap uses the hardware
-multicast completion signal (`noc_semaphore_inc_multicast`; see
+This is the same layout rule point-to-point gather uses: `N`
+point-to-point pipes to one destination get slot indices `0..N-1`.
+Collective overlap differs only in the completion signal: it uses the
+hardware multicast completion signal (`noc_semaphore_inc_multicast`; see
 `PipeOptimizations.md`, section 2) rather than per-destination
-`noc_semaphore_inc`. The `block_count` requirement is identical and
-checked by the same code: `PipeGraph::verifyReceiverDFBBlockCounts`
-errors at compile time if any receiver DFB's `block_count` is less than
-`max(gatherSlotIdx) + 1` for its pipes, with diagnostic prefix
-`"collective overlap"` (vs `"gather"` for point-to-point). There is
-no synchronous serialization between senders: they run concurrently
-and land in distinct slots.
+`noc_semaphore_inc`. The receiver DFB `block_count` is the number of
+payload blocks available at that receiver. The compiler rejects any
+receiver DFB whose `block_count` is less than `max(gatherSlotIdx) + 1`
+for its pipes. There is no synchronous serialization between senders:
+they run concurrently and land in distinct slots.
 
 ### Arrival counter
 
-The handshake uses a per-PipeNet `i32` counter on each receiver kernel;
-senders increment that counter once per arrival, and the receiver
-advances its local expectation by 1 per expected arrival per iteration,
-blocking until the remote counter catches up. Consequences:
+The handshake uses two counters. Each destination node has a per-PipeNet
+SRAM semaphore that senders increment once per arrival. The receiver
+kernel also keeps a local expected-arrival count and advances it by 1
+per expected arrival per iteration. The receiver blocks until the SRAM
+semaphore reaches the local expected count. Consequences:
 
 - A receiver in `N` pipes' destination ranges observes `N` arrivals per
   round, not 1.
@@ -481,7 +488,8 @@ blocking until the remote counter catches up. Consequences:
   includes the current node; each callback advances the local counter
   by 1.
 - `N` senders targeting one receiver do not coordinate with each other;
-  they only need to increment the receiver's counter independently.
+  they only need to increment the receiver's SRAM semaphore
+  independently.
 
 TT-Metal primitive details for `noc_semaphore_inc_multicast`,
 `noc_async_atomic_barrier`, `experimental::semaphore_wait_min`, and the
@@ -501,18 +509,18 @@ collective. The proof tracks four points in the lowered IR:
    Future batched slot reuse could allow fewer receiver DFB blocks by
    scheduling overlapping senders in capacity-bounded groups.
 2. No inter-sender wait. Each sender waits only for its own receivers to
-   publish destination addresses, performs its own NOC write, then
+   publish destination addresses, performs its own NoC write, then
    increments the receiver completion semaphore. No sender reads a
    semaphore signaled by another sender.
 3. Receiver completion semaphores are per-PipeNet. Sender-ready
    semaphores and address-table entries are per source-node transfer
    interval, so two same-source transfers that overlap get distinct
    state and non-overlapping same-source transfers can reuse state.
-   Receive posts publish DFB addresses with inline 32-bit NOC writes,
+   Receive posts publish DFB addresses with inline 32-bit NoC writes,
    so address publication writes the value directly.
 4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
    for a count of total arrivals, not for specific senders. Senders
-   bump the counter in any order; the receiver only cares about the
+   increment the counter in any order; the receiver only cares about the
    cumulative total reaching its expected value.
 
 The only places execution can stall are:
@@ -576,47 +584,6 @@ State at each receiver (R2 and R3 identical; recv_sem starts at 0):
 t1 and t2 may swap (the two senders are independent). The end state at
 t2 is unchanged because writes target different slots and
 `inc_multicast` is atomic.
-
-## Relation to upstream designs
-
-TT-Lang uses dedicated `ttl.pipe_transfer` IR instead of lowering
-PipeNets directly to MLIR `async` because generic async tokens describe
-dependency ordering, not PipeNet resource ownership. PipeNet lowering
-must preserve source/destination coordinates, receiver-authored DFB
-address publication, expected receiver counts, aggregate collective
-constraints, source-node address-table offsets, and local-vs-global
-ready-counter selection.
-
-Upstream MLIR and IREE use the same broad design principle: explicit
-dependency values or explicit synchronization objects make ordering and
-reuse analyzable before target lowering.
-
-- MLIR `async` provides generic `async.token` / `async.value`
-  dependencies, `async.execute`, groups, and `async.await`; it does not
-  assign target synchronization resources.
-- MLIR `gpu` provides GPU-level execution and async token abstractions
-  for launch and device ordering.
-- MLIR `nvgpu` models target-specific asynchronous copies with
-  `nvgpu.device_async_copy`, groups pending copies with
-  `nvgpu.device_async_create_group`, and waits for completion with
-  `nvgpu.device_async_wait`. The optional `numGroups` wait attribute
-  represents a bounded number of in-flight async-copy groups.
-- MLIR `nvgpu.mbarrier` models synchronization as a memory-backed
-  barrier object with explicit initialization, arrivals, and phase
-  waits.
-- IREE GPU uses `iree_gpu.async_dma` to keep asynchronous data movement
-  explicit until barrier placement and pipelining decisions are made.
-  Its pipeline options include `prefetch_num_stages`, where values above
-  one enable software-pipelined shared-memory prefetching.
-- IREE Stream uses `!stream.timepoint` values to maintain explicit
-  wait-on and signal-to behavior, and it has allocation refinement
-  passes that make resource reuse legal only when resource semantics and
-  ordering allow it.
-
-The TT-Lang analogue is source-node live-interval allocation. The
-allocator consumes explicit post/send operations and assigns physical
-address-table slots and ready counters only for transfer intervals that
-can be live concurrently.
 
 ## Operation PipeNets
 
@@ -832,10 +799,11 @@ user code.
 `ttl.pipenet_scope` is one of the IR additions this feature introduces
 (alongside the `ttl.is_src` / `ttl.is_dst` / `ttl.is_active` predicate
 ops described in [Predicate recognition](#predicate-recognition)). It
-exists only between frontend emission and verifier teardown so the
-verifier can recognize user code that performs PipeNet role traffic
-without re-deriving the role declarations from each pipe-coupled op
-individually; it never reaches TTL -> TTKernel lowering.
+exists only after frontend emission and before the verifier inlines and
+erases it. During that interval, the verifier can recognize user code
+that performs PipeNet role traffic without re-deriving the role
+declarations from each pipe-coupled op individually. The op never
+reaches TTL -> TTKernel lowering.
 
 The frontend emits this region op around DFB-context blocks
 (`with cb.reserve()`) whose body contains pipe role work. It carries
@@ -871,10 +839,11 @@ The verifier relies on these input properties.
 ## Multi-PipeNet operations
 
 The verifier checks each pipe-coupled op against the role of *its
-own* PipeNet, not against the union of all PipeNets' active sets.
+own* PipeNet, not against the union of all PipeNets' active nodes.
 A `ttl.copy(buffer, %pipe_a)` reachable from a node that is in
 `net_b.is_active()` but outside `net_a.src` is rejected with a
-diagnostic that names `net_a`, not "the active set".
+diagnostic that names `net_a`, not the active nodes of some other
+PipeNet.
 
 Two mechanisms together carry per-PipeNet correctness in user code
 when an operation defines multiple PipeNets over different node groups:
@@ -1002,7 +971,7 @@ compile-time properties not runtime-observable.
 | 11c| Overlapping collective end-to-end: multi-tile blocks, partial overlap | X | X |     |
 | 12 | Scatter on subgrid (work < launch, single collective pipe) |  X  |  X  |     |
 | 12a| Scatter under grid="full" (spec scatter example)          |  X  |  X  |     |
-| 13 | Per-row scatter (multi-pipe disjoint dst, 2D active set)  |  X  |  X  |     |
+| 13 | Per-row scatter (multi-pipe disjoint dst, 2D active nodes) |  X  |  X  |     |
 | 14 | Cross-PipeNet destination overlap permitted               |  X  |  X  |     |
 | 15 | Loopback collective (src in dst range)                    |  X  |  X  |     |
 | 16 | Nested `if_src` / `if_dst` across two PipeNets (relay)    |  X  |  X  |     |
@@ -1106,13 +1075,54 @@ The current lowering has four API-specific binding points:
   semaphore binding, but completion remains separate from address
   storage and sender-ready counting.
 
+## Relation to upstream designs
+
+TT-Lang uses dedicated `ttl.pipe_transfer` IR instead of lowering
+PipeNets directly to MLIR `async` because generic async tokens describe
+dependency ordering, not PipeNet resource ownership. PipeNet lowering
+must preserve source/destination coordinates, receiver-authored DFB
+address publication, expected receiver counts, aggregate collective
+constraints, source-node address-table offsets, and local-vs-global
+ready-counter selection.
+
+Upstream MLIR and IREE use the same broad design principle: explicit
+dependency values or explicit synchronization objects make ordering and
+reuse analyzable before target lowering.
+
+- MLIR `async` provides generic `async.token` / `async.value`
+  dependencies, `async.execute`, groups, and `async.await`; it does not
+  assign target synchronization resources.
+- MLIR `gpu` provides GPU-level execution and async token abstractions
+  for launch and device ordering.
+- MLIR `nvgpu` models target-specific asynchronous copies with
+  `nvgpu.device_async_copy`, groups pending copies with
+  `nvgpu.device_async_create_group`, and waits for completion with
+  `nvgpu.device_async_wait`. The optional `numGroups` wait attribute
+  represents a bounded number of in-flight async-copy groups.
+- MLIR `nvgpu.mbarrier` models synchronization as a memory-backed
+  barrier object with explicit initialization, arrivals, and phase
+  waits.
+- IREE GPU uses `iree_gpu.async_dma` to keep asynchronous data movement
+  explicit until barrier placement and pipelining decisions are made.
+  Its pipeline options include `prefetch_num_stages`, where values above
+  one enable software-pipelined shared-memory prefetching.
+- IREE Stream uses `!stream.timepoint` values to maintain explicit
+  wait-on and signal-to behavior, and it has allocation refinement
+  passes that make resource reuse legal only when resource semantics and
+  ordering allow it.
+
+The TT-Lang analogue is source-node live-interval allocation. The
+allocator consumes explicit post/send operations and assigns physical
+address-table slots and ready counters only for transfer intervals that
+can be live concurrently.
+
 ## Limitations
 
 * Work larger than launch: the verifier checks role containment but
   does not add nodes or split work. Operations that distribute more
   work than launched nodes via per-node block tiling (e.g. `_even_split`
   in `test_mcast_matmul.py`) are unaffected when every launched node
-  appears in the active set.
+  appears in the source/destination union.
 * Typos in pipe coordinates change role domains. An operation whose
   pipe writes `dst=(slice(0, 5), 0)` instead of `dst=(slice(0, 4), 0)`
   has a one-node larger destination domain, and that extra node will
@@ -1151,7 +1161,7 @@ The current lowering has four API-specific binding points:
   `MeshCoordinate` for source and destination) that lowers to fabric
   ops alongside the existing intra-chip lowering. The
   `OperationPipeNets` data structure is small enough to grow that
-  variant without affecting today's intra-chip path. Verifier
+  variant without affecting today's intra-chip lowering. Verifier
   bound-checking against the operation's grid extent (still future
   work) would also reject out-of-chip coordinates that today silently
   miscompile.
