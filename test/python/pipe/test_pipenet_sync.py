@@ -1371,7 +1371,7 @@ def test_multicast_destination_addresses_differ_by_destination_rejected(device):
         Exception,
         match=(
             "collective pipe receive posts publish different destination "
-            "addresses; TT-Metal NoC multicast requires one destination L1 "
+            "addresses; TT-Metal NoC multicast requires one destination SRAM "
             "address for all receivers"
         ),
     ):
