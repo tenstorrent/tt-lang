@@ -8,7 +8,11 @@
 //
 // This file provides small interval primitives for TTL transforms that map
 // logical program objects to a bounded set of physical resources. It does not
-// compute full MLIR SSA liveness. Callers define the interval endpoints that
+// compute full MLIR SSA liveness because these resources are often live for
+// protocol-specific event ranges rather than for the full SSA value lifetime.
+// For example, pipe sender-ready counters and address-table slots are reusable
+// after the send consumes the posted state, even though the transfer token may
+// remain live until a later wait. Callers define the interval endpoints that
 // matter for the resource being allocated, then use these helpers to compare
 // and color those intervals deterministically.
 //
