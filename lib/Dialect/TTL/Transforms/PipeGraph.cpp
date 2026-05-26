@@ -33,7 +33,7 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
       auto diag = emitError(loc)
                   << "collective pipe receive posts publish different "
                      "destination addresses; TT-Metal NoC multicast requires "
-                     "one destination L1 address for all receivers";
+                     "one destination SRAM address for all receivers";
       diag.attachNote(existing->second.loc)
           << "previous collective receive post for this pipe was here";
       return failure();
@@ -183,7 +183,7 @@ emitUntraceableCollectiveDestinationAddress(Operation *op) {
   return op->emitError()
          << "collective pipe destination address could not be "
             "determined statically; TT-Metal NoC multicast requires one "
-            "statically proven destination L1 address for all receivers";
+            "statically proven destination SRAM address for all receivers";
 }
 
 static LogicalResult addStaticCoordinates(ArrayRef<OpFoldResult> mixedOffsets,
@@ -209,7 +209,7 @@ static LogicalResult addStaticCoordinates(ArrayRef<OpFoldResult> mixedOffsets,
 
 /// Return the static tile offset within the receiver DFB for a receive
 /// destination. Collective lowering has one sender-visible address-table entry
-/// per pipe because NoC multicast writes one destination L1 address to every
+/// per pipe because NoC multicast writes one destination SRAM address to every
 /// receiver.
 static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
   Value view = traceUnrealizedCasts(dst);

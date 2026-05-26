@@ -38,7 +38,7 @@ func.func @gather_block_count_too_small()
 // -----
 
 // A collective pipe cannot publish different receiver DFB slice offsets because
-// NoC multicast uses one destination L1 address for all receivers.
+// NoC multicast uses one destination SRAM address for all receivers.
 
 func.func @collective_destination_addresses_differ_by_destination()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -61,7 +61,7 @@ func.func @collective_destination_addresses_differ_by_destination()
   %recv1 = tensor.extract_slice %recv_group[0, 1] [1, 1] [1, 1]
       : tensor<1x2x!ttcore.tile<32x32, f32>>
       to tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{collective pipe receive posts publish different destination addresses; TT-Metal NoC multicast requires one destination L1 address for all receivers}}
+  // expected-error @below {{collective pipe receive posts publish different destination addresses; TT-Metal NoC multicast requires one destination SRAM address for all receivers}}
   %xf1 = ttl.copy %p, %recv1
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -73,7 +73,7 @@ func.func @collective_destination_addresses_differ_by_destination()
 // -----
 
 // Collective destination addresses must be statically traceable because NoC
-// multicast uses one destination L1 address for all receivers.
+// multicast uses one destination SRAM address for all receivers.
 
 func.func @collective_destination_address_dynamic_offset_rejected(%offset: index)
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -87,7 +87,7 @@ func.func @collective_destination_address_dynamic_offset_rejected(%offset: index
   %recv = tensor.extract_slice %recv_group[0, %offset] [1, 1] [1, 1]
       : tensor<1x2x!ttcore.tile<32x32, f32>>
       to tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{collective pipe destination address could not be determined statically; TT-Metal NoC multicast requires one statically proven destination L1 address for all receivers}}
+  // expected-error @below {{collective pipe destination address could not be determined statically; TT-Metal NoC multicast requires one statically proven destination SRAM address for all receivers}}
   %xf = ttl.copy %p, %recv
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
