@@ -4,8 +4,9 @@
 
 # REQUIRES: ttnn, tt-device
 #
-# RUN: env TTLANG_FINAL_MLIR=%t.final.mlir TTLANG_SUPPRESS_KERNEL_OUTPUT=1 timeout 180 %python %s > %t.output 2>&1
+# RUN: env TTLANG_FINAL_MLIR=%t.final.mlir timeout 180 %python %s > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=FINAL < %t.final.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: FileCheck %s --check-prefix=RUNTIME < %t.output
 
 """Runtime coverage for liveness-based PipeNet resource allocation.
@@ -314,6 +315,15 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # FINAL-SAME: ttl.pipe_sram_scratch_bytes = 64 : i64
 # FINAL-SAME: ttl.pipe_sync_semaphore_count = 11 : i64
 # FINAL-NOT: ttl.pipe_global_semaphore_count
+#
+# CHECK-CPP-LABEL: // post_receives_and_send
+# CHECK-CPP-DAG: {{(size_t|int32_t)}} [[READY:v[0-9]+]] = 10;
+# CHECK-CPP: noc_inline_dw_write
+# CHECK-CPP: get_semaphore([[READY]])
+# CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
+# CHECK-CPP: experimental::semaphore_wait
+# CHECK-CPP: noc_async_write
+# CHECK-CPP: noc_semaphore_inc
 #
 # RUNTIME: PASS: ksplit_resource_allocation result verified
 def make_expected_output(input_torch, grid_dim):
