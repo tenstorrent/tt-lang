@@ -81,14 +81,17 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   return std::nullopt;
 }
 
-/// Return true when `tensor` was directly acquired from a CB via
-/// ttl.cb_wait or ttl.cb_reserve (the only two ViewLikeOpInterface
-/// implementations whose view source is a CircularBufferType).
-/// Unlike getAttachedCB, this rejects ttl.attach_cb, tensor.extract, and
-/// tensor.extract_slice chains -- it only traces through unrealized
-/// conversion casts.
+/// Return true when `tensor` was acquired from a CB via ttl.cb_wait or
+/// ttl.cb_reserve (the only two ViewLikeOpInterface implementations whose
+/// view source is a CircularBufferType). Traces through
+/// unrealized_conversion_cast and ttl.attach_cb (which the Python DSL
+/// inserts after every cb_wait/cb_reserve).
 inline bool isCBAcquireView(mlir::Value tensor) {
   tensor = traceUnrealizedCasts(tensor);
+  if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+    tensor = attach.getTensor();
+    tensor = traceUnrealizedCasts(tensor);
+  }
   if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
     mlir::Value source = viewLike.getViewSource();
     return mlir::isa<CircularBufferType>(source.getType());
