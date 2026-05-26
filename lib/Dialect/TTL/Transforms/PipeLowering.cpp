@@ -353,6 +353,8 @@ buildReceiverPublishedAddress(Value dst, Location loc,
 //===----------------------------------------------------------------------===//
 
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
+  // Each kernel function tracks its own receive-wait progress. Walk the
+  // function bodies to find the PipeNets that may complete receives there.
   mod.walk([&](FuncOp func) {
     // Collect unique pipeNetIds that have at least one receive in this
     // function. A runtime counter is required because receive waits may be
@@ -925,6 +927,10 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   using PipeKey =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
   llvm::MapVector<int64_t, llvm::SmallSetVector<PipeKey, 4>> seenPerNet;
+  // Role-predicate lowering needs all pipes for a PipeNet to build the
+  // `is_src`, `is_dst`, and `is_active` predicates. Walk create ops after Pipe
+  // Transfer IR expansion so duplicate static pipes from cloned regions merge
+  // into one predicate entry.
   mod.walk([&](PipeTransferCreateOp op) {
     auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
     int64_t netId = pipeType.getPipeNetId();
@@ -955,26 +961,60 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
 
 namespace {
 
-enum class PipeTransferEventKind {
+/// Operation kind that changes source-node rendezvous state for a pipe
+/// transfer.
+///
+/// Address-table slots and sender-ready counters are live from receive post
+/// until send consumes the posted state. Waits use receiver-completion
+/// resources, so they are intentionally not rendezvous events.
+enum class PipeTransferRendezvousEventKind {
   Post,
   Send,
 };
 
-struct PipeTransferEvent {
+/// One ordered post/send operation used to validate bounded rendezvous depth.
+struct PipeTransferRendezvousEvent {
+  /// Pipe transfer post or send operation.
   Operation *op;
-  PipeTransferEventKind kind;
+  /// Whether the operation creates or consumes one posted rendezvous phase.
+  PipeTransferRendezvousEventKind kind;
 };
 
+/// Allocation unit for source-node pipe rendezvous resources.
+///
+/// Repeated static transfer operations for the same logical pipe share one
+/// unit so they preserve the existing per-pipe protocol state. The interval
+/// bounds the lifetime of the unit's address-table slot and sender-ready
+/// counter for deterministic coloring.
 struct PipeTransferAllocationUnit {
+  /// Pipe transfer create operations represented by this allocation unit.
   SmallVector<Operation *> transferCreateOps;
-  SmallVector<PipeTransferEvent> events;
+
+  /// Post/send events used to reject unsupported queue depth in linear blocks.
+  SmallVector<PipeTransferRendezvousEvent> rendezvousEvents;
+
+  /// Logical pipe whose source node owns this unit's rendezvous resources.
   PipeKey pipe;
+
+  /// Pipe type cached from the first create op for resource-plan construction.
   PipeType pipeType;
+
+  /// Collective takes precedence when cloned regions produce mixed contracts.
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
+
+  /// Stable tie-breaker for deterministic allocation.
   int64_t ordinal = 0;
+
+  /// Conservative post-to-send lifetime for source-node rendezvous resources.
   OperationLiveInterval interval;
+
+  /// True when at least one receive post contributes to the interval.
   bool hasPost = false;
+
+  /// True when at least one send contributes to the interval.
   bool hasSend = false;
+
+  /// Assigned first-fit color within the source node's allocation group.
   int64_t resourceColor = 0;
 };
 
@@ -993,37 +1033,39 @@ emitUnsupportedQueueDepth(Operation *op,
 }
 
 static LogicalResult
-validateSingleLivePostPerLinearBlock(const PipeTransferAllocationUnit &unit) {
-  if (unit.events.size() <= 2) {
+validateMaxLivePostsPerLinearBlock(const PipeTransferAllocationUnit &unit,
+                                   int64_t maxLivePosts) {
+  if (unit.rendezvousEvents.size() <= static_cast<size_t>(maxLivePosts + 1)) {
     return success();
   }
 
-  llvm::MapVector<Block *, SmallVector<PipeTransferEvent>> eventsByBlock;
-  for (const PipeTransferEvent &event : unit.events) {
+  llvm::MapVector<Block *, SmallVector<PipeTransferRendezvousEvent>>
+      eventsByBlock;
+  for (const PipeTransferRendezvousEvent &event : unit.rendezvousEvents) {
     eventsByBlock[event.op->getBlock()].push_back(event);
   }
 
   for (auto &entry : eventsByBlock) {
-    SmallVector<PipeTransferEvent> &events = entry.second;
-    if (events.size() <= 2) {
+    SmallVector<PipeTransferRendezvousEvent> &events = entry.second;
+    if (events.size() <= static_cast<size_t>(maxLivePosts + 1)) {
       continue;
     }
 
-    llvm::sort(events,
-               [](const PipeTransferEvent &lhs, const PipeTransferEvent &rhs) {
-                 return lhs.op->isBeforeInBlock(rhs.op);
-               });
+    llvm::sort(events, [](const PipeTransferRendezvousEvent &lhs,
+                          const PipeTransferRendezvousEvent &rhs) {
+      return lhs.op->isBeforeInBlock(rhs.op);
+    });
 
     int64_t livePosts = 0;
-    for (const PipeTransferEvent &event : events) {
+    for (const PipeTransferRendezvousEvent &event : events) {
       switch (event.kind) {
-      case PipeTransferEventKind::Post:
+      case PipeTransferRendezvousEventKind::Post:
         ++livePosts;
-        if (livePosts > 1) {
+        if (livePosts > maxLivePosts) {
           return emitUnsupportedQueueDepth(event.op, unit);
         }
         break;
-      case PipeTransferEventKind::Send:
+      case PipeTransferRendezvousEventKind::Send:
         if (livePosts > 0) {
           --livePosts;
         }
@@ -1092,6 +1134,10 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
     return &units.back();
   };
 
+  // Resource allocation depends only on receive posts and sends. Walk the
+  // module once in operation order to form per-pipe allocation units, record
+  // rendezvous events for queue-depth validation, and build post-to-send live
+  // intervals for coloring.
   WalkResult walkResult = mod.walk([&](Operation *op) {
     if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
       int64_t eventOrdinal = nextEventOrdinal++;
@@ -1101,7 +1147,8 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
         return WalkResult::interrupt();
       }
       (*unit)->hasPost = true;
-      (*unit)->events.push_back({op, PipeTransferEventKind::Post});
+      (*unit)->rendezvousEvents.push_back(
+          {op, PipeTransferRendezvousEventKind::Post});
       updateIntervalStart((*unit)->interval, op, eventOrdinal, dominanceInfo);
       return WalkResult::advance();
     }
@@ -1113,7 +1160,8 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
         return WalkResult::interrupt();
       }
       (*unit)->hasSend = true;
-      (*unit)->events.push_back({op, PipeTransferEventKind::Send});
+      (*unit)->rendezvousEvents.push_back(
+          {op, PipeTransferRendezvousEventKind::Send});
       updateIntervalEnd((*unit)->interval, op, dominanceInfo);
       return WalkResult::advance();
     }
@@ -1125,7 +1173,8 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
   }
 
   for (PipeTransferAllocationUnit &unit : units) {
-    if (failed(validateSingleLivePostPerLinearBlock(unit))) {
+    if (failed(validateMaxLivePostsPerLinearBlock(unit,
+                                                  /*maxLivePosts=*/1))) {
       return failure();
     }
     finalizeInterval(unit.interval, unit.hasPost, unit.hasSend, dominanceInfo,
