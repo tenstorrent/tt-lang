@@ -10,8 +10,13 @@
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @copy_roles_valid
-  // CHECK: ttl.copy
-  // CHECK: ttl.copy
+  // CHECK: %[[PIPE0:.*]] = ttl.create_pipe
+  // CHECK: %[[CB0:.*]] = ttl.bind_cb
+  // CHECK: ttl.if_src %[[PIPE0]]
+  // CHECK: ttl.copy %[[CB0]], %[[PIPE0]]
+  // CHECK: ttl.if_dst %[[PIPE0]]
+  // CHECK: %[[RECV0:.*]] = ttl.cb_reserve %[[CB0]]
+  // CHECK: ttl.copy %[[PIPE0]], %[[RECV0]]
   func.func @copy_roles_valid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -24,9 +29,12 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
           -> !ttl.transfer_handle<write>
     }
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      %recv = ttl.copy %pipe, %cb
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -42,6 +50,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scope_erased_after_verification
   // CHECK-NOT: ttl.pipenet_scope
   // CHECK: ttl.if_src
+  // CHECK-NOT: ttl.pipenet_scope
   // CHECK: return
   func.func @scope_erased_after_verification() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -143,6 +152,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_src_predicate
   // CHECK: ttl.is_src
+  // CHECK: ttl.copy
   func.func @is_src_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -166,6 +176,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_dst_predicate
   // CHECK: ttl.is_dst
+  // CHECK: %[[RECV1:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV1]]
   func.func @is_dst_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -173,9 +185,12 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_dst {pipe_net_id = 0 : i64}
     scf.if %cond {
-      %recv = ttl.copy %pipe, %cb
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -189,6 +204,10 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @two_pipenets_disjoint
+  // CHECK: %[[RECV_A:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV_A]]
+  // CHECK: %[[RECV_B:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV_B]]
   func.func @two_pipenets_disjoint() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pa = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 3) net 0
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
@@ -197,15 +216,21 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pa : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0> {
-      %ra = ttl.copy %pa, %cb
+      %recv_a_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %ra = ttl.copy %pa, %recv_a_dst
           : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     ttl.if_dst %pb : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1> {
-      %rb = ttl.copy %pb, %cb
+      %recv_b_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %rb = ttl.copy %pb, %recv_b_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -219,6 +244,8 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_for_no_predicate
+  // CHECK: scf.for
+  // CHECK: ttl.copy
   func.func @scf_for_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -247,6 +274,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 #srcSet = affine_set<(d0) : (d0 == 0)>
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_guard
+  // CHECK: affine.if
+  // CHECK: ttl.copy
   func.func @affine_if_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -270,6 +299,8 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_active_scope
   // CHECK: ttl.is_active
+  // CHECK-NOT: ttl.pipenet_scope
+  // CHECK: return
   func.func @is_active_scope() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -292,6 +323,9 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @nested_is_active_intersect
+  // CHECK: ttl.is_active
+  // CHECK: ttl.is_active
+  // CHECK: ttl.copy
   func.func @nested_is_active_intersect() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pa = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 3) net 0
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
@@ -325,6 +359,8 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_ne_guard
+  // CHECK: arith.cmpi ne
+  // CHECK: ttl.copy
   func.func @cmpi_ne_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -349,6 +385,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sle_guard
+  // CHECK: arith.cmpi sle
+  // CHECK: ttl.copy
   func.func @cmpi_sle_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -373,6 +411,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sgt_guard
+  // CHECK: arith.cmpi sgt
+  // CHECK: %[[RECV2:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV2]]
   func.func @cmpi_sgt_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -382,9 +423,12 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %c0 = arith.constant 0 : index
     %cond = arith.cmpi sgt, %x, %c0 : index
     scf.if %cond {
-      %recv = ttl.copy %pipe, %cb
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -397,6 +441,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sge_guard
+  // CHECK: arith.cmpi sge
+  // CHECK: %[[RECV3:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV3]]
   func.func @cmpi_sge_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -406,9 +453,12 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %c1 = arith.constant 1 : index
     %cond = arith.cmpi sge, %x, %c1 : index
     scf.if %cond {
-      %recv = ttl.copy %pipe, %cb
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -421,6 +471,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @andi_two_coords
+  // CHECK: arith.andi
+  // CHECK: ttl.copy
   func.func @andi_two_coords() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -449,6 +501,9 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @ori_two_coords
+  // CHECK: arith.ori
+  // CHECK: ttl.is_src
+  // CHECK: ttl.copy
   func.func @ori_two_coords() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -485,6 +540,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @xori_guard
+  // CHECK: arith.xori
+  // CHECK: ttl.is_src
+  // CHECK: ttl.copy
   func.func @xori_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -518,6 +576,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @evalindex_subi_indexcast
+  // CHECK: arith.index_cast
+  // CHECK: arith.subi
+  // CHECK: ttl.copy
   func.func @evalindex_subi_indexcast() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -546,6 +607,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 #mulSet = affine_set<(d0) : (2 * d0 == 0)>
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_mul
+  // CHECK: affine.if
+  // CHECK: ttl.copy
   func.func @affine_if_mul() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -572,6 +635,8 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 #modSet = affine_set<(d0) : (d0 mod 4 == 0)>
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_mod
+  // CHECK: affine.if
+  // CHECK: ttl.copy
   func.func @affine_if_mod() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -597,6 +662,9 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 #floordivSet = affine_set<(d0) : (d0 floordiv 2 == 0)>
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_floordiv
+  // CHECK: affine.if
+  // CHECK: arith.cmpi
+  // CHECK: ttl.copy
   func.func @affine_if_floordiv() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -624,6 +692,8 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 #ceildivSet = affine_set<(d0) : (d0 ceildiv 2 == 0)>
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_ceildiv
+  // CHECK: affine.if
+  // CHECK: ttl.copy
   func.func @affine_if_ceildiv() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -649,6 +719,8 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 #symSet = affine_set<(d0)[s0] : (d0 - s0 == 0)>
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_symbol
+  // CHECK: affine.if
+  // CHECK: ttl.copy
   func.func @affine_if_symbol() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -675,6 +747,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @multi_block
+  // CHECK: cf.cond_br
+  // CHECK: ttl.is_src
+  // CHECK: ttl.copy
   func.func @multi_block(%flag: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -704,6 +779,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @mixed_predicate_andi
+  // CHECK: ttl.is_src
+  // CHECK: arith.andi
+  // CHECK: ttl.copy
   func.func @mixed_predicate_andi() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -730,11 +808,15 @@ module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
 // `a.else ∪ (a.then ∩ b.else)`. Picking `a = (x == 0)`, `b = (y == 0)` on
 // a 2x2 grid yields then = {(0,0)} (src), else = {(0,1), (1,0), (1,1)}.
 // A loopback pipe (dst spans the entire grid) covers both branches: the
-// else-side `ttl.copy(pipe, cb)` must validate against the else-domain
-// being a subset of the pipe destination.
+// else-side pipe receive must validate against the else-domain being a subset
+// of the pipe destination.
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @andi_else_domain
+  // CHECK: arith.andi
+  // CHECK: ttl.copy
+  // CHECK: %[[RECV4:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV4]]
   func.func @andi_else_domain() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(1, 1) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(1, 1) net 0>
@@ -752,9 +834,12 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
              !ttl.pipe<src(0, 0) dst(0, 0) to(1, 1) net 0>)
           -> !ttl.transfer_handle<write>
     } else {
-      %recv = ttl.copy %pipe, %cb
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 1) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -770,6 +855,10 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 #srcOnly = affine_set<(d0) : (d0 == 0)>
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_else_branch
+  // CHECK: affine.if
+  // CHECK: ttl.copy
+  // CHECK: %[[RECV5:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV5]]
   func.func @affine_if_else_branch() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -782,9 +871,12 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
           -> !ttl.transfer_handle<write>
     } else {
-      %recv = ttl.copy %pipe, %cb
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -798,6 +890,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_while_no_predicate
+  // CHECK: scf.while
+  // CHECK: ttl.copy
   func.func @scf_while_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -831,6 +925,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_execute_region_no_predicate
+  // CHECK: scf.execute_region
+  // CHECK: ttl.copy
   func.func @scf_execute_region_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -857,6 +953,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_while_top_level
+  // CHECK: scf.while
+  // CHECK: ttl.if_src
+  // CHECK: ttl.copy
   func.func @scf_while_top_level() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -889,6 +988,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_for_no_predicate
+  // CHECK: affine.for
+  // CHECK: ttl.copy
   func.func @affine_for_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -915,7 +1016,10 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func private @send_helper
+  // CHECK: ttl.copy
   // CHECK-LABEL: func.func @kernel_caller_guards
+  // CHECK: ttl.if_src
+  // CHECK: func.call @send_helper
   func.func private @send_helper(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
                                   %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
     %x = ttl.copy %cb, %pipe
@@ -947,6 +1051,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 #dstRange = affine_set<(d0) : (d0 - 1 >= 0)>
 module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_inequality
+  // CHECK: affine.if
+  // CHECK: %[[RECV6:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV6]]
   func.func @affine_if_inequality() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -954,9 +1061,12 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #dstRange(%x) {
-      %recv = ttl.copy %pipe, %cb
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
     func.return
@@ -972,6 +1082,8 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
 #twoConstraints = affine_set<(d0) : (d0 >= 0, 0 - d0 >= 0)>
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_multi_constraint
+  // CHECK: affine.if
+  // CHECK: ttl.copy
   func.func @affine_if_multi_constraint() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
@@ -998,6 +1110,8 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 #originSet = affine_set<(d0, d1) : (d0 == 0, d1 == 0)>
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @affine_if_multi_dim
+  // CHECK: affine.if
+  // CHECK: ttl.copy
   func.func @affine_if_multi_dim() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
@@ -1025,6 +1139,10 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 #dstHalf = affine_set<(d0) : (d0 - 1 >= 0)>
 module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_inequality_else
+  // CHECK: affine.if
+  // CHECK: %[[RECV7:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV7]]
+  // CHECK: ttl.copy
   func.func @affine_if_inequality_else() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -1032,9 +1150,12 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #dstHalf(%x) {
-      %recv = ttl.copy %pipe, %cb
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     } else {
       %send = ttl.copy %cb, %pipe

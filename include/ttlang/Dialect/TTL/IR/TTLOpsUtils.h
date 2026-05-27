@@ -16,8 +16,10 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <cstdint>
 #include <optional>
@@ -51,13 +53,80 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
+/// Trace a transfer handle through tensor containers and loop-carried values
+/// to the first value accepted by `match`.
+template <typename ResultT, typename MatchFn>
+inline ResultT
+traceTransferHandleSource(mlir::Value value, MatchFn match,
+                          llvm::SmallPtrSetImpl<mlir::Value> &seen) {
+  value = traceUnrealizedCasts(value);
+  if (!seen.insert(value).second) {
+    return ResultT();
+  }
+
+  if (ResultT result = match(value)) {
+    return result;
+  }
+  if (auto extractOp = value.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    return traceTransferHandleSource<ResultT>(extractOp.getTensor(), match,
+                                              seen);
+  }
+  if (auto insertOp = value.getDefiningOp<mlir::tensor::InsertOp>()) {
+    return traceTransferHandleSource<ResultT>(insertOp.getScalar(), match,
+                                              seen);
+  }
+  if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
+    if (auto loop =
+            mlir::dyn_cast<mlir::LoopLikeOpInterface>(result.getOwner())) {
+      auto yieldedOpt = loop.getYieldedValuesMutable();
+      auto resultsOpt = loop.getLoopResults();
+      if (yieldedOpt && resultsOpt) {
+        auto yielded = *yieldedOpt;
+        auto results = *resultsOpt;
+        for (unsigned idx = 0; idx < results.size(); ++idx) {
+          if (results[idx] == result) {
+            return traceTransferHandleSource<ResultT>(yielded[idx].get(), match,
+                                                      seen);
+          }
+        }
+      }
+    }
+  }
+  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Operation *parent = blockArg.getOwner()->getParentOp();
+    if (auto loop = mlir::dyn_cast_or_null<mlir::LoopLikeOpInterface>(parent)) {
+      auto iterArgs = loop.getRegionIterArgs();
+      auto inits = loop.getInitsMutable();
+      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
+        if (iterArgs[idx] == blockArg) {
+          return traceTransferHandleSource<ResultT>(inits[idx].get(), match,
+                                                    seen);
+        }
+      }
+    }
+  }
+
+  return ResultT();
+}
+
 /// Walk through `tensor.extract_slice` ops and return the underlying
 /// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
+  view = traceUnrealizedCasts(view);
   while (auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
     view = slice.getSource();
+    view = traceUnrealizedCasts(view);
   }
   return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
+}
+
+/// Return the user reserve that produced a pipe receive destination block.
+inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
+  dst = traceUnrealizedCasts(dst);
+  if (auto attach = dst.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
+    return findCBReserveForView(attach.getTensor());
+  }
+  return findCBReserveForView(dst);
 }
 
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion

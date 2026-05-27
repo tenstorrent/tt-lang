@@ -289,7 +289,7 @@ def run_kernel_on_device(
     cb_configs: List[Any],
     core_ranges: Any,
     program_hash: int = None,
-    num_pipe_nets: int = 0,
+    num_pipe_sync_semaphores: int = 0,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -307,7 +307,8 @@ def run_kernel_on_device(
             block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         program_hash: Hash for tt-metal program cache (not yet used).
-        num_pipe_nets: Number of PipeNets used by this kernel (for semaphore allocation).
+        num_pipe_sync_semaphores: Number of pipe synchronization semaphores
+            allocated by the compiler.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -342,13 +343,11 @@ def run_kernel_on_device(
         core_ranges=core_ranges,
     )
 
-    # Build semaphore descriptors for pipe synchronization.
-    # Each PipeNet uses 2 semaphores: sender_sem and receiver_sem.
-    # Index: pipeNetId * 2 (sender), pipeNetId * 2 + 1 (receiver).
+    # Build semaphore descriptors for pipe synchronization. The compiler emits
+    # integer semaphore indices from a flat runtime layout.
     semaphore_descriptors = []
-    if num_pipe_nets > 0:
-        num_sems = num_pipe_nets * 2
-        for sem_id in range(num_sems):
+    if num_pipe_sync_semaphores > 0:
+        for sem_id in range(num_pipe_sync_semaphores):
             semaphore_descriptors.append(
                 ttnn.SemaphoreDescriptor(
                     sem_id, core_ranges=core_ranges, initial_value=0

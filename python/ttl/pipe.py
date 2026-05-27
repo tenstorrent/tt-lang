@@ -184,10 +184,10 @@ class PipeNet:
     should be sized from the operation's work extent, not the launch extent.
 
     A PipeNet's pipes must all be the same kind (all unicast or all
-    multicast). The TTKernel lowering allocates one semaphore pair per
-    PipeNet, and the unicast and multicast handshakes use the pair's
-    bits with incompatible semantics; mixing them in one PipeNet races
-    when the same node participates in both. Use separate PipeNets.
+    multicast). The unicast and multicast handshakes use the PipeNet's
+    synchronization state with incompatible semantics; mixing them in one
+    PipeNet can race when the same node participates in both. Use separate
+    PipeNets.
 
     Args:
         pipes: List of Pipe objects defining the network

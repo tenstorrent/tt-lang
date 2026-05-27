@@ -10,10 +10,6 @@ Pipe pattern tests matching the four spec examples:
   4. Forward: unicast to +1 neighbor (ring)
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl
@@ -294,6 +290,9 @@ def forward_kernel(inp, out):
 
             net.if_src(send)
 
+    @ttl.datamovement()
+    def dm_write():
+        x, _ = ttl.node(dims=2)
         with nbr_cb.reserve() as blk:
 
             def recv(pipe):
@@ -302,12 +301,91 @@ def forward_kernel(inp, out):
 
             net.if_dst(recv)
 
-    @ttl.datamovement()
-    def dm_write():
-        x, _ = ttl.node(dims=2)
         with out_cb.wait() as blk:
             tx = ttl.copy(blk, out[0, x])
             tx.wait()
+
+
+@ttl.operation(grid=(2, 1))
+def posted_loopback_multicast_kernel(inp, out):
+    net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(0, 2), 0))])
+
+    send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        # TTNN interop expects a compute kernel, so use identity compute.
+        with recv_cb.wait() as recv_blk, out_cb.reserve() as out_blk:
+            out_blk.store(recv_blk)
+
+    @ttl.datamovement()
+    def post_recv_then_send():
+        x, _ = ttl.node(dims=2)
+        if x == 0:
+            with send_cb.reserve() as send_blk, recv_cb.reserve() as recv_blk:
+                ttl.copy(inp[0, 0], send_blk).wait()
+
+                def recv(pipe):
+                    recv_tx = ttl.copy(pipe, recv_blk)
+
+                    def send(pipe):
+                        ttl.copy(send_blk, pipe).wait()
+
+                    net.if_src(send)
+                    recv_tx.wait()
+
+                net.if_dst(recv)
+        else:
+            with recv_cb.reserve() as recv_blk:
+
+                def recv(pipe):
+                    ttl.copy(pipe, recv_blk).wait()
+
+                net.if_dst(recv)
+
+    @ttl.datamovement()
+    def write_output():
+        x, _ = ttl.node(dims=2)
+        with out_cb.wait() as out_blk:
+            ttl.copy(out_blk, out[0, x]).wait()
+
+
+@ttl.operation(grid=(1, 1))
+def posted_self_unicast_wait_receive_before_send_wait_kernel(inp, out):
+    net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, 0))])
+
+    send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with recv_cb.wait() as recv_blk, out_cb.reserve() as out_blk:
+            out_blk.store(recv_blk)
+
+    @ttl.datamovement()
+    def post_receive_send_then_wait_receive():
+        with send_cb.reserve() as send_blk, recv_cb.reserve() as recv_blk:
+            ttl.copy(inp[0, 0], send_blk).wait()
+
+            def recv(pipe):
+                recv_tx = ttl.copy(pipe, recv_blk)
+
+                def send(pipe):
+                    send_tx = ttl.copy(send_blk, pipe)
+                    recv_tx.wait()
+                    send_tx.wait()
+
+                net.if_src(send)
+
+            net.if_dst(recv)
+
+    @ttl.datamovement()
+    def write_output():
+        with out_cb.wait() as out_blk:
+            ttl.copy(out_blk, out[0, 0]).wait()
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +489,31 @@ def test_forward_ring(device):
     assert_pcc(expected, result)
 
 
+def test_same_thread_receive_post_before_send_loopback(device):
+    """A same-thread loopback receive is valid when copy posts before send."""
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    inp_tt = to_dram(inp_torch, device)
+    out_tt = to_dram(torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16), device)
+
+    posted_loopback_multicast_kernel(inp_tt, out_tt)
+
+    result = ttnn.to_torch(out_tt)
+    expected = torch.cat([inp_torch, inp_torch], dim=1)
+    assert_pcc(expected, result)
+
+
+def test_self_unicast_wait_receive_before_send_wait(device):
+    """Unicast self-loop is valid after receive post and send post both run."""
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    inp_tt = to_dram(inp_torch, device)
+    out_tt = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+
+    posted_self_unicast_wait_receive_before_send_wait_kernel(inp_tt, out_tt)
+
+    result = ttnn.to_torch(out_tt)
+    assert_pcc(inp_torch, result)
+
+
 # ---------------------------------------------------------------------------
 # Per-row forward rings: a USE_Y x USE_X subgrid of the launched device grid
 # forms USE_Y independent rings. Every active core (x, y) sends its tile to
@@ -459,6 +562,10 @@ def row_rings_kernel(inp, out):
 
                 net.if_src(send)
 
+    @ttl.datamovement()
+    def dm_write():
+        if net.is_active():
+            x, y = ttl.node(dims=2)
             with nbr_cb.reserve() as blk:
 
                 def recv(pipe):
@@ -466,10 +573,6 @@ def row_rings_kernel(inp, out):
 
                 net.if_dst(recv)
 
-    @ttl.datamovement()
-    def dm_write():
-        if net.is_active():
-            x, y = ttl.node(dims=2)
             with out_cb.wait() as blk:
                 ttl.copy(blk, out[y, x]).wait()
 

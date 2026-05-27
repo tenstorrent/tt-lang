@@ -599,6 +599,42 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
   }];
 }
 
+def TTL_PipeRecvPostOp : TTL_Op<"pipe_recv_post",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Post a pipe receive destination";
+  let description = [{
+    Publishes the destination dataflow buffer slot address for a pipe receive
+    and returns a transfer handle. The operation does not wait for the payload.
+    A matching `ttl.pipe_recv_wait` completes the receive before the destination
+    slot is consumed.
+  }];
+  let arguments = (ins
+    TTL_Pipe:$pipe,
+    AnyType:$dst
+  );
+  let results = (outs TTL_TransferHandle:$xf);
+  let assemblyFormat = "$pipe `,` $dst attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeRecvWaitOp : TTL_Op<"pipe_recv_wait",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Wait for a posted pipe receive";
+  let description = [{
+    Blocks until the sender has completed the pipe transfer associated with a
+    posted receive. The destination dataflow buffer slot is safe to consume
+    after this operation completes. The `dst` operand identifies the posted
+    destination slot whose receive is being completed.
+  }];
+  let arguments = (ins
+    TTL_TransferHandle:$xf,
+    TTL_Pipe:$pipe,
+    AnyType:$dst
+  );
+  let assemblyFormat = "$xf `,` $pipe `,` $dst attr-dict `:` type($xf) `,` type($pipe) `,` type($dst)";
+  let hasVerifier = 1;
+}
+
 def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
     [SingleBlockImplicitTerminator<"YieldOp">,
      DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {

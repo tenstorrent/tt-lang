@@ -73,7 +73,6 @@ import textwrap
 import types
 from dataclasses import dataclass
 
-
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -186,17 +185,18 @@ def _find_copy_records(
     # body to release the previous iteration's copy) must not suppress injection.
     wait_abs_linenos: dict[str, list[int]] = {}
     for stmt in stmts:
-        if (
-            isinstance(stmt, ast.Expr)
-            and isinstance(stmt.value, ast.Call)
-            and isinstance(stmt.value.func, ast.Attribute)
-            and stmt.value.func.attr == "wait"
-            and isinstance(stmt.value.func.value, ast.Name)
-        ):
-            name = stmt.value.func.value.id
-            wait_abs_linenos.setdefault(name, []).append(
-                file_start_line + stmt.lineno - 1
-            )
+        for node in ast.walk(stmt):
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "wait"
+                and isinstance(node.value.func.value, ast.Name)
+            ):
+                name = node.value.func.value.id
+                wait_abs_linenos.setdefault(name, []).append(
+                    file_start_line + node.lineno - 1
+                )
 
     return [
         (var, ln)

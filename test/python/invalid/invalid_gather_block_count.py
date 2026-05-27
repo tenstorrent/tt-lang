@@ -6,10 +6,10 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: gather receiver CB block_count must be >= number of senders.
+Validation test: gather receiver DFB block_count must be >= number of senders.
 
-Each sender writes to a separate slot in the receiver's CB. If block_count is
-too small, writes will land outside the CB's allocated memory.
+Each sender writes to a separate slot in the receiver's DFB. If block_count is
+too small, writes will land outside the DFB's allocated memory.
 """
 
 import os
@@ -67,7 +67,7 @@ def bad_gather(inp, out):
                 ttl.copy(blk, out[0, 0]).wait()
 
 
-# CHECK: gather pipe receiver CB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2
+# CHECK: gather pipe receiver DFB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2
 
 device = ttnn.open_device(device_id=0)
 try:

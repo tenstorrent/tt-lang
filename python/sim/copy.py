@@ -25,6 +25,7 @@ from .greenlet_scheduler import block_if_needed
 from .sharding import try_count_locality
 from .trace import TRACE, trace
 from .ttnnsim import Tensor, tile_count_from_tensor
+from .pipe import Pipe, SrcPipeIdentity
 
 
 def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
@@ -98,6 +99,7 @@ class CopyTransaction:
         self._src = src
         self._dst = dst
         self._completed = False
+        self._transfer_performed = False
         # Stable trace label, computed once at construction so the scheduler
         # can read it via direct attribute access from inside the hot
         # block_current_kernel path instead of paying for a getattr/fallback.
@@ -130,6 +132,16 @@ class CopyTransaction:
                 dst=type(dst).__name__,
                 **_copy_trace_fields(src, dst),
             )
+
+        if self._starts_on_copy():
+            self._handler.transfer(self._src, self._dst)
+            self._transfer_performed = True
+
+    def _starts_on_copy(self) -> bool:
+        """Return true for transfers whose side effects begin at copy()."""
+        return isinstance(self._src, Block) and isinstance(
+            self._dst, (Pipe, SrcPipeIdentity)
+        )
 
     @staticmethod
     def _lookup_handler(
@@ -174,11 +186,13 @@ class CopyTransaction:
         block_if_needed(self, "wait")
 
         # Transfer - let exceptions propagate to scheduler for context.
-        # In dry-run mode the payload bytes are not moved; only the block
-        # state transitions below still fire so that structural checks
-        # (state machine, deadlock) remain fully exercised.
-        if not get_context().config.dry_run:
-            self._handler.transfer(self._src, self._dst)
+        if not self._transfer_performed:
+            # In dry-run mode the payload bytes are not moved; only the block
+            # state transitions below still fire so that structural checks
+            # (state machine, deadlock) remain fully exercised.
+            if not get_context().config.dry_run:
+                self._handler.transfer(self._src, self._dst)
+            self._transfer_performed = True
         self._completed = True
 
         # Mark tx.wait() complete in state machine - this transitions blocks back to accessible states
