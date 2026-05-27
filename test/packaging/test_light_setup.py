@@ -17,7 +17,7 @@ def test_light_metadata_pins_ttlang_version(
     requires_text: Callable[[], str],
 ) -> None:
     result = run_egg_info(
-        {"TTLANG_PRETEND_VERSION": "0.71.0.dev20260525"},
+        {"TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525"},
         cwd=LIGHT_ROOT,
     )
 
@@ -31,7 +31,7 @@ def test_light_metadata_accepts_explicit_ttlang_version(
 ) -> None:
     result = run_egg_info(
         {
-            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525",
             "TTLANG_LIGHT_TTLANG_VERSION": "0.71.0.dev20260524+light",
         },
         cwd=LIGHT_ROOT,
@@ -46,7 +46,7 @@ def test_light_metadata_rejects_ttlang_without_light_label(
 ) -> None:
     result = run_egg_info(
         {
-            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525",
             "TTLANG_LIGHT_TTLANG_VERSION": "0.71.0.dev20260524",
         },
         cwd=LIGHT_ROOT,
@@ -56,24 +56,24 @@ def test_light_metadata_rejects_ttlang_without_light_label(
     assert "requires local version label +light" in result.stderr
 
 
-def test_light_metadata_requires_pretend_version(
+def test_light_metadata_requires_version_override(
     run_egg_info: Callable[..., object],
 ) -> None:
     result = run_egg_info(
         {},
-        env_removals=("TTLANG_PRETEND_VERSION", "TTLANG_LIGHT_TTLANG_VERSION"),
+        env_removals=("TTLANG_VERSION_OVERRIDE", "TTLANG_LIGHT_TTLANG_VERSION"),
         cwd=LIGHT_ROOT,
     )
 
     assert result.returncode != 0
-    assert "requires TTLANG_PRETEND_VERSION" in result.stderr
+    assert "requires TTLANG_VERSION_OVERRIDE" in result.stderr
 
 
 def test_light_metadata_rejects_final_version(
     run_egg_info: Callable[..., object],
 ) -> None:
     result = run_egg_info(
-        {"TTLANG_PRETEND_VERSION": "0.71.0"},
+        {"TTLANG_VERSION_OVERRIDE": "0.71.0"},
         cwd=LIGHT_ROOT,
     )
 

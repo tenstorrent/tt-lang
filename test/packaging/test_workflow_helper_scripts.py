@@ -285,7 +285,7 @@ def test_internal_wheel_metadata_fails_when_git_version_cannot_be_derived(
     sys.path.insert(0, str(REPO_ROOT / "packaging"))
     import internal_wheel_metadata
 
-    monkeypatch.delenv("TTLANG_PRETEND_VERSION", raising=False)
+    monkeypatch.delenv("TTLANG_VERSION_OVERRIDE", raising=False)
 
     def fail_git(*_args: object, **_kwargs: object) -> str:
         raise subprocess.CalledProcessError(1, ["git"])

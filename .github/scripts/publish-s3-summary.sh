@@ -6,7 +6,7 @@
 # publish workflow. With --dry-run, record that no upload occurred. With no
 # $GITHUB_STEP_SUMMARY set, output goes to stdout for local invocations/tests.
 #
-# Usage: publish-s3-summary.sh [--dry-run] <ttnn_dep_mode> <pretend_version>
+# Usage: publish-s3-summary.sh [--dry-run] <ttnn_dep_mode> <version_override>
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ if [[ "${1:-}" == "--dry-run" ]]; then
 fi
 
 if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 [--dry-run] <ttnn_dep_mode> <pretend_version>" >&2
+    echo "Usage: $0 [--dry-run] <ttnn_dep_mode> <version_override>" >&2
     exit 2
 fi
 

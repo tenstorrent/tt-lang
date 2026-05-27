@@ -21,7 +21,7 @@ on:
         type: string
         default: ""
         required: false
-      pretend_version:
+      version_override:
         description: "PEP 440 version for the internal wheel. Leave empty to compute a nightly dev version."
         type: string
         default: ""
@@ -64,7 +64,7 @@ jobs:
       docker_tag: ${{ steps.resolve.outputs.docker_tag }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
       overwrite_releases: ${{ steps.resolve.outputs.overwrite_releases }}
-      pretend_version: ${{ steps.resolve.outputs.pretend_version }}
+      version_override: ${{ steps.resolve.outputs.version_override }}
       ttnn_dep_mode: ${{ steps.resolve.outputs.ttnn_dep_mode }}
 
     steps:
@@ -88,7 +88,7 @@ jobs:
           DISPATCH_DOCKER_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.docker_tag || '' }}
           DISPATCH_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.dry_run) || 'false' }}
           DISPATCH_OVERWRITE_RELEASES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.overwrite_releases) || 'false' }}
-          DISPATCH_PRETEND_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.pretend_version || '' }}
+          DISPATCH_VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version_override || '' }}
           DISPATCH_TTNN_DEP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.ttnn_dep_mode || 'bundled' }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -97,7 +97,7 @@ jobs:
           docker_tag="$DISPATCH_DOCKER_TAG"
           dry_run="$DISPATCH_DRY_RUN"
           overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
-          pretend_version="$DISPATCH_PRETEND_VERSION"
+          version_override="$DISPATCH_VERSION_OVERRIDE"
           ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
@@ -118,20 +118,20 @@ jobs:
             overwrite_releases=true
           fi
 
-          if [ -z "$pretend_version" ]; then
-            pretend_version=$(python3 .github/scripts/compute-nightly-version.py)
+          if [ -z "$version_override" ]; then
+            version_override=$(python3 .github/scripts/compute-nightly-version.py)
           fi
 
           {
             echo "docker_tag=$docker_tag"
             echo "dry_run=$dry_run"
             echo "overwrite_releases=$overwrite_releases"
-            echo "pretend_version=$pretend_version"
+            echo "version_override=$version_override"
             echo "ttnn_dep_mode=$ttnn_dep_mode"
           } >> "$GITHUB_OUTPUT"
 
           echo "Resolved ttnn_dep_mode=$ttnn_dep_mode"
-          echo "Resolved pretend_version=$pretend_version"
+          echo "Resolved version_override=$version_override"
           echo "Resolved dry_run=$dry_run"
           if [ -n "$docker_tag" ]; then
             echo "Using existing docker_tag=$docker_tag"
@@ -161,7 +161,7 @@ jobs:
     with:
       docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
       ttnn_dep_mode: ${{ needs.preflight.outputs.ttnn_dep_mode }}
-      pretend_version: ${{ needs.preflight.outputs.pretend_version }}
+      version_override: ${{ needs.preflight.outputs.version_override }}
       external_tt_metal_dir: ${{ needs.preflight.outputs.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/tt-metal' || '' }}
       external_python_venv: ${{ needs.preflight.outputs.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
       bundled_tt_metal_dir: ${{ needs.preflight.outputs.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
@@ -195,7 +195,7 @@ jobs:
         run: |
           .github/scripts/verify-s3-wheel-versions.sh \
             "${{ needs.preflight.outputs.ttnn_dep_mode }}" \
-            "${{ needs.preflight.outputs.pretend_version }}" \
+            "${{ needs.preflight.outputs.version_override }}" \
             dist
 
       - name: Configure AWS Credentials
@@ -227,4 +227,4 @@ jobs:
           .github/scripts/publish-s3-summary.sh \
             "${summary_args[@]}" \
             "${{ needs.preflight.outputs.ttnn_dep_mode }}" \
-            "${{ needs.preflight.outputs.pretend_version }}"
+            "${{ needs.preflight.outputs.version_override }}"

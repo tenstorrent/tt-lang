@@ -15,7 +15,7 @@ def test_default_metadata_requires_ttnn(
     requires_text: Callable[[], str],
 ) -> None:
     result = run_egg_info(
-        {"TTLANG_PRETEND_VERSION": "0.71.0.dev20260525"},
+        {"TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525"},
         env_removals=("TTLANG_TTNN_DEP_MODE",),
     )
 
@@ -30,7 +30,7 @@ def test_external_metadata_omits_ttnn(
     result = run_egg_info(
         {
             "TTLANG_TTNN_DEP_MODE": "external",
-            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525+light",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525+light",
         },
     )
 
@@ -51,7 +51,7 @@ def test_bundled_metadata_omits_ttnn_and_adds_ttnn_runtime_deps(
     result = run_egg_info(
         {
             "TTLANG_TTNN_DEP_MODE": "bundled",
-            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525",
             "TTLANG_BUNDLED_TT_METAL_DIR": str(tt_metal),
         },
     )
@@ -68,11 +68,11 @@ def test_external_metadata_requires_explicit_nonfinal_version(
 ) -> None:
     result = run_egg_info(
         {"TTLANG_TTNN_DEP_MODE": "external"},
-        env_removals=("TTLANG_PRETEND_VERSION",),
+        env_removals=("TTLANG_VERSION_OVERRIDE",),
     )
 
     assert result.returncode != 0
-    assert "requires TTLANG_PRETEND_VERSION" in result.stderr
+    assert "requires TTLANG_VERSION_OVERRIDE" in result.stderr
 
 
 def test_external_metadata_rejects_final_version(
@@ -81,7 +81,7 @@ def test_external_metadata_rejects_final_version(
     result = run_egg_info(
         {
             "TTLANG_TTNN_DEP_MODE": "external",
-            "TTLANG_PRETEND_VERSION": "0.71.0",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0",
         },
     )
 
@@ -95,7 +95,7 @@ def test_external_metadata_requires_light_label(
     result = run_egg_info(
         {
             "TTLANG_TTNN_DEP_MODE": "external",
-            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525",
         },
     )
 
@@ -110,7 +110,7 @@ def test_bundled_metadata_requires_tt_metal_root(
     result = run_egg_info(
         {
             "TTLANG_TTNN_DEP_MODE": "bundled",
-            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525",
             "TTLANG_BUNDLED_TT_METAL_DIR": str(tmp_path / "missing"),
         },
     )
@@ -125,7 +125,7 @@ def test_invalid_dependency_mode_fails(
     result = run_egg_info(
         {
             "TTLANG_TTNN_DEP_MODE": "invalid",
-            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525",
         },
     )
 

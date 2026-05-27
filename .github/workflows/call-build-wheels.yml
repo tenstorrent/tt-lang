@@ -16,7 +16,7 @@ on:
         type: string
         default: pypi
         required: false
-      pretend_version:
+      version_override:
         description: "Optional PEP 440 version override for branch/internal wheels."
         type: string
         default: ""
@@ -70,14 +70,14 @@ jobs:
 
       - name: Validate wheel inputs
         run: |
-          if [[ "${{ inputs.ttnn_dep_mode }}" == "external" && -z "${{ inputs.pretend_version }}" ]]; then
-            echo "ttnn_dep_mode=external requires pretend_version" >&2
+          if [[ "${{ inputs.ttnn_dep_mode }}" == "external" && -z "${{ inputs.version_override }}" ]]; then
+            echo "ttnn_dep_mode=external requires version_override" >&2
             exit 1
           fi
 
       - name: Configure tt-lang
         env:
-          TTLANG_PRETEND_VERSION: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' && format('{0}+light', inputs.pretend_version) || inputs.pretend_version }}
+          TTLANG_VERSION_OVERRIDE: ${{ inputs.ttnn_dep_mode == 'external' && inputs.version_override != '' && format('{0}+light', inputs.version_override) || inputs.version_override }}
           TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}
           TTLANG_EXTERNAL_TT_METAL_BUILD_DIR: ${{ inputs.external_tt_metal_build_dir }}
           TTLANG_PYTHON_VENV: ${{ inputs.external_python_venv }}
@@ -93,7 +93,7 @@ jobs:
       - name: Build tt-lang wheel
         env:
           TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
-          TTLANG_PRETEND_VERSION: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' && format('{0}+light', inputs.pretend_version) || inputs.pretend_version }}
+          TTLANG_VERSION_OVERRIDE: ${{ inputs.ttnn_dep_mode == 'external' && inputs.version_override != '' && format('{0}+light', inputs.version_override) || inputs.version_override }}
           TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}
           TTLANG_EXTERNAL_TT_METAL_BUILD_DIR: ${{ inputs.external_tt_metal_build_dir }}
           TTLANG_BUNDLED_TT_METAL_DIR: ${{ inputs.bundled_tt_metal_dir }}
@@ -147,7 +147,7 @@ jobs:
 
       - name: Build tt-lang-sim wheel
         env:
-          TTLANG_PRETEND_VERSION: ${{ inputs.pretend_version }}
+          TTLANG_VERSION_OVERRIDE: ${{ inputs.version_override }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel packaging/sim --wheel-dir=dist --no-deps --no-build-isolation
@@ -163,21 +163,21 @@ jobs:
           python .github/scripts/smoke-test-wheel.py
 
       - name: Build tt-lang-light wheel
-        if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' }}
+        if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.version_override != '' }}
         env:
-          TTLANG_PRETEND_VERSION: ${{ inputs.pretend_version }}
-          TTLANG_LIGHT_TTLANG_VERSION: ${{ format('{0}+light', inputs.pretend_version) }}
+          TTLANG_VERSION_OVERRIDE: ${{ inputs.version_override }}
+          TTLANG_LIGHT_TTLANG_VERSION: ${{ format('{0}+light', inputs.version_override) }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel packaging/light --wheel-dir=dist --no-deps --no-build-isolation
 
       - name: Check internal metapackage metadata
-        if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' }}
+        if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.version_override != '' }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           python .github/scripts/check-light-metapackage.py \
             --dist-dir dist \
-            --expect-ttlang-version "${{ format('{0}+light', inputs.pretend_version) }}"
+            --expect-ttlang-version "${{ format('{0}+light', inputs.version_override) }}"
 
       - name: Report wheel sizes
         run: ls -lh dist/*.whl

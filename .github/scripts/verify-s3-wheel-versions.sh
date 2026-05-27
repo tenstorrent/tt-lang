@@ -7,12 +7,12 @@
 # tt-lang-light metapackage; bundled and pypi modes publish all wheels at the
 # requested internal version.
 #
-# Usage: verify-s3-wheel-versions.sh <ttnn_dep_mode> <pretend_version> <dist_dir>
+# Usage: verify-s3-wheel-versions.sh <ttnn_dep_mode> <version_override> <dist_dir>
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <ttnn_dep_mode> <pretend_version> <dist_dir>" >&2
+    echo "Usage: $0 <ttnn_dep_mode> <version_override> <dist_dir>" >&2
     exit 2
 }
 

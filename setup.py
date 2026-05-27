@@ -35,6 +35,7 @@ class NoSdist(_sdist):
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _TTNN_DEP_MODES = ("pypi", "external", "bundled")
+_VERSION_OVERRIDE_ENV = "TTLANG_VERSION_OVERRIDE"
 
 
 def _ttnn_dep_mode():
@@ -43,6 +44,10 @@ def _ttnn_dep_mode():
         allowed = ", ".join(_TTNN_DEP_MODES)
         raise SystemExit(f"TTLANG_TTNN_DEP_MODE must be one of: {allowed}")
     return mode
+
+
+def _version_override():
+    return os.environ.get(_VERSION_OVERRIDE_ENV, "").strip()
 
 
 def _read_tt_metal_version_var(name):
@@ -122,14 +127,14 @@ def get_version_from_git():
     sit between the public release and the +local label, so the tag is split
     on '+' before the dev counter is inserted.
 
-    Override mechanism: if TTLANG_PRETEND_VERSION is set in the environment, it
-    is returned verbatim. Used by the publish-pypi workflow to stamp wheels
-    built from a branch with a caller-supplied PEP 440 version (e.g. an rc/dev
-    pre-release) when no matching git tag exists.
+    Override mechanism: if TTLANG_VERSION_OVERRIDE is set in the environment,
+    it is returned verbatim. Used by workflows to stamp wheels built from a
+    branch with a caller-supplied PEP 440 version when no matching git tag
+    exists.
     """
-    pretend = os.environ.get("TTLANG_PRETEND_VERSION", "").strip()
-    if pretend:
-        return pretend
+    version_override = _version_override()
+    if version_override:
+        return version_override
     try:
         tag = (
             subprocess.check_output(
@@ -150,7 +155,7 @@ def get_version_from_git():
     except (subprocess.CalledProcessError, OSError) as error:
         raise SystemExit(
             "failed to derive tt-lang version from git; set "
-            "TTLANG_PRETEND_VERSION when building outside a tagged checkout"
+            f"{_VERSION_OVERRIDE_ENV} when building outside a tagged checkout"
         ) from error
 
     base, sep, local = tag.partition("+")
@@ -164,16 +169,11 @@ def _validate_ttnn_dep_mode_version(version):
     mode = _ttnn_dep_mode()
     if mode not in ("external", "bundled"):
         return
-    if not os.environ.get("TTLANG_PRETEND_VERSION", "").strip():
-        raise SystemExit(
-            f"TTLANG_TTNN_DEP_MODE={mode} requires TTLANG_PRETEND_VERSION "
-            "so internal wheels cannot be confused with PyPI release wheels"
-        )
 
     try:
         parsed_version = Version(version)
     except InvalidVersion as error:
-        raise SystemExit(f"invalid TTLANG_PRETEND_VERSION {version!r}") from error
+        raise SystemExit(f"invalid {_VERSION_OVERRIDE_ENV} {version!r}") from error
 
     if not parsed_version.is_devrelease and not parsed_version.is_prerelease:
         raise SystemExit(
@@ -184,6 +184,15 @@ def _validate_ttnn_dep_mode_version(version):
         raise SystemExit(
             "TTLANG_TTNN_DEP_MODE=external requires a +light local version "
             "such as 0.71.0.dev20260525+light"
+        )
+
+
+def _require_ttnn_dep_mode_version_override():
+    mode = _ttnn_dep_mode()
+    if mode in ("external", "bundled") and not _version_override():
+        raise SystemExit(
+            f"TTLANG_TTNN_DEP_MODE={mode} requires {_VERSION_OVERRIDE_ENV} "
+            "so internal wheels cannot be confused with PyPI release wheels"
         )
 
 
@@ -368,6 +377,7 @@ from bundled_ttnn import (  # noqa: E402
 )
 from rewrite_readme import absolutize_readme_images, ref_for_version  # noqa: E402
 
+_require_ttnn_dep_mode_version_override()
 _version = get_version_from_git()
 _validate_ttnn_dep_mode_version(_version)
 

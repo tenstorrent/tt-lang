@@ -24,6 +24,7 @@ from internal_wheel_metadata import (  # noqa: E402
     get_version,
     require_local_version_label,
     require_non_final_internal_version,
+    require_version_override,
 )
 
 
@@ -42,6 +43,7 @@ def _ttlang_requirement(version: str) -> str:
     return f"tt-lang == {ttlang_version}"
 
 
+require_version_override("tt-lang-light")
 VERSION = get_version(REPO_ROOT)
 require_non_final_internal_version("tt-lang-light", VERSION)
 

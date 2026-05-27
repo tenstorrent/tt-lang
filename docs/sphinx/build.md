@@ -596,11 +596,11 @@ workflow with:
 ```text
 docker_tag: <existing-ird-tag>
 ttnn_dep_mode: bundled
-pretend_version: <internal-version>
+version_override: <internal-version>
 ```
 
 The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=bundled`,
-`TTLANG_PRETEND_VERSION=<pretend_version>`, and
+`TTLANG_VERSION_OVERRIDE=<version_override>`, and
 `TTLANG_BUNDLED_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal`. The resulting
 `tt-lang` wheel includes the `ttnn` Python package, its native extensions, the
 needed shared libraries, and the runtime/header payload copied from the
@@ -611,14 +611,14 @@ bundled or public `ttnn` wheel, dispatch the workflow with:
 
 ```text
 ttnn_dep_mode: external
-pretend_version: <internal-version>
+version_override: <internal-version>
 ```
 
 The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=external` and
-`TTLANG_PRETEND_VERSION=<pretend_version>+light`. The resulting `tt-lang` wheel
+`TTLANG_VERSION_OVERRIDE=<version_override>+light`. The resulting `tt-lang` wheel
 omits `Requires-Dist: ttnn`; the normal PyPI build keeps that requirement. The
-same build also emits `tt-lang-light==<pretend_version>`, a metapackage that
-depends on `tt-lang==<pretend_version>+light`.
+same build also emits `tt-lang-light==<version_override>`, a metapackage that
+depends on `tt-lang==<version_override>+light`.
 
 #### Local internal wheel testing
 
@@ -631,11 +631,11 @@ Bundled wheel:
 source /opt/ttlang-toolchain/venv/bin/activate
 TTLANG_VERSION=<internal-version>
 
-TTLANG_PRETEND_VERSION="$TTLANG_VERSION" \
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
 cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DTTLANG_USE_TOOLCHAIN=ON
 
 TTLANG_TTNN_DEP_MODE=bundled \
-TTLANG_PRETEND_VERSION="$TTLANG_VERSION" \
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
 TTLANG_BUNDLED_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
 pip wheel . --wheel-dir=/tmp/ttlang-wheels/bundled/raw --no-deps --no-build-isolation
 
@@ -649,7 +649,7 @@ Light wheel:
 source /opt/ttlang-toolchain/venv/bin/activate
 TTLANG_VERSION=<internal-version>
 
-TTLANG_PRETEND_VERSION="$TTLANG_VERSION+light" \
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION+light" \
 cmake -G Ninja -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DTTLANG_USE_TOOLCHAIN=ON \
@@ -657,7 +657,7 @@ cmake -G Ninja -B build \
   -DTTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv
 
 TTLANG_TTNN_DEP_MODE=external \
-TTLANG_PRETEND_VERSION="$TTLANG_VERSION+light" \
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION+light" \
 TTLANG_EXTERNAL_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
 TTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv \
 pip wheel . --wheel-dir=/tmp/ttlang-wheels/light/raw --no-deps --no-build-isolation
@@ -665,7 +665,7 @@ pip wheel . --wheel-dir=/tmp/ttlang-wheels/light/raw --no-deps --no-build-isolat
 auditwheel repair /tmp/ttlang-wheels/light/raw/tt_lang-*.whl \
   --wheel-dir=/tmp/ttlang-wheels/light/dist
 
-TTLANG_PRETEND_VERSION="$TTLANG_VERSION" \
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
 TTLANG_LIGHT_TTLANG_VERSION="$TTLANG_VERSION+light" \
 pip wheel packaging/light --wheel-dir=/tmp/ttlang-wheels/light/dist \
   --no-deps --no-build-isolation

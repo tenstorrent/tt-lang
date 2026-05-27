@@ -12,11 +12,25 @@ import subprocess
 
 from packaging.version import InvalidVersion, Version
 
+VERSION_OVERRIDE_ENV = "TTLANG_VERSION_OVERRIDE"
+
+
+def get_version_override() -> str:
+    return os.environ.get(VERSION_OVERRIDE_ENV, "").strip()
+
+
+def require_version_override(package_name: str) -> None:
+    if not get_version_override():
+        raise SystemExit(
+            f"{package_name} requires {VERSION_OVERRIDE_ENV} so internal wheels "
+            "cannot be confused with PyPI release wheels"
+        )
+
 
 def get_version(repo_root: pathlib.Path) -> str:
-    pretend = os.environ.get("TTLANG_PRETEND_VERSION", "").strip()
-    if pretend:
-        return pretend
+    version_override = get_version_override()
+    if version_override:
+        return version_override
     try:
         tag = subprocess.check_output(
             ["git", "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0"],
@@ -33,7 +47,7 @@ def get_version(repo_root: pathlib.Path) -> str:
     except subprocess.CalledProcessError as error:
         raise SystemExit(
             "failed to derive internal wheel version from git; set "
-            "TTLANG_PRETEND_VERSION explicitly"
+            f"{VERSION_OVERRIDE_ENV} explicitly"
         ) from error
 
     tag = tag.lstrip("v")
@@ -45,11 +59,7 @@ def get_version(repo_root: pathlib.Path) -> str:
 
 
 def require_non_final_internal_version(package_name: str, version: str) -> None:
-    if not os.environ.get("TTLANG_PRETEND_VERSION", "").strip():
-        raise SystemExit(
-            f"{package_name} requires TTLANG_PRETEND_VERSION so internal wheels "
-            "cannot be confused with PyPI release wheels"
-        )
+    require_version_override(package_name)
 
     try:
         parsed_version = Version(version)
