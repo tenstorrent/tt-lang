@@ -74,29 +74,7 @@ jobs:
           ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
 
           if [ -z "$pretend_version" ]; then
-            pretend_version=$(python3 - <<'PY'
-          import datetime
-          import re
-          import subprocess
-          import sys
-
-          tags = subprocess.check_output(
-              ["git", "tag", "--merged", "HEAD", "--list", "v[0-9]*"],
-              text=True,
-          ).splitlines()
-          stable_versions = []
-          for tag in tags:
-              match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)", tag)
-              if match:
-                  stable_versions.append(tuple(int(part) for part in match.groups()))
-          if not stable_versions:
-              print("No stable vMAJOR.MINOR.PATCH tag is reachable from HEAD", file=sys.stderr)
-              sys.exit(1)
-          major, minor, patch = max(stable_versions)
-          nightly_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
-          print(f"{major}.{minor}.{patch + 1}.dev{nightly_date}")
-          PY
-            )
+            pretend_version=$(python3 .github/scripts/compute-nightly-version.py)
           fi
 
           {
@@ -164,15 +142,10 @@ jobs:
 
       - name: Verify wheel versions
         run: |
-          if [ "${{ needs.preflight.outputs.ttnn_dep_mode }}" = "external" ]; then
-            .github/scripts/verify-wheel-version.sh \
-              --expect "tt_lang=${{ needs.preflight.outputs.pretend_version }}+light" \
-              --expect "tt_lang_light=${{ needs.preflight.outputs.pretend_version }}" \
-              --expect "tt_lang_sim=${{ needs.preflight.outputs.pretend_version }}" \
-              dist
-          else
-            .github/scripts/verify-wheel-version.sh "${{ needs.preflight.outputs.pretend_version }}" dist
-          fi
+          .github/scripts/verify-s3-wheel-versions.sh \
+            "${{ needs.preflight.outputs.ttnn_dep_mode }}" \
+            "${{ needs.preflight.outputs.pretend_version }}" \
+            dist
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -184,56 +157,15 @@ jobs:
         run: python3 -m pip install s3pypi
 
       - name: Publish wheels
-        env:
-          OVERWRITE_RELEASES: ${{ needs.preflight.outputs.overwrite_releases }}
         run: |
-          upload_args=(--put-root-index --bucket tenstorrent-pypi)
-          if [ "$OVERWRITE_RELEASES" = "true" ]; then
-            upload_args+=(--force)
+          if [ "${{ needs.preflight.outputs.overwrite_releases }}" = "true" ]; then
+            .github/scripts/publish-s3-wheels.sh --overwrite dist
+          else
+            .github/scripts/publish-s3-wheels.sh dist
           fi
-
-          shopt -s nullglob
-          wheels=(dist/*.whl)
-          if [ "${#wheels[@]}" -eq 0 ]; then
-            echo "No wheels found under dist/" >&2
-            exit 1
-          fi
-
-          for wheel in "${wheels[@]}"; do
-            s3pypi upload "$wheel" "${upload_args[@]}"
-          done
 
       - name: Report install command
         run: |
-          {
-            echo "### Published wheels"
-            echo
-            echo "Package index: https://pypi.eng.aws.tenstorrent.com/"
-            echo
-            if [ "${{ needs.preflight.outputs.ttnn_dep_mode }}" = "external" ]; then
-              echo "Light install:"
-              echo
-              echo '```bash'
-              echo "pip install \\"
-              echo "  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \\"
-              echo "  --extra-index-url https://download.pytorch.org/whl/cpu \\"
-              echo "  tt-lang-light==${{ needs.preflight.outputs.pretend_version }}"
-              echo '```'
-              echo
-              echo "Underlying no-ttnn tt-lang wheel:"
-              echo
-              echo '```bash'
-              echo "pip install \\"
-              echo "  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \\"
-              echo "  --extra-index-url https://download.pytorch.org/whl/cpu \\"
-              echo "  tt-lang==${{ needs.preflight.outputs.pretend_version }}+light"
-              echo '```'
-            else
-              echo '```bash'
-              echo "pip install \\"
-              echo "  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \\"
-              echo "  --extra-index-url https://download.pytorch.org/whl/cpu \\"
-              echo "  tt-lang==${{ needs.preflight.outputs.pretend_version }}"
-              echo '```'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          .github/scripts/publish-s3-summary.sh \
+            "${{ needs.preflight.outputs.ttnn_dep_mode }}" \
+            "${{ needs.preflight.outputs.pretend_version }}"
