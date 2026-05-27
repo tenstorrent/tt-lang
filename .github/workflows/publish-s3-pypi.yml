@@ -34,6 +34,11 @@ on:
         type: boolean
         default: false
         required: true
+      dry_run:
+        description: "Build and verify wheels without publishing to S3."
+        type: boolean
+        default: true
+        required: true
 
 permissions:
   contents: read
@@ -47,6 +52,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       docker_tag: ${{ steps.resolve.outputs.docker_tag }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
       overwrite_releases: ${{ steps.resolve.outputs.overwrite_releases }}
       pretend_version: ${{ steps.resolve.outputs.pretend_version }}
       ttnn_dep_mode: ${{ steps.resolve.outputs.ttnn_dep_mode }}
@@ -62,6 +68,7 @@ jobs:
         id: resolve
         env:
           DISPATCH_DOCKER_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.docker_tag || '' }}
+          DISPATCH_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.dry_run) || 'false' }}
           DISPATCH_OVERWRITE_RELEASES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.overwrite_releases) || 'true' }}
           DISPATCH_PRETEND_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.pretend_version || '' }}
           DISPATCH_TTNN_DEP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.ttnn_dep_mode || 'bundled' }}
@@ -69,6 +76,7 @@ jobs:
           set -euo pipefail
 
           docker_tag="$DISPATCH_DOCKER_TAG"
+          dry_run="$DISPATCH_DRY_RUN"
           overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
           pretend_version="$DISPATCH_PRETEND_VERSION"
           ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
@@ -79,6 +87,7 @@ jobs:
 
           {
             echo "docker_tag=$docker_tag"
+            echo "dry_run=$dry_run"
             echo "overwrite_releases=$overwrite_releases"
             echo "pretend_version=$pretend_version"
             echo "ttnn_dep_mode=$ttnn_dep_mode"
@@ -86,6 +95,7 @@ jobs:
 
           echo "Resolved ttnn_dep_mode=$ttnn_dep_mode"
           echo "Resolved pretend_version=$pretend_version"
+          echo "Resolved dry_run=$dry_run"
           if [ -n "$docker_tag" ]; then
             echo "Using existing docker_tag=$docker_tag"
           else
@@ -148,15 +158,18 @@ jobs:
             dist
 
       - name: Configure AWS Credentials
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::767397912691:role/GitHubActionsS3AccessRole
           aws-region: us-east-2
 
       - name: Install s3pypi
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: python3 -m pip install s3pypi
 
       - name: Publish wheels
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: |
           if [ "${{ needs.preflight.outputs.overwrite_releases }}" = "true" ]; then
             .github/scripts/publish-s3-wheels.sh --overwrite dist
@@ -166,6 +179,11 @@ jobs:
 
       - name: Report install command
         run: |
+          summary_args=()
+          if [ "${{ needs.preflight.outputs.dry_run }}" = "true" ]; then
+            summary_args+=(--dry-run)
+          fi
           .github/scripts/publish-s3-summary.sh \
+            "${summary_args[@]}" \
             "${{ needs.preflight.outputs.ttnn_dep_mode }}" \
             "${{ needs.preflight.outputs.pretend_version }}"

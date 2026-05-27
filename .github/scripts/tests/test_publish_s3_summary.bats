@@ -23,6 +23,10 @@ setup() {
     run -2 "$SCRIPT" pypi
 }
 
+@test "--dry-run without enough arguments -> usage error (exit 2)" {
+    run -2 "$SCRIPT" --dry-run pypi
+}
+
 @test "pypi mode emits single install block to stdout" {
     run -0 "$SCRIPT" pypi "$VER"
     assert_output --partial "### Published wheels"
@@ -43,6 +47,14 @@ setup() {
     assert_output --partial "tt-lang==$VER+light"
     assert_output --partial "Light install:"
     assert_output --partial "Underlying no-ttnn tt-lang wheel:"
+}
+
+@test "--dry-run marks summary as not uploaded" {
+    run -0 "$SCRIPT" --dry-run bundled "$VER"
+    assert_output --partial "### Wheel publish dry run"
+    assert_output --partial "No wheels were uploaded."
+    assert_output --partial "tt-lang==$VER"
+    refute_output --partial "### Published wheels"
 }
 
 @test "appends to GITHUB_STEP_SUMMARY when set" {
