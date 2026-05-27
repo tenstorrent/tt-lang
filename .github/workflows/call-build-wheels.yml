@@ -77,6 +77,7 @@ jobs:
 
       - name: Configure tt-lang
         env:
+          TTLANG_PRETEND_VERSION: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' && format('{0}+light', inputs.pretend_version) || inputs.pretend_version }}
           TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}
           TTLANG_EXTERNAL_TT_METAL_BUILD_DIR: ${{ inputs.external_tt_metal_build_dir }}
           TTLANG_PYTHON_VENV: ${{ inputs.external_python_venv }}

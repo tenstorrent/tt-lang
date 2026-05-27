@@ -54,16 +54,22 @@ For finer control, `tt-lang-setup-sfpi` runs only the sfpi step and
 More frequently updated development versions of `tt-lang` are available from
 Tenstorrent's S3 PyPI index.
 
+Set `TTLANG_VERSION` to a published version from the workflow summary or the
+S3 package index. A version selector is required because public PyPI also hosts
+`tt-lang`, and pip resolves candidates across all configured indexes. Available
+versions are listed at https://pypi.eng.aws.tenstorrent.com/.
+
 The default internal `tt-lang` wheel bundles the `ttnn` artifacts from the
 toolchain used to build the wheel, so `pip install` does not pull `ttnn` from
 PyPI. As with the public wheel, `tt-lang-setup` then installs the matching sfpi
 runtime and copies the tutorials:
 
 ```bash
+TTLANG_VERSION=<published-internal-version>
 pip install \
   --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
-  tt-lang==0.71.0.dev20260526
+  "tt-lang==$TTLANG_VERSION"
 tt-lang-setup    # downloads sfpi into the bundled ttnn tree + copies tutorials
 ```
 
@@ -74,10 +80,11 @@ metapackage: `tt-lang-light==X` depends on the matching no-ttnn core wheel
 environment, not both.
 
 ```bash
+TTLANG_VERSION=<published-internal-version>
 pip install \
   --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
-  tt-lang-light==0.71.0.dev20260526
+  "tt-lang-light==$TTLANG_VERSION"
 tt-lang-setup    # copies tutorials only; sfpi is provided by the external tt-metal
 ```
 

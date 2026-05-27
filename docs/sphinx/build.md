@@ -244,9 +244,9 @@ version that `setup.py` writes into the wheel's `install_requires` is read
 from `TTNN_PYPI`, so no rewrite is needed:
 
 ```text
-TTNN_PYPI="0.70.1"
-TTNN_PYPI_TT_METAL_TAG="v0.70.1-rc1"
-TT_METAL_TAG="v0.70.1-rc1"
+TTNN_PYPI="<ttnn-pypi-version>"
+TTNN_PYPI_TT_METAL_TAG="<ttnn-pypi-tt-metal-tag>"
+TT_METAL_TAG="<tt-metal-tag>"
 ```
 
 ```bash
@@ -454,15 +454,15 @@ follow the tt-metal convention: SemVer pre-release identifier of the form
 `-dev<YYYYMMDD>`:
 
 ```bash
-git tag v1.2.0-dev20260515
-git push origin v1.2.0-dev20260515
+git tag v<MAJOR.MINOR.PATCH>-dev<YYYYMMDD>
+git push origin v<MAJOR.MINOR.PATCH>-dev<YYYYMMDD>
 ```
 
 SemVer orders `vX.Y.Z-dev<date>` strictly below `vX.Y.Z` (final), so users
 who pin to `vX.Y.Z` are unaffected by dev releases. Within a single
 `vX.Y.Z` line, dev tags order monotonically by date. The form is
 Docker-tag-safe directly (no `+` translation needed). `-rc<N>` works the
-same way (`v1.2.0-rc1` is a release candidate of `v1.2.0`).
+same way (a release candidate of `vX.Y.Z` is tagged `vX.Y.Z-rc<N>`).
 
 Legacy `<TAG>+<local>` build-metadata tags are still translated to
 `<TAG>-<local>` by `get-version-tag.sh` for image-tag compatibility, but
@@ -567,8 +567,9 @@ then uploads with
 
 Do not publish a bundled internal wheel with the same package name and version
 as the public PyPI wheel if the public wheel has different dependency metadata.
-For example, public `tt-lang==0.71.0` may depend on a separately published
-`ttnn` wheel, while an internal S3 `tt-lang==0.71.0` may bundle `ttnn` directly.
+For example, a public `tt-lang` release may depend on a separately published
+`ttnn` wheel, while an internal S3 `tt-lang` wheel at the same version may
+bundle `ttnn` directly.
 Those two artifacts are not interchangeable, and pip can see both indexes when
 `--extra-index-url` is used.
 
@@ -578,9 +579,9 @@ Automatic S3 publishing should use this policy:
   distinct from the public PyPI artifact version, or when the S3 artifact is
   byte-for-byte equivalent in dependency semantics.
 - Nightly builds do not create Git tags. The scheduled workflow computes a
-  PEP 440 development version such as `0.71.0.dev20260527`, where the base
-  version matches the latest stable tag reachable from `HEAD`, and the numeric
-  suffix is a UTC date.
+  PEP 440 development version of the form `<MAJOR.MINOR.PATCH>.dev<YYYYMMDD>`,
+  where the base version matches the latest stable tag reachable from `HEAD`,
+  and the numeric suffix is a UTC date.
 - Scheduled reruns overwrite the same date-based version in the S3 index. This
   keeps nightly versions readable, but existing local pip caches may still hold
   the older wheel for that version.
@@ -595,7 +596,7 @@ workflow with:
 ```text
 docker_tag: <existing-ird-tag>
 ttnn_dep_mode: bundled
-pretend_version: 0.71.0.dev20260526
+pretend_version: <internal-version>
 ```
 
 The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=bundled`,
@@ -610,7 +611,7 @@ bundled or public `ttnn` wheel, dispatch the workflow with:
 
 ```text
 ttnn_dep_mode: external
-pretend_version: 0.71.0.dev20260526
+pretend_version: <internal-version>
 ```
 
 The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=external` and
@@ -628,10 +629,13 @@ Bundled wheel:
 
 ```bash
 source /opt/ttlang-toolchain/venv/bin/activate
+TTLANG_VERSION=<internal-version>
+
+TTLANG_PRETEND_VERSION="$TTLANG_VERSION" \
 cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DTTLANG_USE_TOOLCHAIN=ON
 
 TTLANG_TTNN_DEP_MODE=bundled \
-TTLANG_PRETEND_VERSION=0.71.0.dev20260526 \
+TTLANG_PRETEND_VERSION="$TTLANG_VERSION" \
 TTLANG_BUNDLED_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
 pip wheel . --wheel-dir=/tmp/ttlang-wheels/bundled/raw --no-deps --no-build-isolation
 
@@ -643,6 +647,9 @@ Light wheel:
 
 ```bash
 source /opt/ttlang-toolchain/venv/bin/activate
+TTLANG_VERSION=<internal-version>
+
+TTLANG_PRETEND_VERSION="$TTLANG_VERSION+light" \
 cmake -G Ninja -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DTTLANG_USE_TOOLCHAIN=ON \
@@ -650,7 +657,7 @@ cmake -G Ninja -B build \
   -DTTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv
 
 TTLANG_TTNN_DEP_MODE=external \
-TTLANG_PRETEND_VERSION=0.71.0.dev20260526+light \
+TTLANG_PRETEND_VERSION="$TTLANG_VERSION+light" \
 TTLANG_EXTERNAL_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
 TTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv \
 pip wheel . --wheel-dir=/tmp/ttlang-wheels/light/raw --no-deps --no-build-isolation
@@ -658,8 +665,8 @@ pip wheel . --wheel-dir=/tmp/ttlang-wheels/light/raw --no-deps --no-build-isolat
 auditwheel repair /tmp/ttlang-wheels/light/raw/tt_lang-*.whl \
   --wheel-dir=/tmp/ttlang-wheels/light/dist
 
-TTLANG_PRETEND_VERSION=0.71.0.dev20260526 \
-TTLANG_LIGHT_TTLANG_VERSION=0.71.0.dev20260526+light \
+TTLANG_PRETEND_VERSION="$TTLANG_VERSION" \
+TTLANG_LIGHT_TTLANG_VERSION="$TTLANG_VERSION+light" \
 pip wheel packaging/light --wheel-dir=/tmp/ttlang-wheels/light/dist \
   --no-deps --no-build-isolation
 ```
@@ -671,7 +678,7 @@ the external tt-metal environment:
 python3.12 -m venv /tmp/ttlang-light-test
 source /tmp/ttlang-light-test/bin/activate
 pip install --find-links=/tmp/ttlang-wheels/light/dist \
-  tt-lang-light==0.71.0.dev20260526
+  "tt-lang-light==$TTLANG_VERSION"
 tt-lang-setup-external-tt-metal \
   --tt-metal-dir /opt/ttlang-toolchain/tt-metal \
   --check \

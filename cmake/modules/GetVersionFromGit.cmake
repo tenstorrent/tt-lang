@@ -9,6 +9,12 @@ find_package(Git QUIET)
 # Deliberately not a plausible-looking release version.
 set(_TTLANG_VERSION_FALLBACK "0.0.0+unknown")
 
+if(DEFINED ENV{TTLANG_PRETEND_VERSION} AND NOT "$ENV{TTLANG_PRETEND_VERSION}" STREQUAL "")
+  set(TTLANG_VERSION "$ENV{TTLANG_PRETEND_VERSION}")
+  message(STATUS "tt-lang version: ${TTLANG_VERSION} (from TTLANG_PRETEND_VERSION)")
+  return()
+endif()
+
 if(GIT_FOUND)
   execute_process(
     COMMAND ${GIT_EXECUTABLE} describe --tags --match "v[0-9]*" --abbrev=0
