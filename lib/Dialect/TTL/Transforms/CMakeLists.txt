@@ -1,4 +1,5 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  PipeNetForeachLowering.cpp
   ConvertTTLToTTKernel.cpp
   PipeGraph.cpp
   PipeLowering.cpp

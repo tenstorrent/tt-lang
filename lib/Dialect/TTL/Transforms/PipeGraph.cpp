@@ -283,6 +283,16 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
       dfbType.getBlockCount(), op->getLoc());
 }
 
+static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
+                                     PipeRecordAttr record, int64_t pipeNetId,
+                                     Value dst) {
+  auto pipeType =
+      PipeType::get(op->getContext(), record.getSrcX(), record.getSrcY(),
+                    record.getDstStartX(), record.getDstStartY(),
+                    record.getDstEndX(), record.getDstEndY(), pipeNetId);
+  return addPipeReceiver(graph, op, pipeType, dst);
+}
+
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
 
@@ -292,8 +302,33 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
       return;
     }
     if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {
-      auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
-      walkResult = addPipeReceiver(graph, op, pipeType, postOp.getDst());
+      if (auto pipeType =
+              mlir::dyn_cast<PipeType>(postOp.getPipe().getType())) {
+        walkResult = addPipeReceiver(graph, op, pipeType, postOp.getDst());
+        return;
+      }
+      if (mlir::isa<SelectedPipeDstType>(postOp.getPipe().getType())) {
+        auto foreachOp = postOp->getParentOfType<PipeNetForeachDstOp>();
+        if (!foreachOp) {
+          walkResult = postOp.emitError()
+                       << "destination-selected pipe receive must be inside "
+                          "ttl.pipenet_foreach_dst";
+          return;
+        }
+        for (Attribute attr : foreachOp.getPipes()) {
+          auto record = mlir::cast<PipeRecordAttr>(attr);
+          if (failed(addPipeReceiver(graph, op, record,
+                                     foreachOp.getPipeNetId(),
+                                     postOp.getDst()))) {
+            walkResult = failure();
+            return;
+          }
+        }
+        return;
+      }
+      walkResult = postOp.emitError()
+                   << "pipe receive post requires a static pipe or "
+                      "destination-selected pipe";
       return;
     }
   });

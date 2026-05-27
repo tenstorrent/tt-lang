@@ -43,6 +43,138 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Pipe events in mutually exclusive scf.if regions are not in program order.
+// Both branches have the same coordinate domain because the condition is
+// coordinate-invariant, but one dynamic execution takes only one branch.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @coord_invariant_if_pipe_events_are_not_sequential
+  // CHECK: scf.if
+  // CHECK: ttl.wait
+  // CHECK: else
+  // CHECK: ttl.copy
+  // CHECK: return
+  func.func @coord_invariant_if_pipe_events_are_not_sequential() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        {pipeNetName = "loopback_net"}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %c0 = arith.constant 0 : index
+    %coord_invariant = arith.cmpi eq, %c0, %c0 : index
+    scf.if %coord_invariant {
+      %recv_reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv_view = ttl.attach_cb %recv_reserve, %recv_cb
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_view
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      ttl.wait %recv : !ttl.transfer_handle
+    } else {
+      %send = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// PipeNet foreach ops declare the PipeNet domain directly; no
+// `ttl.create_pipe` op is required for guard or schedule verification.
+
+module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+  // CHECK-LABEL: func.func @pipenet_foreach_roles_valid
+  // CHECK-NOT: ttl.create_pipe
+  // CHECK: ttl.pipenet_foreach_src
+  // CHECK: ttl.copy
+  // CHECK: ttl.pipenet_foreach_dst
+  // CHECK: ttl.wait
+  func.func @pipenet_foreach_roles_valid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.pipenet_foreach_src attributes {
+        pipeNetId = 0 : i64,
+        pipeNetName = "foreach_net",
+        pipes = [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 1, dstEndX = 0, dstEndY = 1>,
+          #ttl.pipe_record<srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
+        ]} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.selected_pipe_src)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    ttl.pipenet_foreach_dst attributes {
+        pipeNetId = 0 : i64,
+        pipeNetName = "foreach_net",
+        pipes = [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 1, dstEndX = 0, dstEndY = 1>,
+          #ttl.pipe_record<srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
+        ]} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      ttl.wait %recv : !ttl.transfer_handle
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A PipeNet foreach destination body may run multiple selected receives on the
+// same launch node. Those dynamic receive waits are distinct records, not a
+// self-dependency in the schedule graph.
+
+module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @pipenet_foreach_gather_selected_receives_valid
+  // CHECK: ttl.pipenet_foreach_dst
+  // CHECK: ttl.copy
+  // CHECK: ttl.wait
+  func.func @pipenet_foreach_gather_selected_receives_valid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.pipenet_foreach_dst attributes {
+        pipeNetId = 0 : i64,
+        pipeNetName = "gather_net",
+        pipes = [
+          #ttl.pipe_record<srcX = 1, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>,
+          #ttl.pipe_record<srcX = 2, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>
+        ]} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %recv_dst = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_dst
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      ttl.wait %recv : !ttl.transfer_handle
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A ttl.pipenet_scope is accepted when the surrounding predicate is contained
 // in the declared role domain. The verifier erases the scope.
 

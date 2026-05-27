@@ -93,6 +93,25 @@ LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   return llvm::success();
 }
 
+llvm::LogicalResult
+PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                       int64_t srcX, int64_t srcY, int64_t dstStartX,
+                       int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
+                       bool isMulticast) {
+  (void)isMulticast;
+  if (srcX < 0 || srcY < 0) {
+    return emitError() << "source coordinates must be non-negative";
+  }
+  if (dstStartX < 0 || dstStartY < 0 || dstEndX < 0 || dstEndY < 0) {
+    return emitError() << "destination coordinates must be non-negative";
+  }
+  if (dstStartX > dstEndX || dstStartY > dstEndY) {
+    return emitError()
+           << "destination start must not exceed destination end on any axis";
+  }
+  return llvm::success();
+}
+
 } // namespace mlir::tt::ttl
 
 mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
@@ -169,19 +188,35 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
   const bool srcIsSlice = getSrc().getDefiningOp<TensorSliceOp>() != nullptr;
   const bool dstIsSlice = getDst().getDefiningOp<TensorSliceOp>() != nullptr;
-  const bool srcIsPipe = mlir::isa<PipeType>(srcTy);
-  const bool dstIsPipe = mlir::isa<PipeType>(dstTy);
+  const bool srcIsStaticPipe = mlir::isa<PipeType>(srcTy);
+  const bool dstIsStaticPipe = mlir::isa<PipeType>(dstTy);
+  const bool srcIsSelectedPipeSrc = mlir::isa<SelectedPipeSrcType>(srcTy);
+  const bool srcIsSelectedPipeDst = mlir::isa<SelectedPipeDstType>(srcTy);
+  const bool dstIsSelectedPipeSrc = mlir::isa<SelectedPipeSrcType>(dstTy);
+  const bool dstIsSelectedPipeDst = mlir::isa<SelectedPipeDstType>(dstTy);
+  const bool srcIsPipe =
+      srcIsStaticPipe || srcIsSelectedPipeSrc || srcIsSelectedPipeDst;
+  const bool dstIsPipe =
+      dstIsStaticPipe || dstIsSelectedPipeSrc || dstIsSelectedPipeDst;
 
   if (srcIsPipe || dstIsPipe) {
     if (srcIsPipe && dstIsPipe) {
       return emitOpError() << "cannot copy directly between pipes";
     }
     if (dstIsPipe) {
+      if (dstIsSelectedPipeDst) {
+        return emitOpError()
+               << "destination-selected pipe cannot be used as a send target";
+      }
       if (!srcIsCb) {
         return emitOpError()
                << "pipe send requires source operand to be !ttl.cb";
       }
       return success();
+    }
+    if (srcIsSelectedPipeSrc) {
+      return emitOpError()
+             << "source-selected pipe cannot be used as a receive source";
     }
     if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError() << "pipe receive requires a cb_reserve destination";
@@ -254,6 +289,10 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
+  if (!mlir::isa<PipeType, SelectedPipeDstType>(getPipe().getType())) {
+    return emitOpError()
+           << "requires a static pipe or destination-selected pipe";
+  }
   if (!findCBReserveForPipeReceive(getDst())) {
     return emitOpError() << "requires a cb_reserve destination";
   }
@@ -270,6 +309,10 @@ mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeRecvWaitOp::verify() {
+  if (!mlir::isa<PipeType, SelectedPipeDstType>(getPipe().getType())) {
+    return emitOpError()
+           << "requires a static pipe or destination-selected pipe";
+  }
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
   if (!handleType) {
     return emitOpError() << "requires a transfer handle operand";
@@ -1481,6 +1524,94 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
   return success();
 }
 
+static mlir::LogicalResult verifyPipeNetForeachBody(
+    mlir::Operation *op, mlir::Region &body, mlir::Type expectedArgType,
+    llvm::function_ref<bool(mlir::OpOperand &, mlir::BlockArgument)>
+        isValidUse) {
+  if (!body.hasOneBlock()) {
+    return op->emitOpError() << "requires a single-block body";
+  }
+  mlir::Block &block = body.front();
+  if (block.getNumArguments() != 1) {
+    return op->emitOpError()
+           << "body must have exactly one selected-pipe argument";
+  }
+  mlir::BlockArgument pipeArg = block.getArgument(0);
+  if (pipeArg.getType() != expectedArgType) {
+    return op->emitOpError()
+           << "body argument must have type " << expectedArgType << ", got "
+           << pipeArg.getType();
+  }
+  for (mlir::OpOperand &use : pipeArg.getUses()) {
+    if (isValidUse(use, pipeArg)) {
+      continue;
+    }
+    return op->emitOpError() << "selected pipe argument has unsupported use by "
+                             << use.getOwner()->getName();
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyPipeNetForeachRecords(mlir::Operation *op,
+                                                       mlir::ArrayAttr pipes) {
+  if (pipes.empty()) {
+    return op->emitOpError() << "requires at least one pipe record";
+  }
+  auto first = mlir::dyn_cast<mlir::tt::ttl::PipeRecordAttr>(pipes[0]);
+  if (!first) {
+    return op->emitOpError()
+           << "`pipes` must contain only #ttl.pipe_record attributes";
+  }
+  bool isMulticast = first.getIsMulticast();
+  for (mlir::Attribute attr : pipes) {
+    auto record = mlir::dyn_cast<mlir::tt::ttl::PipeRecordAttr>(attr);
+    if (!record) {
+      return op->emitOpError()
+             << "`pipes` must contain only #ttl.pipe_record attributes";
+    }
+    if (record.getIsMulticast() != isMulticast) {
+      return op->emitOpError()
+             << "all pipe records must be either unicast or multicast";
+    }
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
+  if (failed(verifyPipeNetForeachRecords(getOperation(), getPipes()))) {
+    return failure();
+  }
+  return verifyPipeNetForeachBody(
+      getOperation(), getBody(), SelectedPipeSrcType::get(getContext()),
+      [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
+        auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
+        if (!copy) {
+          return false;
+        }
+        return copy.getDst() == pipeArg;
+      });
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
+  if (failed(verifyPipeNetForeachRecords(getOperation(), getPipes()))) {
+    return failure();
+  }
+  return verifyPipeNetForeachBody(
+      getOperation(), getBody(), SelectedPipeDstType::get(getContext()),
+      [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
+        if (auto copy = mlir::dyn_cast<CopyOp>(use.getOwner())) {
+          return copy.getSrc() == pipeArg;
+        }
+        if (auto post = mlir::dyn_cast<PipeRecvPostOp>(use.getOwner())) {
+          return post.getPipe() == pipeArg;
+        }
+        if (auto wait = mlir::dyn_cast<PipeRecvWaitOp>(use.getOwner())) {
+          return wait.getPipe() == pipeArg;
+        }
+        return false;
+      });
+}
+
 //===----------------------------------------------------------------------===//
 // Raw element access verifiers (shared logic + per-op entry points)
 //===----------------------------------------------------------------------===//
@@ -1590,10 +1721,10 @@ mlir::tt::ttl::PipeRole mlir::tt::ttl::IsActiveOp::getReferencedRole() {
 //===----------------------------------------------------------------------===//
 // RegionBranchOpInterface implementations for TTL region ops.
 //
-// `IfSrcOp` / `IfDstOp` execute the body conditionally on coord; from a
-// type-system perspective both successors (body and parent-after-op) are
-// possible, and the analysis decides which path applies via the lattice.
-// `PipeNetScopeOp` is unconditional: control always enters the body.
+// Pipe role ops execute the body conditionally on coord; from a type-system
+// perspective both successors (body and parent-after-op) are possible, and the
+// analysis decides which successor applies via the lattice. `PipeNetScopeOp`
+// is unconditional: control always enters the body.
 //===----------------------------------------------------------------------===//
 
 void mlir::tt::ttl::IfSrcOp::getSuccessorRegions(
@@ -1607,6 +1738,26 @@ void mlir::tt::ttl::IfSrcOp::getSuccessorRegions(
 }
 
 void mlir::tt::ttl::IfDstOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    regions.push_back(RegionSuccessor::parent());
+    return;
+  }
+  regions.push_back(RegionSuccessor::parent());
+}
+
+void mlir::tt::ttl::PipeNetForeachSrcOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    regions.push_back(RegionSuccessor::parent());
+    return;
+  }
+  regions.push_back(RegionSuccessor::parent());
+}
+
+void mlir::tt::ttl::PipeNetForeachDstOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point.isParent()) {
     regions.push_back(RegionSuccessor(&getBody()));

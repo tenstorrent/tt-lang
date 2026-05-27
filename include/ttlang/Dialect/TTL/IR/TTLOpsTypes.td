@@ -130,4 +130,31 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   }];
 }
 
+def TTL_SelectedPipeSrc : TTL_Type<"SelectedPipeSrc", "selected_pipe_src"> {
+  let summary = "Selected source pipe for PipeNet foreach iteration";
+  let description = [{
+    A selected source pipe represents the current record of a
+    `ttl.pipenet_foreach_src` region. Coordinates are dynamic operands of the
+    materializing op and are not encoded in the type. The value is valid only
+    while lowering the foreach body for that selected record.
+  }];
+}
+
+def TTL_SelectedPipeDst : TTL_Type<"SelectedPipeDst", "selected_pipe_dst"> {
+  let summary = "Selected destination pipe for PipeNet foreach iteration";
+  let description = [{
+    A selected destination pipe represents the current record of a
+    `ttl.pipenet_foreach_dst` region. Coordinates are dynamic operands of the
+    materializing op and are not encoded in the type. The value is valid only
+    while lowering the foreach body for that selected record.
+  }];
+}
+
+def TTL_SelectedPipe : TypeConstraint<
+    Or<[
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeSrcType>($_self)">,
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeDstType>($_self)">
+    ]>,
+    "selected PipeNet iteration pipe">;
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

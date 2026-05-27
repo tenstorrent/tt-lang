@@ -6,6 +6,7 @@
 
 #include "PipeGraph.h"
 #include "PipeLowering.h"
+#include "PipeNetForeachLowering.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -450,7 +451,8 @@ static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyOperandKind::CircularBuffer;
   }
-  if (llvm::isa<PipeType>(v.getType())) {
+  if (llvm::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
+          v.getType())) {
     return CopyOperandKind::Pipe;
   }
   if (v.getDefiningOp<TensorSliceOp>()) {
@@ -475,7 +477,7 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 }
 
 static bool isPipeReceiveCopy(CopyOp op) {
-  return llvm::isa<PipeType>(op.getSrc().getType()) &&
+  return llvm::isa<PipeType, SelectedPipeDstType>(op.getSrc().getType()) &&
          getAttachedCB(op.getDst());
 }
 
@@ -860,6 +862,10 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
         return mlir::isa<CBWaitOp>(user) && user->getOperand(0) == src &&
                domInfo.dominates(user, op);
       });
+      if (auto selectedPipe = dst.getDefiningOp<SelectPipeSrcOp>()) {
+        return lowerDataflowBufferToSelectedPipe(
+            op, adaptor.getSrc(), selectedPipe, isConsumerCB, rewriter);
+      }
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), isConsumerCB,
                            pipeRuntimeLayout, rewriter);
     }
@@ -1082,7 +1088,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                          ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
-  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
+  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, SelectPipeSrcOp,
+                    SelectPipeDstOp>();
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
   // tile ops lowering phase.
@@ -1144,7 +1151,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
       typeConverter, &ctx);
-  populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
+  populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex,
+                               pipeRuntimeLayout);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
@@ -1154,6 +1162,16 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                                             diagMessage)) {
     mod.emitError() << diagMessage;
     return failure();
+  }
+
+  SmallVector<Operation *> unusedSelectedPipeOps;
+  mod.walk([&](Operation *op) {
+    if (mlir::isa<SelectPipeSrcOp, SelectPipeDstOp>(op) && op->use_empty()) {
+      unusedSelectedPipeOps.push_back(op);
+    }
+  });
+  for (Operation *op : unusedSelectedPipeOps) {
+    op->erase();
   }
 
   // Apply post-conversion cleanup patterns (e.g., barrier deduplication).

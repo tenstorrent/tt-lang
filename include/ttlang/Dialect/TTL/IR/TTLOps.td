@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPS_TD
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
+include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
 include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
@@ -318,13 +319,13 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
+                 "PipeNetForeachSrcOp", "PipeNetForeachDstOp",
                  "PipeNetScopeOp"]>]> {
   let summary = "Terminate a TTL region body";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
-    `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. It carries no
-    operands and produces no results; the trait
-    `SingleBlockImplicitTerminator` auto-inserts it.
+    `ttl.yield` terminates TTL region bodies. It carries no operands and
+    produces no results; the trait `SingleBlockImplicitTerminator` auto-inserts
+    it.
   }];
   let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
@@ -599,6 +600,118 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
   }];
 }
 
+def TTL_PipeNetForeachSrcOp : TTL_Op<"pipenet_foreach_src",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Iterate over source pipe records in a PipeNet";
+  let description = [{
+    Executes the body region for each static pipe record in a PipeNet on nodes
+    whose coordinates match the selected record's source coordinate. The body
+    receives a `!ttl.selected_pipe_src` argument representing the selected
+    record for that iteration.
+
+    The `pipes` array is the complete record table for this callback. Lowering
+    preserves the callback contract by executing the region once per selected
+    record, with the selected record's coordinates and semaphore ids available
+    to selected-pipe lowering.
+  }];
+
+  let arguments = (ins
+    I64Attr:$pipeNetId,
+    ArrayAttr:$pipes,
+    OptionalAttr<StrAttr>:$pipeNetName
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Iterate over destination pipe records in a PipeNet";
+  let description = [{
+    Executes the body region for each static pipe record in a PipeNet on nodes
+    whose coordinates are inside the selected record's destination range. The
+    body receives a `!ttl.selected_pipe_dst` argument representing the selected
+    record for that iteration.
+
+    The `pipes` array is the complete record table for this callback. Lowering
+    preserves the callback contract by executing the region once per selected
+    record, with the selected record's coordinates and semaphore ids available
+    to selected-pipe lowering.
+  }];
+
+  let arguments = (ins
+    I64Attr:$pipeNetId,
+    ArrayAttr:$pipes,
+    OptionalAttr<StrAttr>:$pipeNetName
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+  let hasVerifier = 1;
+}
+
+def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
+  let summary = "Materialize a selected source pipe";
+  let description = [{
+    Represents a source pipe selected from a PipeNet record table. The
+    operands carry the selected record fields and runtime semaphore ids.
+    Selected-pipe values are scoped to the lowered foreach body that
+    materializes them.
+  }];
+
+  let arguments = (ins
+    Index:$srcX,
+    Index:$srcY,
+    Index:$dstStartX,
+    Index:$dstStartY,
+    Index:$dstEndX,
+    Index:$dstEndY,
+    Index:$numDests,
+    Index:$senderReadySemIdx,
+    Index:$mailboxSemIdxBase,
+    I1:$srcInDstRange,
+    BoolAttr:$isMulticast,
+    I64Attr:$pipeNetId
+  );
+  let results = (outs TTL_SelectedPipeSrc:$pipe);
+  let assemblyFormat = [{
+    `net` $pipeNetId `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `num_dests` `(` $numDests `)` `sems` `(` $senderReadySemIdx `,` $mailboxSemIdxBase `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+  }];
+}
+
+def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
+  let summary = "Materialize a selected destination pipe";
+  let description = [{
+    Represents a destination pipe selected from a PipeNet record table. The
+    operands carry the selected record fields and runtime semaphore ids.
+    Selected-pipe values are scoped to the lowered foreach body that
+    materializes them.
+  }];
+
+  let arguments = (ins
+    Index:$srcX,
+    Index:$srcY,
+    Index:$dstStartX,
+    Index:$dstStartY,
+    Index:$dstEndX,
+    Index:$dstEndY,
+    Index:$numDests,
+    Index:$senderReadySemIdx,
+    Index:$mailboxSemIdxBase,
+    I1:$srcInDstRange,
+    BoolAttr:$isMulticast,
+    I64Attr:$pipeNetId
+  );
+  let results = (outs TTL_SelectedPipeDst:$pipe);
+  let assemblyFormat = [{
+    `net` $pipeNetId `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `num_dests` `(` $numDests `)` `sems` `(` $senderReadySemIdx `,` $mailboxSemIdxBase `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+  }];
+}
+
 def TTL_PipeRecvPostOp : TTL_Op<"pipe_recv_post",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Post a pipe receive destination";
@@ -609,7 +722,7 @@ def TTL_PipeRecvPostOp : TTL_Op<"pipe_recv_post",
     slot is consumed.
   }];
   let arguments = (ins
-    TTL_Pipe:$pipe,
+    AnyType:$pipe,
     AnyType:$dst
   );
   let results = (outs TTL_TransferHandle:$xf);
@@ -628,7 +741,7 @@ def TTL_PipeRecvWaitOp : TTL_Op<"pipe_recv_wait",
   }];
   let arguments = (ins
     TTL_TransferHandle:$xf,
-    TTL_Pipe:$pipe,
+    AnyType:$pipe,
     AnyType:$dst
   );
   let assemblyFormat = "$xf `,` $pipe `,` $dst attr-dict `:` type($xf) `,` type($pipe) `,` type($dst)";

@@ -234,18 +234,17 @@ class PipeNet:
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
-        Execute callback for each pipe where current core is source.
+        Execute callback for each pipe where the current node is a source.
 
-        This method is compiled specially by the TTL compiler. At compile time,
-        it iterates over all pipes and emits conditional blocks for each pipe
-        where the current core matches the source coordinates.
+        This method is compiled specially by the TTL compiler. The callback
+        body is emitted once and lowered to a loop over the PipeNet's
+        pipe records.
 
         Args:
-            callback: Function taking SrcPipeIdentity, called for matching pipes
+            callback: Function taking SrcPipeIdentity for the selected pipe.
 
         Note:
             This method should only be called inside a @ttl.datamovement thread.
-            The callback is invoked at compile time, not runtime.
         """
         # This is a marker method. The actual implementation is in ttl_ast.py
         # which detects calls to this method and handles them specially.
@@ -256,18 +255,17 @@ class PipeNet:
 
     def if_dst(self, callback: Callable[["DstPipeIdentity"], None]) -> None:
         """
-        Execute callback for each pipe where current core is destination.
+        Execute callback for each pipe where the current node is a destination.
 
-        This method is compiled specially by the TTL compiler. At compile time,
-        it iterates over all pipes and emits conditional blocks for each pipe
-        where the current core falls within the destination range.
+        This method is compiled specially by the TTL compiler. The callback
+        body is emitted once and lowered to a loop over the PipeNet's
+        pipe records.
 
         Args:
-            callback: Function taking DstPipeIdentity, called for matching pipes
+            callback: Function taking DstPipeIdentity for the selected pipe.
 
         Note:
             This method should only be called inside a @ttl.datamovement thread.
-            The callback is invoked at compile time, not runtime.
         """
         # This is a marker method. The actual implementation is in ttl_ast.py
         # which detects calls to this method and handles them specially.

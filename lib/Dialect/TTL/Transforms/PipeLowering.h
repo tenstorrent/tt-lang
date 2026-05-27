@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+/// \file
+/// Declares helpers used by TTL-to-TTKernel pipe conversion.
+
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_PIPELOWERING_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPELOWERING_H
 
@@ -62,7 +65,12 @@ verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
                                     const PipeRuntimeLayout &layout);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
-/// pipeNetId used by a pipe receive.
+/// PipeNet id used by a pipe receive wait in that function.
+///
+/// The counter is function-local because each lowered kernel thread owns its
+/// local memory and may execute a different dynamic number of waits. The
+/// counter tracks the next receiver completion semaphore value expected by
+/// that function for the PipeNet.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
 /// Lower CB -> Pipe copy (sender side). Uses receiver-published destination
@@ -87,7 +95,8 @@ LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
 /// is_dst / is_active lowerings use it for O(1) net-id lookup.
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,
                                   const TypeConverter &typeConverter,
-                                  const PipeNetIndex &pipeNetIndex);
+                                  const PipeNetIndex &pipeNetIndex,
+                                  const PipeRuntimeLayout &pipeRuntimeLayout);
 
 } // namespace mlir::tt::ttl
 

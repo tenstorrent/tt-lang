@@ -40,6 +40,31 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("step", &SliceAttr::getStep);
 
   //===--------------------------------------------------------------------===//
+  // PipeRecordAttr
+  //===--------------------------------------------------------------------===//
+
+  tt_attribute_class<PipeRecordAttr>(m, "PipeRecordAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, int64_t srcX, int64_t srcY, int64_t dstStartX,
+             int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
+             bool isMulticast) {
+            return wrap(PipeRecordAttr::get(unwrap(ctx), srcX, srcY, dstStartX,
+                                            dstStartY, dstEndX, dstEndY,
+                                            isMulticast));
+          },
+          nb::arg("context"), nb::arg("src_x"), nb::arg("src_y"),
+          nb::arg("dst_start_x"), nb::arg("dst_start_y"), nb::arg("dst_end_x"),
+          nb::arg("dst_end_y"), nb::arg("is_multicast") = false)
+      .def_prop_ro("src_x", &PipeRecordAttr::getSrcX)
+      .def_prop_ro("src_y", &PipeRecordAttr::getSrcY)
+      .def_prop_ro("dst_start_x", &PipeRecordAttr::getDstStartX)
+      .def_prop_ro("dst_start_y", &PipeRecordAttr::getDstStartY)
+      .def_prop_ro("dst_end_x", &PipeRecordAttr::getDstEndX)
+      .def_prop_ro("dst_end_y", &PipeRecordAttr::getDstEndY)
+      .def_prop_ro("is_multicast", &PipeRecordAttr::getIsMulticast);
+
+  //===--------------------------------------------------------------------===//
   // CircularBufferType
   //===--------------------------------------------------------------------===//
 
@@ -129,4 +154,24 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("pipe_net_id", &PipeType::getPipeNetId)
       .def("is_unicast", &PipeType::isUnicast)
       .def("is_multicast", &PipeType::isMulticast);
+
+  //===--------------------------------------------------------------------===//
+  // SelectedPipe types
+  //===--------------------------------------------------------------------===//
+
+  tt_type_class<SelectedPipeSrcType>(m, "SelectedPipeSrcType")
+      .def_static(
+          "get",
+          [](MlirContext ctx) {
+            return wrap(SelectedPipeSrcType::get(unwrap(ctx)));
+          },
+          nb::arg("context"));
+
+  tt_type_class<SelectedPipeDstType>(m, "SelectedPipeDstType")
+      .def_static(
+          "get",
+          [](MlirContext ctx) {
+            return wrap(SelectedPipeDstType::get(unwrap(ctx)));
+          },
+          nb::arg("context"));
 }

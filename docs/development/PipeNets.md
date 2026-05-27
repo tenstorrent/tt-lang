@@ -821,6 +821,38 @@ strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `matmul_1d_mcast` example uses them. The test asserts the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
+## PipeNet foreach IR ops
+
+The frontend represents `PipeNet.if_src(...)` and `PipeNet.if_dst(...)`
+as `ttl.pipenet_foreach_src` and `ttl.pipenet_foreach_dst` until
+TTL-to-TTKernel lowering. Each op owns the PipeNet id, optional
+diagnostic name, and the complete ordered list of static
+`#ttl.pipe_record` entries for that PipeNet callback.
+
+The foreach body executes once for each selected record whose role
+contains the current launch node. Its block argument is a selected-pipe
+value, not a concrete `!ttl.pipe<...>`, because the selected record
+coordinates become loop values during lowering. Selected-pipe values are
+valid only inside the foreach body and lower while the current record's
+coordinates, semaphore ids, and multicast kind are still available.
+
+`#ttl.pipe_record` stores the user-level destination kind. This is not
+derived from destination cardinality: `dst=slice(i, i + 1)` remains a
+multicast record even though it names one destination node.
+
+Role predicate lowering and guard verification add foreach records to
+the same PipeNet index used for `ttl.create_pipe`, so `net.is_src()`,
+`net.is_dst()`, and `net.is_active()` keep the same role semantics for
+foreach and non-foreach IR. Receive waits on destination-selected pipes
+use one function-local counter per PipeNet id, matching the existing
+static-pipe receive protocol; function scope is required because each
+kernel thread owns its local counter state.
+
+The schedule verifier models foreach bodies per selected record and
+includes pipe identity in each schedule node. Multiple records can
+target the same launch node, especially gathers, and those dynamic
+receive waits are distinct events rather than a self-dependency.
+
 ## Lowering: receiver-published destination addresses
 
 `PipeLowering.cpp::lowerPipeRecvPost` lowers `ttl.copy(pipe, dst_blk)`

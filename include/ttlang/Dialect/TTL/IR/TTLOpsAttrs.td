@@ -7,6 +7,7 @@
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
+include "mlir/IR/AttrTypeBase.td"
 
 //===----------------------------------------------------------------------===//
 // TTL attribute definitions
@@ -56,6 +57,29 @@ def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
                        " `grid` `=` `[` $grid `]` `,`"
                        " `memory` `=` $memoryLayout `>`";
 
+  let genVerifyDecl = 1;
+}
+
+def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
+  let summary = "Static PipeNet pipe record";
+  let description = [{
+    Encodes one static PipeNet record for PipeNet foreach ops. The
+    owning op carries the PipeNet id; records carry source and destination
+    coordinates plus the user-level destination kind. The kind is not redundant:
+    `slice(i, i + 1)` is multicast even though it covers one destination.
+  }];
+
+  let parameters = (ins
+    "int64_t":$srcX,
+    "int64_t":$srcY,
+    "int64_t":$dstStartX,
+    "int64_t":$dstStartY,
+    "int64_t":$dstEndX,
+    "int64_t":$dstEndY,
+    DefaultValuedParameter<"bool", "false">:$isMulticast
+  );
+
+  let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
 }
 

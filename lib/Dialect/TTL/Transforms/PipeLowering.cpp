@@ -4,6 +4,7 @@
 
 #include "PipeLowering.h"
 
+#include "PipeNetForeachLowering.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -107,23 +108,25 @@ lookupPipeChannelLayout(Operation *op, PipeType pipeType,
 
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
   mod.walk([&](FuncOp func) {
-    // Collect unique pipeNetIds that have at least one receive in this
-    // function. A runtime counter is required because receive waits may be
-    // dynamically re-executed inside loops.
+    // Counters are function-local because each lowered kernel thread owns its
+    // local memory and may execute a different dynamic number of receive waits.
+    // One counter per PipeNet id tracks the next receiver semaphore value that
+    // this function must observe.
     llvm::SmallSet<int64_t, 4> pipeNetIds;
     func.walk([&](Operation *op) {
-      if (auto post = mlir::dyn_cast<PipeRecvPostOp>(op)) {
-        auto pipeTy = mlir::cast<PipeType>(post.getPipe().getType());
-        if (getAttachedCB(post.getDst())) {
+      if (auto wait = mlir::dyn_cast<PipeRecvWaitOp>(op)) {
+        if (auto pipeTy = mlir::dyn_cast<PipeType>(wait.getPipe().getType())) {
           pipeNetIds.insert(pipeTy.getPipeNetId());
+        } else {
+          collectPipeNetForeachReceiveWaitCounterIds(wait, pipeNetIds);
         }
       }
     });
     if (pipeNetIds.empty()) {
       return;
     }
-    // Allocas + zero-stores at function entry dominate every receive post,
-    // including posts inside scf.if from `if_dst`.
+    // Function-entry initialization dominates waits inside control-flow regions
+    // produced by PipeNet callbacks and user control flow.
     OpBuilder b(func.getContext());
     b.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
@@ -353,6 +356,10 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
                                 const PipeRuntimeLayout *pipeRuntimeLayout,
                                 ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
+  if (mlir::isa<SelectedPipeDstType>(pipe.getType())) {
+    return lowerSelectedPipeRecvPost(op, pipe, dst, pipeRuntimeLayout,
+                                     rewriter);
+  }
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
   FailureOr<PipeChannelLayout> pipeChannelLayout =
       lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
@@ -467,6 +474,10 @@ LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
                                 const PipeNetCounterMap *counters,
                                 ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
+  if (mlir::isa<SelectedPipeDstType>(pipe.getType())) {
+    (void)dst;
+    return lowerSelectedPipeRecvWait(op, pipe, counters, rewriter);
+  }
   auto pipeType = mlir::cast<PipeType>(pipe.getType());
   auto i32Ty = rewriter.getI32Type();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -679,7 +690,7 @@ static LogicalResult lowerRolePredicate(
 }
 
 // Base for IsSrc/IsDst/IsActive lowerings: holds the shared PipeNetIndex
-// borrowed pointer so the per-pattern matchAndRewrite stays compact.
+// borrowed pointer so each pattern can share the same immutable index.
 template <typename Op>
 struct IsRoleLoweringBase : OpConversionPattern<Op> {
   IsRoleLoweringBase(const TypeConverter &tc, MLIRContext *ctx,
@@ -759,6 +770,7 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
       }
     }
   });
+  addPipeNetForeachRecordsToIndex(mod, index);
 }
 
 void buildPipeRuntimeLayout(ModuleOp mod, const PipeNetIndex &index,
@@ -896,9 +908,12 @@ verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
 
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,
                                   const TypeConverter &typeConverter,
-                                  const PipeNetIndex &pipeNetIndex) {
+                                  const PipeNetIndex &pipeNetIndex,
+                                  const PipeRuntimeLayout &pipeRuntimeLayout) {
   patterns.add<IfSrcLowering, IfDstLowering, CreatePipeLowering>(
       typeConverter, patterns.getContext());
+  populatePipeNetForeachLoweringPatterns(patterns, typeConverter,
+                                         pipeRuntimeLayout);
   patterns.add<IsSrcLowering, IsDstLowering, IsActiveLowering>(
       typeConverter, patterns.getContext(), &pipeNetIndex);
 }
