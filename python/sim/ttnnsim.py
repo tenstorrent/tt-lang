@@ -49,6 +49,7 @@ except ImportError:
     TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
 from .constants import TILE_SHAPE
+from .trace import TRACE
 from .typedefs import Count, IndexType, Selector, Shape, TensorKey
 
 # Public constants (mirror TTL constants)
@@ -1255,9 +1256,12 @@ class Tensor:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
         self._tensor: torch.Tensor = tensor
         self._layout: IndexType = layout
-        self.memory_config: MemoryConfig = _maybe_resolve_nd_shard_spec_for_tensor(
-            tuple(tensor.shape), memory_config
-        )
+        if memory_config.strategy == ShardingStrategy.ND_SHARDED:
+            self.memory_config: MemoryConfig = _maybe_resolve_nd_shard_spec_for_tensor(
+                tuple(tensor.shape), memory_config
+            )
+        else:
+            self.memory_config: MemoryConfig = memory_config
         self.mesh_shard_info: Optional[MeshShardInfo] = None
         # _dtype is the declared/logical type; defaults to the tensor's native dtype.
         self._dtype: Any = dtype if dtype is not None else tensor.dtype
@@ -1506,33 +1510,37 @@ class Tensor:
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
         ek = self._to_element_key(normalized)
-        result = Tensor(self._tensor[cast(Any, ek)], self._layout)
-        if hasattr(self, "_name"):
-            result._name = self._name  # type: ignore
-        result.memory_config = self.memory_config
-        # Accumulate the element-space origin so locality analysis can find
-        # the position of this slice within the original (root) sharded
-        # tensor.  ``ek`` was just computed above so derive starts directly
-        # instead of calling ``element_slice_starts(normalized)`` which would
-        # re-invoke ``_to_element_key``.  Open-ended slices (e.g.
-        # ``tensor[:]``) have no computable start, so fall back to the
-        # parent's origin (which is correct when selecting the full extent).
-        parent_origin: Tuple[int, ...] = getattr(
-            self, "_element_origin", (0,) * len(self.shape)
-        )
-        starts: list[int] = []
-        valid = True
-        for s in ek:
-            if not isinstance(s, slice) or s.start is None:
-                valid = False
-                break
-            starts.append(s.start)
-        if valid:
-            result._element_origin = tuple(  # type: ignore[attr-defined]
-                p + s for p, s in zip(parent_origin, starts)
+        result = Tensor(self._tensor[cast(Any, ek)], self._layout, self.memory_config)
+        _name = getattr(self, "_name", None)
+        if _name is not None:
+            result._name = _name  # type: ignore
+        if TRACE.enabled:
+            # Accumulate the element-space origin so locality analysis can find
+            # the position of this slice within the original (root) sharded
+            # tensor.  ``ek`` was just computed above so derive starts directly
+            # instead of calling ``element_slice_starts(normalized)`` which would
+            # re-invoke ``_to_element_key``.  Open-ended slices (e.g.
+            # ``tensor[:]``) have no computable start, so fall back to the
+            # parent's origin (which is correct when selecting the full extent).
+            # _element_origin is only read by try_count_locality() in sharding.py,
+            # which is called from _copy_trace_fields() inside if TRACE.enabled:
+            # guards in copy.py, so tracking it is a no-op when tracing is off.
+            parent_origin: Tuple[int, ...] = getattr(
+                self, "_element_origin", (0,) * len(self.shape)
             )
-        else:
-            result._element_origin = parent_origin  # type: ignore[attr-defined]
+            starts: list[int] = []
+            valid = True
+            for s in ek:
+                if not isinstance(s, slice) or s.start is None:
+                    valid = False
+                    break
+                starts.append(s.start)
+            if valid:
+                result._element_origin = tuple(  # type: ignore[attr-defined]
+                    p + s for p, s in zip(parent_origin, starts)
+                )
+            else:
+                result._element_origin = parent_origin  # type: ignore[attr-defined]
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:

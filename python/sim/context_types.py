@@ -11,11 +11,13 @@ separated from the context management functions to avoid import cycles.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, Optional, Set, Tuple, TypedDict
+from typing import TYPE_CHECKING, Any, Deque, Dict, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
-from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
 from .blockstate import KernelType
+
+if TYPE_CHECKING:
+    from .ttnnsim import Tensor
 
 # Default L1 memory limit per node (simulator)
 # keep in sync with ttl.constants.DEFAULT_L1_CB_BUDGET_BYTES
