@@ -11,10 +11,10 @@ replace a user's newer local tt-metal build.
 
 This module backs the installed `tt-lang-setup-external-tt-metal` console
 script. It detects either a tt-metal install layout or a source/build layout and
-prints shell exports for `TT_METAL_HOME`, `TT_METAL_RUNTIME_ROOT`,
-`PYTHONPATH`, and `LD_LIBRARY_PATH`. The generated environment lets Python
-import `ttnn` from the selected tt-metal tree while importing `ttl` from the
-installed tt-lang wheel.
+either prints shell exports or runs a supplied command with `TT_METAL_HOME`,
+`TT_METAL_RUNTIME_ROOT`, `PYTHONPATH`, and `LD_LIBRARY_PATH` configured. The
+generated environment lets Python import `ttnn` from the selected tt-metal tree
+while importing `ttl` from the installed tt-lang wheel.
 
 The selected tt-metal tree is trusted input. Passing `--check` imports `ttnn`
 from that tree and therefore may execute native code from `_ttnn.so`.
@@ -156,12 +156,43 @@ def _check_import(settings: ExternalTTMetalEnv) -> int:
     return result.returncode
 
 
+def run_command_with_external_tt_metal(
+    settings: ExternalTTMetalEnv, command: list[str]
+) -> int:
+    result = subprocess.run(
+        command,
+        env=environment_for_external_tt_metal(settings),
+        check=False,
+    )
+    return result.returncode
+
+
+def _split_command(argv: list[str]) -> tuple[list[str], list[str]]:
+    try:
+        separator_index = argv.index("--")
+    except ValueError:
+        return argv, []
+
+    command = argv[separator_index + 1 :]
+    if not command:
+        raise ValueError("command after '--' is required")
+    return argv[:separator_index], command
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        parser_argv, command = _split_command(raw_argv)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
     parser = argparse.ArgumentParser(
         prog="tt-lang-setup-external-tt-metal",
         description=(
             "Print shell exports for using a tt-lang wheel built with "
-            "TTLANG_TTNN_DEP_MODE=external."
+            "TTLANG_TTNN_DEP_MODE=external, or run a command with that "
+            "environment."
         ),
     )
     parser.add_argument(
@@ -192,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
             "with trusted tt-metal builds because this imports native code"
         ),
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(parser_argv)
 
     tt_metal_dir = args.tt_metal_dir_option or args.tt_metal_dir
     if not tt_metal_dir:
@@ -208,6 +239,9 @@ def main(argv: list[str] | None = None) -> int:
         import_status = _check_import(settings)
         if import_status != 0:
             return import_status
+
+    if command:
+        return run_command_with_external_tt_metal(settings, command)
 
     print(emit_shell_exports(settings))
     return 0

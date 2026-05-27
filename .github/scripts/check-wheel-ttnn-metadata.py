@@ -39,8 +39,8 @@ def _requires_ttnn(metadata: str) -> bool:
         try:
             requirement = Requirement(line.split(":", 1)[1].strip())
         except InvalidRequirement as error:
-            raise ValueError(f"invalid Requires-Dist line: {line}") from error
-        if requirement.name == "ttnn":
+            raise ValueError(f"invalid Requires-Dist line: {line}: {error}") from error
+        if requirement.name.lower() == "ttnn":
             return True
     return False
 

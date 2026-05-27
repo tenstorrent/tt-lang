@@ -47,8 +47,12 @@ set -e
 # When running inside a Docker container with volume-mounted repos, git
 # will refuse to operate due to ownership mismatch ("dubious ownership").
 # Mark all directories as safe so that cmake's git operations (patch
-# application, SHA verification) work correctly.
-git config --global --add safe.directory '*'
+# application, SHA verification) work correctly. Gated on a container
+# indicator so direct invocations from a developer host do not mutate
+# the user's global git config.
+if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
+    git config --global --add safe.directory '*'
+fi
 
 MODE="full"
 REMOVE_BUILD_DIR=false
@@ -124,6 +128,10 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --python)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --python requires a path" >&2
+                exit 1
+            fi
             PYTHON_EXECUTABLE="$2"
             shift 2
             ;;
@@ -144,8 +152,8 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "WARNING: Unknown argument: $1" >&2
-            shift
+            echo "ERROR: Unknown argument: $1" >&2
+            exit 1
             ;;
     esac
 done

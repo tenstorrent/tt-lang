@@ -38,7 +38,7 @@ def main() -> int:
         try:
             requirements.append(Requirement(line.split(":", 1)[1].strip()))
         except InvalidRequirement as error:
-            print(f"invalid Requires-Dist line: {line}", file=sys.stderr)
+            print(f"invalid Requires-Dist line: {line}: {error}", file=sys.stderr)
             return 1
 
     expected_specifier = f"=={args.expect_ttlang_version}"

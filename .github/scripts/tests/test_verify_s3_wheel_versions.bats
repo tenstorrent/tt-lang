@@ -68,6 +68,7 @@ setup() {
         "$(whl_light "$VER")" \
         "$(whl_sim "$VER")")
     run -1 "$SCRIPT" external "$VER" "$dir"
+    assert_output --partial "does not match expected '$VER+light'"
 }
 
 @test "external mode requires the tt-lang-light wheel" {

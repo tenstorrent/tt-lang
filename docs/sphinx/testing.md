@@ -3,7 +3,7 @@
 For detailed guidance on writing new tests (lit test structure, FileCheck patterns, test output locations), see [`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md).
 
 ## Compiler tests
-- Full compiler suite: `ninja -C build check-ttlang-all` (MLIR, bindings, end-to-end, pytest, Python lit).
+- Full compiler suite: `ninja -C build check-ttlang-all` (MLIR, bindings, packaging, end-to-end, pytest, Python lit).
 - Quick check (MLIR + bindings only): `ninja -C build check-ttlang`.
 - Single MLIR file: `llvm-lit test/ttlang/<path>.mlir`.
 

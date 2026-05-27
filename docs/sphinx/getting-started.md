@@ -15,10 +15,12 @@ functional simulator (no compiler or hardware support) and does not depend on
 `ttnn`.
 
 First, create an isolated Python environment (venv, conda, etc.) with Python
-3.11 or later (Python 3.12 recommended):
+3.11 or later (Python 3.12 recommended). The wheel targets a specific CPython
+ABI, so the venv's Python must match — invoke `python3.12` (or `python3.11`)
+explicitly rather than the system default `python3`:
 
 ```bash
-python3 -m venv --prompt ttlang ttlang-venv
+python3.12 -m venv --prompt ttlang ttlang-venv
 source ttlang-venv/bin/activate
 ```
 
@@ -81,33 +83,41 @@ programs. The `--check` option imports `ttnn` from the selected tree, so use it
 only with trusted tt-metal builds:
 
 ```bash
-eval "$(tt-lang-setup-external-tt-metal \
+tt-lang-setup-external-tt-metal \
   --tt-metal-dir /path/to/tt-metal \
   --build-dir /path/to/tt-metal/build \
   --check \
-  --format shell)"
+  -- python tutorials/elementwise/step_4_multinode_grid_full.py
 ```
 
 Configure an install-layout tt-metal prefix similarly:
 
 ```bash
-eval "$(tt-lang-setup-external-tt-metal \
+tt-lang-setup-external-tt-metal \
   --tt-metal-dir /path/to/tt-metal-install \
   --check \
-  --format shell)"
+  -- python tutorials/elementwise/step_4_multinode_grid_full.py
 ```
+
+When no command is supplied, `tt-lang-setup-external-tt-metal` prints shell
+exports for interactive shell setup.
 
 Validate that Python resolves both packages from the intended environment:
 
 ```bash
-python -c 'import ttnn, ttl; print(ttnn.__file__, ttl.__version__)'
+tt-lang-setup-external-tt-metal \
+  --tt-metal-dir /path/to/tt-metal-install \
+  --check \
+  -- python -c 'import ttnn, ttl; print(ttnn.__file__, ttl.__version__)'
 ```
 
 Run a tutorial example:
 
 ```bash
 tt-lang-sim tutorials/elementwise/step_4_multinode_grid_full.py    # simulator (no compilation, runs on CPU)
-python tutorials/elementwise/step_4_multinode_grid_full.py        # compiles and runs on hardware
+tt-lang-setup-external-tt-metal \
+  --tt-metal-dir /path/to/tt-metal-install \
+  -- python tutorials/elementwise/step_4_multinode_grid_full.py   # compiles and runs on hardware
 ```
 
 ## Build from source for the simulator only

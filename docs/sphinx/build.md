@@ -672,11 +672,10 @@ python3.12 -m venv /tmp/ttlang-light-test
 source /tmp/ttlang-light-test/bin/activate
 pip install --find-links=/tmp/ttlang-wheels/light/dist \
   tt-lang-light==0.71.0.dev20260526
-eval "$(tt-lang-setup-external-tt-metal \
+tt-lang-setup-external-tt-metal \
   --tt-metal-dir /opt/ttlang-toolchain/tt-metal \
   --check \
-  --format shell)"
-python -c 'import ttl, ttnn; print(ttl.__version__, ttnn.__file__)'
+  -- python -c 'import ttl, ttnn; print(ttl.__version__, ttnn.__file__)'
 ```
 
 ## CMake Options

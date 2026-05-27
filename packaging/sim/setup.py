@@ -45,13 +45,17 @@ def get_version() -> str:
             text=True,
             cwd=str(REPO_ROOT),
         ).strip()
-        base, sep, local = tag.partition("+")
-        local_suffix = f"+{local}" if sep else ""
-        if commits and commits != "0":
-            return f"{base}.dev{commits}{local_suffix}"
-        return f"{base}{local_suffix}"
-    except Exception:
-        return "0.2.0.dev0"
+    except (subprocess.CalledProcessError, OSError) as error:
+        raise SystemExit(
+            "failed to derive tt-lang-sim version from git; set "
+            "TTLANG_PRETEND_VERSION when building outside a tagged checkout"
+        ) from error
+
+    base, sep, local = tag.partition("+")
+    local_suffix = f"+{local}" if sep else ""
+    if commits and commits != "0":
+        return f"{base}.dev{commits}{local_suffix}"
+    return f"{base}{local_suffix}"
 
 
 VERSION = get_version()

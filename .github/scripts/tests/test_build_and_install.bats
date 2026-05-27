@@ -233,8 +233,14 @@ setup() {
     assert_output --partial "=== LLVM toolchain build complete ==="
 }
 
-@test "unknown flag is rejected with a warning" {
+@test "unknown flag aborts with a non-zero exit" {
     run run_configure --not-a-real-flag
-    # Script warns but does not abort on unknown args.
+    assert_failure
     assert_output --partial "Unknown argument: --not-a-real-flag"
+}
+
+@test "--python without a path -> error (exit 1)" {
+    run run_configure --python
+    assert_failure
+    assert_output --partial "ERROR: --python requires a path"
 }

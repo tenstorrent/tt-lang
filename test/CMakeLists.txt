@@ -125,6 +125,8 @@ add_custom_target(check-ttlang-all
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-mlir
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-bindings ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-bindings
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-packaging ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-packaging
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-pytest ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-pytest
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-me2e ==="

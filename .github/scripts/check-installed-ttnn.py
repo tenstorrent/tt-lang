@@ -15,6 +15,7 @@ Usage: check-installed-ttnn.py --mode {pypi,external,bundled}
 import argparse
 import importlib.util
 import pathlib
+import subprocess
 import sys
 
 REQUIRED_BUNDLED_RELATIVE = (
@@ -42,6 +43,34 @@ def check_bundled() -> int:
     ]
     if missing:
         print(f"bundled ttnn is missing files: {missing}", file=sys.stderr)
+        return 1
+
+    ttnn_extension = ttnn_root / "_ttnn.so"
+    expected_ttnncpp = ttnn_root / "build" / "lib" / "_ttnncpp.so"
+    ldd_result = subprocess.run(
+        ["ldd", str(ttnn_extension)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ldd_result.returncode != 0:
+        print(
+            f"ldd failed for bundled ttnn extension:\n{ldd_result.stderr}",
+            file=sys.stderr,
+        )
+        return 1
+    if "not found" in ldd_result.stdout:
+        print(
+            f"bundled ttnn extension has unresolved libraries:\n{ldd_result.stdout}",
+            file=sys.stderr,
+        )
+        return 1
+    if f"_ttnncpp.so => {expected_ttnncpp}" not in ldd_result.stdout:
+        print(
+            "bundled _ttnn.so does not resolve _ttnncpp.so from "
+            f"{expected_ttnncpp}:\n{ldd_result.stdout}",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

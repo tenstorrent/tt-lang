@@ -38,14 +38,27 @@ emit() {
     fi
 }
 
-if [[ "$mode" == "external" ]]; then
+emit_header() {
     emit <<EOF
 $summary_title
 
-$(if [[ "$dry_run" -eq 1 ]]; then echo "No wheels were uploaded."; fi)
+EOF
+    if [[ "$dry_run" -eq 1 ]]; then
+        emit <<EOF
+No wheels were uploaded.
 
+EOF
+    fi
+    emit <<EOF
 Package index: $index_url
 
+EOF
+}
+
+emit_header
+
+if [[ "$mode" == "external" ]]; then
+    emit <<EOF
 Light install:
 
 \`\`\`bash
@@ -66,12 +79,6 @@ pip install \\
 EOF
 else
     emit <<EOF
-$summary_title
-
-$(if [[ "$dry_run" -eq 1 ]]; then echo "No wheels were uploaded."; fi)
-
-Package index: $index_url
-
 \`\`\`bash
 pip install \\
   --extra-index-url $index_url \\

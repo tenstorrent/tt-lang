@@ -68,6 +68,13 @@ jobs:
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
 
+      - name: Validate wheel inputs
+        run: |
+          if [[ "${{ inputs.ttnn_dep_mode }}" == "external" && -z "${{ inputs.pretend_version }}" ]]; then
+            echo "ttnn_dep_mode=external requires pretend_version" >&2
+            exit 1
+          fi
+
       - name: Configure tt-lang
         env:
           TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}

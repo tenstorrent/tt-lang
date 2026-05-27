@@ -51,6 +51,7 @@ setup() {
 @test "empty dist dir -> error (exit 1)" {
     dir=$(make_dist_dir)
     run -1 "$SCRIPT" "$dir"
+    assert_output --partial "No wheels found under $dir"
 }
 
 @test "single wheel uploaded with default flags" {
