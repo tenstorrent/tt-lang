@@ -158,7 +158,7 @@ def _env_with_pythonpath_and_ldd(path: Path) -> dict[str, str]:
         "#!/usr/bin/env bash\n"
         f"printf '\\t_ttnncpp.so => {ttnncpp_path} (0x00000000)\\n'\n"
     )
-    ldd.chmod(0o755)
+    ldd.chmod(0o700)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     return env
 
