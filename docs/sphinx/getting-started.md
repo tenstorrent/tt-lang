@@ -46,23 +46,25 @@ tt-lang-setup                     # copy bundled tutorials to ./tutorials/
 - Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to
   `./tutorials/`.
 
-For finer control, `tt-lang-setup-host` runs only the sfpi step and
+For finer control, `tt-lang-setup-sfpi` runs only the sfpi step and
 `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 
 ### Internal S3 wheels
 
-Tenstorrent internal preview wheels can be installed from the S3 PyPI index when
-the public `ttnn` wheel is older than the tt-metal build in use.
+More frequently updated development versions of `tt-lang` are available from
+Tenstorrent's S3 PyPI index.
 
 The default internal `tt-lang` wheel bundles the `ttnn` artifacts from the
-toolchain used to build the wheel. It does not install the public `ttnn` package
-from PyPI and does not require additional setup after installation:
+toolchain used to build the wheel, so `pip install` does not pull `ttnn` from
+PyPI. As with the public wheel, `tt-lang-setup` then installs the matching sfpi
+runtime and copies the tutorials:
 
 ```bash
 pip install \
   --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   tt-lang==0.71.0.dev20260526
+tt-lang-setup    # downloads sfpi into the bundled ttnn tree + copies tutorials
 ```
 
 Use `tt-lang-light` only when the environment already has a newer local
@@ -76,6 +78,7 @@ pip install \
   --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   tt-lang-light==0.71.0.dev20260526
+tt-lang-setup    # copies tutorials only; sfpi is provided by the external tt-metal
 ```
 
 Configure a native tt-metal source/build layout before running hardware

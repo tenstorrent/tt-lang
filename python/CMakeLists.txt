@@ -222,7 +222,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Setup
     _setup/__init__.py
     _setup/cli.py
     _setup/external_tt_metal.py
-    _setup/host.py
+    _setup/sfpi.py
     _setup/tutorials.py
 )
 
