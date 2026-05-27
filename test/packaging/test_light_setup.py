@@ -79,3 +79,22 @@ def test_light_metadata_rejects_final_version(
 
     assert result.returncode != 0
     assert "requires a non-final version" in result.stderr
+
+
+def test_light_metadata_rejects_base_version_mismatch(
+    run_egg_info: Callable[..., object],
+) -> None:
+    # The metapackage is 0.71.0.devX but the explicit TTLANG_LIGHT_TTLANG_VERSION
+    # uses base 0.72.0. The +light label passes the local-label check but the
+    # bases diverge, so the metapackage would never resolve against the matching
+    # tt-lang wheel — fail early.
+    result = run_egg_info(
+        {
+            "TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525",
+            "TTLANG_LIGHT_TTLANG_VERSION": "0.72.0.dev20260525+light",
+        },
+        cwd=LIGHT_ROOT,
+    )
+
+    assert result.returncode != 0
+    assert "base version" in result.stderr

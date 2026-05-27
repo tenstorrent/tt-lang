@@ -76,39 +76,7 @@ jobs:
           DISPATCH_VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version_override || '' }}
           DISPATCH_TTNN_DEP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.ttnn_dep_mode || 'bundled' }}
           EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-
-          docker_tag="$DISPATCH_DOCKER_TAG"
-          dry_run="$DISPATCH_DRY_RUN"
-          overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
-          version_override="$DISPATCH_VERSION_OVERRIDE"
-          ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
-
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            overwrite_releases=true
-          fi
-
-          if [ -z "$version_override" ]; then
-            version_override=$(python3 .github/scripts/compute-nightly-version.py)
-          fi
-
-          {
-            echo "docker_tag=$docker_tag"
-            echo "dry_run=$dry_run"
-            echo "overwrite_releases=$overwrite_releases"
-            echo "version_override=$version_override"
-            echo "ttnn_dep_mode=$ttnn_dep_mode"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "Resolved ttnn_dep_mode=$ttnn_dep_mode"
-          echo "Resolved version_override=$version_override"
-          echo "Resolved dry_run=$dry_run"
-          if [ -n "$docker_tag" ]; then
-            echo "Using existing docker_tag=$docker_tag"
-          else
-            echo "No docker_tag provided; build-docker will create one"
-          fi
+        run: .github/scripts/resolve-s3-publish-inputs.sh
 
   build-docker:
     needs: preflight
@@ -164,6 +132,7 @@ jobs:
 
       - name: Verify wheel versions
         run: |
+          set -euo pipefail
           .github/scripts/verify-s3-wheel-versions.sh \
             "${{ needs.preflight.outputs.ttnn_dep_mode }}" \
             "${{ needs.preflight.outputs.version_override }}" \
@@ -183,6 +152,7 @@ jobs:
       - name: Publish wheels
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: |
+          set -euo pipefail
           if [ "${{ needs.preflight.outputs.overwrite_releases }}" = "true" ]; then
             .github/scripts/publish-s3-wheels.sh --overwrite dist
           else
@@ -191,6 +161,7 @@ jobs:
 
       - name: Report install command
         run: |
+          set -euo pipefail
           summary_args=()
           if [ "${{ needs.preflight.outputs.dry_run }}" = "true" ]; then
             summary_args+=(--dry-run)

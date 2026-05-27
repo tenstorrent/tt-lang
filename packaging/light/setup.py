@@ -14,6 +14,7 @@ import os
 import pathlib
 import sys
 
+from packaging.version import InvalidVersion, Version
 from setuptools import setup
 from setuptools.command.sdist import sdist as _sdist
 
@@ -40,6 +41,23 @@ def _ttlang_requirement(version: str) -> str:
     if not ttlang_version:
         ttlang_version = f"{version}+light"
     require_local_version_label("tt-lang-light", ttlang_version, "light")
+    # The metapackage pins tt-lang==X+light by exact match. PEP 440
+    # base_version drops dev/pre/post segments, so different dev dates within
+    # the same MAJOR.MINOR.PATCH line are allowed (the existing
+    # test_light_metadata_accepts_explicit_ttlang_version case depends on
+    # this). A MAJOR/MINOR/PATCH mismatch, on the other hand, would produce a
+    # pin that nothing on the index can satisfy — catch that here.
+    try:
+        ttlang_base = Version(ttlang_version).base_version
+        metapackage_base = Version(version).base_version
+    except InvalidVersion as error:
+        raise SystemExit(f"tt-lang-light: failed to parse version: {error}") from error
+    if ttlang_base != metapackage_base:
+        raise SystemExit(
+            "tt-lang-light: tt-lang dependency base version "
+            f"({ttlang_base}) does not match metapackage base version "
+            f"({metapackage_base}); set TTLANG_LIGHT_TTLANG_VERSION to align."
+        )
     return f"tt-lang == {ttlang_version}"
 
 

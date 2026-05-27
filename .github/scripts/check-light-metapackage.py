@@ -20,8 +20,11 @@ def _metadata_for(pattern: str) -> str:
         raise SystemExit(f"expected one wheel for {pattern}, found {wheels}")
     with zipfile.ZipFile(wheels[0]) as wheel:
         metadata_name = next(
-            name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
+            (name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")),
+            None,
         )
+        if metadata_name is None:
+            raise SystemExit(f"{wheels[0]} has no .dist-info/METADATA entry")
         return wheel.read(metadata_name).decode()
 
 

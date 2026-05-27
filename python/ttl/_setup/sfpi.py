@@ -63,16 +63,13 @@ def _sha256(path: Path) -> str:
 
 def _download(url: str, dst: Path) -> None:
     print(f"downloading {url}")
-    with urllib.request.urlopen(url) as resp, dst.open("wb") as out:
+    with urllib.request.urlopen(url, timeout=60) as resp, dst.open("wb") as out:
         shutil.copyfileobj(resp, out)
 
 
 def _safe_extract(archive: Path, dest: Path) -> None:
     with tarfile.open(archive, "r:xz") as tar:
-        try:
-            tar.extractall(path=dest, filter="data")
-        except TypeError:
-            tar.extractall(path=dest)
+        tar.extractall(path=dest, filter="data")
 
 
 def main(argv: list[str] | None = None) -> int:

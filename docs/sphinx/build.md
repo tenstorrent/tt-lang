@@ -694,6 +694,7 @@ tt-lang-setup-external-tt-metal \
 | `TTLANG_TOOLCHAIN_DIR`           | —          | Toolchain prefix for LLVM, tt-metal, and venv                                        |
 | `TTLANG_PYTHON_VENV`            | —          | Existing Python virtual environment used by configure/build                          |
 | `TTLANG_USE_TOOLCHAIN`           | `OFF`     | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR`                                  |
+| `TTLANG_USE_TOOLCHAIN_TTMETAL`   | follows `TTLANG_USE_TOOLCHAIN` | Reuse tt-metal from the toolchain. Set `OFF` (e.g. via `scripts/build-and-install.sh --rebuild-ttmetal`) to keep LLVM from the toolchain but rebuild tt-metal from the submodule. |
 | `TTLANG_BUILD_TOOLCHAIN`         | `OFF`     | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
 | `TTLANG_EXTERNAL_TT_METAL_DIR`    | —          | Existing tt-metal source or install directory                                        |
 | `TTLANG_EXTERNAL_TT_METAL_BUILD_DIR` | —       | Existing native tt-metal build directory                                             |

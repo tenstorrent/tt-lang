@@ -20,7 +20,8 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from conftest import REPO_ROOT  # noqa: E402
+
 _SETUP_DIR = REPO_ROOT / "python" / "ttl" / "_setup"
 
 # Load python/ttl/_setup/cli.py without triggering ttl/__init__.py (which
@@ -42,53 +43,58 @@ if _pkg_name not in sys.modules:
 cli = sys.modules[f"{_pkg_name}.cli"]
 
 
-def _fake_distribution_with_version(version: str):
-    class _FakeDist:
-        pass
+def _patch_installed_version(
+    monkeypatch: pytest.MonkeyPatch, version: str | None
+) -> None:
+    def fake_version(name: str) -> str:
+        if version is None:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return version
 
-    fake = _FakeDist()
-    fake.version = version  # type: ignore[attr-defined]
-    return fake
+    monkeypatch.setattr(importlib.metadata, "version", fake_version)
 
 
 def test_light_install_detected_when_version_has_light_local_label(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        importlib.metadata,
-        "distribution",
-        lambda name: _fake_distribution_with_version("1.1.1.dev20260527+light"),
-    )
+    _patch_installed_version(monkeypatch, "1.1.1.dev20260527+light")
     assert cli._is_light_install() is True
 
 
 def test_light_install_not_detected_for_plain_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        importlib.metadata,
-        "distribution",
-        lambda name: _fake_distribution_with_version("1.1.1.dev20260527"),
-    )
+    _patch_installed_version(monkeypatch, "1.1.1.dev20260527")
     assert cli._is_light_install() is False
 
 
 def test_light_install_not_detected_for_other_local_label(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        importlib.metadata,
-        "distribution",
-        lambda name: _fake_distribution_with_version("1.1.1+local"),
-    )
+    _patch_installed_version(monkeypatch, "1.1.1+local")
+    assert cli._is_light_install() is False
+
+
+def test_light_install_not_detected_for_lightning_local_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Substring matching ("+light" in version) would false-positive here.
+    # Parsing the local segment with packaging.version pins the exact label.
+    _patch_installed_version(monkeypatch, "1.1.1+lightning")
+    assert cli._is_light_install() is False
+
+
+def test_light_install_not_detected_for_multi_token_local_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # PEP 440 allows multi-token locals like `+light.dev1`; the convention in
+    # this repo is exactly `+light`, so reject anything more elaborate.
+    _patch_installed_version(monkeypatch, "1.1.1+light.dev1")
     assert cli._is_light_install() is False
 
 
 def test_light_install_returns_false_when_tt_lang_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _raise(name: str):
-        raise importlib.metadata.PackageNotFoundError(name)
-
-    monkeypatch.setattr(importlib.metadata, "distribution", _raise)
+    _patch_installed_version(monkeypatch, None)
     assert cli._is_light_install() is False

@@ -14,7 +14,9 @@ Usage: check-installed-ttnn.py --mode {pypi,external,bundled}
 
 import argparse
 import importlib.util
+import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -23,6 +25,9 @@ REQUIRED_BUNDLED_RELATIVE = (
     "build/lib/_ttnncpp.so",
     "build/lib/libtt_metal.so",
 )
+
+_LDD_NOT_FOUND_RE = re.compile(r"=>\s*not found")
+_LDD_ARROW_RE = re.compile(r"^\s*([^\s]+)\s*=>\s*(\S+)", re.MULTILINE)
 
 
 def check_external() -> int:
@@ -46,11 +51,15 @@ def check_bundled() -> int:
         return 1
 
     ttnn_extension = ttnn_root / "_ttnn.so"
-    expected_ttnncpp = ttnn_root / "build" / "lib" / "_ttnncpp.so"
+    expected_ttnncpp = (ttnn_root / "build" / "lib" / "_ttnncpp.so").resolve()
+    # Strip LD_LIBRARY_PATH so a stray ttnncpp on the loader path can't mask a
+    # broken RUNPATH. ldd inherits everything else (PATH for the helper, etc.).
+    ldd_env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
     ldd_result = subprocess.run(
         ["ldd", str(ttnn_extension)],
         capture_output=True,
         text=True,
+        env=ldd_env,
         check=False,
     )
     if ldd_result.returncode != 0:
@@ -59,16 +68,28 @@ def check_bundled() -> int:
             file=sys.stderr,
         )
         return 1
-    if "not found" in ldd_result.stdout:
+    if _LDD_NOT_FOUND_RE.search(ldd_result.stdout):
         print(
             f"bundled ttnn extension has unresolved libraries:\n{ldd_result.stdout}",
             file=sys.stderr,
         )
         return 1
-    if f"_ttnncpp.so => {expected_ttnncpp}" not in ldd_result.stdout:
+
+    ttnncpp_target: pathlib.Path | None = None
+    for match in _LDD_ARROW_RE.finditer(ldd_result.stdout):
+        soname, target = match.group(1), match.group(2)
+        # Skip the "not found" sentinel; the regex above would capture
+        # target="not", which never resolves to expected_ttnncpp anyway,
+        # but is also not a real soname target. Defensive.
+        if target == "not":
+            continue
+        if pathlib.PurePath(soname).name == "_ttnncpp.so":
+            ttnncpp_target = pathlib.Path(target).resolve()
+            break
+    if ttnncpp_target != expected_ttnncpp:
         print(
             "bundled _ttnn.so does not resolve _ttnncpp.so from "
-            f"{expected_ttnncpp}:\n{ldd_result.stdout}",
+            f"{expected_ttnncpp}; got {ttnncpp_target}\n{ldd_result.stdout}",
             file=sys.stderr,
         )
         return 1

@@ -68,16 +68,16 @@ jobs:
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
 
-      - name: Validate wheel inputs
-        run: |
-          if [[ "${{ inputs.ttnn_dep_mode }}" == "external" && -z "${{ inputs.version_override }}" ]]; then
-            echo "ttnn_dep_mode=external requires version_override" >&2
-            exit 1
-          fi
+      - name: Validate wheel inputs and resolve versions
+        id: versions
+        env:
+          TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+          VERSION_OVERRIDE: ${{ inputs.version_override }}
+        run: .github/scripts/resolve-wheel-versions.sh
 
       - name: Configure tt-lang
         env:
-          TTLANG_VERSION_OVERRIDE: ${{ inputs.ttnn_dep_mode == 'external' && inputs.version_override != '' && format('{0}+light', inputs.version_override) || inputs.version_override }}
+          TTLANG_VERSION_OVERRIDE: ${{ steps.versions.outputs.core_version }}
           TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}
           TTLANG_EXTERNAL_TT_METAL_BUILD_DIR: ${{ inputs.external_tt_metal_build_dir }}
           TTLANG_PYTHON_VENV: ${{ inputs.external_python_venv }}
@@ -93,7 +93,7 @@ jobs:
       - name: Build tt-lang wheel
         env:
           TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
-          TTLANG_VERSION_OVERRIDE: ${{ inputs.ttnn_dep_mode == 'external' && inputs.version_override != '' && format('{0}+light', inputs.version_override) || inputs.version_override }}
+          TTLANG_VERSION_OVERRIDE: ${{ steps.versions.outputs.core_version }}
           TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}
           TTLANG_EXTERNAL_TT_METAL_BUILD_DIR: ${{ inputs.external_tt_metal_build_dir }}
           TTLANG_BUNDLED_TT_METAL_DIR: ${{ inputs.bundled_tt_metal_dir }}
@@ -162,22 +162,23 @@ jobs:
             dist/tt_lang_sim-*.whl
           python .github/scripts/smoke-test-wheel.py
 
+      # external mode is guaranteed by the Validate step to have version_override.
       - name: Build tt-lang-light wheel
-        if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.version_override != '' }}
+        if: ${{ inputs.ttnn_dep_mode == 'external' }}
         env:
           TTLANG_VERSION_OVERRIDE: ${{ inputs.version_override }}
-          TTLANG_LIGHT_TTLANG_VERSION: ${{ format('{0}+light', inputs.version_override) }}
+          TTLANG_LIGHT_TTLANG_VERSION: ${{ steps.versions.outputs.light_version }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel packaging/light --wheel-dir=dist --no-deps --no-build-isolation
 
       - name: Check internal metapackage metadata
-        if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.version_override != '' }}
+        if: ${{ inputs.ttnn_dep_mode == 'external' }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           python .github/scripts/check-light-metapackage.py \
             --dist-dir dist \
-            --expect-ttlang-version "${{ format('{0}+light', inputs.version_override) }}"
+            --expect-ttlang-version "${{ steps.versions.outputs.light_version }}"
 
       - name: Report wheel sizes
         run: ls -lh dist/*.whl

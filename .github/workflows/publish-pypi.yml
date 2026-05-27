@@ -7,9 +7,10 @@ name: Publish to PyPI
 on:
   push:
     tags:
+      # Public PyPI rejects PEP 440 local-version labels (e.g. +light), so the
+      # internal-wheel tags are intentionally excluded here.
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
-      - 'v[0-9]+.[0-9]+.[0-9]+\+*'
   workflow_dispatch:
     inputs:
       docker_tag:

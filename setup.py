@@ -207,7 +207,7 @@ class CMakeBuild(build_ext):
             if "ttl" in ext.name:
                 self.build_(ext)
             else:
-                raise Exception("Unknown extension")
+                raise RuntimeError(f"Unknown extension: {ext.name}")
 
     def _strip_binaries(self, install_dir):
         """Strip debug symbols from .so/.dylib files to reduce wheel size."""

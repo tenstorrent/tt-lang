@@ -22,8 +22,11 @@ MODES = ("pypi", "external", "bundled")
 def _read_metadata(wheel_path: str) -> str:
     with zipfile.ZipFile(wheel_path) as wheel:
         metadata_name = next(
-            name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
+            (name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")),
+            None,
         )
+        if metadata_name is None:
+            raise ValueError(f"{wheel_path} has no .dist-info/METADATA entry")
         return wheel.read(metadata_name).decode()
 
 

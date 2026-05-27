@@ -11,6 +11,8 @@ import importlib.metadata
 import importlib.util
 import sys
 
+from packaging.version import InvalidVersion, Version
+
 from . import sfpi as _sfpi
 from . import tutorials as _tutorials
 
@@ -21,10 +23,16 @@ def _is_sim_only_install() -> bool:
 
 def _is_light_install() -> bool:
     try:
-        version = importlib.metadata.distribution("tt-lang").version
+        raw_version = importlib.metadata.version("tt-lang")
     except importlib.metadata.PackageNotFoundError:
         return False
-    return "+light" in version
+    try:
+        local = Version(raw_version).local
+    except InvalidVersion:
+        return False
+    # PEP 440 local labels are dot-separated; this PR's convention is "+light"
+    # exactly, so reject `+lightning`, `+light.dev1`, etc.
+    return local == "light"
 
 
 def main(argv: list[str] | None = None) -> int:

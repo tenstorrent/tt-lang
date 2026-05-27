@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from conftest import REPO_ROOT  # noqa: E402
+
 sys.path.insert(0, str(REPO_ROOT / "packaging"))
 
 from bundled_ttnn import (  # noqa: E402

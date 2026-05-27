@@ -126,7 +126,6 @@ setup() {
 
     run run_configure --rebuild-ttmetal
     assert_success
-    assert_output --partial ""  # script didn't error
     grep -q '^-DTTLANG_USE_TOOLCHAIN=ON$' "$(cmake_log)"
     grep -q '^-DTTLANG_USE_TOOLCHAIN_TTMETAL=OFF$' "$(cmake_log)"
 }
@@ -163,10 +162,22 @@ setup() {
     grep -q "^-DTTLANG_PYTHON_VENV=$BATS_TEST_TMPDIR/metal-python-env$" "$(cmake_log)"
 }
 
-@test "ttnn dep mode is exported for setup.py" {
+@test "ttnn dep mode external is exported for setup.py" {
     run run_configure --ttnn-dep-mode external
     assert_success
     grep -q '^ENV_TTLANG_TTNN_DEP_MODE=external$' "$(cmake_log)"
+}
+
+@test "ttnn dep mode pypi is exported for setup.py" {
+    run run_configure --ttnn-dep-mode pypi
+    assert_success
+    grep -q '^ENV_TTLANG_TTNN_DEP_MODE=pypi$' "$(cmake_log)"
+}
+
+@test "ttnn dep mode bundled is exported for setup.py" {
+    run run_configure --ttnn-dep-mode bundled
+    assert_success
+    grep -q '^ENV_TTLANG_TTNN_DEP_MODE=bundled$' "$(cmake_log)"
 }
 
 @test "ttnn dep mode option requires an argument" {
