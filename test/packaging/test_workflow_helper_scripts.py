@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import shlex
 import subprocess
 import sys
 import zipfile
@@ -160,47 +161,30 @@ def _env_with_pythonpath(path: Path) -> dict[str, str]:
     return env
 
 
-def _write_owner_executable_script(script_path: Path, text: str) -> None:
-    if script_path.exists():
-        script_path.unlink()
-    file_descriptor = os.open(
-        script_path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-        0o500,
+def _env_with_pythonpath_and_ldd_output(
+    path: Path,
+    *,
+    stdout: str,
+    stderr: str = "",
+    exit_code: int = 0,
+) -> dict[str, str]:
+    env = _env_with_pythonpath(path)
+    script = (
+        "import sys\n"
+        f"sys.stdout.write({stdout!r})\n"
+        f"sys.stderr.write({stderr!r})\n"
+        f"raise SystemExit({exit_code})\n"
     )
-    with os.fdopen(file_descriptor, "w") as script_file:
-        script_file.write(text)
+    env["TTLANG_LDD_COMMAND"] = shlex.join([sys.executable, "-c", script])
+    return env
 
 
 def _env_with_pythonpath_and_ldd(path: Path) -> dict[str, str]:
-    env = _env_with_pythonpath(path)
-    bin_dir = path / "bin"
-    bin_dir.mkdir()
     ttnncpp_path = path / "ttnn" / "build" / "lib" / "_ttnncpp.so"
-    ldd = bin_dir / "ldd"
-    _write_owner_executable_script(
-        ldd,
-        "#!/usr/bin/env bash\n"
-        f"printf '\\t_ttnncpp.so => {ttnncpp_path} (0x00000000)\\n'\n",
+    return _env_with_pythonpath_and_ldd_output(
+        path,
+        stdout=f"\t_ttnncpp.so => {ttnncpp_path} (0x00000000)\n",
     )
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    return env
-
-
-def _env_with_pythonpath_and_ldd_stub(
-    path: Path, *, stub_body: str, exit_code: int = 0
-) -> dict[str, str]:
-    """Install a fake `ldd` on PATH that runs ``stub_body`` and exits ``exit_code``."""
-    env = _env_with_pythonpath(path)
-    bin_dir = path / "bin"
-    bin_dir.mkdir()
-    ldd = bin_dir / "ldd"
-    _write_owner_executable_script(
-        ldd,
-        f"#!/usr/bin/env bash\n{stub_body}\nexit {exit_code}\n",
-    )
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    return env
 
 
 CHECK_INSTALLED_TTNN = REPO_ROOT / ".github" / "scripts" / "check-installed-ttnn.py"
@@ -277,9 +261,10 @@ def test_check_installed_ttnn_bundled_fails_when_ldd_exits_nonzero(
     tmp_path: Path,
 ) -> None:
     _write_fake_ttnn(tmp_path, with_native_libs=True)
-    env = _env_with_pythonpath_and_ldd_stub(
+    env = _env_with_pythonpath_and_ldd_output(
         tmp_path,
-        stub_body="echo 'ldd: cannot read object' >&2",
+        stdout="",
+        stderr="ldd: cannot read object\n",
         exit_code=1,
     )
 
@@ -293,9 +278,9 @@ def test_check_installed_ttnn_bundled_fails_on_unresolved_libraries(
     tmp_path: Path,
 ) -> None:
     _write_fake_ttnn(tmp_path, with_native_libs=True)
-    env = _env_with_pythonpath_and_ldd_stub(
+    env = _env_with_pythonpath_and_ldd_output(
         tmp_path,
-        stub_body="printf '\\tlibmissing.so => not found\\n'",
+        stdout="\tlibmissing.so => not found\n",
     )
 
     result = _run_script(CHECK_INSTALLED_TTNN, "--mode", "bundled", env=env)
@@ -309,9 +294,9 @@ def test_check_installed_ttnn_bundled_fails_when_ttnncpp_resolves_elsewhere(
 ) -> None:
     _write_fake_ttnn(tmp_path, with_native_libs=True)
     # ldd reports _ttnncpp.so resolved to a system path rather than the bundled one.
-    env = _env_with_pythonpath_and_ldd_stub(
+    env = _env_with_pythonpath_and_ldd_output(
         tmp_path,
-        stub_body="printf '\\t_ttnncpp.so => /usr/lib/_ttnncpp.so (0x00000000)\\n'",
+        stdout="\t_ttnncpp.so => /usr/lib/_ttnncpp.so (0x00000000)\n",
     )
 
     result = _run_script(CHECK_INSTALLED_TTNN, "--mode", "bundled", env=env)

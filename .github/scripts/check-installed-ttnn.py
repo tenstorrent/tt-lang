@@ -17,6 +17,7 @@ import importlib.util
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 
@@ -28,6 +29,7 @@ REQUIRED_BUNDLED_RELATIVE = (
 
 _LDD_NOT_FOUND_RE = re.compile(r"=>\s*not found")
 _LDD_ARROW_RE = re.compile(r"^\s*([^\s]+)\s*=>\s*(\S+)", re.MULTILINE)
+_LDD_COMMAND_ENV = "TTLANG_LDD_COMMAND"
 
 
 def check_external() -> int:
@@ -35,6 +37,13 @@ def check_external() -> int:
         print("external wheel unexpectedly installed ttnn", file=sys.stderr)
         return 1
     return 0
+
+
+def _ldd_command() -> list[str]:
+    command = shlex.split(os.environ.get(_LDD_COMMAND_ENV, "ldd"))
+    if not command:
+        raise ValueError(f"{_LDD_COMMAND_ENV} must not be empty")
+    return command
 
 
 def check_bundled() -> int:
@@ -55,8 +64,13 @@ def check_bundled() -> int:
     # Strip LD_LIBRARY_PATH so a stray ttnncpp on the loader path can't mask a
     # broken RUNPATH. ldd inherits everything else (PATH for the helper, etc.).
     ldd_env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
+    try:
+        ldd_command = _ldd_command()
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
     ldd_result = subprocess.run(
-        ["ldd", str(ttnn_extension)],
+        [*ldd_command, str(ttnn_extension)],
         capture_output=True,
         text=True,
         env=ldd_env,
