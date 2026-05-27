@@ -178,6 +178,24 @@ Create a debug configuration in `.vscode/launch.json`:
 3. Press F5 or select "Debug TT-Lang Simulator" from the Run menu
 4. The debugger stops at breakpoints, allowing variable inspection and step-through execution
 
+## Python profiling (`tt-lang-sim-profile`)
+
+`test/scripts/tt-lang-sim-profile` runs a simulator script under `cProfile` and
+prints a top-30 hotspot report (by cumulative time and by internal time) to
+stderr after the run.  All arguments are forwarded to `tt-lang-sim` unchanged.
+
+```bash
+# Profile with stdout/stderr interleaved
+test/scripts/tt-lang-sim-profile examples/matmul-tutorial/step_1_single_node_single_tile_block.py --dry-run --scheduler=greedy
+
+# Save binary cProfile stats for later inspection with python -m pstats
+test/scripts/tt-lang-sim-profile examples/matmul-tutorial/step_1_single_node_single_tile_block.py --dry-run --save /tmp/stats.prof
+python -m pstats /tmp/stats.prof
+```
+
+The `--save FILE` option must appear after all other arguments to avoid ambiguity
+with simulator flags that also begin with `--`.
+
 ## Dry-run mode
 
 Pass `--dry-run` to `ttlang-sim` (or call `sim.context.set_dry_run(True)` from Python)
