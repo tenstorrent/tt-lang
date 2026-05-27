@@ -15,6 +15,9 @@ prints shell exports for `TT_METAL_HOME`, `TT_METAL_RUNTIME_ROOT`,
 `PYTHONPATH`, and `LD_LIBRARY_PATH`. The generated environment lets Python
 import `ttnn` from the selected tt-metal tree while importing `ttl` from the
 installed tt-lang wheel.
+
+The selected tt-metal tree is trusted input. Passing `--check` imports `ttnn`
+from that tree and therefore may execute native code from `_ttnn.so`.
 """
 
 from __future__ import annotations
@@ -39,6 +42,8 @@ def _resolve_existing_dir(raw_path: str, label: str) -> Path:
     resolved_path = Path(raw_path).expanduser().resolve()
     if not resolved_path.is_dir():
         raise ValueError(f"{label} is not a directory: {resolved_path}")
+    if ":" in str(resolved_path):
+        raise ValueError(f"{label} must not contain ':' because it is used in paths")
     return resolved_path
 
 
@@ -182,7 +187,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="validate that the resulting environment can import ttnn",
+        help=(
+            "validate that the resulting environment can import ttnn; only use "
+            "with trusted tt-metal builds because this imports native code"
+        ),
     )
     args = parser.parse_args(argv)
 

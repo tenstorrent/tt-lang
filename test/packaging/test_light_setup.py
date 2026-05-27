@@ -50,10 +50,23 @@ def test_light_metadata_pins_ttlang_version(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "tt-lang==0.71.0.dev20260525" in _requires_text(tmp_path)
+    assert "tt-lang==0.71.0.dev20260525+light" in _requires_text(tmp_path)
 
 
 def test_light_metadata_accepts_explicit_ttlang_version(tmp_path: Path) -> None:
+    result = _run_egg_info(
+        tmp_path,
+        {
+            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+            "TTLANG_LIGHT_TTLANG_VERSION": "0.71.0.dev20260524+light",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "tt-lang==0.71.0.dev20260524+light" in _requires_text(tmp_path)
+
+
+def test_light_metadata_rejects_ttlang_without_light_label(tmp_path: Path) -> None:
     result = _run_egg_info(
         tmp_path,
         {
@@ -62,8 +75,8 @@ def test_light_metadata_accepts_explicit_ttlang_version(tmp_path: Path) -> None:
         },
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "tt-lang==0.71.0.dev20260524" in _requires_text(tmp_path)
+    assert result.returncode != 0
+    assert "requires local version label +light" in result.stderr
 
 
 def test_light_metadata_requires_pretend_version(tmp_path: Path) -> None:

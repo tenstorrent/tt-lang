@@ -66,7 +66,8 @@ pip install \
 Use `tt-lang-light` only when the environment already has a newer local
 tt-metal source or install layout that should provide `ttnn`. The package is a
 metapackage: `tt-lang-light==X` depends on the matching no-ttnn core wheel
-`tt-lang==X+light`.
+`tt-lang==X+light`. Install either `tt-lang` or `tt-lang-light` in an
+environment, not both.
 
 ```bash
 pip install \
@@ -76,7 +77,8 @@ pip install \
 ```
 
 Configure a native tt-metal source/build layout before running hardware
-programs:
+programs. The `--check` option imports `ttnn` from the selected tree, so use it
+only with trusted tt-metal builds:
 
 ```bash
 eval "$(tt-lang-setup-external-tt-metal \

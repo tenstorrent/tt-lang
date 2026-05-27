@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import InvalidVersion, Version
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.sdist import sdist as _sdist
@@ -33,7 +35,6 @@ class NoSdist(_sdist):
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _TTNN_DEP_MODES = ("pypi", "external", "bundled")
-_NON_FINAL_VERSION_RE = re.compile(r"(?:\.dev|a|b|rc)\d+", re.IGNORECASE)
 
 
 def _ttnn_dep_mode():
@@ -89,7 +90,7 @@ def _read_install_requires():
     mode = _ttnn_dep_mode()
     if mode == "pypi":
         requirements.append(_ttnn_requirement())
-    elif mode == "bundled":
+    elif mode in ("external", "bundled"):
         requirements.extend(
             _missing_requirements(requirements, TTNN_RUNTIME_REQUIREMENTS)
         )
@@ -98,14 +99,20 @@ def _read_install_requires():
 
 def _missing_requirements(existing_requirements, extra_requirements):
     existing_names = {
-        requirement.split(";", 1)[0].split("==", 1)[0].split(">=", 1)[0].strip().lower()
-        for requirement in existing_requirements
+        _requirement_name(requirement) for requirement in existing_requirements
     }
     return [
         requirement
         for requirement in extra_requirements
-        if requirement.split(">=", 1)[0].strip().lower() not in existing_names
+        if _requirement_name(requirement) not in existing_names
     ]
+
+
+def _requirement_name(requirement_text):
+    try:
+        return Requirement(requirement_text).name.lower()
+    except InvalidRequirement as error:
+        raise SystemExit(f"invalid requirement {requirement_text!r}") from error
 
 
 def get_version_from_git():
@@ -150,17 +157,29 @@ def get_version_from_git():
 
 
 def _validate_ttnn_dep_mode_version(version):
-    if _ttnn_dep_mode() not in ("external", "bundled"):
+    mode = _ttnn_dep_mode()
+    if mode not in ("external", "bundled"):
         return
     if not os.environ.get("TTLANG_PRETEND_VERSION", "").strip():
         raise SystemExit(
-            f"TTLANG_TTNN_DEP_MODE={_ttnn_dep_mode()} requires TTLANG_PRETEND_VERSION "
+            f"TTLANG_TTNN_DEP_MODE={mode} requires TTLANG_PRETEND_VERSION "
             "so internal wheels cannot be confused with PyPI release wheels"
         )
-    if not _NON_FINAL_VERSION_RE.search(version):
+
+    try:
+        parsed_version = Version(version)
+    except InvalidVersion as error:
+        raise SystemExit(f"invalid TTLANG_PRETEND_VERSION {version!r}") from error
+
+    if not parsed_version.is_devrelease and not parsed_version.is_prerelease:
         raise SystemExit(
-            f"TTLANG_TTNN_DEP_MODE={_ttnn_dep_mode()} requires a non-final version "
+            f"TTLANG_TTNN_DEP_MODE={mode} requires a non-final version "
             "such as 0.71.0.dev20260525 or 0.71.0rc1"
+        )
+    if mode == "external" and parsed_version.local != "light":
+        raise SystemExit(
+            "TTLANG_TTNN_DEP_MODE=external requires a +light local version "
+            "such as 0.71.0.dev20260525+light"
         )
 
 
@@ -207,6 +226,13 @@ class CMakeBuild(build_ext):
                 else "$ORIGIN"
             )
             self.spawn(["patchelf", "--set-rpath", rpath, so_file])
+
+    def _remove_bundled_ttnn(self, install_dir):
+        """Remove stale bundled payloads left by earlier wheel builds."""
+        for package_name in ("ttnn", "tracy"):
+            package_dir = install_dir / package_name
+            if package_dir.exists():
+                shutil.rmtree(package_dir)
 
     def _sanitize_env_for_cmake(self):
         """Remove pip build-isolation env vars that break cmake's nested pip calls.
@@ -319,6 +345,8 @@ class CMakeBuild(build_ext):
 
         if _ttnn_dep_mode() == "bundled":
             copy_bundled_ttnn(BUNDLED_TT_METAL_ROOT, install_dir)
+        else:
+            self._remove_bundled_ttnn(install_dir)
 
         # Post-install: strip binaries and fix RPATH for wheel distribution
         self._strip_binaries(install_dir)

@@ -578,9 +578,9 @@ Automatic S3 publishing should use this policy:
   distinct from the public PyPI artifact version, or when the S3 artifact is
   byte-for-byte equivalent in dependency semantics.
 - Nightly builds do not create Git tags. The scheduled workflow computes a
-  PEP 440 development version such as `0.72.0.dev20260527`, where the base
-  version is the next patch release after the latest stable tag reachable from
-  `HEAD`, and the numeric suffix is a UTC date.
+  PEP 440 development version such as `0.71.0.dev20260527`, where the base
+  version matches the latest stable tag reachable from `HEAD`, and the numeric
+  suffix is a UTC date.
 - Scheduled reruns overwrite the same date-based version in the S3 index. This
   keeps nightly versions readable, but existing local pip caches may still hold
   the older wheel for that version.
@@ -686,6 +686,7 @@ python -c 'import ttl, ttnn; print(ttl.__version__, ttnn.__file__)'
 | `CMAKE_BUILD_TYPE`               | `Release` | Build type (Debug, Release, RelWithDebInfo)                                          |
 | `LLVM_BUILD_TYPE`                | `Release` | LLVM build type (independent of project build type)                                  |
 | `TTLANG_TOOLCHAIN_DIR`           | —          | Toolchain prefix for LLVM, tt-metal, and venv                                        |
+| `TTLANG_PYTHON_VENV`            | —          | Existing Python virtual environment used by configure/build                          |
 | `TTLANG_USE_TOOLCHAIN`           | `OFF`     | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR`                                  |
 | `TTLANG_BUILD_TOOLCHAIN`         | `OFF`     | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
 | `TTLANG_EXTERNAL_TT_METAL_DIR`    | —          | Existing tt-metal source or install directory                                        |

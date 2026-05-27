@@ -14,6 +14,8 @@ import glob
 import sys
 import zipfile
 
+from packaging.requirements import InvalidRequirement, Requirement
+
 MODES = ("pypi", "external", "bundled")
 
 
@@ -23,6 +25,24 @@ def _read_metadata(wheel_path: str) -> str:
             name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
         )
         return wheel.read(metadata_name).decode()
+
+
+def _has_bundled_ttnn_payload(wheel_path: str) -> bool:
+    with zipfile.ZipFile(wheel_path) as wheel:
+        return any(name.startswith("ttnn/") for name in wheel.namelist())
+
+
+def _requires_ttnn(metadata: str) -> bool:
+    for line in metadata.splitlines():
+        if not line.startswith("Requires-Dist:"):
+            continue
+        try:
+            requirement = Requirement(line.split(":", 1)[1].strip())
+        except InvalidRequirement as error:
+            raise ValueError(f"invalid Requires-Dist line: {line}") from error
+        if requirement.name == "ttnn":
+            return True
+    return False
 
 
 def main() -> int:
@@ -39,13 +59,17 @@ def main() -> int:
         )
         return 1
 
-    metadata = _read_metadata(wheels[0])
-    has_ttnn = any(
-        line.startswith("Requires-Dist: ttnn") for line in metadata.splitlines()
-    )
+    try:
+        has_ttnn = _requires_ttnn(_read_metadata(wheels[0]))
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
 
     if args.mode in ("external", "bundled") and has_ttnn:
         print(f"{args.mode} wheel metadata must not require ttnn", file=sys.stderr)
+        return 1
+    if args.mode == "external" and _has_bundled_ttnn_payload(wheels[0]):
+        print("external wheel must not bundle a ttnn payload", file=sys.stderr)
         return 1
     if args.mode == "pypi" and not has_ttnn:
         print("default wheel metadata must require ttnn", file=sys.stderr)

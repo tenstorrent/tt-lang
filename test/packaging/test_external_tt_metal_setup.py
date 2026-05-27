@@ -93,3 +93,16 @@ def test_native_layout_rejects_missing_explicit_build_dir(tmp_path: Path) -> Non
         assert "tt-metal build directory is not a directory" in str(error)
     else:
         raise AssertionError("missing explicit build directory must fail")
+
+
+def test_rejects_colon_in_path(tmp_path: Path) -> None:
+    module = _load_module()
+    bad_root = tmp_path / "tt:metal"
+    bad_root.mkdir()
+
+    try:
+        module.detect_external_tt_metal(bad_root)
+    except ValueError as error:
+        assert "must not contain ':'" in str(error)
+    else:
+        raise AssertionError("paths containing ':' must fail")

@@ -4,8 +4,8 @@
 """Print a PEP 440 nightly version derived from reachable release tags.
 
 Reads `git tag --merged HEAD --list 'v[0-9]*'`, picks the greatest stable
-vMAJOR.MINOR.PATCH tag, and prints `MAJOR.MINOR.(PATCH+1).devYYYYMMDD` using
-today's UTC date.
+vMAJOR.MINOR.PATCH tag, and prints `MAJOR.MINOR.PATCH.devYYYYMMDD` using today's
+UTC date.
 
 Usage: compute-nightly-version.py
 """
@@ -36,7 +36,7 @@ def main() -> int:
 
     major, minor, patch = max(stable_versions)
     nightly_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
-    print(f"{major}.{minor}.{patch + 1}.dev{nightly_date}")
+    print(f"{major}.{minor}.{patch}.dev{nightly_date}")
     return 0
 
 

@@ -160,7 +160,9 @@ def copy_bundled_ttnn(tt_metal_root: Path, build_lib: Path) -> None:
     )
 
     lib_dir = ttnn_package / "build" / "lib"
-    _copy_patterns(tt_metal_root / "lib", lib_dir, _LIB_PATTERNS)
+    _copy_patterns(
+        tt_metal_root / "lib", lib_dir, _LIB_PATTERNS, preserve_symlinks=True
+    )
     _require_file(lib_dir / "_ttnn.so", "bundled _ttnn.so")
     shutil.copy2(lib_dir / "_ttnn.so", ttnn_package / "_ttnn.so")
     (lib_dir / "_ttnn.so").unlink()
@@ -221,6 +223,7 @@ def _copy_patterns(
     patterns: tuple[str, ...],
     exclude_files: set[str] | None = None,
     required: bool = True,
+    preserve_symlinks: bool = False,
 ) -> None:
     if not src_dir.is_dir():
         if required:
@@ -240,7 +243,7 @@ def _copy_patterns(
                 continue
             dst_path = dst_dir / relative_path
             dst_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_path, dst_path)
+            shutil.copy2(src_path, dst_path, follow_symlinks=not preserve_symlinks)
             copied += 1
 
     if required and copied == 0:

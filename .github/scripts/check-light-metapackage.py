@@ -11,6 +11,8 @@ import glob
 import sys
 import zipfile
 
+from packaging.requirements import InvalidRequirement, Requirement
+
 
 def _metadata_for(pattern: str) -> str:
     wheels = glob.glob(pattern)
@@ -29,13 +31,27 @@ def main() -> int:
     parser.add_argument("--expect-ttlang-version", required=True)
     args = parser.parse_args()
 
-    metadata = _metadata_for(f"{args.dist_dir}/tt_lang_light-*.whl")
-    normalized_lines = [line.replace(" ", "") for line in metadata.splitlines()]
-    expected = f"Requires-Dist:tt-lang=={args.expect_ttlang_version}"
+    requirements = []
+    for line in _metadata_for(f"{args.dist_dir}/tt_lang_light-*.whl").splitlines():
+        if not line.startswith("Requires-Dist:"):
+            continue
+        try:
+            requirements.append(Requirement(line.split(":", 1)[1].strip()))
+        except InvalidRequirement as error:
+            print(f"invalid Requires-Dist line: {line}", file=sys.stderr)
+            return 1
 
-    if expected not in normalized_lines:
+    expected_specifier = f"=={args.expect_ttlang_version}"
+    has_expected_pin = any(
+        requirement.name.lower() == "tt-lang"
+        and str(requirement.specifier) == expected_specifier
+        for requirement in requirements
+    )
+
+    if not has_expected_pin:
         print(
-            f"tt-lang-light must require {expected!r}; metadata had no match",
+            "tt-lang-light must require "
+            f"tt-lang{expected_specifier}; metadata had no match",
             file=sys.stderr,
         )
         return 1

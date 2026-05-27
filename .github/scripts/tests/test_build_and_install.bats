@@ -19,8 +19,9 @@ bash_log() { echo "$BATS_TEST_TMPDIR/bash.log"; }
 # real cleanup scripts copied into the synthetic repo.
 setup_stubs() {
     mkdir -p "$BATS_TEST_TMPDIR/bin"
-    cat > "$BATS_TEST_TMPDIR/bin/cmake" <<EOF
+cat > "$BATS_TEST_TMPDIR/bin/cmake" <<EOF
 #!/bin/bash
+printf 'ENV_TTLANG_TTNN_DEP_MODE=%s\n' "\${TTLANG_TTNN_DEP_MODE:-}" >> "$(cmake_log)"
 printf '%s\n' "\$@" >> "$(cmake_log)"
 echo "---END-INVOCATION---" >> "$(cmake_log)"
 EOF
@@ -160,6 +161,26 @@ setup() {
     run run_configure --python-venv "$BATS_TEST_TMPDIR/metal-python-env"
     assert_success
     grep -q "^-DTTLANG_PYTHON_VENV=$BATS_TEST_TMPDIR/metal-python-env$" "$(cmake_log)"
+}
+
+@test "ttnn dep mode is exported for setup.py" {
+    run run_configure --ttnn-dep-mode external
+    assert_success
+    grep -q '^ENV_TTLANG_TTNN_DEP_MODE=external$' "$(cmake_log)"
+}
+
+@test "ttnn dep mode option requires an argument" {
+    run run_configure --ttnn-dep-mode
+    assert_failure
+    assert_output --partial "ERROR: --ttnn-dep-mode requires a mode"
+    [[ ! -s "$(cmake_log)" ]]
+}
+
+@test "ttnn dep mode rejects unknown values" {
+    run run_configure --ttnn-dep-mode invalid
+    assert_failure
+    assert_output --partial "ERROR: --ttnn-dep-mode must be one of"
+    [[ ! -s "$(cmake_log)" ]]
 }
 
 @test "external python venv option requires an argument" {

@@ -80,7 +80,7 @@ jobs:
       - name: Install wheel build tools
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
-          pip install auditwheel patchelf
+          pip install auditwheel packaging patchelf
 
       - name: Build tt-lang wheel
         env:
@@ -108,11 +108,17 @@ jobs:
           auditwheel repair dist-raw/*.whl --wheel-dir=dist
 
       - name: Check tt-lang wheel metadata
-        run: python3.12 .github/scripts/check-wheel-ttnn-metadata.py --mode "${{ inputs.ttnn_dep_mode }}" --dist-dir dist
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          python .github/scripts/check-wheel-ttnn-metadata.py \
+            --mode "${{ inputs.ttnn_dep_mode }}" \
+            --dist-dir dist
 
       - name: Check bundled ttnn wheel payload
         if: ${{ inputs.ttnn_dep_mode == 'bundled' }}
-        run: python3.12 .github/scripts/check-wheel-bundled-payload.py --dist-dir dist
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          python .github/scripts/check-wheel-bundled-payload.py --dist-dir dist
 
       - name: Test tt-lang wheel
         run: |
@@ -160,7 +166,8 @@ jobs:
       - name: Check internal metapackage metadata
         if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' }}
         run: |
-          python3.12 .github/scripts/check-light-metapackage.py \
+          source /opt/ttlang-toolchain/venv/bin/activate
+          python .github/scripts/check-light-metapackage.py \
             --dist-dir dist \
             --expect-ttlang-version "${{ format('{0}+light', inputs.pretend_version) }}"
 

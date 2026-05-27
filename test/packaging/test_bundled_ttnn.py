@@ -44,6 +44,7 @@ def _make_tt_metal_install(tmp_path: Path) -> Path:
         "libfmt.so.11",
     ):
         _write(root / "lib" / library_name)
+    (root / "lib" / "libtt-umd.so").symlink_to("libtt-umd.so.0")
 
     _write(root / "runtime" / "hw" / "firmware.hex")
     _write(root / "runtime" / "sfpi" / "include" / "sfpi.h")
@@ -83,6 +84,10 @@ def test_copy_bundled_ttnn_uses_pip_wheel_layout(tmp_path: Path) -> None:
     assert (build_lib / "ttnn" / "_ttnn.so").is_file()
     assert (build_lib / "ttnn" / "build" / "lib" / "_ttnncpp.so").is_file()
     assert (build_lib / "ttnn" / "build" / "lib" / "libtt_metal.so").is_file()
+    assert (build_lib / "ttnn" / "build" / "lib" / "libtt-umd.so").is_symlink()
+    assert (build_lib / "ttnn" / "build" / "lib" / "libtt-umd.so").readlink() == Path(
+        "libtt-umd.so.0"
+    )
     assert (build_lib / "ttnn" / "runtime" / "hw" / "firmware.hex").is_file()
     assert not (build_lib / "ttnn" / "runtime" / "sfpi").exists()
     assert (build_lib / "ttnn" / "generated" / "fabric" / "mesh.yaml").is_file()

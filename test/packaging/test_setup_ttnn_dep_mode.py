@@ -75,12 +75,15 @@ def test_external_metadata_omits_ttnn(tmp_path: Path) -> None:
         tmp_path,
         {
             "TTLANG_TTNN_DEP_MODE": "external",
-            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525+light",
         },
     )
 
+    requirements = _requires_text(tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "ttnn==" not in _requires_text(tmp_path)
+    assert "ttnn==" not in requirements
+    assert "loguru>=0.6.0" in requirements
+    assert "networkx>=3.1" in requirements
 
 
 def test_bundled_metadata_omits_ttnn_and_adds_ttnn_runtime_deps(
@@ -126,6 +129,19 @@ def test_external_metadata_rejects_final_version(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "requires a non-final version" in result.stderr
+
+
+def test_external_metadata_requires_light_label(tmp_path: Path) -> None:
+    result = _run_egg_info(
+        tmp_path,
+        {
+            "TTLANG_TTNN_DEP_MODE": "external",
+            "TTLANG_PRETEND_VERSION": "0.71.0.dev20260525",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "requires a +light local version" in result.stderr
 
 
 def test_bundled_metadata_requires_tt_metal_root(tmp_path: Path) -> None:

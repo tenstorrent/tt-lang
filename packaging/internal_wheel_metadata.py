@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import os
 import pathlib
-import re
 import subprocess
 
-_NON_FINAL_VERSION_RE = re.compile(r"(?:\.dev|a|b|rc)\d+", re.IGNORECASE)
+from packaging.version import InvalidVersion, Version
 
 
 def get_version(repo_root: pathlib.Path) -> str:
@@ -19,29 +18,30 @@ def get_version(repo_root: pathlib.Path) -> str:
     if pretend:
         return pretend
     try:
-        tag = (
-            subprocess.check_output(
-                ["git", "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0"],
-                stderr=subprocess.DEVNULL,
-                text=True,
-                cwd=str(repo_root),
-            )
-            .strip()
-            .lstrip("v")
-        )
-        commits = subprocess.check_output(
-            ["git", "rev-list", f"v{tag}..HEAD", "--count"],
+        tag = subprocess.check_output(
+            ["git", "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0"],
             stderr=subprocess.DEVNULL,
             text=True,
             cwd=str(repo_root),
         ).strip()
-        base, sep, local = tag.partition("+")
-        local_suffix = f"+{local}" if sep else ""
-        if commits and commits != "0":
-            return f"{base}.dev{commits}{local_suffix}"
-        return f"{base}{local_suffix}"
-    except Exception:
-        return "0.2.0.dev0"
+        commits = subprocess.check_output(
+            ["git", "rev-list", f"{tag}..HEAD", "--count"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            cwd=str(repo_root),
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            "failed to derive internal wheel version from git; set "
+            "TTLANG_PRETEND_VERSION explicitly"
+        ) from error
+
+    tag = tag.lstrip("v")
+    base, sep, local = tag.partition("+")
+    local_suffix = f"+{local}" if sep else ""
+    if commits and commits != "0":
+        return f"{base}.dev{commits}{local_suffix}"
+    return f"{base}{local_suffix}"
 
 
 def require_non_final_internal_version(package_name: str, version: str) -> None:
@@ -50,8 +50,26 @@ def require_non_final_internal_version(package_name: str, version: str) -> None:
             f"{package_name} requires TTLANG_PRETEND_VERSION so internal wheels "
             "cannot be confused with PyPI release wheels"
         )
-    if not _NON_FINAL_VERSION_RE.search(version):
+
+    try:
+        parsed_version = Version(version)
+    except InvalidVersion as error:
+        raise SystemExit(f"{package_name} has invalid version {version!r}") from error
+
+    if not parsed_version.is_devrelease and not parsed_version.is_prerelease:
         raise SystemExit(
             f"{package_name} requires a non-final version such as "
             "0.71.0.dev20260525 or 0.71.0rc1"
+        )
+
+
+def require_local_version_label(package_name: str, version: str, label: str) -> None:
+    try:
+        parsed_version = Version(version)
+    except InvalidVersion as error:
+        raise SystemExit(f"{package_name} has invalid version {version!r}") from error
+
+    if parsed_version.local != label:
+        raise SystemExit(
+            f"{package_name} requires local version label +{label}; got {version}"
         )

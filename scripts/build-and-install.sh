@@ -32,6 +32,8 @@
 #                                 (forwarded as -DPython3_EXECUTABLE=<path>)
 #   --python-venv <path>          Existing Python venv to use for configure/build
 #                                 (forwarded as -DTTLANG_PYTHON_VENV=<path>)
+#   --ttnn-dep-mode <mode>        Wheel ttnn dependency mode for setup.py
+#                                 (pypi, external, or bundled)
 #
 # Typical multi-stage usage (build outside Docker, copy results in):
 #   1. build-and-install.sh --configure-only               # Build LLVM + tt-metal
@@ -57,6 +59,7 @@ PYTHON_EXECUTABLE=""
 PYTHON_VENV=""
 EXTERNAL_TT_METAL_DIR=""
 EXTERNAL_TT_METAL_BUILD_DIR=""
+TTNN_DEP_MODE="${TTLANG_TTNN_DEP_MODE:-}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -132,6 +135,14 @@ while [[ $# -gt 0 ]]; do
             PYTHON_VENV="$2"
             shift 2
             ;;
+        --ttnn-dep-mode)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --ttnn-dep-mode requires a mode" >&2
+                exit 1
+            fi
+            TTNN_DEP_MODE="$2"
+            shift 2
+            ;;
         *)
             echo "WARNING: Unknown argument: $1" >&2
             shift
@@ -147,6 +158,18 @@ fi
 if [ "$MODE" = "llvm-toolchain-only" ] && [ -z "$EXTERNAL_TT_METAL_DIR" ]; then
     echo "ERROR: --llvm-toolchain-only requires --external-tt-metal-dir" >&2
     exit 1
+fi
+
+if [ -n "$TTNN_DEP_MODE" ]; then
+    case "$TTNN_DEP_MODE" in
+        pypi | external | bundled)
+            export TTLANG_TTNN_DEP_MODE="$TTNN_DEP_MODE"
+            ;;
+        *)
+            echo "ERROR: --ttnn-dep-mode must be one of: pypi, external, bundled" >&2
+            exit 1
+            ;;
+    esac
 fi
 
 TTLANG_TOOLCHAIN_DIR="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"

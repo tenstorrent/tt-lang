@@ -4,7 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Build the internal tt-lang-light metapackage. It ships no Python modules; it
-# pins an internal tt-lang wheel built with TTLANG_TTNN_DEP_MODE=external.
+# pins an internal tt-lang wheel built with TTLANG_TTNN_DEP_MODE=external. The
+# pinned tt-lang wheel uses a +light local version and must stay on the internal
+# S3 index; this metapackage is not suitable for public PyPI.
 
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ REPO_ROOT = PKG_ROOT.parent.parent
 sys.path.insert(0, str(PKG_ROOT.parent))
 from internal_wheel_metadata import (  # noqa: E402
     get_version,
+    require_local_version_label,
     require_non_final_internal_version,
 )
 
@@ -34,7 +37,8 @@ class NoSdist(_sdist):
 def _ttlang_requirement(version: str) -> str:
     ttlang_version = os.environ.get("TTLANG_LIGHT_TTLANG_VERSION", "").strip()
     if not ttlang_version:
-        ttlang_version = version
+        ttlang_version = f"{version}+light"
+    require_local_version_label("tt-lang-light", ttlang_version, "light")
     return f"tt-lang == {ttlang_version}"
 
 
