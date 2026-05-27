@@ -1431,6 +1431,74 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   state.sawError = true;
 }
 
+// Maps (funcOp, coord.x, coord.y) to the last pipe schedule node id seen
+// along the current execution path.
+using ProgramOrderFrontier = llvm::DenseMap<ProgramPointIdentity, unsigned>;
+
+static void buildProgramOrderEdgesInOps(
+    Block &block, SmallVectorImpl<PipeScheduleNode> &nodes,
+    const llvm::DenseMap<PipeNodeIdentity, unsigned> &nodeIds,
+    ProgramOrderFrontier &frontier, func::FuncOp funcOp);
+
+static void buildProgramOrderEdgesInRegion(
+    Region &region, SmallVectorImpl<PipeScheduleNode> &nodes,
+    const llvm::DenseMap<PipeNodeIdentity, unsigned> &nodeIds,
+    ProgramOrderFrontier &frontier, func::FuncOp funcOp) {
+  for (Block &block : region.getBlocks()) {
+    buildProgramOrderEdgesInOps(block, nodes, nodeIds, frontier, funcOp);
+  }
+}
+
+static void buildProgramOrderEdgesInOps(
+    Block &block, SmallVectorImpl<PipeScheduleNode> &nodes,
+    const llvm::DenseMap<PipeNodeIdentity, unsigned> &nodeIds,
+    ProgramOrderFrontier &frontier, func::FuncOp funcOp) {
+  for (Operation &op : block.getOperations()) {
+    // Give each branch its own frontier copy so no ProgramOrder edge is added
+    // between sibling regions. Merge both exits afterward.
+    if (auto ifOp = llvm::dyn_cast<scf::IfOp>(op)) {
+      ProgramOrderFrontier thenFrontier = frontier;
+      buildProgramOrderEdgesInRegion(ifOp.getThenRegion(), nodes, nodeIds,
+                                     thenFrontier, funcOp);
+      ProgramOrderFrontier elseFrontier = frontier;
+      if (!ifOp.getElseRegion().empty()) {
+        buildProgramOrderEdgesInRegion(ifOp.getElseRegion(), nodes, nodeIds,
+                                       elseFrontier, funcOp);
+      }
+      frontier = std::move(thenFrontier);
+      for (auto &[key, id] : elseFrontier) {
+        frontier.insert({key, id});
+      }
+      continue;
+    }
+
+    // Recurse into non-if regions with the shared frontier.
+    for (Region &nested : op.getRegions()) {
+      buildProgramOrderEdgesInRegion(nested, nodes, nodeIds, frontier, funcOp);
+    }
+
+    // Add ProgramOrder edges for each node owned by this op. An op can map to
+    // multiple nodes (one per active coord), so scan all three node kinds.
+    for (int k = 0; k < 3; ++k) {
+      auto kind = static_cast<PipeScheduleNodeKind>(k);
+      for (unsigned idx = 0, end = nodes.size(); idx < end; ++idx) {
+        PipeScheduleNode &node = nodes[idx];
+        if (node.op != &op || node.kind != kind) {
+          continue;
+        }
+        ProgramPointIdentity programPoint{funcOp.getOperation(), node.coord.x,
+                                          node.coord.y};
+        auto lastIt = frontier.find(programPoint);
+        if (lastIt != frontier.end() && lastIt->second != idx) {
+          addPipeScheduleEdge(nodes, lastIt->second, idx,
+                              PipeScheduleEdgeKind::ProgramOrder);
+        }
+        frontier[programPoint] = idx;
+      }
+    }
+  }
+}
+
 // Verify the hidden rendezvous introduced by receiver-advertised pipe lowering.
 // Receive-side ttl.copy publishes the address; ttl.wait on that handle waits
 // for completion. Modeling those as distinct events preserves async copy
@@ -1441,36 +1509,29 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   llvm::DenseMap<PipeNodeIdentity, unsigned> nodeIds;
   llvm::DenseMap<PipeCoordIdentity, SmallVector<unsigned>> receivePostNodes;
   llvm::DenseMap<PipeCoordIdentity, SmallVector<unsigned>> receiveWaitNodes;
-  llvm::DenseMap<ProgramPointIdentity, unsigned> lastCompletionNodes;
 
+  // Pass 1: collect all pipe schedule nodes using a flat walk. No ProgramOrder
+  // edges are built here so that the CFG-aware pass can add them correctly.
   module.walk([&](Operation *op) {
     auto eventIt = state.pipeEventIndices.find(op);
     if (eventIt == state.pipeEventIndices.end()) {
       return;
     }
-    PipeEvent event = state.pipeEvents[eventIt->second];
+    const PipeEvent &event = state.pipeEvents[eventIt->second];
     if (!event.domain.known || event.domain.nodes.empty()) {
       return;
     }
-
-    auto funcOp = op->getParentOfType<func::FuncOp>();
-    if (!funcOp) {
-      return;
-    }
-
     for (Coord coord : event.domain.nodes) {
-      PipeScheduleNodeKind nodeKind;
+      PipeScheduleNodeKind kind;
       if (event.kind == PipeEventKind::Send) {
-        nodeKind = PipeScheduleNodeKind::Send;
+        kind = PipeScheduleNodeKind::Send;
       } else if (event.kind == PipeEventKind::ReceivePost) {
-        nodeKind = PipeScheduleNodeKind::ReceivePost;
+        kind = PipeScheduleNodeKind::ReceivePost;
       } else {
-        nodeKind = PipeScheduleNodeKind::ReceiveWait;
+        kind = PipeScheduleNodeKind::ReceiveWait;
       }
-
-      unsigned nodeId = addPipeScheduleNode(nodes, nodeIds, op, event.pipeType,
-                                            coord, nodeKind);
-
+      unsigned nodeId =
+          addPipeScheduleNode(nodes, nodeIds, op, event.pipeType, coord, kind);
       if (event.kind == PipeEventKind::Send) {
         sendNodes.push_back({nodeId, event.pipeType});
       } else if (event.kind == PipeEventKind::ReceivePost) {
@@ -1480,16 +1541,15 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
         receiveWaitNodes[getPipeCoordIdentity(event.pipeType, coord)].push_back(
             nodeId);
       }
-
-      ProgramPointIdentity programPoint{funcOp.getOperation(), coord.x,
-                                        coord.y};
-      auto lastIt = lastCompletionNodes.find(programPoint);
-      if (lastIt != lastCompletionNodes.end()) {
-        addPipeScheduleEdge(nodes, lastIt->second, nodeId,
-                            PipeScheduleEdgeKind::ProgramOrder);
-      }
-      lastCompletionNodes[programPoint] = nodeId;
     }
+  });
+
+  // Pass 2: CFG-aware traversal to add ProgramOrder edges. Each function
+  // gets a fresh frontier so order is local to each kernel-thread function.
+  module.walk([&](func::FuncOp funcOp) {
+    ProgramOrderFrontier frontier;
+    buildProgramOrderEdgesInRegion(funcOp.getBody(), nodes, nodeIds, frontier,
+                                   funcOp);
   });
 
   for (auto [sendNode, pipeType] : sendNodes) {
