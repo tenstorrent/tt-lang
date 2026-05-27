@@ -24,6 +24,7 @@ def ensure_dialects_registered(ctx):
 # Re-export C++-bound attributes/types for convenience.
 SliceAttr = ir.SliceAttr
 PipeRecordAttr = ir.PipeRecordAttr
+PipeNetRecordsAttr = ir.PipeNetRecordsAttr
 CircularBufferType = ir.CircularBufferType
 PipeType = ir.PipeType
 SelectedPipeSrcType = ir.SelectedPipeSrcType

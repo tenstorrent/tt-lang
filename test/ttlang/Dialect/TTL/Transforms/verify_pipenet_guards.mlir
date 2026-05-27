@@ -104,12 +104,10 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.pipenet_foreach_src attributes {
-        pipeNetId = 0 : i64,
-        pipeNetName = "foreach_net",
-        pipes = [
+      records = #ttl.pipenet_records<net 0 name "foreach_net" pipes [
           #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 1, dstEndX = 0, dstEndY = 1>,
           #ttl.pipe_record<srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
-        ]} {
+      ]>} {
     ^bb0(%pipe: !ttl.selected_pipe_src):
       %send = ttl.copy %cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
@@ -118,12 +116,10 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
       ttl.wait %send : !ttl.transfer_handle<write>
     }
     ttl.pipenet_foreach_dst attributes {
-        pipeNetId = 0 : i64,
-        pipeNetName = "foreach_net",
-        pipes = [
+      records = #ttl.pipenet_records<net 0 name "foreach_net" pipes [
           #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 1, dstEndX = 0, dstEndY = 1>,
           #ttl.pipe_record<srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
-        ]} {
+      ]>} {
     ^bb0(%pipe: !ttl.selected_pipe_dst):
       %recv_dst = ttl.cb_reserve %cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -153,12 +149,10 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.pipenet_foreach_dst attributes {
-        pipeNetId = 0 : i64,
-        pipeNetName = "gather_net",
-        pipes = [
+      records = #ttl.pipenet_records<net 0 name "gather_net" pipes [
           #ttl.pipe_record<srcX = 1, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>,
           #ttl.pipe_record<srcX = 2, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>
-        ]} {
+      ]>} {
     ^bb0(%pipe: !ttl.selected_pipe_dst):
       %recv_dst = ttl.cb_reserve %cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>

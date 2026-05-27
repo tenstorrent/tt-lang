@@ -65,6 +65,47 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("is_multicast", &PipeRecordAttr::getIsMulticast);
 
   //===--------------------------------------------------------------------===//
+  // PipeNetRecordsAttr
+  //===--------------------------------------------------------------------===//
+
+  tt_attribute_class<PipeNetRecordsAttr>(m, "PipeNetRecordsAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, int64_t pipeNetId,
+             std::optional<std::string> pipeNetName,
+             std::vector<MlirAttribute> pipes) {
+            SmallVector<PipeRecordAttr> records;
+            records.reserve(pipes.size());
+            for (MlirAttribute attr : pipes) {
+              records.push_back(mlir::cast<PipeRecordAttr>(unwrap(attr)));
+            }
+            StringAttr nameAttr;
+            if (pipeNetName.has_value()) {
+              nameAttr = StringAttr::get(unwrap(ctx), *pipeNetName);
+            }
+            return wrap(PipeNetRecordsAttr::get(unwrap(ctx), pipeNetId, nameAttr,
+                                                records));
+          },
+          nb::arg("context"), nb::arg("pipe_net_id"),
+          nb::arg("pipe_net_name").none() = nb::none(), nb::arg("pipes"))
+      .def_prop_ro("pipe_net_id", &PipeNetRecordsAttr::getPipeNetId)
+      .def_prop_ro("pipe_net_name",
+                   [](PipeNetRecordsAttr &self) -> std::optional<std::string> {
+                     if (auto nameAttr = self.getPipeNetName()) {
+                       return nameAttr.getValue().str();
+                     }
+                     return std::nullopt;
+                   })
+      .def_prop_ro("pipes", [](PipeNetRecordsAttr &self) {
+        std::vector<MlirAttribute> out;
+        out.reserve(self.getPipes().size());
+        for (PipeRecordAttr record : self.getPipes()) {
+          out.push_back(wrap(record));
+        }
+        return out;
+      });
+
+  //===--------------------------------------------------------------------===//
   // CircularBufferType
   //===--------------------------------------------------------------------===//
 

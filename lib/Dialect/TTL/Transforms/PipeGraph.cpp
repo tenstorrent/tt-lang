@@ -315,10 +315,9 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
                           "ttl.pipenet_foreach_dst";
           return;
         }
-        for (Attribute attr : foreachOp.getPipes()) {
-          auto record = mlir::cast<PipeRecordAttr>(attr);
-          if (failed(addPipeReceiver(graph, op, record,
-                                     foreachOp.getPipeNetId(),
+        PipeNetRecordsAttr records = foreachOp.getRecords();
+        for (PipeRecordAttr record : records.getPipes()) {
+          if (failed(addPipeReceiver(graph, op, record, records.getPipeNetId(),
                                      postOp.getDst()))) {
             walkResult = failure();
             return;

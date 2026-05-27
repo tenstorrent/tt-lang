@@ -316,14 +316,13 @@ static Value selectIndexByLoopIndex(RewriterBase &rewriter, Location loc,
   return selected;
 }
 
-static SmallVector<PipeType> getForeachPipeTypes(MLIRContext *context,
-                                                 int64_t pipeNetId,
-                                                 ArrayAttr pipeRecords) {
+static SmallVector<PipeType>
+getForeachPipeTypes(MLIRContext *context, int64_t pipeNetId,
+                    ::llvm::ArrayRef<PipeRecordAttr> pipeRecords) {
   SmallVector<PipeType> pipeTypes;
   pipeTypes.reserve(pipeRecords.size());
-  for (Attribute attr : pipeRecords) {
-    pipeTypes.push_back(getPipeTypeFromRecord(
-        context, mlir::cast<PipeRecordAttr>(attr), pipeNetId));
+  for (PipeRecordAttr record : pipeRecords) {
+    pipeTypes.push_back(getPipeTypeFromRecord(context, record, pipeNetId));
   }
   return pipeTypes;
 }
@@ -356,13 +355,14 @@ struct PipeNetForeachSrcLowering
   LogicalResult
   matchAndRewrite(PipeNetForeachSrcOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    SmallVector<PipeType> pipeTypes =
-        getForeachPipeTypes(op.getContext(), op.getPipeNetId(), op.getPipes());
+    PipeNetRecordsAttr records = op.getRecords();
+    SmallVector<PipeType> pipeTypes = getForeachPipeTypes(
+        op.getContext(), records.getPipeNetId(), records.getPipes());
     if (pipeTypes.empty()) {
       return rewriter.notifyMatchFailure(op, "empty PipeNet record list");
     }
     bool isMulticast =
-        mlir::cast<PipeRecordAttr>(op.getPipes()[0]).getIsMulticast();
+        mlir::cast<PipeRecordAttr>(records.getPipes()[0]).getIsMulticast();
 
     SmallVector<int64_t> srcXs, srcYs, dstStartXs, dstStartYs, dstEndXs,
         dstEndYs, senderSemIdxs, mailboxSemIdxs, numDests, srcInDstRanges;
@@ -416,7 +416,7 @@ struct PipeNetForeachSrcLowering
         rewriter, loc, SelectedPipeSrcType::get(op.getContext()), srcX, srcY,
         dstStartX, dstStartY, dstEndX, dstEndY, selectedNumDests, senderSemIdx,
         mailboxSemIdx, srcInDstRange, rewriter.getBoolAttr(isMulticast),
-        rewriter.getI64IntegerAttr(op.getPipeNetId()));
+        rewriter.getI64IntegerAttr(records.getPipeNetId()));
 
     auto nodeX =
         ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
@@ -445,13 +445,14 @@ struct PipeNetForeachDstLowering
   LogicalResult
   matchAndRewrite(PipeNetForeachDstOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    SmallVector<PipeType> pipeTypes =
-        getForeachPipeTypes(op.getContext(), op.getPipeNetId(), op.getPipes());
+    PipeNetRecordsAttr records = op.getRecords();
+    SmallVector<PipeType> pipeTypes = getForeachPipeTypes(
+        op.getContext(), records.getPipeNetId(), records.getPipes());
     if (pipeTypes.empty()) {
       return rewriter.notifyMatchFailure(op, "empty PipeNet record list");
     }
     bool isMulticast =
-        mlir::cast<PipeRecordAttr>(op.getPipes()[0]).getIsMulticast();
+        mlir::cast<PipeRecordAttr>(records.getPipes()[0]).getIsMulticast();
 
     SmallVector<int64_t> srcXs, srcYs, dstStartXs, dstStartYs, dstEndXs,
         dstEndYs, senderSemIdxs, mailboxSemIdxs, numDests, srcInDstRanges;
@@ -505,7 +506,7 @@ struct PipeNetForeachDstLowering
         rewriter, loc, SelectedPipeDstType::get(op.getContext()), srcX, srcY,
         dstStartX, dstStartY, dstEndX, dstEndY, selectedNumDests, senderSemIdx,
         mailboxSemIdx, srcInDstRange, rewriter.getBoolAttr(isMulticast),
-        rewriter.getI64IntegerAttr(op.getPipeNetId()));
+        rewriter.getI64IntegerAttr(records.getPipeNetId()));
 
     auto nodeX =
         ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
@@ -569,18 +570,18 @@ void addPipeNetForeachRecordsToIndex(ModuleOp mod, PipeNetIndex &index) {
 
   mod.walk([&](Operation *op) {
     if (auto foreachSrc = mlir::dyn_cast<PipeNetForeachSrcOp>(op)) {
-      for (Attribute attr : foreachSrc.getPipes()) {
-        addPipeType(getPipeTypeFromRecord(op->getContext(),
-                                          mlir::cast<PipeRecordAttr>(attr),
-                                          foreachSrc.getPipeNetId()));
+      PipeNetRecordsAttr records = foreachSrc.getRecords();
+      for (PipeRecordAttr record : records.getPipes()) {
+        addPipeType(getPipeTypeFromRecord(op->getContext(), record,
+                                          records.getPipeNetId()));
       }
       return;
     }
     if (auto foreachDst = mlir::dyn_cast<PipeNetForeachDstOp>(op)) {
-      for (Attribute attr : foreachDst.getPipes()) {
-        addPipeType(getPipeTypeFromRecord(op->getContext(),
-                                          mlir::cast<PipeRecordAttr>(attr),
-                                          foreachDst.getPipeNetId()));
+      PipeNetRecordsAttr records = foreachDst.getRecords();
+      for (PipeRecordAttr record : records.getPipes()) {
+        addPipeType(getPipeTypeFromRecord(op->getContext(), record,
+                                          records.getPipeNetId()));
       }
     }
   });
@@ -592,7 +593,7 @@ void collectPipeNetForeachReceiveWaitCounterIds(
     return;
   }
   if (auto foreachOp = wait->getParentOfType<PipeNetForeachDstOp>()) {
-    pipeNetIds.insert(foreachOp.getPipeNetId());
+    pipeNetIds.insert(foreachOp.getRecords().getPipeNetId());
   }
 }
 

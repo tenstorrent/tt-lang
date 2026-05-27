@@ -605,21 +605,22 @@ def TTL_PipeNetForeachSrcOp : TTL_Op<"pipenet_foreach_src",
      DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Iterate over source pipe records in a PipeNet";
   let description = [{
-    Executes the body region for each static pipe record in a PipeNet on nodes
+    Executes the body region once per static pipe record in a PipeNet on nodes
     whose coordinates match the selected record's source coordinate. The body
     receives a `!ttl.selected_pipe_src` argument representing the selected
     record for that iteration.
 
-    The `pipes` array is the complete record table for this callback. Lowering
-    preserves the callback contract by executing the region once per selected
-    record, with the selected record's coordinates and semaphore ids available
-    to selected-pipe lowering.
+    The lowered form is a loop over the records gated by a coordinate-match
+    predicate (`scf.for { scf.if (myX == srcX && myY == srcY) { body } }`); the
+    op's "executes per record" semantics is the user-visible shape, not the
+    pre-lowering control flow. The records carried by `$records` are the
+    complete table for this callback in user PipeNet construction order;
+    lowering iterates in the same order so program-order semantics is
+    preserved.
   }];
 
   let arguments = (ins
-    I64Attr:$pipeNetId,
-    ArrayAttr:$pipes,
-    OptionalAttr<StrAttr>:$pipeNetName
+    TTL_PipeNetRecordsAttr:$records
   );
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = "attr-dict-with-keyword $body";
@@ -631,21 +632,22 @@ def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
      DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Iterate over destination pipe records in a PipeNet";
   let description = [{
-    Executes the body region for each static pipe record in a PipeNet on nodes
+    Executes the body region once per static pipe record in a PipeNet on nodes
     whose coordinates are inside the selected record's destination range. The
     body receives a `!ttl.selected_pipe_dst` argument representing the selected
     record for that iteration.
 
-    The `pipes` array is the complete record table for this callback. Lowering
-    preserves the callback contract by executing the region once per selected
-    record, with the selected record's coordinates and semaphore ids available
-    to selected-pipe lowering.
+    The lowered form is a loop over the records gated by a destination-range
+    predicate (`scf.for { scf.if (myX in [dstStartX, dstEndX] && myY in
+    [dstStartY, dstEndY]) { body } }`); the op's "executes per record"
+    semantics is the user-visible shape, not the pre-lowering control flow.
+    The records carried by `$records` are the complete table for this callback
+    in user PipeNet construction order; lowering iterates in the same order so
+    program-order semantics is preserved.
   }];
 
   let arguments = (ins
-    I64Attr:$pipeNetId,
-    ArrayAttr:$pipes,
-    OptionalAttr<StrAttr>:$pipeNetName
+    TTL_PipeNetRecordsAttr:$records
   );
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = "attr-dict-with-keyword $body";

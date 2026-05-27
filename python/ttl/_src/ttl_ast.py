@@ -479,6 +479,12 @@ class TTLGenericCompiler(TTCompilerBase):
             )
             for pipe in pipenet.pipes
         ]
+        records_attr = ttl.PipeNetRecordsAttr.get(
+            self.ctx,
+            pipenet.pipe_net_id,
+            pipe_net_name=pipe_net_name,
+            pipes=pipe_records,
+        )
         decl_file = getattr(pipenet, "_source_file", None)
         decl_line = getattr(pipenet, "_source_line", None)
         loc = None
@@ -486,20 +492,10 @@ class TTLGenericCompiler(TTCompilerBase):
             loc = Location.file(decl_file, decl_line, 1, self.ctx)
 
         if method_name == "if_src":
-            op = ttl.pipenet_foreach_src(
-                pipenet.pipe_net_id,
-                pipe_records,
-                pipe_net_name=pipe_net_name,
-                loc=loc,
-            )
+            op = ttl.pipenet_foreach_src(records_attr, loc=loc)
             pipe_type = ttl.SelectedPipeSrcType.get(self.ctx)
         else:
-            op = ttl.pipenet_foreach_dst(
-                pipenet.pipe_net_id,
-                pipe_records,
-                pipe_net_name=pipe_net_name,
-                loc=loc,
-            )
+            op = ttl.pipenet_foreach_dst(records_attr, loc=loc)
             pipe_type = ttl.SelectedPipeDstType.get(self.ctx)
 
         block = Block.create_at_start(op.body, [pipe_type])

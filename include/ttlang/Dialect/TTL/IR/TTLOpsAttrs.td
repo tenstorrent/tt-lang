@@ -63,10 +63,18 @@ def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
 def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
   let summary = "Static PipeNet pipe record";
   let description = [{
-    Encodes one static PipeNet record for PipeNet foreach ops. The
-    owning op carries the PipeNet id; records carry source and destination
-    coordinates plus the user-level destination kind. The kind is not redundant:
-    `slice(i, i + 1)` is multicast even though it covers one destination.
+    Encodes one static PipeNet record for PipeNet foreach ops. The owning
+    `#ttl.pipenet_records` attribute carries the PipeNet id; each record
+    carries source and destination coordinates plus the user-level destination
+    kind.
+
+    `isMulticast` is a frontend-supplied flag, not derived from coordinates:
+    `slice(i, i + 1)` is a singleton-multicast record (one destination, but
+    constructed as a slice) and must keep `isMulticast = true`. The PipeNet
+    kind is uniform across a net's records (all unicast or all multicast),
+    enforced by the owning op verifier; deriving the kind from coordinates
+    would silently flip singleton-multicast records to unicast and break the
+    PipeNet-level invariant.
   }];
 
   let parameters = (ins
@@ -81,6 +89,32 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
 
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
+}
+
+def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
+  let summary = "Identifies a PipeNet and carries its static pipe records";
+  let description = [{
+    Identifies a PipeNet by id (and optional user-facing name) and carries the
+    ordered list of `#ttl.pipe_record` attributes that make up the net. Used
+    by compact PipeNet iteration ops (`ttl.pipenet_foreach_src`,
+    `ttl.pipenet_foreach_dst`) to express "for each pipe in this net..."
+    without materializing per-pipe ops.
+
+    `pipes` is in user PipeNet construction order; compact lowering iterates
+    in the same order so program-order semantics is preserved.
+
+    All records must share the same `isMulticast` kind (the PipeNet-level
+    uniformity invariant); the owning op verifier rejects mixed kinds.
+  }];
+
+  let parameters = (ins
+    "int64_t":$pipeNetId,
+    OptionalParameter<"::mlir::StringAttr">:$pipeNetName,
+    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+  );
+
+  let assemblyFormat = "`<` `net` $pipeNetId (`name` $pipeNetName^)? "
+                       "`pipes` `[` $pipes `]` `>`";
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_TD

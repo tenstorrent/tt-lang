@@ -1552,23 +1552,15 @@ static mlir::LogicalResult verifyPipeNetForeachBody(
   return mlir::success();
 }
 
-static mlir::LogicalResult verifyPipeNetForeachRecords(mlir::Operation *op,
-                                                       mlir::ArrayAttr pipes) {
+static mlir::LogicalResult
+verifyPipeNetForeachRecords(mlir::Operation *op,
+                            mlir::tt::ttl::PipeNetRecordsAttr records) {
+  ::llvm::ArrayRef<mlir::tt::ttl::PipeRecordAttr> pipes = records.getPipes();
   if (pipes.empty()) {
     return op->emitOpError() << "requires at least one pipe record";
   }
-  auto first = mlir::dyn_cast<mlir::tt::ttl::PipeRecordAttr>(pipes[0]);
-  if (!first) {
-    return op->emitOpError()
-           << "`pipes` must contain only #ttl.pipe_record attributes";
-  }
-  bool isMulticast = first.getIsMulticast();
-  for (mlir::Attribute attr : pipes) {
-    auto record = mlir::dyn_cast<mlir::tt::ttl::PipeRecordAttr>(attr);
-    if (!record) {
-      return op->emitOpError()
-             << "`pipes` must contain only #ttl.pipe_record attributes";
-    }
+  bool isMulticast = pipes.front().getIsMulticast();
+  for (mlir::tt::ttl::PipeRecordAttr record : pipes) {
     if (record.getIsMulticast() != isMulticast) {
       return op->emitOpError()
              << "all pipe records must be either unicast or multicast";
@@ -1578,7 +1570,7 @@ static mlir::LogicalResult verifyPipeNetForeachRecords(mlir::Operation *op,
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
-  if (failed(verifyPipeNetForeachRecords(getOperation(), getPipes()))) {
+  if (failed(verifyPipeNetForeachRecords(getOperation(), getRecords()))) {
     return failure();
   }
   return verifyPipeNetForeachBody(
@@ -1593,7 +1585,7 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
-  if (failed(verifyPipeNetForeachRecords(getOperation(), getPipes()))) {
+  if (failed(verifyPipeNetForeachRecords(getOperation(), getRecords()))) {
     return failure();
   }
   return verifyPipeNetForeachBody(

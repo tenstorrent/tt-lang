@@ -14,12 +14,10 @@ func.func @foreach_src_send() attributes {ttl.kernel_thread = #ttkernel.thread<n
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.pipenet_foreach_src attributes {
-      pipeNetId = 0 : i64,
-      pipeNetName = "row_net",
-      pipes = [
+      records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
         #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
-      ]} {
+      ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_src):
     %xf = ttl.copy %cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
@@ -46,12 +44,10 @@ func.func @foreach_dst_receive() attributes {ttl.kernel_thread = #ttkernel.threa
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.pipenet_foreach_dst attributes {
-      pipeNetId = 0 : i64,
-      pipeNetName = "row_net",
-      pipes = [
+      records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
         #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
-      ]} {
+      ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_dst):
     %recv = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -83,12 +79,10 @@ func.func @foreach_src_multicast_send() attributes {ttl.kernel_thread = #ttkerne
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.pipenet_foreach_src attributes {
-      pipeNetId = 0 : i64,
-      pipeNetName = "row_net",
-      pipes = [
+      records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 1, dstEndY = 0, isMulticast = true>,
         #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 2, dstEndY = 1, isMulticast = true>
-      ]} {
+      ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_src):
     %xf = ttl.copy %cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
@@ -115,12 +109,10 @@ func.func @foreach_dst_multicast_receive() attributes {ttl.kernel_thread = #ttke
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.pipenet_foreach_dst attributes {
-      pipeNetId = 0 : i64,
-      pipeNetName = "row_net",
-      pipes = [
+      records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 1, dstEndY = 0, isMulticast = true>,
         #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 2, dstEndY = 1, isMulticast = true>
-      ]} {
+      ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_dst):
     %recv = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -154,12 +146,10 @@ func.func @foreach_src_nested_user_control_flow() attributes {ttl.kernel_thread 
   %c2 = arith.constant 2 : index
   %true = arith.constant true
   ttl.pipenet_foreach_src attributes {
-      pipeNetId = 0 : i64,
-      pipeNetName = "row_net",
-      pipes = [
+      records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
         #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
-      ]} {
+      ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_src):
     scf.for %iter = %c0 to %c2 step %c1 {
       scf.if %true {
@@ -193,12 +183,10 @@ func.func @foreach_dst_nested_user_control_flow() attributes {ttl.kernel_thread 
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %true = arith.constant true
   ttl.pipenet_foreach_dst attributes {
-      pipeNetId = 0 : i64,
-      pipeNetName = "row_net",
-      pipes = [
+      records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
         #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
-      ]} {
+      ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_dst):
     scf.if %true {
       %recv = ttl.cb_reserve %cb

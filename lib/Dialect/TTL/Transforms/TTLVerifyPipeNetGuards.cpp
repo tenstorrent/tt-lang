@@ -165,15 +165,20 @@ PipeType getPipeTypeFromRecord(MLIRContext *context, PipeRecordAttr record,
 }
 
 SmallVector<PipeType> getPipeTypesFromRecords(MLIRContext *context,
-                                              ArrayAttr records,
+                                              ArrayRef<PipeRecordAttr> records,
                                               int64_t pipeNetId) {
   SmallVector<PipeType> pipeTypes;
   pipeTypes.reserve(records.size());
-  for (Attribute attr : records) {
-    pipeTypes.push_back(
-        getPipeTypeFromRecord(context, cast<PipeRecordAttr>(attr), pipeNetId));
+  for (PipeRecordAttr record : records) {
+    pipeTypes.push_back(getPipeTypeFromRecord(context, record, pipeNetId));
   }
   return pipeTypes;
+}
+
+SmallVector<PipeType>
+getPipeTypesFromRecords(MLIRContext *context, PipeNetRecordsAttr records) {
+  return getPipeTypesFromRecords(context, records.getPipes(),
+                                 records.getPipeNetId());
 }
 
 Domain pipeSourceUnion(ArrayRef<PipeType> pipeTypes) {
@@ -274,22 +279,20 @@ std::optional<SelectedPipeInfo> getSelectedPipeInfo(Value pipe) {
 
   Operation *parent = blockArg.getOwner()->getParentOp();
   if (auto foreachSrc = dyn_cast_or_null<PipeNetForeachSrcOp>(parent)) {
+    PipeNetRecordsAttr records = foreachSrc.getRecords();
     SmallVector<PipeType> pipeTypes =
-        getPipeTypesFromRecords(foreachSrc.getContext(), foreachSrc.getPipes(),
-                                foreachSrc.getPipeNetId());
+        getPipeTypesFromRecords(foreachSrc.getContext(), records);
     Domain domain = pipeSourceUnion(pipeTypes);
-    return SelectedPipeInfo{static_cast<int64_t>(foreachSrc.getPipeNetId()),
-                            PipeRole::Source, std::move(pipeTypes),
-                            std::move(domain)};
+    return SelectedPipeInfo{records.getPipeNetId(), PipeRole::Source,
+                            std::move(pipeTypes), std::move(domain)};
   }
   if (auto foreachDst = dyn_cast_or_null<PipeNetForeachDstOp>(parent)) {
+    PipeNetRecordsAttr records = foreachDst.getRecords();
     SmallVector<PipeType> pipeTypes =
-        getPipeTypesFromRecords(foreachDst.getContext(), foreachDst.getPipes(),
-                                foreachDst.getPipeNetId());
+        getPipeTypesFromRecords(foreachDst.getContext(), records);
     Domain domain = pipeDestinationUnion(pipeTypes);
-    return SelectedPipeInfo{static_cast<int64_t>(foreachDst.getPipeNetId()),
-                            PipeRole::Destination, std::move(pipeTypes),
-                            std::move(domain)};
+    return SelectedPipeInfo{records.getPipeNetId(), PipeRole::Destination,
+                            std::move(pipeTypes), std::move(domain)};
   }
 
   return std::nullopt;
@@ -382,27 +385,21 @@ struct ModuleState {
       }
       recordPipe(pipeType, pipe.getLoc(), name);
     });
-    module.walk([&](PipeNetForeachSrcOp foreachOp) {
+    auto recordForeachOp = [&](Location loc, PipeNetRecordsAttr records) {
       std::optional<StringRef> name;
-      if (auto attr = foreachOp.getPipeNetNameAttr()) {
-        name = attr.getValue();
+      if (auto nameAttr = records.getPipeNetName()) {
+        name = nameAttr.getValue();
       }
       for (PipeType pipeType :
-           getPipeTypesFromRecords(foreachOp.getContext(), foreachOp.getPipes(),
-                                   foreachOp.getPipeNetId())) {
-        recordPipe(pipeType, foreachOp.getLoc(), name);
+           getPipeTypesFromRecords(module.getContext(), records)) {
+        recordPipe(pipeType, loc, name);
       }
+    };
+    module.walk([&](PipeNetForeachSrcOp foreachOp) {
+      recordForeachOp(foreachOp.getLoc(), foreachOp.getRecords());
     });
     module.walk([&](PipeNetForeachDstOp foreachOp) {
-      std::optional<StringRef> name;
-      if (auto attr = foreachOp.getPipeNetNameAttr()) {
-        name = attr.getValue();
-      }
-      for (PipeType pipeType :
-           getPipeTypesFromRecords(foreachOp.getContext(), foreachOp.getPipes(),
-                                   foreachOp.getPipeNetId())) {
-        recordPipe(pipeType, foreachOp.getLoc(), name);
-      }
+      recordForeachOp(foreachOp.getLoc(), foreachOp.getRecords());
     });
 
     if (!hasPipes()) {
@@ -1217,12 +1214,14 @@ public:
         .Case<PipeNetForeachSrcOp>([&](PipeNetForeachSrcOp foreachOp) {
           narrowed = domainIntersect(
               before.getDomain(),
-              state.getRoleDomain(foreachOp.getPipeNetId(), PipeRole::Source));
+              state.getRoleDomain(foreachOp.getRecords().getPipeNetId(),
+                                  PipeRole::Source));
         })
         .Case<PipeNetForeachDstOp>([&](PipeNetForeachDstOp foreachOp) {
           narrowed = domainIntersect(
-              before.getDomain(), state.getRoleDomain(foreachOp.getPipeNetId(),
-                                                      PipeRole::Destination));
+              before.getDomain(),
+              state.getRoleDomain(foreachOp.getRecords().getPipeNetId(),
+                                  PipeRole::Destination));
         })
         .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
           auto scope = getPipeNetScopeRoles(scopeOp, state);
@@ -1742,22 +1741,19 @@ PipeScheduleFrontier buildPipeScheduleOperation(
                                       std::move(elseFrontier));
   }
 
-  auto buildPipeNetForeach = [&](Region &region, ArrayAttr records,
-                                 int64_t pipeNetId) {
+  auto buildPipeNetForeach = [&](Region &region, PipeNetRecordsAttr records) {
     for (PipeType pipeType :
-         getPipeTypesFromRecords(op->getContext(), records, pipeNetId)) {
+         getPipeTypesFromRecords(op->getContext(), records)) {
       frontier = buildPipeScheduleRegion(region, state, builder,
                                          std::move(frontier), pipeType);
     }
     return frontier;
   };
   if (auto foreachSrc = dyn_cast<PipeNetForeachSrcOp>(op)) {
-    return buildPipeNetForeach(foreachSrc.getRegion(), foreachSrc.getPipes(),
-                               foreachSrc.getPipeNetId());
+    return buildPipeNetForeach(foreachSrc.getRegion(), foreachSrc.getRecords());
   }
   if (auto foreachDst = dyn_cast<PipeNetForeachDstOp>(op)) {
-    return buildPipeNetForeach(foreachDst.getRegion(), foreachDst.getPipes(),
-                               foreachDst.getPipeNetId());
+    return buildPipeNetForeach(foreachDst.getRegion(), foreachDst.getRecords());
   }
 
   for (Region &region : op->getRegions()) {
