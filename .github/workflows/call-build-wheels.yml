@@ -19,7 +19,7 @@ permissions:
 jobs:
   build-wheels:
     name: "Build tt-lang wheel"
-    runs-on: ubuntu-22.04
+    runs-on: mlir-large-runner-lang
     timeout-minutes: 120
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${{ inputs.docker_tag }}
