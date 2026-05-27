@@ -50,6 +50,10 @@ jobs:
         if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
         run: .github/scripts/require-release-tag.sh
 
+      - name: Require PyPI ttnn alignment
+        if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
+        run: .github/scripts/require-pypi-ttnn-alignment.sh
+
   build-docker:
     needs: preflight
     if: ${{ github.event_name == 'push' || inputs.docker_tag == '' }}

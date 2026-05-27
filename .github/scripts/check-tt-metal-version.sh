@@ -4,11 +4,12 @@
 #
 # Verify (or update) that everything tied to tt-metal points at the same
 # release tag. The single source of truth is third-party/tt-metal-version,
-# a sourceable shell snippet defining TTNN_PYPI and TT_METAL_TAG. See that
-# file's header for variable semantics.
+# a sourceable shell snippet defining TTNN_PYPI, TTNN_PYPI_TT_METAL_TAG, and
+# TT_METAL_TAG. See that file's header for variable semantics.
 #
 # Checks:
 #   - TT_METAL_TAG points at a real tt-metal release tag
+#   - TTNN_PYPI_TT_METAL_TAG is recorded for public PyPI publish alignment
 #   - third-party/tt-metal submodule HEAD == commit pointed to by the tag
 #   - Dockerfile.base does not hard-code a tt-metal SHA
 #
@@ -33,10 +34,14 @@ UPDATE=0
 . "$VERSION_FILE"
 : "${TT_METAL_TAG:?$VERSION_FILE: TT_METAL_TAG not set}"
 : "${TTNN_PYPI:?$VERSION_FILE: TTNN_PYPI not set}"
+: "${TTNN_PYPI_TT_METAL_TAG:?$VERSION_FILE: TTNN_PYPI_TT_METAL_TAG not set}"
 TAG="$TT_METAL_TAG"
 PYPI="$TTNN_PYPI"
+PYPI_TAG="$TTNN_PYPI_TT_METAL_TAG"
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] \
   || { echo "$VERSION_FILE: TT_METAL_TAG '$TAG' does not look like vX.Y.Z" >&2; exit 1; }
+[[ "$PYPI_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] \
+  || { echo "$VERSION_FILE: TTNN_PYPI_TT_METAL_TAG '$PYPI_TAG' does not look like vX.Y.Z" >&2; exit 1; }
 
 # Resolve tag -> commit via ls-remote. Annotated tags get a `^{}` deref line.
 RESOLVED=$(git ls-remote --tags "$TT_METAL_REMOTE" \
@@ -86,5 +91,5 @@ fi
 if (( UPDATE )); then
   echo "ok: submodule re-cloned at $TAG ($(echo "$RESOLVED" | cut -c1-12)) with nested submodules"
 else
-  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule; setup.py requires ttnn==$PYPI"
+  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule; setup.py requires ttnn==$PYPI from $PYPI_TAG"
 fi

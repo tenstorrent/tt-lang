@@ -11,6 +11,36 @@ on:
         description: "Docker image tag for the ird container."
         type: string
         required: true
+      ttnn_dep_mode:
+        description: "ttnn dependency mode: pypi depends on ttnn, external omits it, bundled includes cached ttnn."
+        type: string
+        default: pypi
+        required: false
+      pretend_version:
+        description: "Optional PEP 440 version override for branch/internal wheels."
+        type: string
+        default: ""
+        required: false
+      external_tt_metal_dir:
+        description: "Existing tt-metal install/source directory."
+        type: string
+        default: ""
+        required: false
+      external_tt_metal_build_dir:
+        description: "Existing native tt-metal build directory."
+        type: string
+        default: ""
+        required: false
+      external_python_venv:
+        description: "Existing Python venv to use while configuring tt-lang."
+        type: string
+        default: ""
+        required: false
+      bundled_tt_metal_dir:
+        description: "Cached tt-metal install to bundle into tt-lang when ttnn_dep_mode=bundled."
+        type: string
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -19,7 +49,7 @@ permissions:
 jobs:
   build-wheels:
     name: "Build tt-lang wheel"
-    runs-on: ubuntu-22.04
+    runs-on: mlir-large-runner-lang
     timeout-minutes: 120
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${{ inputs.docker_tag }}
@@ -41,9 +71,28 @@ jobs:
       - name: Configure tt-lang
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
-          cmake -G Ninja -B build \
-            -DCMAKE_BUILD_TYPE=Release \
+          cmake_args=(
+            -G Ninja
+            -B build
+            -DCMAKE_BUILD_TYPE=Release
             -DTTLANG_USE_TOOLCHAIN=ON
+          )
+          if [ -n "${{ inputs.external_tt_metal_dir }}" ]; then
+            cmake_args+=(
+              -DTTLANG_EXTERNAL_TT_METAL_DIR="${{ inputs.external_tt_metal_dir }}"
+            )
+          fi
+          if [ -n "${{ inputs.external_tt_metal_build_dir }}" ]; then
+            cmake_args+=(
+              -DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR="${{ inputs.external_tt_metal_build_dir }}"
+            )
+          fi
+          if [ -n "${{ inputs.external_python_venv }}" ]; then
+            cmake_args+=(
+              -DTTLANG_PYTHON_VENV="${{ inputs.external_python_venv }}"
+            )
+          fi
+          cmake "${cmake_args[@]}"
 
       - name: Install wheel build tools
         run: |
@@ -51,6 +100,13 @@ jobs:
           pip install auditwheel patchelf
 
       - name: Build tt-lang wheel
+        env:
+          TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+          TTLANG_PRETEND_VERSION: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' && format('{0}+light', inputs.pretend_version) || inputs.pretend_version }}
+          TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}
+          TTLANG_EXTERNAL_TT_METAL_BUILD_DIR: ${{ inputs.external_tt_metal_build_dir }}
+          TTLANG_BUNDLED_TT_METAL_DIR: ${{ inputs.bundled_tt_metal_dir }}
+          TTLANG_PYTHON_VENV: ${{ inputs.external_python_venv }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation
@@ -68,11 +124,98 @@ jobs:
           source /opt/ttlang-toolchain/venv/bin/activate
           auditwheel repair dist-raw/*.whl --wheel-dir=dist
 
+      - name: Check tt-lang wheel metadata
+        env:
+          TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+        run: |
+          python3.12 - <<'PY'
+          import glob
+          import os
+          import zipfile
+
+          wheels = glob.glob("dist/tt_lang-*.whl")
+          if len(wheels) != 1:
+              raise SystemExit(f"expected one tt-lang wheel, found {wheels}")
+
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              metadata_name = next(
+                  name for name in wheel.namelist()
+                  if name.endswith(".dist-info/METADATA")
+              )
+              metadata = wheel.read(metadata_name).decode()
+
+          has_ttnn = any(
+              line.startswith("Requires-Dist: ttnn")
+              for line in metadata.splitlines()
+          )
+          mode = os.environ["TTLANG_TTNN_DEP_MODE"]
+          if mode in ("external", "bundled") and has_ttnn:
+              raise SystemExit(f"{mode} wheel metadata must not require ttnn")
+          if mode == "pypi" and not has_ttnn:
+              raise SystemExit("default wheel metadata must require ttnn")
+          if mode not in ("pypi", "external", "bundled"):
+              raise SystemExit(f"unknown TTLANG_TTNN_DEP_MODE={mode!r}")
+          print(f"{wheels[0]}: ttnn dependency present={has_ttnn}")
+          PY
+
+      - name: Check bundled ttnn wheel payload
+        if: ${{ inputs.ttnn_dep_mode == 'bundled' }}
+        run: |
+          python3.12 - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/tt_lang-*.whl")
+          if len(wheels) != 1:
+              raise SystemExit(f"expected one tt-lang wheel, found {wheels}")
+
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              names = set(wheel.namelist())
+
+          required = [
+              "ttnn/__init__.py",
+              "ttnn/_ttnn.so",
+              "ttnn/build/lib/_ttnncpp.so",
+              "ttnn/build/lib/libtt_metal.so",
+          ]
+          for name in required:
+              if name not in names:
+                  raise SystemExit(f"bundled wheel is missing {name}")
+          PY
+
       - name: Test tt-lang wheel
+        env:
+          TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
         run: |
           python3.12 -m venv /tmp/test-venv-hw
           source /tmp/test-venv-hw/bin/activate
-          pip install --no-cache-dir dist/tt_lang-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install \
+            --no-cache-dir \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            dist/tt_lang-*.whl
+          if [ "$TTLANG_TTNN_DEP_MODE" = "external" ]; then
+            python - <<'PY'
+          import importlib.util
+
+          if importlib.util.find_spec("ttnn") is not None:
+              raise SystemExit("external wheel unexpectedly installed ttnn")
+          PY
+          elif [ "$TTLANG_TTNN_DEP_MODE" = "bundled" ]; then
+            python - <<'PY'
+          import pathlib
+          import ttnn
+
+          ttnn_root = pathlib.Path(ttnn.__file__).resolve().parent
+          required = [
+              ttnn_root / "_ttnn.so",
+              ttnn_root / "build" / "lib" / "_ttnncpp.so",
+              ttnn_root / "build" / "lib" / "libtt_metal.so",
+          ]
+          missing = [str(path) for path in required if not path.exists()]
+          if missing:
+              raise SystemExit(f"bundled ttnn is missing files: {missing}")
+          PY
+          fi
           python .github/scripts/smoke-test-wheel.py
 
       - name: Free disk space before tt-lang-sim wheel test
@@ -82,6 +225,8 @@ jobs:
           df -h
 
       - name: Build tt-lang-sim wheel
+        env:
+          TTLANG_PRETEND_VERSION: ${{ inputs.pretend_version }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel packaging/sim --wheel-dir=dist --no-deps --no-build-isolation
@@ -90,8 +235,51 @@ jobs:
         run: |
           python3.12 -m venv /tmp/test-venv-sim
           source /tmp/test-venv-sim/bin/activate
-          pip install --no-cache-dir dist/tt_lang_sim-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install \
+            --no-cache-dir \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            dist/tt_lang_sim-*.whl
           python .github/scripts/smoke-test-wheel.py
+
+      - name: Build tt-lang-light wheel
+        if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' }}
+        env:
+          TTLANG_PRETEND_VERSION: ${{ inputs.pretend_version }}
+          TTLANG_LIGHT_TTLANG_VERSION: ${{ format('{0}+light', inputs.pretend_version) }}
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip wheel packaging/light --wheel-dir=dist --no-deps --no-build-isolation
+
+      - name: Check internal metapackage metadata
+        if: ${{ inputs.ttnn_dep_mode == 'external' && inputs.pretend_version != '' }}
+        env:
+          TTLANG_WHEEL_VERSION: ${{ format('{0}+light', inputs.pretend_version) }}
+        run: |
+          python3.12 - <<'PY'
+          import glob
+          import os
+          import zipfile
+
+          ttlang_wheel_version = os.environ["TTLANG_WHEEL_VERSION"]
+
+          def metadata_for(pattern):
+              wheels = glob.glob(pattern)
+              if len(wheels) != 1:
+                  raise SystemExit(f"expected one wheel for {pattern}, found {wheels}")
+              with zipfile.ZipFile(wheels[0]) as wheel:
+                  metadata_name = next(
+                      name for name in wheel.namelist()
+                      if name.endswith(".dist-info/METADATA")
+                  )
+                  return wheel.read(metadata_name).decode()
+
+          light_metadata = metadata_for("dist/tt_lang_light-*.whl")
+          light_lines = [
+              line.replace(" ", "") for line in light_metadata.splitlines()
+          ]
+          if f"Requires-Dist:tt-lang=={ttlang_wheel_version}" not in light_lines:
+              raise SystemExit("tt-lang-light must pin tt-lang")
+          PY
 
       - name: Report wheel sizes
         run: ls -lh dist/*.whl

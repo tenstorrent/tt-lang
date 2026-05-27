@@ -76,6 +76,36 @@ Set `TTLANG_TOOLCHAIN_DIR` to change the install location (default:
 `/opt/ttlang-toolchain`). Once installed, use `-DTTLANG_USE_TOOLCHAIN=ON` for
 fast rebuilds of tt-lang itself.
 
+### Install an LLVM-only toolchain with external tt-metal
+
+When a developer already has a local tt-metal build, TT-Lang can install only
+LLVM/MLIR and the toolchain Python venv. tt-metal stays external and is passed
+to CMake at configure time:
+
+```bash
+TTLANG_TOOLCHAIN_DIR=/opt/ttlang-llvm-toolchain \
+  scripts/build-and-install.sh \
+    --llvm-toolchain-only \
+    --force-rebuild \
+    --external-tt-metal-dir /path/to/tt-metal \
+    --external-tt-metal-build-dir /path/to/tt-metal/build \
+    --python-venv /path/to/tt-metal/python_env
+```
+
+The resulting prefix contains LLVM/MLIR and the venv. It is not a complete
+TT-Lang distribution and does not install tt-metal under the prefix. Use it
+by combining the LLVM toolchain with the same external tt-metal selection:
+
+```bash
+cmake -G Ninja -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTTLANG_USE_TOOLCHAIN=ON \
+  -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-llvm-toolchain \
+  -DTTLANG_EXTERNAL_TT_METAL_DIR=/path/to/tt-metal \
+  -DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR=/path/to/tt-metal/build \
+  -DTTLANG_PYTHON_VENV=/path/to/tt-metal/python_env
+```
+
 ### Use a pre-built toolchain
 
 ```bash
@@ -202,28 +232,38 @@ recorded commits are not derived from one another.
   `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` and `-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON`
   to cmake. `scripts/build-and-install.sh` accepts the equivalent
   `--accept-ttmetal-mismatch` flag.
-- The tt-metal version is recorded in `third-party/tt-metal-version`, a
-  one-line file holding a tt-metal release tag. See
+- The tt-metal and public `ttnn` provenance versions are recorded in
+  `third-party/tt-metal-version`. See
   [Updating tt-metal](#updating-tt-metal).
 
 ### Updating tt-metal
 
 Edit the canonical version file and run the verifier in update mode. The
-verifier checks out `third-party/tt-metal` at the tag's commit; the ttnn
-version that `setup.py` writes into the wheel's `install_requires` is
-computed dynamically from the same file, so no rewrite is needed:
+verifier checks out `third-party/tt-metal` at `TT_METAL_TAG`; the `ttnn`
+version that `setup.py` writes into the wheel's `install_requires` is read
+from `TTNN_PYPI`, so no rewrite is needed:
+
+```text
+TTNN_PYPI="0.70.1"
+TTNN_PYPI_TT_METAL_TAG="v0.70.1-rc1"
+TT_METAL_TAG="v0.70.1-rc1"
+```
 
 ```bash
-echo v0.69.0 > third-party/tt-metal-version
 .github/scripts/check-tt-metal-version.sh --update
 ```
 
-Background: `third-party/tt-metal-version` is the single source of truth
-for the tt-metal version (one tt-metal release tag, e.g. `v0.69.0`). The
-submodule SHA, the `ttnn` version that `setup.py` writes into the
-wheel's `install_requires`, and the `--build-arg TT_METAL_TAG` passed to
-`Dockerfile.base` are all derived from it. CI runs
-`.github/scripts/check-tt-metal-version.sh` on every PR to catch drift.
+`TTNN_PYPI_TT_METAL_TAG` records the tt-metal tag used to build the public
+`ttnn` wheel. `TT_METAL_TAG` records the tt-metal tag used to build TT-Lang.
+Public PyPI publishing requires these tags to match; internal S3 bundled
+wheels can use a newer `TT_METAL_TAG` before a matching public `ttnn` wheel is
+available.
+
+Background: `third-party/tt-metal-version` is the single source of truth for
+the `ttnn` dependency version, the public `ttnn` provenance tag, and the
+tt-metal tag passed to `Dockerfile.base`. CI runs
+`.github/scripts/check-tt-metal-version.sh` on every PR to catch submodule
+drift.
 
 ### Updating LLVM
 
@@ -477,9 +517,11 @@ re-runs and dry-runs.
 Job-by-job:
 
 1. **`preflight`** — runs `require-release-tag.sh`, which fails unless
-   `GITHUB_REF` looks like `refs/tags/v[0-9]...`. Skipped under
-   `dry_run: true`. Exposes `tag_version` (tag with leading `v` stripped) for
-   the wheel-version check.
+   `GITHUB_REF` looks like `refs/tags/v[0-9]...`, then runs
+   `require-pypi-ttnn-alignment.sh`, which fails when the public `ttnn` wheel
+   recorded in `third-party/tt-metal-version` was built from a different
+   tt-metal tag than TT-Lang. Skipped under `dry_run: true`. Exposes
+   `tag_version` (tag with leading `v` stripped) for the wheel-version check.
 2. **`build-docker`** — calls `call-build-docker.yml` on tag push (where no
    `docker_tag` input is supplied). Skipped on `workflow_dispatch`, which
    requires `docker_tag`. Outputs the freshly built ird tag.
@@ -514,6 +556,129 @@ ird image tag):
 | Dispatch from a non-tag ref with `dry_run: true`              | required         | Build wheel against the supplied tag, skip PyPI upload              |
 | Dispatch from a non-tag ref with `dry_run: false`             | required         | Fails at `preflight` because `GITHUB_REF` is not a release tag      |
 
+(publishing-to-s3-pypi)=
+#### Publishing to S3 PyPI
+
+`publish-s3-pypi.yml` publishes internal wheels to the Tenstorrent S3 PyPI
+index at `https://pypi.eng.aws.tenstorrent.com/`. It runs nightly on a GitHub
+schedule and can also be dispatched manually. It uses GitHub OIDC for AWS access,
+then uploads with
+`s3pypi upload --put-root-index --bucket tenstorrent-pypi`.
+
+Do not publish a bundled internal wheel with the same package name and version
+as the public PyPI wheel if the public wheel has different dependency metadata.
+For example, public `tt-lang==0.71.0` may depend on a separately published
+`ttnn` wheel, while an internal S3 `tt-lang==0.71.0` may bundle `ttnn` directly.
+Those two artifacts are not interchangeable, and pip can see both indexes when
+`--extra-index-url` is used.
+
+Automatic S3 publishing should use this policy:
+
+- Release or RC tags may publish to S3 only when the S3 artifact version is
+  distinct from the public PyPI artifact version, or when the S3 artifact is
+  byte-for-byte equivalent in dependency semantics.
+- Nightly builds do not create Git tags. The scheduled workflow computes a
+  PEP 440 development version such as `0.72.0.dev20260527`, where the base
+  version is the next patch release after the latest stable tag reachable from
+  `HEAD`, and the numeric suffix is a UTC date.
+- Scheduled reruns overwrite the same date-based version in the S3 index. This
+  keeps nightly versions readable, but existing local pip caches may still hold
+  the older wheel for that version.
+
+The scheduled workflow defaults to `ttnn_dep_mode: bundled`, builds and pushes
+the matching IRD image, builds wheels from that image, verifies the wheel
+versions, and publishes the result to S3 PyPI.
+
+For a manual bundled internal wheel with an existing IRD image, dispatch the
+workflow with:
+
+```text
+docker_tag: <existing-ird-tag>
+ttnn_dep_mode: bundled
+pretend_version: 0.71.0.dev20260526
+```
+
+The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=bundled`,
+`TTLANG_PRETEND_VERSION=<pretend_version>`, and
+`TTLANG_BUNDLED_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal`. The resulting
+`tt-lang` wheel includes the `ttnn` Python package, its native extensions, the
+needed shared libraries, and the runtime/header payload copied from the
+toolchain's tt-metal install.
+
+For light wheels that must use a user-provided tt-metal build instead of a
+bundled or public `ttnn` wheel, dispatch the workflow with:
+
+```text
+ttnn_dep_mode: external
+pretend_version: 0.71.0.dev20260526
+```
+
+The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=external` and
+`TTLANG_PRETEND_VERSION=<pretend_version>+light`. The resulting `tt-lang` wheel
+omits `Requires-Dist: ttnn`; the normal PyPI build keeps that requirement. The
+same build also emits `tt-lang-light==<pretend_version>`, a metapackage that
+depends on `tt-lang==<pretend_version>+light`.
+
+#### Local internal wheel testing
+
+Use the same environment variables as the reusable workflow when validating the
+wheel build locally.
+
+Bundled wheel:
+
+```bash
+source /opt/ttlang-toolchain/venv/bin/activate
+cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DTTLANG_USE_TOOLCHAIN=ON
+
+TTLANG_TTNN_DEP_MODE=bundled \
+TTLANG_PRETEND_VERSION=0.71.0.dev20260526 \
+TTLANG_BUNDLED_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
+pip wheel . --wheel-dir=/tmp/ttlang-wheels/bundled/raw --no-deps --no-build-isolation
+
+auditwheel repair /tmp/ttlang-wheels/bundled/raw/tt_lang-*.whl \
+  --wheel-dir=/tmp/ttlang-wheels/bundled/dist
+```
+
+Light wheel:
+
+```bash
+source /opt/ttlang-toolchain/venv/bin/activate
+cmake -G Ninja -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTTLANG_USE_TOOLCHAIN=ON \
+  -DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
+  -DTTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv
+
+TTLANG_TTNN_DEP_MODE=external \
+TTLANG_PRETEND_VERSION=0.71.0.dev20260526+light \
+TTLANG_EXTERNAL_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
+TTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv \
+pip wheel . --wheel-dir=/tmp/ttlang-wheels/light/raw --no-deps --no-build-isolation
+
+auditwheel repair /tmp/ttlang-wheels/light/raw/tt_lang-*.whl \
+  --wheel-dir=/tmp/ttlang-wheels/light/dist
+
+TTLANG_PRETEND_VERSION=0.71.0.dev20260526 \
+TTLANG_LIGHT_TTLANG_VERSION=0.71.0.dev20260526+light \
+pip wheel packaging/light --wheel-dir=/tmp/ttlang-wheels/light/dist \
+  --no-deps --no-build-isolation
+```
+
+Install-test the light package from the local wheel directory, then configure
+the external tt-metal environment:
+
+```bash
+python3.12 -m venv /tmp/ttlang-light-test
+source /tmp/ttlang-light-test/bin/activate
+pip install --find-links=/tmp/ttlang-wheels/light/dist \
+  tt-lang-light==0.71.0.dev20260526
+eval "$(tt-lang-setup-external-tt-metal \
+  --tt-metal-dir /opt/ttlang-toolchain/tt-metal \
+  --check \
+  --format shell)"
+python -c 'import ttl, ttnn; print(ttl.__version__, ttnn.__file__)'
+```
+
 ## CMake Options
 
 | Option                             | Default     | Description                                                                          |
@@ -523,6 +688,8 @@ ird image tag):
 | `TTLANG_TOOLCHAIN_DIR`           | —          | Toolchain prefix for LLVM, tt-metal, and venv                                        |
 | `TTLANG_USE_TOOLCHAIN`           | `OFF`     | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR`                                  |
 | `TTLANG_BUILD_TOOLCHAIN`         | `OFF`     | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
+| `TTLANG_EXTERNAL_TT_METAL_DIR`    | —          | Existing tt-metal source or install directory                                        |
+| `TTLANG_EXTERNAL_TT_METAL_BUILD_DIR` | —       | Existing native tt-metal build directory                                             |
 | `MLIR_PREFIX`                    | —          | Path to pre-built LLVM/MLIR install                                                  |
 | `TTLANG_ACCEPT_LLVM_MISMATCH`    | `OFF`     | Allow LLVM SHA mismatch with pre-built installs                                      |
 | `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF`     | Allow tt-metal SHA mismatch with pre-built installs                                  |

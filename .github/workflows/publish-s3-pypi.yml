@@ -1,0 +1,239 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish S3 PyPI Wheels
+
+on:
+  schedule:
+    # Nightly S3-only internal wheel publish. GitHub cron uses UTC.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      docker_tag:
+        description: "Docker image tag for the ird container. Leave empty to build and push one first."
+        type: string
+        default: ""
+        required: false
+      pretend_version:
+        description: "PEP 440 version for the internal wheel. Leave empty to compute a nightly dev version."
+        type: string
+        default: ""
+        required: false
+      ttnn_dep_mode:
+        description: "ttnn dependency mode for the tt-lang wheel."
+        type: choice
+        options:
+          - bundled
+          - external
+          - pypi
+        default: bundled
+        required: true
+      overwrite_releases:
+        description: "Overwrite an existing wheel/version in the S3 PyPI index."
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+  packages: read
+
+jobs:
+  preflight:
+    name: "Resolve S3 publish inputs"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      docker_tag: ${{ steps.resolve.outputs.docker_tag }}
+      overwrite_releases: ${{ steps.resolve.outputs.overwrite_releases }}
+      pretend_version: ${{ steps.resolve.outputs.pretend_version }}
+      ttnn_dep_mode: ${{ steps.resolve.outputs.ttnn_dep_mode }}
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve publish inputs
+        id: resolve
+        env:
+          DISPATCH_DOCKER_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.docker_tag || '' }}
+          DISPATCH_OVERWRITE_RELEASES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.overwrite_releases) || 'true' }}
+          DISPATCH_PRETEND_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.pretend_version || '' }}
+          DISPATCH_TTNN_DEP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.ttnn_dep_mode || 'bundled' }}
+        run: |
+          set -euo pipefail
+
+          docker_tag="$DISPATCH_DOCKER_TAG"
+          overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
+          pretend_version="$DISPATCH_PRETEND_VERSION"
+          ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
+
+          if [ -z "$pretend_version" ]; then
+            pretend_version=$(python3 - <<'PY'
+          import datetime
+          import re
+          import subprocess
+          import sys
+
+          tags = subprocess.check_output(
+              ["git", "tag", "--merged", "HEAD", "--list", "v[0-9]*"],
+              text=True,
+          ).splitlines()
+          stable_versions = []
+          for tag in tags:
+              match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)", tag)
+              if match:
+                  stable_versions.append(tuple(int(part) for part in match.groups()))
+          if not stable_versions:
+              print("No stable vMAJOR.MINOR.PATCH tag is reachable from HEAD", file=sys.stderr)
+              sys.exit(1)
+          major, minor, patch = max(stable_versions)
+          nightly_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+          print(f"{major}.{minor}.{patch + 1}.dev{nightly_date}")
+          PY
+            )
+          fi
+
+          {
+            echo "docker_tag=$docker_tag"
+            echo "overwrite_releases=$overwrite_releases"
+            echo "pretend_version=$pretend_version"
+            echo "ttnn_dep_mode=$ttnn_dep_mode"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved ttnn_dep_mode=$ttnn_dep_mode"
+          echo "Resolved pretend_version=$pretend_version"
+          if [ -n "$docker_tag" ]; then
+            echo "Using existing docker_tag=$docker_tag"
+          else
+            echo "No docker_tag provided; build-docker will create one"
+          fi
+
+  build-docker:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.docker_tag == '' }}
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+    with:
+      push: true
+
+  build-wheels:
+    needs: [preflight, build-docker]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/call-build-wheels.yml
+    with:
+      docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
+      ttnn_dep_mode: ${{ needs.preflight.outputs.ttnn_dep_mode }}
+      pretend_version: ${{ needs.preflight.outputs.pretend_version }}
+      external_tt_metal_dir: ${{ needs.preflight.outputs.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/tt-metal' || '' }}
+      external_python_venv: ${{ needs.preflight.outputs.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
+      bundled_tt_metal_dir: ${{ needs.preflight.outputs.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
+
+  publish:
+    name: "Publish wheels to S3 PyPI"
+    needs: [preflight, build-wheels]
+    if: ${{ needs.build-wheels.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Download wheels
+        uses: actions/download-artifact@v6
+        with:
+          name: tt-lang-wheels
+          path: dist
+
+      - name: Verify wheel versions
+        run: |
+          if [ "${{ needs.preflight.outputs.ttnn_dep_mode }}" = "external" ]; then
+            .github/scripts/verify-wheel-version.sh \
+              --expect "tt_lang=${{ needs.preflight.outputs.pretend_version }}+light" \
+              --expect "tt_lang_light=${{ needs.preflight.outputs.pretend_version }}" \
+              --expect "tt_lang_sim=${{ needs.preflight.outputs.pretend_version }}" \
+              dist
+          else
+            .github/scripts/verify-wheel-version.sh "${{ needs.preflight.outputs.pretend_version }}" dist
+          fi
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::767397912691:role/GitHubActionsS3AccessRole
+          aws-region: us-east-2
+
+      - name: Install s3pypi
+        run: python3 -m pip install s3pypi
+
+      - name: Publish wheels
+        env:
+          OVERWRITE_RELEASES: ${{ needs.preflight.outputs.overwrite_releases }}
+        run: |
+          upload_args=(--put-root-index --bucket tenstorrent-pypi)
+          if [ "$OVERWRITE_RELEASES" = "true" ]; then
+            upload_args+=(--force)
+          fi
+
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [ "${#wheels[@]}" -eq 0 ]; then
+            echo "No wheels found under dist/" >&2
+            exit 1
+          fi
+
+          for wheel in "${wheels[@]}"; do
+            s3pypi upload "$wheel" "${upload_args[@]}"
+          done
+
+      - name: Report install command
+        run: |
+          {
+            echo "### Published wheels"
+            echo
+            echo "Package index: https://pypi.eng.aws.tenstorrent.com/"
+            echo
+            if [ "${{ needs.preflight.outputs.ttnn_dep_mode }}" = "external" ]; then
+              echo "Light install:"
+              echo
+              echo '```bash'
+              echo "pip install \\"
+              echo "  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \\"
+              echo "  --extra-index-url https://download.pytorch.org/whl/cpu \\"
+              echo "  tt-lang-light==${{ needs.preflight.outputs.pretend_version }}"
+              echo '```'
+              echo
+              echo "Underlying no-ttnn tt-lang wheel:"
+              echo
+              echo '```bash'
+              echo "pip install \\"
+              echo "  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \\"
+              echo "  --extra-index-url https://download.pytorch.org/whl/cpu \\"
+              echo "  tt-lang==${{ needs.preflight.outputs.pretend_version }}+light"
+              echo '```'
+            else
+              echo '```bash'
+              echo "pip install \\"
+              echo "  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \\"
+              echo "  --extra-index-url https://download.pytorch.org/whl/cpu \\"
+              echo "  tt-lang==${{ needs.preflight.outputs.pretend_version }}"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -10,6 +10,7 @@
 # Modes (mutually exclusive):
 #   (default)              Full pipeline: configure + install tt-metal + build + install + finalize
 #   --toolchain-only       Configure only (LLVM + tt-metal) + finalize; no tt-lang build
+#   --llvm-toolchain-only  Configure only (LLVM) + finalize using an external tt-metal; no tt-lang build
 #   --configure-only       Configure only; keep build dirs for downstream steps
 #   --install-ttmetal      Install tt-metal artifacts from build dir into toolchain
 #   --build-and-install    Build tt-lang + install (assumes configure already ran)
@@ -23,8 +24,14 @@
 #   --remove-build-dir            Remove CMAKE_BINARY_DIR after finalize (for Docker builds)
 #   --accept-ttmetal-mismatch     Pass -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON to cmake
 #                                 configure to bypass the tt-metal SHA verification
+#   --external-tt-metal-dir <path>
+#                                 Use an existing tt-metal source or install tree
+#   --external-tt-metal-build-dir <path>
+#                                 Use an existing native tt-metal build directory
 #   --python <path>               Python interpreter to use for the toolchain venv
 #                                 (forwarded as -DPython3_EXECUTABLE=<path>)
+#   --python-venv <path>          Existing Python venv to use for configure/build
+#                                 (forwarded as -DTTLANG_PYTHON_VENV=<path>)
 #
 # Typical multi-stage usage (build outside Docker, copy results in):
 #   1. build-and-install.sh --configure-only               # Build LLVM + tt-metal
@@ -47,11 +54,18 @@ FORCE_REBUILD=false
 REBUILD_TTMETAL=false
 ACCEPT_TTMETAL_MISMATCH=false
 PYTHON_EXECUTABLE=""
+PYTHON_VENV=""
+EXTERNAL_TT_METAL_DIR=""
+EXTERNAL_TT_METAL_BUILD_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --toolchain-only)
             MODE="toolchain-only"
+            shift
+            ;;
+        --llvm-toolchain-only)
+            MODE="llvm-toolchain-only"
             shift
             ;;
         --configure-only)
@@ -90,8 +104,32 @@ while [[ $# -gt 0 ]]; do
             ACCEPT_TTMETAL_MISMATCH=true
             shift
             ;;
+        --external-tt-metal-dir)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --external-tt-metal-dir requires a path" >&2
+                exit 1
+            fi
+            EXTERNAL_TT_METAL_DIR="$2"
+            shift 2
+            ;;
+        --external-tt-metal-build-dir)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --external-tt-metal-build-dir requires a path" >&2
+                exit 1
+            fi
+            EXTERNAL_TT_METAL_BUILD_DIR="$2"
+            shift 2
+            ;;
         --python)
             PYTHON_EXECUTABLE="$2"
+            shift 2
+            ;;
+        --python-venv)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --python-venv requires a path" >&2
+                exit 1
+            fi
+            PYTHON_VENV="$2"
             shift 2
             ;;
         *)
@@ -101,8 +139,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ -n "$EXTERNAL_TT_METAL_BUILD_DIR" ] && [ -z "$EXTERNAL_TT_METAL_DIR" ]; then
+    echo "ERROR: --external-tt-metal-build-dir requires --external-tt-metal-dir" >&2
+    exit 1
+fi
+
+if [ "$MODE" = "llvm-toolchain-only" ] && [ -z "$EXTERNAL_TT_METAL_DIR" ]; then
+    echo "ERROR: --llvm-toolchain-only requires --external-tt-metal-dir" >&2
+    exit 1
+fi
+
 TTLANG_TOOLCHAIN_DIR="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"
-if [ "$MODE" = "toolchain-only" ]; then
+if [ "$MODE" = "toolchain-only" ] || [ "$MODE" = "llvm-toolchain-only" ]; then
     CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build-toolchain}"
 else
     CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build}"
@@ -125,6 +173,10 @@ do_configure() {
         _use_toolchain=OFF
     fi
 
+    if [ "$MODE" = "llvm-toolchain-only" ]; then
+        _build_toolchain=OFF
+    fi
+
     # Per-component override: rebuild tt-metal from submodule while still
     # consuming LLVM from the toolchain. Defaults to TTLANG_USE_TOOLCHAIN
     # unless --rebuild-ttmetal sets it to OFF.
@@ -142,6 +194,17 @@ do_configure() {
     if [ -n "$PYTHON_EXECUTABLE" ]; then
         _python_args+=("-DPython3_EXECUTABLE=$PYTHON_EXECUTABLE")
     fi
+    if [ -n "$PYTHON_VENV" ]; then
+        _python_args+=("-DTTLANG_PYTHON_VENV=$PYTHON_VENV")
+    fi
+
+    local _external_ttmetal_args=()
+    if [ -n "$EXTERNAL_TT_METAL_DIR" ]; then
+        _external_ttmetal_args+=("-DTTLANG_EXTERNAL_TT_METAL_DIR=$EXTERNAL_TT_METAL_DIR")
+    fi
+    if [ -n "$EXTERNAL_TT_METAL_BUILD_DIR" ]; then
+        _external_ttmetal_args+=("-DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR=$EXTERNAL_TT_METAL_BUILD_DIR")
+    fi
 
     cmake -G Ninja -B "$CMAKE_BINARY_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
@@ -153,6 +216,7 @@ do_configure() {
         -DTTLANG_FORCE_TOOLCHAIN_REBUILD=$_force_rebuild \
         -DTTLANG_BUILD_TOOLCHAIN=$_build_toolchain \
         -DTTLANG_ACCEPT_TTMETAL_MISMATCH=$_accept_ttmetal_mismatch \
+        "${_external_ttmetal_args[@]}" \
         "${_python_args[@]}"
 
     echo "=== Disk space after configure ==="
@@ -268,6 +332,11 @@ case "$MODE" in
         fi
         do_finalize
         echo "=== Toolchain build complete ==="
+        ;;
+    llvm-toolchain-only)
+        do_configure
+        do_finalize
+        echo "=== LLVM toolchain build complete ==="
         ;;
     configure-only)
         do_configure

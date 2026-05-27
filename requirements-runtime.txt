@@ -11,5 +11,7 @@ ml_dtypes>=0.5.0,<1.0; python_version>='3.13'
 # platform-conditional (Linux x86_64 / aarch64 only, where ttnn publishes
 # wheels) and version-conditional (derived from third-party/tt-metal-version).
 # setup.py:_ttnn_requirement() builds the line and appends it to the
-# install_requires list at wheel-build time. macOS / Windows users wanting
-# a sim-only install should `pip install tt-lang-sim` instead.
+# install_requires list at wheel-build time. Internal wheels built with
+# TTLANG_TTNN_DEP_MODE=external skip that dynamic requirement and rely on a
+# user-provided tt-metal/ttnn install. macOS / Windows users wanting a sim-only
+# install should `pip install tt-lang-sim` instead.

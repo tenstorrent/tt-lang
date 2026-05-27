@@ -47,6 +47,60 @@ tt-lang-setup                     # copy bundled tutorials to ./tutorials/
 For finer control, `tt-lang-setup-host` runs only the sfpi step and
 `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 
+### Internal S3 wheels
+
+Tenstorrent internal preview wheels can be installed from the S3 PyPI index when
+the public `ttnn` wheel is older than the tt-metal build in use.
+
+The default internal `tt-lang` wheel bundles the `ttnn` artifacts from the
+toolchain used to build the wheel. It does not install the public `ttnn` package
+from PyPI and does not require additional setup after installation:
+
+```bash
+pip install \
+  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  tt-lang==0.71.0.dev20260526
+```
+
+Use `tt-lang-light` only when the environment already has a newer local
+tt-metal source or install layout that should provide `ttnn`. The package is a
+metapackage: `tt-lang-light==X` depends on the matching no-ttnn core wheel
+`tt-lang==X+light`.
+
+```bash
+pip install \
+  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  tt-lang-light==0.71.0.dev20260526
+```
+
+Configure a native tt-metal source/build layout before running hardware
+programs:
+
+```bash
+eval "$(tt-lang-setup-external-tt-metal \
+  --tt-metal-dir /path/to/tt-metal \
+  --build-dir /path/to/tt-metal/build \
+  --check \
+  --format shell)"
+```
+
+Configure an install-layout tt-metal prefix similarly:
+
+```bash
+eval "$(tt-lang-setup-external-tt-metal \
+  --tt-metal-dir /path/to/tt-metal-install \
+  --check \
+  --format shell)"
+```
+
+Validate that Python resolves both packages from the intended environment:
+
+```bash
+python -c 'import ttnn, ttl; print(ttnn.__file__, ttl.__version__)'
+```
+
 Run a tutorial example:
 
 ```bash

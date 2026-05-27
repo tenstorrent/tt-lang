@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "packaging"))
 
 from rewrite_readme import (  # noqa: E402

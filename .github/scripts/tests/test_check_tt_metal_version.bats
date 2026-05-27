@@ -45,6 +45,7 @@ EOF
 @test "rejects missing TT_METAL_TAG" {
     cat > "$REPO/third-party/tt-metal-version" <<'EOF'
 TTNN_PYPI="0.69.0"
+TTNN_PYPI_TT_METAL_TAG="v0.69.0"
 EOF
     commit_all "$REPO" "missing tag"
     run run_check_no_network
@@ -54,6 +55,7 @@ EOF
 
 @test "rejects missing TTNN_PYPI" {
     cat > "$REPO/third-party/tt-metal-version" <<'EOF'
+TTNN_PYPI_TT_METAL_TAG="v0.69.0"
 TT_METAL_TAG="v0.69.0"
 EOF
     commit_all "$REPO" "missing pypi"
@@ -62,9 +64,21 @@ EOF
     assert_output --partial "TTNN_PYPI not set"
 }
 
+@test "rejects missing TTNN_PYPI_TT_METAL_TAG" {
+    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
+TTNN_PYPI="0.69.0"
+TT_METAL_TAG="v0.69.0"
+EOF
+    commit_all "$REPO" "missing pypi tag"
+    run run_check_no_network
+    assert_failure
+    assert_output --partial "TTNN_PYPI_TT_METAL_TAG not set"
+}
+
 @test "rejects malformed TT_METAL_TAG (no leading v)" {
     cat > "$REPO/third-party/tt-metal-version" <<'EOF'
 TTNN_PYPI="0.69.0"
+TTNN_PYPI_TT_METAL_TAG="v0.69.0"
 TT_METAL_TAG="0.69.0"
 EOF
     commit_all "$REPO" "bad tag"
@@ -73,9 +87,22 @@ EOF
     assert_output --partial "does not look like vX.Y.Z"
 }
 
-@test "accepts valid two-variable format" {
+@test "rejects malformed TTNN_PYPI_TT_METAL_TAG (no leading v)" {
+    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
+TTNN_PYPI="0.69.0"
+TTNN_PYPI_TT_METAL_TAG="0.69.0"
+TT_METAL_TAG="v0.69.0"
+EOF
+    commit_all "$REPO" "bad pypi tag"
+    run run_check_no_network
+    assert_failure
+    assert_output --partial "TTNN_PYPI_TT_METAL_TAG '0.69.0' does not look like vX.Y.Z"
+}
+
+@test "accepts valid version-file format" {
     cat > "$REPO/third-party/tt-metal-version" <<'EOF'
 TTNN_PYPI="0.70.1"
+TTNN_PYPI_TT_METAL_TAG="v0.70.1-rc1"
 TT_METAL_TAG="v0.70.1-rc1"
 EOF
     commit_all "$REPO" "valid"
@@ -92,6 +119,7 @@ EOF
 # describing fields
 
 TTNN_PYPI="0.70.1"
+TTNN_PYPI_TT_METAL_TAG="v0.70.1-rc1"
 # inter-variable comment
 TT_METAL_TAG="v0.70.1-rc1"
 
@@ -106,6 +134,7 @@ EOF
 @test "accepts rc-suffixed tag (vX.Y.Z-rcN)" {
     cat > "$REPO/third-party/tt-metal-version" <<'EOF'
 TTNN_PYPI="0.70.1"
+TTNN_PYPI_TT_METAL_TAG="v0.70.1-rc2"
 TT_METAL_TAG="v0.70.1-rc2"
 EOF
     commit_all "$REPO" "rc tag"

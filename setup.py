@@ -32,13 +32,24 @@ class NoSdist(_sdist):
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
+_TTNN_DEP_MODES = ("pypi", "external", "bundled")
+_NON_FINAL_VERSION_RE = re.compile(r"(?:\.dev|a|b|rc)\d+", re.IGNORECASE)
+
+
+def _ttnn_dep_mode():
+    mode = os.environ.get("TTLANG_TTNN_DEP_MODE", "pypi").strip().lower()
+    if mode not in _TTNN_DEP_MODES:
+        allowed = ", ".join(_TTNN_DEP_MODES)
+        raise SystemExit(f"TTLANG_TTNN_DEP_MODE must be one of: {allowed}")
+    return mode
 
 
 def _read_tt_metal_version_var(name):
     """Read a shell variable from third-party/tt-metal-version.
 
     The file is a sourceable shell snippet (`KEY="value"` assignments).
-    Expected names: TTNN_PYPI, TT_METAL_TAG. See the file's header.
+    Expected names include TTNN_PYPI, TTNN_PYPI_TT_METAL_TAG, and
+    TT_METAL_TAG. See the file's header.
     """
     version_file = REPO_ROOT / "third-party" / "tt-metal-version"
     text = version_file.read_text()
@@ -65,7 +76,8 @@ def _ttnn_requirement():
 
 def _read_install_requires():
     """Read base runtime requirements from requirements-runtime.txt and
-    append the dynamic ttnn requirement.
+    append the dynamic ttnn requirement unless the wheel is explicitly built
+    for an externally managed or bundled tt-metal/ttnn install.
     """
     req_file = REPO_ROOT / "requirements-runtime.txt"
     requirements = []
@@ -74,8 +86,26 @@ def _read_install_requires():
         if not line or line.startswith("#"):
             continue
         requirements.append(line)
-    requirements.append(_ttnn_requirement())
+    mode = _ttnn_dep_mode()
+    if mode == "pypi":
+        requirements.append(_ttnn_requirement())
+    elif mode == "bundled":
+        requirements.extend(
+            _missing_requirements(requirements, TTNN_RUNTIME_REQUIREMENTS)
+        )
     return requirements
+
+
+def _missing_requirements(existing_requirements, extra_requirements):
+    existing_names = {
+        requirement.split(";", 1)[0].split("==", 1)[0].split(">=", 1)[0].strip().lower()
+        for requirement in existing_requirements
+    }
+    return [
+        requirement
+        for requirement in extra_requirements
+        if requirement.split(">=", 1)[0].strip().lower() not in existing_names
+    ]
 
 
 def get_version_from_git():
@@ -119,6 +149,21 @@ def get_version_from_git():
         return "0.2.0.dev0"
 
 
+def _validate_ttnn_dep_mode_version(version):
+    if _ttnn_dep_mode() not in ("external", "bundled"):
+        return
+    if not os.environ.get("TTLANG_PRETEND_VERSION", "").strip():
+        raise SystemExit(
+            f"TTLANG_TTNN_DEP_MODE={_ttnn_dep_mode()} requires TTLANG_PRETEND_VERSION "
+            "so internal wheels cannot be confused with PyPI release wheels"
+        )
+    if not _NON_FINAL_VERSION_RE.search(version):
+        raise SystemExit(
+            f"TTLANG_TTNN_DEP_MODE={_ttnn_dep_mode()} requires a non-final version "
+            "such as 0.71.0.dev20260525 or 0.71.0rc1"
+        )
+
+
 class TTLangExtension(Extension):
     def __init__(self, name):
         super().__init__(name, sources=[])
@@ -154,8 +199,14 @@ class CMakeBuild(build_ext):
                 "found on PATH. Install it (e.g. `pip install patchelf`) before "
                 "building the wheel."
             )
+        bundled_ttnn_extension = install_dir / "ttnn" / "_ttnn.so"
         for so_file in glob.glob(str(install_dir / "**/*.so"), recursive=True):
-            self.spawn(["patchelf", "--set-rpath", "$ORIGIN", so_file])
+            rpath = (
+                "$ORIGIN/build/lib"
+                if pathlib.Path(so_file) == bundled_ttnn_extension
+                else "$ORIGIN"
+            )
+            self.spawn(["patchelf", "--set-rpath", rpath, so_file])
 
     def _sanitize_env_for_cmake(self):
         """Remove pip build-isolation env vars that break cmake's nested pip calls.
@@ -225,6 +276,16 @@ class CMakeBuild(build_ext):
                 if toolchain_dir:
                     cmake_args.append(f"-DTTLANG_TOOLCHAIN_DIR={toolchain_dir}")
 
+            for env_var in (
+                "TTLANG_EXTERNAL_TT_METAL_DIR",
+                "TTLANG_EXTERNAL_TT_METAL_BUILD_DIR",
+                "TTLANG_ACCEPT_TTMETAL_MISMATCH",
+                "TTLANG_PYTHON_VENV",
+            ):
+                value = os.environ.get(env_var, "")
+                if value:
+                    cmake_args.append(f"-D{env_var}={value}")
+
             # Forward CC/CXX as cmake -D flags.  CMakeLists.txt defaults
             # to clang before project(), which runs before cmake reads the
             # CC/CXX env vars — so the env vars alone have no effect.
@@ -256,6 +317,9 @@ class CMakeBuild(build_ext):
             ]
         )
 
+        if _ttnn_dep_mode() == "bundled":
+            copy_bundled_ttnn(BUNDLED_TT_METAL_ROOT, install_dir)
+
         # Post-install: strip binaries and fix RPATH for wheel distribution
         self._strip_binaries(install_dir)
         self._fix_rpath(install_dir)
@@ -264,9 +328,32 @@ class CMakeBuild(build_ext):
 ttlang_c = TTLangExtension("ttl")
 
 sys.path.insert(0, str(REPO_ROOT / "packaging"))
+from bundled_ttnn import (  # noqa: E402
+    TTNN_RUNTIME_REQUIREMENTS,
+    copy_bundled_ttnn,
+    resolve_tt_metal_root,
+    stage_bundled_ttnn_python_packages,
+)
 from rewrite_readme import absolutize_readme_images, ref_for_version  # noqa: E402
 
 _version = get_version_from_git()
+_validate_ttnn_dep_mode_version(_version)
+
+BUNDLED_TT_METAL_ROOT = None
+_bundled_packages = []
+_bundled_package_dir = {}
+if _ttnn_dep_mode() == "bundled":
+    try:
+        BUNDLED_TT_METAL_ROOT = resolve_tt_metal_root(REPO_ROOT)
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
+    _bundled_metadata = stage_bundled_ttnn_python_packages(
+        BUNDLED_TT_METAL_ROOT,
+        REPO_ROOT / "build" / "bundled-ttnn-python",
+        REPO_ROOT,
+    )
+    _bundled_packages = _bundled_metadata.packages
+    _bundled_package_dir = _bundled_metadata.package_dir
 
 readme_path = REPO_ROOT / "README.md"
 with open(str(readme_path), "r", encoding="utf-8") as readme_file:
@@ -291,7 +378,8 @@ setup(
         "ttl.tutorials.broadcast",
         "ttl.utils",
         "sim_stats",
-    ],
+    ]
+    + _bundled_packages,
     package_dir={
         "ttl": "python/ttl",
         "ttl._pipenets": "python/ttl/_pipenets",
@@ -306,7 +394,8 @@ setup(
         "ttl.tutorials.broadcast": "examples/tutorial",
         "ttl.utils": "python/utils",
         "sim_stats": "python/sim_stats",
-    },
+    }
+    | _bundled_package_dir,
     ext_modules=[ttlang_c],
     cmdclass={"build_ext": CMakeBuild, "sdist": NoSdist},
     zip_safe=False,
