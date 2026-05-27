@@ -5,12 +5,6 @@
 name: Publish S3 PyPI Wheels
 
 on:
-  # Temporary PR dry-run trigger while this new workflow is not yet registered
-  # for workflow_dispatch on GitHub. PR runs force dry_run=true below and never
-  # publish S3 artifacts or GHCR images.
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: ["main"]
   schedule:
     # Nightly S3-only internal wheel publish. GitHub cron uses UTC.
     - cron: "0 8 * * *"
@@ -47,7 +41,7 @@ on:
         required: true
 
 concurrency:
-  group: publish-s3-pypi-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  group: publish-s3-pypi-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -57,7 +51,6 @@ permissions:
 jobs:
   preflight:
     name: "Resolve S3 publish inputs"
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     outputs:
@@ -73,14 +66,6 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-
-      - name: Log in to GHCR
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
 
       - name: Resolve publish inputs
         id: resolve
@@ -100,21 +85,7 @@ jobs:
           version_override="$DISPATCH_VERSION_OVERRIDE"
           ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
 
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            dry_run=true
-            overwrite_releases=false
-            if [ -z "$docker_tag" ]; then
-              docker_tag=$(.github/containers/get-version-tag.sh)
-              probe_output=$(mktemp)
-              GITHUB_OUTPUT="$probe_output" .github/scripts/probe-docker-image.sh "$docker_tag"
-              if grep -q '^needs_rebuild=true$' "$probe_output"; then
-                echo "::error::PR S3 dry-runs do not publish GHCR images."
-                echo "Wait for CI to publish docker_tag=$docker_tag."
-                echo "Alternatively run workflow_dispatch with an existing docker_tag."
-                exit 1
-              fi
-            fi
-          elif [ "$EVENT_NAME" = "schedule" ]; then
+          if [ "$EVENT_NAME" = "schedule" ]; then
             overwrite_releases=true
           fi
 
@@ -141,7 +112,7 @@ jobs:
 
   build-docker:
     needs: preflight
-    if: ${{ github.event_name != 'pull_request' && needs.preflight.outputs.docker_tag == '' }}
+    if: ${{ needs.preflight.outputs.docker_tag == '' }}
     permissions:
       contents: read
       packages: write
