@@ -5,6 +5,12 @@
 name: Publish S3 PyPI Wheels
 
 on:
+  # Temporary PR dry-run trigger while this new workflow is not yet registered
+  # for workflow_dispatch on GitHub. PR runs force dry_run=true below and skip
+  # only the S3 upload.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: ["main"]
   schedule:
     # Nightly S3-only internal wheel publish. GitHub cron uses UTC.
     - cron: "0 8 * * *"
@@ -72,6 +78,7 @@ jobs:
           DISPATCH_OVERWRITE_RELEASES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.overwrite_releases) || 'true' }}
           DISPATCH_PRETEND_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.pretend_version || '' }}
           DISPATCH_TTNN_DEP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.ttnn_dep_mode || 'bundled' }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
@@ -80,6 +87,11 @@ jobs:
           overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
           pretend_version="$DISPATCH_PRETEND_VERSION"
           ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            dry_run=true
+            overwrite_releases=false
+          fi
 
           if [ -z "$pretend_version" ]; then
             pretend_version=$(python3 .github/scripts/compute-nightly-version.py)
