@@ -79,3 +79,17 @@ def test_native_layout_requires_built_libraries(tmp_path: Path) -> None:
         assert "has no built libraries" in str(error)
     else:
         raise AssertionError("native layout without built libraries must fail")
+
+
+def test_native_layout_rejects_missing_explicit_build_dir(tmp_path: Path) -> None:
+    module = _load_module()
+    source_root = tmp_path / "tt-metal-src"
+    (source_root / "ttnn" / "ttnn").mkdir(parents=True)
+    (source_root / "tt_metal").mkdir()
+
+    try:
+        module.detect_external_tt_metal(source_root, tmp_path / "missing-build")
+    except ValueError as error:
+        assert "tt-metal build directory is not a directory" in str(error)
+    else:
+        raise AssertionError("missing explicit build directory must fail")

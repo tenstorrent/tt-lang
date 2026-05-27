@@ -65,7 +65,7 @@ def detect_external_tt_metal(
     native_tt_metal_source = tt_metal_root / "tt_metal"
     if native_ttnn_package.is_dir() and native_tt_metal_source.is_dir():
         native_build_dir = (
-            Path(build_dir).expanduser().resolve()
+            _resolve_existing_dir(str(build_dir), "tt-metal build directory")
             if build_dir is not None
             else tt_metal_root / "build"
         )
