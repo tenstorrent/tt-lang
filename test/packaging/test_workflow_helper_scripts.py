@@ -101,10 +101,15 @@ def test_check_light_metapackage_parses_requires_dist(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_compute_nightly_version_uses_latest_reachable_tag(
+def test_compute_nightly_version_uses_latest_stable_tag(
     tmp_path: Path,
 ) -> None:
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
         cwd=tmp_path,
@@ -119,6 +124,13 @@ def test_compute_nightly_version_uses_latest_reachable_tag(
     subprocess.run(["git", "add", "file.txt"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-m", "first"], cwd=tmp_path, check=True)
     subprocess.run(["git", "tag", "v1.2.3"], cwd=tmp_path, check=True)
+
+    subprocess.run(["git", "checkout", "-b", "release"], cwd=tmp_path, check=True)
+    (tmp_path / "file.txt").write_text("release\n")
+    subprocess.run(["git", "commit", "-am", "release"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "tag", "v1.2.4"], cwd=tmp_path, check=True)
+
+    subprocess.run(["git", "checkout", "main"], cwd=tmp_path, check=True)
     (tmp_path / "file.txt").write_text("second\n")
     subprocess.run(["git", "commit", "-am", "second"], cwd=tmp_path, check=True)
 
@@ -127,7 +139,7 @@ def test_compute_nightly_version_uses_latest_reachable_tag(
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == f"1.2.3.dev{today}"
+    assert result.stdout.strip() == f"1.2.4.dev{today}"
 
 
 def _write_fake_ttnn(root: Path, *, with_native_libs: bool) -> None:
@@ -148,17 +160,29 @@ def _env_with_pythonpath(path: Path) -> dict[str, str]:
     return env
 
 
+def _write_owner_executable_script(script_path: Path, text: str) -> None:
+    if script_path.exists():
+        script_path.unlink()
+    file_descriptor = os.open(
+        script_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o500,
+    )
+    with os.fdopen(file_descriptor, "w") as script_file:
+        script_file.write(text)
+
+
 def _env_with_pythonpath_and_ldd(path: Path) -> dict[str, str]:
     env = _env_with_pythonpath(path)
     bin_dir = path / "bin"
     bin_dir.mkdir()
     ttnncpp_path = path / "ttnn" / "build" / "lib" / "_ttnncpp.so"
     ldd = bin_dir / "ldd"
-    ldd.write_text(
+    _write_owner_executable_script(
+        ldd,
         "#!/usr/bin/env bash\n"
-        f"printf '\\t_ttnncpp.so => {ttnncpp_path} (0x00000000)\\n'\n"
+        f"printf '\\t_ttnncpp.so => {ttnncpp_path} (0x00000000)\\n'\n",
     )
-    ldd.chmod(0o700)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     return env
 
@@ -171,8 +195,10 @@ def _env_with_pythonpath_and_ldd_stub(
     bin_dir = path / "bin"
     bin_dir.mkdir()
     ldd = bin_dir / "ldd"
-    ldd.write_text(f"#!/usr/bin/env bash\n{stub_body}\nexit {exit_code}\n")
-    ldd.chmod(0o700)
+    _write_owner_executable_script(
+        ldd,
+        f"#!/usr/bin/env bash\n{stub_body}\nexit {exit_code}\n",
+    )
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     return env
 
