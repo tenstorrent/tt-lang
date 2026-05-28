@@ -142,8 +142,8 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
 }
 
 /// Sender-side pipe protocol body shared by static and selected pipe
-/// lowering. Writes source DFB data to the receiver-published destination
-/// address and signals arrival via semaphore.
+/// lowering. Writes source DFB data to the published destination DFB address
+/// and signals arrival via semaphore.
 LogicalResult emitSendProtocol(CopyOp op, Value srcCB, bool isConsumerCB,
                                const PipeMetadata &meta,
                                ConversionPatternRewriter &rewriter) {
@@ -229,7 +229,7 @@ LogicalResult emitSendProtocol(CopyOp op, Value srcCB, bool isConsumerCB,
   Value zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
                                             rewriter.getI32IntegerAttr(0));
 
-  // Receiver-published destination address.
+  // Published destination DFB address.
   Value mailboxSemAddr = meta.mailboxSemAddr(rewriter, loc);
   Value mailboxPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxSemAddr);
@@ -286,16 +286,15 @@ LogicalResult emitSendProtocol(CopyOp op, Value srcCB, bool isConsumerCB,
         rewriter, loc, getReceiverSemIdx(meta.getPipeNetId()));
     Value semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
     Value incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    Value dstSemNocAddr = ttk::GetNocAddrOp::create(
-        rewriter, loc, dstStartXVal, dstStartYVal, semAddr);
+    Value dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
+                                                    dstStartYVal, semAddr);
     ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr, incrVal,
                                    /*noc_id=*/Value(),
                                    /*posted=*/BoolAttr());
   } else {
     Value recvSemIdx = arith::ConstantIndexOp::create(
         rewriter, loc, getReceiverSemIdx(meta.getPipeNetId()));
-    Value recvSemAddr =
-        ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
+    Value recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
     Value numRemoteDestsVal = meta.numRemoteDestsI32(rewriter, loc);
     Value recvSemMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
         rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
@@ -308,10 +307,10 @@ LogicalResult emitSendProtocol(CopyOp op, Value srcCB, bool isConsumerCB,
     auto emitSelfInc = [&](OpBuilder &b) {
       Value srcX = meta.srcXLogical(b, loc);
       Value srcY = meta.srcYLogical(b, loc);
-      Value srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
-          b, loc, indexTy, srcX);
-      Value srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
-          b, loc, indexTy, srcY);
+      Value srcXTranslated =
+          ttk::ConvertLogicalXToTranslatedOp::create(b, loc, indexTy, srcX);
+      Value srcYTranslated =
+          ttk::ConvertLogicalYToTranslatedOp::create(b, loc, indexTy, srcY);
       Value selfRecvSemNocAddr = ttk::GetNocAddrOp::create(
           b, loc, srcXTranslated, srcYTranslated, recvSemAddr);
       ttk::NocSemaphoreIncOp::create(b, loc, selfRecvSemNocAddr, incrVal,
@@ -356,9 +355,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   if (mlir::isa<SelectedPipeSrcType>(pipe.getType())) {
     auto selectOp = pipe.getDefiningOp<SelectPipeSrcOp>();
     if (!selectOp) {
-      return op.emitOpError()
-             << "source-selected pipe must be materialized by "
-                "ttl.select_pipe_src";
+      return op.emitOpError() << "source-selected pipe must be materialized by "
+                                 "ttl.select_pipe_src";
     }
     SelectedPipeMetadata meta(selectOp);
     return emitSendProtocol(op, srcCB, isConsumerCB, meta, rewriter);
@@ -366,8 +364,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   return rewriter.notifyMatchFailure(op, "unsupported pipe operand type");
 }
 
-/// Receiver-side pipe receive post: publish the receiver DFB slot address to
-/// the sender's mailbox and bump the sender-ready semaphore.
+/// Receiver-side pipe receive post: publish the destination DFB address to the
+/// source node and bump the sender-ready semaphore.
 LogicalResult emitRecvPostProtocol(PipeRecvPostOp op, Value dst,
                                    const PipeMetadata &meta,
                                    const PipeRuntimeLayout *runtime,
@@ -380,7 +378,7 @@ LogicalResult emitRecvPostProtocol(PipeRecvPostOp op, Value dst,
     return op.emitError() << "pipe receive post uses NOC thread index "
                           << nocIdx << ", but pipe runtime layout has only "
                           << runtime->numMailboxStagingSems
-                          << " mailbox staging semaphores";
+                          << " address-publication staging semaphores";
   }
   Location loc = op.getLoc();
   auto indexTy = rewriter.getIndexType();
@@ -420,8 +418,7 @@ LogicalResult emitRecvPostProtocol(PipeRecvPostOp op, Value dst,
       ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
   Value publishedAddress = receiverWritePtr;
   Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  Value globalTileIndex =
-      utils::addSliceOffset(dst, zeroIdx, rewriter, loc);
+  Value globalTileIndex = utils::addSliceOffset(dst, zeroIdx, rewriter, loc);
   if (globalTileIndex != zeroIdx) {
     Value tileOffsetI32 =
         arith::IndexCastOp::create(rewriter, loc, i32Ty, globalTileIndex);
@@ -436,7 +433,8 @@ LogicalResult emitRecvPostProtocol(PipeRecvPostOp op, Value dst,
 
   // TODO(#617): Support per-destination receive addresses for multicast.
   // TTKernel multicast writes take one destination address for the rectangle,
-  // so all receivers of a pipe currently publish to its source-local mailbox.
+  // so all receivers of a pipe currently publish to one source-local
+  // posted-address word.
   Value mailboxStagingSemIdx = arith::ConstantIndexOp::create(
       rewriter, loc, runtime->mailboxStagingSemIdxBase + nocIdx);
   Value mailboxStagingSem =
@@ -917,10 +915,11 @@ verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
   }
 
   auto diag = mod.emitError()
-              << "pipe rendezvous requires " << requiredSemaphoreIds
+              << "pipe synchronization requires " << requiredSemaphoreIds
               << " hardware semaphore ids, exceeding TT hardware limit of "
               << kMaxHardwarePipeSyncSemaphores
-              << "; issue #619 tracks scalable rendezvous allocation";
+              << "; issue #619 tracks scalable pipe synchronization "
+                 "allocation";
   Diagnostic &note = diag.attachNote(mod.getLoc())
                      << "highest allocated semaphore id is " << highest.index
                      << " for ";
@@ -935,7 +934,7 @@ verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
     note << "receiver-arrival counter";
     break;
   case ResourceKind::MailboxStaging:
-    note << "mailbox staging";
+    note << "address-publication staging";
     break;
   case ResourceKind::SenderReady:
     note << "sender-ready counter for ";
@@ -943,8 +942,8 @@ verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
     appendPipe(*highest.pipe);
     break;
   case ResourceKind::PostedAddressMailbox:
-    note << "posted-address mailbox for ";
-    assert(highest.pipe && "mailbox resource must have a pipe");
+    note << "posted-address word for ";
+    assert(highest.pipe && "posted-address resource must have a pipe");
     appendPipe(*highest.pipe);
     break;
   }

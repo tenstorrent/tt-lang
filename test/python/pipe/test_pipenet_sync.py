@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pipe rendezvous coverage for posted receives.
+"""Pipe synchronization coverage for posted receives.
 
 These tests cover cases where the receiver publishes one or more destination
 DFB addresses before waiting for the transfers to complete.
@@ -131,7 +131,7 @@ posted_gather_kernel = make_two_net_posted_gather_kernel()
 same_source_two_pipe_kernel = make_same_source_two_pipe_kernel()
 
 
-def make_many_pipe_rendezvous_kernel():
+def make_many_pipe_sync_kernel():
     grid_dim = 2
     row_upper_net = ttl.PipeNet(
         [
@@ -171,7 +171,7 @@ def make_many_pipe_rendezvous_kernel():
     )
 
     @ttl.operation(grid=(grid_dim + 1, grid_dim), fp32_dest_acc_en=True)
-    def many_pipe_rendezvous(inp, out):
+    def many_pipe_sync(inp, out):
         _row_upper_net = row_upper_net
         _row_lower_net = row_lower_net
         _col_upper_net = col_upper_net
@@ -337,7 +337,7 @@ def make_many_pipe_rendezvous_kernel():
         def write_output():
             pass
 
-    return many_pipe_rendezvous
+    return many_pipe_sync
 
 
 def make_non_uniform_multicast_receive_address_kernel():
@@ -388,7 +388,7 @@ def make_non_uniform_multicast_receive_address_kernel():
 non_uniform_multicast_receive_address_kernel = (
     make_non_uniform_multicast_receive_address_kernel()
 )
-many_pipe_rendezvous_kernel = make_many_pipe_rendezvous_kernel()
+many_pipe_sync_kernel = make_many_pipe_sync_kernel()
 
 
 def test_posted_gather_uses_distinct_receiver_slots(device):
@@ -408,7 +408,7 @@ def test_posted_gather_uses_distinct_receiver_slots(device):
     assert_pcc(expected.float(), result.float())
 
 
-def test_same_source_pipes_use_distinct_rendezvous_state(device):
+def test_same_source_pipes_use_distinct_pipe_sync_state(device):
     inp_torch = torch.randn(TILE, 2 * TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
 
@@ -422,7 +422,7 @@ def test_same_source_pipes_use_distinct_rendezvous_state(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_many_pipe_rendezvous_sites_report_hardware_semaphore_limit(device):
+def test_many_pipe_sync_sites_report_hardware_semaphore_limit(device):
     inp_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
 
@@ -432,11 +432,11 @@ def test_many_pipe_rendezvous_sites_report_hardware_semaphore_limit(device):
     with pytest.raises(
         Exception,
         match=(
-            "pipe rendezvous requires .* hardware semaphore ids, exceeding "
+            "pipe synchronization requires .* hardware semaphore ids, exceeding "
             "TT hardware limit of 16; issue #619"
         ),
     ):
-        many_pipe_rendezvous_kernel(inp, out)
+        many_pipe_sync_kernel(inp, out)
 
 
 def test_multicast_receive_addresses_differ_by_destination_rejected(device):

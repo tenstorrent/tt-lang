@@ -88,9 +88,9 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
 // -----
 
 //===----------------------------------------------------------------------===//
-// Two senders to the same destination range use receiver-published
-// addresses. Each send reads the posted destination address from the
-// sender-visible mailbox before issuing its multicast write.
+// Two senders to the same destination range use destination DFB addresses
+// published by the receivers. Each send reads the posted destination address
+// from the source-visible address word before issuing its multicast write.
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @overlap_distinct_slots
@@ -178,9 +178,10 @@ func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thre
 // -----
 
 //===----------------------------------------------------------------------===//
-// Loopback sender: payload writes use multicast with the receiver-published
-// common destination address. Signaling splits into noc_semaphore_inc_multicast
-// to remote receivers + local noc_semaphore_inc on the sender's own recvSem.
+// Loopback sender: payload writes use multicast with the common destination
+// DFB address published by the receivers. Signaling splits into
+// noc_semaphore_inc_multicast to remote receivers + local noc_semaphore_inc on
+// the sender's own recvSem.
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @loopback_self_inc

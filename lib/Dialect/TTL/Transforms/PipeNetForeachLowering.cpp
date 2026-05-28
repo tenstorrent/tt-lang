@@ -37,8 +37,8 @@ namespace {
 static Value buildPipeIndexTable(OpBuilder &b, Location loc,
                                  ArrayRef<int64_t> values) {
   assert(!values.empty());
-  auto memrefTy = MemRefType::get(
-      {static_cast<int64_t>(values.size())}, b.getIndexType());
+  auto memrefTy =
+      MemRefType::get({static_cast<int64_t>(values.size())}, b.getIndexType());
   Value table = memref::AllocaOp::create(b, loc, memrefTy);
   for (size_t i = 0; i < values.size(); ++i) {
     Value v = arith::ConstantIndexOp::create(b, loc, values[i]);
@@ -100,7 +100,8 @@ struct PipeForeachFields {
 
 /// `scf.for` and the `SelectPipe*Op` it materializes per iteration. Each
 /// pattern still owns the role-specific coord predicate and body cloning.
-template <typename SelectOp> struct PipeForeachShell {
+template <typename SelectOp>
+struct PipeForeachShell {
   scf::ForOp forOp;
   SelectOp selectedPipe;
 };
@@ -139,14 +140,14 @@ buildPipeForeachShell(Operation *op, ArrayRef<PipeType> pipeTypes,
   Value srcInDstRangeT = buildPipeIndexTable(rewriter, loc, f.srcInDstRange);
 
   Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  Value upper =
-      arith::ConstantIndexOp::create(rewriter, loc, pipeTypes.size());
+  Value upper = arith::ConstantIndexOp::create(rewriter, loc, pipeTypes.size());
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
 
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value iv = forOp.getInductionVar();
-  Value srcInDstRangeIdx = loadPipeTableEntry(rewriter, loc, srcInDstRangeT, iv);
+  Value srcInDstRangeIdx =
+      loadPipeTableEntry(rewriter, loc, srcInDstRangeT, iv);
   Value srcInDstRangeI1 = arith::CmpIOp::create(
       rewriter, loc, arith::CmpIPredicate::ne, srcInDstRangeIdx, lower);
   auto selectedPipe = SelectOp::create(
@@ -160,8 +161,7 @@ buildPipeForeachShell(Operation *op, ArrayRef<PipeType> pipeTypes,
       loadPipeTableEntry(rewriter, loc, numDestsT, iv),
       loadPipeTableEntry(rewriter, loc, senderSemIdxT, iv),
       loadPipeTableEntry(rewriter, loc, mailboxSemIdxT, iv), srcInDstRangeI1,
-      rewriter.getBoolAttr(isMulticast),
-      rewriter.getI64IntegerAttr(pipeNetId));
+      rewriter.getBoolAttr(isMulticast), rewriter.getI64IntegerAttr(pipeNetId));
 
   return PipeForeachShell<SelectOp>{forOp, selectedPipe};
 }
@@ -222,10 +222,8 @@ struct PipeNetForeachSrcLowering
     return lowerForeach<SelectPipeSrcOp, SelectedPipeSrcType>(
         op, rewriter,
         [](OpBuilder &b, Location loc, SelectPipeSrcOp selectedPipe) {
-          Value nodeX =
-              ttk::MyLogicalXOp::create(b, loc, b.getIndexType());
-          Value nodeY =
-              ttk::MyLogicalYOp::create(b, loc, b.getIndexType());
+          Value nodeX = ttk::MyLogicalXOp::create(b, loc, b.getIndexType());
+          Value nodeY = ttk::MyLogicalYOp::create(b, loc, b.getIndexType());
           Value xMatches = arith::CmpIOp::create(
               b, loc, arith::CmpIPredicate::eq, nodeX, selectedPipe.getSrcX());
           Value yMatches = arith::CmpIOp::create(
@@ -245,22 +243,20 @@ struct PipeNetForeachDstLowering
     return lowerForeach<SelectPipeDstOp, SelectedPipeDstType>(
         op, rewriter,
         [](OpBuilder &b, Location loc, SelectPipeDstOp selectedPipe) {
-          Value nodeX =
-              ttk::MyLogicalXOp::create(b, loc, b.getIndexType());
-          Value nodeY =
-              ttk::MyLogicalYOp::create(b, loc, b.getIndexType());
-          Value xAtStart = arith::CmpIOp::create(
-              b, loc, arith::CmpIPredicate::sge, nodeX,
-              selectedPipe.getDstStartX());
-          Value xAtEnd = arith::CmpIOp::create(
-              b, loc, arith::CmpIPredicate::sle, nodeX,
-              selectedPipe.getDstEndX());
-          Value yAtStart = arith::CmpIOp::create(
-              b, loc, arith::CmpIPredicate::sge, nodeY,
-              selectedPipe.getDstStartY());
-          Value yAtEnd = arith::CmpIOp::create(
-              b, loc, arith::CmpIPredicate::sle, nodeY,
-              selectedPipe.getDstEndY());
+          Value nodeX = ttk::MyLogicalXOp::create(b, loc, b.getIndexType());
+          Value nodeY = ttk::MyLogicalYOp::create(b, loc, b.getIndexType());
+          Value xAtStart =
+              arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, nodeX,
+                                    selectedPipe.getDstStartX());
+          Value xAtEnd =
+              arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, nodeX,
+                                    selectedPipe.getDstEndX());
+          Value yAtStart =
+              arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, nodeY,
+                                    selectedPipe.getDstStartY());
+          Value yAtEnd =
+              arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, nodeY,
+                                    selectedPipe.getDstEndY());
           Value xInRange = arith::AndIOp::create(b, loc, xAtStart, xAtEnd);
           Value yInRange = arith::AndIOp::create(b, loc, yAtStart, yAtEnd);
           return arith::AndIOp::create(b, loc, xInRange, yInRange).getResult();

@@ -68,7 +68,7 @@ public:
   /// semaphore.
   virtual Value senderReadySemAddr(OpBuilder &builder, Location loc) const = 0;
 
-  /// `i32` result of `ttkernel.get_semaphore` for the mailbox slot.
+  /// `i32` result of `ttkernel.get_semaphore` for the posted-address slot.
   virtual Value mailboxSemAddr(OpBuilder &builder, Location loc) const = 0;
 
 protected:
@@ -114,8 +114,7 @@ public:
   }
   Value numDestsI32(OpBuilder &b, Location loc) const override {
     return arith::ConstantOp::create(
-        b, loc, b.getI32Type(),
-        b.getI32IntegerAttr(pipeType.getNumDests()));
+        b, loc, b.getI32Type(), b.getI32IntegerAttr(pipeType.getNumDests()));
   }
   Value numRemoteDestsI32(OpBuilder &b, Location loc) const override {
     int64_t value =
@@ -223,15 +222,15 @@ private:
   Value srcInDstRangeOperand;
 };
 
-/// Sender-side pipe protocol: write `srcCB` payload to the receiver-published
-/// destination address, then signal arrival. Replaces `op` with a zero i32.
+/// Sender-side pipe protocol: write `srcCB` payload to the published
+/// destination DFB address, then signal arrival. Replaces `op` with a zero i32.
 LogicalResult emitSendProtocol(CopyOp op, Value srcCB, bool isConsumerCB,
                                const PipeMetadata &meta,
                                ConversionPatternRewriter &rewriter);
 
-/// Receiver-side pipe receive post: publish the receiver DFB slot address to
-/// the sender's mailbox and bump the sender-ready semaphore. Replaces `op`
-/// with a zero i32 transfer handle.
+/// Receiver-side pipe receive post: publish the destination DFB address to the
+/// source node and bump the sender-ready semaphore. Replaces `op` with a zero
+/// i32 transfer handle.
 LogicalResult emitRecvPostProtocol(PipeRecvPostOp op, Value dst,
                                    const PipeMetadata &meta,
                                    const PipeRuntimeLayout *runtime,

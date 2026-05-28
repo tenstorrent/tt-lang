@@ -19,8 +19,8 @@
 namespace mlir::tt::ttl {
 
 /// Receiver-arrival semaphores are indexed by PipeNet id. Sender-ready
-/// semaphores and mailbox words are per pipe because different pipes in one
-/// PipeNet can be posted and sent independently.
+/// semaphores and posted-address words are per pipe because different pipes in
+/// one PipeNet can be posted and sent independently.
 inline int64_t getReceiverSemIdx(int64_t pipeNetId) { return pipeNetId; }
 
 struct PipeChannelLayout {
@@ -41,17 +41,17 @@ using PipeNetIndex = llvm::DenseMap<int64_t, SmallVector<PipeType>>;
 /// Static lookup table used by pipe lowering. Receiver-arrival semaphore
 /// indices are global. Receive posts use one local staging semaphore per NOC
 /// data-movement thread because remote SRAM writes read from local memory.
-/// Sender-ready and mailbox indices only need to be unique among pipes that
-/// share a source core.
+/// Sender-ready and posted-address indices only need to be unique among pipes
+/// that share a source node.
 struct PipeRuntimeLayout {
   int64_t mailboxStagingSemIdxBase = 0;
   int64_t numMailboxStagingSems = 0;
   llvm::DenseMap<PipeKey, PipeChannelLayout> channels;
 };
 
-/// Look up the per-pipe channel layout (sender-ready and mailbox semaphore
-/// indices) for `pipeType` in `pipeRuntimeLayout`. Emits an internal-compiler-
-/// error diagnostic if the layout pointer is null or the pipe is missing.
+/// Look up the per-pipe channel layout for `pipeType` in `pipeRuntimeLayout`.
+/// Emits an internal-compiler-error diagnostic if the layout pointer is null or
+/// the pipe is missing.
 FailureOr<PipeChannelLayout>
 lookupPipeChannelLayout(Operation *op, PipeType pipeType,
                         const PipeRuntimeLayout *pipeRuntimeLayout);
@@ -80,7 +80,7 @@ verifyPipeRuntimeLayoutFitsHardware(ModuleOp mod,
 /// that function for the PipeNet.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
-/// Lower CB -> Pipe copy (sender side). Uses receiver-published destination
+/// Lower CB -> Pipe copy (sender side). Uses the published destination DFB
 /// addresses and signals destinations via semaphore.
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                             bool isConsumerCB,

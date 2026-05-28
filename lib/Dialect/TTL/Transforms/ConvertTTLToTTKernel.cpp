@@ -1118,8 +1118,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
-  // Validate receiver DFB consistency before lowering emits the rendezvous
-  // protocol.
+  // Validate receiver DFB consistency before lowering emits the pipe
+  // synchronization protocol.
   auto pipeGraphOrErr = PipeGraph::build(mod);
   if (failed(pipeGraphOrErr)) {
     return failure();

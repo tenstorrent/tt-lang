@@ -71,13 +71,18 @@ def scatter(inp, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: ttl.kernel_thread = #ttkernel.thread<noc>
 
-# PipeNet emits create_pipe + if_src for each pipe in the net
-# CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0)
-# CHECK: ttl.if_src
-
-# if_dst call (receive from pipe)
-# CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0)
-# CHECK: ttl.if_dst
+# PipeNet callbacks emit foreach ops over selected-pipe records.
+# CHECK-NOT: ttl.create_pipe
+# CHECK: ttl.pipenet_foreach_src
+# CHECK-SAME: name "scatter_net"
+# CHECK-SAME: pipes[<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 3, dstEndY = 0, isMulticast = true>]
+# CHECK: ^bb0(%[[SRC_PIPE:.*]]: !ttl.selected_pipe_src):
+# CHECK: ttl.copy %{{.*}}, %[[SRC_PIPE]]
+# CHECK: ttl.pipenet_foreach_dst
+# CHECK-SAME: name "scatter_net"
+# CHECK-SAME: pipes[<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 3, dstEndY = 0, isMulticast = true>]
+# CHECK: ^bb0(%[[DST_PIPE:.*]]: !ttl.selected_pipe_dst):
+# CHECK: ttl.copy %[[DST_PIPE]], %{{.*}}
 
 # =============================================================================
 # C++ Output Checks (multicast pipe)

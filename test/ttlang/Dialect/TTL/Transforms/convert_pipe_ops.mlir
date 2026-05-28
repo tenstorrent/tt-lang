@@ -105,29 +105,29 @@ func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // -----
 
 // Two pipes in the same PipeNet with the same source need distinct ready
-// semaphores and mailbox words, otherwise posts for one pipe can satisfy the
-// other pipe's send.
-// CHECK-LABEL: func.func @same_source_two_pipes_use_distinct_rendezvous_state
+// semaphores and posted-address words, otherwise posts for one pipe can
+// satisfy the other pipe's send.
+// CHECK-LABEL: func.func @same_source_two_pipes_use_distinct_pipe_sync_state
 // CHECK-DAG: %[[STAGING_IDX:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[P0_READY_IDX:.*]] = arith.constant 2 : index
 // CHECK-DAG: %[[P0_MAILBOX_IDX:.*]] = arith.constant 3 : index
 // CHECK-DAG: %[[P1_READY_IDX:.*]] = arith.constant 4 : index
 // CHECK-DAG: %[[P1_MAILBOX_IDX:.*]] = arith.constant 5 : index
-// First receive post publishes to p0 mailbox and increments p0 ready sem.
+// First receive post publishes to p0's address word and increments p0 ready sem.
 // CHECK: ttkernel.get_semaphore(%[[STAGING_IDX]])
 // CHECK: %[[P0_MAILBOX:.*]] = ttkernel.get_semaphore(%[[P0_MAILBOX_IDX]])
 // CHECK: %[[P0_READY:.*]] = ttkernel.get_semaphore(%[[P0_READY_IDX]])
-// Second receive post publishes to p1 mailbox and increments p1 ready sem.
+// Second receive post publishes to p1's address word and increments p1 ready sem.
 // CHECK: ttkernel.get_semaphore(%[[STAGING_IDX]])
 // CHECK: %[[P1_MAILBOX:.*]] = ttkernel.get_semaphore(%[[P1_MAILBOX_IDX]])
 // CHECK: %[[P1_READY:.*]] = ttkernel.get_semaphore(%[[P1_READY_IDX]])
-// First send waits on p0 ready sem and reads p0 mailbox.
+// First send waits on p0 ready sem and reads p0's address word.
 // CHECK: ttkernel.get_semaphore(%[[P0_READY_IDX]])
 // CHECK: ttkernel.get_semaphore(%[[P0_MAILBOX_IDX]])
-// Second send waits on p1 ready sem and reads p1 mailbox.
+// Second send waits on p1 ready sem and reads p1's address word.
 // CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
 // CHECK: ttkernel.get_semaphore(%[[P1_MAILBOX_IDX]])
-func.func @same_source_two_pipes_use_distinct_rendezvous_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @same_source_two_pipes_use_distinct_pipe_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -178,8 +178,8 @@ func.func @copy_cb_to_pipe_multicast() attributes { "ttl.kernel_thread" = #ttker
 // -----
 
 // CB -> Pipe (multicast loopback): payload writes use multicast with the
-// receiver-published common destination address. Signaling splits into
-// inc_multicast to remote receivers + local noc_semaphore_inc on self.
+// common destination DFB address published by the receivers. Signaling uses
+// inc_multicast for remote receivers and local noc_semaphore_inc for self.
 // CHECK-LABEL: func.func @copy_cb_to_pipe_multicast_loopback
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore

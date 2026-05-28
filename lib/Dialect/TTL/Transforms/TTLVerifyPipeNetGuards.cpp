@@ -175,8 +175,8 @@ SmallVector<PipeType> getPipeTypesFromRecords(MLIRContext *context,
   return pipeTypes;
 }
 
-SmallVector<PipeType>
-getPipeTypesFromRecords(MLIRContext *context, PipeNetRecordsAttr records) {
+SmallVector<PipeType> getPipeTypesFromRecords(MLIRContext *context,
+                                              PipeNetRecordsAttr records) {
   return getPipeTypesFromRecords(context, records.getPipes(),
                                  records.getPipeNetId());
 }
@@ -1747,17 +1747,17 @@ PipeScheduleFrontier buildPipeScheduleOperation(
                                       std::move(elseFrontier));
   }
 
-  // Fork each record's iteration from the entry frontier and merge exits:
-  // the body runs at a node only when that record's coord predicate matches,
-  // so iterations with disjoint predicates are runtime-mutually-exclusive
-  // there. Threading the frontier across iterations would invent
-  // cross-iteration program-order edges that don't exist on any one node.
+  // Model each PipeNet record as a coordinate-conditioned control-flow case.
+  // Every case starts from the same incoming frontier, and the verifier merges
+  // the case exits afterward. Chaining cases through a single frontier would
+  // make record order look like unconditional program order and would create
+  // false edges between cases that cannot both execute at the same node.
   auto buildPipeNetForeach = [&](Region &region, PipeNetRecordsAttr records) {
     std::optional<PipeScheduleFrontier> mergedExit;
     for (PipeType pipeType :
          getPipeTypesFromRecords(op->getContext(), records)) {
-      PipeScheduleFrontier branchExit = buildPipeScheduleRegion(
-          region, state, builder, frontier, pipeType);
+      PipeScheduleFrontier branchExit =
+          buildPipeScheduleRegion(region, state, builder, frontier, pipeType);
       if (!mergedExit) {
         mergedExit = std::move(branchExit);
       } else {
@@ -1791,10 +1791,11 @@ PipeScheduleFrontier buildPipeScheduleBlock(
   return frontier;
 }
 
-// Verify the hidden rendezvous introduced by receiver-advertised pipe lowering.
-// Receive-side ttl.copy publishes the address; ttl.wait on that handle waits
-// for completion. Modeling those as distinct events preserves async copy
-// semantics while rejecting wait-for cycles.
+// Verify the pipe schedule implied by destination-address publication.
+// A receive-side ttl.copy publishes the destination DFB address; ttl.wait on
+// that receive handle waits for the matching send completion. Modeling those
+// operations as separate schedule events preserves async pipe-copy semantics
+// while rejecting wait-for cycles.
 void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   PipeScheduleBuilder builder;
 

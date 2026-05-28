@@ -220,16 +220,18 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.if_dst
 # CHECK-INITIAL-NOT: ttl.create_pipe
 # CHECK-INITIAL: ttl.pipenet_foreach_src
-# CHECK-INITIAL: #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 1, dstEndX = 0, dstEndY = 1, isMulticast = true>
-# CHECK-INITIAL-SAME: #ttl.pipe_record<srcX = 6, srcY = 0, dstStartX = 6, dstStartY = 1, dstEndX = 6, dstEndY = 1, isMulticast = true>
+# CHECK-INITIAL-SAME: name "SINGLETON_MULTICAST_NET"
+# CHECK-INITIAL-SAME: pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 1, dstEndX = 0, dstEndY = 1, isMulticast = true>
+# CHECK-INITIAL-SAME: <srcX = 6, srcY = 0, dstStartX = 6, dstStartY = 1, dstEndX = 6, dstEndY = 1, isMulticast = true>
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_src):
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL-NOT: ttl.if_src
 # CHECK-INITIAL-NOT: ttl.if_dst
 # CHECK-INITIAL-NOT: ttl.create_pipe
 # CHECK-INITIAL: ttl.pipenet_foreach_dst
-# CHECK-INITIAL: #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 1, dstEndX = 0, dstEndY = 1, isMulticast = true>
-# CHECK-INITIAL-SAME: #ttl.pipe_record<srcX = 6, srcY = 0, dstStartX = 6, dstStartY = 1, dstEndX = 6, dstEndY = 1, isMulticast = true>
+# CHECK-INITIAL-SAME: name "SINGLETON_MULTICAST_NET"
+# CHECK-INITIAL-SAME: pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 1, dstEndX = 0, dstEndY = 1, isMulticast = true>
+# CHECK-INITIAL-SAME: <srcX = 6, srcY = 0, dstStartX = 6, dstStartY = 1, dstEndX = 6, dstEndY = 1, isMulticast = true>
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_dst):
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL-NOT: ttl.if_src

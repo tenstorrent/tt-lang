@@ -605,23 +605,36 @@ def TTL_PipeNetForeachSrcOp : TTL_Op<"pipenet_foreach_src",
      DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Iterate over source pipe records in a PipeNet";
   let description = [{
-    Executes the body region once per static pipe record in a PipeNet on nodes
-    whose coordinates match the selected record's source coordinate. The body
-    receives a `!ttl.selected_pipe_src` argument representing the selected
-    record for that iteration.
+    Executes the body region once for each static PipeNet record whose source
+    coordinate matches the current launch node. The body receives a
+    `!ttl.selected_pipe_src` argument representing the selected record for that
+    iteration.
 
-    The lowered form is a loop over the records gated by a coordinate-match
-    predicate (`scf.for { scf.if (myX == srcX && myY == srcY) { body } }`); the
-    op's "executes per record" semantics is the user-visible shape, not the
-    pre-lowering control flow. The records carried by `$records` are the
-    complete table for this callback in user PipeNet construction order;
-    lowering iterates in the same order so program-order semantics is
-    preserved.
+    The records carried by `$records` are ordered by user PipeNet construction
+    order. That order defines program order for a launch node that matches
+    multiple records.
 
     Every use of the body's block-argument pipe must be a `ttl.copy` operand
     (destination); the pipe value may not appear as an `scf.for` iter-arg or
     `scf.if` result. Control flow inside the body may still enclose the
     consumer.
+
+    Example:
+
+    ```mlir
+    ttl.pipenet_foreach_src attributes {
+        records = #ttl.pipenet_records<net 0 pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
+                           dstEndX = 1, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %xf = ttl.copy %dfb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.selected_pipe_src) -> !ttl.transfer_handle<write>
+      ttl.wait %xf : !ttl.transfer_handle<write>
+      ttl.yield
+    }
+    ```
   }];
 
   let arguments = (ins
@@ -637,23 +650,39 @@ def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
      DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Iterate over destination pipe records in a PipeNet";
   let description = [{
-    Executes the body region once per static pipe record in a PipeNet on nodes
-    whose coordinates are inside the selected record's destination range. The
-    body receives a `!ttl.selected_pipe_dst` argument representing the selected
-    record for that iteration.
+    Executes the body region once for each static PipeNet record whose
+    destination range contains the current launch node. The body receives a
+    `!ttl.selected_pipe_dst` argument representing the selected record for that
+    iteration.
 
-    The lowered form is a loop over the records gated by a destination-range
-    predicate (`scf.for { scf.if (myX in [dstStartX, dstEndX] && myY in
-    [dstStartY, dstEndY]) { body } }`); the op's "executes per record"
-    semantics is the user-visible shape, not the pre-lowering control flow.
-    The records carried by `$records` are the complete table for this callback
-    in user PipeNet construction order; lowering iterates in the same order so
-    program-order semantics is preserved.
+    The records carried by `$records` are ordered by user PipeNet construction
+    order. That order defines program order for a launch node that matches
+    multiple records.
 
     Every use of the body's block-argument pipe must be an operand of
     `ttl.copy` (source), `ttl.pipe_recv_post`, or `ttl.pipe_recv_wait`; the
     pipe value may not appear as an `scf.for` iter-arg or `scf.if` result.
     Control flow inside the body may still enclose the consumer.
+
+    Example:
+
+    ```mlir
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
+                           dstEndX = 1, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %dst = ttl.cb_reserve %dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %xf = ttl.copy %pipe, %dst
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.transfer_handle
+      ttl.wait %xf : !ttl.transfer_handle
+      ttl.yield
+    }
+    ```
   }];
 
   let arguments = (ins
@@ -668,9 +697,19 @@ def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
   let summary = "Materialize a selected source pipe";
   let description = [{
     Represents a source pipe selected from a PipeNet record table. The
-    operands carry the selected record fields and runtime semaphore ids.
+    operands carry the selected record fields and pipe synchronization resource
+    indices.
     Selected-pipe values are scoped to the lowered foreach body that
     materializes them.
+
+    Example:
+
+    ```mlir
+    %pipe = ttl.select_pipe_src net 0 src (%src_x, %src_y)
+        dst (%dst_x, %dst_y) to (%dst_x, %dst_y) num_dests (%one)
+        sems (%ready_sem, %address_sem) src_in_dst (%false)
+        {isMulticast = false} : !ttl.selected_pipe_src
+    ```
   }];
 
   let arguments = (ins
@@ -698,9 +737,19 @@ def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
   let summary = "Materialize a selected destination pipe";
   let description = [{
     Represents a destination pipe selected from a PipeNet record table. The
-    operands carry the selected record fields and runtime semaphore ids.
+    operands carry the selected record fields and pipe synchronization resource
+    indices.
     Selected-pipe values are scoped to the lowered foreach body that
     materializes them.
+
+    Example:
+
+    ```mlir
+    %pipe = ttl.select_pipe_dst net 0 src (%src_x, %src_y)
+        dst (%dst_x, %dst_y) to (%dst_x, %dst_y) num_dests (%one)
+        sems (%ready_sem, %address_sem) src_in_dst (%false)
+        {isMulticast = false} : !ttl.selected_pipe_dst
+    ```
   }];
 
   let arguments = (ins

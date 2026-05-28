@@ -96,11 +96,11 @@ def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
   let description = [{
     Identifies a PipeNet by id (and optional user-facing name) and carries the
     ordered list of `#ttl.pipe_record` attributes that make up the net. Used
-    by compact PipeNet iteration ops (`ttl.pipenet_foreach_src`,
+    by PipeNet foreach ops (`ttl.pipenet_foreach_src`,
     `ttl.pipenet_foreach_dst`) to express "for each pipe in this net..."
     without materializing per-pipe ops.
 
-    `pipes` is in user PipeNet construction order; compact lowering iterates
+    `pipes` is in user PipeNet construction order; foreach lowering iterates
     in the same order so program-order semantics is preserved.
 
     All records must share the same `isMulticast` kind (the PipeNet-level

@@ -5,9 +5,9 @@
 // DFB. Receivers reserve the destination DFB slot, publish its address, wait
 // for completion, and then push the slot.
 
-// Sender-side unicast lowering waits for a receiver-published destination
-// address and uses that address for the NoC write. It must not reserve or push
-// the receiver DFB.
+// Sender-side unicast lowering waits for the destination DFB address published
+// by the receiver and uses that address for the NoC write. It must not reserve
+// or push the receiver DFB.
 // CHECK-LABEL: func.func @sender_uses_published_unicast_address
 // CHECK: ttkernel.experimental::semaphore_wait
 // CHECK-NOT: ttkernel.cb_reserve_back
@@ -33,9 +33,9 @@ func.func @sender_uses_published_unicast_address() attributes { "ttl.kernel_thre
 
 // -----
 
-// Sender-side multicast lowering also consumes receiver-published addresses.
-// The sender waits for all destinations to publish before issuing the multicast
-// write and must not advance any receiver DFB.
+// Sender-side multicast lowering also consumes destination DFB addresses
+// published by receivers. The sender waits for all destinations to publish
+// before issuing the multicast write and must not advance any receiver DFB.
 // CHECK-LABEL: func.func @sender_uses_published_multicast_addresses
 // CHECK: ttkernel.experimental::semaphore_wait
 // CHECK-NOT: ttkernel.cb_reserve_back

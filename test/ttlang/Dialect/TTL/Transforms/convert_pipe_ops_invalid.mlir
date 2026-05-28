@@ -1,6 +1,6 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -convert-ttl-to-ttkernel
 
-// Summary: Negative tests for pipe receiver DFB validation and rendezvous
+// Summary: Negative tests for pipe receiver DFB validation and pipe sync
 // resource diagnostics in ttl-convert-ttl-to-ttkernel.
 
 // Two unicast pipes converging on node (1, 0) need distinct slots in the
@@ -99,13 +99,13 @@ func.func @multicast_receive_address_dynamic_offset_rejected(%offset: index)
 // -----
 
 // Eight unicast pipes from one source require one receiver-arrival semaphore,
-// one mailbox-staging semaphore, and two source-local semaphore ids per pipe.
-// This exceeds the hardware semaphore id limit.
+// one address-publication staging semaphore, and two source-local semaphore ids
+// per pipe. This exceeds the hardware semaphore id limit.
 
-// expected-error @below {{pipe rendezvous requires 18 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable rendezvous allocation}}
-// expected-note @below {{highest allocated semaphore id is 17 for posted-address mailbox for pipe net 0 src(0, 0) dst(8, 0) to(8, 0)}}
+// expected-error @below {{pipe synchronization requires 18 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable pipe synchronization allocation}}
+// expected-note @below {{highest allocated semaphore id is 17 for posted-address word for pipe net 0 src(0, 0) dst(8, 0) to(8, 0)}}
 module {
-  func.func @unicast_rendezvous_exceeds_hardware_semaphore_limit()
+  func.func @unicast_pipe_sync_exceeds_hardware_semaphore_limit()
       attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>

@@ -83,8 +83,8 @@ void populateTTLModule(nb::module_ &m) {
             if (pipeNetName.has_value()) {
               nameAttr = StringAttr::get(unwrap(ctx), *pipeNetName);
             }
-            return wrap(PipeNetRecordsAttr::get(unwrap(ctx), pipeNetId, nameAttr,
-                                                records));
+            return wrap(PipeNetRecordsAttr::get(unwrap(ctx), pipeNetId,
+                                                nameAttr, records));
           },
           nb::arg("context"), nb::arg("pipe_net_id"),
           nb::arg("pipe_net_name").none() = nb::none(), nb::arg("pipes"))
