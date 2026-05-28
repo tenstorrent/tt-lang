@@ -617,6 +617,11 @@ def TTL_PipeNetForeachSrcOp : TTL_Op<"pipenet_foreach_src",
     complete table for this callback in user PipeNet construction order;
     lowering iterates in the same order so program-order semantics is
     preserved.
+
+    Every use of the body's block-argument pipe must be a `ttl.copy` operand
+    (destination); the pipe value may not appear as an `scf.for` iter-arg or
+    `scf.if` result. Control flow inside the body may still enclose the
+    consumer.
   }];
 
   let arguments = (ins
@@ -644,6 +649,11 @@ def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
     The records carried by `$records` are the complete table for this callback
     in user PipeNet construction order; lowering iterates in the same order so
     program-order semantics is preserved.
+
+    Every use of the body's block-argument pipe must be an operand of
+    `ttl.copy` (source), `ttl.pipe_recv_post`, or `ttl.pipe_recv_wait`; the
+    pipe value may not appear as an `scf.for` iter-arg or `scf.if` result.
+    Control flow inside the body may still enclose the consumer.
   }];
 
   let arguments = (ins

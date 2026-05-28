@@ -395,24 +395,25 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
     return _make_tensor_slice(tensor, start_indices, cb_shape)
 
 
+def _is_pipe_mlir_type(t):
+    """True if `t` is any of the MLIR pipe value types (static or selected)."""
+    return (
+        ttl.PipeType.maybe_downcast(t)
+        or ttl.SelectedPipeSrcType.maybe_downcast(t)
+        or ttl.SelectedPipeDstType.maybe_downcast(t)
+    )
+
+
 def _is_pipe(val):
-    """Check if a value is a pipe (either MLIR PipeType or Python Pipe with MLIR value)."""
-    if hasattr(val, "type") and (
-        ttl.PipeType.maybe_downcast(val.type)
-        or ttl.SelectedPipeSrcType.maybe_downcast(val.type)
-        or ttl.SelectedPipeDstType.maybe_downcast(val.type)
-    ):
+    """Check if a value is a pipe (either MLIR pipe value or Python Pipe)."""
+    if hasattr(val, "type") and _is_pipe_mlir_type(val.type):
         return True
     return isinstance(val, Pipe) and hasattr(val, "_mlir_value")
 
 
 def _get_pipe_mlir_value(pipe):
-    """Get the MLIR value for a pipe (either MLIR value or Python Pipe object)."""
-    if hasattr(pipe, "type") and (
-        ttl.PipeType.maybe_downcast(pipe.type)
-        or ttl.SelectedPipeSrcType.maybe_downcast(pipe.type)
-        or ttl.SelectedPipeDstType.maybe_downcast(pipe.type)
-    ):
+    """Get the MLIR value for a pipe (either MLIR value or Python Pipe)."""
+    if hasattr(pipe, "type") and _is_pipe_mlir_type(pipe.type):
         return pipe
     return pipe._mlir_value
 

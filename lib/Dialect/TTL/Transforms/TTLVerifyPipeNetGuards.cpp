@@ -372,19 +372,13 @@ struct ModuleState {
           domainUnion(netSourceDomains[pipeNetId], pipeSourceDomain(pipeType));
       netDestinationDomains[pipeNetId] = domainUnion(
           netDestinationDomains[pipeNetId], pipeDestinationDomain(pipeType));
+      // The only reader of `pipeNetLocs[id]` calls `.front()`, so we record
+      // just the first location per PipeNet.
       if (pipeNetLocs[pipeNetId].empty()) {
         pipeNetLocs[pipeNetId].push_back(loc);
       }
       recordPipeNetName(pipeNetId, name);
     };
-    module.walk([&](CreatePipeOp pipe) {
-      PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
-      std::optional<StringRef> name;
-      if (auto attr = pipe.getPipeNetNameAttr()) {
-        name = attr.getValue();
-      }
-      recordPipe(pipeType, pipe.getLoc(), name);
-    });
     auto recordForeachOp = [&](Location loc, PipeNetRecordsAttr records) {
       std::optional<StringRef> name;
       if (auto nameAttr = records.getPipeNetName()) {
@@ -395,11 +389,23 @@ struct ModuleState {
         recordPipe(pipeType, loc, name);
       }
     };
-    module.walk([&](PipeNetForeachSrcOp foreachOp) {
-      recordForeachOp(foreachOp.getLoc(), foreachOp.getRecords());
-    });
-    module.walk([&](PipeNetForeachDstOp foreachOp) {
-      recordForeachOp(foreachOp.getLoc(), foreachOp.getRecords());
+    module.walk([&](Operation *op) {
+      TypeSwitch<Operation *>(op)
+          .Case<CreatePipeOp>([&](CreatePipeOp pipe) {
+            PipeType pipeType =
+                mlir::cast<PipeType>(pipe.getResult().getType());
+            std::optional<StringRef> name;
+            if (auto attr = pipe.getPipeNetNameAttr()) {
+              name = attr.getValue();
+            }
+            recordPipe(pipeType, pipe.getLoc(), name);
+          })
+          .Case<PipeNetForeachSrcOp>([&](PipeNetForeachSrcOp foreachOp) {
+            recordForeachOp(foreachOp.getLoc(), foreachOp.getRecords());
+          })
+          .Case<PipeNetForeachDstOp>([&](PipeNetForeachDstOp foreachOp) {
+            recordForeachOp(foreachOp.getLoc(), foreachOp.getRecords());
+          });
     });
 
     if (!hasPipes()) {
