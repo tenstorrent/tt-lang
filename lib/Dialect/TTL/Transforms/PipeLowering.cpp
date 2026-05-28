@@ -75,13 +75,6 @@ static int64_t getNocIndex(Operation *op) {
   return attr.getInt();
 }
 
-static PipeKey getPipeKey(PipeType pipeType) {
-  return {pipeType.getSrcX(),      pipeType.getSrcY(),
-          pipeType.getDstStartX(), pipeType.getDstStartY(),
-          pipeType.getDstEndX(),   pipeType.getDstEndY(),
-          pipeType.getPipeNetId()};
-}
-
 struct PipeSourceKey {
   int64_t srcX;
   int64_t srcY;
@@ -140,10 +133,10 @@ lookupPipeResourceInfo(PipeTransferCreateOp createOp,
 }
 
 static PipeCompletionWaitInfo
-lookupPipeCompletionWaitInfo(PipeType pipeType,
+lookupPipeCompletionWaitInfo(int64_t pipeNetId,
                              const PipeResourcePlan *pipeResourcePlan) {
   assert(pipeResourcePlan && "missing pipe resource plan");
-  auto it = pipeResourcePlan->completionWaits.find(pipeType.getPipeNetId());
+  auto it = pipeResourcePlan->completionWaits.find(pipeNetId);
   assert(it != pipeResourcePlan->completionWaits.end() &&
          "pipe net missing from pipe completion info");
   return it->second;
@@ -243,6 +236,52 @@ static Value buildReadyCounterAddress(Location loc,
                                    globalInfo->runtimeCommonArgIndex);
 }
 
+static Value loadIndexTableEntry(Operation *op, Location loc,
+                                 ArrayRef<int64_t> values, Value recordIndex,
+                                 ConversionPatternRewriter &rewriter);
+
+static Value buildSelectedReadyCounterAddress(
+    Operation *op, Location loc, ArrayRef<PipeResourceInfo> resources,
+    Value recordIndex, const PipeResourcePlan &pipeResourcePlan,
+    ConversionPatternRewriter &rewriter) {
+  assert(!resources.empty() && "selected pipe resource table is empty");
+  if (std::holds_alternative<PipeLocalReadyCounterInfo>(
+          resources.front().readyCounter)) {
+    SmallVector<int64_t> senderReadySemIdxs;
+    senderReadySemIdxs.reserve(resources.size());
+    for (const PipeResourceInfo &resource : resources) {
+      const auto *localCounter =
+          std::get_if<PipeLocalReadyCounterInfo>(&resource.readyCounter);
+      assert(localCounter && "selected resource ready-counter kind mismatch");
+      senderReadySemIdxs.push_back(localCounter->senderReadySemIdx);
+    }
+    Value senderReadySemIdx =
+        loadIndexTableEntry(op, loc, senderReadySemIdxs, recordIndex, rewriter);
+    return ttk::GetSemaphoreOp::create(rewriter, loc, senderReadySemIdx)
+        .getResult();
+  }
+
+  SmallVector<int64_t> globalSemaphoreIndices;
+  globalSemaphoreIndices.reserve(resources.size());
+  for (const PipeResourceInfo &resource : resources) {
+    const auto *globalCounter =
+        std::get_if<PipeGlobalReadyCounterInfo>(&resource.readyCounter);
+    assert(globalCounter && "selected resource ready-counter kind mismatch");
+    globalSemaphoreIndices.push_back(globalCounter->globalSemaphoreIndex);
+  }
+  Value globalIndex = loadIndexTableEntry(op, loc, globalSemaphoreIndices,
+                                          recordIndex, rewriter);
+  int64_t baseRuntimeArgIndex = getPipeRuntimeCommonArgIndex(
+      op, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan));
+  Value base =
+      arith::ConstantIndexOp::create(rewriter, loc, baseRuntimeArgIndex);
+  Value runtimeArgIndex =
+      arith::AddIOp::create(rewriter, loc, base, globalIndex);
+  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                        runtimeArgIndex)
+      .getResult();
+}
+
 /// Add a static byte offset to an L1 address without changing the address
 /// representation.
 static Value addByteOffset(Location loc, Value baseAddress, int64_t byteOffset,
@@ -255,6 +294,43 @@ static Value addByteOffset(Location loc, Value baseAddress, int64_t byteOffset,
                                 rewriter.getI32IntegerAttr(byteOffset));
   return arith::AddIOp::create(rewriter, loc, baseAddress, offsetValue)
       .getResult();
+}
+
+static Value addByteOffset(Location loc, Value baseAddress, Value byteOffset,
+                           ConversionPatternRewriter &rewriter) {
+  Value byteOffsetI32 = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getI32Type(), byteOffset);
+  return arith::AddIOp::create(rewriter, loc, baseAddress, byteOffsetI32)
+      .getResult();
+}
+
+static Value
+buildIndexTableAtFunctionEntry(Operation *op, Location loc,
+                               ArrayRef<int64_t> values,
+                               ConversionPatternRewriter &rewriter) {
+  assert(!values.empty() && "selected pipe resource table must not be empty");
+  FuncOp func = op->getParentOfType<FuncOp>();
+  assert(func && "selected pipe op must be inside a function");
+
+  ConversionPatternRewriter::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(&func.getBody().front());
+  auto memrefTy = MemRefType::get({static_cast<int64_t>(values.size())},
+                                  rewriter.getIndexType());
+  Value table = memref::AllocaOp::create(rewriter, loc, memrefTy);
+  for (auto [index, value] : llvm::enumerate(values)) {
+    Value tableIndex = arith::ConstantIndexOp::create(rewriter, loc, index);
+    Value tableValue = arith::ConstantIndexOp::create(rewriter, loc, value);
+    memref::StoreOp::create(rewriter, loc, tableValue, table,
+                            ValueRange{tableIndex});
+  }
+  return table;
+}
+
+static Value loadIndexTableEntry(Operation *op, Location loc,
+                                 ArrayRef<int64_t> values, Value recordIndex,
+                                 ConversionPatternRewriter &rewriter) {
+  Value table = buildIndexTableAtFunctionEntry(op, loc, values, rewriter);
+  return memref::LoadOp::create(rewriter, loc, table, ValueRange{recordIndex});
 }
 
 struct AddressTableInfo {
@@ -277,6 +353,23 @@ static Value buildAddressTableAddress(Location loc,
   return addByteOffset(loc, scratchBase, info.byteOffset, rewriter);
 }
 
+static Value buildSelectedAddressTableAddress(
+    Operation *op, Location loc, ArrayRef<PipeResourceInfo> resources,
+    Value recordIndex, const PipeResourcePlan &pipeResourcePlan,
+    ConversionPatternRewriter &rewriter) {
+  SmallVector<int64_t> byteOffsets;
+  byteOffsets.reserve(resources.size());
+  for (const PipeResourceInfo &resource : resources) {
+    byteOffsets.push_back(resource.addressStorage.sramAddressTable.byteOffset);
+  }
+  Value byteOffset =
+      loadIndexTableEntry(op, loc, byteOffsets, recordIndex, rewriter);
+  Value scratchBase = buildPipeRuntimeCommonArg(
+      loc, rewriter, getPipeRuntimeCommonArgIndex(op, 0));
+  (void)pipeResourcePlan;
+  return addByteOffset(loc, scratchBase, byteOffset, rewriter);
+}
+
 /// Load the receiver-published destination DFB address from this pipe's
 /// source-core SRAM address-table entry.
 static Value
@@ -295,10 +388,66 @@ buildAddressTableDestinationAddress(Location loc, const AddressTableInfo &info,
       .getResult();
 }
 
+static Value
+buildAddressTableDestinationAddress(Location loc, Value tableAddress,
+                                    ConversionPatternRewriter &rewriter) {
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+  auto tablePtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, tableAddress);
+  auto zeroI32 = arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
+                                           rewriter.getI32IntegerAttr(0));
+  return ttk::LoadFromL1Op::create(rewriter, loc, rewriter.getI32Type(),
+                                   tablePtr, zeroI32)
+      .getResult();
+}
+
 struct ReceiverPublishedAddressInfo {
   Value receiverDFB;
   ttcore::TileType tileType;
 };
+
+struct SelectedPipeFields {
+  Value recordIndex;
+  Value srcX;
+  Value srcY;
+  Value dstStartX;
+  Value dstStartY;
+  Value dstEndX;
+  Value dstEndY;
+  Value numDests;
+  Value srcInDstRange;
+  int64_t pipeNetId;
+};
+
+static SelectedPipeFields getSelectedPipeFields(const PipeReference &pipeRef) {
+  assert(pipeRef.isSelected() && "expected selected pipe reference");
+  if (pipeRef.isSelectedSrc()) {
+    SelectPipeSrcOp op = pipeRef.selectedSrc;
+    return SelectedPipeFields{
+        op.getRecordIndex(),   op.getSrcX(),
+        op.getSrcY(),          op.getDstStartX(),
+        op.getDstStartY(),     op.getDstEndX(),
+        op.getDstEndY(),       op.getNumDests(),
+        op.getSrcInDstRange(), static_cast<int64_t>(op.getPipeNetId())};
+  }
+  SelectPipeDstOp op = pipeRef.selectedDst;
+  return SelectedPipeFields{
+      op.getRecordIndex(),   op.getSrcX(),
+      op.getSrcY(),          op.getDstStartX(),
+      op.getDstStartY(),     op.getDstEndX(),
+      op.getDstEndY(),       op.getNumDests(),
+      op.getSrcInDstRange(), static_cast<int64_t>(op.getPipeNetId())};
+}
+
+static ArrayRef<PipeResourceInfo>
+lookupSelectedPipeResources(PipeTransferCreateOp createOp,
+                            const PipeResourcePlan *pipeResourcePlan) {
+  assert(pipeResourcePlan && "missing pipe resource plan");
+  auto it = pipeResourcePlan->selectedResources.find(createOp.getOperation());
+  assert(it != pipeResourcePlan->selectedResources.end() &&
+         "selected pipe transfer missing from pipe resource plan");
+  return it->second;
+}
 
 static FailureOr<ReceiverPublishedAddressInfo>
 getReceiverPublishedAddressInfo(Operation *op, Value dst,
@@ -372,9 +521,11 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
       if (auto post = mlir::dyn_cast<PipeTransferPostOp>(op)) {
         auto createOp = findPipeTransferCreateForTransfer(post.getTransfer());
         assert(createOp && "pipe transfer post missing traced create op");
-        auto pipeTy = mlir::cast<PipeType>(createOp.getPipe().getType());
         if (getAttachedCB(post.getDst())) {
-          pipeNetIds.insert(pipeTy.getPipeNetId());
+          FailureOr<PipeReference> pipeRef =
+              getPipeReference(post, createOp.getPipe());
+          assert(succeeded(pipeRef) && "pipe transfer create verifier failed");
+          pipeNetIds.insert((*pipeRef).getPipeNetId());
         }
       }
     });
@@ -405,6 +556,176 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
 
 /// Lower CB -> Pipe copy: write source DFB data to the receiver-published
 /// destination address, then signal arrival.
+static LogicalResult
+lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
+                              bool isConsumerCB, PipeTransferCreateOp createOp,
+                              const PipeReference &pipeRef,
+                              const PipeResourcePlan *pipeResourcePlan,
+                              ConversionPatternRewriter &rewriter) {
+  auto loc = op.getLoc();
+  SelectedPipeFields fields = getSelectedPipeFields(pipeRef);
+  ArrayRef<PipeResourceInfo> resources =
+      lookupSelectedPipeResources(createOp, pipeResourcePlan);
+  PipeCompletionWaitInfo completionInfo =
+      lookupPipeCompletionWaitInfo(fields.pipeNetId, pipeResourcePlan);
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+
+  auto cbType = getTTLCBType(srcCB);
+  if (!cbType) {
+    return rewriter.notifyMatchFailure(op, "failed to get CB type");
+  }
+  auto tileType = llvm::dyn_cast<ttcore::TileType>(cbType.getElementType());
+  if (!tileType) {
+    return rewriter.notifyMatchFailure(op, "CB element type must be tile");
+  }
+
+  Value senderSemAddr = buildSelectedReadyCounterAddress(
+      op, loc, resources, fields.recordIndex, *pipeResourcePlan, rewriter);
+  auto senderSemPtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
+  Value expectedSignals = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getI32Type(), fields.numDests);
+  ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedSignals);
+  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
+
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
+  assert(succeeded(cbConverted) && "preflight checked source DFB type");
+  Value srcPtrIdx;
+  if (isConsumerCB) {
+    auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
+    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc,
+                                           rewriter.getIndexType(), cbReadPtr);
+  } else {
+    auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
+    srcPtrIdx = arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getIndexType(), srcWritePtr);
+  }
+
+  int64_t cbNumTiles = 1;
+  for (int64_t dimension : cbType.getShape()) {
+    cbNumTiles *= dimension;
+  }
+  Value srcAddr = arith::IndexCastOp::create(rewriter, loc,
+                                             rewriter.getI32Type(), srcPtrIdx);
+  auto totalSizeVal = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getI32Type(),
+      rewriter.getI32IntegerAttr(cbNumTiles * tileType.getSizeBytes()));
+
+  auto dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), fields.dstStartX);
+  auto dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), fields.dstStartY);
+  auto dstEndXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), fields.dstEndX);
+  auto dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), fields.dstEndY);
+  Value numDestsVal = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getI32Type(), fields.numDests);
+  Value oneDst = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  Value isCollective = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ne, fields.numDests, oneDst);
+
+  int64_t nocIdx = getNocIndex(op);
+  Value nocVal;
+  if (nocIdx > 0) {
+    nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                       rewriter.getI8IntegerAttr(nocIdx));
+  }
+
+  Value tableAddress = buildSelectedAddressTableAddress(
+      op, loc, resources, fields.recordIndex, *pipeResourcePlan, rewriter);
+  Value dstAddr =
+      buildAddressTableDestinationAddress(loc, tableAddress, rewriter);
+
+  auto writeIf =
+      scf::IfOp::create(rewriter, loc, isCollective, /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&writeIf.getThenRegion().front());
+    auto mcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
+        rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
+        dstAddr, nocVal);
+    auto loopbackIf = scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
+                                        /*withElseRegion=*/true);
+    {
+      OpBuilder::InsertionGuard loopbackGuard(rewriter);
+      rewriter.setInsertionPointToStart(&loopbackIf.getThenRegion().front());
+      ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
+          rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
+          numDestsVal, /*linked=*/nullptr,
+          /*multicast_path_reserve=*/nullptr, nocVal);
+      rewriter.setInsertionPointToStart(&loopbackIf.getElseRegion().front());
+      ttk::NocAsyncWriteMulticastOp::create(
+          rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
+          numDestsVal, /*linked=*/nullptr,
+          /*multicast_path_reserve=*/nullptr, nocVal);
+    }
+
+    rewriter.setInsertionPointToStart(&writeIf.getElseRegion().front());
+    auto nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
+                                             dstStartYVal, dstAddr);
+    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr, nocAddr.getResult(),
+                                 totalSizeVal);
+  }
+  rewriter.setInsertionPointAfter(writeIf);
+
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
+
+  auto recvSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, completionInfo.receiverSemIdx);
+  auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
+  auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  auto completionIf =
+      scf::IfOp::create(rewriter, loc, isCollective, /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&completionIf.getThenRegion().front());
+    auto recvSemMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
+        rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
+        recvSemAddr, nocVal);
+    auto oneI32 = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
+    Value numRemoteWithLoopback =
+        arith::SubIOp::create(rewriter, loc, numDestsVal, oneI32);
+    Value numRemoteDests =
+        arith::SelectOp::create(rewriter, loc, fields.srcInDstRange,
+                                numRemoteWithLoopback, numDestsVal);
+    ttk::NocSemaphoreIncMulticastOp::create(
+        rewriter, loc, recvSemMcastAddr.getResult(), incrVal, numRemoteDests,
+        /*noc_id=*/Value(), /*posted=*/BoolAttr());
+
+    auto selfIncIf = scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
+                                       /*withElseRegion=*/false);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&selfIncIf.getThenRegion().front());
+      auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+          rewriter, loc, rewriter.getIndexType(), fields.srcX);
+      auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+          rewriter, loc, rewriter.getIndexType(), fields.srcY);
+      auto selfRecvSemNocAddr = ttk::GetNocAddrOp::create(
+          rewriter, loc, srcXTranslated, srcYTranslated, recvSemAddr);
+      ttk::NocSemaphoreIncOp::create(rewriter, loc,
+                                     selfRecvSemNocAddr.getResult(), incrVal,
+                                     /*noc_id=*/Value(), /*posted=*/BoolAttr());
+    }
+    rewriter.setInsertionPointAfter(selfIncIf);
+    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, /*noc_id=*/Value());
+
+    rewriter.setInsertionPointToStart(&completionIf.getElseRegion().front());
+    auto dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
+                                                   dstStartYVal, recvSemAddr);
+    ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr.getResult(),
+                                   incrVal, /*noc_id=*/Value(),
+                                   /*posted=*/BoolAttr());
+  }
+  rewriter.setInsertionPointAfter(completionIf);
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
                                     const PipeResourcePlan *pipeResourcePlan,
@@ -415,11 +736,20 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   if (failed(createOp)) {
     return failure();
   }
-  auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
+  FailureOr<PipeReference> pipeRef =
+      getPipeReference(op, (*createOp).getPipe());
+  if (failed(pipeRef)) {
+    return failure();
+  }
+  if ((*pipeRef).isSelected()) {
+    return lowerSelectedPipeTransferSend(op, srcCB, isConsumerCB, *createOp,
+                                         *pipeRef, pipeResourcePlan, rewriter);
+  }
+  auto pipeType = (*pipeRef).pipeType;
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(*createOp, pipeResourcePlan);
   PipeCompletionWaitInfo completionInfo =
-      lookupPipeCompletionWaitInfo(pipeType, pipeResourcePlan);
+      lookupPipeCompletionWaitInfo(pipeType.getPipeNetId(), pipeResourcePlan);
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto cbType = getTTLCBType(srcCB);
@@ -609,6 +939,59 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   return success();
 }
 
+static LogicalResult lowerSelectedPipeTransferPost(
+    PipeTransferPostOp op, Value dst, PipeTransferCreateOp createOp,
+    const PipeReference &pipeRef, const PipeResourcePlan *pipeResourcePlan,
+    ConversionPatternRewriter &rewriter) {
+  auto loc = op.getLoc();
+  SelectedPipeFields fields = getSelectedPipeFields(pipeRef);
+  ArrayRef<PipeResourceInfo> resources =
+      lookupSelectedPipeResources(createOp, pipeResourcePlan);
+  FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
+      getReceiverPublishedAddressInfo(op, dst, rewriter);
+  if (failed(publishedAddressInfo)) {
+    return failure();
+  }
+
+  int64_t nocIdx = getNocIndex(op);
+  Value nocVal;
+  Value inlineNocId = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(nocIdx));
+  if (nocIdx > 0) {
+    nocVal = inlineNocId;
+  }
+
+  auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), fields.srcX);
+  auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), fields.srcY);
+
+  Value publishedAddress =
+      buildReceiverPublishedAddress(dst, loc, *publishedAddressInfo, rewriter);
+  Value tableAddress = buildSelectedAddressTableAddress(
+      op, loc, resources, fields.recordIndex, *pipeResourcePlan, rewriter);
+  auto senderTableNocAddr = ttk::GetNocAddrOp::create(
+      rewriter, loc, srcXTranslated, srcYTranslated, tableAddress);
+  auto byteEnableAll = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
+  ttk::NocInlineDwWriteOp::create(rewriter, loc, senderTableNocAddr.getResult(),
+                                  publishedAddress, byteEnableAll, inlineNocId);
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
+
+  Value senderSemAddr = buildSelectedReadyCounterAddress(
+      op, loc, resources, fields.recordIndex, *pipeResourcePlan, rewriter);
+  auto senderSemNocAddr = ttk::GetNocAddrOp::create(
+      rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
+  auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
+                                 readyIncr, nocVal, /*posted=*/BoolAttr());
+
+  auto token = UnrealizedConversionCastOp::create(
+      rewriter, loc, op.getToken().getType(), ValueRange{});
+  rewriter.replaceOp(op, token.getResult(0));
+  return success();
+}
+
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     const PipeResourcePlan *pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
@@ -618,7 +1001,16 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   if (failed(createOp)) {
     return failure();
   }
-  auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
+  FailureOr<PipeReference> pipeRef =
+      getPipeReference(op, (*createOp).getPipe());
+  if (failed(pipeRef)) {
+    return failure();
+  }
+  if ((*pipeRef).isSelected()) {
+    return lowerSelectedPipeTransferPost(op, dst, *createOp, *pipeRef,
+                                         pipeResourcePlan, rewriter);
+  }
+  auto pipeType = (*pipeRef).pipeType;
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(*createOp, pipeResourcePlan);
   FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
@@ -940,28 +1332,32 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   // Transfer IR expansion so duplicate static pipes from cloned regions merge
   // into one predicate entry.
   mod.walk([&](PipeTransferCreateOp op) {
-    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
-    int64_t netId = pipeType.getPipeNetId();
-    PipeKey key{pipeType.getSrcX(),      pipeType.getSrcY(),
-                pipeType.getDstStartX(), pipeType.getDstStartY(),
-                pipeType.getDstEndX(),   pipeType.getDstEndY()};
+    FailureOr<PipeReference> pipeRef = getPipeReference(op, op.getPipe());
+    assert(succeeded(pipeRef) && "pipe transfer create verifier failed");
     PipeTransferContract contract = getPipeTransferContract(op);
-    if (seenPerNet[netId].insert(key)) {
-      index[netId].push_back(PipeInfo{pipeType, contract});
-      return;
-    }
-    if (!isCollectiveTransfer(contract)) {
-      return;
-    }
-    for (PipeInfo &pipeInfo : index[netId]) {
-      PipeType existingType = pipeInfo.pipeType;
-      PipeKey existingKey{
-          existingType.getSrcX(),      existingType.getSrcY(),
-          existingType.getDstStartX(), existingType.getDstStartY(),
-          existingType.getDstEndX(),   existingType.getDstEndY()};
-      if (existingKey == key) {
-        pipeInfo.transferContract = PipeTransferContract::Collective;
-        break;
+    for (PipeType pipeType :
+         getPipeTypesFromReference(op.getContext(), *pipeRef)) {
+      int64_t netId = pipeType.getPipeNetId();
+      PipeKey key{pipeType.getSrcX(),      pipeType.getSrcY(),
+                  pipeType.getDstStartX(), pipeType.getDstStartY(),
+                  pipeType.getDstEndX(),   pipeType.getDstEndY()};
+      if (seenPerNet[netId].insert(key)) {
+        index[netId].push_back(PipeInfo{pipeType, contract});
+        continue;
+      }
+      if (!isCollectiveTransfer(contract)) {
+        continue;
+      }
+      for (PipeInfo &pipeInfo : index[netId]) {
+        PipeType existingType = pipeInfo.pipeType;
+        PipeKey existingKey{
+            existingType.getSrcX(),      existingType.getSrcY(),
+            existingType.getDstStartX(), existingType.getDstStartY(),
+            existingType.getDstEndX(),   existingType.getDstEndY()};
+        if (existingKey == key) {
+          pipeInfo.transferContract = PipeTransferContract::Collective;
+          break;
+        }
       }
     }
   });
@@ -998,6 +1394,10 @@ struct PipeTransferAllocationUnit {
   /// Pipe transfer create operations represented by this allocation unit.
   SmallVector<Operation *> transferCreateOps;
 
+  /// Selected transfer create operations and row indices represented by this
+  /// allocation unit.
+  SmallVector<std::pair<Operation *, unsigned>> selectedTransferRows;
+
   /// Post/send events used to reject unsupported queue depth in linear blocks.
   SmallVector<PipeTransferRendezvousEvent> rendezvousEvents;
 
@@ -1025,6 +1425,10 @@ struct PipeTransferAllocationUnit {
   /// Assigned first-fit color within the source node's allocation group.
   int64_t resourceColor = 0;
 };
+
+static bool isSelectedTransferUnit(const PipeTransferAllocationUnit &unit) {
+  return !unit.selectedTransferRows.empty();
+}
 
 } // namespace
 
@@ -1091,19 +1495,74 @@ static bool pipeTransferIntervalsOverlap(const PipeTransferAllocationUnit &lhs,
   return intervalsOverlap(lhs.interval, rhs.interval, dominanceInfo);
 }
 
-static FailureOr<SmallVector<PipeTransferAllocationUnit>>
+static bool pipeResourceUnitsInterfere(const PipeTransferAllocationUnit &lhs,
+                                       const PipeTransferAllocationUnit &rhs,
+                                       const DominanceInfo &dominanceInfo) {
+  if (isSelectedTransferUnit(lhs) || isSelectedTransferUnit(rhs)) {
+    return true;
+  }
+  return pipeTransferIntervalsOverlap(lhs, rhs, dominanceInfo);
+}
+
+static Operation *getPipeTransferIntervalBoundary(Operation *protocolOp,
+                                                  Value transfer) {
+  FailureOr<PipeTransferCreateOp> createOp =
+      getPipeTransferCreate(protocolOp, transfer);
+  if (failed(createOp)) {
+    return protocolOp;
+  }
+  FailureOr<PipeReference> pipeRef =
+      getPipeReference(protocolOp, (*createOp).getPipe());
+  if (failed(pipeRef) || !(*pipeRef).isSelected()) {
+    return protocolOp;
+  }
+  Operation *selectedOp = (*pipeRef).isSelectedSrc()
+                              ? (*pipeRef).selectedSrc.getOperation()
+                              : (*pipeRef).selectedDst.getOperation();
+  if (auto forOp = selectedOp->getParentOfType<scf::ForOp>()) {
+    return forOp.getOperation();
+  }
+  return protocolOp;
+}
+
+static FailureOr<SmallVector<PipeTransferAllocationUnit, 0>>
 collectPipeTransferAllocationUnits(ModuleOp mod,
                                    const DominanceInfo &dominanceInfo,
                                    const PostDominanceInfo &postDominanceInfo) {
-  SmallVector<PipeTransferAllocationUnit> units;
+  SmallVector<PipeTransferAllocationUnit, 0> units;
   llvm::MapVector<Operation *, unsigned> indexByTransferCreateOp;
+  llvm::MapVector<Operation *, SmallVector<unsigned>>
+      indicesBySelectedTransferCreateOp;
   llvm::MapVector<PipeKey, unsigned> indexByPipe;
   int64_t nextOrdinal = 0;
   int64_t nextEventOrdinal = 0;
 
-  auto getOrCreateUnit =
+  auto addUnitForPipe = [&](Operation *transferCreateOp, PipeType pipeType,
+                            PipeTransferContract transferContract)
+      -> PipeTransferAllocationUnit * {
+    PipeKey pipe = getPipeKey(pipeType);
+    auto existingPipe = indexByPipe.find(pipe);
+    if (existingPipe != indexByPipe.end()) {
+      PipeTransferAllocationUnit &unit = units[existingPipe->second];
+      if (isCollectiveTransfer(transferContract)) {
+        unit.transferContract = PipeTransferContract::Collective;
+      }
+      return &unit;
+    }
+
+    PipeTransferAllocationUnit unit;
+    unit.pipe = pipe;
+    unit.pipeType = pipeType;
+    unit.transferContract = transferContract;
+    unit.ordinal = nextOrdinal++;
+    indexByPipe.insert({pipe, units.size()});
+    units.push_back(unit);
+    return &units.back();
+  };
+
+  auto getOrCreateUnits =
       [&](Operation *protocolOp,
-          Value transfer) -> FailureOr<PipeTransferAllocationUnit *> {
+          Value transfer) -> FailureOr<SmallVector<unsigned>> {
     FailureOr<PipeTransferCreateOp> createOp =
         getPipeTransferCreate(protocolOp, transfer);
     if (failed(createOp)) {
@@ -1111,35 +1570,56 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
     }
 
     Operation *transferCreateOp = (*createOp).getOperation();
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(protocolOp, (*createOp).getPipe());
+    if (failed(pipeRef)) {
+      return failure();
+    }
+
+    SmallVector<unsigned> result;
+    if ((*pipeRef).isSelected()) {
+      auto existing = indicesBySelectedTransferCreateOp.find(transferCreateOp);
+      if (existing != indicesBySelectedTransferCreateOp.end()) {
+        for (unsigned unitIndex : existing->second) {
+          result.push_back(unitIndex);
+        }
+        return result;
+      }
+
+      PipeNetRecordsAttr records = (*pipeRef).getRecords();
+      SmallVector<unsigned> unitIndices;
+      unitIndices.reserve(records.getPipes().size());
+      for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
+        PipeType pipeType = getPipeTypeFromRecord(
+            protocolOp->getContext(), record, records.getPipeNetId());
+        PipeTransferContract transferContract = getPipeTransferContract(record);
+        PipeTransferAllocationUnit *unit =
+            addUnitForPipe(transferCreateOp, pipeType, transferContract);
+        unit->selectedTransferRows.push_back(
+            {transferCreateOp, static_cast<unsigned>(recordIndex)});
+        unsigned unitIndex = unit - units.data();
+        unitIndices.push_back(unitIndex);
+        result.push_back(unitIndex);
+      }
+      indicesBySelectedTransferCreateOp.insert(
+          {transferCreateOp, std::move(unitIndices)});
+      return result;
+    }
+
     auto existing = indexByTransferCreateOp.find(transferCreateOp);
     if (existing != indexByTransferCreateOp.end()) {
-      return &units[existing->second];
+      result.push_back(existing->second);
+      return result;
     }
 
-    auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
-    PipeKey pipe = getPipeKey(pipeType);
-    PipeTransferContract transferContract = getPipeTransferContract(*createOp);
-    auto existingPipe = indexByPipe.find(pipe);
-    if (existingPipe != indexByPipe.end()) {
-      PipeTransferAllocationUnit &unit = units[existingPipe->second];
-      unit.transferCreateOps.push_back(transferCreateOp);
-      if (isCollectiveTransfer(transferContract)) {
-        unit.transferContract = PipeTransferContract::Collective;
-      }
-      indexByTransferCreateOp.insert({transferCreateOp, existingPipe->second});
-      return &unit;
-    }
-
-    PipeTransferAllocationUnit unit;
-    unit.transferCreateOps.push_back(transferCreateOp);
-    unit.pipe = pipe;
-    unit.pipeType = pipeType;
-    unit.transferContract = transferContract;
-    unit.ordinal = nextOrdinal++;
-    indexByTransferCreateOp.insert({transferCreateOp, units.size()});
-    indexByPipe.insert({pipe, units.size()});
-    units.push_back(unit);
-    return &units.back();
+    PipeTransferAllocationUnit *unit =
+        addUnitForPipe(transferCreateOp, (*pipeRef).pipeType,
+                       getPipeTransferContract(*createOp));
+    unit->transferCreateOps.push_back(transferCreateOp);
+    unsigned unitIndex = unit - units.data();
+    indexByTransferCreateOp.insert({transferCreateOp, unitIndex});
+    result.push_back(unitIndex);
+    return result;
   };
 
   // Resource allocation depends only on receive posts and sends. Walk the
@@ -1149,28 +1629,39 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
   WalkResult walkResult = mod.walk([&](Operation *op) {
     if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
       int64_t eventOrdinal = nextEventOrdinal++;
-      FailureOr<PipeTransferAllocationUnit *> unit =
-          getOrCreateUnit(op, postOp.getTransfer());
-      if (failed(unit)) {
+      Operation *intervalBoundary =
+          getPipeTransferIntervalBoundary(op, postOp.getTransfer());
+      FailureOr<SmallVector<unsigned>> unitsForTransfer =
+          getOrCreateUnits(op, postOp.getTransfer());
+      if (failed(unitsForTransfer)) {
         return WalkResult::interrupt();
       }
-      (*unit)->hasPost = true;
-      (*unit)->rendezvousEvents.push_back(
-          {op, PipeTransferRendezvousEventKind::Post});
-      updateIntervalStart((*unit)->interval, op, eventOrdinal, dominanceInfo);
+      for (unsigned unitIndex : *unitsForTransfer) {
+        PipeTransferAllocationUnit &unit = units[unitIndex];
+        unit.hasPost = true;
+        unit.rendezvousEvents.push_back(
+            {op, PipeTransferRendezvousEventKind::Post});
+        updateIntervalStart(unit.interval, intervalBoundary, eventOrdinal,
+                            dominanceInfo);
+      }
       return WalkResult::advance();
     }
 
     if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
-      FailureOr<PipeTransferAllocationUnit *> unit =
-          getOrCreateUnit(op, sendOp.getTransfer());
-      if (failed(unit)) {
+      Operation *intervalBoundary =
+          getPipeTransferIntervalBoundary(op, sendOp.getTransfer());
+      FailureOr<SmallVector<unsigned>> unitsForTransfer =
+          getOrCreateUnits(op, sendOp.getTransfer());
+      if (failed(unitsForTransfer)) {
         return WalkResult::interrupt();
       }
-      (*unit)->hasSend = true;
-      (*unit)->rendezvousEvents.push_back(
-          {op, PipeTransferRendezvousEventKind::Send});
-      updateIntervalEnd((*unit)->interval, op, dominanceInfo);
+      for (unsigned unitIndex : *unitsForTransfer) {
+        PipeTransferAllocationUnit &unit = units[unitIndex];
+        unit.hasSend = true;
+        unit.rendezvousEvents.push_back(
+            {op, PipeTransferRendezvousEventKind::Send});
+        updateIntervalEnd(unit.interval, intervalBoundary, dominanceInfo);
+      }
       return WalkResult::advance();
     }
 
@@ -1208,6 +1699,67 @@ isBeforeForDeterministicAllocation(const PipeTransferAllocationUnit &lhs,
 using SourceColorMap =
     llvm::MapVector<PipeSourceKey, SmallVector<SmallVector<unsigned>>>;
 
+using PipeResourceInterferenceGraph =
+    SmallVector<llvm::SmallSetVector<unsigned, 8>>;
+
+static void addPipeResourceInterference(PipeResourceInterferenceGraph &graph,
+                                        unsigned lhsIndex, unsigned rhsIndex) {
+  graph[lhsIndex].insert(rhsIndex);
+  graph[rhsIndex].insert(lhsIndex);
+}
+
+static PipeResourceInterferenceGraph
+buildPipeResourceInterferenceGraph(ArrayRef<unsigned> unitIndices,
+                                   ArrayRef<PipeTransferAllocationUnit> units,
+                                   const DominanceInfo &dominanceInfo) {
+  PipeResourceInterferenceGraph graph;
+  graph.resize(units.size());
+  for (auto indexedLhs : llvm::enumerate(unitIndices)) {
+    unsigned lhsIndex = indexedLhs.value();
+    for (unsigned rhsPosition = indexedLhs.index() + 1;
+         rhsPosition < unitIndices.size(); ++rhsPosition) {
+      unsigned rhsIndex = unitIndices[rhsPosition];
+      if (pipeResourceUnitsInterfere(units[lhsIndex], units[rhsIndex],
+                                     dominanceInfo)) {
+        addPipeResourceInterference(graph, lhsIndex, rhsIndex);
+      }
+    }
+  }
+  return graph;
+}
+
+static SmallVector<SmallVector<unsigned>>
+colorPipeResourceInterferenceGraph(ArrayRef<unsigned> unitIndices,
+                                   const PipeResourceInterferenceGraph &graph,
+                                   ArrayRef<PipeTransferAllocationUnit> units) {
+  SmallVector<unsigned> sortedUnitIndices(unitIndices.begin(),
+                                          unitIndices.end());
+  llvm::sort(sortedUnitIndices, [&](unsigned lhsIndex, unsigned rhsIndex) {
+    return isBeforeForDeterministicAllocation(units[lhsIndex], units[rhsIndex]);
+  });
+
+  SmallVector<SmallVector<unsigned>> colorUsers;
+  for (unsigned unitIndex : sortedUnitIndices) {
+    unsigned selectedColor = 0;
+    for (;; ++selectedColor) {
+      if (selectedColor == colorUsers.size()) {
+        colorUsers.push_back({});
+        break;
+      }
+      bool hasConflict = llvm::any_of(
+          colorUsers[selectedColor], [&](unsigned assignedUnitIndex) {
+            return graph[unitIndex].count(assignedUnitIndex) != 0;
+          });
+      if (!hasConflict) {
+        break;
+      }
+    }
+    colorUsers[selectedColor].push_back(unitIndex);
+  }
+
+  return colorUsers;
+}
+
 static SourceColorMap
 assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
                          const DominanceInfo &dominanceInfo) {
@@ -1219,17 +1771,11 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
 
   SourceColorMap colorUsersBySource;
   for (auto &entry : unitIndicesBySource) {
+    PipeResourceInterferenceGraph interferenceGraph =
+        buildPipeResourceInterferenceGraph(entry.second, units, dominanceInfo);
     SmallVector<SmallVector<unsigned>> colorUsers =
-        assignGreedyIntervalColors<unsigned>(
-            entry.second,
-            [&](unsigned lhsIndex, unsigned rhsIndex) {
-              return isBeforeForDeterministicAllocation(units[lhsIndex],
-                                                        units[rhsIndex]);
-            },
-            [&](unsigned lhsIndex, unsigned rhsIndex) {
-              return pipeTransferIntervalsOverlap(
-                  units[lhsIndex], units[rhsIndex], dominanceInfo);
-            });
+        colorPipeResourceInterferenceGraph(entry.second, interferenceGraph,
+                                           units);
 
     for (auto indexedColor : llvm::enumerate(colorUsers)) {
       for (unsigned unitIndex : indexedColor.value()) {
@@ -1246,12 +1792,12 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
 LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
-  FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
+  FailureOr<SmallVector<PipeTransferAllocationUnit, 0>> maybeUnits =
       collectPipeTransferAllocationUnits(mod, dominanceInfo, postDominanceInfo);
   if (failed(maybeUnits)) {
     return failure();
   }
-  SmallVector<PipeTransferAllocationUnit> &units = *maybeUnits;
+  SmallVector<PipeTransferAllocationUnit, 0> &units = *maybeUnits;
   SourceColorMap colorUsersBySource =
       assignLiveIntervalColors(units, dominanceInfo);
 
@@ -1327,6 +1873,19 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
     for (Operation *transferCreateOp : unit.transferCreateOps) {
       info.resources[transferCreateOp] = pipeResource;
     }
+    for (auto [transferCreateOp, recordIndex] : unit.selectedTransferRows) {
+      SmallVector<PipeResourceInfo> &resources =
+          info.selectedResources[transferCreateOp];
+      if (resources.empty()) {
+        FailureOr<PipeReference> pipeRef = getPipeReference(
+            transferCreateOp,
+            cast<PipeTransferCreateOp>(transferCreateOp).getPipe());
+        assert(succeeded(pipeRef) && "pipe transfer create verifier failed");
+        resources.resize((*pipeRef).getRecords().getPipes().size());
+      }
+      assert(recordIndex < resources.size() && "selected record index invalid");
+      resources[recordIndex] = pipeResource;
+    }
   }
 
   info.sramScratch.bytes =
@@ -1353,6 +1912,15 @@ int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info) {
       observe(localCounter->senderReadySemIdx);
     }
   }
+  for (const auto &[transferCreateOp, resources] : info.selectedResources) {
+    (void)transferCreateOp;
+    for (const PipeResourceInfo &resource : resources) {
+      if (auto *localCounter =
+              std::get_if<PipeLocalReadyCounterInfo>(&resource.readyCounter)) {
+        observe(localCounter->senderReadySemIdx);
+      }
+    }
+  }
   return highestSemaphoreIdx + 1;
 }
 
@@ -1364,6 +1932,16 @@ int64_t getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info) {
             std::get_if<PipeGlobalReadyCounterInfo>(&resource.readyCounter)) {
       highestGlobalSemaphoreIndex = std::max(
           highestGlobalSemaphoreIndex, globalCounter->globalSemaphoreIndex);
+    }
+  }
+  for (const auto &[transferCreateOp, resources] : info.selectedResources) {
+    (void)transferCreateOp;
+    for (const PipeResourceInfo &resource : resources) {
+      if (auto *globalCounter =
+              std::get_if<PipeGlobalReadyCounterInfo>(&resource.readyCounter)) {
+        highestGlobalSemaphoreIndex = std::max(
+            highestGlobalSemaphoreIndex, globalCounter->globalSemaphoreIndex);
+      }
     }
   }
   return highestGlobalSemaphoreIndex + 1;
@@ -1404,6 +1982,16 @@ LogicalResult verifyPipeResourcePlanFitsHardware(ModuleOp mod,
             std::get_if<PipeLocalReadyCounterInfo>(&resource.readyCounter)) {
       observe(localCounter->senderReadySemIdx, ResourceKind::SenderReady,
               resource.pipe);
+    }
+  }
+  for (const auto &[transferCreateOp, resources] : info.selectedResources) {
+    (void)transferCreateOp;
+    for (const PipeResourceInfo &resource : resources) {
+      if (auto *localCounter =
+              std::get_if<PipeLocalReadyCounterInfo>(&resource.readyCounter)) {
+        observe(localCounter->senderReadySemIdx, ResourceKind::SenderReady,
+                resource.pipe);
+      }
     }
   }
 

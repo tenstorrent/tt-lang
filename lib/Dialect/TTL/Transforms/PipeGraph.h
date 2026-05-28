@@ -16,6 +16,8 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cassert>
+
 namespace mlir::tt::ttl {
 
 //===----------------------------------------------------------------------===//
@@ -100,6 +102,85 @@ inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
              ? PipeTransferContract::Collective
              : PipeTransferContract::PointToPoint;
 }
+
+inline PipeTransferContract getPipeTransferContract(PipeRecordAttr record) {
+  return record.getIsMulticast() ? PipeTransferContract::Collective
+                                 : PipeTransferContract::PointToPoint;
+}
+
+inline PipeKey getPipeKey(PipeType pipeType) {
+  return {pipeType.getSrcX(),      pipeType.getSrcY(),
+          pipeType.getDstStartX(), pipeType.getDstStartY(),
+          pipeType.getDstEndX(),   pipeType.getDstEndY(),
+          pipeType.getPipeNetId()};
+}
+
+inline PipeKey getPipeKey(PipeRecordAttr record, int64_t pipeNetId) {
+  return {record.getSrcX(),
+          record.getSrcY(),
+          record.getDstStartX(),
+          record.getDstStartY(),
+          record.getDstEndX(),
+          record.getDstEndY(),
+          pipeNetId};
+}
+
+inline PipeType getPipeTypeFromRecord(MLIRContext *context,
+                                      PipeRecordAttr record,
+                                      int64_t pipeNetId) {
+  return PipeType::get(context, record.getSrcX(), record.getSrcY(),
+                       record.getDstStartX(), record.getDstStartY(),
+                       record.getDstEndX(), record.getDstEndY(), pipeNetId);
+}
+
+struct PipeReference {
+  enum class Kind {
+    Static,
+    SelectedSrc,
+    SelectedDst,
+  };
+
+  Kind kind = Kind::Static;
+  Value value;
+  PipeType pipeType;
+  SelectPipeSrcOp selectedSrc;
+  SelectPipeDstOp selectedDst;
+
+  bool isStatic() const { return kind == Kind::Static; }
+  bool isSelected() const { return !isStatic(); }
+  bool isSelectedSrc() const { return kind == Kind::SelectedSrc; }
+  bool isSelectedDst() const { return kind == Kind::SelectedDst; }
+
+  PipeNetRecordsAttr getRecords() const {
+    assert(isSelected() && "static pipe has no records attr");
+    if (selectedSrc) {
+      SelectPipeSrcOp op = selectedSrc;
+      return op.getRecords();
+    }
+    SelectPipeDstOp op = selectedDst;
+    return op.getRecords();
+  }
+
+  int64_t getPipeNetId() const {
+    if (pipeType) {
+      return pipeType.getPipeNetId();
+    }
+    if (selectedSrc) {
+      SelectPipeSrcOp op = selectedSrc;
+      return static_cast<int64_t>(op.getPipeNetId());
+    }
+    SelectPipeDstOp op = selectedDst;
+    return static_cast<int64_t>(op.getPipeNetId());
+  }
+};
+
+/// Return a static or selected pipe reference after tracing only unrealized
+/// conversion casts. Selected references must be direct select op results.
+FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe);
+
+/// Enumerate the static pipe types represented by a pipe reference.
+SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
+                                                const PipeReference &ref);
 
 /// Graph tracking pipe connections and receiver DFB assignments.
 /// Built after pipe receive copies have been expanded to pipe transfer ops.

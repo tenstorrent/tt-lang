@@ -86,6 +86,8 @@ struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
+  llvm::MapVector<Operation *, SmallVector<PipeResourceInfo>>
+      selectedResources;
 };
 
 /// Diagnose layouts that exceed the hardware semaphore id limit before

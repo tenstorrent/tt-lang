@@ -7,8 +7,9 @@
 // PipeNet roles permit them. The analysis is a `DenseForwardDataFlowAnalysis`
 // whose lattice is the set of launch coordinates that can reach each program
 // point. Predicate-bearing region ops (`scf.if`, `affine.if`, `ttl.if_src`,
-// `ttl.if_dst`, `ttl.pipenet_scope`) narrow that set on region entry; pipe-
-// coupled ops are checked against the narrowed set.
+// `ttl.if_dst`, `ttl.pipenet_foreach_src`, `ttl.pipenet_foreach_dst`,
+// `ttl.pipenet_scope`) narrow that set on region entry; pipe-coupled ops are
+// checked against the narrowed set.
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
@@ -155,6 +156,40 @@ Domain pipeDestinationDomain(PipeType pipeType) {
   return result;
 }
 
+PipeType getPipeTypeFromRecord(MLIRContext *context, PipeRecordAttr record,
+                               int64_t pipeNetId) {
+  return PipeType::get(context, record.getSrcX(), record.getSrcY(),
+                       record.getDstStartX(), record.getDstStartY(),
+                       record.getDstEndX(), record.getDstEndY(), pipeNetId);
+}
+
+Domain pipeRecordSourceDomain(PipeRecordAttr record) {
+  Domain result;
+  result.nodes.insert({record.getSrcX(), record.getSrcY()});
+  return result;
+}
+
+Domain pipeRecordDestinationDomain(PipeRecordAttr record) {
+  Domain result;
+  for (int64_t x = record.getDstStartX(); x <= record.getDstEndX(); ++x) {
+    for (int64_t y = record.getDstStartY(); y <= record.getDstEndY(); ++y) {
+      result.nodes.insert({x, y});
+    }
+  }
+  return result;
+}
+
+Domain pipeRecordsRoleDomain(PipeNetRecordsAttr records, PipeRole role) {
+  Domain result;
+  for (PipeRecordAttr record : records.getPipes()) {
+    Domain recordDomain = role == PipeRole::Source
+                              ? pipeRecordSourceDomain(record)
+                              : pipeRecordDestinationDomain(record);
+    result = domainUnion(result, recordDomain);
+  }
+  return result;
+}
+
 //===----------------------------------------------------------------------===//
 // Generic helpers.
 //===----------------------------------------------------------------------===//
@@ -193,7 +228,7 @@ struct WaitUse {
 };
 
 bool isPipeReceiveCopy(CopyOp copyOp) {
-  return mlir::isa<PipeType>(copyOp.getSrc().getType()) &&
+  return mlir::isa<PipeType, SelectedPipeDstType>(copyOp.getSrc().getType()) &&
          getAttachedCB(copyOp.getDst());
 }
 
@@ -220,6 +255,49 @@ struct PipeEvent {
   Domain domain;
 };
 
+struct SelectedPipeRecords {
+  PipeNetRecordsAttr records;
+  PipeRole role = PipeRole::Active;
+};
+
+std::optional<SelectedPipeRecords> getSelectedPipeRecords(Value pipe) {
+  pipe = traceUnrealizedCasts(pipe);
+  if (auto selectedSrc = pipe.getDefiningOp<SelectPipeSrcOp>()) {
+    return SelectedPipeRecords{selectedSrc.getRecords(), PipeRole::Source};
+  }
+  if (auto selectedDst = pipe.getDefiningOp<SelectPipeDstOp>()) {
+    return SelectedPipeRecords{selectedDst.getRecords(), PipeRole::Destination};
+  }
+  auto blockArg = mlir::dyn_cast<BlockArgument>(pipe);
+  if (!blockArg || blockArg.getArgNumber() != 0) {
+    return std::nullopt;
+  }
+  Operation *owner = blockArg.getOwner()->getParentOp();
+  if (auto foreachSrc = mlir::dyn_cast<PipeNetForeachSrcOp>(owner)) {
+    return SelectedPipeRecords{foreachSrc.getRecords(), PipeRole::Source};
+  }
+  if (auto foreachDst = mlir::dyn_cast<PipeNetForeachDstOp>(owner)) {
+    return SelectedPipeRecords{foreachDst.getRecords(), PipeRole::Destination};
+  }
+  return std::nullopt;
+}
+
+std::optional<PipeNetRecordsAttr> getSelectedSourceRecords(Value pipe) {
+  std::optional<SelectedPipeRecords> selected = getSelectedPipeRecords(pipe);
+  if (selected && selected->role == PipeRole::Source) {
+    return selected->records;
+  }
+  return std::nullopt;
+}
+
+std::optional<PipeNetRecordsAttr> getSelectedDestinationRecords(Value pipe) {
+  std::optional<SelectedPipeRecords> selected = getSelectedPipeRecords(pipe);
+  if (selected && selected->role == PipeRole::Destination) {
+    return selected->records;
+  }
+  return std::nullopt;
+}
+
 struct ModuleState;
 void checkKnownSubset(Operation *op, const Domain &current,
                       const Domain &allowed, Operation *unanalyzableOp,
@@ -236,7 +314,7 @@ struct ModuleState {
   llvm::DenseMap<int64_t, Domain> cbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
-  llvm::DenseMap<Operation *, unsigned> pipeEventIndices;
+  llvm::DenseMap<Operation *, SmallVector<unsigned>> pipeEventIndices;
   bool sawError = false;
 
   bool hasPipes() const { return !pipeNetLocs.empty(); }
@@ -273,21 +351,52 @@ struct ModuleState {
     return domainUnion(src, dst);
   }
 
+  void recordPipeNet(PipeType pipeType, Location loc,
+                     std::optional<StringRef> name = std::nullopt) {
+    int64_t pipeNetId = pipeType.getPipeNetId();
+    netSourceDomains[pipeNetId] =
+        domainUnion(netSourceDomains[pipeNetId], pipeSourceDomain(pipeType));
+    netDestinationDomains[pipeNetId] = domainUnion(
+        netDestinationDomains[pipeNetId], pipeDestinationDomain(pipeType));
+    pipeNetLocs[pipeNetId].push_back(loc);
+    auto &storedName = pipeNetNames[pipeNetId];
+    if (storedName.empty() && name && !name->empty()) {
+      storedName = name->str();
+    }
+  }
+
+  void recordPipeNetRecords(PipeNetRecordsAttr records, Location loc) {
+    std::optional<StringRef> name;
+    if (StringAttr attr = records.getPipeNetName()) {
+      name = attr.getValue();
+    }
+    for (PipeRecordAttr record : records.getPipes()) {
+      recordPipeNet(getPipeTypeFromRecord(records.getContext(), record,
+                                          records.getPipeNetId()),
+                    loc, name);
+    }
+  }
+
   LogicalResult initialize(ModuleOp module) {
     module.walk([&](CreatePipeOp pipe) {
-      PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
-      int64_t pipeNetId = pipeType.getPipeNetId();
-      netSourceDomains[pipeNetId] =
-          domainUnion(netSourceDomains[pipeNetId], pipeSourceDomain(pipeType));
-      netDestinationDomains[pipeNetId] = domainUnion(
-          netDestinationDomains[pipeNetId], pipeDestinationDomain(pipeType));
-      pipeNetLocs[pipeNetId].push_back(pipe.getLoc());
-      auto &name = pipeNetNames[pipeNetId];
-      if (name.empty()) {
-        if (auto attr = pipe.getPipeNetNameAttr()) {
-          name = attr.getValue().str();
-        }
+      std::optional<StringRef> name;
+      if (auto attr = pipe.getPipeNetNameAttr()) {
+        name = attr.getValue();
       }
+      recordPipeNet(mlir::cast<PipeType>(pipe.getResult().getType()),
+                    pipe.getLoc(), name);
+    });
+    module.walk([&](PipeNetForeachSrcOp op) {
+      recordPipeNetRecords(op.getRecords(), op.getLoc());
+    });
+    module.walk([&](PipeNetForeachDstOp op) {
+      recordPipeNetRecords(op.getRecords(), op.getLoc());
+    });
+    module.walk([&](SelectPipeSrcOp op) {
+      recordPipeNetRecords(op.getRecords(), op.getLoc());
+    });
+    module.walk([&](SelectPipeDstOp op) {
+      recordPipeNetRecords(op.getRecords(), op.getLoc());
     });
 
     if (!hasPipes()) {
@@ -307,32 +416,81 @@ struct ModuleState {
     return success();
   }
 
-  void recordPipeEvent(CopyOp copyOp, const Domain &domain) {
-    PipeEvent event;
-    event.op = copyOp.getOperation();
-    if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
-      event.pipeType = pipeType;
-      event.kind = PipeEventKind::Send;
-      event.domain = domainIntersect(domain, pipeSourceDomain(pipeType));
-    } else if (auto pipeType =
-                   mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-      if (!isPipeReceiveCopy(copyOp)) {
-        return;
+  void replacePipeEvents(Operation *op, SmallVector<PipeEvent> events) {
+    if (events.empty()) {
+      return;
+    }
+    auto it = pipeEventIndices.find(op);
+    if (it == pipeEventIndices.end()) {
+      SmallVector<unsigned> indices;
+      indices.reserve(events.size());
+      for (PipeEvent &event : events) {
+        indices.push_back(pipeEvents.size());
+        pipeEvents.push_back(event);
       }
-      event.pipeType = pipeType;
-      event.kind = PipeEventKind::ReceivePost;
-      event.domain = domainIntersect(domain, pipeDestinationDomain(pipeType));
-    } else {
+      pipeEventIndices.try_emplace(op, std::move(indices));
       return;
     }
 
-    auto [it, inserted] =
-        pipeEventIndices.try_emplace(copyOp.getOperation(), pipeEvents.size());
-    if (inserted) {
-      pipeEvents.push_back(event);
-      return;
+    assert(it->second.size() == events.size() &&
+           "pipe event count for an op changed during analysis");
+    for (auto [index, event] : llvm::zip_equal(it->second, events)) {
+      pipeEvents[index] = event;
     }
-    pipeEvents[it->second] = event;
+  }
+
+  void appendSelectedPipeEvents(Operation *op, PipeNetRecordsAttr records,
+                                PipeEventKind kind, const Domain &domain,
+                                SmallVectorImpl<PipeEvent> &events) {
+    PipeRole role = kind == PipeEventKind::Send ? PipeRole::Source
+                                                : PipeRole::Destination;
+    for (PipeRecordAttr record : records.getPipes()) {
+      PipeType pipeType = getPipeTypeFromRecord(
+          records.getContext(), record, records.getPipeNetId());
+      Domain roleDomain = role == PipeRole::Source
+                              ? pipeRecordSourceDomain(record)
+                              : pipeRecordDestinationDomain(record);
+      events.push_back(
+          PipeEvent{op, pipeType, kind, domainIntersect(domain, roleDomain)});
+    }
+  }
+
+  SmallVector<PipeEvent> getPipeCopyEvents(CopyOp copyOp,
+                                           const Domain &domain) {
+    SmallVector<PipeEvent> events;
+    Operation *op = copyOp.getOperation();
+    if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
+      events.push_back(PipeEvent{op, pipeType, PipeEventKind::Send,
+                                 domainIntersect(domain,
+                                                 pipeSourceDomain(pipeType))});
+      return events;
+    }
+    if (std::optional<PipeNetRecordsAttr> records =
+            getSelectedSourceRecords(copyOp.getDst())) {
+      appendSelectedPipeEvents(op, *records, PipeEventKind::Send, domain,
+                               events);
+      return events;
+    }
+    if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
+      if (isPipeReceiveCopy(copyOp)) {
+        events.push_back(PipeEvent{
+            op, pipeType, PipeEventKind::ReceivePost,
+            domainIntersect(domain, pipeDestinationDomain(pipeType))});
+      }
+      return events;
+    }
+    if (std::optional<PipeNetRecordsAttr> records =
+            getSelectedDestinationRecords(copyOp.getSrc())) {
+      if (isPipeReceiveCopy(copyOp)) {
+        appendSelectedPipeEvents(op, *records, PipeEventKind::ReceivePost,
+                                 domain, events);
+      }
+    }
+    return events;
+  }
+
+  void recordPipeEvent(CopyOp copyOp, const Domain &domain) {
+    replacePipeEvents(copyOp.getOperation(), getPipeCopyEvents(copyOp, domain));
   }
 
   void recordPipeWaitEvent(WaitOp waitOp, const Domain &domain,
@@ -341,37 +499,51 @@ struct ModuleState {
     if (!copyOp.has_value()) {
       return;
     }
-    auto pipeType = mlir::cast<PipeType>(copyOp->getSrc().getType());
 
-    int64_t netId = pipeType.getPipeNetId();
-    std::string name = netName(netId);
-    std::string msg;
-    llvm::raw_string_ostream(msg)
-        << "this `ttl.wait` waits for a pipe receive on launched nodes "
-           "that are not destinations of PipeNet "
-        << name << "; keep the wait under the same `if " << name
-        << ".is_dst(): ...` or `" << name
-        << ".if_dst(...)` guard as the receive copy";
-    checkKnownSubset(waitOp, domain, pipeDestinationDomain(pipeType),
-                     unanalyzableOp, msg, {{netId, PipeRole::Destination}},
-                     *this);
-    if (sawError) {
-      return;
+    SmallVector<PipeEvent> events;
+    Operation *op = waitOp.getOperation();
+    if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp->getSrc().getType())) {
+      int64_t netId = pipeType.getPipeNetId();
+      std::string name = netName(netId);
+      std::string msg;
+      llvm::raw_string_ostream(msg)
+          << "this `ttl.wait` waits for a pipe receive on launched nodes "
+             "that are not destinations of PipeNet "
+          << name << "; keep the wait under the same `if " << name
+          << ".is_dst(): ...` or `" << name
+          << ".if_dst(...)` guard as the receive copy";
+      checkKnownSubset(waitOp, domain, pipeDestinationDomain(pipeType),
+                       unanalyzableOp, msg, {{netId, PipeRole::Destination}},
+                       *this);
+      if (sawError) {
+        return;
+      }
+      events.push_back(PipeEvent{
+          op, pipeType, PipeEventKind::ReceiveWait,
+          domainIntersect(domain, pipeDestinationDomain(pipeType))});
+    } else if (std::optional<PipeNetRecordsAttr> records =
+                   getSelectedDestinationRecords(copyOp->getSrc())) {
+      int64_t netId = records->getPipeNetId();
+      std::string name = netName(netId);
+      std::string msg;
+      llvm::raw_string_ostream(msg)
+          << "this `ttl.wait` waits for a pipe receive on launched nodes "
+             "that are not destinations of PipeNet "
+          << name << "; keep the wait under the same `if " << name
+          << ".is_dst(): ...` or `" << name
+          << ".if_dst(...)` guard as the receive copy";
+      checkKnownSubset(waitOp, domain,
+                       pipeRecordsRoleDomain(*records, PipeRole::Destination),
+                       unanalyzableOp, msg, {{netId, PipeRole::Destination}},
+                       *this);
+      if (sawError) {
+        return;
+      }
+      appendSelectedPipeEvents(op, *records, PipeEventKind::ReceiveWait,
+                               domain, events);
     }
 
-    PipeEvent event;
-    event.op = waitOp.getOperation();
-    event.pipeType = pipeType;
-    event.kind = PipeEventKind::ReceiveWait;
-    event.domain = domainIntersect(domain, pipeDestinationDomain(pipeType));
-
-    auto [it, inserted] =
-        pipeEventIndices.try_emplace(waitOp.getOperation(), pipeEvents.size());
-    if (inserted) {
-      pipeEvents.push_back(event);
-      return;
-    }
-    pipeEvents[it->second] = event;
+    replacePipeEvents(op, std::move(events));
   }
 };
 
@@ -802,6 +974,22 @@ void verifyCopy(CopyOp copyOp, const Domain &current, Operation *unanalyzable,
                      unanalyzable, msg, {{netId, PipeRole::Source}}, state);
     return;
   }
+  if (std::optional<PipeNetRecordsAttr> records =
+          getSelectedSourceRecords(copyOp.getDst())) {
+    int64_t netId = records->getPipeNetId();
+    std::string name = state.netName(netId);
+    std::string msg;
+    llvm::raw_string_ostream(msg)
+        << "this `ttl.copy(buffer, pipe)` sends data on PipeNet " << name
+        << " from a node that is not a source of any pipe in that net; "
+           "wrap the copy in `"
+        << name << ".if_src(...)` or guard with `if " << name
+        << ".is_src(): ...`";
+    checkKnownSubset(copyOp, current,
+                     pipeRecordsRoleDomain(*records, PipeRole::Source),
+                     unanalyzable, msg, {{netId, PipeRole::Source}}, state);
+    return;
+  }
   if (auto srcPipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
     int64_t netId = srcPipeType.getPipeNetId();
     std::string name = state.netName(netId);
@@ -813,6 +1001,23 @@ void verifyCopy(CopyOp copyOp, const Domain &current, Operation *unanalyzable,
         << name << ".if_dst(...)` or guard with `if " << name
         << ".is_dst(): ...`";
     checkKnownSubset(copyOp, current, pipeDestinationDomain(srcPipeType),
+                     unanalyzable, msg, {{netId, PipeRole::Destination}},
+                     state);
+    return;
+  }
+  if (std::optional<PipeNetRecordsAttr> records =
+          getSelectedDestinationRecords(copyOp.getSrc())) {
+    int64_t netId = records->getPipeNetId();
+    std::string name = state.netName(netId);
+    std::string msg;
+    llvm::raw_string_ostream(msg)
+        << "this `ttl.copy(pipe, buffer)` receives data from PipeNet " << name
+        << " on a node that is not a destination of any pipe in that "
+           "net; wrap the copy in `"
+        << name << ".if_dst(...)` or guard with `if " << name
+        << ".is_dst(): ...`";
+    checkKnownSubset(copyOp, current,
+                     pipeRecordsRoleDomain(*records, PipeRole::Destination),
                      unanalyzable, msg, {{netId, PipeRole::Destination}},
                      state);
   }
@@ -1039,6 +1244,17 @@ public:
           narrowed = domainIntersect(before.getDomain(),
                                      pipeDestinationDomain(pipeType));
         })
+        .Case<PipeNetForeachSrcOp>([&](PipeNetForeachSrcOp foreachSrc) {
+          narrowed = domainIntersect(
+              before.getDomain(),
+              pipeRecordsRoleDomain(foreachSrc.getRecords(), PipeRole::Source));
+        })
+        .Case<PipeNetForeachDstOp>([&](PipeNetForeachDstOp foreachDst) {
+          narrowed = domainIntersect(
+              before.getDomain(),
+              pipeRecordsRoleDomain(foreachDst.getRecords(),
+                                    PipeRole::Destination));
+        })
         .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
           auto scope = getPipeNetScopeRoles(scopeOp, state);
           if (!scope) {
@@ -1132,7 +1348,9 @@ using PipeIdentity =
 using PipeCoordIdentity =
     std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                int64_t, int64_t>;
-using PipeNodeIdentity = std::tuple<Operation *, int64_t, int64_t, int64_t>;
+using PipeNodeIdentity =
+    std::tuple<Operation *, int64_t, int64_t, int64_t, int64_t, int64_t,
+               int64_t, int64_t, int64_t, int64_t, int64_t>;
 using ProgramPointIdentity = std::tuple<Operation *, int64_t, int64_t>;
 
 PipeIdentity getPipeIdentity(PipeType pipeType) {
@@ -1150,8 +1368,13 @@ PipeCoordIdentity getPipeCoordIdentity(PipeType pipeType, Coord coord) {
 }
 
 PipeNodeIdentity getPipeNodeIdentity(Operation *op, Coord coord,
+                                     PipeType pipeType,
                                      PipeScheduleNodeKind kind) {
-  return {op, coord.x, coord.y, static_cast<int64_t>(kind)};
+  auto [pipeNetId, srcX, srcY, dstStartX, dstEndX, dstStartY, dstEndY] =
+      getPipeIdentity(pipeType);
+  return {op,        pipeNetId, srcX,      srcY,
+          dstStartX, dstEndX,   dstStartY, dstEndY,
+          coord.x,   coord.y,   static_cast<int64_t>(kind)};
 }
 
 unsigned
@@ -1159,7 +1382,7 @@ addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
                     llvm::DenseMap<PipeNodeIdentity, unsigned> &nodeIds,
                     Operation *op, PipeType pipeType, Coord coord,
                     PipeScheduleNodeKind kind) {
-  PipeNodeIdentity identity = getPipeNodeIdentity(op, coord, kind);
+  PipeNodeIdentity identity = getPipeNodeIdentity(op, coord, pipeType, kind);
   auto [it, inserted] = nodeIds.try_emplace(identity, nodes.size());
   if (inserted) {
     nodes.push_back({op, pipeType, coord, kind, {}});
@@ -1449,47 +1672,49 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     if (eventIt == state.pipeEventIndices.end()) {
       return;
     }
-    PipeEvent event = state.pipeEvents[eventIt->second];
-    if (!event.domain.known || event.domain.nodes.empty()) {
-      return;
-    }
-
-    auto funcOp = op->getParentOfType<func::FuncOp>();
-    if (!funcOp) {
-      return;
-    }
-
-    for (Coord coord : event.domain.nodes) {
-      PipeScheduleNodeKind nodeKind;
-      if (event.kind == PipeEventKind::Send) {
-        nodeKind = PipeScheduleNodeKind::Send;
-      } else if (event.kind == PipeEventKind::ReceivePost) {
-        nodeKind = PipeScheduleNodeKind::ReceivePost;
-      } else {
-        nodeKind = PipeScheduleNodeKind::ReceiveWait;
+    for (unsigned eventIndex : eventIt->second) {
+      PipeEvent event = state.pipeEvents[eventIndex];
+      if (!event.domain.known || event.domain.nodes.empty()) {
+        continue;
       }
 
-      unsigned nodeId = addPipeScheduleNode(nodes, nodeIds, op, event.pipeType,
-                                            coord, nodeKind);
-
-      if (event.kind == PipeEventKind::Send) {
-        sendNodes.push_back({nodeId, event.pipeType});
-      } else if (event.kind == PipeEventKind::ReceivePost) {
-        receivePostNodes[getPipeCoordIdentity(event.pipeType, coord)].push_back(
-            nodeId);
-      } else {
-        receiveWaitNodes[getPipeCoordIdentity(event.pipeType, coord)].push_back(
-            nodeId);
+      auto funcOp = op->getParentOfType<func::FuncOp>();
+      if (!funcOp) {
+        continue;
       }
 
-      ProgramPointIdentity programPoint{funcOp.getOperation(), coord.x,
-                                        coord.y};
-      auto lastIt = lastCompletionNodes.find(programPoint);
-      if (lastIt != lastCompletionNodes.end()) {
-        addPipeScheduleEdge(nodes, lastIt->second, nodeId,
-                            PipeScheduleEdgeKind::ProgramOrder);
+      for (Coord coord : event.domain.nodes) {
+        PipeScheduleNodeKind nodeKind;
+        if (event.kind == PipeEventKind::Send) {
+          nodeKind = PipeScheduleNodeKind::Send;
+        } else if (event.kind == PipeEventKind::ReceivePost) {
+          nodeKind = PipeScheduleNodeKind::ReceivePost;
+        } else {
+          nodeKind = PipeScheduleNodeKind::ReceiveWait;
+        }
+
+        unsigned nodeId = addPipeScheduleNode(nodes, nodeIds, op,
+                                              event.pipeType, coord, nodeKind);
+
+        if (event.kind == PipeEventKind::Send) {
+          sendNodes.push_back({nodeId, event.pipeType});
+        } else if (event.kind == PipeEventKind::ReceivePost) {
+          receivePostNodes[getPipeCoordIdentity(event.pipeType, coord)]
+              .push_back(nodeId);
+        } else {
+          receiveWaitNodes[getPipeCoordIdentity(event.pipeType, coord)]
+              .push_back(nodeId);
+        }
+
+        ProgramPointIdentity programPoint{funcOp.getOperation(), coord.x,
+                                          coord.y};
+        auto lastIt = lastCompletionNodes.find(programPoint);
+        if (lastIt != lastCompletionNodes.end()) {
+          addPipeScheduleEdge(nodes, lastIt->second, nodeId,
+                              PipeScheduleEdgeKind::ProgramOrder);
+        }
+        lastCompletionNodes[programPoint] = nodeId;
       }
-      lastCompletionNodes[programPoint] = nodeId;
     }
   });
 
