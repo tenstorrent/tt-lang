@@ -4,6 +4,7 @@
 
 #include "PipeLowering.h"
 
+#include "PipeMetadata.h"
 #include "PipeNetForeachLowering.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -72,10 +73,6 @@ static int64_t getNocIndex(Operation *op) {
   return attr.getInt();
 }
 
-static int64_t getReceiverSemIdx(PipeType pipeType) {
-  return getReceiverSemIdx(pipeType.getPipeNetId());
-}
-
 static PipeKey getPipeKey(PipeType pipeType) {
   return {pipeType.getSrcX(),      pipeType.getSrcY(),
           pipeType.getDstStartX(), pipeType.getDstStartY(),
@@ -87,7 +84,7 @@ static PipeKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY(), 0, 0, 0, 0, 0};
 }
 
-static FailureOr<PipeChannelLayout>
+FailureOr<PipeChannelLayout>
 lookupPipeChannelLayout(Operation *op, PipeType pipeType,
                         const PipeRuntimeLayout *pipeRuntimeLayout) {
   if (!pipeRuntimeLayout) {
@@ -144,49 +141,31 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
   });
 }
 
-/// Lower CB -> Pipe copy: write source DFB data to the receiver-published
-/// destination address, then signal arrival.
-LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
-                            bool isConsumerCB,
-                            const PipeRuntimeLayout *pipeRuntimeLayout,
-                            ConversionPatternRewriter &rewriter) {
-  auto loc = op.getLoc();
-  auto pipeType = mlir::cast<PipeType>(pipe.getType());
-  FailureOr<PipeChannelLayout> pipeChannelLayout =
-      lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
-  if (failed(pipeChannelLayout)) {
-    return failure();
-  }
+/// Sender-side pipe protocol body shared by static and selected pipe
+/// lowering. Writes source DFB data to the receiver-published destination
+/// address and signals arrival via semaphore.
+LogicalResult emitSendProtocol(CopyOp op, Value srcCB, bool isConsumerCB,
+                               const PipeMetadata &meta,
+                               ConversionPatternRewriter &rewriter) {
+  Location loc = op.getLoc();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+  auto indexTy = rewriter.getIndexType();
+  auto i32Ty = rewriter.getI32Type();
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   if (failed(cbConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
   }
-
   auto cbType = getTTLCBType(srcCB);
   if (!cbType) {
     return rewriter.notifyMatchFailure(op, "failed to get CB type");
   }
-  auto cbShape = cbType.getShape();
-
-  auto elementType = cbType.getElementType();
-  auto tileType = llvm::dyn_cast<ttcore::TileType>(elementType);
+  auto tileType = llvm::dyn_cast<ttcore::TileType>(cbType.getElementType());
   if (!tileType) {
     return rewriter.notifyMatchFailure(op, "CB element type must be tile");
   }
-  int64_t pageSizeBytes = tileType.getSizeBytes();
 
-  int64_t dstStartX = pipeType.getDstStartX();
-  int64_t dstStartY = pipeType.getDstStartY();
-  int64_t dstEndX = pipeType.getDstEndX();
-  int64_t dstEndY = pipeType.getDstEndY();
-  int64_t numDests = pipeType.getNumDests();
-
-  auto indexTy = rewriter.getIndexType();
-  auto i32Ty = rewriter.getI32Type();
-
-  // Build optional NOC index value for ops that accept a noc parameter.
+  // Optional NOC index value for ops that accept a noc parameter.
   int64_t nocIdx = getNocIndex(op);
   Value nocVal;
   if (nocIdx > 0) {
@@ -194,157 +173,166 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                                        rewriter.getI8IntegerAttr(nocIdx));
   }
 
-  int64_t expectedSignals = pipeType.isUnicast() ? 1 : numDests;
-  auto senderSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, pipeChannelLayout->senderReadySemIdx);
-  auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
-  auto senderSemPtr =
+  // Sender-ready wait: block until every receiver has posted (one signal
+  // per destination for multicast, exactly one for unicast).
+  Value senderSemAddr = meta.senderReadySemAddr(rewriter, loc);
+  Value senderSemPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
-  auto expectedVal = arith::ConstantOp::create(
-      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(expectedSignals));
+  Value expectedVal;
+  if (meta.isUnicast()) {
+    expectedVal = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                            rewriter.getI32IntegerAttr(1));
+  } else {
+    expectedVal = meta.numDestsI32(rewriter, loc);
+  }
   ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedVal);
-  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
   ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
 
-  SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
+  // Source address: producer reads from write_ptr (data staged there before
+  // push_back); consumer reads from read_ptr.
   int64_t cbNumTiles = 1;
-  for (int64_t d : cbBounds) {
+  for (int64_t d : cbType.getShape()) {
     cbNumTiles *= d;
   }
-  // Producer source address is at the source DFB's write_ptr (data is staged
-  // there before push_back); consumer source address is at its read_ptr.
   Value srcPtrIdx;
   if (isConsumerCB) {
-    auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
+    Value cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
   } else {
-    auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
-    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
+    Value cbWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
+    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbWritePtr);
   }
 
-  // Destination coordinates for multicast - convert logical to virtual coords
-  auto dstStartXLogical =
-      arith::ConstantIndexOp::create(rewriter, loc, dstStartX);
-  auto dstStartYLogical =
-      arith::ConstantIndexOp::create(rewriter, loc, dstStartY);
-  auto dstEndXLogical = arith::ConstantIndexOp::create(rewriter, loc, dstEndX);
-  auto dstEndYLogical = arith::ConstantIndexOp::create(rewriter, loc, dstEndY);
-
-  // NOC operations require virtual/translated coordinates
-  auto dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+  // Logical -> translated destination coords for NOC ops.
+  Value dstStartXLogical = meta.dstStartXLogical(rewriter, loc);
+  Value dstStartYLogical = meta.dstStartYLogical(rewriter, loc);
+  Value dstEndXLogical = meta.dstEndXLogical(rewriter, loc);
+  Value dstEndYLogical = meta.dstEndYLogical(rewriter, loc);
+  Value dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
       rewriter, loc, indexTy, dstStartXLogical);
-  auto dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+  Value dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, dstStartYLogical);
-  auto dstEndXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+  Value dstEndXVal = ttk::ConvertLogicalXToTranslatedOp::create(
       rewriter, loc, indexTy, dstEndXLogical);
-  auto dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+  Value dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, dstEndYLogical);
 
-  auto numDestsVal = arith::ConstantOp::create(
-      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
+  Value numDestsVal = meta.numDestsI32(rewriter, loc);
 
-  // Transfer the entire block in a single NOC write. Tiles are contiguous in
-  // the CB, and destination CB layout is uniform across cores, so we can send
-  // all tiles at once instead of one per tile.
-  int64_t totalSizeBytes = cbNumTiles * pageSizeBytes;
-  auto totalSizeVal = arith::ConstantOp::create(
-      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
-
+  // Single NOC transfer for the whole block: tiles are contiguous in the CB
+  // and destination CB layout is uniform across cores.
+  Value totalSizeVal = arith::ConstantOp::create(
+      rewriter, loc, i32Ty,
+      rewriter.getI32IntegerAttr(cbNumTiles * tileType.getSizeBytes()));
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
+  Value zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                            rewriter.getI32IntegerAttr(0));
 
-  auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                           rewriter.getI32IntegerAttr(0));
-
-  auto mailboxSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, pipeChannelLayout->mailboxSemIdxBase);
-  auto mailboxSemAddr =
-      ttk::GetSemaphoreOp::create(rewriter, loc, mailboxSemIdx);
-  auto mailboxPtr =
+  // Receiver-published destination address.
+  Value mailboxSemAddr = meta.mailboxSemAddr(rewriter, loc);
+  Value mailboxPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxSemAddr);
   Value dstAddr =
       ttk::LoadFromL1Op::create(rewriter, loc, i32Ty, mailboxPtr, zeroI32);
 
-  if (pipeType.isUnicast()) {
-    auto nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
-                                             dstStartYVal, dstAddr);
-    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr, nocAddr.getResult(),
-                                 totalSizeVal);
+  // Data write. Unicast: one noc_async_write. Multicast: variant depends on
+  // srcInDstRange. Static metadata folds at build time; selected metadata
+  // emits scf.if since srcInDstRange varies per iteration.
+  if (meta.isUnicast()) {
+    Value nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
+                                              dstStartYVal, dstAddr);
+    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr, nocAddr, totalSizeVal);
   } else {
-    auto mcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
+    Value mcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
         rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
         dstAddr, nocVal);
-    if (pipeType.srcInDstRange()) {
+    auto emitLoopback = [&](OpBuilder &b) {
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
-          rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
-          numDestsVal, /*linked=*/nullptr,
-          /*multicast_path_reserve=*/nullptr, nocVal);
-    } else {
+          b, loc, srcAddr, mcastAddr, totalSizeVal, numDestsVal,
+          /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr, nocVal);
+    };
+    auto emitNormal = [&](OpBuilder &b) {
       ttk::NocAsyncWriteMulticastOp::create(
-          rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
-          numDestsVal, /*linked=*/nullptr,
-          /*multicast_path_reserve=*/nullptr, nocVal);
+          b, loc, srcAddr, mcastAddr, totalSizeVal, numDestsVal,
+          /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr, nocVal);
+    };
+    if (auto staticSrc = meta.staticSrcInDstRange()) {
+      if (*staticSrc) {
+        emitLoopback(rewriter);
+      } else {
+        emitNormal(rewriter);
+      }
+    } else {
+      Value srcInDst = meta.srcInDstRangeI1(rewriter, loc);
+      auto ifOp = scf::IfOp::create(rewriter, loc, srcInDst,
+                                    /*withElseRegion=*/true);
+      rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+      emitLoopback(rewriter);
+      rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
+      emitNormal(rewriter);
+      rewriter.setInsertionPointAfter(ifOp);
     }
   }
 
-  // Wait for all async writes to complete before signaling the semaphore.
-  // Without this barrier, the receiver may wake up before all data arrives.
+  // Barrier so the receiver does not wake up before all data has arrived.
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
-  // Signal that data has arrived.
-  if (pipeType.isUnicast()) {
-    // Point-to-point: atomically increment destination's semaphore.
-    auto semIdx = arith::ConstantIndexOp::create(rewriter, loc,
-                                                 getReceiverSemIdx(pipeType));
-    auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
-    auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    auto dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
-                                                   dstStartYVal, semAddr);
-    ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr.getResult(),
-                                   incrVal, /*noc_id=*/Value(),
+  // Arrival signal. Unicast: single noc_semaphore_inc to dst. Multicast:
+  // multicast inc (excluding sender) + optional self-inc when the sender is
+  // also a destination.
+  if (meta.isUnicast()) {
+    Value semIdx = arith::ConstantIndexOp::create(
+        rewriter, loc, getReceiverSemIdx(meta.getPipeNetId()));
+    Value semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
+    Value incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value dstSemNocAddr = ttk::GetNocAddrOp::create(
+        rewriter, loc, dstStartXVal, dstStartYVal, semAddr);
+    ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr, incrVal,
+                                   /*noc_id=*/Value(),
                                    /*posted=*/BoolAttr());
   } else {
-    // Multicast: atomic inc on every receiver's recvSem. Receiver pairs
-    // with cumulative wait_min via the per-PipeNet runtime counter.
-    auto recvSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, getReceiverSemIdx(pipeType));
-    auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
-
-    // HW multicast auto-excludes the sender; num_dests counts only remote
-    // receivers. No inc_multicast_loopback in tt-metal — sender's own
-    // recvSem is incremented locally below.
-    int64_t numRemoteDests = pipeType.srcInDstRange() ? numDests - 1 : numDests;
-    auto numRemoteDestsVal = arith::ConstantOp::create(
-        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numRemoteDests));
-
-    auto recvSemMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
+    Value recvSemIdx = arith::ConstantIndexOp::create(
+        rewriter, loc, getReceiverSemIdx(meta.getPipeNetId()));
+    Value recvSemAddr =
+        ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
+    Value numRemoteDestsVal = meta.numRemoteDestsI32(rewriter, loc);
+    Value recvSemMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
         rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
         recvSemAddr, nocVal);
-
-    auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
     ttk::NocSemaphoreIncMulticastOp::create(
-        rewriter, loc, recvSemMcastAddr.getResult(), incrVal, numRemoteDestsVal,
+        rewriter, loc, recvSemMcastAddr, incrVal, numRemoteDestsVal,
         /*noc_id=*/Value(), /*posted=*/BoolAttr());
 
-    if (pipeType.srcInDstRange()) {
-      // Local self-inc: when sender is also a receiver of overlapping
-      // pipes, its own cumulative count must include this pipe.
-      auto srcXLogical =
-          arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
-      auto srcYLogical =
-          arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
-      auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
-          rewriter, loc, indexTy, srcXLogical);
-      auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
-          rewriter, loc, indexTy, srcYLogical);
-      auto selfRecvSemNocAddr = ttk::GetNocAddrOp::create(
-          rewriter, loc, srcXTranslated, srcYTranslated, recvSemAddr);
-      ttk::NocSemaphoreIncOp::create(rewriter, loc,
-                                     selfRecvSemNocAddr.getResult(), incrVal,
-                                     /*noc_id=*/Value(), /*posted=*/BoolAttr());
+    auto emitSelfInc = [&](OpBuilder &b) {
+      Value srcX = meta.srcXLogical(b, loc);
+      Value srcY = meta.srcYLogical(b, loc);
+      Value srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+          b, loc, indexTy, srcX);
+      Value srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+          b, loc, indexTy, srcY);
+      Value selfRecvSemNocAddr = ttk::GetNocAddrOp::create(
+          b, loc, srcXTranslated, srcYTranslated, recvSemAddr);
+      ttk::NocSemaphoreIncOp::create(b, loc, selfRecvSemNocAddr, incrVal,
+                                     /*noc_id=*/Value(),
+                                     /*posted=*/BoolAttr());
+    };
+    if (auto staticSrc = meta.staticSrcInDstRange()) {
+      if (*staticSrc) {
+        emitSelfInc(rewriter);
+      }
+    } else {
+      Value srcInDst = meta.srcInDstRangeI1(rewriter, loc);
+      auto ifOp = scf::IfOp::create(rewriter, loc, srcInDst,
+                                    /*withElseRegion=*/false);
+      rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+      emitSelfInc(rewriter);
+      rewriter.setInsertionPointAfter(ifOp);
     }
 
-    // Flush the (non-posted) atomic increments before the kernel can move
-    // on. Without this barrier, receivers race with the sender on recvSem.
+    // Flush atomic increments so receivers do not race with the sender on
+    // recvSem.
     ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, /*noc_id=*/Value());
   }
 
@@ -352,27 +340,49 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   return success();
 }
 
-LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
-                                const PipeRuntimeLayout *pipeRuntimeLayout,
-                                ConversionPatternRewriter &rewriter) {
-  auto loc = op.getLoc();
-  if (mlir::isa<SelectedPipeDstType>(pipe.getType())) {
-    return lowerSelectedPipeRecvPost(op, pipe, dst, pipeRuntimeLayout,
-                                     rewriter);
+LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
+                            bool isConsumerCB,
+                            const PipeRuntimeLayout *pipeRuntimeLayout,
+                            ConversionPatternRewriter &rewriter) {
+  if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
+    FailureOr<PipeChannelLayout> channel =
+        lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
+    if (failed(channel)) {
+      return failure();
+    }
+    StaticPipeMetadata meta(pipeType, *channel);
+    return emitSendProtocol(op, srcCB, isConsumerCB, meta, rewriter);
   }
-  auto pipeType = mlir::cast<PipeType>(pipe.getType());
-  FailureOr<PipeChannelLayout> pipeChannelLayout =
-      lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
-  if (failed(pipeChannelLayout)) {
-    return failure();
+  if (mlir::isa<SelectedPipeSrcType>(pipe.getType())) {
+    auto selectOp = pipe.getDefiningOp<SelectPipeSrcOp>();
+    if (!selectOp) {
+      return op.emitOpError()
+             << "source-selected pipe must be materialized by "
+                "ttl.select_pipe_src";
+    }
+    SelectedPipeMetadata meta(selectOp);
+    return emitSendProtocol(op, srcCB, isConsumerCB, meta, rewriter);
+  }
+  return rewriter.notifyMatchFailure(op, "unsupported pipe operand type");
+}
+
+/// Receiver-side pipe receive post: publish the receiver DFB slot address to
+/// the sender's mailbox and bump the sender-ready semaphore.
+LogicalResult emitRecvPostProtocol(PipeRecvPostOp op, Value dst,
+                                   const PipeMetadata &meta,
+                                   const PipeRuntimeLayout *runtime,
+                                   ConversionPatternRewriter &rewriter) {
+  if (!runtime) {
+    return op.emitError("internal compiler error: missing pipe runtime layout");
   }
   int64_t nocIdx = getNocIndex(op);
-  if (nocIdx >= pipeRuntimeLayout->numMailboxStagingSems) {
+  if (nocIdx >= runtime->numMailboxStagingSems) {
     return op.emitError() << "pipe receive post uses NOC thread index "
                           << nocIdx << ", but pipe runtime layout has only "
-                          << pipeRuntimeLayout->numMailboxStagingSems
+                          << runtime->numMailboxStagingSems
                           << " mailbox staging semaphores";
   }
+  Location loc = op.getLoc();
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -387,7 +397,6 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   if (failed(receiverCBConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert receiver DFB");
   }
-
   auto receiverCBType = getTTLCBType(receiverCB);
   if (!receiverCBType) {
     return rewriter.notifyMatchFailure(op, "failed to get receiver DFB type");
@@ -405,20 +414,21 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
                                        rewriter.getI8IntegerAttr(nocIdx));
   }
 
-  auto receiverWritePtr =
+  // Publish receiver DFB slot address (write_ptr + optional static slice
+  // offset) to the per-thread staging slot.
+  Value receiverWritePtr =
       ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
   Value publishedAddress = receiverWritePtr;
-  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  Value localTileIndex = zeroIdx;
+  Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
   Value globalTileIndex =
-      utils::addSliceOffset(dst, localTileIndex, rewriter, loc);
-  if (globalTileIndex != localTileIndex) {
-    auto tileOffsetI32 =
+      utils::addSliceOffset(dst, zeroIdx, rewriter, loc);
+  if (globalTileIndex != zeroIdx) {
+    Value tileOffsetI32 =
         arith::IndexCastOp::create(rewriter, loc, i32Ty, globalTileIndex);
-    auto pageSizeBytes = arith::ConstantOp::create(
+    Value pageSizeBytes = arith::ConstantOp::create(
         rewriter, loc, i32Ty,
         rewriter.getI32IntegerAttr(tileType.getSizeBytes()));
-    auto byteOffset =
+    Value byteOffset =
         arith::MulIOp::create(rewriter, loc, tileOffsetI32, pageSizeBytes);
     publishedAddress =
         arith::AddIOp::create(rewriter, loc, receiverWritePtr, byteOffset);
@@ -427,66 +437,80 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   // TODO(#617): Support per-destination receive addresses for multicast.
   // TTKernel multicast writes take one destination address for the rectangle,
   // so all receivers of a pipe currently publish to its source-local mailbox.
-  Value targetMailboxSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, pipeChannelLayout->mailboxSemIdxBase);
-  auto mailboxStagingSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, pipeRuntimeLayout->mailboxStagingSemIdxBase + nocIdx);
-  auto mailboxStagingSem =
+  Value mailboxStagingSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, runtime->mailboxStagingSemIdxBase + nocIdx);
+  Value mailboxStagingSem =
       ttk::GetSemaphoreOp::create(rewriter, loc, mailboxStagingSemIdx);
-  auto mailboxStagingPtr =
+  Value mailboxStagingPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, mailboxStagingSem);
-  auto zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                           rewriter.getI32IntegerAttr(0));
+  Value zeroI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                            rewriter.getI32IntegerAttr(0));
   ttk::StoreToL1Op::create(rewriter, loc, publishedAddress, mailboxStagingPtr,
                            zeroI32);
-  auto targetMailboxSem =
-      ttk::GetSemaphoreOp::create(rewriter, loc, targetMailboxSemIdx);
+  Value targetMailboxSem = meta.mailboxSemAddr(rewriter, loc);
 
-  auto srcXLogical =
-      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
-  auto srcYLogical =
-      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
-  auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+  Value srcXLogical = meta.srcXLogical(rewriter, loc);
+  Value srcYLogical = meta.srcYLogical(rewriter, loc);
+  Value srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
       rewriter, loc, indexTy, srcXLogical);
-  auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+  Value srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, srcYLogical);
-  auto senderMailboxNocAddr = ttk::GetNocAddrOp::create(
+  Value senderMailboxNocAddr = ttk::GetNocAddrOp::create(
       rewriter, loc, srcXTranslated, srcYTranslated, targetMailboxSem);
   ttk::RemoteSramWriteU32Op::create(rewriter, loc, mailboxStagingSem,
-                                    senderMailboxNocAddr.getResult(), nocVal);
+                                    senderMailboxNocAddr, nocVal);
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
-  auto senderSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, pipeChannelLayout->senderReadySemIdx);
-  auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
-  auto senderSemNocAddr = ttk::GetNocAddrOp::create(
+  Value senderSemAddr = meta.senderReadySemAddr(rewriter, loc);
+  Value senderSemNocAddr = ttk::GetNocAddrOp::create(
       rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
-  auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
-                                 readyIncr, nocVal, /*posted=*/BoolAttr());
+  Value readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr, readyIncr,
+                                 nocVal, /*posted=*/BoolAttr());
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
 }
 
-/// Lower the receiver completion wait with a per-PipeNet runtime counter.
-LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
-                                const PipeNetCounterMap *counters,
+LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
+                                const PipeRuntimeLayout *pipeRuntimeLayout,
                                 ConversionPatternRewriter &rewriter) {
-  auto loc = op.getLoc();
-  if (mlir::isa<SelectedPipeDstType>(pipe.getType())) {
-    (void)dst;
-    return lowerSelectedPipeRecvWait(op, pipe, counters, rewriter);
+  if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
+    FailureOr<PipeChannelLayout> channel =
+        lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
+    if (failed(channel)) {
+      return failure();
+    }
+    StaticPipeMetadata meta(pipeType, *channel);
+    return emitRecvPostProtocol(op, dst, meta, pipeRuntimeLayout, rewriter);
   }
-  auto pipeType = mlir::cast<PipeType>(pipe.getType());
+  if (mlir::isa<SelectedPipeDstType>(pipe.getType())) {
+    auto selectOp = pipe.getDefiningOp<SelectPipeDstOp>();
+    if (!selectOp) {
+      return op.emitOpError()
+             << "destination-selected pipe must be materialized by "
+                "ttl.select_pipe_dst";
+    }
+    SelectedPipeMetadata meta(selectOp);
+    return emitRecvPostProtocol(op, dst, meta, pipeRuntimeLayout, rewriter);
+  }
+  return op.emitOpError()
+         << "requires a static pipe or destination-selected pipe";
+}
+
+/// Receiver-side pipe receive completion: cumulative `semaphore_wait_min`
+/// against the per-PipeNet function-local counter.
+LogicalResult emitRecvWaitProtocol(PipeRecvWaitOp op, const PipeMetadata &meta,
+                                   const PipeNetCounterMap *counters,
+                                   ConversionPatternRewriter &rewriter) {
+  Location loc = op.getLoc();
   auto i32Ty = rewriter.getI32Type();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
-  (void)dst;
 
-  auto recvSemIdx = arith::ConstantIndexOp::create(rewriter, loc,
-                                                   getReceiverSemIdx(pipeType));
-  auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
-  auto recvSemPtr =
+  Value recvSemIdx = arith::ConstantIndexOp::create(
+      rewriter, loc, getReceiverSemIdx(meta.getPipeNetId()));
+  Value recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
+  Value recvSemPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, recvSemAddr);
 
   Value counter;
@@ -494,7 +518,7 @@ LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
     auto func = op->getParentOfType<func::FuncOp>();
     auto fIt = counters->find(func);
     if (fIt != counters->end()) {
-      auto pIt = fIt->second.find(pipeType.getPipeNetId());
+      auto pIt = fIt->second.find(meta.getPipeNetId());
       if (pIt != fIt->second.end()) {
         counter = pIt->second;
       }
@@ -511,18 +535,40 @@ LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
     return failure();
   }
 
-  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  auto loaded =
+  Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value loaded =
       memref::LoadOp::create(rewriter, loc, counter, ValueRange{zeroIdx});
-  auto oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                          rewriter.getI32IntegerAttr(1));
-  auto newCounter = arith::AddIOp::create(rewriter, loc, loaded, oneI32);
+  Value oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                           rewriter.getI32IntegerAttr(1));
+  Value newCounter = arith::AddIOp::create(rewriter, loc, loaded, oneI32);
   memref::StoreOp::create(rewriter, loc, newCounter, counter,
                           ValueRange{zeroIdx});
   ttk::SemaphoreWaitMinOp::create(rewriter, loc, recvSemPtr, newCounter);
 
   rewriter.eraseOp(op);
   return success();
+}
+
+LogicalResult lowerPipeRecvWait(PipeRecvWaitOp op, Value pipe, Value dst,
+                                const PipeNetCounterMap *counters,
+                                ConversionPatternRewriter &rewriter) {
+  (void)dst;
+  if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
+    StaticPipeMetadata meta(pipeType, /*layout=*/{});
+    return emitRecvWaitProtocol(op, meta, counters, rewriter);
+  }
+  if (mlir::isa<SelectedPipeDstType>(pipe.getType())) {
+    auto selectOp = pipe.getDefiningOp<SelectPipeDstOp>();
+    if (!selectOp) {
+      return op.emitOpError()
+             << "destination-selected pipe must be materialized by "
+                "ttl.select_pipe_dst";
+    }
+    SelectedPipeMetadata meta(selectOp);
+    return emitRecvWaitProtocol(op, meta, counters, rewriter);
+  }
+  return op.emitOpError()
+         << "requires a static pipe or destination-selected pipe";
 }
 
 //===----------------------------------------------------------------------===//

@@ -35,26 +35,6 @@ void addPipeNetForeachRecordsToIndex(ModuleOp mod, PipeNetIndex &index);
 void collectPipeNetForeachReceiveWaitCounterIds(
     PipeRecvWaitOp wait, llvm::SmallSet<int64_t, 4> &pipeNetIds);
 
-/// Lower a DFB-to-selected-pipe copy inside `ttl.pipenet_foreach_src`.
-LogicalResult lowerDataflowBufferToSelectedPipe(
-    CopyOp op, Value sourceDataflowBuffer, SelectPipeSrcOp selectedPipe,
-    bool isConsumerDataflowBuffer, ConversionPatternRewriter &rewriter);
-
-/// Lower selected-pipe receive address publication.
-LogicalResult lowerSelectedPipeRecvPost(PipeRecvPostOp op, Value pipe,
-                                        Value dst,
-                                        const PipeRuntimeLayout *layout,
-                                        ConversionPatternRewriter &rewriter);
-
-/// Lower selected-pipe receive completion waits.
-///
-/// `counters` must contain an entry for the enclosing function and PipeNet id.
-/// This mirrors static-pipe receive wait lowering: repeated dynamic waits in
-/// loops wait for monotonically increasing receiver semaphore values.
-LogicalResult lowerSelectedPipeRecvWait(PipeRecvWaitOp op, Value pipe,
-                                        const PipeNetCounterMap *counters,
-                                        ConversionPatternRewriter &rewriter);
-
 /// Add PipeNet foreach lowering patterns to `patterns`.
 void populatePipeNetForeachLoweringPatterns(
     RewritePatternSet &patterns, const TypeConverter &typeConverter,

@@ -862,10 +862,6 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
         return mlir::isa<CBWaitOp>(user) && user->getOperand(0) == src &&
                domInfo.dominates(user, op);
       });
-      if (auto selectedPipe = dst.getDefiningOp<SelectPipeSrcOp>()) {
-        return lowerDataflowBufferToSelectedPipe(
-            op, adaptor.getSrc(), selectedPipe, isConsumerCB, rewriter);
-      }
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), isConsumerCB,
                            pipeRuntimeLayout, rewriter);
     }

@@ -49,6 +49,13 @@ struct PipeRuntimeLayout {
   llvm::DenseMap<PipeKey, PipeChannelLayout> channels;
 };
 
+/// Look up the per-pipe channel layout (sender-ready and mailbox semaphore
+/// indices) for `pipeType` in `pipeRuntimeLayout`. Emits an internal-compiler-
+/// error diagnostic if the layout pointer is null or the pipe is missing.
+FailureOr<PipeChannelLayout>
+lookupPipeChannelLayout(Operation *op, PipeType pipeType,
+                        const PipeRuntimeLayout *pipeRuntimeLayout);
+
 /// Walk `mod` once and group every PipeType result by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on
 /// multiple ops contributes one entry.
