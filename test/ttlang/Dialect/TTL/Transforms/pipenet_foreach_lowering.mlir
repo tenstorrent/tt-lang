@@ -4,12 +4,17 @@
 // around one callback body.
 
 // CHECK-LABEL: func.func @foreach_src_send
+// Per-field tables built once outside the loop; loop body indexes them.
+// CHECK: memref.alloca
+// CHECK: memref.store
 // CHECK: scf.for
+// CHECK: memref.load
 // CHECK: ttkernel.my_logical_x
 // CHECK: ttkernel.noc_async_write(
 // CHECK-NOT: ttkernel.noc_async_write(
 // CHECK: return
 // CHECK-NOT: ttl.pipenet_foreach_src
+// CHECK-NOT: arith.select
 func.func @foreach_src_send() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

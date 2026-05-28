@@ -28,21 +28,31 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
-static Value selectIndexByLoopIndex(RewriterBase &rewriter, Location loc,
-                                    Value loopIndex, ArrayRef<int64_t> values) {
+/// Build a stack-allocated index-typed table of the given values at the
+/// current insertion point. Generated form is one `memref.alloca` plus N
+/// `memref.store`s of `arith.constant` index values. Per-iteration access
+/// inside the foreach loop becomes a single `memref.load`, bounding the
+/// loop-body code size at O(1) per field instead of an O(N) `arith.select`
+/// chain.
+static Value buildPipeIndexTable(OpBuilder &b, Location loc,
+                                 ArrayRef<int64_t> values) {
   assert(!values.empty());
-  Value selected = arith::ConstantIndexOp::create(rewriter, loc, values[0]);
-  for (size_t valueIndex = 1; valueIndex < values.size(); ++valueIndex) {
-    Value valueIndexConst =
-        arith::ConstantIndexOp::create(rewriter, loc, valueIndex);
-    Value isSelected = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::eq, loopIndex, valueIndexConst);
-    Value candidate =
-        arith::ConstantIndexOp::create(rewriter, loc, values[valueIndex]);
-    selected =
-        arith::SelectOp::create(rewriter, loc, isSelected, candidate, selected);
+  auto memrefTy = MemRefType::get(
+      {static_cast<int64_t>(values.size())}, b.getIndexType());
+  Value table = memref::AllocaOp::create(b, loc, memrefTy);
+  for (size_t i = 0; i < values.size(); ++i) {
+    Value v = arith::ConstantIndexOp::create(b, loc, values[i]);
+    Value idx = arith::ConstantIndexOp::create(b, loc, i);
+    memref::StoreOp::create(b, loc, v, table, ValueRange{idx});
   }
-  return selected;
+  return table;
+}
+
+/// Load the per-iteration index value from a table built by
+/// `buildPipeIndexTable`.
+static Value loadPipeTableEntry(OpBuilder &b, Location loc, Value table,
+                                Value iv) {
+  return memref::LoadOp::create(b, loc, table, ValueRange{iv});
 }
 
 static SmallVector<PipeType>
@@ -114,6 +124,22 @@ struct PipeNetForeachSrcLowering
     }
 
     Location loc = op.getLoc();
+    // Build per-field stack tables before entering the loop; each per-iter
+    // access becomes one memref.load instead of an N-deep select chain.
+    Value srcXTable = buildPipeIndexTable(rewriter, loc, srcXs);
+    Value srcYTable = buildPipeIndexTable(rewriter, loc, srcYs);
+    Value dstStartXTable = buildPipeIndexTable(rewriter, loc, dstStartXs);
+    Value dstStartYTable = buildPipeIndexTable(rewriter, loc, dstStartYs);
+    Value dstEndXTable = buildPipeIndexTable(rewriter, loc, dstEndXs);
+    Value dstEndYTable = buildPipeIndexTable(rewriter, loc, dstEndYs);
+    Value senderSemIdxTable =
+        buildPipeIndexTable(rewriter, loc, senderSemIdxs);
+    Value mailboxSemIdxTable =
+        buildPipeIndexTable(rewriter, loc, mailboxSemIdxs);
+    Value numDestsTable = buildPipeIndexTable(rewriter, loc, numDests);
+    Value srcInDstRangeTable =
+        buildPipeIndexTable(rewriter, loc, srcInDstRanges);
+
     Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value upper =
         arith::ConstantIndexOp::create(rewriter, loc, pipeTypes.size());
@@ -122,22 +148,24 @@ struct PipeNetForeachSrcLowering
 
     rewriter.setInsertionPointToStart(forOp.getBody());
     Value loopIndex = forOp.getInductionVar();
-    Value srcX = selectIndexByLoopIndex(rewriter, loc, loopIndex, srcXs);
-    Value srcY = selectIndexByLoopIndex(rewriter, loc, loopIndex, srcYs);
+    Value srcX = loadPipeTableEntry(rewriter, loc, srcXTable, loopIndex);
+    Value srcY = loadPipeTableEntry(rewriter, loc, srcYTable, loopIndex);
     Value dstStartX =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, dstStartXs);
+        loadPipeTableEntry(rewriter, loc, dstStartXTable, loopIndex);
     Value dstStartY =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, dstStartYs);
-    Value dstEndX = selectIndexByLoopIndex(rewriter, loc, loopIndex, dstEndXs);
-    Value dstEndY = selectIndexByLoopIndex(rewriter, loc, loopIndex, dstEndYs);
+        loadPipeTableEntry(rewriter, loc, dstStartYTable, loopIndex);
+    Value dstEndX =
+        loadPipeTableEntry(rewriter, loc, dstEndXTable, loopIndex);
+    Value dstEndY =
+        loadPipeTableEntry(rewriter, loc, dstEndYTable, loopIndex);
     Value senderSemIdx =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, senderSemIdxs);
+        loadPipeTableEntry(rewriter, loc, senderSemIdxTable, loopIndex);
     Value mailboxSemIdx =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, mailboxSemIdxs);
+        loadPipeTableEntry(rewriter, loc, mailboxSemIdxTable, loopIndex);
     Value selectedNumDests =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, numDests);
+        loadPipeTableEntry(rewriter, loc, numDestsTable, loopIndex);
     Value srcInDstRangeIdx =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, srcInDstRanges);
+        loadPipeTableEntry(rewriter, loc, srcInDstRangeTable, loopIndex);
     Value srcInDstRange = arith::CmpIOp::create(
         rewriter, loc, arith::CmpIPredicate::ne, srcInDstRangeIdx, lower);
 
@@ -204,6 +232,20 @@ struct PipeNetForeachDstLowering
     }
 
     Location loc = op.getLoc();
+    Value srcXTable = buildPipeIndexTable(rewriter, loc, srcXs);
+    Value srcYTable = buildPipeIndexTable(rewriter, loc, srcYs);
+    Value dstStartXTable = buildPipeIndexTable(rewriter, loc, dstStartXs);
+    Value dstStartYTable = buildPipeIndexTable(rewriter, loc, dstStartYs);
+    Value dstEndXTable = buildPipeIndexTable(rewriter, loc, dstEndXs);
+    Value dstEndYTable = buildPipeIndexTable(rewriter, loc, dstEndYs);
+    Value senderSemIdxTable =
+        buildPipeIndexTable(rewriter, loc, senderSemIdxs);
+    Value mailboxSemIdxTable =
+        buildPipeIndexTable(rewriter, loc, mailboxSemIdxs);
+    Value numDestsTable = buildPipeIndexTable(rewriter, loc, numDests);
+    Value srcInDstRangeTable =
+        buildPipeIndexTable(rewriter, loc, srcInDstRanges);
+
     Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value upper =
         arith::ConstantIndexOp::create(rewriter, loc, pipeTypes.size());
@@ -212,22 +254,24 @@ struct PipeNetForeachDstLowering
 
     rewriter.setInsertionPointToStart(forOp.getBody());
     Value loopIndex = forOp.getInductionVar();
-    Value srcX = selectIndexByLoopIndex(rewriter, loc, loopIndex, srcXs);
-    Value srcY = selectIndexByLoopIndex(rewriter, loc, loopIndex, srcYs);
+    Value srcX = loadPipeTableEntry(rewriter, loc, srcXTable, loopIndex);
+    Value srcY = loadPipeTableEntry(rewriter, loc, srcYTable, loopIndex);
     Value dstStartX =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, dstStartXs);
+        loadPipeTableEntry(rewriter, loc, dstStartXTable, loopIndex);
     Value dstStartY =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, dstStartYs);
-    Value dstEndX = selectIndexByLoopIndex(rewriter, loc, loopIndex, dstEndXs);
-    Value dstEndY = selectIndexByLoopIndex(rewriter, loc, loopIndex, dstEndYs);
+        loadPipeTableEntry(rewriter, loc, dstStartYTable, loopIndex);
+    Value dstEndX =
+        loadPipeTableEntry(rewriter, loc, dstEndXTable, loopIndex);
+    Value dstEndY =
+        loadPipeTableEntry(rewriter, loc, dstEndYTable, loopIndex);
     Value senderSemIdx =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, senderSemIdxs);
+        loadPipeTableEntry(rewriter, loc, senderSemIdxTable, loopIndex);
     Value mailboxSemIdx =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, mailboxSemIdxs);
+        loadPipeTableEntry(rewriter, loc, mailboxSemIdxTable, loopIndex);
     Value selectedNumDests =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, numDests);
+        loadPipeTableEntry(rewriter, loc, numDestsTable, loopIndex);
     Value srcInDstRangeIdx =
-        selectIndexByLoopIndex(rewriter, loc, loopIndex, srcInDstRanges);
+        loadPipeTableEntry(rewriter, loc, srcInDstRangeTable, loopIndex);
     Value srcInDstRange = arith::CmpIOp::create(
         rewriter, loc, arith::CmpIPredicate::ne, srcInDstRangeIdx, lower);
 
