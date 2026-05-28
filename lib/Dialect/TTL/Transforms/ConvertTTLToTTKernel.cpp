@@ -961,9 +961,9 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
                           "expansion");
     }
     if (*kind == TransferKind::read) {
-      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc());
+      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), Value());
     } else if (*kind == TransferKind::write) {
-      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc());
+      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), Value());
     } else {
       // Future-proofing: TransferKind is currently {read, write}, but fail
       // explicitly if it ever expands without updating the lowering.

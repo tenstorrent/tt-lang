@@ -27,9 +27,9 @@
 // CHECK:     auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:     TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG0]], [[ADDR]]);
 // CHECK-NEXT:     noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB]].get_write_ptr());
-// CHECK:     noc_async_read_barrier();
+// CHECK:     noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   }
-// CHECK:   noc_async_read_barrier();
+// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {
