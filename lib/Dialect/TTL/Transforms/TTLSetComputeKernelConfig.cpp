@@ -13,7 +13,6 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -105,62 +104,41 @@ static std::optional<int64_t> getF32FPUSrcCBIndex(Operation *op, Value operand,
   return getF32InputCBIndexForBlockArg(operand, computeOp);
 }
 
-/// Collect the CB indices that must be configured with `UnpackToDestFp32`
-/// because at least one SFPU-strategy tile op in the compute body reads an
-/// f32 input tile from that CB directly into DST.
+struct F32InputCBUsage {
+  llvm::SmallSetVector<int64_t, 4> sfpuCBs;
+  llvm::SmallDenseMap<int64_t, Operation *> fpuCBConsumers;
+};
+
+/// Collect f32 input CB usage in one compute body.
 ///
 /// FPU consumers (reduce, matmul, and FPU-eligible add/sub/mul) read via
-/// SRCA/SRCB and must remain in `Default` unpack mode; the two modes are
-/// mutually exclusive on a given CB. When a CB is consumed by both
-/// strategies the kernel cannot be configured without dropping f32
-/// precision for the SFPU consumer, so a hard error is reported instead of
-/// silently degrading precision.
-///
-/// Returns failure when a conflict is detected; the caller must propagate
-/// the failure (typically via `signalPassFailure`).
-static FailureOr<llvm::SmallSetVector<int64_t, 4>>
-collectF32SFPUInputCBs(ComputeOp computeOp) {
-  llvm::SmallSetVector<int64_t, 4> sfpuCBs;
-  llvm::SmallDenseMap<int64_t, Operation *> fpuCBs;
+/// SRCA/SRCB and must remain in `Default` unpack mode. SFPU consumers that read
+/// f32 directly into DST require `UnpackToDestFp32`. These modes are configured
+/// per kernel on the function, so conflicts must be diagnosed after aggregating
+/// usage across every ttl.compute in the func.func.
+static F32InputCBUsage collectF32InputCBUsage(ComputeOp computeOp) {
+  F32InputCBUsage usage;
 
   Block &body = computeOp.getRegion().front();
   for (Operation &op : body.without_terminator()) {
     for (Value operand : op.getOperands()) {
-      if (auto fpuIdx = getF32FPUSrcCBIndex(&op, operand, computeOp)) {
-        fpuCBs.insert({*fpuIdx, &op});
+      if (std::optional<int64_t> fpuIdx =
+              getF32FPUSrcCBIndex(&op, operand, computeOp)) {
+        usage.fpuCBConsumers.insert({*fpuIdx, &op});
       }
     }
     if (!wantsUnpackToDestFp32(&op)) {
       continue;
     }
     for (Value operand : op.getOperands()) {
-      auto cbIdx = getF32InputCBIndexForBlockArg(operand, computeOp);
-      if (!cbIdx) {
-        continue;
+      if (std::optional<int64_t> cbIdx =
+              getF32InputCBIndexForBlockArg(operand, computeOp)) {
+        usage.sfpuCBs.insert(*cbIdx);
       }
-      sfpuCBs.insert(*cbIdx);
     }
   }
 
-  bool failed = false;
-  for (int64_t cb : sfpuCBs) {
-    if (!fpuCBs.contains(cb)) {
-      continue;
-    }
-    fpuCBs[cb]->emitOpError()
-        << "f32 input from CB " << cb
-        << " is consumed by both FPU and SFPU strategies; the FPU consumer "
-           "requires default unpack mode while the SFPU consumer needs "
-           "UnpackToDestFp32, and the two modes are mutually exclusive on a "
-           "given CB. Split the source into separate CBs (one per strategy) "
-           "so the SFPU consumer keeps full f32 precision";
-    failed = true;
-  }
-  if (failed) {
-    return failure();
-  }
-
-  return sfpuCBs;
+  return usage;
 }
 
 struct TTLSetComputeKernelConfigPass
@@ -249,25 +227,42 @@ struct TTLSetComputeKernelConfigPass
     funcOp->setAttr(kEnableFPUBinaryOpsAttrName,
                     BoolAttr::get(funcOp.getContext(), enableFPUBinaryOps));
 
-    llvm::SmallSetVector<int64_t, 4> unpackFp32CBs;
-    WalkResult walkResult = funcOp->walk([&](ComputeOp computeOp) {
-      auto cbs = collectF32SFPUInputCBs(computeOp);
-      if (failed(cbs)) {
-        return WalkResult::interrupt();
+    llvm::SmallSetVector<int64_t, 4> kernelSFPUCBs;
+    llvm::SmallDenseMap<int64_t, Operation *> kernelFPUCBConsumers;
+    funcOp->walk([&](ComputeOp computeOp) {
+      const F32InputCBUsage usage = collectF32InputCBUsage(computeOp);
+      kernelSFPUCBs.insert_range(usage.sfpuCBs);
+      for (auto [cb, consumer] : usage.fpuCBConsumers) {
+        // Keep the first FPU consumer for stable diagnostics when multiple
+        // compute regions consume the same CB through the FPU path.
+        kernelFPUCBConsumers.insert({cb, consumer});
       }
-      for (int64_t cb : *cbs) {
-        unpackFp32CBs.insert(cb);
-      }
-      return WalkResult::advance();
     });
-    if (walkResult.wasInterrupted()) {
+
+    bool hasConflict = false;
+    for (int64_t cb : kernelSFPUCBs) {
+      Operation *fpuConsumer = kernelFPUCBConsumers.lookup(cb);
+      if (!fpuConsumer) {
+        continue;
+      }
+      fpuConsumer->emitOpError()
+          << "f32 input from CB " << cb
+          << " is consumed by both FPU and SFPU strategies in the same "
+             "kernel; the FPU consumer requires default unpack mode while "
+             "the SFPU consumer needs UnpackToDestFp32, and the two modes "
+             "are mutually exclusive on a given CB. Split the source into "
+             "separate CBs (one per strategy) so the SFPU consumer keeps "
+             "full f32 precision";
+      hasConflict = true;
+    }
+    if (hasConflict) {
       signalPassFailure();
       return;
     }
 
-    if (!unpackFp32CBs.empty() && !funcOp->hasAttr(kUnpackToDestFp32AttrName)) {
-      SmallVector<int64_t> sortedCBs(unpackFp32CBs.begin(),
-                                     unpackFp32CBs.end());
+    if (!kernelSFPUCBs.empty() && !funcOp->hasAttr(kUnpackToDestFp32AttrName)) {
+      SmallVector<int64_t> sortedCBs(kernelSFPUCBs.begin(),
+                                     kernelSFPUCBs.end());
       llvm::sort(sortedCBs);
       SmallVector<int32_t> sortedCBs32(sortedCBs.begin(), sortedCBs.end());
       funcOp->setAttr(kUnpackToDestFp32AttrName,

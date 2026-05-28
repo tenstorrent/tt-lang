@@ -810,7 +810,7 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     noc_kernel_idx = 0
-    kernel_bool_attrs = {
+    kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
             "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
@@ -834,13 +834,13 @@ def _compile_ttnn_kernel(
             config = ttnn.ComputeConfigDescriptor()
             if fp32_dest_acc_en is not None:
                 config.fp32_dest_acc_en = fp32_dest_acc_en
-            elif kernel_bool_attrs[name]["fp32_dest_acc_en"]:
+            elif kernel_config_attrs[name]["fp32_dest_acc_en"]:
                 config.fp32_dest_acc_en = True
             if dst_full_sync_en is not None:
                 config.dst_full_sync_en = dst_full_sync_en
-            elif kernel_bool_attrs[name]["dst_full_sync_en"]:
+            elif kernel_config_attrs[name]["dst_full_sync_en"]:
                 config.dst_full_sync_en = True
-            unpack_fp32_cbs = kernel_bool_attrs[name]["unpack_to_dest_fp32"]
+            unpack_fp32_cbs = kernel_config_attrs[name]["unpack_to_dest_fp32"]
             if unpack_fp32_cbs:
                 _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
             # Compute kernels run on TRISC threads
