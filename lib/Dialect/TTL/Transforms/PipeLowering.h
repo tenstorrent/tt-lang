@@ -97,6 +97,10 @@ public:
 /// limit checks.
 class PipeReadyCounterInfo {
 public:
+  /// Placeholder for pre-sized selected-resource slots; every slot is
+  /// overwritten with a factory-built counter before use.
+  PipeReadyCounterInfo() = default;
+
   /// Allocate a sender-ready counter from TTKernel local semaphore ids.
   static PipeReadyCounterInfo localSemaphore(int64_t senderReadyCounterSemIdx);
 
@@ -114,8 +118,8 @@ private:
   PipeReadyCounterInfo(PipeReadyCounterStorage storage, int64_t index)
       : storage(storage), index(index) {}
 
-  PipeReadyCounterStorage storage;
-  int64_t index;
+  PipeReadyCounterStorage storage = PipeReadyCounterStorage::LocalSemaphore;
+  int64_t index = -1;
 };
 
 struct PipeCompletionWaitInfo {
@@ -193,6 +197,8 @@ struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
+  llvm::MapVector<Operation *, SmallVector<PipeResourceInfo>>
+      selectedResources;
   /// Entry-block counter initializers are part of the resource plan so all
   /// computed-address sends sharing one allocation unit share one slot state.
   llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
