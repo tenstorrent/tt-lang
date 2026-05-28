@@ -141,15 +141,22 @@ mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
   auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
   int64_t tensorRank = tensorTy.getRank();
+  int64_t resultRank = resultTy.getRank();
 
   if (static_cast<int64_t>(getIndices().size()) != tensorRank) {
     return emitOpError() << "index count (" << getIndices().size()
                          << ") must match tensor rank (" << tensorRank << ")";
   }
 
-  if (resultTy.getRank() != tensorRank) {
-    return emitOpError() << "result rank (" << resultTy.getRank()
-                         << ") must match tensor rank (" << tensorRank << ")";
+  // Allow rank-reducing slices: the leading (tensorRank - resultRank) tensor
+  // dims are squeezed by scalar subscripts (enforced at the Python layer). The
+  // lowering maps CB iteration vars to the trailing dims and feeds each
+  // squeezed scalar index into the full-rank tile-coordinate linearization, so
+  // selecting a nonzero slot in a leading dim addresses the right sub-block.
+  if (resultRank > tensorRank) {
+    return emitOpError() << "result rank (" << resultRank
+                         << ") cannot exceed tensor rank (" << tensorRank
+                         << ")";
   }
 
   if (resultTy.getElementType() != tensorTy.getElementType()) {
