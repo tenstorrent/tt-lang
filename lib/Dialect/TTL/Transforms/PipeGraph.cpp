@@ -682,29 +682,74 @@ struct PipeTransferInfo {
   SmallVector<Operation *> transferCreateOps;
 };
 
+FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe) {
+  Value tracedPipe = traceUnrealizedCasts(pipe);
+  if (auto pipeType = mlir::dyn_cast<PipeType>(tracedPipe.getType())) {
+    return PipeReference{PipeReference::Kind::Static, tracedPipe, pipeType,
+                         SelectPipeSrcOp(), SelectPipeDstOp()};
+  }
+  if (auto selectedSrc = tracedPipe.getDefiningOp<SelectPipeSrcOp>()) {
+    return PipeReference{PipeReference::Kind::SelectedSrc, tracedPipe,
+                         PipeType(), selectedSrc, SelectPipeDstOp()};
+  }
+  if (auto selectedDst = tracedPipe.getDefiningOp<SelectPipeDstOp>()) {
+    return PipeReference{PipeReference::Kind::SelectedDst, tracedPipe,
+                         PipeType(), SelectPipeSrcOp(), selectedDst};
+  }
+  return op->emitError() << "selected pipe operand must be a direct result of "
+                            "ttl.select_pipe_src or ttl.select_pipe_dst";
+}
+
+SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
+                                                const PipeReference &ref) {
+  if (ref.isStatic()) {
+    return SmallVector<PipeType>{ref.pipeType};
+  }
+  SmallVector<PipeType> pipeTypes;
+  PipeNetRecordsAttr records = ref.getRecords();
+  pipeTypes.reserve(records.getPipes().size());
+  for (PipeRecordAttr record : records.getPipes()) {
+    pipeTypes.push_back(
+        getPipeTypeFromRecord(context, record, records.getPipeNetId()));
+  }
+  return pipeTypes;
+}
+
 static llvm::MapVector<PipeKey, PipeTransferInfo>
 collectPipeTransferInfo(ModuleOp mod) {
   llvm::MapVector<PipeKey, PipeTransferInfo> pipeInfo;
-  auto addTransfer = [&](PipeTransferCreateOp op) {
-    if (!op) {
-      return;
-    }
-    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
-    PipeTransferContract contract = getPipeTransferContract(op);
-    PipeKey key = getPipeKey(pipeType);
+  auto addPipe = [&](PipeKey key, PipeTransferContract contract,
+                     PipeTransferCreateOp createOp) {
     auto existing = pipeInfo.find(key);
     if (existing == pipeInfo.end()) {
-      pipeInfo.insert({key, PipeTransferInfo{contract, {op.getOperation()}}});
+      pipeInfo.insert(
+          {key, PipeTransferInfo{contract, {createOp.getOperation()}}});
       return;
     }
     if (!llvm::is_contained(existing->second.transferCreateOps,
-                            op.getOperation())) {
-      existing->second.transferCreateOps.push_back(op.getOperation());
+                            createOp.getOperation())) {
+      existing->second.transferCreateOps.push_back(createOp.getOperation());
     }
-    // Duplicate transfers for the same PipeKey can arise from cloned regions.
-    // Collective is the stronger contract and must be preserved.
     if (isCollectiveTransfer(contract)) {
       existing->second.transferContract = PipeTransferContract::Collective;
+    }
+  };
+  auto addTransfer = [&](PipeTransferCreateOp createOp) {
+    if (!createOp) {
+      return;
+    }
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(createOp, createOp.getPipe());
+    assert(succeeded(pipeRef) && "pipe transfer create verifier failed");
+    if ((*pipeRef).isStatic()) {
+      addPipe(getPipeKey((*pipeRef).pipeType),
+              getPipeTransferContract(createOp), createOp);
+      return;
+    }
+    PipeNetRecordsAttr records = (*pipeRef).getRecords();
+    for (PipeRecordAttr record : records.getPipes()) {
+      addPipe(getPipeKey(record, records.getPipeNetId()),
+              getPipeTransferContract(record), createOp);
     }
   };
   mod.walk([&](Operation *op) {
@@ -853,7 +898,7 @@ getReceiverSlotSpanBlocks(Value dst, CircularBufferType dfbType) {
 }
 
 static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
-                                     PipeType pipeType,
+                                     const PipeKey &pipe,
                                      PipeTransferContract transferContract,
                                      ArrayRef<Operation *> transferCreateOps,
                                      Value dst) {
@@ -891,9 +936,8 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
   assert(reserveOp && "reserve span computation already traced reserve op");
 
   return graph.addReceiverDFB(
-      pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
-      pipeType.getDstStartY(), pipeType.getDstEndX(), pipeType.getDstEndY(),
-      pipeType.getPipeNetId(), *dfbIndex, dfbType, hasStaticTileOffset,
+      pipe.srcX, pipe.srcY, pipe.dstStartX, pipe.dstStartY, pipe.dstEndX,
+      pipe.dstEndY, pipe.pipeNetId, *dfbIndex, dfbType, hasStaticTileOffset,
       staticTileOffset, *slotSpanBlocks, reserveOp.getOperation(),
       transferContract, transferCreateOps, dfbType.getBlockCount(),
       op->getLoc());
@@ -912,19 +956,27 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
           "ttl.pipe_transfer.create");
       return WalkResult::interrupt();
     }
-    auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-    PipeKey key = getPipeKey(pipeType);
-    auto pipeInfoIt = transferInfos.find(key);
-    if (pipeInfoIt == transferInfos.end()) {
-      postOp.emitError(
-          "pipe transfer post must reference a known pipe transfer");
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(postOp, createOp.getPipe());
+    if (failed(pipeRef)) {
       return WalkResult::interrupt();
     }
-    const PipeTransferInfo &pipeInfo = pipeInfoIt->second;
-    if (failed(addPipeReceiver(graph, postOp, pipeType,
-                               pipeInfo.transferContract,
-                               pipeInfo.transferCreateOps, postOp.getDst()))) {
-      return WalkResult::interrupt();
+    for (PipeType pipeType :
+         getPipeTypesFromReference(postOp.getContext(), *pipeRef)) {
+      PipeKey key = getPipeKey(pipeType);
+      auto pipeInfoIt = transferInfos.find(key);
+      if (pipeInfoIt == transferInfos.end()) {
+        postOp.emitError(
+            "pipe transfer post must reference a known pipe transfer");
+        return WalkResult::interrupt();
+      }
+      const PipeTransferInfo &pipeInfo = pipeInfoIt->second;
+      if (failed(addPipeReceiver(graph, postOp, key,
+                                 pipeInfo.transferContract,
+                                 pipeInfo.transferCreateOps,
+                                 postOp.getDst()))) {
+        return WalkResult::interrupt();
+      }
     }
     return WalkResult::advance();
   });

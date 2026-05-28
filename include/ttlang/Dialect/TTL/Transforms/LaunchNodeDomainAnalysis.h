@@ -105,6 +105,18 @@ bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
 
+/// Return the launch node containing the source endpoint of `record`.
+LaunchNodeDomain getPipeRecordSourceLaunchNodeDomain(PipeRecordAttr record);
+
+/// Return the launch nodes containing the destination endpoint range of
+/// `record`.
+LaunchNodeDomain
+getPipeRecordDestinationLaunchNodeDomain(PipeRecordAttr record);
+
+/// Return the source or destination launch nodes represented by all records.
+LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
+                                                    PipeRole role);
+
 /// Read the PipeNet ids selected by a `ttl.pipenet_scope`.
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp, SmallVectorImpl<int64_t> &ids);
 
@@ -137,6 +149,13 @@ struct LaunchNodeDomainState {
 
   /// Return the launch nodes that have `role` for the requested PipeNet.
   LaunchNodeDomain getRoleDomain(int64_t netId, PipeRole role) const;
+
+  /// Record one static pipe declaration into source and destination domains.
+  void recordPipeNet(PipeType pipeType, Location loc,
+                     std::optional<StringRef> name = std::nullopt);
+
+  /// Record pipe declarations carried by compact selected PipeNet records.
+  void recordPipeNetRecords(PipeNetRecordsAttr records, Location loc);
 
   /// Populate launch-grid and PipeNet role domains from the module.
   void initialize(ModuleOp module);
@@ -203,7 +222,8 @@ struct LaunchNodeDomainAnalysisOptions {
 /// structured control flow.
 ///
 /// Region branch transfers narrow domains for `scf.if`, `affine.if`,
-/// `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. Other operations carry
+/// `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_foreach_src`,
+/// `ttl.pipenet_foreach_dst`, and `ttl.pipenet_scope`. Other operations carry
 /// the incoming domain through unchanged.
 class LaunchNodeDomainAnalysis
     : public dataflow::DenseForwardDataFlowAnalysis<LaunchNodeDomainLattice> {
