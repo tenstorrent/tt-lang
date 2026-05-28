@@ -1282,10 +1282,10 @@ class TTLGenericCompiler(TTCompilerBase):
             method_name = context_expr.func.attr
             cb_node = context_expr.func.value
 
-            if method_name not in ("reserve", "wait"):
+            if method_name not in ("reserve", "wait", "peek"):
                 self._raise_error(
                     context_expr,
-                    f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'",
+                    f"'with' only supports 'reserve()', 'wait()', or 'peek()', got '{method_name}'",
                 )
 
             if not isinstance(cb_node, ast.Name):
@@ -1299,7 +1299,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(cb_node, f"'{cb_node.id}' not found in scope")
             cb_val = cb_table[cb_node.id]
 
-            # Get tensor type from CB for reserve/wait result
+            # Get tensor type from CB for reserve/wait/peek result
             tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
             if method_name == "reserve":
                 tensor = self._emit_op_signposts(
@@ -1308,13 +1308,19 @@ class TTLGenericCompiler(TTCompilerBase):
                     lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv),
                 )
                 releases.append(("cb_push", ttl.cb_push, cb_val, context_expr))
-            else:  # wait
+            elif method_name == "wait":
                 tensor = self._emit_op_signposts(
                     "cb_wait",
                     context_expr,
                     lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv),
                 )
                 releases.append(("cb_pop", ttl.cb_pop, cb_val, context_expr))
+            else:  # peek -- wait without releasing the slot
+                tensor = self._emit_op_signposts(
+                    "cb_wait",
+                    context_expr,
+                    lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv),
+                )
 
             # Attach CB to tensor so store() can find the CB association
             acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)

@@ -81,16 +81,39 @@ class DataflowBuffer:
         """
         Wait for data from the dataflow buffer (consumer acquire).
 
-        Use in consumer threads to acquire data. Must be followed by pop()
-        to signal consumption is complete.
+        Use in consumer threads to acquire data. Emits cb_pop when the
+        with-block exits, returning the slot to the producer.
+        Use peek() instead when the same block must be read more than once.
 
         Returns:
             TensorBlock: The acquired data with DFB association.
 
         Example:
-            block = dfb.wait()
-            result = compute(block)
-            block.pop()
+            with dfb.wait() as block:
+                result = compute(block)
+        """
+        tensor_type = _get_cb_tensor_type(ast_self)
+        tensor = ttl.cb_wait(tensor_type, ast_self)
+        return ttl.attach_cb(tensor.type, tensor, ast_self)
+
+    def peek(ast_self: "DataflowBuffer") -> "TensorBlock":
+        """
+        Wait for data from the dataflow buffer without releasing the slot.
+
+        Like wait(), but no cb_pop is emitted when the with-block exits.
+        Use this when the same block must be read more than once before
+        signalling consumption to the producer (e.g., reduce first, then
+        element-wise scale). The caller is responsible for eventually
+        calling pop() once all reads are complete.
+
+        Returns:
+            TensorBlock: The acquired data with DFB association.
+
+        Example:
+            with dfb.peek() as block:
+                scalar = ttl.reduce(block, ...)   # first pass
+            with dfb.wait() as block:             # second pass + auto pop
+                result = ttl.mul(block, scalar)
         """
         tensor_type = _get_cb_tensor_type(ast_self)
         tensor = ttl.cb_wait(tensor_type, ast_self)
