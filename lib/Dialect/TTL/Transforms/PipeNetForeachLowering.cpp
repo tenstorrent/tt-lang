@@ -77,6 +77,95 @@ static void cloneForeachBody(ForeachOp foreachOp, Value selectedPipe,
   }
 }
 
+/// Per-pipe scalar fields the foreach lowering needs: coords, semaphore
+/// indices, num_dests, and srcInDstRange (as 0/1). Kept as parallel
+/// SmallVectors so they map directly to one stack table each.
+struct PipeForeachFields {
+  SmallVector<int64_t> srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY;
+  SmallVector<int64_t> senderSemIdx, mailboxSemIdx, numDests, srcInDstRange;
+
+  void append(PipeType pipeType, const PipeChannelLayout &layout) {
+    srcX.push_back(pipeType.getSrcX());
+    srcY.push_back(pipeType.getSrcY());
+    dstStartX.push_back(pipeType.getDstStartX());
+    dstStartY.push_back(pipeType.getDstStartY());
+    dstEndX.push_back(pipeType.getDstEndX());
+    dstEndY.push_back(pipeType.getDstEndY());
+    senderSemIdx.push_back(layout.senderReadySemIdx);
+    mailboxSemIdx.push_back(layout.mailboxSemIdxBase);
+    numDests.push_back(pipeType.getNumDests());
+    srcInDstRange.push_back(pipeType.srcInDstRange() ? 1 : 0);
+  }
+};
+
+/// `scf.for` and the `SelectPipe*Op` it materializes per iteration. Each
+/// pattern still owns the role-specific coord predicate and body cloning.
+template <typename SelectOp> struct PipeForeachShell {
+  scf::ForOp forOp;
+  SelectOp selectedPipe;
+};
+
+/// Gather fields, build per-field stack tables, emit the foreach `scf.for`,
+/// emit per-iteration loads + the matching `SelectOp`. Insertion point on
+/// return is at the start of `forOp.getBody()`, after the SelectOp.
+template <typename SelectOp, typename SelectedType>
+static FailureOr<PipeForeachShell<SelectOp>>
+buildPipeForeachShell(Operation *op, ArrayRef<PipeType> pipeTypes,
+                      bool isMulticast, int64_t pipeNetId,
+                      const PipeRuntimeLayout *runtime,
+                      ConversionPatternRewriter &rewriter) {
+  PipeForeachFields f;
+  for (PipeType pipeType : pipeTypes) {
+    FailureOr<PipeChannelLayout> layout =
+        lookupPipeChannelLayout(op, pipeType, runtime);
+    if (failed(layout)) {
+      return failure();
+    }
+    f.append(pipeType, *layout);
+  }
+
+  Location loc = op->getLoc();
+  // Per-field stack tables built once before the loop. Loop body becomes
+  // one memref.load per field instead of an N-deep arith.select chain.
+  Value srcXT = buildPipeIndexTable(rewriter, loc, f.srcX);
+  Value srcYT = buildPipeIndexTable(rewriter, loc, f.srcY);
+  Value dstStartXT = buildPipeIndexTable(rewriter, loc, f.dstStartX);
+  Value dstStartYT = buildPipeIndexTable(rewriter, loc, f.dstStartY);
+  Value dstEndXT = buildPipeIndexTable(rewriter, loc, f.dstEndX);
+  Value dstEndYT = buildPipeIndexTable(rewriter, loc, f.dstEndY);
+  Value senderSemIdxT = buildPipeIndexTable(rewriter, loc, f.senderSemIdx);
+  Value mailboxSemIdxT = buildPipeIndexTable(rewriter, loc, f.mailboxSemIdx);
+  Value numDestsT = buildPipeIndexTable(rewriter, loc, f.numDests);
+  Value srcInDstRangeT = buildPipeIndexTable(rewriter, loc, f.srcInDstRange);
+
+  Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value upper =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeTypes.size());
+  Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
+
+  rewriter.setInsertionPointToStart(forOp.getBody());
+  Value iv = forOp.getInductionVar();
+  Value srcInDstRangeIdx = loadPipeTableEntry(rewriter, loc, srcInDstRangeT, iv);
+  Value srcInDstRangeI1 = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ne, srcInDstRangeIdx, lower);
+  auto selectedPipe = SelectOp::create(
+      rewriter, loc, SelectedType::get(op->getContext()),
+      loadPipeTableEntry(rewriter, loc, srcXT, iv),
+      loadPipeTableEntry(rewriter, loc, srcYT, iv),
+      loadPipeTableEntry(rewriter, loc, dstStartXT, iv),
+      loadPipeTableEntry(rewriter, loc, dstStartYT, iv),
+      loadPipeTableEntry(rewriter, loc, dstEndXT, iv),
+      loadPipeTableEntry(rewriter, loc, dstEndYT, iv),
+      loadPipeTableEntry(rewriter, loc, numDestsT, iv),
+      loadPipeTableEntry(rewriter, loc, senderSemIdxT, iv),
+      loadPipeTableEntry(rewriter, loc, mailboxSemIdxT, iv), srcInDstRangeI1,
+      rewriter.getBoolAttr(isMulticast),
+      rewriter.getI64IntegerAttr(pipeNetId));
+
+  return PipeForeachShell<SelectOp>{forOp, selectedPipe};
+}
+
 template <typename ForeachOp>
 struct PipeNetForeachLoweringBase : OpConversionPattern<ForeachOp> {
   PipeNetForeachLoweringBase(const TypeConverter &typeConverter,
@@ -85,15 +174,14 @@ struct PipeNetForeachLoweringBase : OpConversionPattern<ForeachOp> {
       : OpConversionPattern<ForeachOp>(typeConverter, context),
         pipeRuntimeLayout(layout) {}
   const PipeRuntimeLayout *pipeRuntimeLayout;
-};
 
-struct PipeNetForeachSrcLowering
-    : PipeNetForeachLoweringBase<PipeNetForeachSrcOp> {
-  using PipeNetForeachLoweringBase::PipeNetForeachLoweringBase;
-
-  LogicalResult
-  matchAndRewrite(PipeNetForeachSrcOp op, OpAdaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  /// Gather per-pipe types, build the foreach loop shell, and inline the
+  /// body under the role-specific coord predicate. `buildPredicate` reads
+  /// per-iteration coords off the materialized SelectOp and returns an i1
+  /// "execute this iteration on this node" value.
+  template <typename SelectOp, typename SelectedType, typename PredicateFn>
+  LogicalResult lowerForeach(ForeachOp op, ConversionPatternRewriter &rewriter,
+                             PredicateFn &&buildPredicate) const {
     PipeNetRecordsAttr records = op.getRecords();
     SmallVector<PipeType> pipeTypes = getForeachPipeTypes(
         op.getContext(), records.getPipeNetId(), records.getPipes());
@@ -103,95 +191,47 @@ struct PipeNetForeachSrcLowering
     bool isMulticast =
         mlir::cast<PipeRecordAttr>(records.getPipes()[0]).getIsMulticast();
 
-    SmallVector<int64_t> srcXs, srcYs, dstStartXs, dstStartYs, dstEndXs,
-        dstEndYs, senderSemIdxs, mailboxSemIdxs, numDests, srcInDstRanges;
-    for (PipeType pipeType : pipeTypes) {
-      FailureOr<PipeChannelLayout> layout =
-          lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
-      if (failed(layout)) {
-        return failure();
-      }
-      srcXs.push_back(pipeType.getSrcX());
-      srcYs.push_back(pipeType.getSrcY());
-      dstStartXs.push_back(pipeType.getDstStartX());
-      dstStartYs.push_back(pipeType.getDstStartY());
-      dstEndXs.push_back(pipeType.getDstEndX());
-      dstEndYs.push_back(pipeType.getDstEndY());
-      senderSemIdxs.push_back(layout->senderReadySemIdx);
-      mailboxSemIdxs.push_back(layout->mailboxSemIdxBase);
-      numDests.push_back(pipeType.getNumDests());
-      srcInDstRanges.push_back(pipeType.srcInDstRange() ? 1 : 0);
+    FailureOr<PipeForeachShell<SelectOp>> shellOr =
+        buildPipeForeachShell<SelectOp, SelectedType>(
+            op, pipeTypes, isMulticast, records.getPipeNetId(),
+            this->pipeRuntimeLayout, rewriter);
+    if (failed(shellOr)) {
+      return failure();
     }
+    PipeForeachShell<SelectOp> &shell = *shellOr;
 
     Location loc = op.getLoc();
-    // Build per-field stack tables before entering the loop; each per-iter
-    // access becomes one memref.load instead of an N-deep select chain.
-    Value srcXTable = buildPipeIndexTable(rewriter, loc, srcXs);
-    Value srcYTable = buildPipeIndexTable(rewriter, loc, srcYs);
-    Value dstStartXTable = buildPipeIndexTable(rewriter, loc, dstStartXs);
-    Value dstStartYTable = buildPipeIndexTable(rewriter, loc, dstStartYs);
-    Value dstEndXTable = buildPipeIndexTable(rewriter, loc, dstEndXs);
-    Value dstEndYTable = buildPipeIndexTable(rewriter, loc, dstEndYs);
-    Value senderSemIdxTable =
-        buildPipeIndexTable(rewriter, loc, senderSemIdxs);
-    Value mailboxSemIdxTable =
-        buildPipeIndexTable(rewriter, loc, mailboxSemIdxs);
-    Value numDestsTable = buildPipeIndexTable(rewriter, loc, numDests);
-    Value srcInDstRangeTable =
-        buildPipeIndexTable(rewriter, loc, srcInDstRanges);
-
-    Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value upper =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeTypes.size());
-    Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
-
-    rewriter.setInsertionPointToStart(forOp.getBody());
-    Value loopIndex = forOp.getInductionVar();
-    Value srcX = loadPipeTableEntry(rewriter, loc, srcXTable, loopIndex);
-    Value srcY = loadPipeTableEntry(rewriter, loc, srcYTable, loopIndex);
-    Value dstStartX =
-        loadPipeTableEntry(rewriter, loc, dstStartXTable, loopIndex);
-    Value dstStartY =
-        loadPipeTableEntry(rewriter, loc, dstStartYTable, loopIndex);
-    Value dstEndX =
-        loadPipeTableEntry(rewriter, loc, dstEndXTable, loopIndex);
-    Value dstEndY =
-        loadPipeTableEntry(rewriter, loc, dstEndYTable, loopIndex);
-    Value senderSemIdx =
-        loadPipeTableEntry(rewriter, loc, senderSemIdxTable, loopIndex);
-    Value mailboxSemIdx =
-        loadPipeTableEntry(rewriter, loc, mailboxSemIdxTable, loopIndex);
-    Value selectedNumDests =
-        loadPipeTableEntry(rewriter, loc, numDestsTable, loopIndex);
-    Value srcInDstRangeIdx =
-        loadPipeTableEntry(rewriter, loc, srcInDstRangeTable, loopIndex);
-    Value srcInDstRange = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ne, srcInDstRangeIdx, lower);
-
-    auto selectedPipe = SelectPipeSrcOp::create(
-        rewriter, loc, SelectedPipeSrcType::get(op.getContext()), srcX, srcY,
-        dstStartX, dstStartY, dstEndX, dstEndY, selectedNumDests, senderSemIdx,
-        mailboxSemIdx, srcInDstRange, rewriter.getBoolAttr(isMulticast),
-        rewriter.getI64IntegerAttr(records.getPipeNetId()));
-
-    auto nodeX =
-        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
-    auto nodeY =
-        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
-    Value xMatches = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::eq, nodeX, srcX);
-    Value yMatches = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::eq, nodeY, srcY);
-    Value isSource = arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
-
-    auto ifOp = scf::IfOp::create(rewriter, loc, isSource,
+    Value predicate = buildPredicate(rewriter, loc, shell.selectedPipe);
+    auto ifOp = scf::IfOp::create(rewriter, loc, predicate,
                                   /*withElseRegion=*/false);
     rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    cloneForeachBody(op, selectedPipe.getPipe(), rewriter);
-    rewriter.setInsertionPointAfter(forOp);
+    cloneForeachBody(op, shell.selectedPipe.getPipe(), rewriter);
+    rewriter.setInsertionPointAfter(shell.forOp);
     rewriter.eraseOp(op);
     return success();
+  }
+};
+
+struct PipeNetForeachSrcLowering
+    : PipeNetForeachLoweringBase<PipeNetForeachSrcOp> {
+  using PipeNetForeachLoweringBase::PipeNetForeachLoweringBase;
+
+  LogicalResult
+  matchAndRewrite(PipeNetForeachSrcOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerForeach<SelectPipeSrcOp, SelectedPipeSrcType>(
+        op, rewriter,
+        [](OpBuilder &b, Location loc, SelectPipeSrcOp selectedPipe) {
+          Value nodeX =
+              ttk::MyLogicalXOp::create(b, loc, b.getIndexType());
+          Value nodeY =
+              ttk::MyLogicalYOp::create(b, loc, b.getIndexType());
+          Value xMatches = arith::CmpIOp::create(
+              b, loc, arith::CmpIPredicate::eq, nodeX, selectedPipe.getSrcX());
+          Value yMatches = arith::CmpIOp::create(
+              b, loc, arith::CmpIPredicate::eq, nodeY, selectedPipe.getSrcY());
+          return arith::AndIOp::create(b, loc, xMatches, yMatches).getResult();
+        });
   }
 };
 
@@ -202,109 +242,29 @@ struct PipeNetForeachDstLowering
   LogicalResult
   matchAndRewrite(PipeNetForeachDstOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    PipeNetRecordsAttr records = op.getRecords();
-    SmallVector<PipeType> pipeTypes = getForeachPipeTypes(
-        op.getContext(), records.getPipeNetId(), records.getPipes());
-    if (pipeTypes.empty()) {
-      return rewriter.notifyMatchFailure(op, "empty PipeNet record list");
-    }
-    bool isMulticast =
-        mlir::cast<PipeRecordAttr>(records.getPipes()[0]).getIsMulticast();
-
-    SmallVector<int64_t> srcXs, srcYs, dstStartXs, dstStartYs, dstEndXs,
-        dstEndYs, senderSemIdxs, mailboxSemIdxs, numDests, srcInDstRanges;
-    for (PipeType pipeType : pipeTypes) {
-      FailureOr<PipeChannelLayout> layout =
-          lookupPipeChannelLayout(op, pipeType, pipeRuntimeLayout);
-      if (failed(layout)) {
-        return failure();
-      }
-      srcXs.push_back(pipeType.getSrcX());
-      srcYs.push_back(pipeType.getSrcY());
-      dstStartXs.push_back(pipeType.getDstStartX());
-      dstStartYs.push_back(pipeType.getDstStartY());
-      dstEndXs.push_back(pipeType.getDstEndX());
-      dstEndYs.push_back(pipeType.getDstEndY());
-      senderSemIdxs.push_back(layout->senderReadySemIdx);
-      mailboxSemIdxs.push_back(layout->mailboxSemIdxBase);
-      numDests.push_back(pipeType.getNumDests());
-      srcInDstRanges.push_back(pipeType.srcInDstRange() ? 1 : 0);
-    }
-
-    Location loc = op.getLoc();
-    Value srcXTable = buildPipeIndexTable(rewriter, loc, srcXs);
-    Value srcYTable = buildPipeIndexTable(rewriter, loc, srcYs);
-    Value dstStartXTable = buildPipeIndexTable(rewriter, loc, dstStartXs);
-    Value dstStartYTable = buildPipeIndexTable(rewriter, loc, dstStartYs);
-    Value dstEndXTable = buildPipeIndexTable(rewriter, loc, dstEndXs);
-    Value dstEndYTable = buildPipeIndexTable(rewriter, loc, dstEndYs);
-    Value senderSemIdxTable =
-        buildPipeIndexTable(rewriter, loc, senderSemIdxs);
-    Value mailboxSemIdxTable =
-        buildPipeIndexTable(rewriter, loc, mailboxSemIdxs);
-    Value numDestsTable = buildPipeIndexTable(rewriter, loc, numDests);
-    Value srcInDstRangeTable =
-        buildPipeIndexTable(rewriter, loc, srcInDstRanges);
-
-    Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value upper =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeTypes.size());
-    Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
-
-    rewriter.setInsertionPointToStart(forOp.getBody());
-    Value loopIndex = forOp.getInductionVar();
-    Value srcX = loadPipeTableEntry(rewriter, loc, srcXTable, loopIndex);
-    Value srcY = loadPipeTableEntry(rewriter, loc, srcYTable, loopIndex);
-    Value dstStartX =
-        loadPipeTableEntry(rewriter, loc, dstStartXTable, loopIndex);
-    Value dstStartY =
-        loadPipeTableEntry(rewriter, loc, dstStartYTable, loopIndex);
-    Value dstEndX =
-        loadPipeTableEntry(rewriter, loc, dstEndXTable, loopIndex);
-    Value dstEndY =
-        loadPipeTableEntry(rewriter, loc, dstEndYTable, loopIndex);
-    Value senderSemIdx =
-        loadPipeTableEntry(rewriter, loc, senderSemIdxTable, loopIndex);
-    Value mailboxSemIdx =
-        loadPipeTableEntry(rewriter, loc, mailboxSemIdxTable, loopIndex);
-    Value selectedNumDests =
-        loadPipeTableEntry(rewriter, loc, numDestsTable, loopIndex);
-    Value srcInDstRangeIdx =
-        loadPipeTableEntry(rewriter, loc, srcInDstRangeTable, loopIndex);
-    Value srcInDstRange = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ne, srcInDstRangeIdx, lower);
-
-    auto selectedPipe = SelectPipeDstOp::create(
-        rewriter, loc, SelectedPipeDstType::get(op.getContext()), srcX, srcY,
-        dstStartX, dstStartY, dstEndX, dstEndY, selectedNumDests, senderSemIdx,
-        mailboxSemIdx, srcInDstRange, rewriter.getBoolAttr(isMulticast),
-        rewriter.getI64IntegerAttr(records.getPipeNetId()));
-
-    auto nodeX =
-        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
-    auto nodeY =
-        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
-    Value xAtStart = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::sge, nodeX, dstStartX);
-    Value xAtEnd = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::sle, nodeX, dstEndX);
-    Value yAtStart = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::sge, nodeY, dstStartY);
-    Value yAtEnd = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::sle, nodeY, dstEndY);
-    Value xInRange = arith::AndIOp::create(rewriter, loc, xAtStart, xAtEnd);
-    Value yInRange = arith::AndIOp::create(rewriter, loc, yAtStart, yAtEnd);
-    Value isDestination =
-        arith::AndIOp::create(rewriter, loc, xInRange, yInRange);
-
-    auto ifOp = scf::IfOp::create(rewriter, loc, isDestination,
-                                  /*withElseRegion=*/false);
-    rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    cloneForeachBody(op, selectedPipe.getPipe(), rewriter);
-    rewriter.setInsertionPointAfter(forOp);
-    rewriter.eraseOp(op);
-    return success();
+    return lowerForeach<SelectPipeDstOp, SelectedPipeDstType>(
+        op, rewriter,
+        [](OpBuilder &b, Location loc, SelectPipeDstOp selectedPipe) {
+          Value nodeX =
+              ttk::MyLogicalXOp::create(b, loc, b.getIndexType());
+          Value nodeY =
+              ttk::MyLogicalYOp::create(b, loc, b.getIndexType());
+          Value xAtStart = arith::CmpIOp::create(
+              b, loc, arith::CmpIPredicate::sge, nodeX,
+              selectedPipe.getDstStartX());
+          Value xAtEnd = arith::CmpIOp::create(
+              b, loc, arith::CmpIPredicate::sle, nodeX,
+              selectedPipe.getDstEndX());
+          Value yAtStart = arith::CmpIOp::create(
+              b, loc, arith::CmpIPredicate::sge, nodeY,
+              selectedPipe.getDstStartY());
+          Value yAtEnd = arith::CmpIOp::create(
+              b, loc, arith::CmpIPredicate::sle, nodeY,
+              selectedPipe.getDstEndY());
+          Value xInRange = arith::AndIOp::create(b, loc, xAtStart, xAtEnd);
+          Value yInRange = arith::AndIOp::create(b, loc, yAtStart, yAtEnd);
+          return arith::AndIOp::create(b, loc, xInRange, yInRange).getResult();
+        });
   }
 };
 
