@@ -253,7 +253,7 @@ func.func @explicit_pipe_transfer_ir() attributes { "ttl.kernel_thread" = #ttker
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %transfer_init = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer_init = ttl.pipe_transfer.create %p {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
   %transfer = scf.for %iter = %zero to %one step %one iter_args(%transfer_arg = %transfer_init)
       -> (!ttl.pipe_transfer) {
@@ -681,7 +681,7 @@ func.func @independent_receivers_same_dfb_compute_addresses() attributes { "ttl.
 func.func @explicit_pipe_transfer_receive_only() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer = ttl.pipe_transfer.create %p {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
   // Preserve receiver-published lowering while testing an unused post token.
   %local = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -948,7 +948,7 @@ func.func @same_source_control_flow_interval_uses_distinct_sync_state() attribut
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>
   %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %p1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
-  %transfer0 = ttl.pipe_transfer.create %p0 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer0 = ttl.pipe_transfer.create %p0 {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
   %recv0_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<2x1x!ttcore.tile<32x32, f32>>
   %recv0 = tensor.extract_slice %recv0_full[1, 0] [1, 1] [1, 1]
@@ -963,7 +963,7 @@ func.func @same_source_control_flow_interval_uses_distinct_sync_state() attribut
   %send0 = ttl.pipe_transfer.send %transfer0, %src_cb
       : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
   ttl.wait %send0 : !ttl.transfer_handle<write>
-  %transfer1 = ttl.pipe_transfer.create %p1 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer1 = ttl.pipe_transfer.create %p1 {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
   %recv1_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<2x1x!ttcore.tile<32x32, f32>>
   %recv1 = tensor.extract_slice %recv1_full[1, 0] [1, 1] [1, 1]
@@ -1003,7 +1003,7 @@ func.func @same_source_control_flow_send_interval_uses_distinct_sync_state() att
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>
   %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %p1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
-  %transfer0 = ttl.pipe_transfer.create %p0 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer0 = ttl.pipe_transfer.create %p0 {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
   %recv0_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<2x1x!ttcore.tile<32x32, f32>>
   %recv0 = tensor.extract_slice %recv0_full[1, 0] [1, 1] [1, 1]
@@ -1020,7 +1020,7 @@ func.func @same_source_control_flow_send_interval_uses_distinct_sync_state() att
     ttl.wait %else_send : !ttl.transfer_handle<write>
   }
   ttl.pipe_transfer.wait %token0 : !ttl.pipe_token<net 0>
-  %transfer1 = ttl.pipe_transfer.create %p1 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer1 = ttl.pipe_transfer.create %p1 {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
   %recv1_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<2x1x!ttcore.tile<32x32, f32>>
   %recv1 = tensor.extract_slice %recv1_full[1, 0] [1, 1] [1, 1]
@@ -1030,6 +1030,47 @@ func.func @same_source_control_flow_send_interval_uses_distinct_sync_state() att
   %send1 = ttl.pipe_transfer.send %transfer1, %src_cb
       : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
   ttl.wait %send1 : !ttl.transfer_handle<write>
+  ttl.pipe_transfer.wait %token1 : !ttl.pipe_token<net 0>
+  ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
+// A transfer with a receive post but no send has no bounded post-to-send
+// interval, so it conservatively conflicts with later same-source transfers.
+// CHECK-LABEL: func.func @same_source_missing_send_interval_uses_distinct_sync_state
+// CHECK-DAG: %[[P0_READY_IDX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[P1_READY_IDX:.*]] = arith.constant 2 : index
+// CHECK: ttkernel.get_semaphore(%[[P0_READY_IDX]])
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
+// CHECK: ttkernel.experimental.semaphore_wait
+func.func @same_source_missing_send_interval_uses_distinct_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>
+  %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
+  %transfer0 = ttl.pipe_transfer.create %p0 {kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+  %recv0_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<2x1x!ttcore.tile<32x32, f32>>
+  %recv0 = tensor.extract_slice %recv0_full[1, 0] [1, 1] [1, 1]
+      : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token0 = ttl.pipe_transfer.post %transfer0, %recv0
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+  %transfer1 = ttl.pipe_transfer.create %p1 {kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
+  %recv1_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<2x1x!ttcore.tile<32x32, f32>>
+  %recv1 = tensor.extract_slice %recv1_full[1, 0] [1, 1] [1, 1]
+      : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token1 = ttl.pipe_transfer.post %transfer1, %recv1
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+  %send1 = ttl.pipe_transfer.send %transfer1, %src_cb
+      : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  ttl.pipe_transfer.wait %token0 : !ttl.pipe_token<net 0>
   ttl.pipe_transfer.wait %token1 : !ttl.pipe_token<net 0>
   ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 2>
   func.return

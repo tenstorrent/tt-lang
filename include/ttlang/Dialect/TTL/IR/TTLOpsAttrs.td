@@ -8,6 +8,7 @@
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLAttrInterfaces.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
+include "mlir/IR/AttrTypeBase.td"
 
 //===----------------------------------------------------------------------===//
 // TTL attribute definitions
@@ -236,6 +237,55 @@ def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
                        " `memory` `=` $memoryLayout `>`";
 
   let genVerifyDecl = 1;
+}
+
+def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
+  let summary = "Static PipeNet pipe record";
+  let description = [{
+    Encodes one static PipeNet record for PipeNet foreach ops. The owning
+    `#ttl.pipenet_records` attribute carries the PipeNet id; each record
+    carries source and destination coordinates plus the user-level destination
+    kind.
+
+    `isMulticast` is a frontend-supplied flag, not derived from coordinates:
+    `slice(i, i + 1)` is a singleton collective record with one destination
+    node, but it must preserve the PipeNet-level collective contract.
+  }];
+
+  let parameters = (ins
+    "int64_t":$srcX,
+    "int64_t":$srcY,
+    "int64_t":$dstStartX,
+    "int64_t":$dstStartY,
+    "int64_t":$dstEndX,
+    "int64_t":$dstEndY,
+    DefaultValuedParameter<"bool", "false">:$isMulticast
+  );
+
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
+  let summary = "Identifies a PipeNet and carries its static pipe records";
+  let description = [{
+    Identifies a PipeNet by id and carries the ordered list of
+    `#ttl.pipe_record` attributes that make up the net. PipeNet foreach ops use
+    this attribute to represent callback iteration without materializing one
+    source-level op per record.
+
+    `pipes` is in user PipeNet construction order; foreach lowering preserves
+    that order for launch nodes that match multiple records.
+  }];
+
+  let parameters = (ins
+    "int64_t":$pipeNetId,
+    OptionalParameter<"::mlir::StringAttr">:$pipeNetName,
+    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+  );
+
+  let assemblyFormat = "`<` `net` $pipeNetId (`name` $pipeNetName^)? "
+                       "`pipes` `[` $pipes `]` `>`";
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_TD

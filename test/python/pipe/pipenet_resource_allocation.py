@@ -4,7 +4,7 @@
 
 # REQUIRES: ttnn, tt-device
 #
-# RUN: env TTLANG_FINAL_MLIR=%t.final.mlir timeout 180 %python %s > %t.output 2>&1
+# RUN: env TTLANG_FINAL_MLIR=%t.final.mlir timeout 240 %python %s > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=FINAL < %t.final.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: FileCheck %s --check-prefix=RUNTIME < %t.output
@@ -16,8 +16,8 @@ https://github.com/tenstorrent/tt-lang/issues/625. The report stated that
 either PipeNet delivery route alone completed, while enabling both routes
 deadlocked.
 
-The runtime RUN uses GRID_DIM=2, the original small issue-625 reproducer. It
-keeps the same row/column/helper PipeNet structure, both-route semantics,
+The runtime RUN uses GRID_DIM=7 to cover the issue-628 code-size reproducer.
+It keeps the same row/column/helper PipeNet structure, both-route semantics,
 float32 tensors, and compute-side DFB waits. It fixes the schedule by posting
 loopback receives before sending and by popping send DFB blocks before reusing
 them. Each node writes one result tile per K-pair, which verifies both
@@ -30,10 +30,7 @@ constant:
 
 The output is an OUTPUT_K_PAIRS*GRID_DIM x (GRID_DIM+1) tile grid. Each output
 tile is the sum of the row-route tile and column-route tile received by that
-node. For the runtime GRID_DIM=2 run, the expected output tile values are:
-
-  4 6 2
-  4 8 6
+node. make_expected_output computes the full GRID_DIM=7 expected tensor.
 """
 
 import contextlib  # noqa: E402
@@ -47,9 +44,7 @@ import ttl  # noqa: E402
 from ttlang_test_utils import assert_allclose, to_dram  # noqa: E402
 
 TILE = 32
-# TODO(#628): increase toward 7 after PipeNet data-movement lowering stops
-# duplicating transfer bodies per participating coordinate.
-GRID_DIM = 2
+GRID_DIM = 7
 
 
 def get_transfer_k_tiles(grid_dim):
@@ -328,6 +323,7 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # CHECK-CPP: get_semaphore([[READY]])
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait
+# CHECK-CPP: noc0.async_write_multicast
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc_semaphore_inc
 #

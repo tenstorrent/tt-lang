@@ -30,8 +30,12 @@ DeviceRangeAttr = ir.DeviceRangeAttr
 DeviceRefAttr = ir.DeviceRefAttr
 DeviceTransferAttr = ir.DeviceTransferAttr
 TransferEdgeAttr = ir.TransferEdgeAttr
+PipeRecordAttr = ir.PipeRecordAttr
+PipeNetRecordsAttr = ir.PipeNetRecordsAttr
 CircularBufferType = ir.CircularBufferType
 PipeType = ir.PipeType
+SelectedPipeSrcType = ir.SelectedPipeSrcType
+SelectedPipeDstType = ir.SelectedPipeDstType
 
 __all__ = [  # noqa: F405
     *[name for name in globals().keys() if not name.startswith("_")],

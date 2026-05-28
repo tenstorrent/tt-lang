@@ -177,6 +177,9 @@ struct PipeResourcePlan {
   /// Maps each pipe send, receiver post, and receiver wait to the resources
   /// shared by that transfer definition.
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
+  /// Per-record resources for protocol operations over selected PipeNets.
+  llvm::MapVector<Operation *, SmallVector<PipeResourceInfo>>
+      selectedResources;
   /// Protocol operations proven unreachable at their pipe endpoint. Lowering
   /// removes these operations without allocating rendezvous resources.
   llvm::SmallPtrSet<Operation *, 8> staticallyInactiveOps;
