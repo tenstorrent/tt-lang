@@ -1747,13 +1747,25 @@ PipeScheduleFrontier buildPipeScheduleOperation(
                                       std::move(elseFrontier));
   }
 
+  // Fork each record's iteration from the entry frontier and merge exits:
+  // the body runs at a node only when that record's coord predicate matches,
+  // so iterations with disjoint predicates are runtime-mutually-exclusive
+  // there. Threading the frontier across iterations would invent
+  // cross-iteration program-order edges that don't exist on any one node.
   auto buildPipeNetForeach = [&](Region &region, PipeNetRecordsAttr records) {
+    std::optional<PipeScheduleFrontier> mergedExit;
     for (PipeType pipeType :
          getPipeTypesFromRecords(op->getContext(), records)) {
-      frontier = buildPipeScheduleRegion(region, state, builder,
-                                         std::move(frontier), pipeType);
+      PipeScheduleFrontier branchExit = buildPipeScheduleRegion(
+          region, state, builder, frontier, pipeType);
+      if (!mergedExit) {
+        mergedExit = std::move(branchExit);
+      } else {
+        mergedExit = mergePipeScheduleFrontiers(std::move(*mergedExit),
+                                                std::move(branchExit));
+      }
     }
-    return frontier;
+    return mergedExit ? std::move(*mergedExit) : frontier;
   };
   if (auto foreachSrc = dyn_cast<PipeNetForeachSrcOp>(op)) {
     return buildPipeNetForeach(foreachSrc.getRegion(), foreachSrc.getRecords());
