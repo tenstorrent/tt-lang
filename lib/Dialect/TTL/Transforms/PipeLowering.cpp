@@ -183,13 +183,10 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
 
-  // Build optional NOC index value for ops that accept a noc parameter.
+  // Multicast data movement requires an explicit NOC index, including NOC 0.
   int64_t nocIdx = getNocIndex(op);
-  Value nocVal;
-  if (nocIdx > 0) {
-    nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
-                                       rewriter.getI8IntegerAttr(nocIdx));
-  }
+  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                           rewriter.getI8IntegerAttr(nocIdx));
 
   int64_t expectedSignals = pipeType.isUnicast() ? 1 : numDests;
   auto senderSemIdx = arith::ConstantIndexOp::create(
@@ -236,6 +233,16 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       rewriter, loc, indexTy, dstEndXLogical);
   auto dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, dstEndYLogical);
+  Value mcastStartXVal = dstStartXVal;
+  Value mcastStartYVal = dstStartYVal;
+  Value mcastEndXVal = dstEndXVal;
+  Value mcastEndYVal = dstEndYVal;
+  // TTKernel multicast ops follow tt-metal's NOC1 convention: callers pass
+  // the rectangle with start/end reversed after coordinate translation.
+  if (nocIdx == 1) {
+    std::swap(mcastStartXVal, mcastEndXVal);
+    std::swap(mcastStartYVal, mcastEndYVal);
+  }
 
   auto numDestsVal = arith::ConstantOp::create(
       rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
@@ -262,30 +269,26 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       ttk::LoadFromL1Op::create(rewriter, loc, i32Ty, mailboxPtr, zeroI32);
 
   if (pipeType.isUnicast()) {
-    auto nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
-                                             dstStartYVal, dstAddr);
-    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr, nocAddr.getResult(),
-                                 totalSizeVal);
+    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
+                                 ValueRange{dstStartXVal, dstStartYVal},
+                                 ValueRange{}, dstAddr, totalSizeVal);
   } else {
-    auto mcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
-        rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-        dstAddr, nocVal);
     if (pipeType.srcInDstRange()) {
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
-          rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
-          numDestsVal, /*linked=*/nullptr,
-          /*multicast_path_reserve=*/nullptr, nocVal);
+          rewriter, loc, srcAddr, totalSizeVal, numDestsVal, mcastStartXVal,
+          mcastStartYVal, mcastEndXVal, mcastEndYVal, dstAddr, nocVal,
+          /*linked=*/nullptr);
     } else {
       ttk::NocAsyncWriteMulticastOp::create(
-          rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
-          numDestsVal, /*linked=*/nullptr,
-          /*multicast_path_reserve=*/nullptr, nocVal);
+          rewriter, loc, srcAddr, totalSizeVal, numDestsVal, mcastStartXVal,
+          mcastStartYVal, mcastEndXVal, mcastEndYVal, dstAddr, nocVal,
+          /*linked=*/nullptr);
     }
   }
 
   // Wait for all async writes to complete before signaling the semaphore.
   // Without this barrier, the receiver may wake up before all data arrives.
-  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
 
   // Signal that data has arrived.
   if (pipeType.isUnicast()) {
@@ -294,11 +297,10 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                                                  getReceiverSemIdx(pipeType));
     auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
     auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    auto dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
-                                                   dstStartYVal, semAddr);
+    auto dstSemNocAddr = ttk::GetNocAddrOp::create(
+        rewriter, loc, dstStartXVal, dstStartYVal, semAddr, nocVal);
     ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr.getResult(),
-                                   incrVal, /*noc_id=*/Value(),
-                                   /*posted=*/BoolAttr());
+                                   incrVal, nocVal, /*posted=*/BoolAttr());
   } else {
     // Multicast: atomic inc on every receiver's recvSem. Receiver pairs
     // with cumulative wait_min via the per-PipeNet runtime counter.
@@ -313,14 +315,14 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto numRemoteDestsVal = arith::ConstantOp::create(
         rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numRemoteDests));
 
-    auto recvSemMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
-        rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-        recvSemAddr, nocVal);
+    auto recvSemMcastAddr = ttk::GetNocMulticastAddrOp::create(
+        rewriter, loc, mcastStartXVal, mcastStartYVal, mcastEndXVal,
+        mcastEndYVal, recvSemAddr, nocVal);
 
     auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
     ttk::NocSemaphoreIncMulticastOp::create(
         rewriter, loc, recvSemMcastAddr.getResult(), incrVal, numRemoteDestsVal,
-        /*noc_id=*/Value(), /*posted=*/BoolAttr());
+        nocVal, /*posted=*/BoolAttr());
 
     if (pipeType.srcInDstRange()) {
       // Local self-inc: when sender is also a receiver of overlapping
@@ -334,15 +336,15 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
           rewriter, loc, indexTy, srcYLogical);
       auto selfRecvSemNocAddr = ttk::GetNocAddrOp::create(
-          rewriter, loc, srcXTranslated, srcYTranslated, recvSemAddr);
+          rewriter, loc, srcXTranslated, srcYTranslated, recvSemAddr, nocVal);
       ttk::NocSemaphoreIncOp::create(rewriter, loc,
                                      selfRecvSemNocAddr.getResult(), incrVal,
-                                     /*noc_id=*/Value(), /*posted=*/BoolAttr());
+                                     nocVal, /*posted=*/BoolAttr());
     }
 
     // Flush the (non-posted) atomic increments before the kernel can move
     // on. Without this barrier, receivers race with the sender on recvSem.
-    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, /*noc_id=*/Value());
+    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
   }
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
@@ -392,11 +394,8 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
         op, "receiver DFB element type must be tile");
   }
 
-  Value nocVal;
-  if (nocIdx > 0) {
-    nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
-                                       rewriter.getI8IntegerAttr(nocIdx));
-  }
+  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                           rewriter.getI8IntegerAttr(nocIdx));
 
   auto receiverWritePtr =
       ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
@@ -444,16 +443,16 @@ LogicalResult lowerPipeRecvPost(PipeRecvPostOp op, Value pipe, Value dst,
   auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, srcYLogical);
   auto senderMailboxNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, targetMailboxSem);
+      rewriter, loc, srcXTranslated, srcYTranslated, targetMailboxSem, nocVal);
   ttk::RemoteSramWriteU32Op::create(rewriter, loc, mailboxStagingSem,
                                     senderMailboxNocAddr.getResult(), nocVal);
-  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
 
   auto senderSemIdx = arith::ConstantIndexOp::create(
       rewriter, loc, pipeChannelLayout->senderReadySemIdx);
   auto senderSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, senderSemIdx);
   auto senderSemNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
+      rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr, nocVal);
   auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
   ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
                                  readyIncr, nocVal, /*posted=*/BoolAttr());

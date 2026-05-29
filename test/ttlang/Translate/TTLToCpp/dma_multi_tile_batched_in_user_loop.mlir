@@ -94,7 +94,7 @@
 // CHECK:     }
 
 // Consecutive barriers deduplicated to single barrier.
-// CHECK:     noc_async_read_barrier();
+// CHECK:     noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   }
 // CHECK:   return;
 // CHECK-NEXT: }
