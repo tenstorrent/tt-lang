@@ -586,9 +586,9 @@ Automatic S3 publishing should use this policy:
   keeps nightly versions readable, but existing local pip caches may still hold
   the older wheel for that version.
 
-The scheduled workflow defaults to `ttnn_dep_mode: bundled`, builds and pushes
-the matching IRD image, builds wheels from that image, verifies the wheel
-versions, and publishes the result to S3 PyPI.
+The scheduled workflow defaults to `ttnn_dep_mode: bundled-and-external`, builds
+and pushes the matching IRD image, builds bundled and light wheels from that
+image, verifies the wheel versions, and publishes the result to S3 PyPI.
 
 For a manual bundled internal wheel with an existing IRD image, dispatch the
 workflow with:

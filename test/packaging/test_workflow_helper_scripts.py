@@ -24,6 +24,7 @@ CHECK_LIGHT_METAPACKAGE = SCRIPTS_DIR / "check-light-metapackage.py"
 COMPUTE_NIGHTLY_VERSION = SCRIPTS_DIR / "compute-nightly-version.py"
 CHECK_INSTALLED_TTNN = SCRIPTS_DIR / "check-installed-ttnn.py"
 CHECK_BUNDLED_PAYLOAD = SCRIPTS_DIR / "check-wheel-bundled-payload.py"
+PUBLISH_S3_PYPI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-s3-pypi.yml"
 
 
 def _run_script(
@@ -48,6 +49,15 @@ def _write_wheel(dist_dir: Path, filename: str, metadata: str) -> Path:
     with zipfile.ZipFile(wheel_path, "w") as wheel:
         wheel.writestr(f"{dist_info}/METADATA", metadata)
     return wheel_path
+
+
+def test_s3_schedule_publishes_bundled_and_external_wheels() -> None:
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+
+    assert (
+        "github.event_name == 'workflow_dispatch' && inputs.ttnn_dep_mode || "
+        "'bundled-and-external'"
+    ) in workflow
 
 
 def test_check_wheel_ttnn_metadata_matches_requirement_name(tmp_path: Path) -> None:
