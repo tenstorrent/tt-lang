@@ -20,6 +20,21 @@ BIN_DIR="$(dirname "$SCRIPTS_DIR")/../bin"
 # Real tt-lang repo root (parent of .github/). Lets tests reach
 # scripts/ (top-level) without hard-coding a path.
 TTLANG_REPO_ROOT="$(dirname "$(dirname "$SCRIPTS_DIR")")"
+WHEEL_PYTAG="cp312-cp312-linux_x86_64"
+
+whl()       { printf 'tt_lang-%s-%s.whl' "$1" "$WHEEL_PYTAG"; }
+whl_sim()   { printf 'tt_lang_sim-%s-py3-none-any.whl' "$1"; }
+whl_light() { printf 'tt_lang_light-%s-py3-none-any.whl' "$1"; }
+whl_build() { printf 'tt_lang-%s-%s-%s.whl' "$1" "$2" "$WHEEL_PYTAG"; }
+
+make_wheel_dir() {
+    local dir
+    dir=$(mktemp -d "$BATS_TEST_TMPDIR/wheels.XXXXXX")
+    for name in "$@"; do
+        : > "$dir/$name"
+    done
+    echo "$dir"
+}
 
 # Build a synthetic git repo in $BATS_TEST_TMPDIR (auto-cleaned). Initialized
 # with one file at each UPLIFT_PATHS location, plus python/sim/example.py for

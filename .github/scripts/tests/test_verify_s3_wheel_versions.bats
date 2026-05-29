@@ -7,20 +7,6 @@
 load test_helper
 
 VER="99.99.99.dev20260515"
-PYTAG="cp312-cp312-linux_x86_64"
-
-whl()       { printf 'tt_lang-%s-%s.whl' "$1" "$PYTAG"; }
-whl_sim()   { printf 'tt_lang_sim-%s-py3-none-any.whl' "$1"; }
-whl_light() { printf 'tt_lang_light-%s-py3-none-any.whl' "$1"; }
-
-make_wheel_dir() {
-    local dir
-    dir=$(mktemp -d "$BATS_TEST_TMPDIR/wheels.XXXXXX")
-    for name in "$@"; do
-        : > "$dir/$name"
-    done
-    echo "$dir"
-}
 
 setup() {
     SCRIPT="$SCRIPTS_DIR/verify-s3-wheel-versions.sh"

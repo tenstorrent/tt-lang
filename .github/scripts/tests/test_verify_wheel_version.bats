@@ -10,22 +10,6 @@ load test_helper
 # the literals can never be confused with a production version.
 VER="99.99.99"
 WRONG_VER="99.99.98"
-PYTAG="cp312-cp312-linux_x86_64"
-
-whl()       { printf 'tt_lang-%s-%s.whl' "$1" "$PYTAG"; }
-whl_sim()   { printf 'tt_lang_sim-%s-py3-none-any.whl' "$1"; }
-whl_light() { printf 'tt_lang_light-%s-py3-none-any.whl' "$1"; }
-whl_build() { printf 'tt_lang-%s-%s-%s.whl' "$1" "$2" "$PYTAG"; }  # <ver> <build>
-
-# Create a temp dir containing zero or more empty wheel files. Echoes the dir.
-make_wheel_dir() {
-    local dir
-    dir=$(mktemp -d "$BATS_TEST_TMPDIR/wheels.XXXXXX")
-    for name in "$@"; do
-        : > "$dir/$name"
-    done
-    echo "$dir"
-}
 
 setup() {
     SCRIPT="$SCRIPTS_DIR/verify-wheel-version.sh"
