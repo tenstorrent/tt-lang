@@ -237,9 +237,6 @@ static Type getFusedResultTileType(Operation *sourceOp) {
 static Value emitTileOpFor(OpBuilder &builder, Location loc,
                            Operation *sourceOp, ValueRange tileOperands) {
   Type tileType = getFusedResultTileType(sourceOp);
-  if (!tileType) {
-    return nullptr;
-  }
 
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
@@ -719,9 +716,13 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           auto dfIt = deferredMatmul.find(operand);
           if (dfIt != deferredMatmul.end()) {
             auto [mmLhs, mmRhs] = dfIt->second;
-            auto matmulTensor = cast<RankedTensorType>(operand.getType());
             Type matmulTileType =
-                ttcore::TileType::get(matmulTensor.getElementType());
+                getFusedResultTileType(operand.getDefiningOp());
+            if (!matmulTileType) {
+              return rewriter.notifyMatchFailure(
+                  op, "fusion failed: cannot derive tile type for deferred "
+                      "matmul");
+            }
             auto mmTileOp =
                 createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
                     rewriter, loc, matmulTileType, mmLhs, mmRhs, Value());

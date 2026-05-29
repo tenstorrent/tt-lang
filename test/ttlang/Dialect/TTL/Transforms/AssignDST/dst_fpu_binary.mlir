@@ -353,6 +353,7 @@ func.func @all_fpu_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // SFPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // SFPU:           ttl.compute
+// SFPU-SAME:      ttl.unroll_factor = 4
 // copy a_fpu and B for SFPU add
 // SFPU:           %{{.*}}, %[[ATILE1:.*]] = ttl.copy_tile %{{.*}}[%{{.*}}, %{{.*}}] into dst[%[[C0]]]
 // SFPU:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %{{.*}}[%{{.*}}, %{{.*}}] into dst[%[[C1]]]
@@ -456,6 +457,7 @@ func.func @block_arg_fpu_and_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // SFPU-DAG:       %[[C3:.*]] = arith.constant 3 : index
 // SFPU:           ttl.compute
+// SFPU-SAME:      ttl.unroll_factor = 2
 // SFPU:           ttl.copy_tile {{.*}}
 // SFPU:           ttl.tile_abs {{.*}} into dst[%[[C0]]]
 // SFPU:           ttl.copy_tile {{.*}}

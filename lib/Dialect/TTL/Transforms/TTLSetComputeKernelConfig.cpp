@@ -93,20 +93,26 @@ static inline bool wantsUnpackToDestFp32(Operation *op) {
 }
 
 /// Return the CB index when `value` is an f32 input block argument of
-/// `computeOp` consumed by an FPU-style tile op (reduce, matmul, or
-/// FPU-eligible add/sub/mul). FPU consumers route their operand through
-/// SRCA/SRCB, which is incompatible with `UnpackToDestFp32` mode on the CB.
-static std::optional<int64_t> getF32FPUSrcCBIndex(Operation *op, Value operand,
-                                                  ComputeOp computeOp) {
-  if (!isa<TileReduceOp, TileMatmulBlockOp>(op) && !isFPUEligibleBinaryOp(op)) {
+/// `computeOp` consumed by a tile op that must keep its source CB in `Default`
+/// unpack mode. FPU-style ops (reduce, matmul, FPU-eligible add/sub/mul) route
+/// the operand through SRCA/SRCB; `tile_bcast`/`tile_transpose` lower to
+/// `unary_bcast`/`transpose_dest`, which produce incorrect results under
+/// `UnpackToDestFp32` on their source CB (tt-llk #1338). Both are incompatible
+/// with the mode.
+static std::optional<int64_t>
+getF32DefaultUnpackCBIndex(Operation *op, Value operand, ComputeOp computeOp) {
+  if (!isa<TileReduceOp, TileMatmulBlockOp, TileBcastOp, TileTransposeOp>(op) &&
+      !isFPUEligibleBinaryOp(op)) {
     return std::nullopt;
   }
   return getF32InputCBIndexForBlockArg(operand, computeOp);
 }
 
+static constexpr unsigned kMaxUnpackFp32CBs = 4;
+
 struct F32InputCBUsage {
-  llvm::SmallSetVector<int64_t, 4> sfpuCBs;
-  llvm::SmallDenseMap<int64_t, Operation *> fpuCBConsumers;
+  llvm::SmallSetVector<int64_t, kMaxUnpackFp32CBs> sfpuCBs;
+  llvm::MapVector<int64_t, Operation *> fpuCBConsumers;
 };
 
 /// Collect f32 input CB usage in one compute body.
@@ -123,7 +129,7 @@ static F32InputCBUsage collectF32InputCBUsage(ComputeOp computeOp) {
   for (Operation &op : body.without_terminator()) {
     for (Value operand : op.getOperands()) {
       if (std::optional<int64_t> fpuIdx =
-              getF32FPUSrcCBIndex(&op, operand, computeOp)) {
+              getF32DefaultUnpackCBIndex(&op, operand, computeOp)) {
         usage.fpuCBConsumers.insert({*fpuIdx, &op});
       }
     }
@@ -227,7 +233,7 @@ struct TTLSetComputeKernelConfigPass
     funcOp->setAttr(kEnableFPUBinaryOpsAttrName,
                     BoolAttr::get(funcOp.getContext(), enableFPUBinaryOps));
 
-    llvm::SmallSetVector<int64_t, 4> kernelSFPUCBs;
+    llvm::SmallSetVector<int64_t, kMaxUnpackFp32CBs> kernelSFPUCBs;
     llvm::SmallDenseMap<int64_t, Operation *> kernelFPUCBConsumers;
     funcOp->walk([&](ComputeOp computeOp) {
       const F32InputCBUsage usage = collectF32InputCBUsage(computeOp);
