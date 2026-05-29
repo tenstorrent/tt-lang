@@ -44,8 +44,12 @@ for spec in "$@"; do
     verify_args=()
 
     if [[ "$variant_spec" == *:no-sim ]]; then
-        verify_args+=(--no-sim)
         variant="${variant_spec%:no-sim}"
+        if [[ "$variant" != light ]]; then
+            echo ":no-sim is only valid for the light variant: $spec" >&2
+            exit 2
+        fi
+        verify_args+=(--no-sim)
     else
         variant="$variant_spec"
     fi

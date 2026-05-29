@@ -37,6 +37,12 @@ setup() {
     assert_output --partial "Unknown wheel variant: garbage"
 }
 
+@test ":no-sim on a non-light variant -> usage error (exit 2)" {
+    dir=$(make_wheel_dir "$(whl "$VER")" "$(whl_sim "$VER")")
+    run -2 "$SCRIPT" "$VER" "$PUBLISH_DIR" "bundled:no-sim=$dir"
+    assert_output --partial ":no-sim is only valid for the light variant"
+}
+
 @test "missing artifact dir -> error" {
     run -1 "$SCRIPT" "$VER" "$PUBLISH_DIR" bundled="$BATS_TEST_TMPDIR/missing"
     assert_output --partial "Wheel artifact directory not found"
