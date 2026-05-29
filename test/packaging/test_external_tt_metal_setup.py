@@ -27,13 +27,18 @@ def _load_module():
     return module
 
 
-def test_detects_install_layout_and_emits_shell_exports(tmp_path: Path) -> None:
-    module = _load_module()
+def _make_install_layout(tmp_path: Path) -> Path:
     install_root = tmp_path / "tt-metal-install"
     (install_root / "python_packages" / "ttnn" / "ttnn").mkdir(parents=True)
     (install_root / "python_packages" / "tools").mkdir(parents=True)
     (install_root / "python_packages" / "ttnn" / "ttnn" / "_ttnn.so").touch()
     (install_root / "lib").mkdir()
+    return install_root
+
+
+def test_detects_install_layout_and_emits_shell_exports(tmp_path: Path) -> None:
+    module = _load_module()
+    install_root = _make_install_layout(tmp_path)
 
     settings = module.detect_external_tt_metal(install_root)
     shell_exports = module.emit_shell_exports(settings)
@@ -101,11 +106,7 @@ def test_rejects_colon_in_path(tmp_path: Path) -> None:
 
 def test_command_form_runs_with_external_environment(tmp_path: Path) -> None:
     module = _load_module()
-    install_root = tmp_path / "tt-metal-install"
-    (install_root / "python_packages" / "ttnn" / "ttnn").mkdir(parents=True)
-    (install_root / "python_packages" / "tools").mkdir(parents=True)
-    (install_root / "python_packages" / "ttnn" / "ttnn" / "_ttnn.so").touch()
-    (install_root / "lib").mkdir()
+    install_root = _make_install_layout(tmp_path)
 
     check_environment = """
 import os
@@ -134,3 +135,13 @@ assert os.environ["LD_LIBRARY_PATH"].split(":")[0] == f"{install_root}/lib"
     )
 
     assert status == 0
+
+
+def test_cli_rejects_positional_tt_metal_dir(tmp_path: Path) -> None:
+    module = _load_module()
+    install_root = _make_install_layout(tmp_path)
+
+    with pytest.raises(SystemExit) as error:
+        module.main([str(install_root)])
+
+    assert error.value.code == 2

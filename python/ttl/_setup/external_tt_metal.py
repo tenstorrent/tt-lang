@@ -196,13 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "tt_metal_dir",
-        nargs="?",
-        help="existing tt-metal source or install directory",
-    )
-    parser.add_argument(
         "--tt-metal-dir",
-        dest="tt_metal_dir_option",
+        required=True,
         help="existing tt-metal source or install directory",
     )
     parser.add_argument(
@@ -225,12 +220,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(parser_argv)
 
-    tt_metal_dir = args.tt_metal_dir_option or args.tt_metal_dir
-    if not tt_metal_dir:
-        parser.error("tt-metal directory is required")
-
     try:
-        settings = detect_external_tt_metal(tt_metal_dir, args.build_dir)
+        settings = detect_external_tt_metal(args.tt_metal_dir, args.build_dir)
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
