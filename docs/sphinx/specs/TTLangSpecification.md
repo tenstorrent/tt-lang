@@ -466,15 +466,14 @@ def elwise_write():
 #
 # All tensors have tiled layout
 
-# Shape in tiles (I, M, N and K are evenly divisible by TILE_SIZE)
-I_TILES = I // TILE_SIZE
+# Shape in tiles (M, N and K are evenly divisible by TILE_SIZE)
 M_TILES = M // TILE_SIZE
 N_TILES = N // TILE_SIZE
 K_TILES = K // TILE_SIZE
 
-# Shape in blocks (I_TILES, M_TILES, N_TILES and K_TILES are evenly
+# Shape in blocks (I, M_TILES, N_TILES and K_TILES are evenly
 # divisible by I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE and K_BLOCK_SIZE)
-I_BLOCKS = I_TILES // I_BLOCK_SIZE
+I_BLOCKS = I // I_BLOCK_SIZE
 M_BLOCKS = M_TILES // M_BLOCK_SIZE
 N_BLOCKS = N_TILES // N_BLOCK_SIZE
 K_BLOCKS = K_TILES // K_BLOCK_SIZE
