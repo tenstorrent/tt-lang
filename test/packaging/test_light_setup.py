@@ -81,6 +81,22 @@ def test_light_metadata_rejects_final_version(
     assert "requires a non-final version" in result.stderr
 
 
+def test_light_metadata_allows_final_version_when_release_guard_passed(
+    run_egg_info: Callable[..., object],
+    requires_text: Callable[[], str],
+) -> None:
+    result = run_egg_info(
+        {
+            "TTLANG_VERSION_OVERRIDE": "0.71.0",
+            "TTLANG_ALLOW_FINAL_INTERNAL_VERSION": "true",
+        },
+        cwd=LIGHT_ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "tt-lang==0.71.0+light" in requires_text()
+
+
 def test_light_metadata_rejects_base_version_mismatch(
     run_egg_info: Callable[..., object],
 ) -> None:

@@ -11,7 +11,8 @@
 #   DISPATCH_DRY_RUN             "true"|"false" (workflow_dispatch input).
 #   DISPATCH_OVERWRITE_RELEASES  "true"|"false" (workflow_dispatch input).
 #   DISPATCH_VERSION_OVERRIDE    PEP 440 string, may be empty.
-#   DISPATCH_WHEEL_VARIANT       pypi|light|bundled|bundled-and-light.
+#   DISPATCH_WHEEL_VARIANT       pypi|light|bundled|bundled-and-light, may be
+#                                empty for non-dispatch events.
 #   EVENT_NAME                   github.event_name.
 #   GITHUB_REF                   github.ref, required for push events.
 #   GITHUB_OUTPUT                Path that receives the resolved outputs.
@@ -19,7 +20,7 @@
 #
 # Outputs (written to $GITHUB_OUTPUT):
 #   docker_tag, dry_run, overwrite_releases, version_override, wheel_variant,
-#   wheel_variants, wheel_matrix
+#   wheel_variants, wheel_matrix, allow_final_internal_version
 
 set -euo pipefail
 
@@ -35,15 +36,63 @@ stable_tag_version() {
     return 1
 }
 
+is_stable_version() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+variant_includes_bundled() {
+    [[ "$1" == "bundled" || "$1" == "bundled-and-light" ]]
+}
+
+ttnn_pypi_aligned() {
+    local repo_root version_file
+    repo_root=$(git rev-parse --show-toplevel)
+    version_file="${TTLANG_TT_METAL_VERSION_FILE:-$repo_root/third-party/tt-metal-version}"
+
+    # shellcheck source=../../third-party/tt-metal-version
+    . "$version_file"
+    : "${TTNN_PYPI_TT_METAL_TAG:?$version_file: TTNN_PYPI_TT_METAL_TAG not set}"
+    : "${TT_METAL_TAG:?$version_file: TT_METAL_TAG not set}"
+
+    [[ "$TTNN_PYPI_TT_METAL_TAG" == "$TT_METAL_TAG" ]]
+}
+
 : "${DISPATCH_DRY_RUN:?DISPATCH_DRY_RUN is required}"
 : "${DISPATCH_OVERWRITE_RELEASES:?DISPATCH_OVERWRITE_RELEASES is required}"
-: "${DISPATCH_WHEEL_VARIANT:?DISPATCH_WHEEL_VARIANT is required}"
 : "${EVENT_NAME:?EVENT_NAME is required}"
 docker_tag="${DISPATCH_DOCKER_TAG:-}"
 dry_run="$DISPATCH_DRY_RUN"
 overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
 version_override="${DISPATCH_VERSION_OVERRIDE:-}"
-wheel_variant="$DISPATCH_WHEEL_VARIANT"
+wheel_variant="${DISPATCH_WHEEL_VARIANT:-}"
+
+if [[ -z "$version_override" ]]; then
+    if [[ "$EVENT_NAME" == "push" ]]; then
+        version_override=$(stable_tag_version "${GITHUB_REF:-}")
+    else
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        version_override=$(python3 "$script_dir/compute-nightly-version.py")
+    fi
+fi
+
+if [[ -z "$wheel_variant" ]]; then
+    case "$EVENT_NAME" in
+        push)
+            if ttnn_pypi_aligned; then
+                wheel_variant=light
+            else
+                wheel_variant=bundled-and-light
+            fi
+            ;;
+        schedule)
+            wheel_variant=bundled-and-light
+            ;;
+        *)
+            echo "DISPATCH_WHEEL_VARIANT is required for $EVENT_NAME events" >&2
+            exit 1
+            ;;
+    esac
+fi
 
 case "$wheel_variant" in
     bundled)
@@ -68,17 +117,19 @@ case "$wheel_variant" in
         ;;
 esac
 
-if [[ "$EVENT_NAME" == "schedule" ]]; then
-    overwrite_releases=true
+if is_stable_version "$version_override" && variant_includes_bundled "$wheel_variant" && ttnn_pypi_aligned; then
+    echo "Refusing to publish bundled tt-lang==$version_override to S3 because public PyPI publishing is aligned for this tt-metal tag." >&2
+    echo "Use the light or pypi S3 variant, or use a distinct internal version." >&2
+    exit 1
 fi
 
-if [[ -z "$version_override" ]]; then
-    if [[ "$EVENT_NAME" == "push" ]]; then
-        version_override=$(stable_tag_version "${GITHUB_REF:-}")
-    else
-        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        version_override=$(python3 "$script_dir/compute-nightly-version.py")
-    fi
+allow_final_internal_version=false
+if is_stable_version "$version_override"; then
+    allow_final_internal_version=true
+fi
+
+if [[ "$EVENT_NAME" == "schedule" ]]; then
+    overwrite_releases=true
 fi
 
 output_file="${GITHUB_OUTPUT:-/dev/stdout}"
@@ -90,11 +141,13 @@ output_file="${GITHUB_OUTPUT:-/dev/stdout}"
     echo "wheel_variant=$wheel_variant"
     echo "wheel_variants=$wheel_variants"
     echo "wheel_matrix=$wheel_matrix"
+    echo "allow_final_internal_version=$allow_final_internal_version"
 } >> "$output_file"
 
 echo "Resolved wheel_variant=$wheel_variant"
 echo "Resolved wheel_variants=$wheel_variants"
 echo "Resolved version_override=$version_override"
+echo "Resolved allow_final_internal_version=$allow_final_internal_version"
 echo "Resolved dry_run=$dry_run"
 echo "Resolved overwrite_releases=$overwrite_releases"
 if [[ -n "$docker_tag" ]]; then

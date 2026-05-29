@@ -66,6 +66,7 @@ jobs:
       wheel_variant: ${{ steps.resolve.outputs.wheel_variant }}
       wheel_variants: ${{ steps.resolve.outputs.wheel_variants }}
       wheel_matrix: ${{ steps.resolve.outputs.wheel_matrix }}
+      allow_final_internal_version: ${{ steps.resolve.outputs.allow_final_internal_version }}
 
     steps:
       - name: Checkout tt-lang
@@ -81,7 +82,7 @@ jobs:
           DISPATCH_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.dry_run) || 'false' }}
           DISPATCH_OVERWRITE_RELEASES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.overwrite_releases) || 'false' }}
           DISPATCH_VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version_override || '' }}
-          DISPATCH_WHEEL_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.wheel_variant || 'bundled-and-light' }}
+          DISPATCH_WHEEL_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.wheel_variant || '' }}
           EVENT_NAME: ${{ github.event_name }}
         run: .github/scripts/resolve-s3-publish-inputs.sh
 
@@ -116,6 +117,7 @@ jobs:
       external_python_venv: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
       bundled_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
       build_sim_wheel: ${{ !(needs.preflight.outputs.wheel_variant == 'bundled-and-light' && matrix.wheel_variant == 'light') }}
+      allow_final_internal_version: ${{ needs.preflight.outputs.allow_final_internal_version == 'true' }}
       artifact_name: tt-lang-wheels-${{ matrix.wheel_variant }}
 
   publish:

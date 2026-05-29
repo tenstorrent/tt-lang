@@ -13,10 +13,19 @@ import subprocess
 from packaging.version import InvalidVersion, Version
 
 VERSION_OVERRIDE_ENV = "TTLANG_VERSION_OVERRIDE"
+ALLOW_FINAL_INTERNAL_VERSION_ENV = "TTLANG_ALLOW_FINAL_INTERNAL_VERSION"
 
 
 def get_version_override() -> str:
     return os.environ.get(VERSION_OVERRIDE_ENV, "").strip()
+
+
+def allow_final_internal_version() -> bool:
+    return os.environ.get(ALLOW_FINAL_INTERNAL_VERSION_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def require_version_override(package_name: str) -> None:
@@ -66,7 +75,11 @@ def require_non_final_internal_version(package_name: str, version: str) -> None:
     except InvalidVersion as error:
         raise SystemExit(f"{package_name} has invalid version {version!r}") from error
 
-    if not parsed_version.is_devrelease and not parsed_version.is_prerelease:
+    if (
+        not parsed_version.is_devrelease
+        and not parsed_version.is_prerelease
+        and not allow_final_internal_version()
+    ):
         raise SystemExit(
             f"{package_name} requires a non-final version such as "
             "0.71.0.dev20260525 or 0.71.0rc1"

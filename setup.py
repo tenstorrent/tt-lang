@@ -36,6 +36,7 @@ class NoSdist(_sdist):
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _TTNN_DEP_MODES = ("pypi", "external", "bundled")
 _VERSION_OVERRIDE_ENV = "TTLANG_VERSION_OVERRIDE"
+_ALLOW_FINAL_INTERNAL_VERSION_ENV = "TTLANG_ALLOW_FINAL_INTERNAL_VERSION"
 
 
 def _ttnn_dep_mode():
@@ -48,6 +49,14 @@ def _ttnn_dep_mode():
 
 def _version_override():
     return os.environ.get(_VERSION_OVERRIDE_ENV, "").strip()
+
+
+def _allow_final_internal_version():
+    return os.environ.get(_ALLOW_FINAL_INTERNAL_VERSION_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _read_tt_metal_version_var(name):
@@ -175,7 +184,11 @@ def _validate_ttnn_dep_mode_version(version):
     except InvalidVersion as error:
         raise SystemExit(f"invalid {_VERSION_OVERRIDE_ENV} {version!r}") from error
 
-    if not parsed_version.is_devrelease and not parsed_version.is_prerelease:
+    if (
+        not parsed_version.is_devrelease
+        and not parsed_version.is_prerelease
+        and not _allow_final_internal_version()
+    ):
         raise SystemExit(
             f"TTLANG_TTNN_DEP_MODE={mode} requires a non-final version "
             "such as 0.71.0.dev20260525 or 0.71.0rc1"

@@ -55,9 +55,9 @@ def test_s3_schedule_publishes_bundled_and_light_wheels() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
 
     assert (
-        "github.event_name == 'workflow_dispatch' && inputs.wheel_variant || "
-        "'bundled-and-light'"
+        "github.event_name == 'workflow_dispatch' && inputs.wheel_variant || ''"
     ) in workflow
+    assert "EVENT_NAME: ${{ github.event_name }}" in workflow
 
 
 def test_s3_stable_tags_publish_clean_version_wheels() -> None:

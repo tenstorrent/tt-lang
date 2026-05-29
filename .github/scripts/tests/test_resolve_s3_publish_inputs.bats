@@ -28,6 +28,18 @@ output_value() {
     grep "^${key}=" "$GITHUB_OUTPUT_FILE" | sed "s/^${key}=//"
 }
 
+make_tt_metal_version_file() {
+    local pypi_tag="$1"
+    local tt_metal_tag="$2"
+    local version_file="$BATS_TEST_TMPDIR/tt-metal-version.$pypi_tag.$tt_metal_tag"
+    cat > "$version_file" <<EOF
+TTNN_PYPI="0.70.1"
+TTNN_PYPI_TT_METAL_TAG="$pypi_tag"
+TT_METAL_TAG="$tt_metal_tag"
+EOF
+    echo "$version_file"
+}
+
 @test "missing DISPATCH_DRY_RUN -> error" {
     unset DISPATCH_DRY_RUN
     run -1 "$SCRIPT"
@@ -83,6 +95,12 @@ output_value() {
     assert_equal "$(output_value overwrite_releases)" "true"
 }
 
+@test "schedule event defaults to bundled and light" {
+    DISPATCH_WHEEL_VARIANT="" EVENT_NAME=schedule run -0 "$SCRIPT"
+    assert_equal "$(output_value wheel_variant)" "bundled-and-light"
+    assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
+}
+
 @test "schedule event keeps overwrite_releases=true if already set" {
     DISPATCH_OVERWRITE_RELEASES=true EVENT_NAME=schedule run -0 "$SCRIPT"
     assert_equal "$(output_value overwrite_releases)" "true"
@@ -93,19 +111,54 @@ output_value() {
     assert_equal "$(output_value overwrite_releases)" "false"
 }
 
-@test "stable tag push uses clean tag version" {
+@test "stable tag push publishes bundled and light when public PyPI is blocked" {
+    version_file=$(make_tt_metal_version_file v0.70.1-rc1 v0.71.0-rc2)
+
     DISPATCH_VERSION_OVERRIDE="" \
+    DISPATCH_WHEEL_VARIANT="" \
     EVENT_NAME=push \
     GITHUB_REF=refs/tags/v1.2.3 \
+    TTLANG_TT_METAL_VERSION_FILE="$version_file" \
         run -0 "$SCRIPT"
 
     assert_equal "$(output_value version_override)" "1.2.3"
-    assert_equal "$(output_value wheel_variant)" "bundled"
+    assert_equal "$(output_value wheel_variant)" "bundled-and-light"
+    assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
     assert_equal "$(output_value overwrite_releases)" "false"
+    assert_equal "$(output_value allow_final_internal_version)" "true"
+}
+
+@test "stable tag push publishes only light when public PyPI is aligned" {
+    version_file=$(make_tt_metal_version_file v0.71.0-rc2 v0.71.0-rc2)
+
+    DISPATCH_VERSION_OVERRIDE="" \
+    DISPATCH_WHEEL_VARIANT="" \
+    EVENT_NAME=push \
+    GITHUB_REF=refs/tags/v1.2.3 \
+    TTLANG_TT_METAL_VERSION_FILE="$version_file" \
+        run -0 "$SCRIPT"
+
+    assert_equal "$(output_value version_override)" "1.2.3"
+    assert_equal "$(output_value wheel_variant)" "light"
+    assert_equal "$(output_value wheel_variants)" '["light"]'
+    assert_equal "$(output_value allow_final_internal_version)" "true"
+}
+
+@test "stable manual bundled publish is rejected when public PyPI is aligned" {
+    version_file=$(make_tt_metal_version_file v0.71.0-rc2 v0.71.0-rc2)
+
+    DISPATCH_VERSION_OVERRIDE="1.2.3" \
+    DISPATCH_WHEEL_VARIANT=bundled \
+    EVENT_NAME=workflow_dispatch \
+    TTLANG_TT_METAL_VERSION_FILE="$version_file" \
+        run -1 "$SCRIPT"
+
+    assert_output --partial "Refusing to publish bundled tt-lang==1.2.3 to S3"
 }
 
 @test "push event rejects non-stable tag when version is unset" {
     DISPATCH_VERSION_OVERRIDE="" \
+    DISPATCH_WHEEL_VARIANT="" \
     EVENT_NAME=push \
     GITHUB_REF=refs/tags/v1.2.3-rc1 \
         run -1 "$SCRIPT"
@@ -131,6 +184,7 @@ EOF
 
     DISPATCH_VERSION_OVERRIDE="" run -0 "$shadow_dir/resolve-s3-publish-inputs.sh"
     assert_equal "$(output_value version_override)" "9.9.9.dev20991231"
+    assert_equal "$(output_value allow_final_internal_version)" "false"
 }
 
 @test "GITHUB_OUTPUT unset -> writes to stdout" {
@@ -139,6 +193,7 @@ EOF
     assert_output --partial "version_override=42.42.42.dev20260527"
     assert_output --partial "wheel_variant=bundled"
     assert_output --partial 'wheel_variants=["bundled"]'
+    assert_output --partial "allow_final_internal_version=false"
 }
 
 @test "appends rather than overwrites GITHUB_OUTPUT" {

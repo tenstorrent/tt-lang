@@ -89,6 +89,44 @@ def test_external_metadata_rejects_final_version(
     assert "requires a non-final version" in result.stderr
 
 
+def test_external_metadata_allows_final_version_when_release_guard_passed(
+    run_egg_info: Callable[..., object],
+    requires_text: Callable[[], str],
+) -> None:
+    result = run_egg_info(
+        {
+            "TTLANG_TTNN_DEP_MODE": "external",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0+light",
+            "TTLANG_ALLOW_FINAL_INTERNAL_VERSION": "true",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ttnn==" not in requires_text()
+
+
+def test_bundled_metadata_allows_final_version_when_release_guard_passed(
+    run_egg_info: Callable[..., object],
+    requires_text: Callable[[], str],
+    make_fake_tt_metal_install: Callable[..., Path],
+) -> None:
+    tt_metal = make_fake_tt_metal_install()
+
+    result = run_egg_info(
+        {
+            "TTLANG_TTNN_DEP_MODE": "bundled",
+            "TTLANG_VERSION_OVERRIDE": "0.71.0",
+            "TTLANG_ALLOW_FINAL_INTERNAL_VERSION": "true",
+            "TTLANG_BUNDLED_TT_METAL_DIR": str(tt_metal),
+        },
+    )
+
+    requirements = requires_text()
+    assert result.returncode == 0, result.stderr
+    assert "ttnn==" not in requirements
+    assert "loguru>=0.6.0" in requirements
+
+
 def test_external_metadata_requires_light_label(
     run_egg_info: Callable[..., object],
 ) -> None:
