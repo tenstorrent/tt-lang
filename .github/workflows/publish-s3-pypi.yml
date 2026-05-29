@@ -117,7 +117,7 @@ jobs:
   publish:
     name: "Publish wheels to S3 PyPI"
     needs: [preflight, build-wheels]
-    if: ${{ needs.build-wheels.result == 'success' }}
+    if: ${{ always() && needs.preflight.result == 'success' && needs.build-wheels.result == 'success' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
 
