@@ -9,6 +9,7 @@
 // address and uses that address for the NoC write. It must not reserve or push
 // the receiver DFB.
 // CHECK-LABEL: func.func @sender_uses_published_unicast_address
+// CHECK: %[[NOC:.+]] = arith.constant {{.*}} : i8
 // CHECK: ttkernel.experimental::semaphore_wait
 // CHECK-NOT: ttkernel.cb_reserve_back
 // CHECK: %[[SRC_WP:.+]] = ttkernel.get_write_ptr
@@ -16,7 +17,8 @@
 // CHECK: %[[DST_Y:.+]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[DST_WP:.+]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_WP]])
-// CHECK: ttkernel.noc_async_write %[[SRC_WP]], core[%[[DST_X]], %[[DST_Y]]], %[[DST_WP]]
+// CHECK: ttkernel.noc_async_write %[[SRC_WP]], core[%[[DST_X]], %[[DST_Y]]], %[[DST_WP]], {{.*}} : (i32, index, index, i32, i32) -> ()
+// CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK-NOT: ttkernel.cb_push_back
 // CHECK: return

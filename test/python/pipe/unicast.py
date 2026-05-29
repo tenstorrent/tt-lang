@@ -87,7 +87,7 @@ def unicast_pipe(inp, out):
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
 # CHECK-CPP: noc.async_write(
-# CHECK-CPP: noc.async_write_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: noc0.async_write_barrier<Noc::BarrierMode::FULL>();
 # CHECK-CPP: noc_semaphore_inc(
 
 # Receiver side: publish the reserved DFB address, then wait for sender

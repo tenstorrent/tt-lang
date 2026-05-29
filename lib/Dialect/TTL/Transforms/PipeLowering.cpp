@@ -288,11 +288,7 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   // Wait for all async writes to complete before signaling the semaphore.
   // Without this barrier, the receiver may wake up before all data arrives.
-  if (pipeType.isUnicast()) {
-    ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, Value());
-  } else {
-    ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
-  }
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
 
   // Signal that data has arrived.
   if (pipeType.isUnicast()) {
