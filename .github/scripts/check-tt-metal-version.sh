@@ -38,10 +38,13 @@ UPDATE=0
 TAG="$TT_METAL_TAG"
 PYPI="$TTNN_PYPI"
 PYPI_TAG="$TTNN_PYPI_TT_METAL_TAG"
-[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] \
-  || { echo "$VERSION_FILE: TT_METAL_TAG '$TAG' does not look like vX.Y.Z" >&2; exit 1; }
-[[ "$PYPI_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] \
-  || { echo "$VERSION_FILE: TTNN_PYPI_TT_METAL_TAG '$PYPI_TAG' does not look like vX.Y.Z" >&2; exit 1; }
+require_semver_tag() {
+  local name=$1 value=$2
+  [[ "$value" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] \
+    || { echo "$VERSION_FILE: $name '$value' does not look like vX.Y.Z" >&2; exit 1; }
+}
+require_semver_tag TT_METAL_TAG "$TAG"
+require_semver_tag TTNN_PYPI_TT_METAL_TAG "$PYPI_TAG"
 
 # Resolve tag -> commit via ls-remote. Annotated tags get a `^{}` deref line.
 RESOLVED=$(git ls-remote --tags "$TT_METAL_REMOTE" \

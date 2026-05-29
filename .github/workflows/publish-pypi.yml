@@ -105,7 +105,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download wheels
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: tt-lang-wheels
           path: dist/
@@ -127,7 +127,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download wheels
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: tt-lang-wheels
           path: dist/

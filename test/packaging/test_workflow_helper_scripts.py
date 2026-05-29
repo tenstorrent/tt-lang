@@ -18,6 +18,13 @@ import pytest
 
 from conftest import REPO_ROOT  # noqa: E402
 
+SCRIPTS_DIR = REPO_ROOT / ".github" / "scripts"
+CHECK_WHEEL_TTNN_METADATA = SCRIPTS_DIR / "check-wheel-ttnn-metadata.py"
+CHECK_LIGHT_METAPACKAGE = SCRIPTS_DIR / "check-light-metapackage.py"
+COMPUTE_NIGHTLY_VERSION = SCRIPTS_DIR / "compute-nightly-version.py"
+CHECK_INSTALLED_TTNN = SCRIPTS_DIR / "check-installed-ttnn.py"
+CHECK_BUNDLED_PAYLOAD = SCRIPTS_DIR / "check-wheel-bundled-payload.py"
+
 
 def _run_script(
     script: Path,
@@ -52,8 +59,9 @@ def test_check_wheel_ttnn_metadata_matches_requirement_name(tmp_path: Path) -> N
         "Metadata-Version: 2.1\nRequires-Dist: ttnn-foo >= 1\n",
     )
 
-    script = REPO_ROOT / ".github" / "scripts" / "check-wheel-ttnn-metadata.py"
-    result = _run_script(script, "--mode", "pypi", "--dist-dir", str(dist_dir))
+    result = _run_script(
+        CHECK_WHEEL_TTNN_METADATA, "--mode", "pypi", "--dist-dir", str(dist_dir)
+    )
 
     assert result.returncode != 0
     assert "default wheel metadata must require ttnn" in result.stderr
@@ -70,8 +78,9 @@ def test_check_wheel_ttnn_metadata_rejects_external_payload(tmp_path: Path) -> N
     with zipfile.ZipFile(wheel_path, "a") as wheel:
         wheel.writestr("ttnn/__init__.py", "")
 
-    script = REPO_ROOT / ".github" / "scripts" / "check-wheel-ttnn-metadata.py"
-    result = _run_script(script, "--mode", "external", "--dist-dir", str(dist_dir))
+    result = _run_script(
+        CHECK_WHEEL_TTNN_METADATA, "--mode", "external", "--dist-dir", str(dist_dir)
+    )
 
     assert result.returncode != 0
     assert "external wheel must not bundle a ttnn payload" in result.stderr
@@ -90,9 +99,8 @@ def test_check_light_metapackage_parses_requires_dist(tmp_path: Path) -> None:
         ),
     )
 
-    script = REPO_ROOT / ".github" / "scripts" / "check-light-metapackage.py"
     result = _run_script(
-        script,
+        CHECK_LIGHT_METAPACKAGE,
         "--dist-dir",
         str(dist_dir),
         "--expect-ttlang-version",
@@ -135,8 +143,7 @@ def test_compute_nightly_version_uses_latest_stable_tag(
     (tmp_path / "file.txt").write_text("second\n")
     subprocess.run(["git", "commit", "-am", "second"], cwd=tmp_path, check=True)
 
-    script = REPO_ROOT / ".github" / "scripts" / "compute-nightly-version.py"
-    result = _run_script(script, cwd=tmp_path)
+    result = _run_script(COMPUTE_NIGHTLY_VERSION, cwd=tmp_path)
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
 
     assert result.returncode == 0, result.stderr
@@ -185,12 +192,6 @@ def _env_with_pythonpath_and_ldd(path: Path) -> dict[str, str]:
         path,
         stdout=f"\t_ttnncpp.so => {ttnncpp_path} (0x00000000)\n",
     )
-
-
-CHECK_INSTALLED_TTNN = REPO_ROOT / ".github" / "scripts" / "check-installed-ttnn.py"
-CHECK_BUNDLED_PAYLOAD = (
-    REPO_ROOT / ".github" / "scripts" / "check-wheel-bundled-payload.py"
-)
 
 
 def test_check_installed_ttnn_pypi_mode_is_noop() -> None:

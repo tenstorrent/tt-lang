@@ -184,7 +184,7 @@ jobs:
         run: ls -lh dist/*.whl
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: tt-lang-wheels
           path: dist/*.whl
