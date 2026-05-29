@@ -560,9 +560,9 @@ ird image tag):
 #### Publishing to S3 PyPI
 
 `publish-s3-pypi.yml` publishes internal wheels to the Tenstorrent S3 PyPI
-index at `https://pypi.eng.aws.tenstorrent.com/`. It runs nightly on a GitHub
-schedule and can also be dispatched manually. It uses GitHub OIDC for AWS access,
-then uploads with
+index at `https://pypi.eng.aws.tenstorrent.com/`. It runs on stable release tag
+pushes, runs nightly on a GitHub schedule, and can also be dispatched manually.
+It uses GitHub OIDC for AWS access, then uploads with
 `s3pypi upload --put-root-index --bucket tenstorrent-pypi`.
 
 Do not publish a bundled internal wheel with the same package name and version
@@ -575,9 +575,12 @@ Those two artifacts are not interchangeable, and pip can see both indexes when
 
 Automatic S3 publishing should use this policy:
 
-- Release or RC tags may publish to S3 only when the S3 artifact version is
-  distinct from the public PyPI artifact version, or when the S3 artifact is
-  byte-for-byte equivalent in dependency semantics.
+- Stable release tags (`vX.Y.Z`) publish clean-version bundled and light wheels
+  to S3. This does not require the public `ttnn` PyPI wheel to exist for the
+  current tt-metal tag.
+- Do not mix public PyPI and S3 indexes for a `tt-lang` version whose artifacts
+  have different dependency semantics. Use the S3 install command emitted by the
+  workflow summary for internal release wheels.
 - Nightly builds do not create Git tags. The scheduled workflow computes a
   PEP 440 development version of the form `<MAJOR.MINOR.PATCH>.dev<YYYYMMDD>`,
   where the base version matches the latest stable tag reachable from `HEAD`,
@@ -586,9 +589,14 @@ Automatic S3 publishing should use this policy:
   keeps nightly versions readable, but existing local pip caches may still hold
   the older wheel for that version.
 
-The scheduled workflow defaults to `wheel_variant: bundled-and-light`, builds
-and pushes the matching IRD image, builds bundled and light wheels from that
-image, verifies the wheel versions, and publishes the result to S3 PyPI.
+Stable tag pushes default to `wheel_variant: bundled-and-light`, derive
+`version_override` from the tag (`v1.1.2` -> `1.1.2`), build and push the
+matching IRD image, build bundled and light wheels from that image, verify the
+wheel versions, and publish the result to S3 PyPI.
+
+The scheduled workflow also defaults to `wheel_variant: bundled-and-light`,
+builds and pushes the matching IRD image, builds bundled and light wheels from
+that image, verifies the wheel versions, and publishes the result to S3 PyPI.
 
 For a manual bundled internal wheel with an existing IRD image, dispatch the
 workflow with:

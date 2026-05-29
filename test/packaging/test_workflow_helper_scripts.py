@@ -60,6 +60,14 @@ def test_s3_schedule_publishes_bundled_and_light_wheels() -> None:
     ) in workflow
 
 
+def test_s3_stable_tags_publish_clean_version_wheels() -> None:
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+
+    assert "push:" in workflow
+    assert "tags:" in workflow
+    assert "- 'v[0-9]+.[0-9]+.[0-9]+'" in workflow
+
+
 def test_check_wheel_ttnn_metadata_matches_requirement_name(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()

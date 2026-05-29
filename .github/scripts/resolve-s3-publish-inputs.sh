@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Resolve the inputs of the S3 PyPI publish workflow into a single set of
-# step outputs. Computes a nightly version when none was supplied, forces
-# `overwrite_releases=true` for scheduled runs, and prints a one-line
-# summary per resolved input.
+# step outputs. Stable tag pushes use the tag version, scheduled runs compute
+# a nightly version, and scheduled runs force `overwrite_releases=true`.
 #
 # Required env:
 #   DISPATCH_DOCKER_TAG          May be empty (workflow_dispatch input).
@@ -14,6 +13,7 @@
 #   DISPATCH_VERSION_OVERRIDE    PEP 440 string, may be empty.
 #   DISPATCH_WHEEL_VARIANT       pypi|light|bundled|bundled-and-light.
 #   EVENT_NAME                   github.event_name.
+#   GITHUB_REF                   github.ref, required for push events.
 #   GITHUB_OUTPUT                Path that receives the resolved outputs.
 #                                Falls back to stdout when unset.
 #
@@ -22,6 +22,18 @@
 #   wheel_variants, wheel_matrix
 
 set -euo pipefail
+
+stable_tag_version() {
+    local ref="$1"
+
+    if [[ "$ref" =~ ^refs/tags/v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        printf '%s.%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+        return 0
+    fi
+
+    echo "S3 release-tag publish requires a stable tag like refs/tags/vX.Y.Z (got '$ref')." >&2
+    return 1
+}
 
 : "${DISPATCH_DRY_RUN:?DISPATCH_DRY_RUN is required}"
 : "${DISPATCH_OVERWRITE_RELEASES:?DISPATCH_OVERWRITE_RELEASES is required}"
@@ -61,8 +73,12 @@ if [[ "$EVENT_NAME" == "schedule" ]]; then
 fi
 
 if [[ -z "$version_override" ]]; then
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    version_override=$(python3 "$script_dir/compute-nightly-version.py")
+    if [[ "$EVENT_NAME" == "push" ]]; then
+        version_override=$(stable_tag_version "${GITHUB_REF:-}")
+    else
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        version_override=$(python3 "$script_dir/compute-nightly-version.py")
+    fi
 fi
 
 output_file="${GITHUB_OUTPUT:-/dev/stdout}"

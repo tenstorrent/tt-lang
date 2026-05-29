@@ -19,6 +19,7 @@ setup() {
     export DISPATCH_VERSION_OVERRIDE="42.42.42.dev20260527"
     export DISPATCH_WHEEL_VARIANT=bundled
     export EVENT_NAME=workflow_dispatch
+    export GITHUB_REF=refs/heads/main
 }
 
 # Read one `key=value` line from the captured GITHUB_OUTPUT file.
@@ -90,6 +91,26 @@ output_value() {
 @test "non-schedule event does not force overwrite_releases" {
     DISPATCH_OVERWRITE_RELEASES=false EVENT_NAME=workflow_dispatch run -0 "$SCRIPT"
     assert_equal "$(output_value overwrite_releases)" "false"
+}
+
+@test "stable tag push uses clean tag version" {
+    DISPATCH_VERSION_OVERRIDE="" \
+    EVENT_NAME=push \
+    GITHUB_REF=refs/tags/v1.2.3 \
+        run -0 "$SCRIPT"
+
+    assert_equal "$(output_value version_override)" "1.2.3"
+    assert_equal "$(output_value wheel_variant)" "bundled"
+    assert_equal "$(output_value overwrite_releases)" "false"
+}
+
+@test "push event rejects non-stable tag when version is unset" {
+    DISPATCH_VERSION_OVERRIDE="" \
+    EVENT_NAME=push \
+    GITHUB_REF=refs/tags/v1.2.3-rc1 \
+        run -1 "$SCRIPT"
+
+    assert_output --partial "S3 release-tag publish requires a stable tag"
 }
 
 @test "empty version_override invokes compute-nightly-version.py" {
