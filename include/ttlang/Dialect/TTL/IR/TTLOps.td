@@ -1008,11 +1008,11 @@ defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 //===----------------------------------------------------------------------===//
 //
 // `ttl.typecast` is a unary elementwise op that converts the data type of
-// every element. It does not fit the standard unary elementwise multiclass
-// because input and result element types differ; the multiclass requires
-// AllTypesMatch on input and result. The destination dtype is encoded in the
-// result type and is threaded to ttkernel.typecast_tile and its init op
-// during lowering by reading it from the result tile element type.
+// every element. The tile-level form `ttl.tile_typecast` carries the
+// destination dtype implicitly via its result tile element type. Because
+// input and result element types differ, typecast does not use the standard
+// unary elementwise multiclass (which constrains all operand and result
+// element types to match).
 
 def TTL_TypecastOp : TTL_Op<"typecast",
     [Pure, TTL_UnaryElementwiseOpTrait]> {

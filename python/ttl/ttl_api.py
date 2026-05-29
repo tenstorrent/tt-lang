@@ -40,6 +40,7 @@ import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl.pykernel._src.utils import _cleanup_source_code
 from ttl.dialects import ttkernel
 from ttl.ir import *
+from ttl.ir import DenseI32ArrayAttr
 from ttl.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
@@ -652,16 +653,24 @@ def _lookup_kernel_func_op(module, kernel_name: str):
     raise RuntimeError(f"Could not find TTKernel function '{kernel_name}'")
 
 
-def _set_unpack_to_dest_fp32(config, ttnn_mod) -> None:
-    """Configure UnpackToDestFp32 for the primary input CB (index 0)."""
+def _set_unpack_to_dest_fp32(config, ttnn_mod, cb_indices) -> None:
+    """Configure UnpackToDestFp32 for the listed CB indices.
+
+    `cb_indices` is the set of circular buffer indices that the compiler
+    determined need full-precision f32 unpack to DST (because at least one
+    SFPU consumer reads an f32 tile from that CB directly into DST).
+    """
     unpack_mode = ttnn_mod.UnpackToDestMode
     # The jit_build layer requires the vector size to be >= the number of CBs
     # for the target architecture (32 for WH B0, 64 for Blackhole). Use 64 to
     # cover both.
     num_cbs = 64
+    cb_set = set(cb_indices)
     modes = config.unpack_to_dest_mode
     for i in range(num_cbs):
-        modes.append(unpack_mode.UnpackToDestFp32 if i == 0 else unpack_mode.Default)
+        modes.append(
+            unpack_mode.UnpackToDestFp32 if i in cb_set else unpack_mode.Default
+        )
 
 
 def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
@@ -679,6 +688,25 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
         f"Expected boolean attribute '{attr_name}' on kernel '{kernel_name}', "
         f"got {attr_text!r}"
     )
+
+
+def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
+    """Read a `DenseI32ArrayAttr` func.func attribute as a list of ints.
+
+    Returns an empty list when the attribute is missing. Used by the runtime
+    bridge to consume the per-CB UnpackToDestFp32 selection emitted by
+    `ttl-set-compute-kernel-config`.
+    """
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(attr_name, None)
+    if attr is None:
+        return []
+    if not isinstance(attr, DenseI32ArrayAttr):
+        raise ValueError(
+            f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
+            f"'{kernel_name}', got {attr}"
+        )
+    return list(attr)
 
 
 def _compile_ttnn_kernel(
@@ -783,11 +811,11 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     noc_kernel_idx = 0
-    kernel_bool_attrs = {
+    kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
             "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
-            "unpack_to_dest_fp32": _get_kernel_bool_attr(
+            "unpack_to_dest_fp32": _get_kernel_i32_array_attr(
                 module, name, "ttl.unpack_to_dest_fp32"
             ),
         }
@@ -807,14 +835,15 @@ def _compile_ttnn_kernel(
             config = ttnn.ComputeConfigDescriptor()
             if fp32_dest_acc_en is not None:
                 config.fp32_dest_acc_en = fp32_dest_acc_en
-            elif kernel_bool_attrs[name]["fp32_dest_acc_en"]:
+            elif kernel_config_attrs[name]["fp32_dest_acc_en"]:
                 config.fp32_dest_acc_en = True
             if dst_full_sync_en is not None:
                 config.dst_full_sync_en = dst_full_sync_en
-            elif kernel_bool_attrs[name]["dst_full_sync_en"]:
+            elif kernel_config_attrs[name]["dst_full_sync_en"]:
                 config.dst_full_sync_en = True
-            if kernel_bool_attrs[name]["unpack_to_dest_fp32"]:
-                _set_unpack_to_dest_fp32(config, ttnn)
+            unpack_fp32_cbs = kernel_config_attrs[name]["unpack_to_dest_fp32"]
+            if unpack_fp32_cbs:
+                _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
