@@ -273,17 +273,17 @@ def cross_dfb_multicast_loopback(out):
 
                 bcast_net.if_src(send)
 
+    @ttl.datamovement()
+    def dm_write():
+        node_col, _node_row = ttl.node(dims=2)
+        for ri in range(NUM_OF_STRIPES):
+
             def recv(pipe):
                 b = dst_cb.reserve()
                 tx = ttl.copy(pipe, b)
                 tx.wait()
 
             bcast_net.if_dst(recv)
-
-    @ttl.datamovement()
-    def dm_write():
-        node_col, _node_row = ttl.node(dims=2)
-        for ri in range(NUM_OF_STRIPES):
             out_blk = dst_cb.wait()
             ttl.copy(out_blk, out[ri : ri + 1, node_col : node_col + 1]).wait()
 

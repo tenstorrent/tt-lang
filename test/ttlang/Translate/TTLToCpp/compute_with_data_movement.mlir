@@ -59,7 +59,7 @@
 // FPU-NEXT:  noc_async_read_tile([[TILE_OFF_A_I32]], [[ACC_A]], [[CB_ADDR_A]]);
 // FPU:     }
 // FPU-NEXT:   }
-// FPU-NEXT:   noc_async_read_barrier();
+// FPU-NEXT:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 
 // Read tensor B into CB1
 // FPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
@@ -84,7 +84,7 @@
 // FPU-NEXT:  noc_async_read_tile([[TILE_OFF_B_I32]], [[ACC_B]], [[CB_ADDR_B]]);
 // FPU:     }
 // FPU-NEXT:   }
-// FPU-NEXT:   noc_async_read_barrier();
+// FPU-NEXT:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // FPU-NEXT:   return;
 
 // =============================================================================
@@ -162,7 +162,7 @@
 // FPU-NEXT:  noc_async_write_tile([[WTILE_I32]], [[WACC]], [[WCB_ADDR]]);
 // FPU:     }
 // FPU-NEXT:   }
-// FPU-NEXT:   noc_async_write_barrier();
+// FPU-NEXT:   noc.async_write_barrier<Noc::BarrierMode::FULL>();
 
 // =============================================================================
 // SFPU path: reader kernel (same for both paths)
@@ -201,7 +201,7 @@
 // SFPU-NEXT:  noc_async_read_tile([[TILE_OFF_A_I32]], [[ACC_A]], [[CB_ADDR_A]]);
 // SFPU:     }
 // SFPU-NEXT:   }
-// SFPU-NEXT:   noc_async_read_barrier();
+// SFPU-NEXT:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 
 // Read tensor B into CB1
 // SFPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
@@ -226,7 +226,7 @@
 // SFPU-NEXT:  noc_async_read_tile([[TILE_OFF_B_I32]], [[ACC_B]], [[CB_ADDR_B]]);
 // SFPU:     }
 // SFPU-NEXT:   }
-// SFPU-NEXT:   noc_async_read_barrier();
+// SFPU-NEXT:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // SFPU-NEXT:   return;
 
 // =============================================================================
@@ -304,7 +304,7 @@
 // SFPU-NEXT:  noc_async_write_tile([[WTILE_I32]], [[WACC]], [[WCB_ADDR]]);
 // SFPU:     }
 // SFPU-NEXT:   }
-// SFPU-NEXT:   noc_async_write_barrier();
+// SFPU-NEXT:   noc.async_write_barrier<Noc::BarrierMode::FULL>();
 
 // Reader kernel: reads A and B from DRAM, pushes to CB0 and CB1
 func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)

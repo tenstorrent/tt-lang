@@ -520,6 +520,10 @@ def TTLVerifyPipeNetGuards
     Each diagnostic carries an example offending coordinate, the contributing
     PipeNet(s), and a suggested guard.
 
+    Same-thread pipe schedule diagnostics are emitted only when role and DFB
+    domain checks have succeeded, so schedule-cycle reports are not mixed with
+    earlier guard failures.
+
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
     `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices

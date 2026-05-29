@@ -68,7 +68,7 @@ It does two things, both inside the venv (no sudo):
 - Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts it under `<venv>/.../ttnn/runtime/sfpi/` (for `tt-lang` installation only).
 - Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to `./tutorials/`.
 
-For finer control: `tt-lang-setup-host` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
+For finer control: `tt-lang-setup-sfpi` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 
 Run a tutorial example:
 
@@ -140,6 +140,7 @@ docker run -d --name $USER-ird \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
   -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
+  -v $HOME/.ssh/known_hosts:/root/.ssh/known_hosts:ro \
   ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
   sleep infinity
 ```

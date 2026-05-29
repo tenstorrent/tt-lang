@@ -379,30 +379,44 @@ def loopback_multicast_kernel(inp, out):
     # src=(0,0); dst column 0 rows 0..3 (includes source).
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, slice(0, N_LB)))])
 
-    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
         if net.is_active():
-            with inp_cb.wait() as t, out_cb.reserve() as o:
+            with recv_cb.wait() as t, out_cb.reserve() as o:
                 o.store(ttl.math.abs(t))
 
     @ttl.datamovement()
     def dm_read():
         if net.is_active():
-            with inp_cb.reserve() as blk:
+            x, y = ttl.node(dims=2)
+            if x == 0 and y == 0:
+                with (
+                    send_cb.reserve() as send_src_blk,
+                    recv_cb.reserve() as recv_dst_blk,
+                ):
+                    ttl.copy(inp[0, 0], send_src_blk).wait()
 
-                def src(pipe):
-                    ttl.copy(inp[0, 0], blk).wait()
-                    ttl.copy(blk, pipe).wait()
+                    def dst(pipe):
+                        recv_tx = ttl.copy(pipe, recv_dst_blk)
 
-                net.if_src(src)
+                        def src(pipe):
+                            ttl.copy(send_src_blk, pipe).wait()
 
-                def dst(pipe):
-                    ttl.copy(pipe, blk).wait()
+                        net.if_src(src)
+                        recv_tx.wait()
 
-                net.if_dst(dst)
+                    net.if_dst(dst)
+            else:
+                with recv_cb.reserve() as recv_dst_blk:
+
+                    def dst(pipe):
+                        ttl.copy(pipe, recv_dst_blk).wait()
+
+                    net.if_dst(dst)
 
     @ttl.datamovement()
     def dm_write():

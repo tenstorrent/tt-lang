@@ -8,6 +8,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/Support/LogicalResult.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
@@ -16,11 +17,9 @@
 namespace mlir::tt::ttl {
 
 //===----------------------------------------------------------------------===//
-// Pipe Graph: Tracks sender->receiver CB associations for pipe copies.
-//
-// For gather patterns, senders must write to the receiver's CB address, not
-// their own. The PipeGraph identifies receiver CBs for each pipe and
-// manages gather slot/semaphore assignments.
+// Pipe Graph: Tracks receiver dataflow buffer associations for pipe copies.
+// The graph validates that each logical pipe has a consistent destination DFB
+// and enough DFB slots for overlapping writes.
 //===----------------------------------------------------------------------===//
 
 /// Key for identifying a pipe by its source, destination, and PipeNet ID.
@@ -61,111 +60,48 @@ struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
 
 namespace mlir::tt::ttl {
 
-/// Receiver CB information for a pipe.
-struct ReceiverCBInfo {
-  int64_t cbIndex;       // CB index (0-31) used by receiver
-  int64_t gatherSlotIdx; // Slot index for gather patterns (0 if not gather)
-  int64_t blockCount;    // CB block_count (for gather validation)
-  Location loc;          // Source location for error reporting
+/// Receiver DFB information for a pipe.
+struct ReceiverDFBInfo {
+  int64_t dfbIndex;           // DFB index (0-31) used by receiver
+  CircularBufferType dfbType; // Receiver DFB type
+  int64_t staticTileOffset;   // Static destination tile offset within the DFB
+  int64_t gatherSlotIdx;      // Slot index for overlap patterns (0 if none)
+  int64_t blockCount;         // DFB block_count
+  Location loc;               // Source location for error reporting
 };
 
-namespace detail {
-// Per-unicast-gather-destination key. Visible in the header because
-// PipeGraph::gatherDstCounts uses it as the DenseMap key type.
-struct GatherDstKey {
-  int64_t dstX, dstY, pipeNetId;
-  bool operator==(const GatherDstKey &o) const {
-    return dstX == o.dstX && dstY == o.dstY && pipeNetId == o.pipeNetId;
-  }
-};
-struct GatherDstKeyInfo {
-  static GatherDstKey getEmptyKey() {
-    int64_t s = llvm::DenseMapInfo<int64_t>::getEmptyKey();
-    return {s, s, s};
-  }
-  static GatherDstKey getTombstoneKey() {
-    int64_t s = llvm::DenseMapInfo<int64_t>::getTombstoneKey();
-    return {s, s, s};
-  }
-  static unsigned getHashValue(const GatherDstKey &k) {
-    return llvm::hash_combine(k.dstX, k.dstY, k.pipeNetId);
-  }
-  static bool isEqual(const GatherDstKey &a, const GatherDstKey &b) {
-    return a == b;
-  }
-};
-} // namespace detail
-
-/// Graph tracking pipe connections and receiver CB assignments.
-/// Built before lowering by analyzing Pipe->CB copy operations.
+/// Graph tracking pipe connections and receiver DFB assignments.
+/// Built after pipe receive copies have been expanded to receive-post ops.
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.
-  /// Returns failure if validation detects an error (e.g., gather CB too
+  /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
   static FailureOr<PipeGraph> build(ModuleOp mod);
 
-  /// Get receiver CB info for a pipe identified by its coordinates.
-  /// Returns nullptr if not found.
-  const ReceiverCBInfo *getReceiverInfo(int64_t srcX, int64_t srcY,
-                                        int64_t dstStartX, int64_t dstStartY,
-                                        int64_t dstEndX, int64_t dstEndY,
-                                        int64_t pipeNetId) const {
-    PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
-    auto it = receiverCBs.find(key);
-    if (it == receiverCBs.end()) {
-      return nullptr;
-    }
-    return &it->second;
-  }
-
   /// Check if any pipes were found.
-  bool hasPipes() const { return !receiverCBs.empty(); }
+  bool hasPipes() const { return !receiverDFBs.empty(); }
 
-  /// Add a receiver CB mapping for a pipe.
-  LogicalResult addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
-                              int64_t dstStartY, int64_t dstEndX,
-                              int64_t dstEndY, int64_t pipeNetId,
-                              int64_t cbIndex, int64_t blockCount, Location loc,
-                              Operation *receiverCopyOp);
+  /// Add a receiver DFB mapping for a pipe.
+  LogicalResult addReceiverDFB(int64_t srcX, int64_t srcY, int64_t dstStartX,
+                               int64_t dstStartY, int64_t dstEndX,
+                               int64_t dstEndY, int64_t pipeNetId,
+                               int64_t dfbIndex, CircularBufferType dfbType,
+                               int64_t staticTileOffset, int64_t blockCount,
+                               Location loc);
 
   /// Assign per-pipe slot indices via greedy coloring keyed by
-  /// (receiver, cbIndex). Pipes sharing a receiver+cbIndex get distinct
+  /// (receiver, DFB index). Pipes sharing a receiver DFB get distinct
   /// slots so their writes do not overwrite each other in that receiver's
-  /// CB. Pipes ordered by (srcX, srcY) for reproducibility. Also populates
-  /// gatherDstCounts for unicast receivers' cumulative wait_min.
+  /// DFB. Pipes ordered by (srcX, srcY) for reproducibility.
   void assignGatherSlotIndices();
 
   /// Each pipe needs `block_count >= gatherSlotIdx + 1` in its receiver
-  /// CB. Covers unicast gather and multicast overlap uniformly.
-  LogicalResult verifyGatherBlockCounts() const;
-
-  /// For unicast gather receivers: returns {recvIndex, totalSenders}.
-  /// recvIndex is 1-based (1st sender, 2nd sender, ...).
-  /// Non-gather unicast returns {1, 1}.
-  /// Keyed on the receiver CopyOp, so call order doesn't matter.
-  std::pair<int64_t, int64_t>
-  getGatherRecvProgress(Operation *receiverCopyOp) const;
+  /// DFB. Covers unicast gather and multicast overlap uniformly.
+  LogicalResult verifyReceiverDFBBlockCounts() const;
 
 private:
-  llvm::DenseMap<PipeKey, ReceiverCBInfo> receiverCBs;
-
-  // Per-unicast-destination sender count, keyed by (dstX, dstY, pipeNetId).
-  // Multicast pipes use the runtime counter from
-  // allocatePipeNetCountersForMulticast / lowerPipeToCB.
-  llvm::DenseMap<detail::GatherDstKey, int64_t, detail::GatherDstKeyInfo>
-      gatherDstCounts;
-
-  // Maps receiver CopyOp -> PipeKey for CopyOp-keyed lookups.
-  llvm::DenseMap<Operation *, PipeKey> receiverCopyToKey;
-
-  // Insertion-ordered record of receiver CopyOps. Used by
-  // assignGatherSlotIndices to assign receive indices in program order
-  // (DenseMap iteration order is hash-based, not insertion-ordered).
-  SmallVector<std::pair<Operation *, PipeKey>> receiverCopyOrder;
-
-  // Maps receiver CopyOp -> 1-based receive index (assigned at build time).
-  llvm::DenseMap<Operation *, int64_t> gatherRecvProgress;
+  llvm::DenseMap<PipeKey, ReceiverDFBInfo> receiverDFBs;
 };
 
 } // namespace mlir::tt::ttl

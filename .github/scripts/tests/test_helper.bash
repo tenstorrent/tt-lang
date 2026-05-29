@@ -36,9 +36,10 @@ mkrepo() {
         git config user.name t
         mkdir -p third-party/llvm-project third-party/tt-metal .github/containers python/sim
         # Sourceable shell snippet matching the real third-party/tt-metal-version
-        # schema (TTNN_PYPI, TT_METAL_TAG).
+        # schema.
         cat > third-party/tt-metal-version <<'VERSION_EOF'
 TTNN_PYPI="0.69.0"
+TTNN_PYPI_TT_METAL_TAG="v0.69.0"
 TT_METAL_TAG="v0.69.0"
 VERSION_EOF
         echo "llvm-content-v1" > third-party/llvm-project/sentinel

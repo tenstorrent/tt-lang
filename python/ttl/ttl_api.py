@@ -549,7 +549,7 @@ class CompiledTTNNKernel:
         all_source_lines=None,
         thread_to_kernel=None,
         kernel_line_offsets=None,
-        num_pipe_nets=0,
+        num_pipe_sync_semaphores=0,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -567,7 +567,8 @@ class CompiledTTNNKernel:
             all_source_lines: Dict mapping kernel name to source lines
             thread_to_kernel: Dict mapping RISC thread name to kernel name
             kernel_line_offsets: Dict mapping kernel name to line offset
-            num_pipe_nets: Number of PipeNets used by this kernel
+            num_pipe_sync_semaphores: Number of pipe synchronization
+                semaphores used by this kernel
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -581,7 +582,7 @@ class CompiledTTNNKernel:
         self.all_source_lines = all_source_lines or {}
         self.thread_to_kernel = thread_to_kernel or {}
         self.kernel_line_offsets = kernel_line_offsets or {}
-        self.num_pipe_nets = num_pipe_nets
+        self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -619,7 +620,7 @@ class CompiledTTNNKernel:
             cb_configs=self.cb_configs,
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
-            num_pipe_nets=self.num_pipe_nets,
+            num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
         )
 
 
@@ -722,7 +723,7 @@ def _compile_ttnn_kernel(
     source_lines=None,
     all_source_lines=None,
     kernel_line_offsets=None,
-    num_pipe_nets: int = 0,
+    num_pipe_sync_semaphores: int = 0,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -880,7 +881,7 @@ def _compile_ttnn_kernel(
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
-        num_pipe_nets=num_pipe_nets,
+        num_pipe_sync_semaphores=num_pipe_sync_semaphores,
     )
 
     if verbose:
@@ -1659,7 +1660,9 @@ def _compile_kernel(
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
-            num_pipe_nets=len(pipenets.pipe_nets),
+            num_pipe_sync_semaphores=pipenets.num_pipe_sync_semaphores(
+                num_noc_threads=noc_kernel_idx
+            ),
         )
         return compiled_kernel
 

@@ -11,6 +11,36 @@ on:
         description: "Docker image tag for the ird container."
         type: string
         required: true
+      ttnn_dep_mode:
+        description: "ttnn dependency mode: pypi depends on ttnn, external omits it, bundled includes cached ttnn."
+        type: string
+        default: pypi
+        required: false
+      version_override:
+        description: "Optional PEP 440 version override for branch/internal wheels."
+        type: string
+        default: ""
+        required: false
+      external_tt_metal_dir:
+        description: "Existing tt-metal install/source directory."
+        type: string
+        default: ""
+        required: false
+      external_tt_metal_build_dir:
+        description: "Existing native tt-metal build directory."
+        type: string
+        default: ""
+        required: false
+      external_python_venv:
+        description: "Existing Python venv to use while configuring tt-lang."
+        type: string
+        default: ""
+        required: false
+      bundled_tt_metal_dir:
+        description: "Cached tt-metal install to bundle into tt-lang when ttnn_dep_mode=bundled."
+        type: string
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -19,7 +49,7 @@ permissions:
 jobs:
   build-wheels:
     name: "Build tt-lang wheel"
-    runs-on: ubuntu-22.04
+    runs-on: mlir-large-runner-lang
     timeout-minutes: 120
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${{ inputs.docker_tag }}
@@ -38,19 +68,36 @@ jobs:
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
 
+      - name: Validate wheel inputs and resolve versions
+        id: versions
+        env:
+          TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+          VERSION_OVERRIDE: ${{ inputs.version_override }}
+        run: .github/scripts/resolve-wheel-versions.sh
+
       - name: Configure tt-lang
+        env:
+          TTLANG_VERSION_OVERRIDE: ${{ steps.versions.outputs.core_version }}
+          TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}
+          TTLANG_EXTERNAL_TT_METAL_BUILD_DIR: ${{ inputs.external_tt_metal_build_dir }}
+          TTLANG_PYTHON_VENV: ${{ inputs.external_python_venv }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
-          cmake -G Ninja -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DTTLANG_USE_TOOLCHAIN=ON
+          .github/scripts/configure-ttlang-build.sh build
 
       - name: Install wheel build tools
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
-          pip install auditwheel patchelf
+          pip install auditwheel packaging patchelf
 
       - name: Build tt-lang wheel
+        env:
+          TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+          TTLANG_VERSION_OVERRIDE: ${{ steps.versions.outputs.core_version }}
+          TTLANG_EXTERNAL_TT_METAL_DIR: ${{ inputs.external_tt_metal_dir }}
+          TTLANG_EXTERNAL_TT_METAL_BUILD_DIR: ${{ inputs.external_tt_metal_build_dir }}
+          TTLANG_BUNDLED_TT_METAL_DIR: ${{ inputs.bundled_tt_metal_dir }}
+          TTLANG_PYTHON_VENV: ${{ inputs.external_python_venv }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation
@@ -68,11 +115,28 @@ jobs:
           source /opt/ttlang-toolchain/venv/bin/activate
           auditwheel repair dist-raw/*.whl --wheel-dir=dist
 
+      - name: Check tt-lang wheel metadata
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          python .github/scripts/check-wheel-ttnn-metadata.py \
+            --mode "${{ inputs.ttnn_dep_mode }}" \
+            --dist-dir dist
+
+      - name: Check bundled ttnn wheel payload
+        if: ${{ inputs.ttnn_dep_mode == 'bundled' }}
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          python .github/scripts/check-wheel-bundled-payload.py --dist-dir dist
+
       - name: Test tt-lang wheel
         run: |
           python3.12 -m venv /tmp/test-venv-hw
           source /tmp/test-venv-hw/bin/activate
-          pip install --no-cache-dir dist/tt_lang-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install \
+            --no-cache-dir \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            dist/tt_lang-*.whl
+          python .github/scripts/check-installed-ttnn.py --mode "${{ inputs.ttnn_dep_mode }}"
           python .github/scripts/smoke-test-wheel.py
 
       - name: Free disk space before tt-lang-sim wheel test
@@ -82,6 +146,8 @@ jobs:
           df -h
 
       - name: Build tt-lang-sim wheel
+        env:
+          TTLANG_VERSION_OVERRIDE: ${{ inputs.version_override }}
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
           pip wheel packaging/sim --wheel-dir=dist --no-deps --no-build-isolation
@@ -90,14 +156,35 @@ jobs:
         run: |
           python3.12 -m venv /tmp/test-venv-sim
           source /tmp/test-venv-sim/bin/activate
-          pip install --no-cache-dir dist/tt_lang_sim-*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install \
+            --no-cache-dir \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            dist/tt_lang_sim-*.whl
           python .github/scripts/smoke-test-wheel.py
+
+      # external mode is guaranteed by the Validate step to have version_override.
+      - name: Build tt-lang-light wheel
+        if: ${{ inputs.ttnn_dep_mode == 'external' }}
+        env:
+          TTLANG_VERSION_OVERRIDE: ${{ inputs.version_override }}
+          TTLANG_LIGHT_TTLANG_VERSION: ${{ steps.versions.outputs.light_version }}
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip wheel packaging/light --wheel-dir=dist --no-deps --no-build-isolation
+
+      - name: Check internal metapackage metadata
+        if: ${{ inputs.ttnn_dep_mode == 'external' }}
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          python .github/scripts/check-light-metapackage.py \
+            --dist-dir dist \
+            --expect-ttlang-version "${{ steps.versions.outputs.light_version }}"
 
       - name: Report wheel sizes
         run: ls -lh dist/*.whl
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: tt-lang-wheels
           path: dist/*.whl

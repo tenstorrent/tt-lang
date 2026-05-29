@@ -455,11 +455,10 @@ def copy(src, dst) -> CopyTransferHandler:
                 raise ValueError(
                     "copy() from pipe requires block dst (from cb.reserve() or cb.wait())"
                 )
-            dst_cb = _get_cb_from_block(dst)
             pipe_val = _get_pipe_mlir_value(src)
-            ctx = dst_cb.type.context
+            ctx = dst.type.context
             xf_type = Type.parse("!ttl.transfer_handle", ctx)
-            return ttl.copy(xf_type, pipe_val, dst_cb)
+            return ttl.copy(xf_type, pipe_val, dst)
 
     # Non-pipe transfers: tensor subscript <-> block
     src_is_subscript = isinstance(src, tuple)

@@ -88,10 +88,10 @@ def scatter(inp, out):
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
-# CHECK-CPP: noc_async_write_multicast(
-# CHECK-CPP: noc_async_write_barrier();
+# CHECK-CPP: noc0.async_write_multicast<Noc::McastMode::EXCLUDE_SRC>(
+# CHECK-CPP: noc0.async_write_barrier<Noc::BarrierMode::FULL>();
 # CHECK-CPP: noc_semaphore_inc_multicast(
-# CHECK-CPP: noc_async_atomic_barrier();
+# CHECK-CPP: noc0.async_atomic_barrier();
 
 # Multicast receiver: signal sender ready, wait for data
 # CHECK-CPP: noc_semaphore_inc(

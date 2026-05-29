@@ -215,6 +215,17 @@ declare_mlir_python_sources(TTLangPythonCommon.PipeNets
     _pipenets/__init__.py
 )
 
+declare_mlir_python_sources(TTLangPythonCommon.Setup
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    _setup/__init__.py
+    _setup/cli.py
+    _setup/external_tt_metal.py
+    _setup/sfpi.py
+    _setup/tutorials.py
+)
+
 declare_mlir_python_sources(TTLangPythonCommon.Utils
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
   ADD_TO_PARENT TTLangPythonCommon

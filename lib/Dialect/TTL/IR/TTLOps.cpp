@@ -176,9 +176,15 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     if (srcIsPipe && dstIsPipe) {
       return emitOpError() << "cannot copy directly between pipes";
     }
-    if (!srcIsCb && !dstIsCb) {
-      return emitOpError()
-             << "pipe transfers require one operand to be !ttl.cb";
+    if (dstIsPipe) {
+      if (!srcIsCb) {
+        return emitOpError()
+               << "pipe send requires source operand to be !ttl.cb";
+      }
+      return success();
+    }
+    if (!findCBReserveForPipeReceive(getDst())) {
+      return emitOpError() << "pipe receive requires a cb_reserve destination";
     }
     return success();
   }
@@ -242,6 +248,37 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
                          << transferTensorTy.getElementType()
                          << ") must match CB element type ("
                          << cbTy.getElementType() << ")";
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
+  if (!findCBReserveForPipeReceive(getDst())) {
+    return emitOpError() << "requires a cb_reserve destination";
+  }
+
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType) {
+    return emitOpError() << "requires a transfer handle result";
+  }
+  if (handleType.getKind()) {
+    return emitOpError() << "requires an untyped transfer handle result";
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeRecvWaitOp::verify() {
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType) {
+    return emitOpError() << "requires a transfer handle operand";
+  }
+  if (handleType.getKind()) {
+    return emitOpError() << "requires an untyped transfer handle operand";
+  }
+  if (!findCBReserveForPipeReceive(getDst())) {
+    return emitOpError() << "requires a cb_reserve destination";
   }
 
   return success();

@@ -164,14 +164,14 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: .reserve_back(
 # CHECK-CPP: noc_async_read_tile(
-# CHECK-CPP: noc_async_read_barrier();
+# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
 # CHECK-CPP: .push_back(
 
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: .wait_front(
 # CHECK-CPP: noc_async_write_tile(
-# CHECK-CPP: noc_async_write_barrier();
+# CHECK-CPP: noc.async_write_barrier<Noc::BarrierMode::FULL>();
 # CHECK-CPP: .pop_front(
 
 # =============================================================================
