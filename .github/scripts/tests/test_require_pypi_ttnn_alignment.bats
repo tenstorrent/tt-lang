@@ -19,39 +19,37 @@ run_alignment_check() {
 }
 
 @test "accepts matching ttnn provenance and tt-metal tag" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
-TTNN_PYPI="0.70.1"
-TTNN_PYPI_TT_METAL_TAG="v0.70.1-rc1"
-TT_METAL_TAG="v0.70.1-rc1"
-EOF
+    write_tt_metal_version_file "$REPO/third-party/tt-metal-version" \
+        "$TEST_TTNN_PYPI_VERSION" \
+        "$TEST_TT_METAL_RC1_TAG" \
+        "$TEST_TT_METAL_RC1_TAG"
     commit_all "$REPO" "aligned"
 
     run run_alignment_check
 
     assert_success
-    assert_output --partial "ok: ttnn==0.70.1 and tt-lang both use tt-metal v0.70.1-rc1"
+    assert_output --partial "ok: ttnn==$TEST_TTNN_PYPI_VERSION and tt-lang both use tt-metal $TEST_TT_METAL_RC1_TAG"
 }
 
 @test "rejects mismatched ttnn provenance and tt-metal tag" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
-TTNN_PYPI="0.70.1"
-TTNN_PYPI_TT_METAL_TAG="v0.70.1-rc1"
-TT_METAL_TAG="v0.71.0-rc2"
-EOF
+    write_tt_metal_version_file "$REPO/third-party/tt-metal-version" \
+        "$TEST_TTNN_PYPI_VERSION" \
+        "$TEST_TT_METAL_RC1_TAG" \
+        "$TEST_TT_METAL_RC2_TAG"
     commit_all "$REPO" "mismatched"
 
     run run_alignment_check
 
     assert_failure
     assert_output --partial "Public PyPI publish requires ttnn provenance to match TT_METAL_TAG."
-    assert_output --partial "TTNN_PYPI=0.70.1 was built from TTNN_PYPI_TT_METAL_TAG=v0.70.1-rc1"
-    assert_output --partial "TT_METAL_TAG=v0.71.0-rc2"
+    assert_output --partial "TTNN_PYPI=$TEST_TTNN_PYPI_VERSION was built from TTNN_PYPI_TT_METAL_TAG=$TEST_TT_METAL_RC1_TAG"
+    assert_output --partial "TT_METAL_TAG=$TEST_TT_METAL_RC2_TAG"
 }
 
 @test "rejects missing ttnn provenance tag" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
-TTNN_PYPI="0.70.1"
-TT_METAL_TAG="v0.70.1-rc1"
+    cat > "$REPO/third-party/tt-metal-version" <<EOF
+TTNN_PYPI="$TEST_TTNN_PYPI_VERSION"
+TT_METAL_TAG="$TEST_TT_METAL_RC1_TAG"
 EOF
     commit_all "$REPO" "missing provenance"
 

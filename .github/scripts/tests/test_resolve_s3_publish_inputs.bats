@@ -28,18 +28,6 @@ output_value() {
     grep "^${key}=" "$GITHUB_OUTPUT_FILE" | sed "s/^${key}=//"
 }
 
-make_tt_metal_version_file() {
-    local pypi_tag="$1"
-    local tt_metal_tag="$2"
-    local version_file="$BATS_TEST_TMPDIR/tt-metal-version.$pypi_tag.$tt_metal_tag"
-    cat > "$version_file" <<EOF
-TTNN_PYPI="0.70.1"
-TTNN_PYPI_TT_METAL_TAG="$pypi_tag"
-TT_METAL_TAG="$tt_metal_tag"
-EOF
-    echo "$version_file"
-}
-
 @test "missing DISPATCH_DRY_RUN -> error" {
     unset DISPATCH_DRY_RUN
     run -1 "$SCRIPT"
@@ -112,7 +100,9 @@ EOF
 }
 
 @test "stable tag push publishes bundled and light when public PyPI is blocked" {
-    version_file=$(make_tt_metal_version_file v0.70.1-rc1 v0.71.0-rc2)
+    version_file=$(make_tt_metal_version_file \
+        "$TEST_TT_METAL_RC1_TAG" \
+        "$TEST_TT_METAL_RC2_TAG")
 
     DISPATCH_VERSION_OVERRIDE="" \
     DISPATCH_WHEEL_VARIANT="" \
@@ -129,7 +119,9 @@ EOF
 }
 
 @test "stable tag push publishes only light when public PyPI is aligned" {
-    version_file=$(make_tt_metal_version_file v0.71.0-rc2 v0.71.0-rc2)
+    version_file=$(make_tt_metal_version_file \
+        "$TEST_TT_METAL_RC2_TAG" \
+        "$TEST_TT_METAL_RC2_TAG")
 
     DISPATCH_VERSION_OVERRIDE="" \
     DISPATCH_WHEEL_VARIANT="" \
@@ -145,7 +137,9 @@ EOF
 }
 
 @test "stable manual bundled publish is rejected when public PyPI is aligned" {
-    version_file=$(make_tt_metal_version_file v0.71.0-rc2 v0.71.0-rc2)
+    version_file=$(make_tt_metal_version_file \
+        "$TEST_TT_METAL_RC2_TAG" \
+        "$TEST_TT_METAL_RC2_TAG")
 
     DISPATCH_VERSION_OVERRIDE="1.2.3" \
     DISPATCH_WHEEL_VARIANT=bundled \
