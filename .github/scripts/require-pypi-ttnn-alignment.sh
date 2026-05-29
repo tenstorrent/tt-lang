@@ -7,18 +7,13 @@
 
 set -euo pipefail
 
-ROOT=$(git rev-parse --show-toplevel)
-VERSION_FILE="$ROOT/third-party/tt-metal-version"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/tt-metal-version-utils.sh
+. "$script_dir/lib/tt-metal-version-utils.sh"
 
-[[ -f "$VERSION_FILE" ]] || { echo "missing $VERSION_FILE" >&2; exit 1; }
+load_tt_metal_version
 
-# shellcheck source=../../third-party/tt-metal-version
-. "$VERSION_FILE"
-: "${TTNN_PYPI:?$VERSION_FILE: TTNN_PYPI not set}"
-: "${TTNN_PYPI_TT_METAL_TAG:?$VERSION_FILE: TTNN_PYPI_TT_METAL_TAG not set}"
-: "${TT_METAL_TAG:?$VERSION_FILE: TT_METAL_TAG not set}"
-
-if [[ "$TTNN_PYPI_TT_METAL_TAG" != "$TT_METAL_TAG" ]]; then
+if ! ttnn_pypi_aligned; then
   cat >&2 <<EOF
 Public PyPI publish requires ttnn provenance to match TT_METAL_TAG.
 TTNN_PYPI=$TTNN_PYPI was built from TTNN_PYPI_TT_METAL_TAG=$TTNN_PYPI_TT_METAL_TAG,

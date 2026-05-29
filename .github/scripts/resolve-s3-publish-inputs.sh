@@ -24,6 +24,10 @@
 
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/tt-metal-version-utils.sh
+. "$script_dir/lib/tt-metal-version-utils.sh"
+
 stable_tag_version() {
     local ref="$1"
 
@@ -44,17 +48,9 @@ variant_includes_bundled() {
     [[ "$1" == "bundled" || "$1" == "bundled-and-light" ]]
 }
 
-ttnn_pypi_aligned() {
-    local repo_root version_file
-    repo_root=$(git rev-parse --show-toplevel)
-    version_file="${TTLANG_TT_METAL_VERSION_FILE:-$repo_root/third-party/tt-metal-version}"
-
-    # shellcheck source=../../third-party/tt-metal-version
-    . "$version_file"
-    : "${TTNN_PYPI_TT_METAL_TAG:?$version_file: TTNN_PYPI_TT_METAL_TAG not set}"
-    : "${TT_METAL_TAG:?$version_file: TT_METAL_TAG not set}"
-
-    [[ "$TTNN_PYPI_TT_METAL_TAG" == "$TT_METAL_TAG" ]]
+pypi_aligned() {
+    load_tt_metal_version || exit 1
+    ttnn_pypi_aligned
 }
 
 : "${DISPATCH_DRY_RUN:?DISPATCH_DRY_RUN is required}"
@@ -70,7 +66,6 @@ if [[ -z "$version_override" ]]; then
     if [[ "$EVENT_NAME" == "push" ]]; then
         version_override=$(stable_tag_version "${GITHUB_REF:-}")
     else
-        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         version_override=$(python3 "$script_dir/compute-nightly-version.py")
     fi
 fi
@@ -78,7 +73,7 @@ fi
 if [[ -z "$wheel_variant" ]]; then
     case "$EVENT_NAME" in
         push)
-            if ttnn_pypi_aligned; then
+            if pypi_aligned; then
                 wheel_variant=light
             else
                 wheel_variant=bundled-and-light
@@ -117,7 +112,7 @@ case "$wheel_variant" in
         ;;
 esac
 
-if is_stable_version "$version_override" && variant_includes_bundled "$wheel_variant" && ttnn_pypi_aligned; then
+if is_stable_version "$version_override" && variant_includes_bundled "$wheel_variant" && pypi_aligned; then
     echo "Refusing to publish bundled tt-lang==$version_override to S3 because public PyPI publishing is aligned for this tt-metal tag." >&2
     echo "Use the light or pypi S3 variant, or use a distinct internal version." >&2
     exit 1

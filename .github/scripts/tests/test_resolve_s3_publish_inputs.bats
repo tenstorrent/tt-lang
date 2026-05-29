@@ -168,8 +168,10 @@ output_value() {
     # ($script_dir/compute-nightly-version.py), so shadow that file specifically.
     shadow_dir="$BATS_TEST_TMPDIR/shadow-scripts"
     mkdir -p "$shadow_dir/tests"
-    # Copy real script (so its sibling import resolves) and override compute-nightly.
+    # Copy real script and its sibling lib (so the sourced helper resolves),
+    # then override compute-nightly.
     cp "$SCRIPT" "$shadow_dir/"
+    cp -r "$SCRIPTS_DIR/lib" "$shadow_dir/"
     cat > "$shadow_dir/compute-nightly-version.py" <<'EOF'
 #!/usr/bin/env python3
 print("9.9.9.dev20991231")

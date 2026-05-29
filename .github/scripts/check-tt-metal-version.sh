@@ -20,6 +20,10 @@
 
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/tt-metal-version-utils.sh
+. "$script_dir/lib/tt-metal-version-utils.sh"
+
 ROOT=$(git rev-parse --show-toplevel)
 VERSION_FILE="$ROOT/third-party/tt-metal-version"
 DOCKERFILE="$ROOT/.github/containers/Dockerfile.base"
@@ -29,12 +33,7 @@ TT_METAL_REMOTE="https://github.com/tenstorrent/tt-metal"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 
-[[ -f "$VERSION_FILE" ]] || { echo "missing $VERSION_FILE" >&2; exit 1; }
-# shellcheck source=../../third-party/tt-metal-version
-. "$VERSION_FILE"
-: "${TT_METAL_TAG:?$VERSION_FILE: TT_METAL_TAG not set}"
-: "${TTNN_PYPI:?$VERSION_FILE: TTNN_PYPI not set}"
-: "${TTNN_PYPI_TT_METAL_TAG:?$VERSION_FILE: TTNN_PYPI_TT_METAL_TAG not set}"
+load_tt_metal_version "$VERSION_FILE"
 TAG="$TT_METAL_TAG"
 PYPI="$TTNN_PYPI"
 PYPI_TAG="$TTNN_PYPI_TT_METAL_TAG"
