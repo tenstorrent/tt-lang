@@ -3,6 +3,7 @@
 -r docs/requirements.txt
 black
 lit
+packaging
 pre-commit
 pyright
 pytest-order>=1.0.0

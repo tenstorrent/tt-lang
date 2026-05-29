@@ -1,29 +1,33 @@
 # tt-metal version used by tt-lang.
 # Sourceable shell snippet: shell consumers `. third-party/tt-metal-version`
-# and read $TTNN_PYPI / $TT_METAL_TAG; setup.py reads the same variables
-# via a small regex parser.
+# and read $TTNN_PYPI / $TTNN_PYPI_TT_METAL_TAG / $TT_METAL_TAG; setup.py
+# reads TTNN_PYPI via a small regex parser.
 #
 # Variables:
 #   TTNN_PYPI    - PyPI version of ttnn. setup.py uses it in the wheel's
 #                  install_requires (ttnn == $TTNN_PYPI).
-#   TT_METAL_TAG - tt-metal git tag the ttnn release was built from.
+#   TTNN_PYPI_TT_METAL_TAG
+#                - tt-metal git tag the ttnn PyPI release was built from.
+#                  publish-pypi.yml requires this to match TT_METAL_TAG.
+#   TT_METAL_TAG - tt-metal git tag tt-lang builds against.
 #                  check-tt-metal-version.sh uses it to verify the
 #                  third-party/tt-metal submodule HEAD;
 #                  .github/containers/Dockerfile.base uses it to download
 #                  install_dependencies.sh and SFPI info.
 #
-# Why two variables: TTNN_PYPI and TT_METAL_TAG may diverge. ttnn 0.70.1,
-# for example, was built from tt-metal tag v0.70.1-rc1; tt-metal does not
-# publish a v0.70.1 tag. To confirm which tt-metal tag a given ttnn
-# release was built from, inspect the PyPI release's provenance
+# Why separate tags: TTNN_PYPI_TT_METAL_TAG and TT_METAL_TAG may diverge.
+# ttnn 0.70.1, for example, was built from tt-metal tag v0.70.1-rc1;
+# tt-metal does not publish a v0.70.1 tag. To confirm which tt-metal tag a
+# given ttnn release was built from, inspect the PyPI release's provenance
 # attestation: https://pypi.org/project/ttnn/<version>/
 #
 # Bumping:
-#   1. Update both variables below to match an existing ttnn PyPI release
-#      and its underlying tt-metal tag.
-#   2. Run: .github/scripts/check-tt-metal-version.sh --update
+#   1. Update TTNN_PYPI and TTNN_PYPI_TT_METAL_TAG to match an existing ttnn
+#      PyPI release and its underlying tt-metal tag.
+#   2. Update TT_METAL_TAG to the tt-metal tag tt-lang should build against.
+#   3. Run: .github/scripts/check-tt-metal-version.sh --update
 #      to check out third-party/tt-metal at the matching commit.
-#   3. Commit the version file and the submodule update together.
+#   4. Commit the version file and the submodule update together.
 #
 # Mismatch warning: the build verifies that third-party/tt-metal's SHA
 # matches tt-mlir's TT_METAL_VERSION value. When a tt-mlir uplift requires
@@ -36,5 +40,7 @@
 # still align with the ttnn PyPI wheel).
 
 TTNN_PYPI="0.70.1"
-# DANGER: the matching tt-metal tag for the above ttnn is v0.70.1-rc1
+TTNN_PYPI_TT_METAL_TAG="v0.70.1-rc1"
+# DANGER: public PyPI publish is blocked until TT_METAL_TAG matches
+# TTNN_PYPI_TT_METAL_TAG. See docs/sphinx/build.md#publishing-to-s3-pypi.
 TT_METAL_TAG="v0.71.0-rc2"

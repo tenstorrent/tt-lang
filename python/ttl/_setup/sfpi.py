@@ -63,21 +63,18 @@ def _sha256(path: Path) -> str:
 
 def _download(url: str, dst: Path) -> None:
     print(f"downloading {url}")
-    with urllib.request.urlopen(url) as resp, dst.open("wb") as out:
+    with urllib.request.urlopen(url, timeout=60) as resp, dst.open("wb") as out:
         shutil.copyfileobj(resp, out)
 
 
 def _safe_extract(archive: Path, dest: Path) -> None:
     with tarfile.open(archive, "r:xz") as tar:
-        try:
-            tar.extractall(path=dest, filter="data")
-        except TypeError:
-            tar.extractall(path=dest)
+        tar.extractall(path=dest, filter="data")
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        prog="tt-lang-setup-host",
+        prog="tt-lang-setup-sfpi",
         description="Install the sfpi runtime needed by ttnn (no sudo).",
     )
     p.add_argument(
@@ -95,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     if not sfpi_meta.exists():
         sys.exit(
             f"missing {sfpi_meta} in installed ttnn; this ttnn version is not "
-            "supported by tt-lang-setup-host"
+            "supported by tt-lang-setup-sfpi"
         )
     info = _parse_sfpi_version_file(sfpi_meta.read_text())
     version = info.get("sfpi_version")
@@ -105,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     arch_key = (os.uname().sysname, os.uname().machine)
     if arch_key not in _ARCH_MAP:
         sys.exit(
-            f"unsupported platform {arch_key}; tt-lang-setup-host only "
+            f"unsupported platform {arch_key}; tt-lang-setup-sfpi only "
             "handles Linux x86_64 / aarch64"
         )
     suffix, hash_key = _ARCH_MAP[arch_key]

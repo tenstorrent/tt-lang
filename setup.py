@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import InvalidVersion, Version
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.sdist import sdist as _sdist
@@ -32,13 +34,28 @@ class NoSdist(_sdist):
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
+_TTNN_DEP_MODES = ("pypi", "external", "bundled")
+_VERSION_OVERRIDE_ENV = "TTLANG_VERSION_OVERRIDE"
+
+
+def _ttnn_dep_mode():
+    mode = os.environ.get("TTLANG_TTNN_DEP_MODE", "pypi").strip().lower()
+    if mode not in _TTNN_DEP_MODES:
+        allowed = ", ".join(_TTNN_DEP_MODES)
+        raise SystemExit(f"TTLANG_TTNN_DEP_MODE must be one of: {allowed}")
+    return mode
+
+
+def _version_override():
+    return os.environ.get(_VERSION_OVERRIDE_ENV, "").strip()
 
 
 def _read_tt_metal_version_var(name):
     """Read a shell variable from third-party/tt-metal-version.
 
     The file is a sourceable shell snippet (`KEY="value"` assignments).
-    Expected names: TTNN_PYPI, TT_METAL_TAG. See the file's header.
+    Expected names include TTNN_PYPI, TTNN_PYPI_TT_METAL_TAG, and
+    TT_METAL_TAG. See the file's header.
     """
     version_file = REPO_ROOT / "third-party" / "tt-metal-version"
     text = version_file.read_text()
@@ -65,7 +82,8 @@ def _ttnn_requirement():
 
 def _read_install_requires():
     """Read base runtime requirements from requirements-runtime.txt and
-    append the dynamic ttnn requirement.
+    append the dynamic ttnn requirement unless the wheel is explicitly built
+    for an externally managed or bundled tt-metal/ttnn install.
     """
     req_file = REPO_ROOT / "requirements-runtime.txt"
     requirements = []
@@ -74,8 +92,32 @@ def _read_install_requires():
         if not line or line.startswith("#"):
             continue
         requirements.append(line)
-    requirements.append(_ttnn_requirement())
+    mode = _ttnn_dep_mode()
+    if mode == "pypi":
+        requirements.append(_ttnn_requirement())
+    elif mode in ("external", "bundled"):
+        requirements.extend(
+            _missing_requirements(requirements, TTNN_RUNTIME_REQUIREMENTS)
+        )
     return requirements
+
+
+def _missing_requirements(existing_requirements, extra_requirements):
+    existing_names = {
+        _requirement_name(requirement) for requirement in existing_requirements
+    }
+    return [
+        requirement
+        for requirement in extra_requirements
+        if _requirement_name(requirement) not in existing_names
+    ]
+
+
+def _requirement_name(requirement_text):
+    try:
+        return Requirement(requirement_text).name.lower()
+    except InvalidRequirement as error:
+        raise SystemExit(f"invalid requirement {requirement_text!r}") from error
 
 
 def get_version_from_git():
@@ -85,14 +127,14 @@ def get_version_from_git():
     sit between the public release and the +local label, so the tag is split
     on '+' before the dev counter is inserted.
 
-    Override mechanism: if TTLANG_PRETEND_VERSION is set in the environment, it
-    is returned verbatim. Used by the publish-pypi workflow to stamp wheels
-    built from a branch with a caller-supplied PEP 440 version (e.g. an rc/dev
-    pre-release) when no matching git tag exists.
+    Override mechanism: if TTLANG_VERSION_OVERRIDE is set in the environment,
+    it is returned verbatim. Used by workflows to stamp wheels built from a
+    branch with a caller-supplied PEP 440 version when no matching git tag
+    exists.
     """
-    pretend = os.environ.get("TTLANG_PRETEND_VERSION", "").strip()
-    if pretend:
-        return pretend
+    version_override = _version_override()
+    if version_override:
+        return version_override
     try:
         tag = (
             subprocess.check_output(
@@ -110,13 +152,48 @@ def get_version_from_git():
             text=True,
             cwd=str(REPO_ROOT),
         ).strip()
-        base, sep, local = tag.partition("+")
-        local_suffix = f"+{local}" if sep else ""
-        if commits and commits != "0":
-            return f"{base}.dev{commits}{local_suffix}"
-        return f"{base}{local_suffix}"
-    except Exception:
-        return "0.2.0.dev0"
+    except (subprocess.CalledProcessError, OSError) as error:
+        raise SystemExit(
+            "failed to derive tt-lang version from git; set "
+            f"{_VERSION_OVERRIDE_ENV} when building outside a tagged checkout"
+        ) from error
+
+    base, sep, local = tag.partition("+")
+    local_suffix = f"+{local}" if sep else ""
+    if commits and commits != "0":
+        return f"{base}.dev{commits}{local_suffix}"
+    return f"{base}{local_suffix}"
+
+
+def _validate_ttnn_dep_mode_version(version):
+    mode = _ttnn_dep_mode()
+    if mode not in ("external", "bundled"):
+        return
+
+    try:
+        parsed_version = Version(version)
+    except InvalidVersion as error:
+        raise SystemExit(f"invalid {_VERSION_OVERRIDE_ENV} {version!r}") from error
+
+    if not parsed_version.is_devrelease and not parsed_version.is_prerelease:
+        raise SystemExit(
+            f"TTLANG_TTNN_DEP_MODE={mode} requires a non-final version "
+            "such as 0.71.0.dev20260525 or 0.71.0rc1"
+        )
+    if mode == "external" and parsed_version.local != "light":
+        raise SystemExit(
+            "TTLANG_TTNN_DEP_MODE=external requires a +light local version "
+            "such as 0.71.0.dev20260525+light"
+        )
+
+
+def _require_ttnn_dep_mode_version_override():
+    mode = _ttnn_dep_mode()
+    if mode in ("external", "bundled") and not _version_override():
+        raise SystemExit(
+            f"TTLANG_TTNN_DEP_MODE={mode} requires {_VERSION_OVERRIDE_ENV} "
+            "so internal wheels cannot be confused with PyPI release wheels"
+        )
 
 
 class TTLangExtension(Extension):
@@ -130,7 +207,7 @@ class CMakeBuild(build_ext):
             if "ttl" in ext.name:
                 self.build_(ext)
             else:
-                raise Exception("Unknown extension")
+                raise RuntimeError(f"Unknown extension: {ext.name}")
 
     def _strip_binaries(self, install_dir):
         """Strip debug symbols from .so/.dylib files to reduce wheel size."""
@@ -154,8 +231,21 @@ class CMakeBuild(build_ext):
                 "found on PATH. Install it (e.g. `pip install patchelf`) before "
                 "building the wheel."
             )
+        bundled_ttnn_extension = install_dir / "ttnn" / "_ttnn.so"
         for so_file in glob.glob(str(install_dir / "**/*.so"), recursive=True):
-            self.spawn(["patchelf", "--set-rpath", "$ORIGIN", so_file])
+            rpath = (
+                "$ORIGIN/build/lib"
+                if pathlib.Path(so_file) == bundled_ttnn_extension
+                else "$ORIGIN"
+            )
+            self.spawn(["patchelf", "--set-rpath", rpath, so_file])
+
+    def _remove_bundled_ttnn(self, install_dir):
+        """Remove stale bundled payloads left by earlier wheel builds."""
+        for package_name in ("ttnn", "tracy"):
+            package_dir = install_dir / package_name
+            if package_dir.exists():
+                shutil.rmtree(package_dir)
 
     def _sanitize_env_for_cmake(self):
         """Remove pip build-isolation env vars that break cmake's nested pip calls.
@@ -225,6 +315,16 @@ class CMakeBuild(build_ext):
                 if toolchain_dir:
                     cmake_args.append(f"-DTTLANG_TOOLCHAIN_DIR={toolchain_dir}")
 
+            for env_var in (
+                "TTLANG_EXTERNAL_TT_METAL_DIR",
+                "TTLANG_EXTERNAL_TT_METAL_BUILD_DIR",
+                "TTLANG_ACCEPT_TTMETAL_MISMATCH",
+                "TTLANG_PYTHON_VENV",
+            ):
+                value = os.environ.get(env_var, "")
+                if value:
+                    cmake_args.append(f"-D{env_var}={value}")
+
             # Forward CC/CXX as cmake -D flags.  CMakeLists.txt defaults
             # to clang before project(), which runs before cmake reads the
             # CC/CXX env vars — so the env vars alone have no effect.
@@ -256,6 +356,11 @@ class CMakeBuild(build_ext):
             ]
         )
 
+        if _ttnn_dep_mode() == "bundled":
+            copy_bundled_ttnn(BUNDLED_TT_METAL_ROOT, install_dir)
+        else:
+            self._remove_bundled_ttnn(install_dir)
+
         # Post-install: strip binaries and fix RPATH for wheel distribution
         self._strip_binaries(install_dir)
         self._fix_rpath(install_dir)
@@ -264,9 +369,33 @@ class CMakeBuild(build_ext):
 ttlang_c = TTLangExtension("ttl")
 
 sys.path.insert(0, str(REPO_ROOT / "packaging"))
+from bundled_ttnn import (  # noqa: E402
+    TTNN_RUNTIME_REQUIREMENTS,
+    copy_bundled_ttnn,
+    resolve_tt_metal_root,
+    stage_bundled_ttnn_python_packages,
+)
 from rewrite_readme import absolutize_readme_images, ref_for_version  # noqa: E402
 
+_require_ttnn_dep_mode_version_override()
 _version = get_version_from_git()
+_validate_ttnn_dep_mode_version(_version)
+
+BUNDLED_TT_METAL_ROOT = None
+_bundled_packages = []
+_bundled_package_dir = {}
+if _ttnn_dep_mode() == "bundled":
+    try:
+        BUNDLED_TT_METAL_ROOT = resolve_tt_metal_root(REPO_ROOT)
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
+    _bundled_metadata = stage_bundled_ttnn_python_packages(
+        BUNDLED_TT_METAL_ROOT,
+        REPO_ROOT / "build" / "bundled-ttnn-python",
+        REPO_ROOT,
+    )
+    _bundled_packages = _bundled_metadata.packages
+    _bundled_package_dir = _bundled_metadata.package_dir
 
 readme_path = REPO_ROOT / "README.md"
 with open(str(readme_path), "r", encoding="utf-8") as readme_file:
@@ -291,7 +420,8 @@ setup(
         "ttl.tutorials.broadcast",
         "ttl.utils",
         "sim_stats",
-    ],
+    ]
+    + _bundled_packages,
     package_dir={
         "ttl": "python/ttl",
         "ttl._pipenets": "python/ttl/_pipenets",
@@ -306,7 +436,8 @@ setup(
         "ttl.tutorials.broadcast": "examples/tutorial",
         "ttl.utils": "python/utils",
         "sim_stats": "python/sim_stats",
-    },
+    }
+    | _bundled_package_dir,
     ext_modules=[ttlang_c],
     cmdclass={"build_ext": CMakeBuild, "sdist": NoSdist},
     zip_safe=False,

@@ -14,6 +14,7 @@ PYTAG="cp312-cp312-linux_x86_64"
 
 whl()       { printf 'tt_lang-%s-%s.whl' "$1" "$PYTAG"; }
 whl_sim()   { printf 'tt_lang_sim-%s-py3-none-any.whl' "$1"; }
+whl_light() { printf 'tt_lang_light-%s-py3-none-any.whl' "$1"; }
 whl_build() { printf 'tt_lang-%s-%s-%s.whl' "$1" "$2" "$PYTAG"; }  # <ver> <build>
 
 # Create a temp dir containing zero or more empty wheel files. Echoes the dir.
@@ -106,4 +107,46 @@ setup() {
     # expected '7'. Field 2 is the real version ($VER), so this must NOT match.
     dir=$(make_wheel_dir "$(whl_build "$VER" 7)")
     run -1 "$SCRIPT" "7" "$dir"
+}
+
+@test "--expect validates per-distribution versions" {
+    light_core="${VER}+light"
+    dir=$(make_wheel_dir "$(whl "$light_core")" "$(whl_light "$VER")" "$(whl_sim "$VER")")
+
+    run -0 "$SCRIPT" \
+        --expect "tt_lang=$light_core" \
+        --expect "tt_lang_light=$VER" \
+        --expect "tt_lang_sim=$VER" \
+        "$dir"
+}
+
+@test "--expect fails on a mismatched distribution version" {
+    light_core="${VER}+light"
+    dir=$(make_wheel_dir "$(whl "$VER")" "$(whl_light "$VER")")
+
+    run -1 "$SCRIPT" \
+        --expect "tt_lang=$light_core" \
+        --expect "tt_lang_light=$VER" \
+        "$dir"
+}
+
+@test "--expect fails on unexpected wheel distribution" {
+    dir=$(make_wheel_dir "$(whl "$VER")")
+
+    run -1 "$SCRIPT" --expect "tt_lang_light=$VER" "$dir"
+}
+
+@test "--expect fails when an expected distribution is missing" {
+    dir=$(make_wheel_dir "$(whl "$VER")")
+
+    run -1 "$SCRIPT" \
+        --expect "tt_lang=$VER" \
+        --expect "tt_lang_light=$VER" \
+        "$dir"
+}
+
+@test "--expect requires distribution=version syntax" {
+    dir=$(make_wheel_dir "$(whl "$VER")")
+
+    run -2 "$SCRIPT" --expect "$VER" "$dir"
 }

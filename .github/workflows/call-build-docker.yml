@@ -100,7 +100,7 @@ jobs:
   build-images:
     needs: [build-image-base, configure-deps]
     if: ${{ !cancelled() && needs.configure-deps.result == 'success' && (needs.build-image-base.result == 'success' || needs.build-image-base.result == 'skipped') }}
-    runs-on: ubuntu-22.04
+    runs-on: mlir-large-runner-lang
     timeout-minutes: 360
 
     outputs:
