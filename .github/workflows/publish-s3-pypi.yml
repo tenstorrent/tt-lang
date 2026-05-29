@@ -21,11 +21,12 @@ on:
         default: ""
         required: false
       ttnn_dep_mode:
-        description: "ttnn dependency mode for the tt-lang wheel."
+        description: "ttnn dependency mode or S3 publish selection."
         type: choice
         options:
           - bundled
           - external
+          - bundled-and-external
           - pypi
         default: bundled
         required: true
@@ -59,6 +60,7 @@ jobs:
       overwrite_releases: ${{ steps.resolve.outputs.overwrite_releases }}
       version_override: ${{ steps.resolve.outputs.version_override }}
       ttnn_dep_mode: ${{ steps.resolve.outputs.ttnn_dep_mode }}
+      ttnn_dep_modes: ${{ steps.resolve.outputs.ttnn_dep_modes }}
 
     steps:
       - name: Checkout tt-lang
@@ -93,17 +95,24 @@ jobs:
   build-wheels:
     needs: [preflight, build-docker]
     if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    name: "Build ${{ matrix.ttnn_dep_mode }} wheels"
+    strategy:
+      fail-fast: false
+      matrix:
+        ttnn_dep_mode: ${{ fromJSON(needs.preflight.outputs.ttnn_dep_modes) }}
     permissions:
       contents: read
       packages: read
     uses: ./.github/workflows/call-build-wheels.yml
     with:
       docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
-      ttnn_dep_mode: ${{ needs.preflight.outputs.ttnn_dep_mode }}
+      ttnn_dep_mode: ${{ matrix.ttnn_dep_mode }}
       version_override: ${{ needs.preflight.outputs.version_override }}
-      external_tt_metal_dir: ${{ needs.preflight.outputs.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/tt-metal' || '' }}
-      external_python_venv: ${{ needs.preflight.outputs.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
-      bundled_tt_metal_dir: ${{ needs.preflight.outputs.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
+      external_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/tt-metal' || '' }}
+      external_python_venv: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
+      bundled_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
+      build_sim_wheel: ${{ !(needs.preflight.outputs.ttnn_dep_mode == 'bundled-and-external' && matrix.ttnn_dep_mode == 'external') }}
+      artifact_name: tt-lang-wheels-${{ matrix.ttnn_dep_mode }}
 
   publish:
     name: "Publish wheels to S3 PyPI"
@@ -124,19 +133,48 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
 
-      - name: Download wheels
+      - name: Download bundled wheels
+        if: ${{ contains(fromJSON(needs.preflight.outputs.ttnn_dep_modes), 'bundled') }}
         uses: actions/download-artifact@v8
         with:
-          name: tt-lang-wheels
-          path: dist
+          name: tt-lang-wheels-bundled
+          path: wheel-artifacts/bundled
 
-      - name: Verify wheel versions
+      - name: Download external wheels
+        if: ${{ contains(fromJSON(needs.preflight.outputs.ttnn_dep_modes), 'external') }}
+        uses: actions/download-artifact@v8
+        with:
+          name: tt-lang-wheels-external
+          path: wheel-artifacts/external
+
+      - name: Download pypi wheels
+        if: ${{ contains(fromJSON(needs.preflight.outputs.ttnn_dep_modes), 'pypi') }}
+        uses: actions/download-artifact@v8
+        with:
+          name: tt-lang-wheels-pypi
+          path: wheel-artifacts/pypi
+
+      - name: Prepare publish dist
         run: |
           set -euo pipefail
-          .github/scripts/verify-s3-wheel-versions.sh \
-            "${{ needs.preflight.outputs.ttnn_dep_mode }}" \
+          prepare_args=()
+          if [ -d wheel-artifacts/bundled ]; then
+            prepare_args+=(bundled=wheel-artifacts/bundled)
+          fi
+          if [ -d wheel-artifacts/external ]; then
+            if [ -d wheel-artifacts/bundled ]; then
+              prepare_args+=(external:no-sim=wheel-artifacts/external)
+            else
+              prepare_args+=(external=wheel-artifacts/external)
+            fi
+          fi
+          if [ -d wheel-artifacts/pypi ]; then
+            prepare_args+=(pypi=wheel-artifacts/pypi)
+          fi
+          .github/scripts/prepare-s3-publish-dist.sh \
             "${{ needs.preflight.outputs.version_override }}" \
-            dist
+            dist \
+            "${prepare_args[@]}"
 
       - name: Configure AWS Credentials
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}

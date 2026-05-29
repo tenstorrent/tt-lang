@@ -41,6 +41,16 @@ on:
         type: string
         default: ""
         required: false
+      build_sim_wheel:
+        description: "Build and test the tt-lang-sim wheel."
+        type: boolean
+        default: true
+        required: false
+      artifact_name:
+        description: "Artifact name for uploaded wheels."
+        type: string
+        default: tt-lang-wheels
+        required: false
 
 permissions:
   contents: read
@@ -139,13 +149,14 @@ jobs:
           python .github/scripts/check-installed-ttnn.py --mode "${{ inputs.ttnn_dep_mode }}"
           python .github/scripts/smoke-test-wheel.py
 
-      - name: Free disk space before tt-lang-sim wheel test
+      - name: Free disk space before remaining wheel tests
         run: |
           rm -rf /tmp/test-venv-hw /tmp/ttlang-prefix build dist-raw
           python3.12 -m pip cache purge || true
           df -h
 
       - name: Build tt-lang-sim wheel
+        if: ${{ inputs.build_sim_wheel }}
         env:
           TTLANG_VERSION_OVERRIDE: ${{ inputs.version_override }}
         run: |
@@ -153,6 +164,7 @@ jobs:
           pip wheel packaging/sim --wheel-dir=dist --no-deps --no-build-isolation
 
       - name: Test tt-lang-sim wheel
+        if: ${{ inputs.build_sim_wheel }}
         run: |
           python3.12 -m venv /tmp/test-venv-sim
           source /tmp/test-venv-sim/bin/activate
@@ -186,6 +198,6 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v7
         with:
-          name: tt-lang-wheels
+          name: ${{ inputs.artifact_name }}
           path: dist/*.whl
           retention-days: 14

@@ -12,13 +12,14 @@
 #   DISPATCH_DRY_RUN             "true"|"false" (workflow_dispatch input).
 #   DISPATCH_OVERWRITE_RELEASES  "true"|"false" (workflow_dispatch input).
 #   DISPATCH_VERSION_OVERRIDE    PEP 440 string, may be empty.
-#   DISPATCH_TTNN_DEP_MODE       pypi|external|bundled.
+#   DISPATCH_TTNN_DEP_MODE       pypi|external|bundled|bundled-and-external.
 #   EVENT_NAME                   github.event_name.
 #   GITHUB_OUTPUT                Path that receives the resolved outputs.
 #                                Falls back to stdout when unset.
 #
 # Outputs (written to $GITHUB_OUTPUT):
-#   docker_tag, dry_run, overwrite_releases, version_override, ttnn_dep_mode
+#   docker_tag, dry_run, overwrite_releases, version_override, ttnn_dep_mode,
+#   ttnn_dep_modes
 
 set -euo pipefail
 
@@ -31,6 +32,19 @@ dry_run="$DISPATCH_DRY_RUN"
 overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
 version_override="${DISPATCH_VERSION_OVERRIDE:-}"
 ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
+
+case "$ttnn_dep_mode" in
+    pypi | external | bundled)
+        ttnn_dep_modes="[\"$ttnn_dep_mode\"]"
+        ;;
+    bundled-and-external)
+        ttnn_dep_modes='["bundled","external"]'
+        ;;
+    *)
+        echo "Unknown S3 wheel selection: $ttnn_dep_mode" >&2
+        exit 2
+        ;;
+esac
 
 if [[ "$EVENT_NAME" == "schedule" ]]; then
     overwrite_releases=true
@@ -48,9 +62,11 @@ output_file="${GITHUB_OUTPUT:-/dev/stdout}"
     echo "overwrite_releases=$overwrite_releases"
     echo "version_override=$version_override"
     echo "ttnn_dep_mode=$ttnn_dep_mode"
+    echo "ttnn_dep_modes=$ttnn_dep_modes"
 } >> "$output_file"
 
 echo "Resolved ttnn_dep_mode=$ttnn_dep_mode"
+echo "Resolved ttnn_dep_modes=$ttnn_dep_modes"
 echo "Resolved version_override=$version_override"
 echo "Resolved dry_run=$dry_run"
 echo "Resolved overwrite_releases=$overwrite_releases"

@@ -49,6 +49,19 @@ setup() {
     assert_output --partial "Underlying no-ttnn tt-lang wheel:"
 }
 
+@test "bundled-and-external mode emits bundled and light install blocks" {
+    run -0 "$SCRIPT" bundled-and-external "$VER"
+    assert_output --partial "Bundled install:"
+    assert_output --partial "tt-lang==$VER"
+    assert_output --partial "tt-lang-light==$VER"
+    assert_output --partial "tt-lang==$VER+light"
+}
+
+@test "unknown mode -> usage error (exit 2)" {
+    run -2 "$SCRIPT" garbage "$VER"
+    assert_output --partial "Unknown S3 wheel selection: garbage"
+}
+
 @test "--dry-run marks summary as not uploaded" {
     run -0 "$SCRIPT" --dry-run bundled "$VER"
     assert_output --partial "### Wheel publish dry run"

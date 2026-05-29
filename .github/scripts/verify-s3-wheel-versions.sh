@@ -7,14 +7,20 @@
 # tt-lang-light metapackage; bundled and pypi modes publish all wheels at the
 # requested internal version.
 #
-# Usage: verify-s3-wheel-versions.sh <ttnn_dep_mode> <version_override> <dist_dir>
+# Usage: verify-s3-wheel-versions.sh [--no-sim] <ttnn_dep_mode> <version_override> <dist_dir>
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <ttnn_dep_mode> <version_override> <dist_dir>" >&2
+    echo "Usage: $0 [--no-sim] <ttnn_dep_mode> <version_override> <dist_dir>" >&2
     exit 2
 }
+
+include_sim=1
+if [[ "${1:-}" == "--no-sim" ]]; then
+    include_sim=0
+    shift
+fi
 
 if [[ $# -ne 3 ]]; then
     usage
@@ -27,11 +33,14 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 case "$mode" in
     external)
-        "$script_dir/verify-wheel-version.sh" \
-            --expect "tt_lang=$version+light" \
-            --expect "tt_lang_light=$version" \
-            --expect "tt_lang_sim=$version" \
-            "$dist_dir"
+        verify_args=(
+            --expect "tt_lang=$version+light"
+            --expect "tt_lang_light=$version"
+        )
+        if [[ "$include_sim" -eq 1 ]]; then
+            verify_args+=(--expect "tt_lang_sim=$version")
+        fi
+        "$script_dir/verify-wheel-version.sh" "${verify_args[@]}" "$dist_dir"
         ;;
     bundled | pypi)
         "$script_dir/verify-wheel-version.sh" "$version" "$dist_dir"

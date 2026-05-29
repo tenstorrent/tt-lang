@@ -30,6 +30,14 @@ if [[ "$dry_run" -eq 1 ]]; then
     summary_title="### Wheel publish dry run"
 fi
 
+case "$mode" in
+    external | bundled-and-external | bundled | pypi) ;;
+    *)
+        echo "Unknown S3 wheel selection: $mode" >&2
+        exit 2
+        ;;
+esac
+
 emit() {
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
         cat >> "$GITHUB_STEP_SUMMARY"
@@ -57,7 +65,26 @@ EOF
 
 emit_header
 
-if [[ "$mode" == "external" ]]; then
+emit_ttlang_install() {
+    local heading="$1"
+    local package_spec="$2"
+    if [[ -n "$heading" ]]; then
+        emit <<EOF
+$heading
+
+EOF
+    fi
+    emit <<EOF
+\`\`\`bash
+pip install \\
+  --extra-index-url $index_url \\
+  --extra-index-url $pytorch_url \\
+  $package_spec
+\`\`\`
+EOF
+}
+
+emit_light_install() {
     emit <<EOF
 Light install:
 
@@ -77,13 +104,20 @@ pip install \\
   tt-lang==$version+light
 \`\`\`
 EOF
-else
-    emit <<EOF
-\`\`\`bash
-pip install \\
-  --extra-index-url $index_url \\
-  --extra-index-url $pytorch_url \\
-  tt-lang==$version
-\`\`\`
+}
+
+case "$mode" in
+    external)
+        emit_light_install
+        ;;
+    bundled-and-external)
+        emit_ttlang_install "Bundled install:" "tt-lang==$version"
+        emit <<EOF
+
 EOF
-fi
+        emit_light_install
+        ;;
+    bundled | pypi)
+        emit_ttlang_install "" "tt-lang==$version"
+        ;;
+esac

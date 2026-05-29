@@ -53,7 +53,21 @@ output_value() {
     assert_equal "$(output_value overwrite_releases)" "false"
     assert_equal "$(output_value version_override)" "1.2.3.dev20260101"
     assert_equal "$(output_value ttnn_dep_mode)" "external"
+    assert_equal "$(output_value ttnn_dep_modes)" '["external"]'
     assert_output --partial "Using existing docker_tag=mytag"
+}
+
+@test "bundled-and-external expands to both build modes" {
+    DISPATCH_TTNN_DEP_MODE=bundled-and-external run -0 "$SCRIPT"
+
+    assert_equal "$(output_value ttnn_dep_mode)" "bundled-and-external"
+    assert_equal "$(output_value ttnn_dep_modes)" '["bundled","external"]'
+    assert_output --partial 'Resolved ttnn_dep_modes=["bundled","external"]'
+}
+
+@test "unknown ttnn dependency selection -> error" {
+    DISPATCH_TTNN_DEP_MODE=garbage run -2 "$SCRIPT"
+    assert_output --partial "Unknown S3 wheel selection: garbage"
 }
 
 @test "empty docker_tag -> hint about build-docker" {
@@ -101,6 +115,7 @@ EOF
     run -0 "$SCRIPT"
     assert_output --partial "version_override=42.42.42.dev20260527"
     assert_output --partial "ttnn_dep_mode=bundled"
+    assert_output --partial 'ttnn_dep_modes=["bundled"]'
 }
 
 @test "appends rather than overwrites GITHUB_OUTPUT" {

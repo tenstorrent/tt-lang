@@ -620,6 +620,19 @@ omits `Requires-Dist: ttnn`; the normal PyPI build keeps that requirement. The
 same build also emits `tt-lang-light==<version_override>`, a metapackage that
 depends on `tt-lang==<version_override>+light`.
 
+To publish bundled and light wheels from the same workflow run, dispatch with:
+
+```text
+ttnn_dep_mode: bundled-and-external
+version_override: <internal-version>
+```
+
+The workflow builds the bundled and external wheel sets separately, uploads
+mode-specific artifacts, verifies each artifact with the expected version rules,
+then publishes a single combined directory. The external build skips
+`tt-lang-sim` in this mode because the bundled build already provides the same
+`tt-lang-sim==<version_override>` package/version for the S3 index.
+
 #### Local internal wheel testing
 
 Use the same environment variables as the reusable workflow when validating the

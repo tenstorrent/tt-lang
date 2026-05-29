@@ -38,6 +38,10 @@ setup() {
     run -2 "$SCRIPT" pypi "$VER" dist extra
 }
 
+@test "--no-sim without enough arguments -> usage error (exit 2)" {
+    run -2 "$SCRIPT" --no-sim external "$VER"
+}
+
 @test "unknown mode -> usage error (exit 2)" {
     dir=$(make_wheel_dir "$(whl "$VER")")
     run -2 "$SCRIPT" unknown "$VER" "$dir"
@@ -60,6 +64,22 @@ setup() {
         "$(whl_light "$VER")" \
         "$(whl_sim "$VER")")
     run -0 "$SCRIPT" external "$VER" "$dir"
+}
+
+@test "external mode with --no-sim accepts light wheels without sim" {
+    dir=$(make_wheel_dir \
+        "$(whl "$VER+light")" \
+        "$(whl_light "$VER")")
+    run -0 "$SCRIPT" --no-sim external "$VER" "$dir"
+}
+
+@test "external mode with --no-sim rejects a sim wheel" {
+    dir=$(make_wheel_dir \
+        "$(whl "$VER+light")" \
+        "$(whl_light "$VER")" \
+        "$(whl_sim "$VER")")
+    run -1 "$SCRIPT" --no-sim external "$VER" "$dir"
+    assert_output --partial "No expected version configured for distribution 'tt_lang_sim'"
 }
 
 @test "external mode rejects tt-lang without +light" {
