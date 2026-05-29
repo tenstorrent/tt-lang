@@ -6,7 +6,7 @@
 # publish workflow. With --dry-run, record that no upload occurred. With no
 # $GITHUB_STEP_SUMMARY set, output goes to stdout for local invocations/tests.
 #
-# Usage: publish-s3-summary.sh [--dry-run] <ttnn_dep_mode> <version_override>
+# Usage: publish-s3-summary.sh [--dry-run] <wheel_variant> <version_override>
 
 set -euo pipefail
 
@@ -17,11 +17,11 @@ if [[ "${1:-}" == "--dry-run" ]]; then
 fi
 
 if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 [--dry-run] <ttnn_dep_mode> <version_override>" >&2
+    echo "Usage: $0 [--dry-run] <wheel_variant> <version_override>" >&2
     exit 2
 fi
 
-mode="$1"
+variant="$1"
 version="$2"
 index_url="https://pypi.eng.aws.tenstorrent.com/"
 pytorch_url="https://download.pytorch.org/whl/cpu"
@@ -30,10 +30,10 @@ if [[ "$dry_run" -eq 1 ]]; then
     summary_title="### Wheel publish dry run"
 fi
 
-case "$mode" in
-    external | bundled-and-external | bundled | pypi) ;;
+case "$variant" in
+    light | bundled-and-light | bundled | pypi) ;;
     *)
-        echo "Unknown S3 wheel selection: $mode" >&2
+        echo "Unknown S3 wheel variant: $variant" >&2
         exit 2
         ;;
 esac
@@ -95,7 +95,7 @@ pip install \\
   tt-lang-light==$version
 \`\`\`
 
-Underlying no-ttnn tt-lang wheel:
+Underlying light tt-lang wheel:
 
 \`\`\`bash
 pip install \\
@@ -106,11 +106,11 @@ pip install \\
 EOF
 }
 
-case "$mode" in
-    external)
+case "$variant" in
+    light)
         emit_light_install
         ;;
-    bundled-and-external)
+    bundled-and-light)
         emit_ttlang_install "Bundled install:" "tt-lang==$version"
         emit <<EOF
 

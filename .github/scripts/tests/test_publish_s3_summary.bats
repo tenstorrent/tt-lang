@@ -41,25 +41,25 @@ setup() {
     refute_output --partial "tt-lang-light"
 }
 
-@test "external mode emits both light and underlying install blocks" {
-    run -0 "$SCRIPT" external "$VER"
+@test "light variant emits both light and underlying install blocks" {
+    run -0 "$SCRIPT" light "$VER"
     assert_output --partial "tt-lang-light==$VER"
     assert_output --partial "tt-lang==$VER+light"
     assert_output --partial "Light install:"
-    assert_output --partial "Underlying no-ttnn tt-lang wheel:"
+    assert_output --partial "Underlying light tt-lang wheel:"
 }
 
-@test "bundled-and-external mode emits bundled and light install blocks" {
-    run -0 "$SCRIPT" bundled-and-external "$VER"
+@test "bundled-and-light variant emits bundled and light install blocks" {
+    run -0 "$SCRIPT" bundled-and-light "$VER"
     assert_output --partial "Bundled install:"
     assert_output --partial "tt-lang==$VER"
     assert_output --partial "tt-lang-light==$VER"
     assert_output --partial "tt-lang==$VER+light"
 }
 
-@test "unknown mode -> usage error (exit 2)" {
+@test "unknown variant -> usage error (exit 2)" {
     run -2 "$SCRIPT" garbage "$VER"
-    assert_output --partial "Unknown S3 wheel selection: garbage"
+    assert_output --partial "Unknown S3 wheel variant: garbage"
 }
 
 @test "--dry-run marks summary as not uploaded" {

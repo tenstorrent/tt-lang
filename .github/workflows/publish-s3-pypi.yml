@@ -20,13 +20,13 @@ on:
         type: string
         default: ""
         required: false
-      ttnn_dep_mode:
-        description: "ttnn dependency mode or S3 publish selection."
+      wheel_variant:
+        description: "Wheel variant set to publish to S3 PyPI."
         type: choice
         options:
           - bundled
-          - external
-          - bundled-and-external
+          - light
+          - bundled-and-light
           - pypi
         default: bundled
         required: true
@@ -59,8 +59,9 @@ jobs:
       dry_run: ${{ steps.resolve.outputs.dry_run }}
       overwrite_releases: ${{ steps.resolve.outputs.overwrite_releases }}
       version_override: ${{ steps.resolve.outputs.version_override }}
-      ttnn_dep_mode: ${{ steps.resolve.outputs.ttnn_dep_mode }}
-      ttnn_dep_modes: ${{ steps.resolve.outputs.ttnn_dep_modes }}
+      wheel_variant: ${{ steps.resolve.outputs.wheel_variant }}
+      wheel_variants: ${{ steps.resolve.outputs.wheel_variants }}
+      wheel_matrix: ${{ steps.resolve.outputs.wheel_matrix }}
 
     steps:
       - name: Checkout tt-lang
@@ -76,7 +77,7 @@ jobs:
           DISPATCH_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.dry_run) || 'false' }}
           DISPATCH_OVERWRITE_RELEASES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.overwrite_releases) || 'false' }}
           DISPATCH_VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version_override || '' }}
-          DISPATCH_TTNN_DEP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.ttnn_dep_mode || 'bundled-and-external' }}
+          DISPATCH_WHEEL_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.wheel_variant || 'bundled-and-light' }}
           EVENT_NAME: ${{ github.event_name }}
         run: .github/scripts/resolve-s3-publish-inputs.sh
 
@@ -95,11 +96,10 @@ jobs:
   build-wheels:
     needs: [preflight, build-docker]
     if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
-    name: "Build ${{ matrix.ttnn_dep_mode }} wheels"
+    name: "Build ${{ matrix.wheel_variant }} wheels"
     strategy:
       fail-fast: false
-      matrix:
-        ttnn_dep_mode: ${{ fromJSON(needs.preflight.outputs.ttnn_dep_modes) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.wheel_matrix) }}
     permissions:
       contents: read
       packages: read
@@ -111,8 +111,8 @@ jobs:
       external_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/tt-metal' || '' }}
       external_python_venv: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
       bundled_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
-      build_sim_wheel: ${{ !(needs.preflight.outputs.ttnn_dep_mode == 'bundled-and-external' && matrix.ttnn_dep_mode == 'external') }}
-      artifact_name: tt-lang-wheels-${{ matrix.ttnn_dep_mode }}
+      build_sim_wheel: ${{ !(needs.preflight.outputs.wheel_variant == 'bundled-and-light' && matrix.wheel_variant == 'light') }}
+      artifact_name: tt-lang-wheels-${{ matrix.wheel_variant }}
 
   publish:
     name: "Publish wheels to S3 PyPI"
@@ -134,21 +134,21 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download bundled wheels
-        if: ${{ contains(fromJSON(needs.preflight.outputs.ttnn_dep_modes), 'bundled') }}
+        if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') }}
         uses: actions/download-artifact@v8
         with:
           name: tt-lang-wheels-bundled
           path: wheel-artifacts/bundled
 
-      - name: Download external wheels
-        if: ${{ contains(fromJSON(needs.preflight.outputs.ttnn_dep_modes), 'external') }}
+      - name: Download light wheels
+        if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
         uses: actions/download-artifact@v8
         with:
-          name: tt-lang-wheels-external
-          path: wheel-artifacts/external
+          name: tt-lang-wheels-light
+          path: wheel-artifacts/light
 
       - name: Download pypi wheels
-        if: ${{ contains(fromJSON(needs.preflight.outputs.ttnn_dep_modes), 'pypi') }}
+        if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'pypi') }}
         uses: actions/download-artifact@v8
         with:
           name: tt-lang-wheels-pypi
@@ -161,11 +161,11 @@ jobs:
           if [ -d wheel-artifacts/bundled ]; then
             prepare_args+=(bundled=wheel-artifacts/bundled)
           fi
-          if [ -d wheel-artifacts/external ]; then
+          if [ -d wheel-artifacts/light ]; then
             if [ -d wheel-artifacts/bundled ]; then
-              prepare_args+=(external:no-sim=wheel-artifacts/external)
+              prepare_args+=(light:no-sim=wheel-artifacts/light)
             else
-              prepare_args+=(external=wheel-artifacts/external)
+              prepare_args+=(light=wheel-artifacts/light)
             fi
           fi
           if [ -d wheel-artifacts/pypi ]; then
@@ -206,5 +206,5 @@ jobs:
           fi
           .github/scripts/publish-s3-summary.sh \
             "${summary_args[@]}" \
-            "${{ needs.preflight.outputs.ttnn_dep_mode }}" \
+            "${{ needs.preflight.outputs.wheel_variant }}" \
             "${{ needs.preflight.outputs.version_override }}"

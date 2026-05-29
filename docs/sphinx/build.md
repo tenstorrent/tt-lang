@@ -586,7 +586,7 @@ Automatic S3 publishing should use this policy:
   keeps nightly versions readable, but existing local pip caches may still hold
   the older wheel for that version.
 
-The scheduled workflow defaults to `ttnn_dep_mode: bundled-and-external`, builds
+The scheduled workflow defaults to `wheel_variant: bundled-and-light`, builds
 and pushes the matching IRD image, builds bundled and light wheels from that
 image, verifies the wheel versions, and publishes the result to S3 PyPI.
 
@@ -595,7 +595,7 @@ workflow with:
 
 ```text
 docker_tag: <existing-ird-tag>
-ttnn_dep_mode: bundled
+wheel_variant: bundled
 version_override: <internal-version>
 ```
 
@@ -610,11 +610,12 @@ For light wheels that must use a user-provided tt-metal build instead of a
 bundled or public `ttnn` wheel, dispatch the workflow with:
 
 ```text
-ttnn_dep_mode: external
+wheel_variant: light
 version_override: <internal-version>
 ```
 
-The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=external` and
+The workflow maps this publish selection to the reusable wheel builder's
+`TTLANG_TTNN_DEP_MODE=external` build mode and sets
 `TTLANG_VERSION_OVERRIDE=<version_override>+light`. The resulting `tt-lang` wheel
 omits `Requires-Dist: ttnn`; the normal PyPI build keeps that requirement. The
 same build also emits `tt-lang-light==<version_override>`, a metapackage that
@@ -623,13 +624,13 @@ depends on `tt-lang==<version_override>+light`.
 To publish bundled and light wheels from the same workflow run, dispatch with:
 
 ```text
-ttnn_dep_mode: bundled-and-external
+wheel_variant: bundled-and-light
 version_override: <internal-version>
 ```
 
-The workflow builds the bundled and external wheel sets separately, uploads
+The workflow builds the bundled and light wheel sets separately, uploads
 mode-specific artifacts, verifies each artifact with the expected version rules,
-then publishes a single combined directory. The external build skips
+then publishes a single combined directory. The light build skips
 `tt-lang-sim` in this mode because the bundled build already provides the same
 `tt-lang-sim==<version_override>` package/version for the S3 index.
 

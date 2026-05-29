@@ -51,12 +51,12 @@ def _write_wheel(dist_dir: Path, filename: str, metadata: str) -> Path:
     return wheel_path
 
 
-def test_s3_schedule_publishes_bundled_and_external_wheels() -> None:
+def test_s3_schedule_publishes_bundled_and_light_wheels() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
 
     assert (
-        "github.event_name == 'workflow_dispatch' && inputs.ttnn_dep_mode || "
-        "'bundled-and-external'"
+        "github.event_name == 'workflow_dispatch' && inputs.wheel_variant || "
+        "'bundled-and-light'"
     ) in workflow
 
 

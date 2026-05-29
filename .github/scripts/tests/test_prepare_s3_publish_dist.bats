@@ -31,10 +31,10 @@ setup() {
     assert_output --partial "Unsafe publish directory: ."
 }
 
-@test "unknown mode -> usage error (exit 2)" {
+@test "unknown variant -> usage error (exit 2)" {
     dir=$(make_wheel_dir "$(whl "$VER")")
     run -2 "$SCRIPT" "$VER" "$PUBLISH_DIR" "garbage=$dir"
-    assert_output --partial "Unknown ttnn dependency mode: garbage"
+    assert_output --partial "Unknown wheel variant: garbage"
 }
 
 @test "missing artifact dir -> error" {
@@ -52,15 +52,15 @@ setup() {
     assert_output --partial "$(whl_sim "$VER")"
 }
 
-@test "combined bundled and external artifacts copy unique wheel set" {
+@test "combined bundled and light artifacts copy unique wheel set" {
     bundled_dir=$(make_wheel_dir "$(whl "$VER")" "$(whl_sim "$VER")")
-    external_dir=$(make_wheel_dir "$(whl "$VER+light")" "$(whl_light "$VER")")
+    light_dir=$(make_wheel_dir "$(whl "$VER+light")" "$(whl_light "$VER")")
 
     run -0 "$SCRIPT" \
         "$VER" \
         "$PUBLISH_DIR" \
         "bundled=$bundled_dir" \
-        "external:no-sim=$external_dir"
+        "light:no-sim=$light_dir"
 
     run ls "$PUBLISH_DIR"
     assert_output --partial "$(whl "$VER")"
@@ -69,13 +69,13 @@ setup() {
     assert_output --partial "$(whl_light "$VER")"
 }
 
-@test "external no-sim spec rejects unexpected sim wheel" {
-    external_dir=$(make_wheel_dir \
+@test "light no-sim spec rejects unexpected sim wheel" {
+    light_dir=$(make_wheel_dir \
         "$(whl "$VER+light")" \
         "$(whl_light "$VER")" \
         "$(whl_sim "$VER")")
 
-    run -1 "$SCRIPT" "$VER" "$PUBLISH_DIR" "external:no-sim=$external_dir"
+    run -1 "$SCRIPT" "$VER" "$PUBLISH_DIR" "light:no-sim=$light_dir"
 
     assert_output --partial "No expected version configured for distribution 'tt_lang_sim'"
 }

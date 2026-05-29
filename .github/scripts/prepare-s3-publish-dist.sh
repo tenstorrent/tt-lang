@@ -2,17 +2,17 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Verify mode-specific wheel artifact directories and copy their wheels into a
-# single publish directory. A spec has the form <mode>[:no-sim]=<dist_dir>.
+# Verify variant-specific wheel artifact directories and copy their wheels into
+# a single publish directory. A spec has the form <variant>[:no-sim]=<dist_dir>.
 # Use `:no-sim` when the same workflow run publishes bundled wheels and the
-# external artifact intentionally omits the duplicate tt-lang-sim wheel.
+# light artifact intentionally omits the duplicate tt-lang-sim wheel.
 #
 # Usage: prepare-s3-publish-dist.sh <version_override> <publish_dir> <spec>...
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <version_override> <publish_dir> <mode[:no-sim]=dist_dir>..." >&2
+    echo "Usage: $0 <version_override> <publish_dir> <variant[:no-sim]=dist_dir>..." >&2
     exit 2
 }
 
@@ -39,21 +39,21 @@ for spec in "$@"; do
     if [[ "$spec" != *=* ]]; then
         usage
     fi
-    mode_spec="${spec%%=*}"
+    variant_spec="${spec%%=*}"
     artifact_dir="${spec#*=}"
     verify_args=()
 
-    if [[ "$mode_spec" == *:no-sim ]]; then
+    if [[ "$variant_spec" == *:no-sim ]]; then
         verify_args+=(--no-sim)
-        mode="${mode_spec%:no-sim}"
+        variant="${variant_spec%:no-sim}"
     else
-        mode="$mode_spec"
+        variant="$variant_spec"
     fi
 
-    case "$mode" in
-        pypi | external | bundled) ;;
+    case "$variant" in
+        pypi | light | bundled) ;;
         *)
-            echo "Unknown ttnn dependency mode: $mode" >&2
+            echo "Unknown wheel variant: $variant" >&2
             exit 2
             ;;
     esac
@@ -65,7 +65,7 @@ for spec in "$@"; do
 
     "$script_dir/verify-s3-wheel-versions.sh" \
         "${verify_args[@]}" \
-        "$mode" \
+        "$variant" \
         "$version" \
         "$artifact_dir"
 

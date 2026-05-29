@@ -17,7 +17,7 @@ setup() {
     export DISPATCH_DRY_RUN=false
     export DISPATCH_OVERWRITE_RELEASES=false
     export DISPATCH_VERSION_OVERRIDE="42.42.42.dev20260527"
-    export DISPATCH_TTNN_DEP_MODE=bundled
+    export DISPATCH_WHEEL_VARIANT=bundled
     export EVENT_NAME=workflow_dispatch
 }
 
@@ -44,7 +44,7 @@ output_value() {
     DISPATCH_DRY_RUN=true \
     DISPATCH_OVERWRITE_RELEASES=false \
     DISPATCH_VERSION_OVERRIDE=1.2.3.dev20260101 \
-    DISPATCH_TTNN_DEP_MODE=external \
+    DISPATCH_WHEEL_VARIANT=light \
     EVENT_NAME=workflow_dispatch \
         run -0 "$SCRIPT"
 
@@ -52,22 +52,24 @@ output_value() {
     assert_equal "$(output_value dry_run)" "true"
     assert_equal "$(output_value overwrite_releases)" "false"
     assert_equal "$(output_value version_override)" "1.2.3.dev20260101"
-    assert_equal "$(output_value ttnn_dep_mode)" "external"
-    assert_equal "$(output_value ttnn_dep_modes)" '["external"]'
+    assert_equal "$(output_value wheel_variant)" "light"
+    assert_equal "$(output_value wheel_variants)" '["light"]'
+    assert_equal "$(output_value wheel_matrix)" '{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
     assert_output --partial "Using existing docker_tag=mytag"
 }
 
-@test "bundled-and-external expands to both build modes" {
-    DISPATCH_TTNN_DEP_MODE=bundled-and-external run -0 "$SCRIPT"
+@test "bundled-and-light expands to both build modes" {
+    DISPATCH_WHEEL_VARIANT=bundled-and-light run -0 "$SCRIPT"
 
-    assert_equal "$(output_value ttnn_dep_mode)" "bundled-and-external"
-    assert_equal "$(output_value ttnn_dep_modes)" '["bundled","external"]'
-    assert_output --partial 'Resolved ttnn_dep_modes=["bundled","external"]'
+    assert_equal "$(output_value wheel_variant)" "bundled-and-light"
+    assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
+    assert_equal "$(output_value wheel_matrix)" '{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"},{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+    assert_output --partial 'Resolved wheel_variants=["bundled","light"]'
 }
 
-@test "unknown ttnn dependency selection -> error" {
-    DISPATCH_TTNN_DEP_MODE=garbage run -2 "$SCRIPT"
-    assert_output --partial "Unknown S3 wheel selection: garbage"
+@test "unknown wheel variant -> error" {
+    DISPATCH_WHEEL_VARIANT=garbage run -2 "$SCRIPT"
+    assert_output --partial "Unknown S3 wheel variant: garbage"
 }
 
 @test "empty docker_tag -> hint about build-docker" {
@@ -114,8 +116,8 @@ EOF
     unset GITHUB_OUTPUT
     run -0 "$SCRIPT"
     assert_output --partial "version_override=42.42.42.dev20260527"
-    assert_output --partial "ttnn_dep_mode=bundled"
-    assert_output --partial 'ttnn_dep_modes=["bundled"]'
+    assert_output --partial "wheel_variant=bundled"
+    assert_output --partial 'wheel_variants=["bundled"]'
 }
 
 @test "appends rather than overwrites GITHUB_OUTPUT" {

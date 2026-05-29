@@ -12,36 +12,46 @@
 #   DISPATCH_DRY_RUN             "true"|"false" (workflow_dispatch input).
 #   DISPATCH_OVERWRITE_RELEASES  "true"|"false" (workflow_dispatch input).
 #   DISPATCH_VERSION_OVERRIDE    PEP 440 string, may be empty.
-#   DISPATCH_TTNN_DEP_MODE       pypi|external|bundled|bundled-and-external.
+#   DISPATCH_WHEEL_VARIANT       pypi|light|bundled|bundled-and-light.
 #   EVENT_NAME                   github.event_name.
 #   GITHUB_OUTPUT                Path that receives the resolved outputs.
 #                                Falls back to stdout when unset.
 #
 # Outputs (written to $GITHUB_OUTPUT):
-#   docker_tag, dry_run, overwrite_releases, version_override, ttnn_dep_mode,
-#   ttnn_dep_modes
+#   docker_tag, dry_run, overwrite_releases, version_override, wheel_variant,
+#   wheel_variants, wheel_matrix
 
 set -euo pipefail
 
 : "${DISPATCH_DRY_RUN:?DISPATCH_DRY_RUN is required}"
 : "${DISPATCH_OVERWRITE_RELEASES:?DISPATCH_OVERWRITE_RELEASES is required}"
-: "${DISPATCH_TTNN_DEP_MODE:?DISPATCH_TTNN_DEP_MODE is required}"
+: "${DISPATCH_WHEEL_VARIANT:?DISPATCH_WHEEL_VARIANT is required}"
 : "${EVENT_NAME:?EVENT_NAME is required}"
 docker_tag="${DISPATCH_DOCKER_TAG:-}"
 dry_run="$DISPATCH_DRY_RUN"
 overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
 version_override="${DISPATCH_VERSION_OVERRIDE:-}"
-ttnn_dep_mode="$DISPATCH_TTNN_DEP_MODE"
+wheel_variant="$DISPATCH_WHEEL_VARIANT"
 
-case "$ttnn_dep_mode" in
-    pypi | external | bundled)
-        ttnn_dep_modes="[\"$ttnn_dep_mode\"]"
+case "$wheel_variant" in
+    bundled)
+        wheel_variants='["bundled"]'
+        wheel_matrix='{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
         ;;
-    bundled-and-external)
-        ttnn_dep_modes='["bundled","external"]'
+    light)
+        wheel_variants='["light"]'
+        wheel_matrix='{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+        ;;
+    bundled-and-light)
+        wheel_variants='["bundled","light"]'
+        wheel_matrix='{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"},{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+        ;;
+    pypi)
+        wheel_variants='["pypi"]'
+        wheel_matrix='{"include":[{"wheel_variant":"pypi","ttnn_dep_mode":"pypi"}]}'
         ;;
     *)
-        echo "Unknown S3 wheel selection: $ttnn_dep_mode" >&2
+        echo "Unknown S3 wheel variant: $wheel_variant" >&2
         exit 2
         ;;
 esac
@@ -61,12 +71,13 @@ output_file="${GITHUB_OUTPUT:-/dev/stdout}"
     echo "dry_run=$dry_run"
     echo "overwrite_releases=$overwrite_releases"
     echo "version_override=$version_override"
-    echo "ttnn_dep_mode=$ttnn_dep_mode"
-    echo "ttnn_dep_modes=$ttnn_dep_modes"
+    echo "wheel_variant=$wheel_variant"
+    echo "wheel_variants=$wheel_variants"
+    echo "wheel_matrix=$wheel_matrix"
 } >> "$output_file"
 
-echo "Resolved ttnn_dep_mode=$ttnn_dep_mode"
-echo "Resolved ttnn_dep_modes=$ttnn_dep_modes"
+echo "Resolved wheel_variant=$wheel_variant"
+echo "Resolved wheel_variants=$wheel_variants"
 echo "Resolved version_override=$version_override"
 echo "Resolved dry_run=$dry_run"
 echo "Resolved overwrite_releases=$overwrite_releases"
