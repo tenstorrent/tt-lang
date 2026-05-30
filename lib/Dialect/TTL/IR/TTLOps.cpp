@@ -390,6 +390,92 @@ mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
 }
 
 //===----------------------------------------------------------------------===//
+// ComputeOp - AccumulationScopeOpInterface implementations
+//===----------------------------------------------------------------------===//
+
+/// Return true when the iterator domain contains a contracted reduction
+/// dimension. Tile accumulation without a reduction iterator is a local tile
+/// update, not a tensor accumulation scope.
+static bool hasReductionIterator(mlir::tt::ttl::ComputeOp op) {
+  for (mlir::utils::IteratorType iteratorType : op.getIteratorTypesArray()) {
+    if (iteratorType == mlir::utils::IteratorType::reduction) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Return true when the compute body contains a top-level additive
+/// accumulation operation. Max reductions are inactive because
+/// AccumulationCombiner currently has no Max value or storage contract for max
+/// accumulation.
+static bool hasAdditiveAccumulatorBody(mlir::tt::ttl::ComputeOp op) {
+  for (mlir::Operation &operation : op.getBody().front().without_terminator()) {
+    if (mlir::isa<mlir::tt::ttl::TileAccumulateAddOp>(operation)) {
+      return true;
+    }
+    if (auto reduce = mlir::dyn_cast<mlir::tt::ttl::TileReduceOp>(operation)) {
+      if (reduce.getReduceType() == mlir::tt::ttl::ReduceType::Sum) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/// Return whether this `ttl.compute` instance carries accumulation semantics
+/// that are expressible through the current additive combiner interface.
+bool mlir::tt::ttl::ComputeOp::isAccumulation() {
+  // The single-output restriction avoids assigning one combiner policy to
+  // unrelated outputs. Multi-output compute support requires output-specific
+  // store analysis before it can implement this interface precisely.
+  return getOutputs().size() == 1 && hasReductionIterator(*this) &&
+         hasAdditiveAccumulatorBody(*this);
+}
+
+/// Return the DPS init operands that receive accumulated tiles.
+mlir::ValueRange mlir::tt::ttl::ComputeOp::getAccumulationOutputs() {
+  if (!isAccumulation()) {
+    return mlir::ValueRange();
+  }
+  return getOutputs();
+}
+
+/// Return explicit initial tensors. Structured reductions define their first
+/// iteration from the compute body, so they do not carry separate init
+/// operands.
+mlir::ValueRange mlir::tt::ttl::ComputeOp::getExplicitInitialValues() {
+  return mlir::ValueRange();
+}
+
+/// Return the additive combiner for the single active accumulation output.
+llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>
+mlir::tt::ttl::ComputeOp::getAccumulationCombiners() {
+  if (!isAccumulation()) {
+    return {};
+  }
+  return llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>(
+      getOutputs().size(), mlir::tt::ttl::AccumulationCombiner::Add);
+}
+
+/// Return overwrite mode for the single active output. The first reduction
+/// iteration establishes the accumulator value before later iterations combine
+/// into it.
+llvm::SmallVector<mlir::tt::ttl::AccumulationInitialMode>
+mlir::tt::ttl::ComputeOp::getAccumulationInitialModes() {
+  if (!isAccumulation()) {
+    return {};
+  }
+  return llvm::SmallVector<mlir::tt::ttl::AccumulationInitialMode>(
+      getOutputs().size(), mlir::tt::ttl::AccumulationInitialMode::Overwrite);
+}
+
+/// Return the compute body region containing the accumulating tile operations.
+mlir::Region &mlir::tt::ttl::ComputeOp::getAccumulationBody() {
+  return getBody();
+}
+
+//===----------------------------------------------------------------------===//
 // ComputeOp - Helper methods (supplements IndexingMapOpInterface defaults)
 //===----------------------------------------------------------------------===//
 
@@ -951,6 +1037,168 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   }
 
   return success();
+}
+
+namespace {
+
+/// Convert a verified AccumulationCombiner attribute list to enum values for
+/// interface consumers. The verifier enforces the element type before this
+/// helper is used.
+llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>
+getVerifiedAccumulationCombiners(mlir::ArrayAttr attrs) {
+  llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner> values;
+  values.reserve(attrs.size());
+  for (mlir::Attribute attr : attrs) {
+    values.push_back(
+        mlir::cast<mlir::tt::ttl::AccumulationCombinerAttr>(attr).getValue());
+  }
+  return values;
+}
+
+/// Convert a verified AccumulationInitialMode attribute list to enum values for
+/// interface consumers. The verifier owns validation so callers can read a
+/// typed policy without rechecking attribute classes.
+llvm::SmallVector<mlir::tt::ttl::AccumulationInitialMode>
+getVerifiedAccumulationInitialModes(mlir::ArrayAttr attrs) {
+  llvm::SmallVector<mlir::tt::ttl::AccumulationInitialMode> values;
+  values.reserve(attrs.size());
+  for (mlir::Attribute attr : attrs) {
+    values.push_back(
+        mlir::cast<mlir::tt::ttl::AccumulationInitialModeAttr>(attr)
+            .getValue());
+  }
+  return values;
+}
+
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// AccumulationScopeOp - AccumulationScopeOpInterface implementations
+//===----------------------------------------------------------------------===//
+
+/// Return true for all instances; the op has no non-accumulating form.
+bool mlir::tt::ttl::AccumulationScopeOp::isAccumulation() { return true; }
+
+/// Return destination tensors whose stores are governed by the scope policy.
+mlir::ValueRange mlir::tt::ttl::AccumulationScopeOp::getAccumulationOutputs() {
+  return getOutputs();
+}
+
+/// Return explicit initial tensors, ordered by the explicit-mode outputs.
+mlir::ValueRange
+mlir::tt::ttl::AccumulationScopeOp::getExplicitInitialValues() {
+  return getExplicitInits();
+}
+
+/// Return one combiner per output tensor.
+llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>
+mlir::tt::ttl::AccumulationScopeOp::getAccumulationCombiners() {
+  return getVerifiedAccumulationCombiners(getCombiners());
+}
+
+/// Return one initial-value mode per output tensor.
+llvm::SmallVector<mlir::tt::ttl::AccumulationInitialMode>
+mlir::tt::ttl::AccumulationScopeOp::getAccumulationInitialModes() {
+  return getVerifiedAccumulationInitialModes(getInitialModes());
+}
+
+/// Return the region containing the accumulation body.
+mlir::Region &mlir::tt::ttl::AccumulationScopeOp::getAccumulationBody() {
+  return getBody();
+}
+
+/// Verify that `ttl.accumulation_scope` contains a complete, explicit
+/// accumulation policy without encoding a storage mechanism.
+mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
+  size_t outputCount = getOutputs().size();
+  if (outputCount == 0) {
+    return emitOpError("requires at least one output");
+  }
+
+  if (getCombiners().size() != outputCount) {
+    return emitOpError("requires one combiner per output, got ")
+           << getCombiners().size() << " combiners for " << outputCount
+           << " outputs";
+  }
+
+  if (getInitialModes().size() != outputCount) {
+    return emitOpError("requires one initial mode per output, got ")
+           << getInitialModes().size() << " modes for " << outputCount
+           << " outputs";
+  }
+
+  for (mlir::Attribute attr : getCombiners()) {
+    if (!mlir::isa<AccumulationCombinerAttr>(attr)) {
+      return emitOpError(
+          "combiners must contain only AccumulationCombinerAttr");
+    }
+  }
+
+  size_t explicitModeCount = 0;
+  llvm::SmallVector<AccumulationInitialMode> initialModes;
+  for (mlir::Attribute attr : getInitialModes()) {
+    auto modeAttr = mlir::dyn_cast<AccumulationInitialModeAttr>(attr);
+    if (!modeAttr) {
+      return emitOpError(
+          "initial_modes must contain only AccumulationInitialModeAttr");
+    }
+    AccumulationInitialMode mode = modeAttr.getValue();
+    initialModes.push_back(mode);
+    if (mode == AccumulationInitialMode::Explicit) {
+      ++explicitModeCount;
+    }
+  }
+
+  if (getExplicitInits().size() != explicitModeCount) {
+    return emitOpError("requires one explicit init per explicit initial mode, "
+                       "got ")
+           << getExplicitInits().size() << " inits for " << explicitModeCount
+           << " explicit modes";
+  }
+
+  // The operand segment contains only explicit initial values. This preserves
+  // the output-to-policy correspondence without unused operands for overwrite
+  // and accumulate-existing outputs.
+  size_t explicitInitIndex = 0;
+  for (auto [outputIndex, mode] : llvm::enumerate(initialModes)) {
+    if (mode != AccumulationInitialMode::Explicit) {
+      continue;
+    }
+    mlir::Value output = getOutputs()[outputIndex];
+    mlir::Value explicitInit = getExplicitInits()[explicitInitIndex++];
+    if (output.getType() != explicitInit.getType()) {
+      return emitOpError("explicit init ")
+             << (explicitInitIndex - 1) << " type " << explicitInit.getType()
+             << " must match output " << outputIndex << " type "
+             << output.getType();
+    }
+  }
+
+  if (getBody().getBlocks().size() != 1) {
+    return emitOpError("body must have exactly one block");
+  }
+
+  mlir::Block &bodyBlock = getBody().front();
+  if (bodyBlock.getNumArguments() != 0) {
+    return emitOpError("body must not have block arguments");
+  }
+  if (!bodyBlock.mightHaveTerminator()) {
+    return emitOpError("body block must have a terminator");
+  }
+  if (!mlir::isa<YieldOp>(bodyBlock.getTerminator())) {
+    return emitOpError("body block must be terminated with ttl.yield");
+  }
+
+  bool hasNestedAccumulationScope = false;
+  getBody().walk([&](AccumulationScopeOp) {
+    hasNestedAccumulationScope = true;
+    return mlir::WalkResult::interrupt();
+  });
+  if (hasNestedAccumulationScope) {
+    return emitOpError("nested ttl.accumulation_scope is not supported");
+  }
+
+  return mlir::success();
 }
 
 // Verify a `num_tiles`-bearing acquire (cb_reserve / cb_wait): the result
