@@ -22,19 +22,14 @@ import ttl
 
 # CHECK: dim -3 out of range for rank 2
 @ttl.operation(grid=(1, 1))
-def invalid_reduce_kernel(inp, scaler, out):
+def invalid_reduce_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
-        with (
-            inp_dfb.wait() as inp_blk,
-            scaler_dfb.wait() as scaler_blk,
-            out_dfb.reserve() as out_blk,
-        ):
-            result = ttl.math.reduce_sum(inp_blk, scaler_blk, dims=[-3])
+        with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
+            result = ttl.math.reduce_sum(inp_blk, dims=[-3])
             out_blk.store(result)
 
     @ttl.datamovement()
@@ -43,10 +38,6 @@ def invalid_reduce_kernel(inp, scaler, out):
         tx_inp = ttl.copy(inp[0, 0], inp_blk)
         tx_inp.wait()
         inp_blk.push()
-        scaler_blk = scaler_dfb.reserve()
-        tx_scaler = ttl.copy(scaler[0, 0], scaler_blk)
-        tx_scaler.wait()
-        scaler_blk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -63,14 +54,9 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        scaler_t = torch.zeros(32, 32, dtype=torch.bfloat16)
-        scaler_t[0, :] = 1.0
-        scaler_t[16, :] = 1.0
-
         inp = to_l1(torch.ones(32, 32, dtype=torch.bfloat16), device)
-        scaler = to_l1(scaler_t, device)
         out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
 
-        invalid_reduce_kernel(inp, scaler, out)
+        invalid_reduce_kernel(inp, out)
     finally:
         ttnn.close_device(device)

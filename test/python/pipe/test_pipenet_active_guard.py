@@ -47,12 +47,12 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
     @ttl.operation(grid="full")
     def small_mcast_matmul(a, w, out):
         a_pipes = [
-            ttl.Pipe(src=(0, row), dst=(slice(0, N_BLOCKS), row))
+            ttl.Pipe(src=(0, row), dst=(slice(1, N_BLOCKS), row))
             for row in range(M_BLOCKS)
         ]
         mcast_a_net = ttl.PipeNet(a_pipes)
         b_pipes = [
-            ttl.Pipe(src=(col, 0), dst=(col, slice(0, M_BLOCKS)))
+            ttl.Pipe(src=(col, 0), dst=(col, slice(1, M_BLOCKS)))
             for col in range(N_BLOCKS)
         ]
         mcast_b_net = ttl.PipeNet(b_pipes)

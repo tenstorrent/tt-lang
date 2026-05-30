@@ -582,6 +582,10 @@ def TTLVerifyPipeNetGuards
     Each diagnostic carries an example offending coordinate, the contributing
     PipeNet(s), and a suggested guard.
 
+    Same-thread pipe schedule diagnostics are emitted only when role and DFB
+    domain checks have succeeded, so schedule-cycle reports are not mixed with
+    earlier guard failures.
+
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
     `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
@@ -678,6 +682,42 @@ def TTLFinalizeDFBIndices
     function, and builds the ttl.compiler_allocated_dfbs module
     attribute for the Python runtime.
   }];
+}
+
+def TTLValidateCBBudget
+    : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
+  let summary = "Validate total CB allocation fits within per-core L1 budget";
+  let description = [{
+    Module-level pass that runs after `ttl-finalize-dfb-indices`, before
+    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every
+    circular buffer declared in the module and compares against a per-core
+    L1 budget.
+
+    For each `BindCBOp`, the pass computes:
+      cb_bytes = total_elements * tile_size_bytes
+
+    When the same `cb_index` appears in multiple functions (e.g. compute
+    and data-movement kernels sharing a CB slot), only the largest
+    allocation for that index is counted.
+
+    On overflow the pass emits an error with a per-CB breakdown and a
+    hint to reduce block shapes or block counts.
+
+    L1 budget is taken from the module's TTCore system descriptor and
+    default device when present (`ChipDescAttr::getUsableL1Size()` for the
+    selected chip). When the module has no system descriptor, the pass uses
+    the same static per-core CB region limit as Wormhole and Blackhole
+    (total L1 minus reserved kernel space).
+
+    This is a static "CB region vs budget" check. It does not model
+    other L1 consumers (kernel binaries, stack, runtime buffers).
+  }];
+
+  let options = [
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override L1 CB budget (bytes). 0 means auto-detect from "
+           "device attributes or use architecture default.">
+  ];
 }
 
 def TTLDumpCBFlowGraph

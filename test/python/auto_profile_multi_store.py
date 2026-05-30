@@ -60,11 +60,11 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # CHECK:          // compute
 # CHECK:          void kernel_main()
-# CHECK-DAG:          experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-DAG:          experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-DAG:          experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
-# CHECK-DAG:          experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
-# CHECK-DAG:          experimental::CircularBuffer [[CB4:.*]](get_compile_time_arg_val(4));
+# CHECK-DAG:          CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-DAG:          CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-DAG:          CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-DAG:          CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
+# CHECK-DAG:          CircularBuffer [[CB4:.*]](get_compile_time_arg_val(4));
 
 # CB waits and reserves wrapped in auto-profile scopes
 # CHECK-NOT:      DeviceZoneScopedN(
@@ -110,11 +110,11 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # CHECK-FPU:          // compute
 # CHECK-FPU:          void kernel_main()
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
-# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB4:.*]](get_compile_time_arg_val(4));
+# CHECK-FPU-DAG:          CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-FPU-DAG:          CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-FPU-DAG:          CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-FPU-DAG:          CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
+# CHECK-FPU-DAG:          CircularBuffer [[CB4:.*]](get_compile_time_arg_val(4));
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait");
 # CHECK-FPU-NEXT:     [[CB0]].wait_front({{.*}});
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait");

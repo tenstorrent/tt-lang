@@ -115,9 +115,9 @@ def add_3d_kernel(lhs, rhs, out):
 # Compute kernel: 3 nested loops over 2x2x2 tile grid
 # CHECK-CPP: // add_compute
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP: [[CB0]].wait_front(
 # CHECK-CPP: [[CB1]].wait_front(
 # CHECK-CPP: [[CB2]].reserve_back(
@@ -136,7 +136,7 @@ def add_3d_kernel(lhs, rhs, out):
 # DM read kernel: 3 nested loops with noc_async_read_tile
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP: [[CB0]].reserve_back(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
@@ -146,7 +146,7 @@ def add_3d_kernel(lhs, rhs, out):
 # DM write kernel: 3 nested loops with noc_async_write_tile
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP: [[CB2]].wait_front(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
@@ -160,9 +160,9 @@ def add_3d_kernel(lhs, rhs, out):
 
 # CHECK-CPP-FPU: // add_compute
 # CHECK-CPP-FPU: void kernel_main()
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-# CHECK-CPP-FPU-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-CPP-FPU-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP-FPU: [[CB0]].wait_front(
 # CHECK-CPP-FPU: [[CB1]].wait_front(
 # CHECK-CPP-FPU: [[CB2]].reserve_back(
@@ -178,7 +178,7 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU-NOT: pack_tile_block(
 
 # Default (combine-pack-tiles enabled): individual pack_tile ops combined.
-# CHECK-CPP-FPU-BLOCK-DAG: experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-CPP-FPU-BLOCK-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP-FPU-BLOCK: tile_regs_wait();
 # CHECK-CPP-FPU-BLOCK: pack_tile_block(
 # CHECK-CPP-FPU-BLOCK: tile_regs_release();

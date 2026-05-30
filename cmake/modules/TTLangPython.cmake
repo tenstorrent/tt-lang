@@ -73,60 +73,78 @@ endmacro()
 # Main logic
 # ---------------------------------------------------------------------------
 
-# 1. Explicit user override — only if the directory actually exists and has
-#    a Python interpreter.  TTLANG_PYTHON_VENV may also be set from the CMake
-#    cache by a previous configure (cases 2-4 below), so we cannot fatal-error
-#    solely on DEFINED; we must verify the directory is present.
-if(DEFINED TTLANG_PYTHON_VENV AND EXISTS "${TTLANG_PYTHON_VENV}")
-  _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _TTLANG_VENV_PYTHON)
-  if(_TTLANG_VENV_PYTHON)
-    _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
-    set(Python3_EXECUTABLE "${_TTLANG_VENV_PYTHON}" CACHE FILEPATH
-      "Python interpreter (from user-specified venv)" FORCE)
-    message(STATUS "Using user-specified Python venv: ${TTLANG_PYTHON_VENV}")
-    message(STATUS "  Python: ${Python3_EXECUTABLE}")
-  endif()
-  # If the dir exists but has no interpreter, fall through to re-evaluate.
-
-# 2. Toolchain venv (when TTLANG_USE_TOOLCHAIN is ON or toolchain dir has a venv).
+if(DEFINED TTLANG_PYTHON_VENV)
+  set(_TTLANG_VENV_SOURCE "specified")
 elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND EXISTS "${TTLANG_TOOLCHAIN_DIR}/venv")
   set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
     "Python venv (from toolchain)" FORCE)
-  _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _TTLANG_VENV_PYTHON)
-  if(NOT _TTLANG_VENV_PYTHON)
-    message(FATAL_ERROR
-      "Toolchain venv at '${TTLANG_PYTHON_VENV}' has no Python interpreter.\n"
-      "The toolchain may be corrupted. Rebuild it or set TTLANG_PYTHON_VENV manually.")
-  endif()
-  _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
-  set(Python3_EXECUTABLE "${_TTLANG_VENV_PYTHON}" CACHE FILEPATH
-    "Python interpreter (from toolchain venv)" FORCE)
-  message(STATUS "Using toolchain Python venv: ${TTLANG_PYTHON_VENV}")
-  message(STATUS "  Python: ${Python3_EXECUTABLE}")
-
-# 3. Local project venv (reuse existing or will be created during submodule build).
+  set(_TTLANG_VENV_SOURCE "toolchain")
 elseif(EXISTS "${CMAKE_BINARY_DIR}/venv")
   set(TTLANG_PYTHON_VENV "${CMAKE_BINARY_DIR}/venv" CACHE PATH
     "Python venv (local project)" FORCE)
-  _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _TTLANG_VENV_PYTHON)
-  if(_TTLANG_VENV_PYTHON)
-    _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
-    set(Python3_EXECUTABLE "${_TTLANG_VENV_PYTHON}" CACHE FILEPATH
-      "Python interpreter (from local project venv)" FORCE)
-    message(STATUS "Using local project Python venv: ${TTLANG_PYTHON_VENV}")
-    message(STATUS "  Python: ${Python3_EXECUTABLE}")
+  set(_TTLANG_VENV_SOURCE "local project")
+elseif(DEFINED TTLANG_TOOLCHAIN_DIR)
+  set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
+    "Python venv (created in toolchain dir)" FORCE)
+  set(_TTLANG_VENV_SOURCE "toolchain")
+else()
+  set(TTLANG_PYTHON_VENV "${CMAKE_BINARY_DIR}/venv" CACHE PATH
+    "Python venv (created in build dir)" FORCE)
+  set(_TTLANG_VENV_SOURCE "local project")
+endif()
+
+_ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _TTLANG_VENV_PYTHON)
+
+if(NOT _TTLANG_VENV_PYTHON)
+  message(STATUS "Creating Python venv at ${TTLANG_PYTHON_VENV}...")
+
+  get_filename_component(_TTLANG_VENV_PARENT "${TTLANG_PYTHON_VENV}" DIRECTORY)
+  file(MAKE_DIRECTORY "${_TTLANG_VENV_PARENT}")
+
+  set(_TTLANG_BOOTSTRAP_PYTHON "")
+  if(DEFINED Python3_EXECUTABLE)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" --version
+      RESULT_VARIABLE _TTLANG_BOOTSTRAP_RESULT
+      OUTPUT_QUIET ERROR_QUIET
+    )
+    if(_TTLANG_BOOTSTRAP_RESULT EQUAL 0)
+      set(_TTLANG_BOOTSTRAP_PYTHON "${Python3_EXECUTABLE}")
+    endif()
   endif()
 
-# 4. No venv yet — will be created during submodule LLVM build if needed.
-#    When building a toolchain, place the venv inside the toolchain directory
-#    so it gets cached/shipped with the toolchain.
-else()
-  if(DEFINED TTLANG_TOOLCHAIN_DIR)
-    set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
-      "Python venv (will be created in toolchain dir)" FORCE)
-  else()
-    set(TTLANG_PYTHON_VENV "${CMAKE_BINARY_DIR}/venv" CACHE PATH
-      "Python venv (will be created during LLVM build)" FORCE)
+  if(NOT _TTLANG_BOOTSTRAP_PYTHON)
+    unset(Python3_EXECUTABLE CACHE)
+    unset(_Python3_EXECUTABLE CACHE)
+    unset(Python3_EXECUTABLE)
+    unset(ENV{VIRTUAL_ENV})
+    set(Python3_FIND_VIRTUALENV STANDARD)
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_TTLANG_BOOTSTRAP_PYTHON "${Python3_EXECUTABLE}")
   endif()
-  message(STATUS "Python venv will be created at: ${TTLANG_PYTHON_VENV}")
+
+  execute_process(
+    COMMAND "${_TTLANG_BOOTSTRAP_PYTHON}" -m venv --prompt ttlang "${TTLANG_PYTHON_VENV}"
+    RESULT_VARIABLE _TTLANG_VENV_RESULT
+  )
+  if(NOT _TTLANG_VENV_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to create Python venv at ${TTLANG_PYTHON_VENV}")
+  endif()
+
+  _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _TTLANG_VENV_PYTHON)
+  if(NOT _TTLANG_VENV_PYTHON)
+    message(FATAL_ERROR
+      "Created Python venv at '${TTLANG_PYTHON_VENV}', but no working Python interpreter was found.")
+  endif()
+
+  execute_process(
+    COMMAND "${_TTLANG_VENV_PYTHON}" -m pip install --upgrade pip --quiet
+  )
 endif()
+
+_ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
+set(Python3_EXECUTABLE "${_TTLANG_VENV_PYTHON}" CACHE FILEPATH
+  "Python interpreter (from ${_TTLANG_VENV_SOURCE} venv)" FORCE)
+message(STATUS "Using ${_TTLANG_VENV_SOURCE} Python venv: ${TTLANG_PYTHON_VENV}")
+message(STATUS "  Python: ${Python3_EXECUTABLE}")

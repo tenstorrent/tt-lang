@@ -26,13 +26,10 @@ Three tests:
 
 3. `test_cross_dfb_multicast_loopback` — four-core multicast where the
    source core (0, 0) is inside the destination range (loopback) and
-   the source DFB index differs from the destination DFB index. The
-   IR-level loopback skip fix in this PR (`skipSenderReserve =
-   pipeType.srcInDstRange()`) is necessary for this pattern, but the
-   stripe-1 multicast write is not delivered: dm_write reads whatever
-   was already in the destination DFB's slot 1 at device init time
-   (zero if L1 was just cleared; otherwise stale data from a prior
-   run). Marked `xfail` pending #583.
+   the source DFB index differs from the destination DFB index. Combines
+   the IR-level loopback skip (`skipSenderReserve =
+   pipeType.srcInDstRange()`) with the cumulative-counter semaphore
+   lowering so every stripe is delivered. Regression test for #583.
 """
 
 import pytest
@@ -69,14 +66,14 @@ def gather_multi_iter(out):
         node_col, _node_row = ttl.node(dims=2)
         for _ri in range(NUM_OF_STRIPES):
             with partial_cb.reserve() as partial_blk:
-                partial_blk.store(ttl.math.fill(partial_blk, 1.0))
+                partial_blk.store(ttl.block.fill(1.0, shape=partial_blk.shape))
             if node_col == 0:
                 blk = recv_cb.wait()
                 with out_cb.reserve() as out_blk:
                     out_blk.store(blk)
             else:
                 with out_cb.reserve() as out_blk:
-                    out_blk.store(ttl.math.fill(out_blk, 1.0))
+                    out_blk.store(ttl.block.fill(1.0, shape=out_blk.shape))
 
     @ttl.datamovement()
     def dm_read():
@@ -154,7 +151,7 @@ def gather_bcast_loop(out):
                 # col>0 (no matching wait) and deadlock past block_count
                 # iterations.
                 with partial_for_sum_cb.reserve() as p_sum_blk:
-                    p_sum_blk.store(ttl.math.fill(p_sum_blk, 1.0))
+                    p_sum_blk.store(ttl.block.fill(1.0, shape=p_sum_blk.shape))
                 partial_blk = partial_for_sum_cb.wait()
                 blk = recv_cb.wait()
                 sum_val = blk + partial_blk
@@ -169,7 +166,7 @@ def gather_bcast_loop(out):
                 # Produce the send-side partial only on the cores whose
                 # dm_read consumes it (col>0). Same rationale as above.
                 with partial_for_send_cb.reserve() as p_send_blk:
-                    p_send_blk.store(ttl.math.fill(p_send_blk, 1.0))
+                    p_send_blk.store(ttl.block.fill(1.0, shape=p_send_blk.shape))
                 blk = bcast_cb.wait()
                 with out_cb.reserve() as out_blk:
                     out_blk.store(blk)
@@ -261,7 +258,7 @@ def cross_dfb_multicast_loopback(out):
         for _ri in range(NUM_OF_STRIPES):
             if node_col == 0:
                 with src_cb.reserve() as src_blk:
-                    src_blk.store(ttl.math.fill(src_blk, 7.0))
+                    src_blk.store(ttl.block.fill(7.0, shape=src_blk.shape))
 
     @ttl.datamovement()
     def dm_read():
@@ -276,31 +273,21 @@ def cross_dfb_multicast_loopback(out):
 
                 bcast_net.if_src(send)
 
+    @ttl.datamovement()
+    def dm_write():
+        node_col, _node_row = ttl.node(dims=2)
+        for ri in range(NUM_OF_STRIPES):
+
             def recv(pipe):
                 b = dst_cb.reserve()
                 tx = ttl.copy(pipe, b)
                 tx.wait()
 
             bcast_net.if_dst(recv)
-
-    @ttl.datamovement()
-    def dm_write():
-        node_col, _node_row = ttl.node(dims=2)
-        for ri in range(NUM_OF_STRIPES):
             out_blk = dst_cb.wait()
             ttl.copy(out_blk, out[ri : ri + 1, node_col : node_col + 1]).wait()
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "Cross-DFB multicast loopback does not deliver the stripe-1 write to "
-        "the destination DFB. With L1 cleared at device init, dm_write reads "
-        "zero for stripe 1; with stale L1 from a prior run, it reads that "
-        "prior data. The IR-level loopback skip fix in this PR is necessary "
-        "but not sufficient. See #583."
-    ),
-)
 def test_cross_dfb_multicast_loopback(device):
     rows = NUM_OF_STRIPES * TILE
     cols = CROSS_DFB_COL_CORES * TILE

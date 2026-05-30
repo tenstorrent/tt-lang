@@ -23,11 +23,17 @@ PKG_ROOT = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = PKG_ROOT.parent.parent
 STAGE = PKG_ROOT / "build" / "stage"
 
+VERSION_OVERRIDE_ENV = "TTLANG_VERSION_OVERRIDE"
+
+
+def get_version_override() -> str:
+    return os.environ.get(VERSION_OVERRIDE_ENV, "").strip()
+
 
 def get_version() -> str:
-    pretend = os.environ.get("TTLANG_PRETEND_VERSION", "").strip()
-    if pretend:
-        return pretend
+    version_override = get_version_override()
+    if version_override:
+        return version_override
     try:
         tag = (
             subprocess.check_output(
@@ -45,13 +51,17 @@ def get_version() -> str:
             text=True,
             cwd=str(REPO_ROOT),
         ).strip()
-        base, sep, local = tag.partition("+")
-        local_suffix = f"+{local}" if sep else ""
-        if commits and commits != "0":
-            return f"{base}.dev{commits}{local_suffix}"
-        return f"{base}{local_suffix}"
-    except Exception:
-        return "0.2.0.dev0"
+    except (subprocess.CalledProcessError, OSError) as error:
+        raise SystemExit(
+            "failed to derive tt-lang-sim version from git; set "
+            f"{VERSION_OVERRIDE_ENV} when building outside a tagged checkout"
+        ) from error
+
+    base, sep, local = tag.partition("+")
+    local_suffix = f"+{local}" if sep else ""
+    if commits and commits != "0":
+        return f"{base}.dev{commits}{local_suffix}"
+    return f"{base}{local_suffix}"
 
 
 VERSION = get_version()

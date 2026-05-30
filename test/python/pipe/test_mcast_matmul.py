@@ -8,7 +8,7 @@
 A rows are multicast horizontally (one pipe per row of the grid).
 B columns are multicast vertically (one pipe per column of the grid).
 
-Uses grid="auto" to adapt to the available device grid.
+Uses grid="full" to adapt to the available device grid.
 
 Tests: multi-tile 8x8 blocks, mcast and balanced (two-NOC) patterns
 with PipeNet named-function callbacks.
@@ -46,7 +46,7 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def mcast_matmul(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
         # Pipes must target the work subgrid (num_*_used), not the full launch grid.
@@ -54,12 +54,12 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
         n_blocks_per_node, num_cols_used = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
-            ttl.Pipe(src=(0, row), dst=(slice(0, num_cols_used), row))
+            ttl.Pipe(src=(0, row), dst=(slice(1, num_cols_used), row))
             for row in range(num_rows_used)
         ]
         mcast_a_net = ttl.PipeNet(a_pipes)
         b_pipes = [
-            ttl.Pipe(src=(col, 0), dst=(col, slice(0, num_rows_used)))
+            ttl.Pipe(src=(col, 0), dst=(col, slice(1, num_rows_used)))
             for col in range(num_cols_used)
         ]
         mcast_b_net = ttl.PipeNet(b_pipes)
@@ -79,7 +79,7 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
                     for local_nb in range(n_blocks_per_node):
                         nb = node_n * n_blocks_per_node + local_nb
                         with out_cb.reserve() as out_blk:
-                            out_blk.store(ttl.math.fill(out_blk, 0))
+                            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
                             for _ in range(K_BLOCKS):
                                 a_blk = a_cb.wait()
                                 b_blk = b_cb.wait()
@@ -99,33 +99,35 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
                         nc = nb * BLOCK_N
                         for kb in range(K_BLOCKS):
                             kc = kb * BLOCK_K
-                            with a_cb.reserve() as a_blk:
+                            with a_cb.reserve() as a_pipe_blk:
 
                                 def read_a(pipe):
                                     ttl.copy(
-                                        a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
+                                        a[mr : mr + BLOCK_M, kc : kc + BLOCK_K],
+                                        a_pipe_blk,
                                     ).wait()
-                                    ttl.copy(a_blk, pipe).wait()
+                                    ttl.copy(a_pipe_blk, pipe).wait()
 
                                 mcast_a_net.if_src(read_a)
 
                                 def recv_a(pipe):
-                                    ttl.copy(pipe, a_blk).wait()
+                                    ttl.copy(pipe, a_pipe_blk).wait()
 
                                 mcast_a_net.if_dst(recv_a)
 
-                            with b_cb.reserve() as b_blk:
+                            with b_cb.reserve() as b_pipe_blk:
 
                                 def read_b(pipe):
                                     ttl.copy(
-                                        w[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
+                                        w[kc : kc + BLOCK_K, nc : nc + BLOCK_N],
+                                        b_pipe_blk,
                                     ).wait()
-                                    ttl.copy(b_blk, pipe).wait()
+                                    ttl.copy(b_pipe_blk, pipe).wait()
 
                                 mcast_b_net.if_src(read_b)
 
                                 def recv_b(pipe):
-                                    ttl.copy(pipe, b_blk).wait()
+                                    ttl.copy(pipe, b_pipe_blk).wait()
 
                                 mcast_b_net.if_dst(recv_b)
 
@@ -153,19 +155,19 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def balanced_matmul(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
         m_blocks_per_node, num_rows_used = _even_split(M_BLOCKS, NUM_ROWS)
         n_blocks_per_node, num_cols_used = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
-            ttl.Pipe(src=(0, row), dst=(slice(0, num_cols_used), row))
+            ttl.Pipe(src=(0, row), dst=(slice(1, num_cols_used), row))
             for row in range(num_rows_used)
         ]
         mcast_a_net = ttl.PipeNet(a_pipes)
         b_pipes = [
-            ttl.Pipe(src=(col, 0), dst=(col, slice(0, num_rows_used)))
+            ttl.Pipe(src=(col, 0), dst=(col, slice(1, num_rows_used)))
             for col in range(num_cols_used)
         ]
         mcast_b_net = ttl.PipeNet(b_pipes)
@@ -185,7 +187,7 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
                     for local_nb in range(n_blocks_per_node):
                         nb = node_n * n_blocks_per_node + local_nb
                         with out_cb.reserve() as out_blk:
-                            out_blk.store(ttl.math.fill(out_blk, 0))
+                            out_blk.store(ttl.block.fill(0, shape=out_blk.shape))
                             for _ in range(K_BLOCKS):
                                 a_blk = a_cb.wait()
                                 b_blk = b_cb.wait()
@@ -204,18 +206,19 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
                         nb = node_n * n_blocks_per_node + local_nb
                         for kb in range(K_BLOCKS):
                             kc = kb * BLOCK_K
-                            with a_cb.reserve() as a_blk:
+                            with a_cb.reserve() as a_pipe_blk:
 
                                 def read_a(pipe):
                                     ttl.copy(
-                                        a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
+                                        a[mr : mr + BLOCK_M, kc : kc + BLOCK_K],
+                                        a_pipe_blk,
                                     ).wait()
-                                    ttl.copy(a_blk, pipe).wait()
+                                    ttl.copy(a_pipe_blk, pipe).wait()
 
                                 mcast_a_net.if_src(read_a)
 
                                 def recv_a(pipe):
-                                    ttl.copy(pipe, a_blk).wait()
+                                    ttl.copy(pipe, a_pipe_blk).wait()
 
                                 mcast_a_net.if_dst(recv_a)
 
@@ -231,18 +234,19 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
                         nc = nb * BLOCK_N
                         for kb in range(K_BLOCKS):
                             kc = kb * BLOCK_K
-                            with b_cb.reserve() as b_blk:
+                            with b_cb.reserve() as b_pipe_blk:
 
                                 def read_b(pipe):
                                     ttl.copy(
-                                        w[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
+                                        w[kc : kc + BLOCK_K, nc : nc + BLOCK_N],
+                                        b_pipe_blk,
                                     ).wait()
-                                    ttl.copy(b_blk, pipe).wait()
+                                    ttl.copy(b_pipe_blk, pipe).wait()
 
                                 mcast_b_net.if_src(read_b)
 
                                 def recv_b(pipe):
-                                    ttl.copy(pipe, b_blk).wait()
+                                    ttl.copy(pipe, b_pipe_blk).wait()
 
                                 mcast_b_net.if_dst(recv_b)
 
@@ -260,19 +264,19 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def balanced_matmul_relu(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
         m_blocks_per_node, num_rows_used = _even_split(M_BLOCKS, NUM_ROWS)
         n_blocks_per_node, num_cols_used = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
-            ttl.Pipe(src=(0, row), dst=(slice(0, num_cols_used), row))
+            ttl.Pipe(src=(0, row), dst=(slice(1, num_cols_used), row))
             for row in range(num_rows_used)
         ]
         mcast_a_net = ttl.PipeNet(a_pipes)
         b_pipes = [
-            ttl.Pipe(src=(col, 0), dst=(col, slice(0, num_rows_used)))
+            ttl.Pipe(src=(col, 0), dst=(col, slice(1, num_rows_used)))
             for col in range(num_cols_used)
         ]
         mcast_b_net = ttl.PipeNet(b_pipes)
@@ -295,7 +299,7 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
                     for local_nb in range(n_blocks_per_node):
                         nb = node_n * n_blocks_per_node + local_nb
                         with acc_cb.reserve() as init:
-                            init.store(ttl.math.fill(init, 0))
+                            init.store(ttl.block.fill(0, shape=init.shape))
                         for kb in range(K_BLOCKS):
                             with (
                                 a_cb.wait() as a_blk,
@@ -321,18 +325,19 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
                         nb = node_n * n_blocks_per_node + local_nb
                         for kb in range(K_BLOCKS):
                             kc = kb * BLOCK_K
-                            with a_cb.reserve() as a_blk:
+                            with a_cb.reserve() as a_pipe_blk:
 
                                 def read_a(pipe):
                                     ttl.copy(
-                                        a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
+                                        a[mr : mr + BLOCK_M, kc : kc + BLOCK_K],
+                                        a_pipe_blk,
                                     ).wait()
-                                    ttl.copy(a_blk, pipe).wait()
+                                    ttl.copy(a_pipe_blk, pipe).wait()
 
                                 mcast_a_net.if_src(read_a)
 
                                 def recv_a(pipe):
-                                    ttl.copy(pipe, a_blk).wait()
+                                    ttl.copy(pipe, a_pipe_blk).wait()
 
                                 mcast_a_net.if_dst(recv_a)
 
@@ -348,18 +353,19 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
                         nc = nb * BLOCK_N
                         for kb in range(K_BLOCKS):
                             kc = kb * BLOCK_K
-                            with b_cb.reserve() as b_blk:
+                            with b_cb.reserve() as b_pipe_blk:
 
                                 def read_b(pipe):
                                     ttl.copy(
-                                        w[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
+                                        w[kc : kc + BLOCK_K, nc : nc + BLOCK_N],
+                                        b_pipe_blk,
                                     ).wait()
-                                    ttl.copy(b_blk, pipe).wait()
+                                    ttl.copy(b_pipe_blk, pipe).wait()
 
                                 mcast_b_net.if_src(read_b)
 
                                 def recv_b(pipe):
-                                    ttl.copy(pipe, b_blk).wait()
+                                    ttl.copy(pipe, b_pipe_blk).wait()
 
                                 mcast_b_net.if_dst(recv_b)
 

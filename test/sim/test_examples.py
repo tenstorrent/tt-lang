@@ -58,12 +58,22 @@ _L1_OVERRIDES: dict[str, int] = {
     "eltwise_add_3d.py": 1_572_864,  # 3 x shape=(2,2,1) x bfloat16 CBs
 }
 
+# Scripts whose correctness checks are calibrated for their declared dtypes
+# (e.g. bfloat16 ULP tolerances).  Run with float32 promotion disabled so
+# they execute with the dtypes written in the source file.
+_NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
+    [
+        "matmul_1d.py",
+        "matmul_1d_mcast.py",
+    ]
+)
+
 
 def run_script_in_process(
     script_path: Path,
     scheduler: str = "fair",
     max_l1_bytes: int | None = None,
-    promote_bf16: bool = False,
+    no_float32_promotion: bool = False,
 ) -> tuple[int, str]:
     """Run a script in-process with simulator backend.
 
@@ -72,19 +82,17 @@ def run_script_in_process(
         scheduler: Scheduler algorithm ('greedy' or 'fair')
         max_l1_bytes: Optional L1 memory limit override in bytes; uses the
             simulator default when None
-        promote_bf16: If True, redirect bfloat16 to float32 for faster
-            computation on hardware without native bfloat16 support
+        no_float32_promotion: If True, disable the default float32 promotion so
+            the script runs with its declared dtypes (e.g. bfloat16 as bfloat16)
 
     Returns:
         (exit_code, output) tuple where exit_code is 0 on success, 1 on error
     """
-    from python.sim.ttnnsim import set_matmul_promote_bf16
-
     set_scheduler_algorithm(scheduler)
     if max_l1_bytes is not None:
         set_max_l1_bytes(max_l1_bytes)
-    if promote_bf16:
-        set_matmul_promote_bf16(True)
+    if no_float32_promotion:
+        sim.ttnn.set_disable_float32_promotion(True)
 
     # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
     # Done here so it doesn't interfere with other tests in parallel execution
@@ -102,8 +110,8 @@ def run_script_in_process(
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = original
-        if promote_bf16:
-            set_matmul_promote_bf16(False)
+        if no_float32_promotion:
+            sim.ttnn.set_disable_float32_promotion(False)
 
 
 @pytest.mark.parametrize(
@@ -113,7 +121,6 @@ def run_script_in_process(
             "broadcast.py",
             marks=requires_ttnn_marks,
         ),
-        "broadcast_demo.py",
         "group_transfer_upsample.py",
         "height_shard_gather.py",
         pytest.param(
@@ -123,7 +130,7 @@ def run_script_in_process(
         "eltwise_add.py",
         "eltwise_add_3d.py",
         "eltwise_pipe.py",
-        "eltwise_pipe_core3.py",
+        "eltwise_pipe_node3.py",
         pytest.param(
             "matmul.py",
             marks=pytest.mark.xfail(reason="Required broadcast not yet supported"),
@@ -133,7 +140,6 @@ def run_script_in_process(
         "multinode_matmul.py",
         "matmul_1d.py",
         "matmul_1d_mcast.py",
-        "eltwise_1d_broadcast.py",
         pytest.param(
             "elementwise-tutorial/step_0_ttnn_base.py",
             marks=requires_ttnn_marks,
@@ -151,7 +157,7 @@ def run_script_in_process(
             marks=requires_ttnn_marks,
         ),
         pytest.param(
-            "elementwise-tutorial/step_4_multinode_grid_auto.py",
+            "elementwise-tutorial/step_4_multinode_grid_full.py",
             marks=requires_ttnn_marks,
         ),
         pytest.param(
@@ -181,6 +187,7 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
         EXAMPLES_DIR / script_name,
         scheduler,
         max_l1_bytes=_L1_OVERRIDES.get(script_name),
+        no_float32_promotion=script_name in _NO_PROMOTION_SCRIPTS,
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
@@ -195,7 +202,11 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
 def test_metal_example_cli(example_path: str, scheduler: str) -> None:
     """Test metal examples run successfully with both schedulers."""
-    code, out = run_script_in_process(EXAMPLES_METAL_DIR / example_path, scheduler)
+    code, out = run_script_in_process(
+        EXAMPLES_METAL_DIR / example_path,
+        scheduler,
+        no_float32_promotion=True,
+    )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
 
@@ -388,43 +399,13 @@ def test_max_dfbs_warning_warns_at_limit(scheduler: str) -> None:
     """Test that max_dfbs_warning.py emits a DFB limit warning but still succeeds.
 
     This example allocates 36 DataflowBuffers, exceeding the default limit of 32.
-    The warning is issued at kernel definition time before any thread execution.
+    The warning is issued at kernel definition time before any kernel execution.
     """
     with pytest.warns(UserWarning, match="hardware limit is 32"):
         code, out = run_script_in_process(ERRORS_DIR / "max_dfbs_warning.py", scheduler)
     assert (
         code == 0
     ), f"Expected max_dfbs_warning.py to succeed, but it exited with code {code}:\n{out}"
-
-
-@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
-def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
-    """Test that eltwise_1d_broadcast.py displays 1D broadcast hardware warning.
-
-    This example demonstrates broadcasting with 1D blocks. Since 1D broadcasts
-    are not supported by current hardware, the simulator should emit warnings
-    when ttl.math.broadcast() is called on 1D blocks, but the script should
-    still execute successfully.
-    """
-    code, out = run_script_in_process(
-        EXAMPLES_DIR / "eltwise_1d_broadcast.py", scheduler
-    )
-
-    # The example should run successfully (warnings don't fail execution)
-    assert code == 0, (
-        f"Expected eltwise_1d_broadcast.py to succeed, but it exited with code {code}\n"
-        f"Output:\n{out}"
-    )
-
-    # Verify the 1D broadcast warning appears
-    assert (
-        "warning: 1D broadcast is not supported on current hardware" in out
-    ), f"Expected 1D broadcast warning not found in output:\n{out}"
-
-    # Verify source location is shown (the broadcast calls are in eltwise_compute function)
-    assert (
-        "examples/eltwise_1d_broadcast.py:" in out
-    ), f"Expected source location not found in output:\n{out}"
 
 
 # ---- Matmul tutorial -------------------------------------------------------
@@ -441,7 +422,7 @@ def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
         # coroutine steps at M=K=N=8192 to be practical.
         "step_2_single_node_multitile_block.py",
         "step_3_multinode.py",
-        "step_4_multinode_grid_auto.py",
+        "step_4_multinode_grid_full.py",
         "step_5_multidevice_shard_m.py",
         "step_6_multidevice_shard_k.py",
     ],
@@ -450,7 +431,7 @@ def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
 def test_matmul_tutorial_sim(script_name: str) -> None:
     """Test matmul-tutorial steps 2-6 on the simulator (pass --run-matmul-tutorial-no-ttnn to enable)."""
     code, out = run_script_in_process(
-        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", promote_bf16=True
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair"
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
@@ -470,6 +451,6 @@ def test_matmul_tutorial_sim(script_name: str) -> None:
 def test_matmul_tutorial_hw(script_name: str) -> None:
     """Test matmul-tutorial steps 0 and 7 on hardware (pass --run-matmul-tutorial-ttnn to enable)."""
     code, out = run_script_in_process(
-        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", promote_bf16=True
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair"
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"

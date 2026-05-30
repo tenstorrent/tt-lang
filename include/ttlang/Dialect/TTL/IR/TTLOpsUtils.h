@@ -16,8 +16,10 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <cstdint>
 #include <optional>
@@ -51,13 +53,80 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
+/// Trace a transfer handle through tensor containers and loop-carried values
+/// to the first value accepted by `match`.
+template <typename ResultT, typename MatchFn>
+inline ResultT
+traceTransferHandleSource(mlir::Value value, MatchFn match,
+                          llvm::SmallPtrSetImpl<mlir::Value> &seen) {
+  value = traceUnrealizedCasts(value);
+  if (!seen.insert(value).second) {
+    return ResultT();
+  }
+
+  if (ResultT result = match(value)) {
+    return result;
+  }
+  if (auto extractOp = value.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    return traceTransferHandleSource<ResultT>(extractOp.getTensor(), match,
+                                              seen);
+  }
+  if (auto insertOp = value.getDefiningOp<mlir::tensor::InsertOp>()) {
+    return traceTransferHandleSource<ResultT>(insertOp.getScalar(), match,
+                                              seen);
+  }
+  if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
+    if (auto loop =
+            mlir::dyn_cast<mlir::LoopLikeOpInterface>(result.getOwner())) {
+      auto yieldedOpt = loop.getYieldedValuesMutable();
+      auto resultsOpt = loop.getLoopResults();
+      if (yieldedOpt && resultsOpt) {
+        auto yielded = *yieldedOpt;
+        auto results = *resultsOpt;
+        for (unsigned idx = 0; idx < results.size(); ++idx) {
+          if (results[idx] == result) {
+            return traceTransferHandleSource<ResultT>(yielded[idx].get(), match,
+                                                      seen);
+          }
+        }
+      }
+    }
+  }
+  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Operation *parent = blockArg.getOwner()->getParentOp();
+    if (auto loop = mlir::dyn_cast_or_null<mlir::LoopLikeOpInterface>(parent)) {
+      auto iterArgs = loop.getRegionIterArgs();
+      auto inits = loop.getInitsMutable();
+      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
+        if (iterArgs[idx] == blockArg) {
+          return traceTransferHandleSource<ResultT>(inits[idx].get(), match,
+                                                    seen);
+        }
+      }
+    }
+  }
+
+  return ResultT();
+}
+
 /// Walk through `tensor.extract_slice` ops and return the underlying
 /// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
+  view = traceUnrealizedCasts(view);
   while (auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
     view = slice.getSource();
+    view = traceUnrealizedCasts(view);
   }
   return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
+}
+
+/// Return the user reserve that produced a pipe receive destination block.
+inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
+  dst = traceUnrealizedCasts(dst);
+  if (auto attach = dst.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
+    return findCBReserveForView(attach.getTensor());
+  }
+  return findCBReserveForView(dst);
 }
 
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion
@@ -79,6 +148,21 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
     return tileType.getElementType();
   }
   return std::nullopt;
+}
+
+/// Return true when `tensor` was directly acquired from a CB via
+/// ttl.cb_wait or ttl.cb_reserve (the only two ViewLikeOpInterface
+/// implementations whose view source is a CircularBufferType).
+/// Unlike getAttachedCB, this rejects ttl.attach_cb, tensor.extract, and
+/// tensor.extract_slice chains -- it only traces through unrealized
+/// conversion casts.
+inline bool isCBAcquireView(mlir::Value tensor) {
+  tensor = traceUnrealizedCasts(tensor);
+  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+    mlir::Value source = viewLike.getViewSource();
+    return mlir::isa<CircularBufferType>(source.getType());
+  }
+  return false;
 }
 
 /// Return the circular buffer attached to `tensor`, or null if none.
@@ -105,6 +189,25 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   }
 
   return mlir::Value();
+}
+
+/// Normalize a Python-style dim (allowing negative indices) against `rank`
+/// into a non-negative index. Negative dims wrap from the end (-1 is the
+/// last dim). Does not bounds-check; callers should validate the result is
+/// in `[0, rank)`.
+inline int64_t normalizeDim(int64_t dim, int64_t rank) {
+  return dim < 0 ? dim + rank : dim;
+}
+
+/// Normalize a list of Python-style dims into a set of non-negative indices
+/// against `rank`. Duplicates after normalization collapse.
+inline llvm::SmallDenseSet<int64_t>
+normalizeDimsToSet(mlir::ArrayRef<int64_t> dims, int64_t rank) {
+  llvm::SmallDenseSet<int64_t> result;
+  for (int64_t d : dims) {
+    result.insert(normalizeDim(d, rank));
+  }
+  return result;
 }
 
 /// True for arithmetic/math tile ops (add, mul, exp, ...); false for data
@@ -448,6 +551,22 @@ inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
   return capacity;
 }
 
+inline bool isConsumedByTileTypecast(Value value) {
+  for (Operation *user : value.getUsers()) {
+    if (isa<TileTypecastOp>(user)) {
+      return true;
+    }
+    if (auto copy = dyn_cast<CopyTileOp>(user)) {
+      for (Operation *copyUser : copy.getDstTile().getUsers()) {
+        if (isa<TileTypecastOp>(copyUser)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /// Compute DST capacity for a compute op. Fails for mixed f32/non-f32 args.
 inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   bool fullSyncEn = getKernelBoolAttr(computeOp, kDstFullSyncEnAttrName);
@@ -472,10 +591,19 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (sawF32 && sawNonF32) {
-    return computeOp.emitOpError(
-        "mixed f32 and non-f32 tile arguments; "
-        "DST capacity uses f32 limits (4 tiles) which may produce "
-        "incorrect results");
+    for (BlockArgument arg : body.getArguments()) {
+      if (arg.getArgNumber() >= computeOp.getNumInputs()) {
+        continue;
+      }
+      if (!getTileElementType(arg.getType())) {
+        continue;
+      }
+      if (!isConsumedByTileTypecast(arg)) {
+        return computeOp.emitOpError(
+            "mixed f32 and non-f32 tile arguments; DST capacity uses f32 "
+            "limits (4 tiles) which may produce incorrect results");
+      }
+    }
   }
 
   bool isFloat32 = sawF32 || fp32DestAccEn;

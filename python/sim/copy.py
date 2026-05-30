@@ -19,13 +19,14 @@ from .copyhandlers import (
 from .ttnnsim import Tensor, tile_count_from_tensor
 from .sharding import try_count_locality
 from .trace import trace
+from .pipe import Pipe, SrcPipeIdentity
 import math
 
 
 def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
     """Return extra fields for copy_start/copy_end when a Tensor is involved.
 
-    When called from within a kernel (greenlet tagged with _sim_core), adds
+    When called from within a kernel (greenlet tagged with _sim_node), adds
     element-level locality fields: local_l1, remote_l1, dram.
     """
     match (src, dst):
@@ -87,6 +88,7 @@ class CopyTransaction:
         self._src = src
         self._dst = dst
         self._completed = False
+        self._transfer_performed = False
 
         # Lookup and store the handler for this type combination
         handler = self._lookup_handler(type(src), type(dst))
@@ -113,6 +115,16 @@ class CopyTransaction:
             src=type(src).__name__,
             dst=type(dst).__name__,
             **_copy_trace_fields(src, dst),
+        )
+
+        if self._starts_on_copy():
+            self._handler.transfer(self._src, self._dst)
+            self._transfer_performed = True
+
+    def _starts_on_copy(self) -> bool:
+        """Return true for transfers whose side effects begin at copy()."""
+        return isinstance(self._src, Block) and isinstance(
+            self._dst, (Pipe, SrcPipeIdentity)
         )
 
     @staticmethod
@@ -159,8 +171,10 @@ class CopyTransaction:
 
         block_if_needed(self, "wait")
 
-        # Transfer - let exceptions propagate to scheduler for context
-        self._handler.transfer(self._src, self._dst)
+        # Transfer - let exceptions propagate to scheduler for context.
+        if not self._transfer_performed:
+            self._handler.transfer(self._src, self._dst)
+            self._transfer_performed = True
         self._completed = True
 
         # Mark tx.wait() complete in state machine - this transitions blocks back to accessible states
@@ -255,7 +269,7 @@ def copy(
     Supported transfer patterns:
     - torch.Tensor → Block: Load tensor data into dataflow buffer
     - Block → torch.Tensor: Extract tensor data from dataflow buffer
-    - Block → Pipe: Broadcast data to multiple cores (pipe send)
+    - Block → Pipe: Broadcast data to multiple nodes (pipe send)
     - Pipe → Block: Receive broadcasted data from pipe (pipe receive)
 
     Args:
@@ -277,4 +291,23 @@ def copy(
         tx = copy(dfb_block, tensor_slice)
         tx.wait()
     """
-    return CopyTransaction(src, dst)
+    handle = CopyTransaction(src, dst)
+
+    # Case A: bare ttl.copy(...) with no assignment — auto-wait immediately.
+    # The AST analysis in analyze_kernel_function identifies these call sites
+    # and registers their (caller_code, abs_lineno) in context.auto_wait_copy_lines.
+    # Using equality-based set lookup so that code objects from different files
+    # with identical bodies are still matched correctly.
+    import sys
+
+    frame = sys._getframe(1)
+    from .context import get_context
+
+    ctx = get_context()
+    if (
+        ctx.auto_wait_copy_lines
+        and (frame.f_code, frame.f_lineno) in ctx.auto_wait_copy_lines
+    ):
+        handle.wait()
+
+    return handle

@@ -1,13 +1,14 @@
 add_mlir_dialect_library(TTLangTTLTransforms
-  ConvertTTLToTTKernel.cpp
-  DFBMaterialization.cpp
-  PipeLowering.cpp
-  ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
+  ConvertTTLToCompute.cpp
+  ConvertTTLToTTKernel.cpp
+  DFBMaterialization.cpp
   LowerDPrintToEmitC.cpp
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
+  PipeGraph.cpp
+  PipeLowering.cpp
   TTLAnnotateCBAssociations.cpp
   TTLAnnotateL1AccLoops.cpp
   TTLAssignDST.cpp
@@ -22,6 +23,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
   TTLSubblockComputeForDST.cpp
+  TTLValidateCBBudget.cpp
   TTLVerifyDFBSPSC.cpp
   TTLVerifyPipeNetGuards.cpp
 
@@ -30,6 +32,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
 
   LINK_LIBS PUBLIC
   MLIRAnalysis
+  MLIRAffineTransforms
   MLIRArithDialect
   MLIREmitCDialect
   MLIRFuncDialect

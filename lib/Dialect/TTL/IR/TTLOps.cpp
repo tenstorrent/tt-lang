@@ -176,9 +176,15 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     if (srcIsPipe && dstIsPipe) {
       return emitOpError() << "cannot copy directly between pipes";
     }
-    if (!srcIsCb && !dstIsCb) {
-      return emitOpError()
-             << "pipe transfers require one operand to be !ttl.cb";
+    if (dstIsPipe) {
+      if (!srcIsCb) {
+        return emitOpError()
+               << "pipe send requires source operand to be !ttl.cb";
+      }
+      return success();
+    }
+    if (!findCBReserveForPipeReceive(getDst())) {
+      return emitOpError() << "pipe receive requires a cb_reserve destination";
     }
     return success();
   }
@@ -247,6 +253,37 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
+  if (!findCBReserveForPipeReceive(getDst())) {
+    return emitOpError() << "requires a cb_reserve destination";
+  }
+
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType) {
+    return emitOpError() << "requires a transfer handle result";
+  }
+  if (handleType.getKind()) {
+    return emitOpError() << "requires an untyped transfer handle result";
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeRecvWaitOp::verify() {
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType) {
+    return emitOpError() << "requires a transfer handle operand";
+  }
+  if (handleType.getKind()) {
+    return emitOpError() << "requires an untyped transfer handle operand";
+  }
+  if (!findCBReserveForPipeReceive(getDst())) {
+    return emitOpError() << "requires a cb_reserve destination";
+  }
+
+  return success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
   if (failed(
           mlir::tt::ttl::verify::isValidWaitOperand(getOperation(), getXf()))) {
@@ -279,6 +316,32 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
     return emitOpError()
            << "dst_tile type must match src type, but got dst_tile: "
            << dstTileTy << ", src: " << srcTy;
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTypecastOp::verify() {
+  auto inputTy = mlir::cast<tt::ttcore::TileType>(getInput().getType());
+  auto resultTy = mlir::cast<tt::ttcore::TileType>(getResult().getType());
+
+  // The tile shape must be preserved; only the element data type changes.
+  if (inputTy.getShape() != resultTy.getShape()) {
+    return emitOpError()
+           << "input and result tile shapes must match, but got input: "
+           << inputTy << ", result: " << resultTy;
+  }
+
+  ttcore::DataType inputDtype = inputTy.getDataType();
+  ttcore::DataType resultDtype = resultTy.getDataType();
+  if (inputDtype == resultDtype) {
+    return emitOpError() << "input and result tile data types must differ";
+  }
+
+  if (!ttcore::isFloat(inputDtype) || !ttcore::isFloat(resultDtype)) {
+    return emitOpError()
+           << "only supports floating-point tile data types, but got input: "
+           << inputTy << ", result: " << resultTy;
   }
 
   return success();
@@ -1055,8 +1118,8 @@ mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
 }
 
 llvm::SmallVector<unsigned>
-mlir::tt::ttl::BcastOp::getDFBInputOperandIndices() {
-  return {0, 1}; // input and output both require CB-attached values
+mlir::tt::ttl::BlockBroadcastOp::getDFBInputOperandIndices() {
+  return {0}; // input is the only operand; output CB is resolved downstream
 }
 
 llvm::SmallVector<unsigned>
@@ -1067,6 +1130,32 @@ mlir::tt::ttl::MatmulOp::getDFBInputOperandIndices() {
 llvm::SmallVector<unsigned>
 mlir::tt::ttl::TransposeOp::getDFBInputOperandIndices() {
   return {0}; // input
+}
+
+// True if `operand`'s producer is one whose result cannot fuse with a
+// downstream compute and so must be packed out to a DFB.
+static bool needsDFBMaterialization(mlir::Value operand) {
+  mlir::Operation *defOp = operand.getDefiningOp();
+  return defOp &&
+         mlir::isa<mlir::tt::ttl::ReduceOp, mlir::tt::ttl::MatmulOp>(defOp);
+}
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::MulUnaryConstOp::getDFBInputOperandIndices() {
+  if (needsDFBMaterialization(getInput())) {
+    return {0};
+  }
+  return {};
+}
+
+llvm::SmallVector<unsigned> mlir::tt::ttl::MulOp::getDFBInputOperandIndices() {
+  llvm::SmallVector<unsigned> indices;
+  for (unsigned idx : {0u, 1u}) {
+    if (needsDFBMaterialization(getOperand(idx))) {
+      indices.push_back(idx);
+    }
+  }
+  return indices;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1210,6 +1299,109 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// BlockBroadcastOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::BlockBroadcastOp::verify() {
+  auto inputType = mlir::cast<RankedTensorType>(getInput().getType());
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (!isa<ttcore::TileType>(inputType.getElementType())) {
+    return emitOpError()
+           << "row-major broadcast is not supported; input element type must "
+              "be !ttcore.tile";
+  }
+
+  if (!inputType.hasStaticShape() || !resultType.hasStaticShape()) {
+    return emitOpError() << "all operands must have static shapes";
+  }
+
+  ArrayRef<int64_t> dims = getDims();
+  ArrayRef<int64_t> shape = getShape();
+
+  int64_t rank = inputType.getRank();
+  if (static_cast<int64_t>(shape.size()) != rank) {
+    return emitOpError() << "shape size " << shape.size()
+                         << " does not match input rank " << rank;
+  }
+  if (resultType.getRank() != rank) {
+    return emitOpError() << "result rank " << resultType.getRank()
+                         << " does not match input rank " << rank;
+  }
+
+  if (dims.empty()) {
+    return emitOpError() << "dims must be non-empty";
+  }
+
+  llvm::SmallDenseSet<int64_t> normDims;
+  for (int64_t d : dims) {
+    int64_t normalized = normalizeDim(d, rank);
+    if (normalized < 0 || normalized >= rank) {
+      return emitOpError() << "dim " << d << " is out of range for rank "
+                           << rank;
+    }
+    if (!normDims.insert(normalized).second) {
+      return emitOpError() << "duplicate dim " << d;
+    }
+  }
+
+  for (int64_t i = 0; i < rank; ++i) {
+    if (normDims.contains(i)) {
+      if (shape[i] <= 0) {
+        return emitOpError()
+               << "shape[" << i << "] = " << shape[i] << " must be positive";
+      }
+      if (inputType.getDimSize(i) != 1) {
+        return emitOpError()
+               << "input dim " << i << " is " << inputType.getDimSize(i)
+               << " but must be 1 for broadcast dim " << i;
+      }
+    } else if (inputType.getDimSize(i) != shape[i]) {
+      return emitOpError() << "input dim " << i << " is "
+                           << inputType.getDimSize(i)
+                           << " but must match shape[" << i
+                           << "] = " << shape[i] << " for non-broadcast dim";
+    }
+    if (resultType.getDimSize(i) != shape[i]) {
+      return emitOpError() << "result dim " << i << " is "
+                           << resultType.getDimSize(i) << " but expected shape["
+                           << i << "] = " << shape[i];
+    }
+  }
+
+  if (inputType.getElementType() != resultType.getElementType()) {
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
+                         << " must match input element type "
+                         << inputType.getElementType();
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// FillOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::FillOp::verify() {
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+  if (!isa<ttcore::TileType>(resultType.getElementType())) {
+    return emitOpError() << "result element type must be !ttcore.tile, got "
+                         << resultType.getElementType();
+  }
+  if (!resultType.hasStaticShape()) {
+    return emitOpError() << "result must have a static shape";
+  }
+  for (auto [i, dim] : llvm::enumerate(resultType.getShape())) {
+    if (dim <= 0) {
+      return emitOpError() << "result shape[" << i << "] = " << dim
+                           << " must be positive";
+    }
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // TransposeOp
 //===----------------------------------------------------------------------===//
 
@@ -1287,6 +1479,87 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
   }
 
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Raw element access verifiers (shared logic + per-op entry points)
+//===----------------------------------------------------------------------===//
+
+/// Shared verification for raw_element_read and raw_element_write. Checks:
+///   1. Enclosing function is a data movement (noc) kernel thread.
+///   2. Block must trace to a circular buffer (cb_wait or cb_reserve).
+///   3. Block must be at least rank 1 (rank-0 not supported).
+///   4. Coordinate count matches block tensor rank.
+///   5. Scalar type matches block's underlying element dtype.
+static mlir::LogicalResult verifyRawElementOp(mlir::Operation *op,
+                                              mlir::Value block,
+                                              mlir::RankedTensorType blockTy,
+                                              mlir::ValueRange coords,
+                                              mlir::Type scalarTy) {
+  // 1. Must be inside a noc kernel thread function.
+  auto func = mlir::tt::ttl::getEnclosingKernelThread(op);
+  if (!func) {
+    return op->emitOpError()
+           << "must be inside a function with '"
+           << mlir::tt::ttl::kKernelThreadAttrName << "' attribute";
+  }
+  auto threadAttr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+      mlir::tt::ttl::kKernelThreadAttrName);
+  if (!threadAttr ||
+      threadAttr.getValue() != mlir::tt::ttkernel::ThreadType::Noc) {
+    return op->emitOpError()
+           << "is only allowed in data movement (noc) threads";
+  }
+
+  // 2. Block must originate directly from ttl.cb_wait or ttl.cb_reserve.
+  if (!mlir::tt::ttl::isCBAcquireView(block)) {
+    return op->emitOpError() << "block must be a tensor view acquired from "
+                                "ttl.cb_wait or ttl.cb_reserve";
+  }
+
+  // 3. Block must have at least one dimension.
+  int64_t blockRank = blockTy.getRank();
+  if (blockRank == 0) {
+    return op->emitOpError()
+           << "block must be at least rank 1, got rank-0 tensor";
+  }
+
+  // 4. Coordinate count must match block tensor rank.
+  if (static_cast<int64_t>(coords.size()) != blockRank) {
+    return op->emitOpError()
+           << "coordinate count (" << coords.size()
+           << ") must match block tensor rank (" << blockRank << ")";
+  }
+
+  // 5. Resolve the expected scalar type from the block element type.
+  mlir::Type elemTy = blockTy.getElementType();
+  mlir::Type expectedScalarTy;
+  if (auto tileTy = mlir::dyn_cast<mlir::tt::ttcore::TileType>(elemTy)) {
+    expectedScalarTy = mlir::tt::ttcore::dataTypeToElementType(
+        op->getContext(), tileTy.getDataType());
+  } else {
+    expectedScalarTy = elemTy;
+  }
+
+  if (scalarTy != expectedScalarTy) {
+    return op->emitOpError()
+           << "scalar type (" << scalarTy
+           << ") must match block element dtype (" << expectedScalarTy << ")";
+  }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
+  auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
+  return verifyRawElementOp(getOperation(), getBlock(), blockTy, getCoords(),
+                            getResult().getType());
+}
+
+mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
+  auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
+  return verifyRawElementOp(getOperation(), getBlock(), blockTy, getCoords(),
+                            getValue().getType());
 }
 
 //===----------------------------------------------------------------------===//

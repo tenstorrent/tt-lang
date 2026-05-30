@@ -78,7 +78,7 @@ TUTORIALS=(
     examples/tutorial/single_node_broadcast_single_tile_block.py
     examples/tutorial/single_node_broadcast_multitile_blocks.py
     examples/elementwise-tutorial/step_3_multinode.py
-    examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+    examples/elementwise-tutorial/step_4_multinode_grid_full.py
 )
 
 PASSED=0

@@ -151,14 +151,14 @@ def make_kernel(
                         mcast_a_net.if_src(read_a)
                         mcast_a_net.if_dst(lambda pipe: (ttl.copy(pipe, a_blk).wait(),))
 
-                    if k_p == 0:
+                    if reduce_net.is_dst():
 
                         def recv(pipe):
                             r = recv_cb.reserve()
                             ttl.copy(pipe, r).wait()
 
                         reduce_net.if_dst(recv)
-                    else:
+                    elif reduce_net.is_src():
                         p = partial_cb.wait()
 
                         def send(pipe):
@@ -187,7 +187,7 @@ def make_kernel(
 
                         mcast_b_net.if_src(read_b)
                         mcast_b_net.if_dst(lambda pipe: (ttl.copy(pipe, b_blk).wait(),))
-                    if k_p == 0:
+                    if col_c < Np:
                         o = out_cb.wait()
                         ttl.copy(o, out[mr : mr + bm, nc : nc + bn]).wait()
 

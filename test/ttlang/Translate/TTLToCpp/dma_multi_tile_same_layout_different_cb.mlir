@@ -25,8 +25,8 @@
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
 
 // CB wrappers declared at top of kernel
-// CHECK:   experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-// CHECK:   experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+// CHECK:   CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+// CHECK:   CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
 
 // First copy: 64x64 (2x2 tiles) → CB [2,2]
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
@@ -51,7 +51,7 @@
 // CHECK:       noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_ADDR1]]);
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc_async_read_barrier();
+// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 
 // Second copy: 64x64 (2x2 tiles) → CB [4,1] - SAME tensor layout, DIFFERENT CB shape
 // CHECK:   int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
@@ -76,7 +76,7 @@
 // CHECK:       noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_ADDR2]]);
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc_async_read_barrier();
+// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   return;
 // CHECK-NEXT: }
 

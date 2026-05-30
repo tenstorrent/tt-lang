@@ -1,6 +1,7 @@
 # Documentation
 
 ## Prerequisites
+- Docs use the same Sphinx RTD theme and `tt_theme.css` as [Tenstorrent core docs](https://docs.tenstorrent.com/) (TT-NN, TT-Metalium). Theme assets live under `docs/sphinx/_static/` and `docs/sphinx/_templates/` for standalone builds; when this repo sits inside `tenstorrent.github.io`, `conf.py` prefers the shared `shared/` tree automatically.
 - Docs are disabled by default. Enable with `-DTTLANG_ENABLE_DOCS=ON` when configuring CMake.
 - On enable, CMake will `pip install` Sphinx, myst-parser, and sphinx-rtd-theme into the active Python.
 - If you prefer manual install: `python -m pip install sphinx myst-parser sphinx-rtd-theme`.

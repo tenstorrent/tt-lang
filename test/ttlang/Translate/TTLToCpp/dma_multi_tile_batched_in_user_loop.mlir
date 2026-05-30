@@ -39,8 +39,8 @@
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
 
 // CB wrappers declared at top of kernel
-// CHECK:   experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-// CHECK:   experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+// CHECK:   CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+// CHECK:   CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
 
 // User loop from input MLIR (0..3)
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[STEP]]) {
@@ -94,7 +94,7 @@
 // CHECK:     }
 
 // Consecutive barriers deduplicated to single barrier.
-// CHECK:     noc_async_read_barrier();
+// CHECK:     noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   }
 // CHECK:   return;
 // CHECK-NEXT: }

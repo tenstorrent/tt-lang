@@ -12,12 +12,52 @@ func.func @pipe_to_pipe_copy() {
 
 // -----
 
-// Test: pipe copy without CB operand.
-func.func @pipe_without_cb(%t: tensor<32x32xf32>) {
+// Test: pipe receive without a reserved destination DFB slot.
+func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  // expected-error @+1 {{'ttl.copy' op pipe transfers require one operand to be !ttl.cb}}
+  // expected-error @+1 {{'ttl.copy' op pipe receive requires a cb_reserve destination}}
   %xf = ttl.copy %p, %t : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<32x32xf32>) -> !ttl.transfer_handle
   ttl.wait %xf : !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+// Test: internal pipe receive post requires an untyped transfer handle.
+func.func @pipe_recv_post_typed_handle_result() {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @+1 {{'ttl.pipe_recv_post' op requires an untyped transfer handle result}}
+  %xf = ttl.pipe_recv_post %p, %dst
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// Test: internal pipe receive wait requires an untyped transfer handle.
+func.func @pipe_recv_wait_typed_handle_operand() {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf = ttl.copy %cb, %p
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  // expected-error @+1 {{'ttl.pipe_recv_wait' op requires an untyped transfer handle operand}}
+  ttl.pipe_recv_wait %xf, %p, %dst
+      : !ttl.transfer_handle<write>,
+        !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+        tensor<1x1x!ttcore.tile<32x32, f32>>
   func.return
 }
 

@@ -63,7 +63,6 @@ struct TTLInsertIntermediateDFBsPass
           if (getAttachedCB(operand)) {
             continue;
           }
-
           op->emitOpError("operand #")
               << idx
               << " requires a DFB-attached value but compiler-allocated DFBs "
@@ -77,10 +76,8 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
-    // Track values already materialized to avoid duplicate DFBs when
-    // multiple DFBInputOpInterface ops consume the same intermediate.
-    llvm::DenseMap<Value, Value> materialized;
     OpBuilder builder(funcOp.getContext());
+    llvm::DenseMap<Value, Value> materialized;
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();
@@ -93,7 +90,6 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        // Reuse an existing materialization for a different consumer.
         if (auto iter = materialized.find(operand);
             iter != materialized.end()) {
           op->setOperand(idx, iter->second);

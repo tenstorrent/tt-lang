@@ -15,11 +15,11 @@ from typing import Any, Deque, Dict, FrozenSet, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
 from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
-from .blockstate import ThreadType
+from .blockstate import KernelType
 
-# Default L1 memory limit per core: Blackhole/Wormhole L1 (1464K) minus
-# large-program reserved space (128K).
-DEFAULT_MAX_L1_BYTES: int = (1464 - 128) * 1024  # 1336 KiB = 1_368_064 bytes
+# Default L1 memory limit per node (simulator)
+# keep in sync with ttl.constants.DEFAULT_L1_CB_BUDGET_BYTES
+DEFAULT_MAX_L1_BYTES: int = 1432 * 1024
 
 
 @dataclass
@@ -28,7 +28,7 @@ class SimulatorConfig:
 
     max_dfbs: int = 32
     scheduler_algorithm: str = "fair"
-    default_auto_grid: Shape = (8, 8)
+    default_full_grid: Shape = (8, 8)
     max_l1_bytes: int = DEFAULT_MAX_L1_BYTES
     num_devices: int = 4
     # Set of event categories to record. Empty means tracing is disabled.
@@ -86,8 +86,8 @@ class SimulatorContext:
     copy_state: CopySystemState = field(default_factory=CopySystemState)
     warnings: WarningState = field(default_factory=WarningState)
     scheduler: Any = None  # Optional[GreenletScheduler] - avoid import cycle
-    current_thread_type: Optional[ThreadType] = None
-    thread_registry: list[BindableTemplate] = field(
+    current_kernel_type: Optional[KernelType] = None
+    kernel_registry: list[BindableTemplate] = field(
         default_factory=list[BindableTemplate]
     )  # pyright: ignore[reportUnknownVariableType]
     kernel_dfb_count: int = 0  # DFBs created in the current kernel body
@@ -95,3 +95,18 @@ class SimulatorContext:
         0  # Total L1 capacity of DFBs created in the current kernel body
     )
     trace_events: list[TraceEvent] = field(default_factory=list)
+    # Maps kernel function objects to their precomputed InjectionPoint tuples.
+    # Populated once per kernel invocation before the node loop runs.
+    # Typed as Any to avoid importing analysis (which imports dfb -> context).
+    injection_points_cache: Dict[Any, Any] = field(default_factory=dict)
+    # Active copy-wait injection hooks for this simulation run.
+    # Maps id(CodeType) -> (by_lineno, return_ips) lookup tables used by
+    # callbacks in analysis.py.  Cleared automatically when the context is
+    # replaced by reset_context(), requiring no sys.monitoring reconfiguration.
+    # Typed as Any to avoid importing analysis.
+    active_hooks: Dict[Any, Any] = field(default_factory=dict)
+    # Set of (code_object, abs_lineno) pairs identifying bare ttl.copy() calls
+    # (i.e. calls whose return value is not assigned).  The copy() function
+    # checks this set to immediately call wait() for those call sites.
+    # Typed as Any to avoid importing types.CodeType here.
+    auto_wait_copy_lines: Set[Any] = field(default_factory=set)

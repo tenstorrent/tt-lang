@@ -38,12 +38,84 @@ if(APPLE)
 endif()
 
 # ---------------------------------------------------------------------------
+# External tt-metal: user-provided installation or native build that overrides
+# the toolchain copy and the submodule build.
+#
+# Two layouts are auto-detected:
+#
+#   (a) install-ttmetal.sh output (toolchain-style):
+#       <dir>/lib/                        shared libraries
+#       <dir>/python_packages/ttnn/ttnn/  ttnn Python package, incl. _ttnn.so
+#       <dir>/tt_metal/                   JIT source tree (headers, firmware)
+#
+#   (b) Native tt-metal source tree with a build subdirectory:
+#       <dir>/tt_metal/                   source headers
+#       <dir>/ttnn/ttnn/_ttnn.so          ttnn Python extension
+#       <dir>/<build>/lib/                shared libraries
+#       <dir>/<build>/tt_metal/third_party/umd/device/libdevice.so
+#       <build> defaults to "build"; override via TTLANG_EXTERNAL_TT_METAL_BUILD_DIR
+#       (absolute path).
+# ---------------------------------------------------------------------------
+if(TTLANG_EXTERNAL_TT_METAL_DIR)
+  message(STATUS "Using external tt-metal at ${TTLANG_EXTERNAL_TT_METAL_DIR}")
+  set(_EXTERNAL_DIR "${TTLANG_EXTERNAL_TT_METAL_DIR}")
+
+  if(EXISTS "${_EXTERNAL_DIR}/python_packages/ttnn/ttnn/_ttnn.so")
+    # Install layout (a). Local (non-CACHE) to avoid polluting CMakeCache.txt;
+    # see the toolchain branch below for the same rationale.
+    set(TTMETAL_BUILD_DIR "${_EXTERNAL_DIR}")
+    set(TT_METAL_HOME "${TTMETAL_BUILD_DIR}")
+    set(TT_METAL_PYTHON_PATH "${TTMETAL_BUILD_DIR}/python_packages/ttnn:${TTMETAL_BUILD_DIR}/python_packages/tools")
+    set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib")
+    message(STATUS "  Layout: install (lib/, python_packages/, tt_metal/)")
+  elseif(EXISTS "${_EXTERNAL_DIR}/ttnn/ttnn" AND EXISTS "${_EXTERNAL_DIR}/tt_metal")
+    # Native source-tree layout (b).
+    if(TTLANG_EXTERNAL_TT_METAL_BUILD_DIR)
+      set(_EXTERNAL_BUILD "${TTLANG_EXTERNAL_TT_METAL_BUILD_DIR}")
+    else()
+      set(_EXTERNAL_BUILD "${_EXTERNAL_DIR}/build")
+    endif()
+    if(NOT EXISTS "${_EXTERNAL_BUILD}/lib")
+      message(FATAL_ERROR
+        "External tt-metal source tree at ${_EXTERNAL_DIR} has no built libraries "
+        "at ${_EXTERNAL_BUILD}/lib. Build tt-metal first, or set "
+        "TTLANG_EXTERNAL_TT_METAL_BUILD_DIR to your build directory.")
+    endif()
+    set(TTMETAL_BUILD_DIR "${_EXTERNAL_BUILD}")
+    set(TT_METAL_HOME "${_EXTERNAL_DIR}")
+    set(TT_METAL_PYTHON_PATH "${_EXTERNAL_DIR}/ttnn:${_EXTERNAL_DIR}/tools")
+    set(TT_METAL_LIB_PATH
+      "${_EXTERNAL_BUILD}/lib:${_EXTERNAL_BUILD}/tt_metal:${_EXTERNAL_BUILD}/ttnn:${_EXTERNAL_BUILD}/tt_stl:${_EXTERNAL_BUILD}/_deps/fmt-build:${_EXTERNAL_BUILD}/tt_metal/third_party/umd/device")
+    message(STATUS "  Layout: native source tree (build dir: ${_EXTERNAL_BUILD})")
+  else()
+    message(FATAL_ERROR
+      "TTLANG_EXTERNAL_TT_METAL_DIR='${_EXTERNAL_DIR}' is neither an install "
+      "directory (python_packages/ttnn/ttnn/_ttnn.so present) nor a native "
+      "tt-metal source tree (ttnn/ttnn/ + tt_metal/ present). Verify the path "
+      "and that tt-metal has been built.")
+  endif()
+
+  add_custom_target(clean-ttmetal
+    COMMENT "tt-metal points at external directory; nothing to clean."
+  )
+
+  return()
+endif()
+
+# ---------------------------------------------------------------------------
 # Pre-built toolchain: tt-metal artifacts are already installed.
 # Set variables for activate.in and skip the build.
+#
+# Keyed off TTLANG_USE_TOOLCHAIN_TTMETAL so this can be disabled independently
+# of LLVM's toolchain use — e.g. to rebuild tt-metal from submodule against
+# a pre-built LLVM toolchain (configure with -DTTLANG_USE_TOOLCHAIN_TTMETAL=OFF
+# or `build-and-install.sh --rebuild-ttmetal`).
 # ---------------------------------------------------------------------------
-if(TTLANG_USE_TOOLCHAIN)
-  set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal" CACHE PATH
-    "tt-metal build directory (from toolchain)" FORCE)
+if(TTLANG_USE_TOOLCHAIN_TTMETAL)
+  # Local (non-CACHE) assignment. Caching with FORCE here would persist this
+  # path into CMakeCache.txt and shadow the build-path value during a later
+  # reconfigure with TTLANG_USE_TOOLCHAIN_TTMETAL=OFF.
+  set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal")
   set(TT_METAL_HOME "${TTMETAL_BUILD_DIR}")
   set(TT_METAL_PYTHON_PATH "${TTMETAL_BUILD_DIR}/python_packages/ttnn:${TTMETAL_BUILD_DIR}/python_packages/tools")
   set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib")
@@ -68,7 +140,7 @@ if(NOT TTLANG_USE_TOOLCHAIN)
   set(_nested_missing FALSE)
 
   foreach(_sub tt_metal/third_party/tracy/CMakeLists.txt
-    tt_metal/third_party/tt_llk/README.md
+    tt_metal/tt-llk/README.md
     tt_metal/third_party/umd/CMakeLists.txt)
     if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/${_sub}")
       set(_nested_missing TRUE)
@@ -206,12 +278,31 @@ else()
   # --- Build ---
   message(STATUS "Building tt-metal (this may take a while)...")
   execute_process(
-    COMMAND ${CMAKE_COMMAND} --build "${TTMETAL_BUILD_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E env
+      "TT_METAL_RUNTIME_ROOT=${TT_METAL_SOURCE_DIR}"
+      "TT_METAL_HOME=${TT_METAL_SOURCE_DIR}"
+      "TT_METAL_CACHE=${TTMETAL_BUILD_DIR}/tt-metal-cache"
+      ${CMAKE_COMMAND} --build "${TTMETAL_BUILD_DIR}"
     RESULT_VARIABLE _TTMETAL_BUILD_RESULT
   )
 
   if(NOT _TTMETAL_BUILD_RESULT EQUAL 0)
     message(FATAL_ERROR "tt-metal build failed (exit ${_TTMETAL_BUILD_RESULT})")
+  endif()
+
+  message(STATUS "Pre-compiling tt-metal firmware binaries...")
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E env
+      "TT_METAL_RUNTIME_ROOT=${TT_METAL_SOURCE_DIR}"
+      "TT_METAL_HOME=${TT_METAL_SOURCE_DIR}"
+      "TT_METAL_CACHE=${TTMETAL_BUILD_DIR}/tt-metal-cache"
+      ${CMAKE_COMMAND} --build "${TTMETAL_BUILD_DIR}" --target precompile-fw --parallel 1
+    RESULT_VARIABLE _TTMETAL_PRECOMPILE_RESULT
+  )
+
+  if(NOT _TTMETAL_PRECOMPILE_RESULT EQUAL 0)
+    message(FATAL_ERROR
+      "tt-metal firmware precompile failed (exit ${_TTMETAL_PRECOMPILE_RESULT})")
   endif()
 
   # Verify the sentinel was produced
@@ -257,7 +348,7 @@ execute_process(
 # packages, runtime artifacts, and JIT source trees so the toolchain is
 # self-contained for Docker image builds and cross-machine caching.
 # ---------------------------------------------------------------------------
-if(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT TTLANG_USE_TOOLCHAIN)
+if(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT TTLANG_USE_TOOLCHAIN_TTMETAL)
   set(_TTMETAL_INSTALL_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal")
   message(STATUS "Installing tt-metal artifacts into ${_TTMETAL_INSTALL_DIR}")
   execute_process(

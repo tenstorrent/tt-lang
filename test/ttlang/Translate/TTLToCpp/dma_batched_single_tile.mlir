@@ -14,8 +14,8 @@
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CB wrappers declared at top of kernel
-// CHECK:   experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-// CHECK:   experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+// CHECK:   CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+// CHECK:   CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
 // Tensor 0: get runtime arg, create accessor, get CB write ptr, cast chain, async read
 // CHECK:   int32_t [[RT_ARG0:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
 // CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
@@ -27,7 +27,7 @@
 // CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
 // CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB1]].get_write_ptr());
 // Consecutive barriers deduplicated to single barrier.
-// CHECK:   noc_async_read_barrier();
+// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

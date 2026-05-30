@@ -5,7 +5,7 @@ Welcome to the tt-lang containerized environment! The environment is automatical
 ## Quick Start
 
 ```bash
-python $TTLANG_TOOLCHAIN_DIR/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+python $TTLANG_TOOLCHAIN_DIR/examples/elementwise-tutorial/step_4_multinode_grid_full.py
 ```
 
 ## Installed Locations
@@ -13,7 +13,7 @@ python $TTLANG_TOOLCHAIN_DIR/examples/elementwise-tutorial/step_4_multinode_grid
 - **Toolchain**: `$TTLANG_TOOLCHAIN_DIR` (`/opt/ttlang-toolchain`)
 - **Examples**: `$TTLANG_TOOLCHAIN_DIR/examples`
 - **Tests**: `$TTLANG_TOOLCHAIN_DIR/test`
-- **Simulator**: `ttlang-sim` (run `ttlang-sim <script.py>` to simulate without hardware)
+- **Simulator**: `tt-lang-sim` (run `tt-lang-sim <script.py>` to simulate without hardware)
 - **Python packages**: `$TTLANG_TOOLCHAIN_DIR/python_packages`
 
 ## Available Tools

@@ -24,7 +24,7 @@ from sim.typedefs import Shape
 
 
 class TestDefaultGrid:
-    """Test default grid configuration for grid='auto'."""
+    """Test default grid configuration for grid='full'."""
 
     def test_get_default_grid_initial_value(self):
         """Test that get_default_grid returns initial default of (8, 8)."""
@@ -50,14 +50,14 @@ class TestDefaultGrid:
         finally:
             set_default_grid(original)
 
-    def test_kernel_auto_grid_uses_default(self):
-        """Test that kernel with grid='auto' uses the configured default grid."""
+    def test_kernel_full_grid_uses_default(self):
+        """Test that kernel with grid='full' uses the configured default grid."""
         original = get_default_grid()
         try:
             # Set custom default
             set_default_grid((3, 5))
 
-            @ttl.operation(grid="auto")
+            @ttl.operation(grid="full")
             def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
                 assert a is not None and b is not None
 
@@ -120,7 +120,7 @@ class TestDefaultGrid:
 
 
 class TestGridCommandLineOption:
-    """Test --grid command-line option in ttlang-sim."""
+    """Test --grid command-line option in tt-lang-sim."""
 
     @staticmethod
     def create_test_script(grid_check: tuple[int, int]) -> Path:
@@ -130,7 +130,7 @@ import ttl
 import ttnn
 import torch
 
-@ttl.operation(grid='auto')
+@ttl.operation(grid='full')
 def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
@@ -312,7 +312,7 @@ if __name__ == "__main__":
 
 
 class TestScriptMustBeFirstArgument:
-    """The Python entry script must precede all ttlang-sim options."""
+    """The Python entry script must precede all tt-lang-sim options."""
 
     _REPO = Path(__file__).parent.parent.parent
     _ENV = {**os.environ, "PYTHONPATH": "python"}
@@ -367,11 +367,11 @@ class TestScriptMustBeFirstArgument:
             text=True,
         )
         assert result.returncode == 0
-        assert "ttlang-sim" in result.stdout
+        assert "tt-lang-sim" in result.stdout
 
 
 class TestMaxDfbsCommandLineOption:
-    """Test --max-dfbs command-line option in ttlang-sim."""
+    """Test --max-dfbs command-line option in tt-lang-sim."""
 
     @staticmethod
     def create_test_script(num_cbs: int) -> Path:
@@ -398,7 +398,7 @@ def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
         with cb0.reserve() as blk:
-            blk.store(ttl.math.fill(blk, 1.0))
+            blk.store(ttl.block.fill(1.0, shape=blk.shape))
         with cb0.wait() as a, {middle_cb}.reserve() as o:
             o.store(a)
         with {middle_cb}.wait() as a, {last_cb}.reserve() as o:
@@ -573,9 +573,11 @@ if __name__ == "__main__":
 
 
 class TestMaxL1CommandLineOption:
-    """Test --max-l1 command-line option in ttlang-sim.
+    """Test --max-l1 command-line option in tt-lang-sim.
 
-    Each CB uses shape=(1,1), block_count=2, bfloat16:
+    Each CB uses shape=(1,1), block_count=2.  ttnn.bfloat16 is promoted to
+    float32 for computation, but memory accounting uses the declared dtype
+    (bfloat16 = 2 bytes/element):
       capacity_bytes = 2 (slots) * 32*32 (elements/slot) * 2 (bytes/element) = 4096
     Three CBs total: 3 * 4096 = 12288 bytes.
 
@@ -602,7 +604,7 @@ def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
         with cb0.reserve() as blk:
-            blk.store(ttl.math.fill(blk, 1.0))
+            blk.store(ttl.block.fill(1.0, shape=blk.shape))
         with cb0.wait() as inp, cb1.reserve() as o:
             o.store(inp)
         with cb1.wait() as inp, cb2.reserve() as o:
@@ -690,8 +692,75 @@ if __name__ == "__main__":
         assert "exceeds the L1 memory limit" not in result.stderr
 
 
+class TestNoFloat32Promotion:
+    """Test --no-float32-promotion flag."""
+
+    @staticmethod
+    def create_test_script() -> Path:
+        """Create a script that reports the underlying dtype of a bfloat16 tensor."""
+        content = """
+import ttl
+import ttnn
+import torch
+
+@ttl.operation(grid=(1, 1))
+def noop(a: ttnn.Tensor):
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm0():
+        pass
+
+    @ttl.datamovement()
+    def dm1():
+        pass
+
+if __name__ == "__main__":
+    device = ttnn.open_device(device_id=0)
+    t = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    # When promotion is active the backing is float32; when disabled it is bfloat16.
+    print(f"underlying_dtype={t.underlying_dtype}")
+    print(f"declared_dtype={t.dtype}")
+    ttnn.close_device(device)
+    print("SUCCESS")
+"""
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+        tmp.write(content)
+        tmp.close()
+        return Path(tmp.name)
+
+    def _run(self, *extra_args: str) -> subprocess.CompletedProcess:
+        script = self.create_test_script()
+        try:
+            return subprocess.run(
+                [sys.executable, "-m", "sim.ttlang_sim", str(script), *extra_args],
+                cwd=Path(__file__).parent.parent.parent,
+                env={**os.environ, "PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            script.unlink()
+
+    def test_promotion_on_by_default(self):
+        """By default, bfloat16 tensors are backed by float32."""
+        result = self._run()
+        assert result.returncode == 0, result.stderr
+        assert "underlying_dtype=torch.float32" in result.stdout
+        assert "declared_dtype=torch.bfloat16" in result.stdout
+
+    def test_no_float32_promotion_flag(self):
+        """--no-float32-promotion makes bfloat16 tensors use native bfloat16 backing."""
+        result = self._run("--no-float32-promotion")
+        assert result.returncode == 0, result.stderr
+        assert "underlying_dtype=torch.bfloat16" in result.stdout
+        assert "declared_dtype=torch.bfloat16" in result.stdout
+
+
 class TestSimStats:
-    """Test ttlang-sim-stats post-processing tool."""
+    """Test tt-lang-sim-stats post-processing tool."""
 
     _REPO = Path(__file__).parent.parent.parent
     _ENV = {**os.environ, "PYTHONPATH": "python", "TTLANG_SIM_ONLY": "1"}
@@ -725,7 +794,7 @@ class TestSimStats:
         )
 
     def test_tensor_stats_basic(self):
-        """ttlang-sim-stats prints tensor access statistics from a trace."""
+        """tt-lang-sim-stats prints tensor access statistics from a trace."""
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:
@@ -742,7 +811,7 @@ class TestSimStats:
             trace_path.unlink(missing_ok=True)
 
     def test_tensor_stats_shows_tensor_names(self):
-        """ttlang-sim-stats shows tensor parameter names from the trace."""
+        """tt-lang-sim-stats shows tensor parameter names from the trace."""
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:
@@ -757,8 +826,8 @@ class TestSimStats:
         finally:
             trace_path.unlink(missing_ok=True)
 
-    def test_dfb_stats_per_core(self):
-        """ttlang-sim-stats shows per-core DFB breakdown with a subtotal."""
+    def test_dfb_stats_per_node(self):
+        """tt-lang-sim-stats shows per-node DFB breakdown with a subtotal."""
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:
@@ -768,14 +837,14 @@ class TestSimStats:
             stats = self._run_stats(trace_path)
             assert stats.returncode == 0, f"sim-stats failed: {stats.stderr}"
             assert "Dataflow Buffer Statistics" in stats.stdout
-            assert "Core" in stats.stdout
+            assert "Node" in stats.stdout
             assert "Reserves" in stats.stdout
             assert "Waits" in stats.stdout
         finally:
             trace_path.unlink(missing_ok=True)
 
     def test_no_stats_without_trace(self):
-        """Running ttlang-sim without --trace produces no trace file to post-process."""
+        """Running tt-lang-sim without --trace produces no trace file to post-process."""
         result = subprocess.run(
             [sys.executable, "-m", "sim.ttlang_sim", "examples/single_node_matmul.py"],
             cwd=self._REPO,
@@ -788,7 +857,7 @@ class TestSimStats:
         assert "TOTAL" not in result.stdout
 
     def test_no_stats_events_in_empty_trace(self):
-        """ttlang-sim-stats reports no statistics when the trace has no relevant events."""
+        """tt-lang-sim-stats reports no statistics when the trace has no relevant events."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             trace_path = Path(f.name)
         try:
@@ -805,7 +874,7 @@ class TestSchedulerAlgorithmOption:
     def test_schedalg_option_greedy(self):
         """Test that --scheduler greedy is accepted."""
         examples_dir = Path(__file__).parent.parent.parent / "examples"
-        script_path = examples_dir / "broadcast_demo.py"
+        script_path = examples_dir / "eltwise_add.py"
 
         result = subprocess.run(
             [
@@ -826,7 +895,7 @@ class TestSchedulerAlgorithmOption:
     def test_schedalg_option_fair(self):
         """Test that --scheduler fair is accepted."""
         examples_dir = Path(__file__).parent.parent.parent / "examples"
-        script_path = examples_dir / "broadcast_demo.py"
+        script_path = examples_dir / "eltwise_add.py"
 
         result = subprocess.run(
             [

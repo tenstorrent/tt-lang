@@ -110,7 +110,6 @@ set(LLK_HEADERS
   "${LLK_SOURCE_DIR}/experimental_untilize_llks.h"
   "${LLK_SOURCE_DIR}/experimental_pack_untilize_llks.h"
   "${LLK_SOURCE_DIR}/experimental_invoke_sfpi_llks.h"
-  "${LLK_SOURCE_DIR}/experimental_dataflow_api.h"
   "${LLK_SOURCE_DIR}/experimental_matmul_llks.h"
   "${LLK_SOURCE_DIR}/experimental_padding_llks.h"
   "${LLK_SOURCE_DIR}/experimental_coord_translation.h"

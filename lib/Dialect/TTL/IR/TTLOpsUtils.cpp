@@ -57,8 +57,8 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
-  // Special case: BcastOp can be fused when its input is CB-attached.
-  if (auto bcastOp = llvm::dyn_cast<BcastOp>(defOp)) {
+  // Special case: BlockBroadcastOp can be fused when its input is CB-attached.
+  if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
     mlir::Value bcastInput = bcastOp.getInput();
     if (getAttachedCB(bcastInput)) {
       result.rootInputs.insert(bcastInput);
