@@ -151,8 +151,13 @@ def _check_import(settings: ExternalTTMetalEnv) -> int:
         [sys.executable, "-c", "import ttnn; print(ttnn.__file__)"],
         env=environment,
         text=True,
+        capture_output=True,
         check=False,
     )
+    if result.stdout:
+        print(result.stdout, end="", file=sys.stderr)
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
     return result.returncode
 
 

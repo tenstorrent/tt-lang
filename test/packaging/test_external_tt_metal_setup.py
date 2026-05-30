@@ -31,6 +31,9 @@ def _make_install_layout(tmp_path: Path) -> Path:
     install_root = tmp_path / "tt-metal-install"
     (install_root / "python_packages" / "ttnn" / "ttnn").mkdir(parents=True)
     (install_root / "python_packages" / "tools").mkdir(parents=True)
+    (install_root / "python_packages" / "ttnn" / "ttnn" / "__init__.py").write_text(
+        "print('ttnn import probe stdout')\n"
+    )
     (install_root / "python_packages" / "ttnn" / "ttnn" / "_ttnn.so").touch()
     (install_root / "lib").mkdir()
     return install_root
@@ -135,6 +138,22 @@ assert os.environ["LD_LIBRARY_PATH"].split(":")[0] == f"{install_root}/lib"
     )
 
     assert status == 0
+
+
+def test_checked_shell_export_form_keeps_stdout_eval_safe(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_module()
+    install_root = _make_install_layout(tmp_path)
+
+    status = module.main(["--tt-metal-dir", str(install_root), "--check"])
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "export TT_METAL_HOME=" in captured.out
+    assert "ttnn import probe stdout" not in captured.out
+    assert "ttnn import probe stdout" in captured.err
 
 
 def test_cli_rejects_positional_tt_metal_dir(tmp_path: Path) -> None:

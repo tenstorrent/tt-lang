@@ -699,18 +699,34 @@ pip wheel packaging/light --wheel-dir=/tmp/ttlang-wheels/light/dist \
   --no-deps --no-build-isolation
 ```
 
-Install-test the light package from the local wheel directory, then configure
-the external tt-metal environment:
+Install-test the light package from the local wheel directory. The setup command
+copies tutorials into `./tutorials/` and skips sfpi installation for light
+installs because the external tt-metal tree provides sfpi:
 
 ```bash
 python3.12 -m venv /tmp/ttlang-light-test
 source /tmp/ttlang-light-test/bin/activate
 pip install --find-links=/tmp/ttlang-wheels/light/dist \
   "tt-lang-light==$TTLANG_VERSION"
-tt-lang-setup-external-tt-metal \
-  --tt-metal-dir /opt/ttlang-toolchain/tt-metal \
-  --check \
-  -- python -c 'import ttl, ttnn; print(ttl.__version__, ttnn.__file__)'
+tt-lang-setup
+```
+
+Configure the external tt-metal environment and validate imports:
+
+```bash
+external_tt_metal_env="$(
+  tt-lang-setup-external-tt-metal \
+    --tt-metal-dir /opt/ttlang-toolchain/tt-metal \
+    --check
+)" && eval "$external_tt_metal_env"
+python -c 'import ttl, ttnn; print(ttl.__version__, ttnn.__file__)'
+```
+
+The TT-Lang tutorial can then run from the local directory copied by
+`tt-lang-setup`:
+
+```bash
+python tutorials/elementwise/step_4_multinode_grid_full.py
 ```
 
 ## CMake Options
