@@ -10,7 +10,7 @@
 // CHECK: ttl.store %{{.*}}, %[[RESERVE]]
 // CHECK: scf.for {{.*}} {
 // CHECK: ttl.store %{{.*}}, %[[RESERVE]] {accumulate}
-// CHECK: } {ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
 // CHECK-NOT: ttl.accumulation_scope
 // CHECK-NOT: ttl.compute
 func.func @auto_l1_fallback() {

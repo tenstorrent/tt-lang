@@ -125,7 +125,7 @@ The pipeline runs these passes in order:
 - `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
 - `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions
-- `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
+- `ttl-annotate-l1-acc-loops` - annotate `+=` accumulation loops with L1 packer accumulation metadata
 - `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 - `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)

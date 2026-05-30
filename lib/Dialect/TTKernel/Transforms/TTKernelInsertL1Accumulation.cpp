@@ -14,7 +14,6 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/Builders.h"
 
 #define DEBUG_TYPE "ttkernel-insert-l1-accumulation"
@@ -32,119 +31,6 @@ namespace {
 static Value buildI32Const(OpBuilder &builder, Location loc, int32_t value) {
   return arith::ConstantOp::create(builder, loc, builder.getI32Type(),
                                    builder.getI32IntegerAttr(value));
-}
-
-/// Returns true if every CB in `packCBs` has a prior value in L1 from a
-/// non-accumulating pack that precedes `rootLoop` in its parent block.
-/// When true, the reconfig before the group must enable L1 acc instead of
-/// disabling it.
-///
-/// See `docs/development/AccumulatingComputeLowering.md` ("Guard placement
-/// around L1 accumulation loops") for the full set of detection rules,
-/// boundary conditions, and the multi-output coverage requirement.
-static bool
-precededByNonAccumulatingPack(scf::ForOp rootLoop,
-                              const llvm::SmallDenseSet<Value, 2> &packCBs) {
-  assert(!packCBs.empty() && "L1-acc loop must have at least one pack CB");
-  // Same-block only: an outer-scope pack wouldn't re-execute on each
-  // iteration if `rootLoop` is nested, so its value would go stale.
-  Block *block = rootLoop->getBlock();
-  if (!block) {
-    return false;
-  }
-  auto it = Block::iterator(rootLoop);
-  if (it == block->begin()) {
-    return false;
-  }
-
-  // `covered` contains output dataflow buffers with a known prior pack before
-  // `rootLoop`. L1 accumulation is a single packer mode, so enabling it for
-  // only some outputs would make iteration 0 add into stale L1 for the rest.
-  // `record` keeps `covered` restricted to buffers from `packCBs`.
-  llvm::SmallDenseSet<Value, 2> covered;
-  auto record = [&](Value cb) {
-    if (packCBs.contains(cb)) {
-      covered.insert(cb);
-    }
-  };
-  auto allCovered = [&] { return covered.size() == packCBs.size(); };
-
-  for (auto revIt = Block::reverse_iterator(it); revIt != block->rend();
-       ++revIt) {
-    Operation *op = &*revIt;
-    if (auto pack = dyn_cast<ttk::PackTileOp>(op)) {
-      record(pack.getOutCb());
-      if (allCovered()) {
-        return true;
-      }
-      continue;
-    }
-    if (auto reserve = dyn_cast<ttk::CBReserveBackOp>(op)) {
-      // A reserve before any confirming pack means the loop writes a fresh
-      // output slot, so iteration 0 must overwrite rather than accumulate.
-      if (packCBs.contains(reserve.getCb()) &&
-          !covered.contains(reserve.getCb())) {
-        return false;
-      }
-      continue;
-    }
-    if (auto push = dyn_cast<ttk::CBPushBackOp>(op)) {
-      // A push before any confirming pack releases the prior slot, so the loop
-      // cannot accumulate onto that value.
-      if (packCBs.contains(push.getCb()) && !covered.contains(push.getCb())) {
-        return false;
-      }
-      continue;
-    }
-    if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-      // An annotated scf.for has its own L1 acc lifecycle; its packs do
-      // not provide a prior value to us. A non-annotated scf.for (e.g., a
-      // compiler-generated tile-loop wrapper) packs with L1 acc disabled,
-      // but only reaches L1 when it actually executes. Require a
-      // provably-positive trip count (both bounds constant with lb < ub);
-      // otherwise fall back to the no-prior-pack lowering.
-      bool isAnnotated = forOp->hasAttr(kL1AccLoopAttrName) ||
-                         forOp->hasAttr(kReductionLoopAttrName);
-      bool executes = false;
-      if (!isAnnotated) {
-        auto tripCounts = getConstLoopTripCounts(forOp);
-        executes = !tripCounts.empty() && !tripCounts.front().isZero();
-      }
-      bool touchedOurs = false;
-      for (Value cb : getPackTileCBs(forOp)) {
-        if (!packCBs.contains(cb)) {
-          continue;
-        }
-        if (!executes) {
-          return false;
-        }
-        covered.insert(cb);
-        touchedOurs = true;
-      }
-      if (touchedOurs && allCovered()) {
-        return true;
-      }
-      continue;
-    }
-    // Conservative fallback for any other region-bearing op (scf.if,
-    // scf.while, custom region ops): if its body packs to one of our CBs
-    // we cannot reason about its execution semantics, so treat as a
-    // boundary.
-    if (op->getNumRegions() > 0) {
-      bool packsOurs = false;
-      op->walk([&](ttk::PackTileOp pack) {
-        if (packCBs.contains(pack.getOutCb())) {
-          packsOurs = true;
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-      if (packsOurs) {
-        return false;
-      }
-    }
-  }
-  return false;
 }
 
 /// Find the innermost enclosing L1 acc or reduction loop.
@@ -167,14 +53,32 @@ static scf::ForOp findL1AccLoop(Operation *op) {
   return reductionFallback;
 }
 
+/// Return the L1 initial mode declared by the loop producer. TTKernel lowering
+/// consumes this semantic contract directly instead of inferring the initial
+/// value from surrounding pack/reserve/push operations after conversion.
+static FailureOr<AccumulationInitialMode> getL1AccInitialMode(scf::ForOp loop) {
+  auto attr =
+      loop->getAttrOfType<AccumulationInitialModeAttr>(kL1AccInitialAttrName);
+  if (!attr) {
+    return failure();
+  }
+  AccumulationInitialMode mode = attr.getValue();
+  if (mode == AccumulationInitialMode::Overwrite ||
+      mode == AccumulationInitialMode::AccumulateExisting) {
+    return mode;
+  }
+  return failure();
+}
+
 struct TTKernelInsertL1AccumulationPass
     : public impl::TTKernelInsertL1AccumulationBase<
           TTKernelInsertL1AccumulationPass> {
   void runOnOperation() override {
     auto moduleOp = getOperation();
+    bool hadFailure = false;
 
-    // Walk from TileRegsAcquireOp upward to find annotated loops —
-    // only loops with actual pack activity need L1 acc guards.
+    // Walk from TileRegsAcquireOp upward to find annotated loops; only loops
+    // with actual pack activity need L1 accumulation guards.
     SmallVector<scf::ForOp> l1AccLoops;
     llvm::SmallDenseSet<Operation *> visitedLoops;
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
@@ -195,6 +99,12 @@ struct TTKernelInsertL1AccumulationPass
       if (alreadyProcessed) {
         return;
       }
+      if (failed(getL1AccInitialMode(loop))) {
+        loop.emitOpError() << "requires " << kL1AccInitialAttrName
+                           << " overwrite or accumulate_existing metadata";
+        hadFailure = true;
+        return;
+      }
       // Packer L1 accumulation adds the packed tile into the existing L1 value.
       // Max reduction packs must write the max result instead, so this pass
       // leaves those loops without L1-accumulation guards.
@@ -208,6 +118,10 @@ struct TTKernelInsertL1AccumulationPass
         l1AccLoops.push_back(loop);
       }
     });
+    if (hadFailure) {
+      signalPassFailure();
+      return;
+    }
 
     // Insertion point for the per-iteration enable: the top-level ancestor
     // of the last tile_regs_release in the loop body, since packs may be
@@ -226,7 +140,7 @@ struct TTKernelInsertL1AccumulationPass
       }
     }
 
-    // Group consecutive sibling loops that pack to the same CB.
+    // Group consecutive sibling loops that pack to the same dataflow buffer.
     auto groups = collectLoopGroups(l1AccLoops, l1AccEnablePoint);
 
     // Emit guards per group.
@@ -234,14 +148,14 @@ struct TTKernelInsertL1AccumulationPass
       OpBuilder builder(group.rootLoop->getContext());
       Location disableLoc = group.rootLoop->getLoc();
 
-      // Reconfig L1 acc immediately before the first loop in the group:
-      // ENABLE when L1 already holds a prior value from a non-accumulating
-      // pack ahead of the group (so iteration 0 accumulates onto it),
-      // DISABLE otherwise (so iteration 0 overwrites stale L1). See
-      // precededByNonAccumulatingPack for the structural detection rules.
-      auto rootPackCBs = getPackTileCBs(group.rootLoop);
+      // Reconfig L1 acc immediately before the first loop in the group. The
+      // semantic loop metadata determines whether iteration 0 overwrites L1 or
+      // accumulates onto a value materialized before the group.
+      FailureOr<AccumulationInitialMode> initialMode =
+          getL1AccInitialMode(group.rootLoop);
+      assert(succeeded(initialMode) && "validated before grouping");
       bool l1HasPriorValue =
-          precededByNonAccumulatingPack(group.rootLoop, rootPackCBs);
+          *initialMode == AccumulationInitialMode::AccumulateExisting;
 
       builder.setInsertionPoint(group.rootLoop);
       Value beforeGroupFlag =

@@ -45,10 +45,9 @@ The compiler surface covers three accumulation sources:
 - The store-then-accumulate pattern (`out_blk.store(v); for K-1: out_blk
   += ...`) is lowered via L1 acc with a modified guard sequence: the
   pre-group reconfig enables L1 acc so iteration 0 accumulates onto the
-  prior-pack value rather than overwriting it. `precededByNonAccumulatingPack`
-  detects the preceding non-accumulating pack and does not abort when a
-  closer pack already covers the CB, so loops accumulating into multiple
-  CBs correctly enable L1 acc before the loop.
+  prior-pack value rather than overwriting it. This is represented before
+  TTKernel lowering by `ttl.l1_acc_initial = accumulate_existing` on the
+  accumulation loop.
 
 The rest of this document details each piece: loop-carried tensor state
 elimination (`ttl-materialize-loop-state`), `DstSectionOp` as the IR
@@ -299,12 +298,11 @@ for iv = lb..ub:
 pack_reconfig_l1_acc(0)
 ```
 
-`precededByNonAccumulatingPack` selects between the two sequences by
-walking backward over the L1-acc loop's parent block and classifying
-each predecessor op as a contributor (a pack that leaves a prior value
-in L1) or a boundary (an op that resets or shadows the L1 slot, or one
-whose execution semantics the walk cannot model). See the helper's
-implementation for the exact classification rules.
+The loop producer selects between the two sequences with
+`ttl.l1_acc_initial`. `overwrite` disables L1 acc before the loop so
+iteration 0 writes the baseline tile. `accumulate_existing` enables L1
+acc before the loop so iteration 0 adds onto a value materialized by an
+earlier store.
 
 The pass is idempotent: a prior run leaves a `pack_reconfig_l1_acc`
 either inside the L1-acc loop body or immediately preceding the loop,

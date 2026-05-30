@@ -35,7 +35,7 @@ func.func @basic_l1_acc_loop() attributes {ttkernel.thread = #ttkernel.thread<co
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -66,7 +66,7 @@ func.func @reduction_loop_fallback() attributes {ttkernel.thread = #ttkernel.thr
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.reduction_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
   return
 }
 
@@ -90,7 +90,7 @@ func.func @max_reduce_no_l1_acc() attributes {ttkernel.thread = #ttkernel.thread
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.reduction_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
   return
 }
 
@@ -150,7 +150,7 @@ func.func @subblocked_loop() attributes {ttkernel.thread = #ttkernel.thread<comp
       ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
     }
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   return
 }
 
@@ -168,7 +168,7 @@ func.func @l1_acc_loop_no_sync() attributes {ttkernel.thread = #ttkernel.thread<
   %c4_i32 = arith.constant 4 : i32
   scf.for %iv = %c0 to %c4 step %c1 {
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   return
 }
 
@@ -207,7 +207,7 @@ func.func @l1_acc_inside_outer_loop() attributes {ttkernel.thread = #ttkernel.th
       ttkernel.tile_regs_wait() : () -> ()
       ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
-    } {ttl.l1_acc_loop}
+    } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
     ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   }
   return
@@ -243,7 +243,7 @@ func.func @multi_push_after_loop() attributes {ttkernel.thread = #ttkernel.threa
     ttkernel.pack_tile(%c0, %cb0, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.pack_tile(%c0, %cb1, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb0, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb1, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
@@ -280,8 +280,8 @@ func.func @nested_l1_acc_loops() attributes {ttkernel.thread = #ttkernel.thread<
       ttkernel.tile_regs_wait() : () -> ()
       ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
-    } {ttl.l1_acc_loop}
-  } {ttl.l1_acc_loop}
+    } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   return
 }
 
@@ -316,8 +316,8 @@ func.func @nested_reduction_loops() attributes {ttkernel.thread = #ttkernel.thre
       ttkernel.tile_regs_wait() : () -> ()
       ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
-    } {ttl.reduction_loop}
-  } {ttl.reduction_loop}
+    } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
   return
 }
 
@@ -369,14 +369,14 @@ func.func @consecutive_l1_acc_loops() attributes {ttkernel.thread = #ttkernel.th
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   scf.for %iv2 = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -423,7 +423,7 @@ func.func @two_outputs_one_loop() attributes {ttkernel.thread = #ttkernel.thread
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb1, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb0, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb1, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
@@ -461,7 +461,7 @@ func.func @already_guarded() attributes {ttkernel.thread = #ttkernel.thread<comp
     scf.if %cmp {
       ttkernel.pack_reconfig_l1_acc(%c1_i32) : (i32) -> ()
     }
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.pack_reconfig_l1_acc(%c0_i32) : (i32) -> ()
   return
@@ -500,7 +500,7 @@ func.func @different_cb_siblings() attributes {ttkernel.thread = #ttkernel.threa
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb0, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb0, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   scf.for %iv2 = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
@@ -508,7 +508,7 @@ func.func @different_cb_siblings() attributes {ttkernel.thread = #ttkernel.threa
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb1, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb1, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -550,7 +550,7 @@ func.func @consecutive_with_init_between() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   // init_short between the two loops (InsertInits emits init_short when
   // sibling loops share an output CB, to avoid clobbering PACK config).
   "ttkernel.mm_block_init_short"(%cb_in1, %cb_in1, %c0_i32, %c1_i32, %c1_i32, %c1_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32, i32, i32, i32) -> ()
@@ -561,7 +561,7 @@ func.func @consecutive_with_init_between() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -614,7 +614,7 @@ func.func @prior_value_then_l1_acc_loop() attributes {ttkernel.thread = #ttkerne
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -661,7 +661,7 @@ func.func @prior_pack_different_cb_ignored() attributes {ttkernel.thread = #ttke
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -709,7 +709,7 @@ func.func @cb_reserve_back_blocks_prior_value_detection() attributes {ttkernel.t
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -761,14 +761,14 @@ func.func @prior_value_root_then_plain_acc_sibling() attributes {ttkernel.thread
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
   scf.for %iv2 = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -793,7 +793,7 @@ func.func @prior_value_root_then_plain_acc_sibling() attributes {ttkernel.thread
 // CHECK-NOT: scf.if
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c0_i32
-// CHECK: } {ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
 // CHECK: ttkernel.cb_push_back
 // CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
@@ -818,17 +818,16 @@ func.func @prior_pack_inside_tile_loop_wrapper() attributes {ttkernel.thread = #
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
 
 // -----
 
-// A pack inside an scf.if conditionally writes to L1, so the pre-group
-// reconfig cannot assume L1 holds a prior value. The conservative fallback
-// in precededByNonAccumulatingPack treats any region-bearing op (other
-// than scf.for that we recurse into) that packs to our CB as a boundary.
+// A conditional prior pack must be represented by overwrite-mode metadata. The
+// TTKernel pass consumes that metadata directly instead of inspecting the scf.if
+// body to determine whether L1 holds a prior value.
 
 // CHECK-LABEL: func.func @prior_pack_inside_scf_if_not_treated_as_prior
 // CHECK: scf.if
@@ -865,7 +864,7 @@ func.func @prior_pack_inside_scf_if_not_treated_as_prior(%cond: i1) attributes {
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -914,7 +913,7 @@ func.func @multi_output_partial_prior_falls_back_to_standard() attributes {ttker
     ttkernel.pack_tile(%c0, %cb_a, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
@@ -965,7 +964,7 @@ func.func @multi_output_full_prior_enables_pre_group() attributes {ttkernel.thre
     ttkernel.pack_tile(%c0, %cb_a, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
@@ -982,7 +981,7 @@ func.func @multi_output_full_prior_enables_pre_group() attributes {ttkernel.thre
 // CHECK-LABEL: func.func @prior_reduction_loop_boundary
 // CHECK: scf.for
 // CHECK:   ttkernel.pack_tile
-// CHECK: } {ttl.reduction_loop
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop
 // CHECK: ttkernel.cb_push_back
 // CHECK: ttkernel.cb_reserve_back
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
@@ -1009,7 +1008,7 @@ func.func @prior_reduction_loop_boundary() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.reduction_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   scf.for %iv1 = %c0 to %c4 step %c1 {
@@ -1018,7 +1017,7 @@ func.func @prior_reduction_loop_boundary() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -1073,7 +1072,7 @@ func.func @prior_pack_inside_scf_while_not_treated_as_prior(%init: i32) attribut
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -1099,7 +1098,7 @@ func.func @prior_pack_inside_scf_while_not_treated_as_prior(%init: i32) attribut
 // CHECK-NOT: scf.if
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c0_i32
-// CHECK: } {ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
 // CHECK: ttkernel.cb_push_back
 // CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
@@ -1134,7 +1133,7 @@ func.func @unrelated_scf_for_skipped_to_prior_pack() attributes {ttkernel.thread
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -1160,7 +1159,7 @@ func.func @unrelated_scf_for_skipped_to_prior_pack() attributes {ttkernel.thread
 // CHECK-NOT: scf.if
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c0_i32
-// CHECK: } {ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
 // CHECK: ttkernel.cb_push_back
 // CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
@@ -1195,7 +1194,7 @@ func.func @unrelated_scf_if_skipped_to_prior_pack(%cond: i1) attributes {ttkerne
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -1244,7 +1243,7 @@ func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttker
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -1264,7 +1263,7 @@ func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttker
 // CHECK:   ttkernel.pack_tile
 // CHECK:   scf.if
 // CHECK:     ttkernel.pack_reconfig_l1_acc
-// CHECK: } {ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
 // Bare non-annotated scf.for — transparent to the group.
 // CHECK: scf.for
@@ -1275,7 +1274,7 @@ func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttker
 // CHECK:   ttkernel.pack_tile
 // CHECK:   scf.if
 // CHECK:     ttkernel.pack_reconfig_l1_acc
-// CHECK: } {ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
 // CHECK: ttkernel.cb_push_back
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
 func.func @annotated_siblings_split_by_bare_for() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
@@ -1292,7 +1291,7 @@ func.func @annotated_siblings_split_by_bare_for() attributes {ttkernel.thread = 
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   // Bare non-annotated scf.for with no packs — splits A and B into
   // separate loop groups.
   scf.for %ivU = %c0 to %c1 step %c1 {
@@ -1305,7 +1304,7 @@ func.func @annotated_siblings_split_by_bare_for() attributes {ttkernel.thread = 
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -1366,7 +1365,7 @@ func.func @multi_cb_init_then_l1_acc() attributes {ttkernel.thread = #ttkernel.t
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return

@@ -384,6 +384,10 @@ LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
     newLoop->setAttr(attr.getName(), attr.getValue());
   }
   newLoop->setAttr(kL1AccLoopAttrName, rewriter.getUnitAttr());
+  newLoop->setAttr(
+      kL1AccInitialAttrName,
+      AccumulationInitialModeAttr::get(
+          rewriter.getContext(), AccumulationInitialMode::AccumulateExisting));
 
   Block *newBody = newLoop.getBody();
   if (!newBody->empty() && isa<scf::YieldOp>(newBody->back())) {

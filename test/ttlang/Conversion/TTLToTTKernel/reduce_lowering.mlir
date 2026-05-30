@@ -82,7 +82,7 @@ func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
       ttl.tile_store %red, %reserve[%c0, %iv1] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_release
     } {ttl.tile_loop_stride = 1 : index}
-  } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
   ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -129,7 +129,7 @@ func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
       ttl.tile_store %red, %reserve[%iv0, %c0] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_release
     } {ttl.tile_loop_stride = 1 : index}
-  } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
   ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -175,7 +175,7 @@ module attributes {ttl.target_arch = "blackhole"} {
         ttl.tile_store %red, %reserve[%iv0, %c0] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
         ttl.tile_regs_release
       } {ttl.tile_loop_stride = 1 : index}
-    } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+    } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
     ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -218,7 +218,7 @@ module attributes {ttl.target_arch = "blackhole"} {
         ttl.tile_store %red, %reserve[%c0, %iv1] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
         ttl.tile_regs_release
       } {ttl.tile_loop_stride = 1 : index}
-    } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+    } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
     ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -304,7 +304,7 @@ module attributes {ttl.target_arch = "wormhole_b0"} {
 // FP32-NEXT:   scf.if %[[FIRST]]
 // FP32-NEXT:     ttkernel.pack_reconfig_l1_acc(%[[C1I]])
 // FP32:        }
-// FP32: } {ttl.reduction_loop
+// FP32: } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop
 // Disable L1 accumulation after reduction loop.
 // FP32: ttkernel.pack_reconfig_l1_acc(%[[C0I]])
 func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
@@ -333,7 +333,7 @@ func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crt
       ttl.tile_store %red, %reserve[%c0, %iv1] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_release
     } {ttl.tile_loop_stride = 1 : index}
-  } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
   ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb0 : <[2, 1], !ttcore.tile<32x32, bf16>, 2>

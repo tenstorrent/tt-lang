@@ -24,7 +24,7 @@
 // L1: ttl.store %{{.*}}, %[[RESERVE]]
 // L1: scf.for {{.*}} {
 // L1: ttl.store %{{.*}}, %[[RESERVE]] {accumulate}
-// L1: } {ttl.l1_acc_loop}
+// L1: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
 // L1-NOT: ttl.accumulation_scope
 // L1-NOT: iter_args
 //

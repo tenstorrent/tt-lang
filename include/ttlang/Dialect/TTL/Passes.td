@@ -298,16 +298,21 @@ def TTKernelInsertL1Accumulation
     Loops are grouped into accumulation scopes: consecutive sibling loops
     that pack to the same CB share a single disable pair. Nested annotated
     loops are folded into the outermost ancestor. Each group gets:
-    - `pack_reconfig_l1_acc(0)` before the first loop.
+    - `pack_reconfig_l1_acc(0)` before the first loop when
+      `ttl.l1_acc_initial=overwrite`, or `pack_reconfig_l1_acc(1)` when
+      `ttl.l1_acc_initial=accumulate_existing`.
     - `if (iv == lb) pack_reconfig_l1_acc(1)` after each loop's first
-      iteration (the L1 acc state persists across `tile_regs` boundaries).
+      iteration for overwrite-mode loops (the L1 acc state persists across
+      `tile_regs` boundaries).
     - For the second+ loop in a group, an enable before the loop to re-enable
       L1 acc after init ops that may reset packer state.
     - `pack_reconfig_l1_acc(0)` after the last `cb_push_back`.
 
     Loops are identified by the `ttl.l1_acc_loop` (user-written) or
     `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
-    ops, with `ttl.l1_acc_loop` taking precedence.
+    ops, with `ttl.l1_acc_loop` taking precedence. Each loop must carry
+    `ttl.l1_acc_initial` so this pass does not infer initial-value semantics
+    from neighboring TTKernel operations.
 
   }];
 
@@ -326,7 +331,9 @@ def TTLAnnotateL1AccLoops
     the `accumulate` attribute (emitted by the `+=` operator) and annotates
     them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
     to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
-    iterations instead of overwriting.
+    iterations instead of overwriting. The pass also records
+    `ttl.l1_acc_initial` to distinguish fresh-output loops from loops seeded
+    by a preceding store to the same reserved output view.
   }];
   let dependentDialects = [
     "::mlir::scf::SCFDialect"

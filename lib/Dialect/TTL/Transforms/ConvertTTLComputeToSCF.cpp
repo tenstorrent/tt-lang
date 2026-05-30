@@ -312,6 +312,10 @@ static scf::LoopNest generateAccumulatingLoops(
           loop->setAttr(kTileLoopStrideAttrName,
                         parBuilder.getIndexAttr(domainStrides[origDim]));
           loop->setAttr(kReductionLoopAttrName, parBuilder.getUnitAttr());
+          loop->setAttr(
+              kL1AccInitialAttrName,
+              AccumulationInitialModeAttr::get(
+                  loop.getContext(), AccumulationInitialMode::Overwrite));
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
@@ -515,6 +519,10 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
         if (iterTypes[idx].getValue() == "reduction") {
           loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+          loop->setAttr(
+              kL1AccInitialAttrName,
+              AccumulationInitialModeAttr::get(
+                  loop.getContext(), AccumulationInitialMode::Overwrite));
         }
       }
     }

@@ -103,6 +103,11 @@ constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 /// kReductionLoopAttrName which marks compiler-generated reduction loops.
 constexpr llvm::StringLiteral kL1AccLoopAttrName("ttl.l1_acc_loop");
 
+/// AccumulationInitialModeAttr on an L1 accumulation or reduction loop. The
+/// value determines whether iteration 0 overwrites L1 or accumulates onto an
+/// already materialized output value.
+constexpr llvm::StringLiteral kL1AccInitialAttrName("ttl.l1_acc_initial");
+
 /// Output CB index for tile ops.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
