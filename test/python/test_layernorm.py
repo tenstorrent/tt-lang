@@ -541,8 +541,7 @@ def make_layernorm_kernel_loop_carried(dim_tiles):
                             with istd_dfb.reserve() as var_blk:
                                 var_blk.store(
                                     ttl.math.rsqrt(
-                                        ttl.math.broadcast(var, var, dims=[1])
-                                        * ms
+                                        ttl.math.broadcast(var, var, dims=[1]) * ms
                                         + ttl.math.fill(var_blk, 1e-6)
                                     )
                                 )

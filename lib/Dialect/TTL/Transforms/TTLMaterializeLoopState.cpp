@@ -247,8 +247,9 @@ buildDstReductionIteratorTypes(RewriterBase &rewriter, int64_t outputRank) {
 //
 // becomes:
 //
-//   %all_contributions = ttl.cb_wait %input, num_tiles = trip_count * tile_count
-//   ttl.compute ins(%init, %all_contributions) outs(%reserved_output) {
+//   %all_contributions = ttl.cb_wait %input, num_tiles = trip_count *
+//   tile_count ttl.compute ins(%init, %all_contributions)
+//   outs(%reserved_output) {
 //     %next = ttl.tile_accumulate_add %init_tile, %contribution_tile
 //     ttl.tile_store %next, %reserved_output
 //   }
@@ -277,8 +278,8 @@ tryMaterializeDstAccumulatingCompute(scf::ForOp loop, TensorLoopState &state,
     return failure();
   }
 
-  // Coalescing replaces one wait per iteration with one pre-compute wait, so the
-  // total tile count must be known at compile time.
+  // Coalescing replaces one wait per iteration with one pre-compute wait, so
+  // the total tile count must be known at compile time.
   std::optional<llvm::APInt> tripCount = loop.getStaticTripCount();
   if (!tripCount || tripCount->isZero() || tripCount->getActiveBits() > 63) {
     return failure();
@@ -286,8 +287,8 @@ tryMaterializeDstAccumulatingCompute(scf::ForOp loop, TensorLoopState &state,
   int64_t tripCountValue = static_cast<int64_t>(tripCount->getZExtValue());
 
   // The contribution wait must be the canonical one-tensor wait immediately in
-  // the loop body. Explicit num_tiles would need separate accounting, and nested
-  // waits cannot be hoisted without moving region-local effects.
+  // the loop body. Explicit num_tiles would need separate accounting, and
+  // nested waits cannot be hoisted without moving region-local effects.
   AttachCBOp attachedContribution;
   CBWaitOp contributionWait =
       getLoopLocalContributionWait(accumulator, loop, attachedContribution);

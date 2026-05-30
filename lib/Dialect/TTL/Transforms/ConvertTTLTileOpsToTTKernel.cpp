@@ -363,8 +363,7 @@ struct TTLTileAccumulateAddToTTKernel
       : OpConversionPattern<TileAccumulateAddOp>(typeConverter, ctx) {}
 
   LogicalResult
-  matchAndRewrite(TileAccumulateAddOp op,
-                  TileAccumulateAddOp::Adaptor adaptor,
+  matchAndRewrite(TileAccumulateAddOp op, TileAccumulateAddOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
@@ -388,9 +387,8 @@ struct TTLTileAccumulateAddToTTKernel
       contributionSource = traceUnrealizedCasts(contributionSource);
     }
 
-    auto contributionCB =
-        lookupAndConvertCB(contributionSource, funcOp, this->getTypeConverter(),
-                           rewriter, loc);
+    auto contributionCB = lookupAndConvertCB(
+        contributionSource, funcOp, this->getTypeConverter(), rewriter, loc);
     auto contributionTileIndex =
         computeCBTileIndex(contributionSource, rewriter, loc);
     if (succeeded(contributionCB) && succeeded(contributionTileIndex)) {

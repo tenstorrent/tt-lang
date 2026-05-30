@@ -96,7 +96,8 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 ///     dst_section {
 ///       <accumulator initialization, if required>
 ///       for each reduction dim:
-///         <tile ops from body, excluding stores and accumulator initialization>
+///         <tile ops from body, excluding stores and accumulator
+///         initialization>
 ///       <stores with placeholder tile + explicit dst_index>
 ///     }
 static scf::LoopNest generateAccumulatingLoops(
@@ -216,9 +217,8 @@ static scf::LoopNest generateAccumulatingLoops(
     }
 
     size_t numInputs = op.getInputs().size();
-    auto extractedInputs =
-        extractTilesAtIndices(builder, bodyLoc, op.getInputs(), indexingMaps,
-                              fullIVs);
+    auto extractedInputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
     auto extractedOutputs = extractTilesAtIndices(
         builder, bodyLoc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
 
@@ -287,8 +287,7 @@ static scf::LoopNest generateAccumulatingLoops(
         OpBuilder secBuilder(&sectionBody,
                              Block::iterator(sectionBody.getTerminator()));
 
-        Value zeroIdx =
-            arith::ConstantIndexOp::create(secBuilder, parLoc, 0);
+        Value zeroIdx = arith::ConstantIndexOp::create(secBuilder, parLoc, 0);
         SmallVector<Value> zeroReductionIVs(reductionDims.size(), zeroIdx);
         SmallVector<Value> initIVs =
             buildFullIVs(parallelIVs, zeroReductionIVs);
