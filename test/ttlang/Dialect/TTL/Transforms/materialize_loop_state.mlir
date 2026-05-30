@@ -1,6 +1,7 @@
 // Verifies ttl-materialize-loop-state removes tensor-valued scf.for iter_args
-// using accumulate stores for additive recurrences and compiler DFB state for
-// general tensor recurrences.
+// using DST compute for eligible additive recurrences, accumulate stores for
+// remaining additive recurrences, and compiler DFB state for general tensor
+// recurrences.
 //
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-materialize-loop-state))' --split-input-file | FileCheck %s
 
@@ -31,6 +32,44 @@ func.func @carried_add(
 // CHECK-NEXT: }
 // CHECK-NOT: ttl.add
 // CHECK-NOT: ttl.attach_cb
+
+// -----
+
+// Attached additive recurrence with loop-local DFB contribution lowers to a
+// reduction compute so DST persists across reduction iterations.
+// CHECK-LABEL: func.func @carried_add_dst_compute
+func.func @carried_add_dst_compute() {
+  %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_delta = ttl.bind_cb {cb_index = 1, block_count = 3} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+  %cb_out = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %init_wait = ttl.cb_wait %cb_init : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init = ttl.attach_cb %init_wait, %cb_init : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c3 = arith.constant 3 : index
+  %c1 = arith.constant 1 : index
+  %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %delta_wait = ttl.cb_wait %cb_delta : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %delta = ttl.attach_cb %delta_wait, %cb_delta : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %sum = ttl.add %acc, %delta : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  %reserve = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+// CHECK: %[[INIT_WAIT:[^ ]+]] = ttl.cb_wait %[[INIT_CB:[^ ]+]] :
+// CHECK-NEXT: %[[INIT:.*]] = ttl.attach_cb %[[INIT_WAIT]], %[[INIT_CB]]
+// CHECK: %[[RESERVE:[^ ]+]] = ttl.cb_reserve %[[OUT_CB:[^ ]+]] :
+// CHECK-NEXT: %[[DELTA_WAIT:[^ ]+]] = ttl.cb_wait %[[DELTA_CB:[^ ]+]] {num_tiles = 3 : i64}
+// CHECK-SAME: -> tensor<3x1x1x!ttcore.tile<32x32, bf16>>
+// CHECK-NEXT: %[[DELTA:.*]] = ttl.attach_cb %[[DELTA_WAIT]], %[[DELTA_CB]]
+// CHECK: ttl.compute
+// CHECK-SAME: ins(%[[INIT]], %[[DELTA]]
+// CHECK: iterator_types = ["parallel", "parallel", "reduction"]
+// CHECK: %[[NEXT:.*]] = ttl.tile_accumulate_add
+// CHECK: ttl.tile_store %[[NEXT]], %[[RESERVE]]
+// CHECK: ttl.cb_pop %[[DELTA_CB]] {num_tiles = 3 : i64}
+// CHECK-NEXT: return
 
 // -----
 
