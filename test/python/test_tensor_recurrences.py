@@ -73,6 +73,43 @@ def _make_loop_carried_add_kernel():
     return kernel
 
 
+def _make_direct_loop_carried_add_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(initial, delta, out):
+        initial_dfb = ttl.make_dataflow_buffer_like(
+            initial, shape=(1, 1), block_count=2
+        )
+        delta_dfb = ttl.make_dataflow_buffer_like(
+            delta, shape=(1, 1), block_count=N_ITERS
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with initial_dfb.wait() as acc:
+                for _ in range(N_ITERS):
+                    with delta_dfb.wait() as delta_blk:
+                        acc = acc + delta_blk
+
+                with out_dfb.reserve() as out_blk:
+                    out_blk.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with initial_dfb.reserve() as initial_blk:
+                ttl.copy(initial[0:1, 0:1], initial_blk).wait()
+            for _ in range(N_ITERS):
+                with delta_dfb.reserve() as delta_blk:
+                    ttl.copy(delta[0:1, 0:1], delta_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as out_blk:
+                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
 def _make_loop_carried_relu_kernel():
     @ttl.operation(grid=(1, 1))
     def kernel(initial, bias, out):
@@ -116,12 +153,23 @@ _DTYPE_TOL = {
 }
 
 
-def _run_io_kernel(kernel, in_tensors, out_zeros, expected_list, dtype, device):
+def _run_io_kernel(
+    kernel,
+    in_tensors,
+    out_zeros,
+    expected_list,
+    dtype,
+    device,
+    kernel_options=None,
+):
     """Common test runner: move inputs and outputs to device, invoke the
     kernel, then assert each output tensor matches its expected value."""
     in_devs = [to_dram(t, device) for t in in_tensors]
     out_devs = [to_dram(t, device) for t in out_zeros]
-    kernel(*in_devs, *out_devs)
+    if kernel_options is None:
+        kernel(*in_devs, *out_devs)
+    else:
+        kernel(*in_devs, *out_devs, options=kernel_options)
     ttnn.synchronize_device(device)
     for out_dev, expected in zip(out_devs, expected_list):
         result = ttnn.to_torch(out_dev).float()
@@ -150,6 +198,30 @@ def test_self_rebound_add_result_is_carried_out_of_loop(device, dtype):
 
     result = ttnn.to_torch(out_dev).float()
     assert_allclose(result.float(), expected.float(), **_DTYPE_TOL[dtype])
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    "accumulation_strategy",
+    ["auto", "dst", "l1-pack"],
+    ids=["auto", "dst", "l1"],
+)
+def test_tensor_accumulation_strategy_options(device, dtype, accumulation_strategy):
+    """Direct additive recurrences are DST-compatible, so every strategy
+    option is valid for this tensor recurrence."""
+    initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 2.0, dtype=dtype)
+    expected = initial.float() + N_ITERS * delta.float()
+    _run_io_kernel(
+        _make_direct_loop_carried_add_kernel(),
+        in_tensors=[initial, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+        kernel_options=f"--ttl-accumulation-strategy={accumulation_strategy}",
+    )
 
 
 @pytest.mark.requires_device
@@ -658,7 +730,10 @@ def _make_block_aug_in_loop_kernel():
 
 @pytest.mark.requires_device
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
-def test_block_aug_assign_in_loop_uses_l1_acc(device, dtype):
+@pytest.mark.parametrize(
+    "accumulation_strategy", ["auto", "l1-pack"], ids=["auto", "l1"]
+)
+def test_block_aug_assign_in_loop_uses_l1_acc(device, dtype, accumulation_strategy):
     """Regression for #540 review: `out_blk += x` inside a for loop on a
     reserve block carried over from an enclosing `with:` scope must
     continue to lower via __iadd__ (L1 acc store), not be wrongly added
@@ -673,6 +748,7 @@ def test_block_aug_assign_in_loop_uses_l1_acc(device, dtype):
         expected_list=[expected],
         dtype=dtype,
         device=device,
+        kernel_options=f"--ttl-accumulation-strategy={accumulation_strategy}",
     )
 
 

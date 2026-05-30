@@ -21,7 +21,12 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addNestedPass<func::FuncOp>(createTTLFormAccumulationScopes());
-  pm.addNestedPass<func::FuncOp>(createTTLLowerAccumulationScopes());
+  {
+    TTLLowerAccumulationScopesOptions lowerOpts;
+    lowerOpts.strategy = options.accumulationStrategy;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOpts)));
+  }
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
@@ -39,6 +44,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLLowerAccumulationScopesOptions lowerOpts;
     lowerOpts.kind = "dfb";
+    lowerOpts.strategy = options.accumulationStrategy;
     pm.addNestedPass<func::FuncOp>(
         createTTLLowerAccumulationScopes(std::move(lowerOpts)));
   }

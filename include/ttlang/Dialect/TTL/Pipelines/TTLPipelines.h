@@ -7,6 +7,8 @@
 
 #include "mlir/Pass/PassOptions.h"
 
+#include <string>
+
 namespace mlir {
 class OpPassManager;
 } // namespace mlir
@@ -22,6 +24,11 @@ struct TTLToTTKernelPipelineOptions
       *this, "maximize-dst",
       llvm::cl::desc("Enable DST maximization via subblock compute."),
       llvm::cl::init(true)};
+  Option<std::string> accumulationStrategy{
+      *this, "accumulation-strategy",
+      llvm::cl::desc("Select accumulation storage strategy: auto, dst, or "
+                     "l1-pack."),
+      llvm::cl::init("auto")};
   Option<bool> enableFPUBinaryOps{
       *this, "enable-fpu-binary-ops",
       llvm::cl::desc("Use FPU for binary add/sub/mul."), llvm::cl::init(true)};

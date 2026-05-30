@@ -19,6 +19,8 @@ import os
 import sys
 from typing import Optional, Sequence
 
+_ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
+
 
 def _make_parser() -> argparse.ArgumentParser:
     """Build the compiler options parser.
@@ -33,6 +35,12 @@ def _make_parser() -> argparse.ArgumentParser:
         dest="maximize_dst",
         action=argparse.BooleanOptionalAction,
         help="Enable DST maximization via subblock compute and scheduling (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-accumulation-strategy",
+        default=None,
+        dest="accumulation_strategy",
+        help="Select accumulation storage strategy: auto, dst, or l1-pack (default: auto).",
     )
     p.add_argument(
         "--ttl-fpu-binary-ops",
@@ -116,7 +124,14 @@ def _parse_explicit(tokens: Sequence[str], *, reject_unknown: bool = False) -> d
             raise ValueError(f"Unknown kernel option(s): {unknown}")
     else:
         ns, _ = _PARSER.parse_known_args(tokens)
-    return {k: v for k, v in vars(ns).items() if v is not None}
+    explicit = {k: v for k, v in vars(ns).items() if v is not None}
+    strategy = explicit.get("accumulation_strategy")
+    if strategy is not None and strategy not in _ACCUMULATION_STRATEGIES:
+        raise ValueError(
+            "Invalid accumulation strategy "
+            f"{strategy!r}; expected one of {sorted(_ACCUMULATION_STRATEGIES)}"
+        )
+    return explicit
 
 
 @dataclasses.dataclass(frozen=True)
@@ -137,6 +152,7 @@ class CompilerOptions:
     """
 
     maximize_dst: bool = True
+    accumulation_strategy: str = "auto"
     enable_fpu_binary_ops: bool = True
     use_block_matmul: bool = True
     subblock_sync: bool = False

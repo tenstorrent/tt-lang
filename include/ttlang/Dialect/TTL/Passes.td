@@ -249,10 +249,11 @@ def TTLLowerAccumulationScopes
     L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
     metadata for TTKernel packer reconfiguration placement.
 
-    `strategy=auto` selects DST when the recurrence satisfies the DST legality
-    rules and otherwise uses L1 packer accumulation. `strategy=dst` requires
-    DST and emits an error when the scope is not DST-compatible.
-    `strategy=l1-pack` always uses the L1 packer strategy.
+    `strategy=auto` selects DST when a tensor recurrence satisfies the DST
+    legality rules and otherwise uses L1 packer accumulation. `strategy=dst`
+    requires DST and emits an error when the scope is not DST-compatible; DFB
+    accumulation scopes are not DST-compatible. `strategy=l1-pack` always uses
+    the L1 packer strategy.
   }];
 
   let options = [

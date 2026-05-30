@@ -7,7 +7,9 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/IRMapping.h"
@@ -51,6 +53,52 @@ static int64_t getTileCount(RankedTensorType tensorType) {
   return tileCount;
 }
 
+/// Returns a constant integer after stripping arith.index_cast. The Python
+/// frontend emits range literals as integer constants cast to index.
+static std::optional<int64_t> getConstantIntThroughIndexCast(Value value) {
+  if (auto constantValue = getConstantIntValue(value)) {
+    return *constantValue;
+  }
+  if (auto indexCast = value.getDefiningOp<arith::IndexCastOp>()) {
+    return getConstantIntThroughIndexCast(indexCast.getIn());
+  }
+  return std::nullopt;
+}
+
+/// Returns the static trip count, accepting constant bounds that have been cast
+/// to index. scf::ForOp::getStaticTripCount does not fold arith.index_cast, and
+/// this pass must be correct when it runs without canonicalize.
+static std::optional<int64_t> getStaticTripCount(scf::ForOp loop) {
+  if (std::optional<llvm::APInt> tripCount = loop.getStaticTripCount()) {
+    if (tripCount->getActiveBits() > 63) {
+      return std::nullopt;
+    }
+    return static_cast<int64_t>(tripCount->getZExtValue());
+  }
+
+  std::optional<int64_t> lowerBound =
+      getConstantIntThroughIndexCast(loop.getLowerBound());
+  std::optional<int64_t> upperBound =
+      getConstantIntThroughIndexCast(loop.getUpperBound());
+  std::optional<int64_t> step = getConstantIntThroughIndexCast(loop.getStep());
+  if (!lowerBound || !upperBound || !step || *step <= 0) {
+    return std::nullopt;
+  }
+
+  if (*upperBound <= *lowerBound) {
+    return 0;
+  }
+
+  uint64_t distance =
+      static_cast<uint64_t>(*upperBound) - static_cast<uint64_t>(*lowerBound);
+  uint64_t stepValue = static_cast<uint64_t>(*step);
+  uint64_t tripCount = 1 + (distance - 1) / stepValue;
+  if (tripCount > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return std::nullopt;
+  }
+  return static_cast<int64_t>(tripCount);
+}
+
 /// Finds the contribution wait only when it is immediately owned by the loop.
 /// Ancestor containment would admit nested-region effects that cannot be
 /// coalesced into one pre-loop wait without changing execution order.
@@ -74,7 +122,8 @@ static CBWaitOp getLoopLocalContributionWait(TensorAccumulationMatch &match,
 }
 
 /// Ensures replacing the whole loop with one reduction compute does not
-/// discard side effects other than the matched wait/attach/add recurrence.
+/// discard side effects other than the matched wait/attach/add recurrence and
+/// its matching contribution release.
 static bool onlyContainsDstReductionOps(scf::ForOp loop,
                                         TensorAccumulationMatch &match,
                                         CBWaitOp contributionWait,
@@ -86,9 +135,17 @@ static bool onlyContainsDstReductionOps(scf::ForOp loop,
     allowedOps.insert(attachedContribution.getOperation());
   }
 
+  bool foundContributionPop = false;
   for (Operation &bodyOp : loop.getBody()->without_terminator()) {
     if (!allowedOps.contains(&bodyOp)) {
-      return false;
+      auto contributionPop = dyn_cast<CBPopOp>(&bodyOp);
+      if (!contributionPop ||
+          contributionPop.getCb() != contributionWait.getCb() ||
+          contributionPop.getNumTiles() || foundContributionPop ||
+          contributionPop->isBeforeInBlock(match.add)) {
+        return false;
+      }
+      foundContributionPop = true;
     }
   }
   return true;
@@ -258,11 +315,11 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 
   // Coalescing replaces one wait per iteration with one pre-compute wait, so
   // the total tile count must be known at compile time.
-  std::optional<llvm::APInt> tripCount = loop.getStaticTripCount();
-  if (!tripCount || tripCount->isZero() || tripCount->getActiveBits() > 63) {
+  std::optional<int64_t> tripCount = getStaticTripCount(loop);
+  if (!tripCount || *tripCount == 0) {
     return failure();
   }
-  int64_t tripCountValue = static_cast<int64_t>(tripCount->getZExtValue());
+  int64_t tripCountValue = *tripCount;
 
   // The contribution wait must be the canonical one-tensor wait immediately in
   // the loop body. Explicit num_tiles would need separate accounting, and
