@@ -24,6 +24,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 
@@ -93,8 +94,9 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 /// Structure:
 ///   for each parallel dim:
 ///     dst_section {
+///       <accumulator initialization, if required>
 ///       for each reduction dim:
-///         <tile ops from body>
+///         <tile ops from body, excluding stores and accumulator initialization>
 ///       <stores with placeholder tile + explicit dst_index>
 ///     }
 static scf::LoopNest generateAccumulatingLoops(
@@ -142,11 +144,41 @@ static scf::LoopNest generateAccumulatingLoops(
   // Collect store ops and their dst_index from the compute body.
   Block &bodyBlock = op.getBody().front();
   SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
+  llvm::SmallPtrSet<Operation *, 4> accumulatorInitOps;
+  auto collectAccumulatorInitOps = [&](auto &&self, Value value) -> void {
+    Operation *definingOp = value.getDefiningOp();
+    if (!definingOp || definingOp->getBlock() != &bodyBlock ||
+        isa<IterIndexOp>(definingOp)) {
+      return;
+    }
+    if (definingOp->hasTrait<TTLAccumulatingOpTrait>()) {
+      return;
+    }
+    if (!accumulatorInitOps.insert(definingOp).second) {
+      return;
+    }
+    for (Value operand : definingOp->getOperands()) {
+      self(self, operand);
+    }
+  };
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       auto dstIdx = getConstantIntValue(store.getDstIndex());
       storeInfos.emplace_back(store,
                               dstIdx ? static_cast<int32_t>(*dstIdx) : 0);
+      continue;
+    }
+
+    auto accumulateAdd = dyn_cast<TileAccumulateAddOp>(&bodyOp);
+    if (!accumulateAdd) {
+      continue;
+    }
+
+    Operation *accumulatorDef = accumulateAdd.getAccumulator().getDefiningOp();
+    if (accumulatorDef && accumulatorDef->getBlock() == &bodyBlock &&
+        !accumulatorDef->hasTrait<TTLAccumulatingOpTrait>()) {
+      collectAccumulatorInitOps(collectAccumulatorInitOps,
+                                accumulateAdd.getAccumulator());
     }
   }
 
@@ -166,12 +198,27 @@ static scf::LoopNest generateAccumulatingLoops(
     return fullIVs;
   };
 
-  // Generate tile ops (excluding stores) inside the reduction loop body.
-  auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
-                                 ValueRange fullIVs) {
+  auto remapIndexValue = [&](OpBuilder &builder, Location valueLoc,
+                             IRMapping &mapping, Value value) -> Value {
+    if (mapping.contains(value)) {
+      return mapping.lookup(value);
+    }
+    if (auto constant = foldIndexToConstant(value)) {
+      return arith::ConstantIndexOp::create(builder, valueLoc, *constant);
+    }
+    return value;
+  };
+
+  auto cloneAccumulatorInits = [&](OpBuilder &builder, Location bodyLoc,
+                                   ValueRange fullIVs) -> IRMapping {
+    if (accumulatorInitOps.empty()) {
+      return IRMapping();
+    }
+
     size_t numInputs = op.getInputs().size();
-    auto extractedInputs = extractTilesAtIndices(
-        builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
+    auto extractedInputs =
+        extractTilesAtIndices(builder, bodyLoc, op.getInputs(), indexingMaps,
+                              fullIVs);
     auto extractedOutputs = extractTilesAtIndices(
         builder, bodyLoc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
 
@@ -179,7 +226,50 @@ static scf::LoopNest generateAccumulatingLoops(
     mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {
+      if (!accumulatorInitOps.contains(&bodyOp)) {
+        continue;
+      }
+      if (auto copyTile = dyn_cast<CopyTileOp>(&bodyOp)) {
+        // Accumulator setup moves outside the reduction loop. Recreate
+        // copy_tile so its indices are valid at the new insertion point.
+        SmallVector<Value> srcIndices;
+        for (Value index : copyTile.getSrcIndices()) {
+          srcIndices.push_back(
+              remapIndexValue(builder, bodyLoc, mapping, index));
+        }
+        auto clonedCopy = CopyTileOp::create(
+            builder, bodyLoc,
+            TypeRange{copyTile.getDstToken().getType(),
+                      copyTile.getDstTile().getType()},
+            mapping.lookupOrDefault(copyTile.getSrc()), srcIndices,
+            remapIndexValue(builder, bodyLoc, mapping, copyTile.getDstIndex()));
+        mapping.map(copyTile.getDstToken(), clonedCopy.getDstToken());
+        mapping.map(copyTile.getDstTile(), clonedCopy.getDstTile());
+        continue;
+      }
+
+      builder.clone(bodyOp, mapping);
+    }
+    return mapping;
+  };
+
+  // Generate tile ops (excluding stores and accumulator initialization) inside
+  // the reduction loop body.
+  auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
+                                 ValueRange fullIVs,
+                                 const IRMapping &baseMapping) {
+    size_t numInputs = op.getInputs().size();
+    auto extractedInputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
+    auto extractedOutputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
+
+    IRMapping mapping = baseMapping;
+    mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
+
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (isa<IterIndexOp, TileStoreOp>(&bodyOp) ||
+          accumulatorInitOps.contains(&bodyOp)) {
         continue;
       }
       builder.clone(bodyOp, mapping);
@@ -197,6 +287,14 @@ static scf::LoopNest generateAccumulatingLoops(
         OpBuilder secBuilder(&sectionBody,
                              Block::iterator(sectionBody.getTerminator()));
 
+        Value zeroIdx =
+            arith::ConstantIndexOp::create(secBuilder, parLoc, 0);
+        SmallVector<Value> zeroReductionIVs(reductionDims.size(), zeroIdx);
+        SmallVector<Value> initIVs =
+            buildFullIVs(parallelIVs, zeroReductionIVs);
+        IRMapping accumulatorInitMapping =
+            cloneAccumulatorInits(secBuilder, parLoc, initIVs);
+
         // Inner: reduction loops.
         scf::LoopNest redNest = scf::buildLoopNest(
             secBuilder, parLoc, redLBs, redUBs, redSteps, ValueRange{},
@@ -204,7 +302,8 @@ static scf::LoopNest generateAccumulatingLoops(
                 ValueRange) -> scf::ValueVector {
               SmallVector<Value> fullIVs =
                   buildFullIVs(parallelIVs, reductionIVs);
-              generateTileOpsOnly(redBuilder, redLoc, fullIVs);
+              generateTileOpsOnly(redBuilder, redLoc, fullIVs,
+                                  accumulatorInitMapping);
               return {};
             });
 
@@ -234,8 +333,6 @@ static scf::LoopNest generateAccumulatingLoops(
           for (auto [idx, dim] : llvm::enumerate(parallelDims)) {
             fullIVs[dim] = parallelIVs[idx];
           }
-          Value zeroIdx =
-              arith::ConstantIndexOp::create(storeBuilder, parLoc, 0);
           for (unsigned dim : reductionDims) {
             fullIVs[dim] = zeroIdx;
           }
@@ -365,7 +462,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
                              : WalkResult::advance();
                 })
                 .wasInterrupted();
-        if (dstAccumulation || hasReduceMax) {
+        bool hasAccumulateAdd = op.containsOp<TileAccumulateAddOp>();
+        if (dstAccumulation || hasReduceMax || hasAccumulateAdd) {
           usedDstAccumulation = true;
           return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
                                            indexingMaps, iterTypes, lowerBounds,

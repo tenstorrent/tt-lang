@@ -300,6 +300,26 @@ static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
   return failure();
 }
 
+/// A copy_tile whose tile result is consumed only as the contribution to an
+/// in-DST recurrence does not need to materialize the contribution in DST.
+static bool isAccumulateContributionOnly(CopyTileOp copyTile) {
+  if (!copyTile.getDstToken().use_empty()) {
+    return false;
+  }
+
+  bool hasContributionUse = false;
+  for (OpOperand &use : copyTile.getDstTile().getUses()) {
+    auto accumulateAdd = dyn_cast<TileAccumulateAddOp>(use.getOwner());
+    if (!accumulateAdd ||
+        use.getOperandNumber() !=
+            accumulateAdd.getContributionMutable().getOperandNumber()) {
+      return false;
+    }
+    hasContributionUse = true;
+  }
+  return hasContributionUse;
+}
+
 /// Generic pattern for lowering TTL binary tile ops to TTKernel SFPU ops.
 /// Binary SFPU ops: DST[odst] = DST[src0] op DST[src1]
 ///
@@ -329,6 +349,75 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     TTKernelComputeOp::create(rewriter, loc, *src0, *src1, odst);
 
     rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
+/// Lower an explicit in-DST additive recurrence. When the contribution is
+/// sourced from a DFB copy, use binary_dest_reuse_tiles so the contribution is
+/// read directly from the DFB and the accumulator remains in its DST slot.
+struct TTLTileAccumulateAddToTTKernel
+    : OpConversionPattern<TileAccumulateAddOp> {
+  TTLTileAccumulateAddToTTKernel(const TypeConverter &typeConverter,
+                                 MLIRContext *ctx)
+      : OpConversionPattern<TileAccumulateAddOp>(typeConverter, ctx) {}
+
+  LogicalResult
+  matchAndRewrite(TileAccumulateAddOp op,
+                  TileAccumulateAddOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto accumulatorDst = getSrcDstIndex(op.getAccumulator(), loc, rewriter);
+    if (failed(accumulatorDst)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_index from accumulator");
+    }
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    CopyTileOp contributionCopy =
+        op.getContribution().getDefiningOp<CopyTileOp>();
+    Value contributionSource = op.getContribution();
+    if (contributionCopy && isAccumulateContributionOnly(contributionCopy)) {
+      contributionSource = contributionCopy.getSrc();
+    } else {
+      contributionSource = traceUnrealizedCasts(contributionSource);
+    }
+
+    auto contributionCB =
+        lookupAndConvertCB(contributionSource, funcOp, this->getTypeConverter(),
+                           rewriter, loc);
+    auto contributionTileIndex =
+        computeCBTileIndex(contributionSource, rewriter, loc);
+    if (succeeded(contributionCB) && succeeded(contributionTileIndex)) {
+      ttk::BinaryDestReuseTilesOp::create(
+          rewriter, loc, *contributionCB, *contributionTileIndex,
+          *accumulatorDst, ttk::EltwiseBinaryType::Add,
+          ttk::BinaryDestReuseType::DestToSrcA);
+
+      rewriter.replaceOp(op, adaptor.getAccumulator());
+      if (contributionCopy && contributionCopy.getDstToken().use_empty() &&
+          contributionCopy.getDstTile().use_empty()) {
+        rewriter.eraseOp(contributionCopy);
+      }
+      return success();
+    }
+
+    auto contributionDst = getSrcDstIndex(op.getContribution(), loc, rewriter);
+    if (failed(contributionDst)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to find DFB source or extract dst_index from "
+              "contribution");
+    }
+
+    ttk::AddBinaryTilesOp::create(rewriter, loc, *accumulatorDst,
+                                  *contributionDst, adaptor.getDstIndex());
+
+    rewriter.replaceOp(op, adaptor.getAccumulator());
     return success();
   }
 };
@@ -452,6 +541,19 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   matchAndRewrite(CopyTileOp op, CopyTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+
+    if (isAccumulateContributionOnly(op)) {
+      auto token = mlir::UnrealizedConversionCastOp::create(
+                       rewriter, loc, TypeRange{op.getResult(0).getType()},
+                       ValueRange{adaptor.getDstIndex()})
+                       .getResult(0);
+      auto tile = mlir::UnrealizedConversionCastOp::create(
+                      rewriter, loc, TypeRange{op.getResult(1).getType()},
+                      ValueRange{adaptor.getSrc()})
+                      .getResult(0);
+      rewriter.replaceOp(op, ValueRange{token, tile});
+      return success();
+    }
 
     // Look up the CB by reading cb_index annotation from the compute op.
     auto funcOp = op->getParentOfType<func::FuncOp>();
@@ -1040,10 +1142,11 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // DST-based ops (no type converter needed).
+  // DST-based ops.
   patterns.add<TTLTileFillToTTKernel>(ctx);
   patterns.add<TTLTileMulUnaryConstToTTKernel>(ctx);
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
+  patterns.add<TTLTileAccumulateAddToTTKernel>(*typeConverter, ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
