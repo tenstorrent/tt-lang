@@ -219,7 +219,9 @@ def TTLFormAccumulationScopes
     Forms `ttl.accumulation_scope` regions around accumulation constructs
     before concrete storage strategy selection. The initial tensor mode
     recognizes single-output additive tensor recurrences whose loop result is
-    immediately stored to a dataflow buffer reservation.
+    immediately stored to a dataflow buffer reservation. DFB mode recognizes
+    user-written accumulating stores after DFB acquire/release structure is
+    canonical.
 
     The pass records accumulation policy only. It does not select DST, L1
     packer accumulation, or explicit dataflow buffer state.
@@ -227,7 +229,7 @@ def TTLFormAccumulationScopes
 
   let options = [
     Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Scope formation kind. The initial implementation supports tensor.">
+           "Scope formation kind: tensor or dfb.">
   ];
 
   let dependentDialects = [
@@ -242,7 +244,8 @@ def TTLLowerAccumulationScopes
   let description = [{
     Lowers `ttl.accumulation_scope` regions to a concrete storage strategy.
     The initial tensor implementation supports single-output additive tensor
-    recurrences formed by `ttl-form-accumulation-scopes`.
+    recurrences formed by `ttl-form-accumulation-scopes`. DFB mode lowers
+    user-written accumulating stores to L1 packer metadata.
 
     `strategy=auto` selects DST when the recurrence satisfies the DST legality
     rules and otherwise uses L1 packer accumulation. `strategy=dst` requires
@@ -252,7 +255,7 @@ def TTLLowerAccumulationScopes
 
   let options = [
     Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Scope lowering kind. The initial implementation supports tensor.">,
+           "Scope lowering kind: tensor or dfb.">,
     Option<"strategy", "strategy", "std::string", "\"auto\"",
            "Accumulation strategy: auto, dst, or l1-pack.">
   ];
@@ -296,8 +299,8 @@ def TTKernelInsertL1Accumulation
     loops are excluded (max is not additive).
 
     Loops are grouped into accumulation scopes: consecutive sibling loops
-    that pack to the same CB share a single disable pair. Nested annotated
-    loops are folded into the outermost ancestor. Each group gets:
+    that pack to the same dataflow buffer share a single disable pair. Nested
+    annotated loops are folded into the outermost ancestor. Each group gets:
     - `pack_reconfig_l1_acc(0)` before the first loop when
       `ttl.l1_acc_initial=overwrite`, or `pack_reconfig_l1_acc(1)` when
       `ttl.l1_acc_initial=accumulate_existing`.
@@ -320,23 +323,6 @@ def TTKernelInsertL1Accumulation
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
-  ];
-}
-
-def TTLAnnotateL1AccLoops
-    : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
-  let summary = "Annotate user-written scf.for loops for L1 accumulation";
-  let description = [{
-    Detects user-written `scf.for` loops containing `ttl.store` ops with
-    the `accumulate` attribute (emitted by the `+=` operator) and annotates
-    them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
-    to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
-    iterations instead of overwriting. The pass also records
-    `ttl.l1_acc_initial` to distinguish fresh-output loops from loops seeded
-    by a preceding store to the same reserved output view.
-  }];
-  let dependentDialects = [
-    "::mlir::scf::SCFDialect"
   ];
 }
 

@@ -11,7 +11,6 @@ add_mlir_dialect_library(TTLangTTLTransforms
   PipeGraph.cpp
   PipeLowering.cpp
   TTLAnnotateCBAssociations.cpp
-  TTLAnnotateL1AccLoops.cpp
   TTLAssignDST.cpp
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp

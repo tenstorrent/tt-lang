@@ -1468,9 +1468,9 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     (accumulate). During `convert-ttl-to-compute`, this op is transformed
     into a `ttl.tile_store` inside the compute body.
 
-    When `accumulate` is set, the enclosing loop is annotated for L1
-    packer accumulation so that each iteration adds to the existing L1
-    value instead of overwriting.
+    When `accumulate` is set, accumulation scope formation records the
+    enclosing loop's accumulation policy before concrete storage strategy
+    lowering.
 
     Example:
     ```mlir

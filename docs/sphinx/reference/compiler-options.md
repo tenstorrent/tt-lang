@@ -125,7 +125,8 @@ The pipeline runs these passes in order:
 - `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
 - `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions
-- `ttl-annotate-l1-acc-loops` - annotate `+=` accumulation loops with L1 packer accumulation metadata
+- `ttl-form-accumulation-scopes{kind=dfb}` - form semantic accumulation scopes for user-written `+=` loops
+- `ttl-lower-accumulation-scopes{kind=dfb}` - lower user-written `+=` scopes to L1 packer metadata
 - `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 - `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
@@ -152,7 +153,7 @@ Form semantic accumulation scopes before concrete strategy selection.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"tensor"` | Scope formation kind. Supported value: `tensor`. |
+| `kind` | string | `"tensor"` | Scope formation kind. Supported values: `tensor`, `dfb`. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-form-accumulation-scopes{kind=tensor})'
@@ -164,7 +165,7 @@ Lower semantic accumulation scopes to a concrete storage strategy.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"tensor"` | Scope lowering kind. Supported value: `tensor`. |
+| `kind` | string | `"tensor"` | Scope lowering kind. Supported values: `tensor`, `dfb`. |
 | `strategy` | string | `"auto"` | Accumulation strategy. Supported values: `auto`, `dst`, `l1-pack`. |
 
 ```bash

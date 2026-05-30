@@ -12,6 +12,8 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
+#include <utility>
+
 using namespace mlir;
 
 namespace mlir::tt::ttl {
@@ -28,7 +30,18 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
-  pm.addPass(createTTLAnnotateL1AccLoops());
+  {
+    TTLFormAccumulationScopesOptions formOpts;
+    formOpts.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLFormAccumulationScopes(std::move(formOpts)));
+  }
+  {
+    TTLLowerAccumulationScopesOptions lowerOpts;
+    lowerOpts.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOpts)));
+  }
   pm.addPass(createTTLConvertTTLToCompute());
   {
     TTLSetComputeKernelConfigOptions configOpts;

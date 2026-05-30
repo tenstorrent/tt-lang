@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 
 #define DEBUG_TYPE "ttl-lower-accumulation-scopes"
@@ -156,6 +157,94 @@ static void eraseAccumulationScopeWrapper(AccumulationScopeOp scope,
   rewriter.eraseOp(scope);
 }
 
+/// Verify the scope policy accepted by the initial DFB L1 lowering strategy.
+/// DFB accumulation has no explicit initial tensor: overwrite and
+/// accumulate-existing modes are implemented by TTKernel L1 packer guards.
+static LogicalResult verifyAddDFBScope(AccumulationScopeOp scope) {
+  if (scope.getOutputs().empty()) {
+    return scope.emitOpError("DFB lowering requires at least one output");
+  }
+  if (!scope.getExplicitInits().empty()) {
+    return scope.emitOpError("DFB lowering does not accept explicit inits");
+  }
+
+  for (AccumulationCombiner combiner : scope.getAccumulationCombiners()) {
+    if (combiner != AccumulationCombiner::Add) {
+      return scope.emitOpError("DFB lowering requires add combiner");
+    }
+  }
+
+  for (AccumulationInitialMode mode : scope.getAccumulationInitialModes()) {
+    if (mode != AccumulationInitialMode::Overwrite &&
+        mode != AccumulationInitialMode::AccumulateExisting) {
+      return scope.emitOpError(
+          "DFB lowering requires overwrite or accumulate_existing initial "
+          "mode");
+    }
+  }
+
+  return success();
+}
+
+/// Find the single top-level loop represented by a DFB accumulation scope. The
+/// formation pass emits one loop per scope so L1 metadata can be attached to
+/// the loop before the semantic wrapper is erased.
+static FailureOr<scf::ForOp>
+getSingleDFBAccumulationLoop(AccumulationScopeOp scope) {
+  scf::ForOp loop;
+  Block &body = scope.getBody().front();
+  for (Operation &operation : body.without_terminator()) {
+    if (auto candidateLoop = dyn_cast<scf::ForOp>(&operation)) {
+      if (loop) {
+        return failure();
+      }
+      loop = candidateLoop;
+      continue;
+    }
+    return failure();
+  }
+
+  if (!loop) {
+    return failure();
+  }
+  return loop;
+}
+
+/// Lower a DFB accumulation scope to explicit L1 packer metadata on its loop.
+/// TTKernel lowering consumes the metadata after TTL stores have been converted
+/// to packs, so no TTKernel operation ordering is inspected here.
+static LogicalResult lowerDFBAccumulationScope(AccumulationScopeOp scope,
+                                               AccumulationStrategy strategy,
+                                               RewriterBase &rewriter) {
+  if (strategy == AccumulationStrategy::Dst) {
+    return scope.emitOpError("cannot lower DFB accumulation scope to DST");
+  }
+  if (failed(verifyAddDFBScope(scope))) {
+    return failure();
+  }
+
+  FailureOr<scf::ForOp> loop = getSingleDFBAccumulationLoop(scope);
+  if (failed(loop)) {
+    return scope.emitOpError("DFB lowering requires one top-level scf.for");
+  }
+
+  SmallVector<AccumulationInitialMode> initialModes =
+      scope.getAccumulationInitialModes();
+  AccumulationInitialMode initialMode = initialModes.front();
+  if (!llvm::all_of(initialModes, [&](AccumulationInitialMode mode) {
+        return mode == initialMode;
+      })) {
+    return scope.emitOpError(
+        "DFB L1 lowering requires one initial mode for all outputs");
+  }
+
+  (*loop)->setAttr(kL1AccLoopAttrName, UnitAttr::get(scope.getContext()));
+  (*loop)->setAttr(kL1AccInitialAttrName, AccumulationInitialModeAttr::get(
+                                              scope.getContext(), initialMode));
+  eraseAccumulationScopeWrapper(scope, rewriter);
+  return success();
+}
+
 /// Lower one tensor accumulation scope according to the selected strategy.
 static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
                                                   AccumulationStrategy strategy,
@@ -196,9 +285,9 @@ struct TTLLowerAccumulationScopesPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (kind != "tensor") {
+    if (kind != "tensor" && kind != "dfb") {
       func.emitOpError() << "invalid accumulation scope lowering kind `" << kind
-                         << "`; expected `tensor`";
+                         << "`; expected `tensor` or `dfb`";
       signalPassFailure();
       return;
     }
@@ -217,8 +306,11 @@ struct TTLLowerAccumulationScopesPass
 
     IRRewriter rewriter(&getContext());
     for (AccumulationScopeOp scope : scopes) {
-      if (failed(lowerTensorAccumulationScope(scope, *selectedStrategy,
-                                              rewriter))) {
+      LogicalResult result =
+          kind == "tensor"
+              ? lowerTensorAccumulationScope(scope, *selectedStrategy, rewriter)
+              : lowerDFBAccumulationScope(scope, *selectedStrategy, rewriter);
+      if (failed(result)) {
         signalPassFailure();
         return;
       }
