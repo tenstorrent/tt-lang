@@ -15,17 +15,12 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/IR/AffineExpr.h"
-#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/DenseMap.h"
@@ -33,7 +28,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <limits>
 #include <optional>
 
 #define DEBUG_TYPE "ttl-materialize-loop-state"
@@ -54,269 +48,6 @@ struct TensorLoopState {
   std::optional<TensorAccumulationMatch> accumulator;
   BindCBOp stateDFB;
 };
-
-// Returns the number of tiles represented by a statically ranked tensor. This
-// pass only reaches this helper after rejecting dynamic tensor types.
-static int64_t getTileCount(RankedTensorType tensorType) {
-  assert(tensorType.hasStaticShape() && "expected static tensor shape");
-  int64_t tileCount = 1;
-  for (int64_t dim : tensorType.getShape()) {
-    tileCount *= dim;
-  }
-  return tileCount;
-}
-
-// Finds the contribution wait only when it is immediately owned by the loop.
-// Ancestor containment would admit nested-region effects that cannot be
-// coalesced into one pre-loop wait without changing execution order.
-static CBWaitOp
-getLoopLocalContributionWait(TensorAccumulationMatch &accumulator,
-                             scf::ForOp loop,
-                             AttachCBOp &attachedContribution) {
-  Value contribution = accumulator.contribution;
-  if (auto attach = contribution.getDefiningOp<AttachCBOp>()) {
-    if (attach->getParentOp() != loop) {
-      return {};
-    }
-    attachedContribution = attach;
-    contribution = attach.getTensor();
-  }
-
-  auto wait = contribution.getDefiningOp<CBWaitOp>();
-  if (!wait || wait->getParentOp() != loop) {
-    return {};
-  }
-  return wait;
-}
-
-// Ensures replacing the whole loop with one reduction compute does not discard
-// side effects other than the matched wait/attach/add recurrence.
-static bool onlyContainsDstReductionOps(scf::ForOp loop,
-                                        TensorAccumulationMatch &accumulator,
-                                        CBWaitOp contributionWait,
-                                        AttachCBOp attachedContribution) {
-  DenseSet<Operation *> allowedOps;
-  allowedOps.insert(accumulator.add.getOperation());
-  allowedOps.insert(contributionWait.getOperation());
-  if (attachedContribution) {
-    allowedOps.insert(attachedContribution.getOperation());
-  }
-
-  for (Operation &bodyOp : loop.getBody()->without_terminator()) {
-    if (!allowedOps.contains(&bodyOp)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// Prepends the reduction dimension so the coalesced wait exposes every
-// per-iteration contribution as one compute input tensor.
-static RankedTensorType
-buildCoalescedContributionType(RankedTensorType unitType, int64_t tripCount) {
-  SmallVector<int64_t> shape;
-  shape.push_back(tripCount);
-  llvm::append_range(shape, unitType.getShape());
-  return RankedTensorType::get(shape, unitType.getElementType());
-}
-
-// Builds maps for a reduction domain whose final dimension indexes the
-// coalesced contribution while the output and initial accumulator ignore it.
-static SmallVector<Attribute>
-buildDstReductionIndexingMaps(MLIRContext *ctx, int64_t outputRank) {
-  int64_t domainRank = outputRank + 1;
-  SmallVector<AffineExpr> parallelExprs;
-  for (int64_t dim = 0; dim < outputRank; ++dim) {
-    parallelExprs.push_back(getAffineDimExpr(dim, ctx));
-  }
-
-  SmallVector<AffineExpr> contributionExprs;
-  contributionExprs.push_back(getAffineDimExpr(outputRank, ctx));
-  llvm::append_range(contributionExprs, parallelExprs);
-
-  AffineMap outputMap = AffineMap::get(domainRank, 0, parallelExprs, ctx);
-  AffineMap contributionMap =
-      AffineMap::get(domainRank, 0, contributionExprs, ctx);
-  return {AffineMapAttr::get(outputMap), AffineMapAttr::get(contributionMap),
-          AffineMapAttr::get(outputMap)};
-}
-
-// Marks output dimensions parallel and appends the single reduction dimension
-// that drives repeated tile accumulation into DST.
-static SmallVector<Attribute>
-buildDstReductionIteratorTypes(RewriterBase &rewriter, int64_t outputRank) {
-  SmallVector<Attribute> iteratorTypes;
-  for (int64_t dim = 0; dim < outputRank; ++dim) {
-    iteratorTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
-  iteratorTypes.push_back(rewriter.getStringAttr("reduction"));
-  return iteratorTypes;
-}
-
-// Materializes the restricted in-DST strategy:
-//
-//   %acc = scf.for ... iter_args(%acc = %init) {
-//     %contribution = ttl.cb_wait %input
-//     %next = ttl.add %acc, %contribution
-//     scf.yield %next
-//   }
-//   ttl.store %acc, %reserved_output
-//
-// becomes:
-//
-//   %all_contributions = ttl.cb_wait %input, num_tiles = trip_count *
-//   tile_count ttl.compute ins(%init, %all_contributions)
-//   outs(%reserved_output) {
-//     %next = ttl.tile_accumulate_add %init_tile, %contribution_tile
-//     ttl.tile_store %next, %reserved_output
-//   }
-//   ttl.cb_pop %input, num_tiles = trip_count * tile_count
-//
-// The generated compute owns the reduction loop so DST is acquired before the
-// first contribution tile and released only after the final accumulated store.
-static LogicalResult
-tryMaterializeDstAccumulatingCompute(scf::ForOp loop, TensorLoopState &state,
-                                     RewriterBase &rewriter) {
-  // The in-DST strategy currently handles one tensor recurrence whose update is
-  // exactly `state = state + contribution`, with matching per-iteration tensor
-  // types. Other recurrence forms use the general materialization below.
-  if (!state.accumulator) {
-    return failure();
-  }
-
-  TensorAccumulationMatch &accumulator = *state.accumulator;
-  if (state.accumulator->contribution.getType() != state.tensorType) {
-    return failure();
-  }
-
-  // The initial accumulator must already be dataflow-buffer backed because the
-  // generated compute reads it as the first input before reusing DST.
-  if (!getAttachedCB(state.initialValue)) {
-    return failure();
-  }
-
-  // Coalescing replaces one wait per iteration with one pre-compute wait, so
-  // the total tile count must be known at compile time.
-  std::optional<llvm::APInt> tripCount = loop.getStaticTripCount();
-  if (!tripCount || tripCount->isZero() || tripCount->getActiveBits() > 63) {
-    return failure();
-  }
-  int64_t tripCountValue = static_cast<int64_t>(tripCount->getZExtValue());
-
-  // The contribution wait must be the canonical one-tensor wait immediately in
-  // the loop body. Explicit num_tiles would need separate accounting, and
-  // nested waits cannot be hoisted without moving region-local effects.
-  AttachCBOp attachedContribution;
-  CBWaitOp contributionWait =
-      getLoopLocalContributionWait(accumulator, loop, attachedContribution);
-  if (!contributionWait || contributionWait.getNumTiles().has_value()) {
-    return failure();
-  }
-  if (!onlyContainsDstReductionOps(loop, accumulator, contributionWait,
-                                   attachedContribution)) {
-    return failure();
-  }
-
-  // The reduction compute preserves the original output tensor domain and adds
-  // only a leading reduction dimension for the coalesced contributions.
-  auto contributionType =
-      dyn_cast<RankedTensorType>(contributionWait.getResult().getType());
-  if (!contributionType || contributionType != state.tensorType ||
-      !contributionType.hasStaticShape()) {
-    return failure();
-  }
-
-  // The single coalesced wait must fit in the producer dataflow buffer. This is
-  // a compile-time strategy selection, not a runtime capacity check.
-  int64_t unitTileCount = getTileCount(contributionType);
-  if (unitTileCount <= 0 ||
-      tripCountValue > std::numeric_limits<int64_t>::max() / unitTileCount) {
-    return failure();
-  }
-  int64_t totalContributionTiles = tripCountValue * unitTileCount;
-  auto contributionCBType =
-      cast<CircularBufferType>(contributionWait.getCb().getType());
-  if (totalContributionTiles > contributionCBType.getTotalElements()) {
-    return failure();
-  }
-
-  Location loc = loop.getLoc();
-  CBReserveOp outputReserve = accumulator.reserve;
-  // The output reserve must dominate both the generated compute output view and
-  // the tile stores that reuse its explicit DST indices.
-  if (!outputReserve->isBeforeInBlock(loop)) {
-    rewriter.moveOpBefore(outputReserve, loop);
-  }
-
-  rewriter.setInsertionPoint(loop);
-  IntegerAttr totalTilesAttr =
-      rewriter.getI64IntegerAttr(totalContributionTiles);
-  RankedTensorType coalescedType =
-      buildCoalescedContributionType(contributionType, tripCountValue);
-  CBWaitOp coalescedWait = CBWaitOp::create(
-      rewriter, loc, coalescedType, contributionWait.getCb(), totalTilesAttr);
-  AttachCBOp coalescedContribution =
-      AttachCBOp::create(rewriter, loc, coalescedType,
-                         coalescedWait.getResult(), contributionWait.getCb());
-
-  // The compute output operand is a tensor view of the reserved output dataflow
-  // buffer. The placeholder tensor has no data dependence; it only supplies the
-  // tensor type needed by AttachCBOp.
-  Value outputInit =
-      tensor::EmptyOp::create(rewriter, loc, state.tensorType.getShape(),
-                              state.tensorType.getElementType());
-  Value output = AttachCBOp::create(rewriter, loc, state.tensorType, outputInit,
-                                    outputReserve.getCb());
-
-  SmallVector<Attribute> indexingMaps = buildDstReductionIndexingMaps(
-      rewriter.getContext(), state.tensorType.getRank());
-  SmallVector<Attribute> iteratorTypes =
-      buildDstReductionIteratorTypes(rewriter, state.tensorType.getRank());
-
-  // Input 0 is the initial accumulator tile, input 1 is the contribution tile
-  // for the current reduction iteration, and output 0 is the reserved DST slot.
-  auto compute = ComputeOp::create(
-      rewriter, loc, TypeRange{state.tensorType},
-      ValueRange{state.initialValue, coalescedContribution.getResult()},
-      ValueRange{output}, rewriter.getArrayAttr(indexingMaps),
-      rewriter.getArrayAttr(iteratorTypes));
-
-  Block *body = rewriter.createBlock(&compute.getBody());
-  Type tileType = state.tensorType.getElementType();
-  body->addArgument(tileType, loc);
-  body->addArgument(tileType, loc);
-  body->addArgument(tileType, loc);
-
-  rewriter.setInsertionPointToStart(body);
-  SmallVector<Value> outputIndices;
-  for (int64_t dim = 0; dim < state.tensorType.getRank(); ++dim) {
-    outputIndices.push_back(
-        IterIndexOp::create(rewriter, loc, rewriter.getI64IntegerAttr(dim)));
-  }
-
-  // TileAccumulateAddOp leaves the result in DST; the store records the final
-  // output location without releasing DST between reduction iterations.
-  auto accumulated = createTileOpWithPlaceholderDstIndex<TileAccumulateAddOp>(
-      rewriter, loc, body->getArgument(0), body->getArgument(1));
-  createTileOpWithPlaceholderDstIndex<TileStoreOp>(
-      rewriter, loc, accumulated.getResult(), outputReserve.getResult(),
-      outputIndices);
-  YieldOp::create(rewriter, loc);
-
-  rewriter.setInsertionPointAfter(compute);
-  // The original per-iteration pops disappear with the loop, so the coalesced
-  // wait needs one matching pop after compute consumes all contribution tiles.
-  CBPopOp::create(rewriter, loc, contributionWait.getCb(), totalTilesAttr);
-
-  // The new compute writes the original final store target, and the loop body
-  // with its local wait/attach/add has been replaced completely.
-  rewriter.eraseOp(accumulator.finalStore);
-  for (AttachCBOp attach : accumulator.deadReserveAttachOps) {
-    rewriter.eraseOp(attach);
-  }
-  rewriter.eraseOp(loop);
-  return success();
-}
 
 // Collects tensor loop-carried values and records whether each one matches the
 // additive recurrence form used by the accumulation-specific lowering.
@@ -580,8 +311,9 @@ static LogicalResult materializeLoopState(scf::ForOp loop,
   // The DST strategy replaces the whole loop with one reduction compute.
   // Mixed loop-carried state needs the existing per-iteration materialization
   // to preserve ordering with non-accumulator updates.
-  if (states.size() == 1 && succeeded(tryMaterializeDstAccumulatingCompute(
-                                loop, states.front(), rewriter))) {
+  if (states.size() == 1 && states.front().accumulator &&
+      succeeded(lowerTensorAccumulationToDst(*states.front().accumulator, loop,
+                                             rewriter))) {
     return success();
   }
 

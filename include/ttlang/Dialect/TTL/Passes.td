@@ -236,6 +236,34 @@ def TTLFormAccumulationScopes
   ];
 }
 
+def TTLLowerAccumulationScopes
+    : Pass<"ttl-lower-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Lower semantic accumulation scopes";
+  let description = [{
+    Lowers `ttl.accumulation_scope` regions to a concrete storage strategy.
+    The initial tensor implementation supports single-output additive tensor
+    recurrences formed by `ttl-form-accumulation-scopes`.
+
+    `strategy=auto` selects DST when the recurrence satisfies the DST legality
+    rules and otherwise uses L1 packer accumulation. `strategy=dst` requires
+    DST and emits an error when the scope is not DST-compatible.
+    `strategy=l1-pack` always uses the L1 packer strategy.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Scope lowering kind. The initial implementation supports tensor.">,
+    Option<"strategy", "strategy", "std::string", "\"auto\"",
+           "Accumulation strategy: auto, dst, or l1-pack.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";

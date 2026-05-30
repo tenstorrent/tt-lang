@@ -21,6 +21,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
+  TTLLowerAccumulationScopes.cpp
   TTLMaterializeLoopState.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp

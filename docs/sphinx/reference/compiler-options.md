@@ -143,6 +143,31 @@ The pipeline runs these passes in order:
 Each pass can also be run standalone for testing. Only passes with configurable
 options are listed; the remaining passes have no options.
 
+#### `ttl-form-accumulation-scopes`
+
+Form semantic accumulation scopes before concrete strategy selection.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"tensor"` | Scope formation kind. Supported value: `tensor`. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-form-accumulation-scopes{kind=tensor})'
+```
+
+#### `ttl-lower-accumulation-scopes`
+
+Lower semantic accumulation scopes to a concrete storage strategy.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"tensor"` | Scope lowering kind. Supported value: `tensor`. |
+| `strategy` | string | `"auto"` | Accumulation strategy. Supported values: `auto`, `dst`, `l1-pack`. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-lower-accumulation-scopes{strategy=dst})'
+```
+
 #### `ttl-insert-intermediate-dfbs`
 
 Insert compiler-allocated intermediate DFBs at fusion split points.
