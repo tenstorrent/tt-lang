@@ -90,6 +90,48 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   return success();
 }
 
+/// Return the initial mode declared by a reduction-capable `ttl.compute` when
+/// it can be lowered through packer L1 accumulation metadata. An inactive
+/// interface means the compute either is not an accumulation or requires a
+/// separate DST-only rule.
+static std::optional<AccumulationInitialMode>
+getL1AccumulationInitialMode(ComputeOp op) {
+  auto accumulation = cast<AccumulationScopeOpInterface>(op.getOperation());
+  if (!accumulation.isAccumulation()) {
+    return std::nullopt;
+  }
+
+  SmallVector<AccumulationCombiner> combiners =
+      accumulation.getAccumulationCombiners();
+  if (!llvm::all_of(combiners, [](AccumulationCombiner combiner) {
+        return combiner == AccumulationCombiner::Add;
+      })) {
+    return std::nullopt;
+  }
+
+  SmallVector<AccumulationInitialMode> initialModes =
+      accumulation.getAccumulationInitialModes();
+  if (initialModes.size() != 1) {
+    return std::nullopt;
+  }
+  return initialModes.front();
+}
+
+/// Return true when L1 packer accumulation cannot represent the compute
+/// semantics, so the reduction must keep its current DST-resident lowering.
+static bool requiresDstAccumulation(ComputeOp op) {
+  if (op.containsOp<TileAccumulateAddOp>()) {
+    return true;
+  }
+  return op.getBody()
+      .walk([](TileReduceOp reduce) {
+        return reduce.getReduceType() == ReduceType::Max
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
 /// Generate parallel-outer / reduction-inner loop structure for accumulating
 /// computes. DstSectionOp wraps the reduction loop + stores so DST persists
 /// across reduction iterations.
@@ -415,13 +457,10 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     }
 
     bool isSubblocked = op->hasAttr(kFullLinStridesAttrName);
-    bool isAccumulating = op.getBody()
-                              .walk([](Operation *inner) {
-                                return inner->hasTrait<TTLAccumulatingOpTrait>()
-                                           ? WalkResult::interrupt()
-                                           : WalkResult::advance();
-                              })
-                              .wasInterrupted();
+    std::optional<AccumulationInitialMode> l1InitialMode =
+        getL1AccumulationInitialMode(op);
+    bool mustUseDstAccumulation = requiresDstAccumulation(op);
+    bool isAccumulating = l1InitialMode.has_value() || mustUseDstAccumulation;
 
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {
@@ -470,23 +509,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
             });
       }
 
-      // DST accumulation: reorder loops (parallel-outer, reduction-inner)
-      // so DST persists across reduction iterations. Required for
-      // reduce_max because L1 accumulation (pack_reconfig_l1_acc)
-      // accumulates via addition, which is only correct for sum.
-      // TODO: reduce_max without dst-accumulation could use a compiler-
-      // introduced intermediate DFB for L1-based max accumulation.
+      // DST accumulation reorders loops so DST persists across reduction
+      // iterations. Max reductions and tile_accumulate_add have no L1 packer
+      // representation in this lowering, so they remain DST-resident
+      // independent of the reduction strategy option.
       if (isAccumulating) {
-        bool hasReduceMax =
-            op.getBody()
-                .walk([](TileReduceOp reduce) {
-                  return reduce.getReduceType() == ReduceType::Max
-                             ? WalkResult::interrupt()
-                             : WalkResult::advance();
-                })
-                .wasInterrupted();
-        bool hasAccumulateAdd = op.containsOp<TileAccumulateAddOp>();
-        if (dstAccumulation || hasReduceMax || hasAccumulateAdd) {
+        if (dstAccumulation || mustUseDstAccumulation) {
           usedDstAccumulation = true;
           return generateAccumulatingLoops(
               rewriter, loc, op, iterDomain, indexingMaps, iterTypes,
@@ -537,12 +565,11 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         int64_t stride =
             fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
         loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
-        if (iterTypes[idx].getValue() == "reduction") {
+        if (iterTypes[idx].getValue() == "reduction" && l1InitialMode) {
           loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
-          loop->setAttr(
-              kL1AccInitialAttrName,
-              AccumulationInitialModeAttr::get(
-                  loop.getContext(), AccumulationInitialMode::Overwrite));
+          loop->setAttr(kL1AccInitialAttrName,
+                        AccumulationInitialModeAttr::get(loop.getContext(),
+                                                         *l1InitialMode));
           loop->setAttr(kL1AccScopeIdAttrName,
                         rewriter.getI64IntegerAttr(*reductionScopeId));
         }
