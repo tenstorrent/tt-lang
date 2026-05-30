@@ -42,6 +42,70 @@ func.func @basic_l1_acc_loop() attributes {ttkernel.thread = #ttkernel.thread<co
 
 // -----
 
+// A statically single-trip overwrite loop never has a later pack that needs
+// L1 accumulation enabled. The pass emits only the bracketing disable guards.
+
+// CHECK-LABEL: func.func @single_trip_overwrite_no_enable
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK-NOT: arith.cmpi
+// CHECK-NOT: scf.if
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc
+func.func @single_trip_overwrite_no_enable() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %iv = %c0 to %c1 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// A statically zero-trip overwrite loop also has no pack after iteration 0.
+// The guards still bracket the scope so packer state is known after the loop.
+
+// CHECK-LABEL: func.func @zero_trip_overwrite_no_enable
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK-NOT: arith.cmpi
+// CHECK-NOT: scf.if
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc
+func.func @zero_trip_overwrite_no_enable() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %iv = %c0 to %c0 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
 // Reduction loop fallback (ttl.reduction_loop attribute) with sum reduce.
 
 // CHECK-LABEL: func.func @reduction_loop_fallback

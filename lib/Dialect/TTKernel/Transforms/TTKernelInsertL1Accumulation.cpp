@@ -70,6 +70,15 @@ static FailureOr<AccumulationInitialMode> getL1AccInitialMode(scf::ForOp loop) {
   return failure();
 }
 
+/// Return true when an overwrite-mode loop may execute iteration 1 or later.
+/// Only packs from those later iterations should accumulate onto the iteration-0
+/// baseline. A known 0- or 1-trip loop has no such pack. Unknown trip counts
+/// keep the conditional enable because runtime trip count may exceed one.
+static bool mayNeedOverwriteModeEnable(scf::ForOp loop) {
+  std::optional<llvm::APInt> tripCount = loop.getStaticTripCount();
+  return !tripCount || tripCount->ugt(1);
+}
+
 struct TTKernelInsertL1AccumulationPass
     : public impl::TTKernelInsertL1AccumulationBase<
           TTKernelInsertL1AccumulationPass> {
@@ -179,6 +188,10 @@ struct TTKernelInsertL1AccumulationPass
           builder.setInsertionPoint(loop);
           Value enableFlag = buildI32Const(builder, loop->getLoc(), 1);
           ttk::PackReconfigL1AccOp::create(builder, loop->getLoc(), enableFlag);
+        }
+
+        if (!mayNeedOverwriteModeEnable(loop)) {
+          continue;
         }
 
         // Iteration 0 creates the baseline output tile. Enable after its last
