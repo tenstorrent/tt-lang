@@ -42,6 +42,8 @@ def compile_ttl_to_ttkernel(
 
     # Build per-function passes.
     func_passes = [
+        "ttl-form-accumulation-scopes",
+        "ttl-lower-accumulation-scopes",
         "ttl-materialize-loop-state",
         "ttl-insert-intermediate-dfbs",
         "ttl-insert-copy-wait",

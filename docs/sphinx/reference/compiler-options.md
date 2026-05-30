@@ -119,6 +119,9 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 
 The pipeline runs these passes in order:
 
+- `ttl-form-accumulation-scopes` - form semantic accumulation scopes for eligible tensor recurrences
+- `ttl-lower-accumulation-scopes` - lower accumulation scopes with `strategy=auto`
+- `ttl-materialize-loop-state` - remove ranked-tensor `scf.for` iter_args
 - `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
 - `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions

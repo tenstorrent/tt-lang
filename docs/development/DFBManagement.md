@@ -13,6 +13,8 @@ The hardware supports at most 32 DFBs per node (indices 0--31). User and compile
 The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
 
 ```
+ttl-form-accumulation-scopes   (FuncOp)   Form eligible tensor accumulation scopes
+ttl-lower-accumulation-scopes  (FuncOp)   Select accumulation storage strategy
 ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
 ttl-insert-intermediate-dfbs   (FuncOp)   Create compiler-allocated DFBs
 ttl-insert-cb-sync             (FuncOp)   Insert cb_push / cb_pop

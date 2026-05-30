@@ -127,6 +127,10 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     scf::ForOp loop, unsigned resultIndex,
     TensorAccumulationReservePlacement reservePlacement,
     ArrayRef<Operation *> allowedReserveUsers) {
+  if (resultIndex >= loop.getNumResults()) {
+    return failure();
+  }
+
   auto loopResult = loop.getResult(resultIndex);
   if (!loopResult.hasOneUse()) {
     return failure();

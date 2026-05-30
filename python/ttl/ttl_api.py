@@ -1506,6 +1506,8 @@ def _compile_kernel(
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
+            "func.func(ttl-form-accumulation-scopes)",
+            "func.func(ttl-lower-accumulation-scopes)",
             "func.func(ttl-materialize-loop-state)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
