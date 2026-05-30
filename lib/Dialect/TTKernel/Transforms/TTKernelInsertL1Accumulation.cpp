@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -16,6 +16,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 
 #define DEBUG_TYPE "ttkernel-insert-l1-accumulation"
 
@@ -34,6 +36,12 @@ namespace ttcore = mlir::tt::ttcore;
 static Value buildI32Const(OpBuilder &builder, Location loc, int32_t value) {
   return arith::ConstantOp::create(builder, loc, builder.getI32Type(),
                                    builder.getI32IntegerAttr(value));
+}
+
+/// Return true when `loop` carries metadata for a packer L1 accumulation loop.
+static bool isL1AccumulationLoop(scf::ForOp loop) {
+  return loop->hasAttr(kL1AccLoopAttrName) ||
+         loop->hasAttr(kReductionLoopAttrName);
 }
 
 /// Find the innermost enclosing L1 acc or reduction loop.
@@ -56,6 +64,17 @@ static scf::ForOp findL1AccLoop(Operation *op) {
   return reductionFallback;
 }
 
+/// Return the scope id declared by the loop producer. Loops with the same id
+/// belong to one semantic accumulation scope and share one packer L1
+/// accumulation lifecycle.
+static FailureOr<int64_t> getL1AccScopeId(scf::ForOp loop) {
+  auto attr = loop->getAttrOfType<IntegerAttr>(kL1AccScopeIdAttrName);
+  if (!attr) {
+    return failure();
+  }
+  return attr.getInt();
+}
+
 /// Return the L1 initial mode declared by the loop producer. TTKernel lowering
 /// consumes this semantic contract directly instead of inferring the initial
 /// value from surrounding pack/reserve/push operations after conversion.
@@ -71,6 +90,20 @@ static FailureOr<AccumulationInitialMode> getL1AccInitialMode(scf::ForOp loop) {
     return mode;
   }
   return failure();
+}
+
+/// Verify metadata that must be supplied by TTL accumulation strategy lowering.
+static LogicalResult verifyL1AccLoopMetadata(scf::ForOp loop) {
+  if (failed(getL1AccInitialMode(loop))) {
+    return loop.emitOpError()
+           << "requires " << kL1AccInitialAttrName
+           << " overwrite or accumulate_existing metadata";
+  }
+  if (failed(getL1AccScopeId(loop))) {
+    return loop.emitOpError() << "requires " << kL1AccScopeIdAttrName
+                              << " metadata";
+  }
+  return success();
 }
 
 /// Return true when an overwrite-mode loop may execute iteration 1 or later.
@@ -132,6 +165,152 @@ static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
   return result;
 }
 
+struct L1AccumulationLoopGroup {
+  scf::ForOp rootLoop;
+  SmallVector<scf::ForOp> loops;
+  Operation *scopeEnd = nullptr;
+};
+
+/// Return the outermost annotated loop that participates in `scopeId`.
+/// Nested independent scopes are rejected until this lowering has an explicit
+/// model for saving and restoring packer L1 accumulation state.
+// TODO(ttl): Add scoped packer L1 accumulation state if strategy lowering
+// starts producing nested independent accumulation scopes.
+static FailureOr<scf::ForOp>
+findScopeRoot(scf::ForOp loop, int64_t scopeId) {
+  scf::ForOp rootLoop = loop;
+  for (Operation *parent = loop->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    auto parentLoop = dyn_cast<scf::ForOp>(parent);
+    if (!parentLoop || !isL1AccumulationLoop(parentLoop)) {
+      continue;
+    }
+    if (failed(verifyL1AccLoopMetadata(parentLoop))) {
+      return failure();
+    }
+    FailureOr<int64_t> parentScopeId = getL1AccScopeId(parentLoop);
+    assert(succeeded(parentScopeId) && "verified above");
+    if (*parentScopeId != scopeId) {
+      loop.emitOpError()
+          << "nested L1 accumulation loops require matching "
+          << kL1AccScopeIdAttrName << " metadata";
+      return failure();
+    }
+    rootLoop = parentLoop;
+  }
+  return rootLoop;
+}
+
+/// Return true when `loop` is an annotated loop in `scopeId`.
+static bool isLoopInScope(scf::ForOp loop, int64_t scopeId) {
+  FailureOr<int64_t> loopScopeId = getL1AccScopeId(loop);
+  return succeeded(loopScopeId) && *loopScopeId == scopeId &&
+         isL1AccumulationLoop(loop);
+}
+
+/// Collect loops by explicit scope id. The scope id encodes semantic grouping;
+/// the remaining sibling scan only finds adjacent loops with the same id and
+/// the dataflow-buffer push that bounds packer L1 accumulation.
+static FailureOr<SmallVector<L1AccumulationLoopGroup>>
+collectL1AccumulationLoopGroups(
+    ArrayRef<scf::ForOp> l1AccLoops,
+    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop) {
+  SmallVector<L1AccumulationLoopGroup> groups;
+  llvm::SmallDenseSet<Operation *> assignedLoops;
+  llvm::SmallDenseSet<Operation *> candidateLoops;
+  for (scf::ForOp loop : l1AccLoops) {
+    candidateLoops.insert(loop.getOperation());
+  }
+
+  for (scf::ForOp loop : l1AccLoops) {
+    if (!enablePointPerLoop.count(loop.getOperation()) ||
+        assignedLoops.contains(loop.getOperation())) {
+      continue;
+    }
+
+    FailureOr<int64_t> scopeId = getL1AccScopeId(loop);
+    if (failed(scopeId)) {
+      loop.emitOpError() << "requires " << kL1AccScopeIdAttrName
+                         << " metadata";
+      return failure();
+    }
+
+    FailureOr<scf::ForOp> rootLoop = findScopeRoot(loop, *scopeId);
+    if (failed(rootLoop)) {
+      return failure();
+    }
+
+    L1AccumulationLoopGroup group;
+    group.rootLoop = *rootLoop;
+    group.scopeEnd = group.rootLoop;
+    group.loops.push_back(loop);
+    assignedLoops.insert(loop.getOperation());
+
+    llvm::SmallDenseSet<Operation *> groupRootLoops;
+    groupRootLoops.insert(group.rootLoop.getOperation());
+
+    for (Operation *operation = group.rootLoop->getNextNode(); operation;
+         operation = operation->getNextNode()) {
+      if (isa<ttk::CBPushBackOp, ttk::CBReserveBackOp>(operation)) {
+        break;
+      }
+
+      auto siblingLoop = dyn_cast<scf::ForOp>(operation);
+      if (!siblingLoop) {
+        continue;
+      }
+      if (!isL1AccumulationLoop(siblingLoop)) {
+        continue;
+      }
+
+      if (failed(verifyL1AccLoopMetadata(siblingLoop))) {
+        return failure();
+      }
+      FailureOr<int64_t> siblingScopeId = getL1AccScopeId(siblingLoop);
+      assert(succeeded(siblingScopeId) && "verified above");
+      if (*siblingScopeId != *scopeId) {
+        break;
+      }
+
+      groupRootLoops.insert(siblingLoop.getOperation());
+      if (candidateLoops.contains(siblingLoop.getOperation()) &&
+          !assignedLoops.contains(siblingLoop.getOperation()) &&
+          enablePointPerLoop.count(siblingLoop.getOperation())) {
+        group.loops.push_back(siblingLoop);
+        assignedLoops.insert(siblingLoop.getOperation());
+      }
+    }
+
+    for (Operation *operation = group.rootLoop->getNextNode(); operation;
+         operation = operation->getNextNode()) {
+      if (isa<ttk::CBPushBackOp>(operation)) {
+        group.scopeEnd = operation;
+        continue;
+      }
+      if (isa<ttk::CBReserveBackOp>(operation)) {
+        break;
+      }
+
+      auto siblingLoop = dyn_cast<scf::ForOp>(operation);
+      if (!siblingLoop) {
+        continue;
+      }
+      if (groupRootLoops.contains(siblingLoop.getOperation())) {
+        group.scopeEnd = operation;
+        continue;
+      }
+      if (isL1AccumulationLoop(siblingLoop) &&
+          !isLoopInScope(siblingLoop, *scopeId)) {
+        break;
+      }
+    }
+
+    groups.push_back(std::move(group));
+  }
+
+  return groups;
+}
+
 struct TTKernelInsertL1AccumulationPass
     : public impl::TTKernelInsertL1AccumulationBase<
           TTKernelInsertL1AccumulationPass> {
@@ -140,7 +319,7 @@ struct TTKernelInsertL1AccumulationPass
     bool hadFailure = false;
 
     // Walk from TileRegsAcquireOp upward to find annotated loops; only loops
-    // with actual pack activity need L1 accumulation guards.
+    // with actual pack activity need packer L1 accumulation reconfiguration.
     SmallVector<scf::ForOp> l1AccLoops;
     llvm::SmallDenseSet<Operation *> visitedLoops;
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
@@ -161,15 +340,13 @@ struct TTKernelInsertL1AccumulationPass
       if (alreadyProcessed) {
         return;
       }
-      if (failed(getL1AccInitialMode(loop))) {
-        loop.emitOpError() << "requires " << kL1AccInitialAttrName
-                           << " overwrite or accumulate_existing metadata";
+      if (failed(verifyL1AccLoopMetadata(loop))) {
         hadFailure = true;
         return;
       }
       // Packer L1 accumulation adds the packed tile into the existing L1 value.
       // Max reduction packs must write the max result instead, so this pass
-      // leaves those loops without L1-accumulation guards.
+      // leaves those loops without packer L1 accumulation reconfiguration.
       bool hasMaxReduce = false;
       loop->walk([&](ttk::ReduceTileOp reduceOp) {
         if (reduceOp.getReduceType() == ttk::ReduceType::Max) {
@@ -206,11 +383,15 @@ struct TTKernelInsertL1AccumulationPass
       }
     }
 
-    // Group consecutive sibling loops that pack to the same dataflow buffer.
-    auto groups = collectLoopGroups(l1AccLoops, l1AccEnablePoint);
+    FailureOr<SmallVector<L1AccumulationLoopGroup>> groups =
+        collectL1AccumulationLoopGroups(l1AccLoops, l1AccEnablePoint);
+    if (failed(groups)) {
+      signalPassFailure();
+      return;
+    }
 
-    // Emit guards per group.
-    for (auto &group : groups) {
+    // Emit packer L1 accumulation reconfiguration for each semantic scope.
+    for (auto &group : *groups) {
       OpBuilder builder(group.rootLoop->getContext());
       Location disableLoc = group.rootLoop->getLoc();
 

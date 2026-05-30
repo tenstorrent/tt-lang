@@ -175,7 +175,8 @@ static void eraseAccumulationScopeWrapper(AccumulationScopeOp scope,
 
 /// Verify the scope policy accepted by the initial DFB L1 lowering strategy.
 /// DFB accumulation has no explicit initial tensor: overwrite and
-/// accumulate-existing modes are implemented by TTKernel L1 packer guards.
+/// accumulate-existing modes are implemented by TTKernel L1 packer
+/// reconfiguration.
 static LogicalResult verifyAddDFBScope(AccumulationScopeOp scope) {
   if (scope.getOutputs().empty()) {
     return scope.emitOpError("DFB lowering requires at least one output");

@@ -35,7 +35,7 @@ func.func @basic_l1_acc_loop() attributes {ttkernel.thread = #ttkernel.thread<co
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -67,7 +67,7 @@ func.func @single_trip_overwrite_no_enable() attributes {ttkernel.thread = #ttke
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -99,7 +99,7 @@ func.func @zero_trip_overwrite_no_enable() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -130,7 +130,7 @@ func.func @reduction_loop_fallback() attributes {ttkernel.thread = #ttkernel.thr
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.l1_acc_scope_id = 0 : i64}
   return
 }
 
@@ -154,7 +154,7 @@ func.func @max_reduce_no_l1_acc() attributes {ttkernel.thread = #ttkernel.thread
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.l1_acc_scope_id = 0 : i64}
   return
 }
 
@@ -214,7 +214,7 @@ func.func @subblocked_loop() attributes {ttkernel.thread = #ttkernel.thread<comp
       ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
     }
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   return
 }
 
@@ -232,7 +232,7 @@ func.func @l1_acc_loop_no_sync() attributes {ttkernel.thread = #ttkernel.thread<
   %c4_i32 = arith.constant 4 : i32
   scf.for %iv = %c0 to %c4 step %c1 {
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   return
 }
 
@@ -271,7 +271,7 @@ func.func @l1_acc_inside_outer_loop() attributes {ttkernel.thread = #ttkernel.th
       ttkernel.tile_regs_wait() : () -> ()
       ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
-    } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+    } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
     ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   }
   return
@@ -307,7 +307,7 @@ func.func @multi_push_after_loop() attributes {ttkernel.thread = #ttkernel.threa
     ttkernel.pack_tile(%c0, %cb0, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.pack_tile(%c0, %cb1, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb0, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb1, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
@@ -344,8 +344,8 @@ func.func @nested_l1_acc_loops() attributes {ttkernel.thread = #ttkernel.thread<
       ttkernel.tile_regs_wait() : () -> ()
       ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
-    } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+    } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   return
 }
 
@@ -380,8 +380,8 @@ func.func @nested_reduction_loops() attributes {ttkernel.thread = #ttkernel.thre
       ttkernel.tile_regs_wait() : () -> ()
       ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
-    } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
-  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
+    } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.l1_acc_scope_id = 0 : i64}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.l1_acc_scope_id = 0 : i64}
   return
 }
 
@@ -433,14 +433,14 @@ func.func @consecutive_l1_acc_loops() attributes {ttkernel.thread = #ttkernel.th
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   scf.for %iv2 = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -487,7 +487,7 @@ func.func @two_outputs_one_loop() attributes {ttkernel.thread = #ttkernel.thread
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb1, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb0, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb1, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
@@ -525,7 +525,7 @@ func.func @already_guarded() attributes {ttkernel.thread = #ttkernel.thread<comp
     scf.if %cmp {
       ttkernel.pack_reconfig_l1_acc(%c1_i32) : (i32) -> ()
     }
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.pack_reconfig_l1_acc(%c0_i32) : (i32) -> ()
   return
@@ -564,7 +564,7 @@ func.func @different_cb_siblings() attributes {ttkernel.thread = #ttkernel.threa
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb0, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 1 : i64}
   ttkernel.cb_push_back(%cb0, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   scf.for %iv2 = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
@@ -572,7 +572,7 @@ func.func @different_cb_siblings() attributes {ttkernel.thread = #ttkernel.threa
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb1, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb1, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -614,7 +614,7 @@ func.func @consecutive_with_init_between() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   // init_short between the two loops (InsertInits emits init_short when
   // sibling loops share an output CB, to avoid clobbering PACK config).
   "ttkernel.mm_block_init_short"(%cb_in1, %cb_in1, %c0_i32, %c1_i32, %c1_i32, %c1_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32, i32, i32, i32) -> ()
@@ -625,7 +625,7 @@ func.func @consecutive_with_init_between() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -678,7 +678,7 @@ func.func @prior_value_then_l1_acc_loop() attributes {ttkernel.thread = #ttkerne
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -725,7 +725,7 @@ func.func @prior_pack_different_cb_ignored() attributes {ttkernel.thread = #ttke
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -773,7 +773,7 @@ func.func @cb_reserve_back_blocks_prior_value_detection() attributes {ttkernel.t
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -825,14 +825,14 @@ func.func @prior_value_root_then_plain_acc_sibling() attributes {ttkernel.thread
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   scf.for %iv2 = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -857,7 +857,7 @@ func.func @prior_value_root_then_plain_acc_sibling() attributes {ttkernel.thread
 // CHECK-NOT: scf.if
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c0_i32
-// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // CHECK: ttkernel.cb_push_back
 // CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
@@ -882,7 +882,7 @@ func.func @prior_pack_inside_tile_loop_wrapper() attributes {ttkernel.thread = #
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -928,7 +928,7 @@ func.func @prior_pack_inside_scf_if_not_treated_as_prior(%cond: i1) attributes {
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -977,7 +977,7 @@ func.func @multi_output_partial_prior_falls_back_to_standard() attributes {ttker
     ttkernel.pack_tile(%c0, %cb_a, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
@@ -1028,7 +1028,7 @@ func.func @multi_output_full_prior_enables_pre_group() attributes {ttkernel.thre
     ttkernel.pack_tile(%c0, %cb_a, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
@@ -1045,7 +1045,7 @@ func.func @multi_output_full_prior_enables_pre_group() attributes {ttkernel.thre
 // CHECK-LABEL: func.func @prior_reduction_loop_boundary
 // CHECK: scf.for
 // CHECK:   ttkernel.pack_tile
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop
 // CHECK: ttkernel.cb_push_back
 // CHECK: ttkernel.cb_reserve_back
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
@@ -1072,7 +1072,7 @@ func.func @prior_reduction_loop_boundary() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.reduction_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   scf.for %iv1 = %c0 to %c4 step %c1 {
@@ -1081,17 +1081,15 @@ func.func @prior_reduction_loop_boundary() attributes {ttkernel.thread = #ttkern
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 1 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
 
 // -----
 
-// A pack inside an scf.while triggers the conservative fallback: the walk
-// does not reason about the while's condition or iteration count, so any
-// pack into the L1-acc loop's pack CB inside the while body makes it a
-// boundary. The standard pattern must be preserved.
+// A pack inside an scf.while is not a valid seed for L1 accumulation in this
+// test, represented by overwrite-mode metadata on the accumulation loop.
 
 // CHECK-LABEL: func.func @prior_pack_inside_scf_while_not_treated_as_prior
 // CHECK: scf.while
@@ -1136,17 +1134,17 @@ func.func @prior_pack_inside_scf_while_not_treated_as_prior(%init: i32) attribut
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
 
 // -----
 
-// A non-annotated scf.for that packs only to a different CB sits between
-// a real prior pack into our CB and the L1-acc loop. The backward walk
-// must skip over the unrelated for (it does not touch our CB) and still
-// find the earlier prior pack.
+// A non-annotated scf.for that packs only to a different dataflow buffer sits
+// between the explicit seed pack and the L1 accumulation loop. The loop
+// metadata, not the intervening operation structure, selects accumulate-existing
+// mode.
 
 // CHECK-LABEL: func.func @unrelated_scf_for_skipped_to_prior_pack
 // CHECK: ttkernel.pack_tile(%{{.*}}, %[[CB_OUT:.*]],
@@ -1162,7 +1160,7 @@ func.func @prior_pack_inside_scf_while_not_treated_as_prior(%init: i32) attribut
 // CHECK-NOT: scf.if
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c0_i32
-// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // CHECK: ttkernel.cb_push_back
 // CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
@@ -1182,7 +1180,7 @@ func.func @unrelated_scf_for_skipped_to_prior_pack() attributes {ttkernel.thread
   ttkernel.tile_regs_wait() : () -> ()
   ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
   ttkernel.tile_regs_release() : () -> ()
-  // Unrelated non-annotated scf.for packing cb_other — walk must skip over.
+  // Unrelated non-annotated scf.for packing cb_other.
   scf.for %iv0 = %c0 to %c1 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
@@ -1197,17 +1195,16 @@ func.func @unrelated_scf_for_skipped_to_prior_pack() attributes {ttkernel.thread
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
 
 // -----
 
-// An scf.if whose body packs only to a different CB sits between a real
-// prior pack into our CB and the L1-acc loop. The conservative fallback
-// must let the walk skip over the if (its body does not touch our CB)
-// and still find the earlier prior pack.
+// An scf.if whose body packs only to a different dataflow buffer sits between
+// the explicit seed pack and the L1 accumulation loop. The loop metadata, not
+// the intervening operation structure, selects accumulate-existing mode.
 
 // CHECK-LABEL: func.func @unrelated_scf_if_skipped_to_prior_pack
 // CHECK: ttkernel.pack_tile(%{{.*}}, %[[CB_OUT:.*]],
@@ -1223,7 +1220,7 @@ func.func @unrelated_scf_for_skipped_to_prior_pack() attributes {ttkernel.thread
 // CHECK-NOT: scf.if
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c0_i32
-// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // CHECK: ttkernel.cb_push_back
 // CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
@@ -1243,7 +1240,7 @@ func.func @unrelated_scf_if_skipped_to_prior_pack(%cond: i1) attributes {ttkerne
   ttkernel.tile_regs_wait() : () -> ()
   ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
   ttkernel.tile_regs_release() : () -> ()
-  // Unrelated scf.if packing cb_other — walk must skip over.
+  // Unrelated scf.if packing cb_other.
   scf.if %cond {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
@@ -1258,18 +1255,16 @@ func.func @unrelated_scf_if_skipped_to_prior_pack(%cond: i1) attributes {ttkerne
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
 
 // -----
 
-// A non-annotated scf.for with lb == ub packs to the L1-acc loop's CB but
-// never executes, so its pack does not reach L1. The walk must not credit
-// such a for as a prior-value contributor; the lowering falls back to the
-// no-prior-pack pattern (DISABLE before, per-iteration ENABLE, DISABLE
-// after).
+// A non-annotated scf.for with lb == ub packs to the L1 accumulation loop's
+// dataflow buffer but never executes. The overwrite-mode metadata selects the
+// standard sequence: disable before, per-iteration enable, disable after.
 
 // CHECK-LABEL: func.func @zero_trip_wrapper_not_credited
 // CHECK: scf.for %{{.*}} = %[[LBU:.*]] to %[[LBU]]
@@ -1307,7 +1302,7 @@ func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttker
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
@@ -1316,8 +1311,8 @@ func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttker
 
 // Two annotated L1-acc loops sharing one CB reservation with a bare
 // non-annotated scf.for between them that packs nothing to the shared
-// CB. `collectLoopGroups` must span the bare for and place both
-// annotated loops in one group; the bare for is transparent.
+// DFB. The shared scope id makes the bare loop transparent to semantic
+// grouping.
 
 // CHECK-LABEL: func.func @annotated_siblings_split_by_bare_for
 // CHECK: ttkernel.cb_reserve_back
@@ -1327,7 +1322,7 @@ func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttker
 // CHECK:   ttkernel.pack_tile
 // CHECK:   scf.if
 // CHECK:     ttkernel.pack_reconfig_l1_acc
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
 // Bare non-annotated scf.for — transparent to the group.
 // CHECK: scf.for
@@ -1338,7 +1333,7 @@ func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttker
 // CHECK:   ttkernel.pack_tile
 // CHECK:   scf.if
 // CHECK:     ttkernel.pack_reconfig_l1_acc
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // CHECK: ttkernel.cb_push_back
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
 func.func @annotated_siblings_split_by_bare_for() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
@@ -1355,32 +1350,28 @@ func.func @annotated_siblings_split_by_bare_for() attributes {ttkernel.thread = 
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
-  // Bare non-annotated scf.for with no packs — splits A and B into
-  // separate loop groups.
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+  // Bare non-annotated scf.for with no packs.
   scf.for %ivU = %c0 to %c1 step %c1 {
   }
-  // Annotated loop B: should accumulate onto A's L1 value in the same
-  // reservation, but overwrites it on iteration 0.
+  // Annotated loop B accumulates onto A's L1 value because both loops have the
+  // same scope id.
   scf.for %ivB = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
 
 // -----
 
-// Loop accumulates into two CBs; each CB has its own pre-loop init pack
-// from its own reservation. Scanning backward from the loop hits cb_b's
-// init pack (covers cb_b), then cb_b's reserve (already covered — must be
-// skipped, not treated as a boundary), then cb_a's init pack (covers
-// cb_a). With both CBs covered, the pre-loop reconfig must be ENABLE so
-// iter 0 accumulates onto the init values for both slots.
+// Loop accumulates into two dataflow buffers, each with a pre-loop init pack.
+// Accumulate-existing metadata makes the pre-loop reconfiguration enable L1
+// accumulation so iteration 0 accumulates onto both init values.
 
 // CHECK-LABEL: func.func @multi_cb_init_then_l1_acc
 // CHECK: ttkernel.pack_tile(%{{.*}}, %[[CB_A:.*]],
@@ -1429,7 +1420,7 @@ func.func @multi_cb_init_then_l1_acc() attributes {ttkernel.thread = #ttkernel.t
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return

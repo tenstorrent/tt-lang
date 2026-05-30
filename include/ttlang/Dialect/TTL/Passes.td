@@ -247,7 +247,7 @@ def TTLLowerAccumulationScopes
     recurrences formed by `ttl-form-accumulation-scopes`. DFB mode lowers
     user-written accumulating stores to L1 packer metadata.
     L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
-    metadata for TTKernel guard placement.
+    metadata for TTKernel packer reconfiguration placement.
 
     `strategy=auto` selects DST when the recurrence satisfies the DST legality
     rules and otherwise uses L1 packer accumulation. `strategy=dst` requires
@@ -294,17 +294,18 @@ def TTLConvertTTLToTTKernel
 
 def TTKernelInsertL1Accumulation
     : Pass<"ttkernel-insert-l1-accumulation", "::mlir::ModuleOp"> {
-  let summary = "Insert L1 accumulation guards for reduction loops";
+  let summary = "Insert packer L1 accumulation reconfiguration";
   let description = [{
-    Inserts `pack_reconfig_l1_acc` guards so that pack operations inside
-    annotated loops accumulate into L1 instead of overwriting. Max-reduce
-    loops are excluded (max is not additive).
+    Inserts `pack_reconfig_l1_acc` operations so that pack operations inside
+    annotated loops accumulate into L1 instead of overwriting. Max-reduce loops
+    are excluded because max is not additive.
     Annotated additive loops must pack to output formats supported by packer
     L1 accumulation: f32, f16, bf16, si32, or u8.
 
-    Loops are grouped into accumulation scopes: consecutive sibling loops
-    that pack to the same dataflow buffer share a single disable pair. Nested
-    annotated loops are folded into the outermost ancestor. Each group gets:
+    Loops are grouped into accumulation scopes by `ttl.l1_acc_scope_id`;
+    the pass does not infer scope identity from neighboring TTKernel
+    operations. Nested annotated loops are folded into the outermost ancestor
+    with the same scope id. Each group gets:
     - `pack_reconfig_l1_acc(0)` before the first loop when
       `ttl.l1_acc_initial=overwrite`, or `pack_reconfig_l1_acc(1)` when
       `ttl.l1_acc_initial=accumulate_existing`.
@@ -318,8 +319,8 @@ def TTKernelInsertL1Accumulation
     Loops are identified by the `ttl.l1_acc_loop` (user-written) or
     `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
     ops, with `ttl.l1_acc_loop` taking precedence. Each loop must carry
-    `ttl.l1_acc_initial` so this pass does not infer initial-value semantics
-    from neighboring TTKernel operations.
+    `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id` so this pass does not infer
+    semantic accumulation state from neighboring TTKernel operations.
 
   }];
 

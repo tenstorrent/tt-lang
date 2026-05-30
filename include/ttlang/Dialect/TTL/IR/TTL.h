@@ -109,8 +109,9 @@ constexpr llvm::StringLiteral kL1AccLoopAttrName("ttl.l1_acc_loop");
 constexpr llvm::StringLiteral kL1AccInitialAttrName("ttl.l1_acc_initial");
 
 /// Integer identifier shared by loops produced from one semantic accumulation
-/// scope. TTKernel lowering uses this to place packer L1 accumulation guards
-/// without rediscovering scope identity from neighboring operations.
+/// scope. TTKernel lowering uses this to place packer L1 accumulation
+/// reconfiguration without rediscovering scope identity from neighboring
+/// operations.
 constexpr llvm::StringLiteral kL1AccScopeIdAttrName("ttl.l1_acc_scope_id");
 
 /// Output CB index for tile ops.

@@ -43,7 +43,7 @@ The compiler surface covers three accumulation sources:
   CB, then bracketed by the same `pack_reconfig_l1_acc` calls.
 
 - The store-then-accumulate pattern (`out_blk.store(v); for K-1: out_blk
-  += ...`) is lowered via L1 acc with a modified guard sequence: the
+  += ...`) is lowered via L1 acc with a modified reconfiguration sequence: the
   pre-group reconfig enables L1 acc so iteration 0 accumulates onto the
   prior-pack value rather than overwriting it. This is represented before
   TTKernel lowering by `ttl.l1_acc_initial = accumulate_existing` on the
@@ -53,7 +53,7 @@ The rest of this document details each piece: loop-carried tensor state
 elimination (`ttl-materialize-loop-state`), `DstSectionOp` as the IR
 primitive that keeps DST live, the choice between DST and L1
 accumulation, the emitted loop structure, per-op init insertion, and
-the L1-acc guard placement (standard and prior-value variants).
+the L1-acc reconfiguration placement (standard and prior-value variants).
 
 ## Loop-carried tensor state (`ttl-materialize-loop-state`)
 
@@ -263,18 +263,20 @@ for each dim (declaration order):
     }
 ```
 
-Reduction loops are annotated with `ttl.reduction_loop`.
-`TTKernelInsertL1Accumulation` inserts the guard after
-`tile_regs_acquire` inside reduction loops.
+Reduction loops are annotated with `ttl.reduction_loop`,
+`ttl.l1_acc_initial`, and `ttl.l1_acc_scope_id`.
+`TTKernelInsertL1Accumulation` consumes that metadata after conversion to
+place packer L1 accumulation reconfiguration.
 
-### Guard placement around L1 accumulation loops
+### Reconfiguration placement around L1 accumulation loops
 
-`TTKernelInsertL1Accumulation` brackets each loop group (consecutive
-sibling loops sharing a pack CB, collected by `collectLoopGroups`) with
-`pack_reconfig_l1_acc` calls. The standard sequence disables L1 acc
-before the group, conditionally enables it inside the first iteration's
-last pack so subsequent iterations accumulate, and disables it again
-after the group:
+`TTKernelInsertL1Accumulation` brackets each semantic scope group with
+`pack_reconfig_l1_acc` calls. Scope groups are formed from
+`ttl.l1_acc_scope_id`; the pass no longer infers semantic grouping from
+shared pack dataflow buffers. The standard overwrite sequence disables
+L1 accumulation before the group, conditionally enables it after the
+first iteration's last pack so subsequent iterations accumulate, and
+disables it again after the group:
 
 ```
 pack_reconfig_l1_acc(0)
@@ -284,11 +286,11 @@ for iv = lb..ub:
 pack_reconfig_l1_acc(0)
 ```
 
-When a non-accumulating pack into the loop's pack CB precedes the loop in
-the same parent block, L1 already holds a value the loop must accumulate
-onto. The reconfig before the group becomes enable, and the
-per-iteration conditional enable on the root loop is omitted because
-every iteration must accumulate from iteration 0 onward:
+When `ttl.l1_acc_initial = accumulate_existing`, lowering has already
+proved that L1 holds the initial value for the scope. The reconfiguration
+before the group enables L1 accumulation, and the per-iteration
+conditional enable on the root loop is omitted because every iteration
+must accumulate from iteration 0 onward:
 
 ```
 pack_tile(...)                  // prior pack runs with L1 acc disabled

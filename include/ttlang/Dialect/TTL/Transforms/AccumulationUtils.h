@@ -73,7 +73,7 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 
 /// Lower a matched additive tensor recurrence to one initial output store plus
 /// per-iteration accumulating stores. The generated loop is annotated for L1
-/// packer accumulation guard insertion.
+/// packer accumulation reconfiguration insertion.
 LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
                                               scf::ForOp loop,
                                               int64_t scopeId,

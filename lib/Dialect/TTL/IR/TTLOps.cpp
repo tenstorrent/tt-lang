@@ -406,9 +406,9 @@ static bool hasReductionIterator(mlir::tt::ttl::ComputeOp op) {
 }
 
 /// Return true when the compute body contains a top-level additive
-/// accumulation operation. Max reductions are inactive because
-/// AccumulationCombiner currently has no Max value or storage contract for max
-/// accumulation.
+/// accumulation operation.
+// TODO(ttl): Add a Max AccumulationCombiner and storage contract before
+// reporting reduce_max through AccumulationScopeOpInterface.
 static bool hasAdditiveAccumulatorBody(mlir::tt::ttl::ComputeOp op) {
   for (mlir::Operation &operation : op.getBody().front().without_terminator()) {
     if (mlir::isa<mlir::tt::ttl::TileAccumulateAddOp>(operation)) {
