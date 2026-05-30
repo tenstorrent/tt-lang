@@ -239,7 +239,10 @@ def make_layernorm_kernel(dim_tiles):
                     istd = istd_dfb.reserve()
                     istd.store(
                         ttl.math.rsqrt(
-                            var_bc * ms + ttl.block.fill(1e-6, shape=var_bc.shape)
+                            var_bc * ms
+                            + ttl.block.fill(
+                                1e-6, shape=var_bc.shape, dtype=var_bc.dtype
+                            )
                         )
                     )
                     # Pass 3: normalize + affine
@@ -371,7 +374,10 @@ def make_layernorm_kernel_explicit(dim_tiles):
                     istd = istd_dfb.reserve()
                     istd.store(
                         ttl.math.rsqrt(
-                            var_bc * ms + ttl.block.fill(1e-6, shape=var_bc.shape)
+                            var_bc * ms
+                            + ttl.block.fill(
+                                1e-6, shape=var_bc.shape, dtype=var_bc.dtype
+                            )
                         )
                     )
                     istd.push()
@@ -432,7 +438,11 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                         # Pass 1: mean via += L1 accumulation, then
                         # broadcast * ms.
                         with mean_dfb.reserve() as mean_blk:
-                            mean_blk.store(ttl.block.fill(0, shape=mean_blk.shape))
+                            mean_blk.store(
+                                ttl.block.fill(
+                                    0, shape=mean_blk.shape, dtype=mean_blk.dtype
+                                )
+                            )
                             for _ in range(dim_tiles):
                                 with x_dfb.wait() as xj:
                                     mean_blk += ttl.math.reduce_sum(xj, dims=[1])
@@ -445,7 +455,11 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                         with mean_dfb.wait() as mean_val:
                             # Pass 2: variance into istd_dfb, then rsqrt.
                             with istd_dfb.reserve() as var_blk:
-                                var_blk.store(ttl.block.fill(0, shape=var_blk.shape))
+                                var_blk.store(
+                                    ttl.block.fill(
+                                        0, shape=var_blk.shape, dtype=var_blk.dtype
+                                    )
+                                )
                                 for _ in range(dim_tiles):
                                     with x_dfb.wait() as xj:
                                         diff = xj - mean_val
@@ -458,7 +472,11 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                             var_blk, dims=[1], shape=(1, 1)
                                         )
                                         * ms
-                                        + ttl.block.fill(1e-6, shape=var_blk.shape)
+                                        + ttl.block.fill(
+                                            1e-6,
+                                            shape=var_blk.shape,
+                                            dtype=var_blk.dtype,
+                                        )
                                     )
                                 )
 
@@ -542,7 +560,11 @@ def make_layernorm_kernel_loop_carried(dim_tiles):
                                 var_blk.store(
                                     ttl.math.rsqrt(
                                         ttl.math.broadcast(var, var, dims=[1]) * ms
-                                        + ttl.math.fill(var_blk, 1e-6)
+                                        + ttl.block.fill(
+                                            1e-6,
+                                            shape=var_blk.shape,
+                                            dtype=var_blk.dtype,
+                                        )
                                     )
                                 )
 

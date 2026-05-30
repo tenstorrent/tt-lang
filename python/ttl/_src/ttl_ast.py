@@ -661,20 +661,25 @@ class TTLGenericCompiler(TTCompilerBase):
                     or self._is_ttl_block_access(node)
                 ):
                     return self._resolve_ttl_function(node, func_args, kwargs)
-                # Tensor-typed .shape: return the value's grid shape as a
-                # Python tuple of ints. Lets users write `y_blk.shape` inside
-                # @ttl.compute / @ttl.datamovement to derive shape kwargs for
-                # spec-form ops like ttl.block.broadcast(..., shape=y_blk.shape).
-                # Resolved before the chained-call and module-attribute branches
-                # so it also works on call expressions whose result is a ranked
-                # tensor. Non-tensor receivers fall through to the existing
-                # handlers and surface their normal diagnostic.
-                if not func_args and not kwargs and node.attr == "shape":
+                # Tensor-typed attributes are resolved from the SSA value type
+                # so spec-form ops can construct result types without reading a
+                # destination DFB during lowering.
+                if not func_args and not kwargs and node.attr in ("shape", "dtype"):
                     value = self.visit(node.value)
                     if value is not None and hasattr(value, "type"):
                         tensor_ty = RankedTensorType.maybe_downcast(value.type)
                         if tensor_ty is not None:
-                            return tuple(tensor_ty.shape)
+                            if node.attr == "shape":
+                                return tuple(tensor_ty.shape)
+                            tile_ty = ttcore.ir.TileType.maybe_downcast(
+                                tensor_ty.element_type
+                            )
+                            if tile_ty is not None:
+                                return ttcore.DataType(tile_ty.data_type_as_int)
+                            if tensor_ty.element_type == F32Type.get(self.ctx):
+                                return ttcore.DataType.Float32
+                            if tensor_ty.element_type == BF16Type.get(self.ctx):
+                                return ttcore.DataType.BFloat16
                 # Handle chained method calls: expr().method()
                 if isinstance(node.value, ast.Call):
                     return self._resolve_chained_method_call(node, func_args, kwargs)

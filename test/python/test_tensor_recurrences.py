@@ -12,7 +12,6 @@ exercise the `ttl-materialize-loop-state` and L1-acc-multi-CB paths
 added alongside the fix.
 """
 
-
 import pytest
 import torch
 
@@ -636,7 +635,9 @@ def _make_block_aug_in_loop_kernel():
         @ttl.compute()
         def compute():
             with out_cb.reserve() as out_blk:
-                out_blk.store(ttl.math.fill(out_blk, 0))
+                out_blk.store(
+                    ttl.block.fill(0, shape=out_blk.shape, dtype=out_blk.dtype)
+                )
                 for _ in range(N_ITERS):
                     with x_cb.wait() as xj:
                         out_blk += xj
