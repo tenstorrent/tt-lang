@@ -19,6 +19,26 @@
 
 namespace mlir::tt::ttl {
 
+/// Return the next scope id by scanning existing explicit L1 accumulation ids.
+///
+/// Scope ids are local compiler metadata. Reusing the maximum existing id plus
+/// one preserves independence when separate lowering passes annotate loops in
+/// the same function.
+int64_t getNextL1AccScopeId(Operation *root) {
+  int64_t nextScopeId = 0;
+  root->walk([&](Operation *operation) {
+    auto attr = operation->getAttrOfType<IntegerAttr>(kL1AccScopeIdAttrName);
+    if (!attr) {
+      return;
+    }
+    int64_t candidateScopeId = attr.getInt() + 1;
+    if (candidateScopeId > nextScopeId) {
+      nextScopeId = candidateScopeId;
+    }
+  });
+  return nextScopeId;
+}
+
 namespace {
 
 /// Returns the number of tiles represented by a statically ranked tensor.
@@ -361,8 +381,7 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 }
 
 LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
-                                              scf::ForOp loop,
-                                              int64_t scopeId,
+                                              scf::ForOp loop, int64_t scopeId,
                                               RewriterBase &rewriter) {
   if (match.contribution.getType() != match.tensorType ||
       loop.getNumResults() != 1 || match.resultIndex != 0) {
@@ -389,8 +408,7 @@ LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
       kL1AccInitialAttrName,
       AccumulationInitialModeAttr::get(
           rewriter.getContext(), AccumulationInitialMode::AccumulateExisting));
-  newLoop->setAttr(kL1AccScopeIdAttrName,
-                   rewriter.getI64IntegerAttr(scopeId));
+  newLoop->setAttr(kL1AccScopeIdAttrName, rewriter.getI64IntegerAttr(scopeId));
 
   Block *newBody = newLoop.getBody();
   if (!newBody->empty() && isa<scf::YieldOp>(newBody->back())) {

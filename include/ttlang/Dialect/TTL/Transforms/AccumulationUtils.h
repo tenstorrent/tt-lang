@@ -75,9 +75,14 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 /// per-iteration accumulating stores. The generated loop is annotated for L1
 /// packer accumulation reconfiguration insertion.
 LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
-                                              scf::ForOp loop,
-                                              int64_t scopeId,
+                                              scf::ForOp loop, int64_t scopeId,
                                               RewriterBase &rewriter);
+
+/// Return one more than the maximum L1 accumulation scope id under `root`.
+///
+/// Callers use this when introducing new annotated loops into IR that may
+/// already contain accumulation scopes from earlier lowering.
+int64_t getNextL1AccScopeId(Operation *root);
 
 } // namespace mlir::tt::ttl
 

@@ -95,21 +95,21 @@ static FailureOr<AccumulationInitialMode> getL1AccInitialMode(scf::ForOp loop) {
 /// Verify metadata that must be supplied by TTL accumulation strategy lowering.
 static LogicalResult verifyL1AccLoopMetadata(scf::ForOp loop) {
   if (failed(getL1AccInitialMode(loop))) {
-    return loop.emitOpError()
-           << "requires " << kL1AccInitialAttrName
-           << " overwrite or accumulate_existing metadata";
+    return loop.emitOpError() << "requires " << kL1AccInitialAttrName
+                              << " overwrite or accumulate_existing metadata";
   }
   if (failed(getL1AccScopeId(loop))) {
-    return loop.emitOpError() << "requires " << kL1AccScopeIdAttrName
-                              << " metadata";
+    return loop.emitOpError()
+           << "requires " << kL1AccScopeIdAttrName << " metadata";
   }
   return success();
 }
 
 /// Return true when an overwrite-mode loop may execute iteration 1 or later.
-/// Only packs from those later iterations should accumulate onto the iteration-0
-/// baseline. A known 0- or 1-trip loop has no such pack. Unknown trip counts
-/// keep the conditional enable because runtime trip count may exceed one.
+/// Only packs from those later iterations should accumulate onto the
+/// iteration-0 baseline. A known 0- or 1-trip loop has no such pack. Unknown
+/// trip counts keep the conditional enable because runtime trip count may
+/// exceed one.
 static bool mayNeedOverwriteModeEnable(scf::ForOp loop) {
   std::optional<llvm::APInt> tripCount = loop.getStaticTripCount();
   return !tripCount || tripCount->ugt(1);
@@ -172,12 +172,12 @@ struct L1AccumulationLoopGroup {
 };
 
 /// Return the outermost annotated loop that participates in `scopeId`.
-/// Nested independent scopes are rejected until this lowering has an explicit
-/// model for saving and restoring packer L1 accumulation state.
-// TODO(ttl): Add scoped packer L1 accumulation state if strategy lowering
-// starts producing nested independent accumulation scopes.
-static FailureOr<scf::ForOp>
-findScopeRoot(scf::ForOp loop, int64_t scopeId) {
+/// This lowering currently models one active packer L1 accumulation
+/// configuration per lexical loop nest. Nested independent scopes require
+/// explicit state transitions when entering and leaving the inner scope.
+// TODO(ttl): Model explicit packer L1 accumulation state transitions before
+// allowing nested independent scope ids.
+static FailureOr<scf::ForOp> findScopeRoot(scf::ForOp loop, int64_t scopeId) {
   scf::ForOp rootLoop = loop;
   for (Operation *parent = loop->getParentOp(); parent;
        parent = parent->getParentOp()) {
@@ -191,9 +191,8 @@ findScopeRoot(scf::ForOp loop, int64_t scopeId) {
     FailureOr<int64_t> parentScopeId = getL1AccScopeId(parentLoop);
     assert(succeeded(parentScopeId) && "verified above");
     if (*parentScopeId != scopeId) {
-      loop.emitOpError()
-          << "nested L1 accumulation loops require matching "
-          << kL1AccScopeIdAttrName << " metadata";
+      loop.emitOpError() << "nested L1 accumulation loops require matching "
+                         << kL1AccScopeIdAttrName << " metadata";
       return failure();
     }
     rootLoop = parentLoop;
@@ -230,8 +229,7 @@ collectL1AccumulationLoopGroups(
 
     FailureOr<int64_t> scopeId = getL1AccScopeId(loop);
     if (failed(scopeId)) {
-      loop.emitOpError() << "requires " << kL1AccScopeIdAttrName
-                         << " metadata";
+      loop.emitOpError() << "requires " << kL1AccScopeIdAttrName << " metadata";
       return failure();
     }
 

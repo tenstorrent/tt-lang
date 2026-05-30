@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -27,6 +28,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
+
+#include <optional>
 
 #define DEBUG_TYPE "ttl-lower-to-loops"
 
@@ -104,7 +107,7 @@ static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
     ArrayRef<Range> iterDomain, ArrayRef<AffineMap> indexingMaps,
     ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
-    ArrayRef<Value> upperBounds, ArrayRef<Value> steps) {
+    ArrayRef<Value> upperBounds, ArrayRef<Value> steps, int64_t scopeId) {
 
   // Separate parallel and reduction dim indices.
   SmallVector<unsigned> parallelDims, reductionDims;
@@ -316,6 +319,8 @@ static scf::LoopNest generateAccumulatingLoops(
               kL1AccInitialAttrName,
               AccumulationInitialModeAttr::get(
                   loop.getContext(), AccumulationInitialMode::Overwrite));
+          loop->setAttr(kL1AccScopeIdAttrName,
+                        parBuilder.getI64IntegerAttr(scopeId));
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
@@ -373,13 +378,17 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   /// Outermost tile loops from subblocked computes that need unrolling.
   /// Populated during pattern application, consumed by runOnOperation.
   SmallVector<scf::ForOp> &loopsToUnroll;
+  /// Pass-local allocator for explicit L1 accumulation scope ids.
+  int64_t &nextL1AccScopeId;
   bool dstAccumulation;
   bool useBlockMatmul;
 
   LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll,
-                      bool dstAccumulation, bool useBlockMatmul)
+                      int64_t &nextL1AccScopeId, bool dstAccumulation,
+                      bool useBlockMatmul)
       : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll),
-        dstAccumulation(dstAccumulation), useBlockMatmul(useBlockMatmul) {}
+        nextL1AccScopeId(nextL1AccScopeId), dstAccumulation(dstAccumulation),
+        useBlockMatmul(useBlockMatmul) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -417,6 +426,17 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {
       iterTypes.push_back(mlir::cast<StringAttr>(attr));
+    }
+
+    std::optional<int64_t> reductionScopeId;
+    for (StringAttr iterType : iterTypes) {
+      if (iterType.getValue() == "reduction") {
+        // All reduction loops emitted for one compute participate in the same
+        // packer L1 accumulation region. The explicit id prevents later
+        // lowering from inferring grouping from dataflow buffer placement.
+        reductionScopeId = nextL1AccScopeId++;
+        break;
+      }
     }
 
     // Block-level matmul: a single DstSectionOp with the matmul_block call,
@@ -468,9 +488,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         bool hasAccumulateAdd = op.containsOp<TileAccumulateAddOp>();
         if (dstAccumulation || hasReduceMax || hasAccumulateAdd) {
           usedDstAccumulation = true;
-          return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
-                                           indexingMaps, iterTypes, lowerBounds,
-                                           upperBounds, steps);
+          return generateAccumulatingLoops(
+              rewriter, loc, op, iterDomain, indexingMaps, iterTypes,
+              lowerBounds, upperBounds, steps, *reductionScopeId);
         }
       }
 
@@ -523,6 +543,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
               kL1AccInitialAttrName,
               AccumulationInitialModeAttr::get(
                   loop.getContext(), AccumulationInitialMode::Overwrite));
+          loop->setAttr(kL1AccScopeIdAttrName,
+                        rewriter.getI64IntegerAttr(*reductionScopeId));
         }
       }
     }
@@ -749,9 +771,11 @@ struct TTLLowerToLoopsPass
     // The pattern collects outermost tile loops from subblocked computes
     // into loopsToUnroll for step 2.
     SmallVector<scf::ForOp> loopsToUnroll;
+    int64_t nextL1AccScopeId = getNextL1AccScopeId(func);
     RewritePatternSet patterns(func.getContext());
     patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll,
-                                      dstAccumulation, useBlockMatmul);
+                                      nextL1AccScopeId, dstAccumulation,
+                                      useBlockMatmul);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();

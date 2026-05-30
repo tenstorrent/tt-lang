@@ -46,22 +46,6 @@ parseAccumulationStrategy(StringRef value) {
       .Default(failure());
 }
 
-/// Return one more than the maximum accumulation scope id under `root`.
-static int64_t getNextL1AccScopeId(Operation *root) {
-  int64_t nextScopeId = 0;
-  root->walk([&](Operation *operation) {
-    auto attr = operation->getAttrOfType<IntegerAttr>(kL1AccScopeIdAttrName);
-    if (!attr) {
-      return;
-    }
-    int64_t candidateScopeId = attr.getInt() + 1;
-    if (candidateScopeId > nextScopeId) {
-      nextScopeId = candidateScopeId;
-    }
-  });
-  return nextScopeId;
-}
-
 /// Verify the scope policy accepted by the initial tensor lowering strategy.
 static LogicalResult
 verifySingleAddExplicitTensorScope(AccumulationScopeOp scope) {
@@ -259,8 +243,7 @@ static LogicalResult lowerDFBAccumulationScope(AccumulationScopeOp scope,
   (*loop)->setAttr(kL1AccLoopAttrName, UnitAttr::get(scope.getContext()));
   (*loop)->setAttr(kL1AccInitialAttrName, AccumulationInitialModeAttr::get(
                                               scope.getContext(), initialMode));
-  (*loop)->setAttr(kL1AccScopeIdAttrName,
-                   rewriter.getI64IntegerAttr(scopeId));
+  (*loop)->setAttr(kL1AccScopeIdAttrName, rewriter.getI64IntegerAttr(scopeId));
   eraseAccumulationScopeWrapper(scope, rewriter);
   return success();
 }
@@ -331,11 +314,10 @@ struct TTLLowerAccumulationScopesPass
     for (AccumulationScopeOp scope : scopes) {
       int64_t scopeId = nextScopeId++;
       LogicalResult result =
-          kind == "tensor"
-              ? lowerTensorAccumulationScope(scope, *selectedStrategy, scopeId,
-                                             rewriter)
-              : lowerDFBAccumulationScope(scope, *selectedStrategy, scopeId,
-                                          rewriter);
+          kind == "tensor" ? lowerTensorAccumulationScope(
+                                 scope, *selectedStrategy, scopeId, rewriter)
+                           : lowerDFBAccumulationScope(scope, *selectedStrategy,
+                                                       scopeId, rewriter);
       if (failed(result)) {
         signalPassFailure();
         return;
