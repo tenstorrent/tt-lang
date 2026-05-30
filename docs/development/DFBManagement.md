@@ -126,7 +126,7 @@ The compiler does not currently auto-split multi-consumer DFBs; users must dupli
 
 `TTLInsertIntermediateDFBs` walks all operations implementing `DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that the interface marks as requiring a CB-attached value, the pass checks whether the operand traces to an existing CB via `getAttachedCB`. If not, the pass materializes the value through a fresh DFB: `bind_cb`, `cb_reserve`, `store`, `cb_wait`, `attach_cb`. The new DFB receives the `ttl.compiler_allocated` marker attribute.
 
-`TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args. Each non-additive recurrence allocates one compiler DFB that holds the loop-carried tensor state across iterations; additive recurrences (`acc = acc + x`) bypass the helper and lower to an in-loop accumulating `ttl.store` against the final consumer's CB.
+`TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args that remain after accumulation strategy lowering. Additive recurrences (`acc = acc + x`) are formed as `ttl.accumulation_scope` earlier in the pipeline and lowered according to the selected accumulation strategy.
 
 When multiple `DFBInputOpInterface` operations consume the same non-CB-attached value, the materialization is shared -- only one DFB is created and the second consumer's operand is rewritten to the existing attached value.
 

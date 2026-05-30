@@ -125,59 +125,10 @@ def TTLMaterializeLoopState
     buffer state. The pass removes tensor results from the loop while
     preserving non-tensor iter args.
 
-    DST-compatible additive recurrences become a reduction `ttl.compute` that
-    keeps the accumulator in DST across the reduction dimension:
-    ```mlir
-    %result = scf.for %iv = %lb to %ub step %step
-        iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-      %contribution = ttl.cb_wait %in_cb : ...
-      %next = ttl.add %acc, %contribution : ...
-      scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    }
-    %reserve = ttl.cb_reserve %out_cb : ...
-    ttl.store %result, %reserve : ...
-    ```
-
-    becomes:
-    ```mlir
-    %contribution = ttl.cb_wait %in_cb {num_tiles = ...} : ...
-    %attached = ttl.attach_cb %contribution, %in_cb : ...
-    %out = ttl.attach_cb %empty, %out_cb : ...
-    ttl.compute ins(%init, %attached : ...) outs(%out : ...)
-        {iterator_types = ["parallel", "parallel", "reduction"]} {
-      ^bb0(%acc: !ttcore.tile<32x32, bf16>,
-           %contribution_tile: !ttcore.tile<32x32, bf16>,
-           %out_tile: !ttcore.tile<32x32, bf16>):
-        %next = ttl.tile_accumulate_add %acc, %contribution_tile ... : ...
-        ttl.tile_store %next, %reserve[...] : ...
-        ttl.yield
-    }
-    ttl.cb_pop %in_cb {num_tiles = ...} : ...
-    ```
-
-    Additive recurrences that do not satisfy the DST strategy preconditions use
-    an accumulation store:
-    ```mlir
-    %result = scf.for %iv = %lb to %ub step %step
-        iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-      %next = ttl.add %acc, %contribution : ...
-      scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    }
-    %reserve = ttl.cb_reserve %out_cb : ...
-    ttl.store %result, %reserve : ...
-    ```
-
-    becomes:
-    ```mlir
-    %reserve = ttl.cb_reserve %out_cb : ...
-    ttl.store %init, %reserve : ...
-    scf.for %iv = %lb to %ub step %step {
-      ttl.store %contribution, %reserve {accumulate} : ...
-      scf.yield
-    }
-    ```
-
-    Other tensor recurrences use compiler-allocated dataflow buffer state:
+    Additive tensor recurrences are handled earlier by
+    `ttl-form-accumulation-scopes` and `ttl-lower-accumulation-scopes`.
+    Any tensor recurrence that reaches this pass uses compiler-allocated
+    dataflow buffer state:
     ```mlir
     %state = scf.for %iv = %lb to %ub step %step
         iter_args(%arg = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
