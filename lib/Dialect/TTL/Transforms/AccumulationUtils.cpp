@@ -362,6 +362,7 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 
 LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
                                               scf::ForOp loop,
+                                              int64_t scopeId,
                                               RewriterBase &rewriter) {
   if (match.contribution.getType() != match.tensorType ||
       loop.getNumResults() != 1 || match.resultIndex != 0) {
@@ -388,6 +389,8 @@ LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
       kL1AccInitialAttrName,
       AccumulationInitialModeAttr::get(
           rewriter.getContext(), AccumulationInitialMode::AccumulateExisting));
+  newLoop->setAttr(kL1AccScopeIdAttrName,
+                   rewriter.getI64IntegerAttr(scopeId));
 
   Block *newBody = newLoop.getBody();
   if (!newBody->empty() && isa<scf::YieldOp>(newBody->back())) {

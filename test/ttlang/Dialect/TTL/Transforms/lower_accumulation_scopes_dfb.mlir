@@ -7,7 +7,7 @@
 
 // CHECK-LABEL: func.func @accumulating_store
 // CHECK: scf.for
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 func.func @accumulating_store(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
@@ -84,7 +84,7 @@ func.func @skip_reduction_loop(
 // CHECK: scf.for
 // CHECK-NOT: ttl.l1_acc_loop
 // CHECK:   scf.for
-// CHECK:   } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK:   } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // CHECK: }
 func.func @nested_only_inner(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -115,9 +115,9 @@ func.func @nested_only_inner(
 
 // CHECK-LABEL: func.func @consecutive_loops_same_reserve
 // CHECK: scf.for
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // CHECK: scf.for
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 1 : i64}
 func.func @consecutive_loops_same_reserve(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -154,7 +154,7 @@ func.func @consecutive_loops_same_reserve(
 
 // CHECK-LABEL: func.func @store_and_acc_in_same_loop
 // CHECK: scf.for
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 func.func @store_and_acc_in_same_loop(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
@@ -181,7 +181,7 @@ func.func @store_and_acc_in_same_loop(
 
 // CHECK-LABEL: func.func @non_matmul_accumulate
 // CHECK: scf.for
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 func.func @non_matmul_accumulate(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
   %c0 = arith.constant 0 : index
@@ -203,7 +203,7 @@ func.func @non_matmul_accumulate(
 
 // CHECK-LABEL: func.func @single_iteration
 // CHECK: scf.for
-// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop}
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 func.func @single_iteration(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {

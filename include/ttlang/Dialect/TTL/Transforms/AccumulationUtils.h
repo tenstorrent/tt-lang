@@ -76,6 +76,7 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 /// packer accumulation guard insertion.
 LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
                                               scf::ForOp loop,
+                                              int64_t scopeId,
                                               RewriterBase &rewriter);
 
 } // namespace mlir::tt::ttl

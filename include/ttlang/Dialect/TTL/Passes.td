@@ -246,6 +246,8 @@ def TTLLowerAccumulationScopes
     The initial tensor implementation supports single-output additive tensor
     recurrences formed by `ttl-form-accumulation-scopes`. DFB mode lowers
     user-written accumulating stores to L1 packer metadata.
+    L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
+    metadata for TTKernel guard placement.
 
     `strategy=auto` selects DST when the recurrence satisfies the DST legality
     rules and otherwise uses L1 packer accumulation. `strategy=dst` requires
