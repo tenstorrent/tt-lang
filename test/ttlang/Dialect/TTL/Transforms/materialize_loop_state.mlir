@@ -1,11 +1,9 @@
 // Verifies ttl-materialize-loop-state removes tensor-valued scf.for iter_args
-// using DST compute for eligible additive recurrences, accumulate stores for
-// remaining additive recurrences, and compiler DFB state for general tensor
-// recurrences.
+// by materializing remaining tensor state through compiler-allocated DFB slots.
 //
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-materialize-loop-state))' --split-input-file | FileCheck %s
 
-// Additive recurrence lowers to an accumulate store.
+// Additive recurrence that reaches this pass uses ordinary DFB state.
 // CHECK-LABEL: func.func @carried_add
 // CHECK-SAME: (%[[INIT:[^:]+]]: tensor<1x1x!ttcore.tile<32x32, bf16>>)
 func.func @carried_add(
@@ -24,21 +22,25 @@ func.func @carried_add(
   ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return
 }
-// CHECK: %[[RESERVE:.*]] = ttl.cb_reserve
-// CHECK-NEXT: ttl.store %[[INIT]], %[[RESERVE]]
+// CHECK: %[[STATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// CHECK: %[[INIT_RESERVE:.*]] = ttl.cb_reserve %[[STATE_DFB]]
+// CHECK-NEXT: ttl.store %[[INIT]], %[[INIT_RESERVE]]
 // CHECK-NEXT: scf.for
-// CHECK-NEXT: %[[CONTRIB:.*]] = ttl.cb_wait
-// CHECK-NEXT: ttl.store %[[CONTRIB]], %[[RESERVE]] {accumulate}
-// CHECK-NEXT: }
-// CHECK-NOT: ttl.add
-// CHECK-NOT: ttl.attach_cb
+// CHECK-NOT: iter_args
+// CHECK: %[[WAIT:.*]] = ttl.cb_wait %[[STATE_DFB]]
+// CHECK-NEXT: %[[CURRENT:.*]] = ttl.attach_cb %[[WAIT]], %[[STATE_DFB]]
+// CHECK: %[[CONTRIB:.*]] = ttl.cb_wait
+// CHECK: %[[NEXT:.*]] = ttl.add %[[CURRENT]], %[[CONTRIB]]
+// CHECK: %[[NEXT_RESERVE:.*]] = ttl.cb_reserve %[[STATE_DFB]]
+// CHECK-NEXT: ttl.store %[[NEXT]], %[[NEXT_RESERVE]]
+// CHECK-NOT: {accumulate}
 
 // -----
 
-// Attached additive recurrence with loop-local DFB contribution lowers to a
-// reduction compute so DST persists across reduction iterations.
-// CHECK-LABEL: func.func @carried_add_dst_compute
-func.func @carried_add_dst_compute() {
+// Attached additive recurrence with loop-local DFB contribution is materialized
+// as ordinary tensor state when accumulation scope lowering has not run.
+// CHECK-LABEL: func.func @carried_add_loop_local_contribution
+func.func @carried_add_loop_local_contribution() {
   %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb_delta = ttl.bind_cb {cb_index = 1, block_count = 3} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
   %cb_out = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -57,25 +59,25 @@ func.func @carried_add_dst_compute() {
   ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return
 }
+// CHECK: %[[STATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
 // CHECK: %[[INIT_WAIT:[^ ]+]] = ttl.cb_wait %[[INIT_CB:[^ ]+]] :
 // CHECK-NEXT: %[[INIT:.*]] = ttl.attach_cb %[[INIT_WAIT]], %[[INIT_CB]]
-// CHECK: %[[RESERVE:[^ ]+]] = ttl.cb_reserve %[[OUT_CB:[^ ]+]] :
-// CHECK-NEXT: %[[DELTA_WAIT:[^ ]+]] = ttl.cb_wait %[[DELTA_CB:[^ ]+]] {num_tiles = 3 : i64}
-// CHECK-SAME: -> tensor<3x1x1x!ttcore.tile<32x32, bf16>>
+// CHECK: %[[INIT_RESERVE:.*]] = ttl.cb_reserve %[[STATE_DFB]]
+// CHECK-NEXT: ttl.store %[[INIT]], %[[INIT_RESERVE]]
+// CHECK-NEXT: scf.for
+// CHECK-NOT: iter_args
+// CHECK: %[[CURRENT:.*]] = ttl.attach_cb {{.*}}, %[[STATE_DFB]]
+// CHECK: %[[DELTA_WAIT:[^ ]+]] = ttl.cb_wait %[[DELTA_CB:[^ ]+]] :
 // CHECK-NEXT: %[[DELTA:.*]] = ttl.attach_cb %[[DELTA_WAIT]], %[[DELTA_CB]]
-// CHECK: ttl.compute
-// CHECK-SAME: ins(%[[INIT]], %[[DELTA]]
-// CHECK: iterator_types = ["parallel", "parallel", "reduction"]
-// CHECK: %[[NEXT:.*]] = ttl.tile_accumulate_add
-// CHECK: ttl.tile_store %[[NEXT]], %[[RESERVE]]
-// CHECK: ttl.cb_pop %[[DELTA_CB]] {num_tiles = 3 : i64}
-// CHECK-NEXT: return
+// CHECK: %[[NEXT:.*]] = ttl.add %[[CURRENT]], %[[DELTA]]
+// CHECK: ttl.store %[[NEXT]]
+// CHECK-NOT: ttl.compute
+// CHECK-NOT: ttl.tile_accumulate_add
 
 // -----
 
-// Additive recurrence whose contribution is defined outside the loop
-// body: the wait+attach are emitted once before the loop and the
-// accumulator path reuses the outer SSA value on every iteration.
+// Additive recurrence whose contribution is defined outside the loop body keeps
+// that contribution outside the rewritten loop.
 // CHECK-LABEL: func.func @carried_add_outer_contribution
 // CHECK-SAME: (%[[INIT:[^:]+]]: tensor<1x1x!ttcore.tile<32x32, bf16>>)
 func.func @carried_add_outer_contribution(
@@ -94,18 +96,21 @@ func.func @carried_add_outer_contribution(
   ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return
 }
+// CHECK: %[[STATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
 // CHECK: %[[WAIT:.*]] = ttl.cb_wait
 // CHECK-NEXT: %[[CONTRIB:.*]] = ttl.attach_cb %[[WAIT]]
-// CHECK: %[[RESERVE:.*]] = ttl.cb_reserve
-// CHECK-NEXT: ttl.store %[[INIT]], %[[RESERVE]]
+// CHECK: %[[INIT_RESERVE:.*]] = ttl.cb_reserve %[[STATE_DFB]]
+// CHECK-NEXT: ttl.store %[[INIT]], %[[INIT_RESERVE]]
 // CHECK-NEXT: scf.for
-// CHECK-NEXT: ttl.store %[[CONTRIB]], %[[RESERVE]] {accumulate}
-// CHECK-NEXT: }
-// CHECK-NOT: ttl.add
+// CHECK-NOT: iter_args
+// CHECK: %[[CURRENT:.*]] = ttl.attach_cb {{.*}}, %[[STATE_DFB]]
+// CHECK-NEXT: %[[NEXT:.*]] = ttl.add %[[CURRENT]], %[[CONTRIB]]
+// CHECK: ttl.store %[[NEXT]]
+// CHECK-NOT: {accumulate}
 
 // -----
 
-// Commuted additive recurrence lowers to the same accumulate store form.
+// Commuted additive recurrence preserves operand order after DFB materialization.
 // CHECK-LABEL: func.func @commuted_carried_add
 // CHECK-SAME: (%[[INIT:[^:]+]]: tensor<1x1x!ttcore.tile<32x32, bf16>>)
 func.func @commuted_carried_add(
@@ -123,13 +128,16 @@ func.func @commuted_carried_add(
   ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return
 }
-// CHECK: %[[RESERVE:.*]] = ttl.cb_reserve
-// CHECK-NEXT: ttl.store %[[INIT]], %[[RESERVE]]
+// CHECK: %[[STATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// CHECK: %[[INIT_RESERVE:.*]] = ttl.cb_reserve %[[STATE_DFB]]
+// CHECK-NEXT: ttl.store %[[INIT]], %[[INIT_RESERVE]]
 // CHECK-NEXT: scf.for
-// CHECK-NEXT: %[[CONTRIB:.*]] = ttl.cb_wait
-// CHECK-NEXT: ttl.store %[[CONTRIB]], %[[RESERVE]] {accumulate}
-// CHECK-NEXT: }
-// CHECK-NOT: ttl.add
+// CHECK-NOT: iter_args
+// CHECK: %[[CURRENT:.*]] = ttl.attach_cb {{.*}}, %[[STATE_DFB]]
+// CHECK: %[[CONTRIB:.*]] = ttl.cb_wait
+// CHECK: %[[NEXT:.*]] = ttl.add %[[CONTRIB]], %[[CURRENT]]
+// CHECK: ttl.store %[[NEXT]]
+// CHECK-NOT: {accumulate}
 
 // -----
 
@@ -197,9 +205,7 @@ func.func @binary_recurrence(
 
 // -----
 
-// Add result used in body (beyond just the yield) falls back to general
-// DFB state because the accumulator match requires the add to have a
-// single use.
+// Add result used in the body is still materialized through DFB state.
 // CHECK-LABEL: func.func @add_with_in_body_use
 func.func @add_with_in_body_use(
     %init: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
@@ -251,7 +257,8 @@ func.func @preserve_scalar_iter_arg(
 
 // -----
 
-// Multiple tensor iter args can mix accumulation and general DFB state.
+// Multiple tensor iter args each receive independent compiler-allocated DFB
+// state.
 // CHECK-LABEL: func.func @mixed_tensor_states
 func.func @mixed_tensor_states(
     %acc_init: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -271,16 +278,20 @@ func.func @mixed_tensor_states(
   func.return
 }
 // CHECK: ttl.compiler_allocated
+// CHECK: ttl.compiler_allocated
+// CHECK: ttl.store %{{.*}}, %{{.*}}
 // CHECK: ttl.store %{{.*}}, %{{.*}}
 // CHECK: scf.for
 // CHECK-NOT: iter_args
-// CHECK: ttl.store %{{.*}} {accumulate}
+// CHECK: ttl.add
+// CHECK: ttl.store
 // CHECK: ttl.relu
 // CHECK: ttl.store
+// CHECK-NOT: {accumulate}
 
 // -----
 
-// Result with multiple users falls back to DFB state rather than accumulation.
+// Result with multiple users is materialized through DFB state once.
 // CHECK-LABEL: func.func @add_result_multiple_users
 func.func @add_result_multiple_users(
     %init: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
@@ -335,9 +346,9 @@ func.func @conditional_recurrence(
 
 // Zero-trip semantics are represented by the pre-loop initial store and the
 // post-loop final wait.
-// CHECK-LABEL: func.func @zero_trip_shape
+// CHECK-LABEL: func.func @zero_trip_loop
 // CHECK-SAME: (%[[INIT:[^:]+]]: tensor<1x1x!ttcore.tile<32x32, bf16>>)
-func.func @zero_trip_shape(
+func.func @zero_trip_loop(
     %init: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index

@@ -6,10 +6,9 @@
 // TTL Materialize Loop State
 //===----------------------------------------------------------------------===//
 //
-// Eliminates tensor-valued scf.for iter_args before compute lowering. Eligible
-// additive recurrence state lowers to an in-DST reduction compute; the
-// remaining additive cases use accumulate stores. All other tensor state lowers
-// through compiler-allocated DFB state slots.
+// Eliminates tensor-valued scf.for iter_args before compute lowering. Remaining
+// tensor state lowers through compiler-allocated DFB slots; accumulation
+// strategies are selected and lowered before this pass.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,8 +27,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <optional>
-
 #define DEBUG_TYPE "ttl-materialize-loop-state"
 
 namespace mlir::tt::ttl {
@@ -45,12 +42,12 @@ struct TensorLoopState {
   Value initialValue;
   BlockArgument iterArg;
   Value yieldedValue;
-  std::optional<TensorAccumulationMatch> accumulator;
   BindCBOp stateDFB;
 };
 
-// Collects tensor loop-carried values and records whether each one matches the
-// additive recurrence form used by the accumulation-specific lowering.
+// Collects tensor loop-carried values that still require explicit state. The
+// accumulation passes run before this pass, so this transform does not infer or
+// select accumulation strategies.
 static SmallVector<TensorLoopState> collectTensorLoopStates(scf::ForOp loop) {
   auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
 
@@ -61,18 +58,11 @@ static SmallVector<TensorLoopState> collectTensorLoopStates(scf::ForOp loop) {
       continue;
     }
 
-    std::optional<TensorAccumulationMatch> accumulator;
-    FailureOr<TensorAccumulationMatch> match =
-        matchAdditiveTensorAccumulation(loop, resultIndex);
-    if (succeeded(match)) {
-      accumulator = *match;
-    }
-
     states.push_back(TensorLoopState{
         resultIndex,
         cast<RankedTensorType>(loop.getInitArgs()[resultIndex].getType()),
         loop.getInitArgs()[resultIndex], loop.getRegionIterArgs()[resultIndex],
-        yield.getOperand(resultIndex), std::move(accumulator), BindCBOp()});
+        yield.getOperand(resultIndex), BindCBOp()});
   }
   return states;
 }
@@ -86,30 +76,12 @@ static bool isTensorStateIndex(ArrayRef<TensorLoopState> states,
   });
 }
 
-// Seeds materialized state before the rewritten loop. Accumulators reuse the
-// user output dataflow buffer; other tensor states use compiler-allocated DFBs.
+// Seeds each compiler-allocated state DFB before the rewritten loop. The
+// pre-loop store preserves zero-trip scf.for semantics without keeping tensor
+// values in the loop signature.
 static void createInitialStores(ArrayRef<TensorLoopState> states,
                                 scf::ForOp loop, RewriterBase &rewriter) {
   for (TensorLoopState state : states) {
-    if (!state.accumulator) {
-      continue;
-    }
-    CBReserveOp reserve = state.accumulator->reserve;
-    if (!reserve->isBeforeInBlock(loop)) {
-      rewriter.moveOpBefore(reserve, loop);
-    }
-
-    rewriter.setInsertionPoint(loop);
-    StoreOp::create(rewriter, state.accumulator->finalStore.getLoc(),
-                    state.initialValue, reserve.getResult(),
-                    /*accumulate=*/nullptr);
-  }
-
-  for (TensorLoopState state : states) {
-    if (state.accumulator) {
-      continue;
-    }
-
     rewriter.setInsertionPoint(loop);
     createDFBStore(state.initialValue, state.stateDFB.getResult(), rewriter);
   }
@@ -146,7 +118,7 @@ static scf::ForOp createLoopWithoutTensorState(scf::ForOp loop,
 }
 
 // Maps old loop-carried SSA values into the rebuilt loop and materializes
-// non-accumulator tensor iter_args from their DFB state slots at loop entry.
+// tensor iter_args from their DFB state slots at loop entry.
 static void mapLoopCarriedValues(scf::ForOp loop, scf::ForOp newLoop,
                                  ArrayRef<TensorLoopState> states,
                                  IRMapping &mapper, RewriterBase &rewriter) {
@@ -165,33 +137,21 @@ static void mapLoopCarriedValues(scf::ForOp loop, scf::ForOp newLoop,
 
   rewriter.setInsertionPointToStart(newLoop.getBody());
   for (TensorLoopState state : states) {
-    if (state.accumulator) {
-      continue;
-    }
-
     auto attach = createDFBWaitAndAttach(
         state.stateDFB.getResult(), state.tensorType, loop.getLoc(), rewriter);
     mapper.map(state.iterArg, attach.getResult());
   }
 }
 
-// For each non-accumulator state, emits a reserve and store of the next
-// iteration value immediately after the op that produced it: at body entry
-// when the value enters from outside the loop body, inline when it is
-// produced by a cloned body op, and at body end as a fallback. Accumulator
-// states emit an in-place accumulate `store` at the `add` site instead.
+// Stores each yielded tensor value at the earliest cloned location where the
+// value is available. This keeps producer-consumer ordering local to the loop
+// body while replacing tensor iter_args with explicit DFB state.
 static void cloneBodyAndMaterializeNextState(scf::ForOp loop,
                                              scf::ForOp newLoop,
                                              ArrayRef<TensorLoopState> states,
                                              IRMapping &mapper,
                                              RewriterBase &rewriter) {
-  DenseSet<Operation *> accumulatorAdds;
   DenseSet<unsigned> storedStateIndices;
-  for (TensorLoopState state : states) {
-    if (state.accumulator) {
-      accumulatorAdds.insert(state.accumulator->add.getOperation());
-    }
-  }
 
   auto storeNextState = [&](TensorLoopState state) {
     Value nextState = mapper.lookupOrDefault(state.yieldedValue);
@@ -200,10 +160,6 @@ static void cloneBodyAndMaterializeNextState(scf::ForOp loop,
   };
 
   for (TensorLoopState state : states) {
-    if (state.accumulator) {
-      continue;
-    }
-
     Operation *definingOp = state.yieldedValue.getDefiningOp();
     if (!definingOp || definingOp->getBlock() != loop.getBody()) {
       storeNextState(state);
@@ -215,25 +171,10 @@ static void cloneBodyAndMaterializeNextState(scf::ForOp loop,
       continue;
     }
 
-    if (accumulatorAdds.contains(&bodyOp)) {
-      for (TensorLoopState state : states) {
-        if (!state.accumulator ||
-            state.accumulator->add.getOperation() != &bodyOp) {
-          continue;
-        }
-        Value contribution =
-            mapper.lookupOrDefault(state.accumulator->contribution);
-        StoreOp::create(rewriter, bodyOp.getLoc(), contribution,
-                        state.accumulator->reserve.getResult(),
-                        rewriter.getUnitAttr());
-      }
-      continue;
-    }
-
     rewriter.clone(bodyOp, mapper);
 
     for (TensorLoopState state : states) {
-      if (state.accumulator || storedStateIndices.contains(state.resultIndex)) {
+      if (storedStateIndices.contains(state.resultIndex)) {
         continue;
       }
       Operation *definingOp = state.yieldedValue.getDefiningOp();
@@ -244,7 +185,7 @@ static void cloneBodyAndMaterializeNextState(scf::ForOp loop,
   }
 
   for (TensorLoopState state : states) {
-    if (!state.accumulator && !storedStateIndices.contains(state.resultIndex)) {
+    if (!storedStateIndices.contains(state.resultIndex)) {
       storeNextState(state);
     }
   }
@@ -263,21 +204,13 @@ static void cloneBodyAndMaterializeNextState(scf::ForOp loop,
 }
 
 // Reconnects users of the old loop results after tensor state has been
-// materialized, and removes final stores absorbed by accumulation state.
+// materialized through compiler-allocated DFB state.
 static void replaceLoopResults(scf::ForOp loop, scf::ForOp newLoop,
                                ArrayRef<TensorLoopState> states,
                                RewriterBase &rewriter) {
   DenseMap<unsigned, Value> tensorReplacements;
   rewriter.setInsertionPointAfter(newLoop);
   for (TensorLoopState state : states) {
-    if (state.accumulator) {
-      rewriter.eraseOp(state.accumulator->finalStore);
-      for (AttachCBOp attach : state.accumulator->deadReserveAttachOps) {
-        rewriter.eraseOp(attach);
-      }
-      continue;
-    }
-
     auto attach = createDFBWaitAndAttach(
         state.stateDFB.getResult(), state.tensorType, loop.getLoc(), rewriter);
     tensorReplacements[state.resultIndex] = attach.getResult();
@@ -308,24 +241,12 @@ static LogicalResult materializeLoopState(scf::ForOp loop,
     return failure();
   }
 
-  // The DST strategy replaces the whole loop with one reduction compute.
-  // Mixed loop-carried state needs the existing per-iteration materialization
-  // to preserve ordering with non-accumulator updates.
-  if (states.size() == 1 && states.front().accumulator &&
-      succeeded(lowerTensorAccumulationToDst(*states.front().accumulator, loop,
-                                             rewriter))) {
-    return success();
-  }
-
   auto funcOp = loop->getParentOfType<func::FuncOp>();
   assert(funcOp && "pass runs on func.func");
   auto moduleOp = funcOp->getParentOfType<ModuleOp>();
   assert(moduleOp && "func.func must be nested in a module");
 
   for (TensorLoopState &state : states) {
-    if (state.accumulator) {
-      continue;
-    }
     OpBuilder::InsertionGuard guard(rewriter);
     state.stateDFB = createCompilerAllocatedDFB(state.tensorType, loop.getLoc(),
                                                 funcOp, moduleOp, rewriter);
