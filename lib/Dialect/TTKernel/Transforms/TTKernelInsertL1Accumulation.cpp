@@ -57,11 +57,10 @@ precededByNonAccumulatingPack(scf::ForOp rootLoop,
     return false;
   }
 
-  // Track which of `packCBs` are confirmed by a preceding pack; return true
-  // only when all are covered, because L1 acc is a single switch for the
-  // whole sync region — partial coverage would corrupt iteration 0 of the
-  // uncovered CBs (acc onto stale L1). Invariant: covered ⊆ packCBs
-  // (enforced by `record`).
+  // `covered` contains output dataflow buffers with a known prior pack before
+  // `rootLoop`. L1 accumulation is a single packer mode, so enabling it for
+  // only some outputs would make iteration 0 add into stale L1 for the rest.
+  // `record` keeps `covered` restricted to buffers from `packCBs`.
   llvm::SmallDenseSet<Value, 2> covered;
   auto record = [&](Value cb) {
     if (packCBs.contains(cb)) {
@@ -81,7 +80,8 @@ precededByNonAccumulatingPack(scf::ForOp rootLoop,
       continue;
     }
     if (auto reserve = dyn_cast<ttk::CBReserveBackOp>(op)) {
-      // Uncovered CB: the loop's first pack lands in a fresh slot.
+      // A reserve before any confirming pack means the loop writes a fresh
+      // output slot, so iteration 0 must overwrite rather than accumulate.
       if (packCBs.contains(reserve.getCb()) &&
           !covered.contains(reserve.getCb())) {
         return false;
@@ -89,7 +89,8 @@ precededByNonAccumulatingPack(scf::ForOp rootLoop,
       continue;
     }
     if (auto push = dyn_cast<ttk::CBPushBackOp>(op)) {
-      // Uncovered CB: the slot is released before the loop reaches it.
+      // A push before any confirming pack releases the prior slot, so the loop
+      // cannot accumulate onto that value.
       if (packCBs.contains(push.getCb()) && !covered.contains(push.getCb())) {
         return false;
       }
@@ -194,7 +195,9 @@ struct TTKernelInsertL1AccumulationPass
       if (alreadyProcessed) {
         return;
       }
-      // L1 acc adds; max reduce would be corrupted by an additive store.
+      // Packer L1 accumulation adds the packed tile into the existing L1 value.
+      // Max reduction packs must write the max result instead, so this pass
+      // leaves those loops without L1-accumulation guards.
       bool hasMaxReduce = false;
       loop->walk([&](ttk::ReduceTileOp reduceOp) {
         if (reduceOp.getReduceType() == ttk::ReduceType::Max) {
@@ -264,8 +267,8 @@ struct TTKernelInsertL1AccumulationPass
           ttk::PackReconfigL1AccOp::create(builder, loop->getLoc(), enableFlag);
         }
 
-        // Enable runs once after the first iteration's last pack so
-        // subsequent iterations accumulate.
+        // Iteration 0 creates the baseline output tile. Enable after its last
+        // pack so later iterations add into that L1 value.
         Operation *afterOp = iter->second;
         Location loc = afterOp->getLoc();
         builder.setInsertionPointAfter(afterOp);
