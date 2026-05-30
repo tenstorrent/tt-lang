@@ -1,4 +1,5 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AccumulationUtils.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
   ConvertTTLToCompute.cpp
@@ -16,6 +17,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLDumpCBFlowGraph.cpp
   TTLErasePipeNetScopes.cpp
   TTLFinalizeDFBIndices.cpp
+  TTLFormAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp

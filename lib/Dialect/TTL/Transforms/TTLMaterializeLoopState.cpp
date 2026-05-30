@@ -17,6 +17,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -44,21 +45,13 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-struct AccumulatorState {
-  StoreOp finalStore;
-  CBReserveOp reserve;
-  AddOp add;
-  Value contribution;
-  SmallVector<AttachCBOp> deadReserveAttachOps;
-};
-
 struct TensorLoopState {
   unsigned resultIndex;
   RankedTensorType tensorType;
   Value initialValue;
   BlockArgument iterArg;
   Value yieldedValue;
-  std::optional<AccumulatorState> accumulator;
+  std::optional<TensorAccumulationMatch> accumulator;
   BindCBOp stateDFB;
 };
 
@@ -73,89 +66,13 @@ static int64_t getTileCount(RankedTensorType tensorType) {
   return tileCount;
 }
 
-// Identifies loop-carried tensors that must be removed before compute lowering.
-static bool isTensorLoopState(scf::ForOp loop, unsigned resultIndex) {
-  return isa<RankedTensorType>(loop.getInitArgs()[resultIndex].getType());
-}
-
-// Matches a recurrence `acc = add(acc, x)` whose loop result is consumed by
-// a single non-accumulate store to a user-declared dataflow buffer.
-// Preconditions: the add has a single use (the yield); the iter_arg is read
-// only by the add; the contribution side is not the iter_arg itself; the
-// reserve fed to the store has no live attach users; reserve and store sit in
-// the loop's parent block.
-static std::optional<AccumulatorState> matchAccumulator(scf::ForOp loop,
-                                                        unsigned resultIndex) {
-  auto loopResult = loop.getResult(resultIndex);
-  if (!loopResult.hasOneUse()) {
-    return std::nullopt;
-  }
-
-  auto finalStore = dyn_cast<StoreOp>(*loopResult.getUsers().begin());
-  if (!finalStore || finalStore.getAccumulate()) {
-    return std::nullopt;
-  }
-
-  auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
-  auto add = yield.getOperand(resultIndex).getDefiningOp<AddOp>();
-  if (!add || add->getBlock() != loop.getBody() ||
-      !add.getResult().hasOneUse()) {
-    return std::nullopt;
-  }
-
-  BlockArgument iterArg = loop.getRegionIterArgs()[resultIndex];
-  Value contribution;
-  if (add.getLhs() == iterArg) {
-    contribution = add.getRhs();
-  } else if (add.getRhs() == iterArg) {
-    contribution = add.getLhs();
-  } else {
-    return std::nullopt;
-  }
-  if (contribution == iterArg) {
-    return std::nullopt;
-  }
-
-  for (OpOperand &use : iterArg.getUses()) {
-    if (use.getOwner() != add.getOperation()) {
-      return std::nullopt;
-    }
-  }
-
-  auto reserve = finalStore.getView().getDefiningOp<CBReserveOp>();
-  if (!reserve) {
-    return std::nullopt;
-  }
-
-  SmallVector<AttachCBOp> deadReserveAttachOps;
-  for (OpOperand &reserveUse : reserve.getResult().getUses()) {
-    Operation *owner = reserveUse.getOwner();
-    if (owner == finalStore.getOperation()) {
-      continue;
-    }
-
-    auto attach = dyn_cast<AttachCBOp>(owner);
-    if (!attach || !attach.getResult().use_empty()) {
-      return std::nullopt;
-    }
-    deadReserveAttachOps.push_back(attach);
-  }
-
-  if (finalStore->getBlock() != loop->getBlock() ||
-      reserve->getBlock() != loop->getBlock()) {
-    return std::nullopt;
-  }
-
-  return AccumulatorState{finalStore, reserve, add, contribution,
-                          deadReserveAttachOps};
-}
-
 // Finds the contribution wait only when it is immediately owned by the loop.
 // Ancestor containment would admit nested-region effects that cannot be
 // coalesced into one pre-loop wait without changing execution order.
-static CBWaitOp getLoopLocalContributionWait(AccumulatorState &accumulator,
-                                             scf::ForOp loop,
-                                             AttachCBOp &attachedContribution) {
+static CBWaitOp
+getLoopLocalContributionWait(TensorAccumulationMatch &accumulator,
+                             scf::ForOp loop,
+                             AttachCBOp &attachedContribution) {
   Value contribution = accumulator.contribution;
   if (auto attach = contribution.getDefiningOp<AttachCBOp>()) {
     if (attach->getParentOp() != loop) {
@@ -175,7 +92,7 @@ static CBWaitOp getLoopLocalContributionWait(AccumulatorState &accumulator,
 // Ensures replacing the whole loop with one reduction compute does not discard
 // side effects other than the matched wait/attach/add recurrence.
 static bool onlyContainsDstReductionOps(scf::ForOp loop,
-                                        AccumulatorState &accumulator,
+                                        TensorAccumulationMatch &accumulator,
                                         CBWaitOp contributionWait,
                                         AttachCBOp attachedContribution) {
   DenseSet<Operation *> allowedOps;
@@ -267,7 +184,7 @@ tryMaterializeDstAccumulatingCompute(scf::ForOp loop, TensorLoopState &state,
     return failure();
   }
 
-  AccumulatorState &accumulator = *state.accumulator;
+  TensorAccumulationMatch &accumulator = *state.accumulator;
   if (state.accumulator->contribution.getType() != state.tensorType) {
     return failure();
   }
@@ -413,12 +330,18 @@ static SmallVector<TensorLoopState> collectTensorLoopStates(scf::ForOp loop) {
       continue;
     }
 
+    std::optional<TensorAccumulationMatch> accumulator;
+    FailureOr<TensorAccumulationMatch> match =
+        matchAdditiveTensorAccumulation(loop, resultIndex);
+    if (succeeded(match)) {
+      accumulator = *match;
+    }
+
     states.push_back(TensorLoopState{
         resultIndex,
         cast<RankedTensorType>(loop.getInitArgs()[resultIndex].getType()),
         loop.getInitArgs()[resultIndex], loop.getRegionIterArgs()[resultIndex],
-        yield.getOperand(resultIndex), matchAccumulator(loop, resultIndex),
-        BindCBOp()});
+        yield.getOperand(resultIndex), std::move(accumulator), BindCBOp()});
   }
   return states;
 }

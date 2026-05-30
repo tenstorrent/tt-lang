@@ -212,6 +212,30 @@ def TTLMaterializeLoopState
   ];
 }
 
+def TTLFormAccumulationScopes
+    : Pass<"ttl-form-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Form semantic accumulation scopes";
+  let description = [{
+    Forms `ttl.accumulation_scope` regions around accumulation constructs
+    before concrete storage strategy selection. The initial tensor mode
+    recognizes single-output additive tensor recurrences whose loop result is
+    immediately stored to a dataflow buffer reservation.
+
+    The pass records accumulation policy only. It does not select DST, L1
+    packer accumulation, or explicit dataflow buffer state.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Scope formation kind. The initial implementation supports tensor.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
