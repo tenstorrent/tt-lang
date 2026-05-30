@@ -297,6 +297,8 @@ def TTKernelInsertL1Accumulation
     Inserts `pack_reconfig_l1_acc` guards so that pack operations inside
     annotated loops accumulate into L1 instead of overwriting. Max-reduce
     loops are excluded (max is not additive).
+    Annotated additive loops must pack to output formats supported by packer
+    L1 accumulation: f32, f16, bf16, si32, or u8.
 
     Loops are grouped into accumulation scopes: consecutive sibling loops
     that pack to the same dataflow buffer share a single disable pair. Nested

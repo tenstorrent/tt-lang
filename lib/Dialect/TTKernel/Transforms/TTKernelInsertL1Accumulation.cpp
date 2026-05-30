@@ -10,6 +10,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -26,6 +27,8 @@ namespace ttk = mlir::tt::ttkernel;
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
+
+namespace ttcore = mlir::tt::ttcore;
 
 /// Build an i32 constant at the builder's insertion point.
 static Value buildI32Const(OpBuilder &builder, Location loc, int32_t value) {
@@ -79,6 +82,56 @@ static bool mayNeedOverwriteModeEnable(scf::ForOp loop) {
   return !tripCount || tripCount->ugt(1);
 }
 
+/// Return true when the packer can add a packed tile into an existing L1 tile
+/// for this output data type.
+static bool isL1AccumulationDataTypeSupported(ttcore::DataType dataType) {
+  // Mirrors tt-metal's pack L1-acc format coverage:
+  // https://github.com/tenstorrent/tt-metal/blob/9938a888cc4efd766d7652c08ab7eeb8fedd9aaf/tt_metal/tt-llk/tests/python_tests/quasar/test_pack_l1_acc_quasar.py#L42-L51
+  // TTCore has no Int8 tile data type, so Int8 is absent here.
+  switch (dataType) {
+  case ttcore::DataType::Float32:
+  case ttcore::DataType::Float16:
+  case ttcore::DataType::BFloat16:
+  case ttcore::DataType::Int32:
+  case ttcore::DataType::UInt8:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// Verify that every pack in an L1 accumulation loop targets a supported output
+/// format. Packer L1 accumulation is an additive write to the destination data
+/// format, and unsupported formats have no valid L1-accumulation behavior.
+static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
+  LogicalResult result = success();
+  loop->walk([&](ttk::PackTileOp packOp) {
+    auto cbType = dyn_cast<ttk::CBType>(packOp.getOutCb().getType());
+    if (!cbType) {
+      result = packOp.emitOpError(
+          "L1 packer accumulation requires a typed output dataflow buffer");
+      return WalkResult::interrupt();
+    }
+
+    auto tileType = dyn_cast<ttcore::TileType>(cbType.getElementType());
+    if (!tileType) {
+      result = packOp.emitOpError(
+          "L1 packer accumulation requires a tile output dataflow buffer");
+      return WalkResult::interrupt();
+    }
+
+    ttcore::DataType dataType = tileType.getDataType();
+    if (!isL1AccumulationDataTypeSupported(dataType)) {
+      result = packOp.emitOpError()
+               << "L1 packer accumulation does not support output data type "
+               << ttcore::DataTypeEnumToString(dataType);
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return result;
+}
+
 struct TTKernelInsertL1AccumulationPass
     : public impl::TTKernelInsertL1AccumulationBase<
           TTKernelInsertL1AccumulationPass> {
@@ -124,6 +177,10 @@ struct TTKernelInsertL1AccumulationPass
         }
       });
       if (!hasMaxReduce) {
+        if (failed(verifyL1AccumulationPackFormats(loop))) {
+          hadFailure = true;
+          return;
+        }
         l1AccLoops.push_back(loop);
       }
     });
