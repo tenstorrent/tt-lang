@@ -275,13 +275,45 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
     }
   }
 
+  auto emitL1PackError = [&](StringRef reason) {
+    return scope.emitOpError()
+           << "cannot lower tensor accumulation scope to L1 packer "
+              "accumulation: "
+           << reason;
+  };
+  if (match->contribution.getType() != match->tensorType) {
+    return emitL1PackError(
+        "the addend must have the same tensor type as the accumulator; select "
+        "the automatic accumulation strategy or rewrite the loop as a same-type "
+        "additive recurrence");
+  }
+  if (loop.getNumResults() != 1 || match->resultIndex != 0) {
+    return emitL1PackError(
+        "the current strategy supports exactly one loop-carried tensor "
+        "accumulator; select the automatic accumulation strategy or split the "
+        "accumulators into separate loops");
+  }
+
+  bool hasLoopLocalStore = false;
+  loop->walk([&](StoreOp) {
+    hasLoopLocalStore = true;
+    return WalkResult::interrupt();
+  });
+  if (hasLoopLocalStore) {
+    return emitL1PackError(
+        "the accumulation loop contains a store not owned by the recurrence; "
+        "select the automatic accumulation strategy, move that store outside "
+        "the loop, or split the loop");
+  }
+
   if (failed(
           lowerTensorAccumulationToL1Pack(*match, loop, scopeId, rewriter))) {
     // TODO(#650): Use explicit DFB state as the correctness fallback for
     // semantically valid scopes when no hardware accumulation strategy is
     // legal.
-    return scope.emitOpError(
-        "cannot lower tensor accumulation scope to L1 packer accumulation");
+    return emitL1PackError(
+        "expected one same-type additive recurrence with one final store; "
+        "select the automatic accumulation strategy or rewrite the loop");
   }
   eraseAccumulationScopeWrapper(scope, rewriter);
   return success();

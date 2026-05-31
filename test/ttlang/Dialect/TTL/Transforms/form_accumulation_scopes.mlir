@@ -90,3 +90,31 @@ func.func @intervening_store_not_formed(
 // CHECK-NOT: ttl.accumulation_scope
 // CHECK: ttl.store
 // CHECK: ttl.store
+
+// -----
+
+// A tensor recurrence loop with a loop-local store is not wrapped. The scope
+// would not own that store's side effect.
+// CHECK-LABEL: func.func @loop_local_store_not_formed
+func.func @loop_local_store_not_formed(
+    %init: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %other_reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %loop = scf.for %iter = %c0 to %c4 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %contribution = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %sum = ttl.add %acc, %contribution : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %init, %other_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  %reserve = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+// CHECK-NOT: ttl.accumulation_scope
+// CHECK: scf.for
+// CHECK: ttl.store

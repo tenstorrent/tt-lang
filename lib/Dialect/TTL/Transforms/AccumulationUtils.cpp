@@ -437,6 +437,17 @@ LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
       loop.getNumResults() != 1 || match.resultIndex != 0) {
     return failure();
   }
+  // The generated metadata configures packer L1 accumulation for every pack in
+  // the loop. Additional stores would produce packs that are not part of the
+  // additive recurrence.
+  bool hasLoopLocalStore = false;
+  loop->walk([&](StoreOp) {
+    hasLoopLocalStore = true;
+    return WalkResult::interrupt();
+  });
+  if (hasLoopLocalStore) {
+    return failure();
+  }
 
   CBReserveOp outputReserve = match.reserve;
   if (outputReserve->getBlock() == loop->getBlock() &&

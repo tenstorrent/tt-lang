@@ -131,13 +131,18 @@ class _AssignedVariableCollector(_ScopedCollector):
     def __init__(self):
         self.names = []
         self._seen = set()
+        self.augassign_only_names = set()
 
-    def _add_target(self, target):
+    def _add_target(self, target, from_augassign=False):
         for name in _extract_target_names(target):
-            if name in self._seen:
+            if name not in self._seen:
+                self.names.append(name)
+                self._seen.add(name)
+                if from_augassign:
+                    self.augassign_only_names.add(name)
                 continue
-            self.names.append(name)
-            self._seen.add(name)
+            if not from_augassign:
+                self.augassign_only_names.discard(name)
 
     def visit_Assign(self, node):
         if len(node.targets) == 1:
@@ -147,7 +152,7 @@ class _AssignedVariableCollector(_ScopedCollector):
         self._add_target(node.target)
 
     def visit_AugAssign(self, node):
-        self._add_target(node.target)
+        self._add_target(node.target, from_augassign=True)
 
 
 def _get_single_result(value):
@@ -519,10 +524,17 @@ class TTCompilerBase(PyKernelAstBase):
 
         # Only names that exist outside the if are carried; fresh names
         # bound inside a branch stay branch-local.
+        # An AugAssign-only DFB-attached block target lowers in place through
+        # __iadd__; carrying it would replace the block view with an scf.if
+        # result and lose the DFB reserve operations.
         carried_var_names = []
         for var_name in collector.names:
             if not self._var_exists(var_name):
                 continue
+            if var_name in collector.augassign_only_names:
+                value = self._var_exists(var_name)[var_name]
+                if _is_attach_cb_block(value):
+                    continue
             carried_var_names.append(var_name)
         return carried_var_names
 

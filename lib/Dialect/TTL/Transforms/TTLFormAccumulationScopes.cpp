@@ -94,6 +94,16 @@ static LogicalResult formTensorAccumulationScope(scf::ForOp loop,
   if (failed(match) || !isContiguousSingleTensorAccumulator(loop, *match)) {
     return failure();
   }
+  // Strategy lowering consumes the whole matched loop. A loop-local store is a
+  // side effect not represented by the tensor recurrence scope contract.
+  bool hasLoopLocalStore = false;
+  loop->walk([&](StoreOp) {
+    hasLoopLocalStore = true;
+    return WalkResult::interrupt();
+  });
+  if (hasLoopLocalStore) {
+    return failure();
+  }
 
   MLIRContext *context = loop.getContext();
   // TODO(#646): Select the combiner from the matched recurrence instead of
@@ -204,9 +214,13 @@ getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
 static FailureOr<SmallVector<StoreOp, 2>>
 collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
   SmallVector<StoreOp, 2> stores;
+  SmallVector<StoreOp, 2> plainStores;
   loop->walk([&](StoreOp store) {
-    if (!store.getAccumulate() ||
-        store->getParentOfType<scf::ForOp>() != loop) {
+    if (store->getParentOfType<scf::ForOp>() != loop) {
+      return WalkResult::advance();
+    }
+    if (!store.getAccumulate()) {
+      plainStores.push_back(store);
       return WalkResult::advance();
     }
     if (store->getParentOp() != loop.getOperation()) {
@@ -220,6 +234,13 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
     return WalkResult::advance();
   });
   if (hadFailure) {
+    return failure();
+  }
+  if (!stores.empty() && !plainStores.empty()) {
+    plainStores.front()->emitError(
+        "non-accumulating store inside a += loop is not supported (#648); "
+        "move it outside the accumulation loop");
+    hadFailure = true;
     return failure();
   }
   return stores;
