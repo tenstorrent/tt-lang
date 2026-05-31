@@ -286,18 +286,11 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     return failure();
   }
 
-  auto tensorType =
-      cast<RankedTensorType>(loop.getInitArgs()[resultIndex].getType());
-  return TensorAccumulationMatch{resultIndex,
-                                 tensorType,
-                                 loop.getInitArgs()[resultIndex],
-                                 iterArg,
-                                 yield.getOperand(resultIndex),
-                                 finalStore,
-                                 reserve,
-                                 add,
-                                 contribution,
-                                 deadReserveAttachOps};
+  Value initialValue = loop.getInitArgs()[resultIndex];
+  auto tensorType = cast<RankedTensorType>(initialValue.getType());
+  return TensorAccumulationMatch{
+      resultIndex, tensorType, initialValue, finalStore,
+      reserve,     add,        contribution, deadReserveAttachOps};
 }
 
 LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,

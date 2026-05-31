@@ -445,6 +445,8 @@ struct TTKernelInsertL1AccumulationPass
       }
 
       // Disable L1 acc after the group's scope end (typically cb_push_back).
+      // The disable flag is always 0; reuse beforeGroupFlag when overwrite mode
+      // already built a 0, otherwise build a fresh 0 for accumulate-existing.
       builder.setInsertionPointAfter(group.scopeEnd);
       Value afterGroupFlag = l1HasPriorValue
                                  ? buildI32Const(builder, disableLoc, 0)

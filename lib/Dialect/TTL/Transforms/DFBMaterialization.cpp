@@ -14,11 +14,6 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
                                     OpBuilder &builder) {
   MLIRContext *ctx = builder.getContext();
 
-  // Smallest size that lets the producer and consumer use different
-  // slots concurrently; one slot would serialize them. Larger counts
-  // work but waste L1, and no current caller has more than one in-flight
-  // value (intermediate DFB at a fusion split; loop state with a pre-loop
-  // store and per-iter consume/produce).
   SmallVector<int64_t> shape(tensorType.getShape());
   Type elementType = tensorType.getElementType();
   int64_t blockCount = 2;

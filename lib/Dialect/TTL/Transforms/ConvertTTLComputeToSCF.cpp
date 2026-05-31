@@ -515,6 +515,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       // independent of the reduction strategy option.
       if (isAccumulating) {
         if (dstAccumulation || mustUseDstAccumulation) {
+          assert(reductionScopeId &&
+                 "accumulating compute must have a reduction iterator");
           usedDstAccumulation = true;
           return generateAccumulatingLoops(
               rewriter, loc, op, iterDomain, indexingMaps, iterTypes,

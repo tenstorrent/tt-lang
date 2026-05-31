@@ -1506,6 +1506,8 @@ def _compile_kernel(
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         accumulation_strategy = compiler_options.accumulation_strategy
+        # Mirrors createTTLToTTKernelPipeline in TTLPipelines.cpp; keep the two
+        # in sync when adding or reordering passes.
         pipeline_passes = [
             "func.func(ttl-form-accumulation-scopes)",
             f"func.func(ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}})",

@@ -23,8 +23,6 @@ struct TensorAccumulationMatch {
   unsigned resultIndex;
   RankedTensorType tensorType;
   Value initialValue;
-  BlockArgument iterArg;
-  Value yieldedValue;
   StoreOp finalStore;
   CBReserveOp reserve;
   AddOp add;

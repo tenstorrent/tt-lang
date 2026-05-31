@@ -1041,31 +1041,15 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
 namespace {
 
-/// Convert a verified AccumulationCombiner attribute list to enum values for
-/// interface consumers. The verifier enforces the element type before this
-/// helper is used.
-llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>
-getVerifiedAccumulationCombiners(mlir::ArrayAttr attrs) {
-  llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner> values;
+/// Convert a verified enum-attribute list to enum values for interface
+/// consumers. The verifier enforces the attribute class before this helper
+/// runs, so callers read a typed policy without rechecking.
+template <typename AttrT, typename EnumT>
+llvm::SmallVector<EnumT> getVerifiedEnumValues(mlir::ArrayAttr attrs) {
+  llvm::SmallVector<EnumT> values;
   values.reserve(attrs.size());
   for (mlir::Attribute attr : attrs) {
-    values.push_back(
-        mlir::cast<mlir::tt::ttl::AccumulationCombinerAttr>(attr).getValue());
-  }
-  return values;
-}
-
-/// Convert a verified AccumulationInitialMode attribute list to enum values for
-/// interface consumers. The verifier owns validation so callers can read a
-/// typed policy without rechecking attribute classes.
-llvm::SmallVector<mlir::tt::ttl::AccumulationInitialMode>
-getVerifiedAccumulationInitialModes(mlir::ArrayAttr attrs) {
-  llvm::SmallVector<mlir::tt::ttl::AccumulationInitialMode> values;
-  values.reserve(attrs.size());
-  for (mlir::Attribute attr : attrs) {
-    values.push_back(
-        mlir::cast<mlir::tt::ttl::AccumulationInitialModeAttr>(attr)
-            .getValue());
+    values.push_back(mlir::cast<AttrT>(attr).getValue());
   }
   return values;
 }
@@ -1093,13 +1077,15 @@ mlir::tt::ttl::AccumulationScopeOp::getExplicitInitialValues() {
 /// Return one combiner per output tensor.
 llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>
 mlir::tt::ttl::AccumulationScopeOp::getAccumulationCombiners() {
-  return getVerifiedAccumulationCombiners(getCombiners());
+  return getVerifiedEnumValues<AccumulationCombinerAttr, AccumulationCombiner>(
+      getCombiners());
 }
 
 /// Return one initial-value mode per output tensor.
 llvm::SmallVector<mlir::tt::ttl::AccumulationInitialMode>
 mlir::tt::ttl::AccumulationScopeOp::getAccumulationInitialModes() {
-  return getVerifiedAccumulationInitialModes(getInitialModes());
+  return getVerifiedEnumValues<AccumulationInitialModeAttr,
+                               AccumulationInitialMode>(getInitialModes());
 }
 
 /// Return the region containing the accumulation body.
