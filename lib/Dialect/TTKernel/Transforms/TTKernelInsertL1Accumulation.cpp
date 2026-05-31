@@ -175,7 +175,7 @@ struct L1AccumulationLoopGroup {
 /// This lowering currently models one active packer L1 accumulation
 /// configuration per lexical loop nest. Nested independent scopes require
 /// explicit state transitions when entering and leaving the inner scope.
-// TODO(ttl): Model explicit packer L1 accumulation state transitions before
+// TODO(#648): Model explicit packer L1 accumulation state transitions before
 // allowing nested independent scope ids.
 static FailureOr<scf::ForOp> findScopeRoot(scf::ForOp loop, int64_t scopeId) {
   scf::ForOp rootLoop = loop;

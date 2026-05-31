@@ -13,7 +13,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
-| `--ttl-accumulation-strategy {auto,dst,l1-pack}` | `auto` | Select the storage strategy for semantic accumulation scopes. `dst` applies only to DST-compatible tensor recurrences. |
+| `--ttl-accumulation-strategy {auto,dst,l1-pack}` | `auto` | Select the storage strategy for tensor recurrence accumulation scopes. DFB accumulation scopes always lower to L1 packer metadata. |
 | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from dataflow buffers. When disabled, binary ops use the SFPU path. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
@@ -110,7 +110,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
-| `accumulation-strategy` | string | `auto` | Select accumulation storage strategy: `auto`, `dst`, or `l1-pack`. `dst` applies only to DST-compatible tensor recurrences. |
+| `accumulation-strategy` | string | `auto` | Select tensor recurrence accumulation storage strategy: `auto`, `dst`, or `l1-pack`. DFB accumulation scopes always lower to L1 packer metadata. |
 | `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
 | `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
@@ -122,13 +122,13 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 The pipeline runs these passes in order:
 
 - `ttl-form-accumulation-scopes` - form semantic accumulation scopes for eligible tensor recurrences
-- `ttl-lower-accumulation-scopes` - lower accumulation scopes with `strategy=<accumulation-strategy>`
+- `ttl-lower-accumulation-scopes` - lower tensor accumulation scopes with `strategy=<accumulation-strategy>`
 - `ttl-materialize-loop-state` - remove ranked-tensor `scf.for` iter_args
 - `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
 - `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions
 - `ttl-form-accumulation-scopes{kind=dfb}` - form semantic accumulation scopes for user-written `+=` loops
-- `ttl-lower-accumulation-scopes{kind=dfb strategy=<accumulation-strategy>}` - lower user-written `+=` scopes according to the selected strategy; `strategy=dst` is invalid for DFB scopes
+- `ttl-lower-accumulation-scopes{kind=dfb}` - lower user-written `+=` scopes to L1 packer metadata
 - `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 - `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
@@ -168,7 +168,7 @@ Lower semantic accumulation scopes to a concrete storage strategy.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `kind` | string | `"tensor"` | Scope lowering kind. Supported values: `tensor`, `dfb`. |
-| `strategy` | string | `"auto"` | Accumulation strategy. Supported values: `auto`, `dst`, `l1-pack`. |
+| `strategy` | string | `"auto"` | Tensor recurrence accumulation strategy. Supported values: `auto`, `dst`, `l1-pack`. Ignored for `kind=dfb`. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-lower-accumulation-scopes{strategy=dst})'

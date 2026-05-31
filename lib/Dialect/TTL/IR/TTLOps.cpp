@@ -407,7 +407,7 @@ static bool hasReductionIterator(mlir::tt::ttl::ComputeOp op) {
 
 /// Return true when the compute body contains a top-level additive
 /// accumulation operation.
-// TODO(ttl): Add a Max AccumulationCombiner and storage contract before
+// TODO(#646): Add a Max AccumulationCombiner and storage contract before
 // reporting reduce_max through AccumulationScopeOpInterface.
 static bool hasAdditiveAccumulatorBody(mlir::tt::ttl::ComputeOp op) {
   for (mlir::Operation &operation : op.getBody().front().without_terminator()) {
@@ -1180,6 +1180,8 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
     hasNestedAccumulationScope = true;
     return mlir::WalkResult::interrupt();
   });
+  // TODO(#648): Define nested and conditional accumulation scope semantics
+  // before accepting nested ttl.accumulation_scope operations.
   if (hasNestedAccumulationScope) {
     return emitOpError("nested ttl.accumulation_scope is not supported");
   }

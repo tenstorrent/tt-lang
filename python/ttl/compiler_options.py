@@ -19,6 +19,8 @@ import os
 import sys
 from typing import Optional, Sequence
 
+# TODO(#649): Add dfb-state after explicit DFB fallback becomes a selectable
+# accumulation strategy.
 _ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
 
 
@@ -29,6 +31,8 @@ def _make_parser() -> argparse.ArgumentParser:
     "explicitly set to the dataclass default".
     """
     p = argparse.ArgumentParser(add_help=False)
+    # TODO(#649): Replace maximize-dst with granular options for accumulation
+    # strategy, compute subblocking, and tile-op scheduling.
     p.add_argument(
         "--ttl-maximize-dst",
         default=None,
@@ -40,7 +44,10 @@ def _make_parser() -> argparse.ArgumentParser:
         "--ttl-accumulation-strategy",
         default=None,
         dest="accumulation_strategy",
-        help="Select accumulation storage strategy: auto, dst, or l1-pack (default: auto).",
+        help=(
+            "Select tensor recurrence accumulation storage strategy: auto, "
+            "dst, or l1-pack (default: auto)."
+        ),
     )
     p.add_argument(
         "--ttl-fpu-binary-ops",

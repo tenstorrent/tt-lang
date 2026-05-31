@@ -51,7 +51,7 @@ def compile_ttl_to_ttkernel(
         "ttl-insert-copy-wait",
         "ttl-auto-sync",
         "ttl-form-accumulation-scopes{kind=dfb}",
-        f"ttl-lower-accumulation-scopes{{kind=dfb strategy={accumulation_strategy}}}",
+        "ttl-lower-accumulation-scopes{kind=dfb}",
         "convert-ttl-to-compute",
         set_compute_config_pass,
         "ttl-assign-dst",
