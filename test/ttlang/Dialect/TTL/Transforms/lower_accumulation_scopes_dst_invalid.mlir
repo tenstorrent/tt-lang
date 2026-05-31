@@ -15,7 +15,7 @@ func.func @dst_required_but_ineligible() {
   %c0 = arith.constant 0 : index
   %c3 = arith.constant 3 : index
   %c1 = arith.constant 1 : index
-  // expected-error @below {{cannot lower tensor accumulation scope to DST}}
+  // expected-error @below {{cannot lower tensor accumulation scope to DST: expected a DST-compatible same-type additive recurrence with one loop-carried accumulator and one final store; select the automatic accumulation strategy or l1-pack}}
   ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {

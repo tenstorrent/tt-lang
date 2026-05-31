@@ -47,7 +47,7 @@ func.func @explicit_init_type_mismatch() {
 // specified.
 func.func @nested_accumulation_scope() {
   %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  // expected-error @below {{'ttl.accumulation_scope' op nested ttl.accumulation_scope is not supported}}
+  // expected-error @below {{'ttl.accumulation_scope' op nested ttl.accumulation_scope is not supported (#648); split nested accumulations into separate scopes}}
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
       ttl.yield

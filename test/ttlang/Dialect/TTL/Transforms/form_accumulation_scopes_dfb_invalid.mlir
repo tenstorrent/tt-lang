@@ -20,7 +20,7 @@ func.func @acc_inside_conditional(
   scf.for %iv = %c0 to %c4 step %c1 {
     scf.if %cond {
       %mm = ttl.matmul %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-error @below {{+= inside a conditional is not supported (#504)}}
+      // expected-error @below {{+= inside a conditional is not supported (#504); move the condition outside the accumulation loop or use a separate loop for the conditional branch}}
       ttl.store %mm, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
   }
@@ -45,7 +45,7 @@ func.func @plain_store_in_accumulation_loop(
   %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   scf.for %iv = %c0 to %c4 step %c1 {
     %mm = ttl.matmul %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{non-accumulating store inside a += loop is not supported (#648)}}
+    // expected-error @below {{non-accumulating store inside a += loop is not supported (#648); move it outside the accumulation loop or split the loop}}
     ttl.store %mm, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %mm, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   }
@@ -70,7 +70,7 @@ func.func @duplicate_output_in_one_loop(
   %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   scf.for %iv = %c0 to %c4 step %c1 {
     ttl.store %a, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{multiple accumulating stores to the same output view in one loop are not supported}}
+    // expected-error @below {{multiple accumulating stores to the same output view in one loop are not supported; combine the updates before storing or split them into separate loops}}
     ttl.store %b, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   }
   func.return %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -89,7 +89,7 @@ func.func @reserve_inside_loop(
   %input = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %result = scf.for %iv = %c0 to %c4 step %c1 iter_args(%carried = %arg0) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     %reserve = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{accumulating store requires an output reserve that dominates the accumulation loop}}
+    // expected-error @below {{accumulating store requires an output reserve that dominates the accumulation loop; move the reserve before the loop}}
     ttl.store %input, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     scf.yield %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>
   }

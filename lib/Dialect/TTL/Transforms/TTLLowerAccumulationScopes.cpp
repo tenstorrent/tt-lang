@@ -52,10 +52,14 @@ parseAccumulationStrategy(StringRef value) {
 static LogicalResult
 verifySingleAddExplicitTensorScope(AccumulationScopeOp scope) {
   if (scope.getOutputs().size() != 1) {
-    return scope.emitOpError("tensor lowering requires exactly one output");
+    return scope.emitOpError(
+        "tensor accumulation lowering supports exactly one output; split "
+        "multiple accumulators into separate scopes");
   }
   if (scope.getExplicitInits().size() != 1) {
-    return scope.emitOpError("tensor lowering requires one explicit init");
+    return scope.emitOpError(
+        "tensor accumulation lowering requires one explicit init; use DFB "
+        "accumulation lowering for overwrite or accumulate_existing modes");
   }
 
   SmallVector<AccumulationCombiner> combiners =
@@ -63,18 +67,21 @@ verifySingleAddExplicitTensorScope(AccumulationScopeOp scope) {
   // TODO(#646): Replace add-only validation with a combiner/strategy legality
   // table shared by all accumulation scope lowerings.
   if (combiners.front() != AccumulationCombiner::Add) {
-    return scope.emitOpError("tensor lowering requires add combiner");
+    return scope.emitOpError(
+        "tensor accumulation lowering supports only the add combiner (#646)");
   }
 
   SmallVector<AccumulationInitialMode> initialModes =
       scope.getAccumulationInitialModes();
   if (initialModes.front() != AccumulationInitialMode::Explicit) {
-    return scope.emitOpError("tensor lowering requires explicit initial mode");
+    return scope.emitOpError(
+        "tensor accumulation lowering requires explicit initial mode; use DFB "
+        "accumulation lowering for overwrite or accumulate_existing modes");
   }
 
   if (!scope.getOutputs().front().getDefiningOp<CBReserveOp>()) {
     return scope.emitOpError(
-        "tensor lowering requires output from ttl.cb_reserve");
+        "tensor accumulation lowering requires output from ttl.cb_reserve");
   }
   return success();
 }
@@ -128,7 +135,11 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
       getSingleTensorAccumulationLoop(scope, finalStore);
   if (failed(loop)) {
     (void)scope.emitOpError(
-        "tensor lowering requires a top-level scf.for followed by ttl.store");
+        "tensor accumulation lowering requires a normalized scope body with "
+        "one "
+        "top-level scf.for followed by the final ttl.store; run "
+        "ttl-form-accumulation-scopes or split other operations outside the "
+        "scope");
     return failure();
   }
 
@@ -138,14 +149,16 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
       ArrayRef<Operation *>{scope.getOperation()});
   if (failed(match)) {
     (void)scope.emitOpError(
-        "tensor lowering requires acc = acc + contribution recurrence");
+        "tensor accumulation lowering requires a loop-carried additive "
+        "recurrence of the form acc = acc + contribution; rewrite the loop");
     return failure();
   }
 
   if (match->finalStore != finalStore ||
       match->initialValue != scope.getExplicitInits().front()) {
     (void)scope.emitOpError(
-        "tensor lowering requires scope policy to match the loop recurrence");
+        "tensor accumulation scope policy must match the loop recurrence; "
+        "rebuild the scope with ttl-form-accumulation-scopes");
     return failure();
   }
 
@@ -167,17 +180,21 @@ static void eraseAccumulationScopeWrapper(AccumulationScopeOp scope,
 /// reconfiguration.
 static LogicalResult verifyAddDFBScope(AccumulationScopeOp scope) {
   if (scope.getOutputs().empty()) {
-    return scope.emitOpError("DFB lowering requires at least one output");
+    return scope.emitOpError(
+        "DFB accumulation lowering requires at least one output");
   }
   if (!scope.getExplicitInits().empty()) {
-    return scope.emitOpError("DFB lowering does not accept explicit inits");
+    return scope.emitOpError(
+        "DFB accumulation lowering does not accept explicit inits; use "
+        "overwrite or accumulate_existing initial modes");
   }
 
   // TODO(#646): Replace add-only validation with a combiner/strategy legality
   // table shared by all accumulation scope lowerings.
   for (AccumulationCombiner combiner : scope.getAccumulationCombiners()) {
     if (combiner != AccumulationCombiner::Add) {
-      return scope.emitOpError("DFB lowering requires add combiner");
+      return scope.emitOpError(
+          "DFB accumulation lowering supports only the add combiner (#646)");
     }
   }
 
@@ -185,8 +202,8 @@ static LogicalResult verifyAddDFBScope(AccumulationScopeOp scope) {
     if (mode != AccumulationInitialMode::Overwrite &&
         mode != AccumulationInitialMode::AccumulateExisting) {
       return scope.emitOpError(
-          "DFB lowering requires overwrite or accumulate_existing initial "
-          "mode");
+          "DFB accumulation lowering requires overwrite or accumulate_existing "
+          "initial mode");
     }
   }
 
@@ -229,7 +246,9 @@ static LogicalResult lowerDFBAccumulationScope(AccumulationScopeOp scope,
 
   FailureOr<scf::ForOp> loop = getSingleDFBAccumulationLoop(scope);
   if (failed(loop)) {
-    return scope.emitOpError("DFB lowering requires one top-level scf.for");
+    return scope.emitOpError(
+        "DFB accumulation lowering requires one top-level scf.for; split "
+        "multiple loops into separate scopes");
   }
 
   SmallVector<AccumulationInitialMode> initialModes =
@@ -239,7 +258,10 @@ static LogicalResult lowerDFBAccumulationScope(AccumulationScopeOp scope,
         return mode == initialMode;
       })) {
     return scope.emitOpError(
-        "DFB L1 lowering requires one initial mode for all outputs");
+        "DFB L1 accumulation lowering requires one initial mode for all "
+        "outputs; split outputs with different initialization requirements "
+        "into "
+        "separate loops");
   }
 
   (*loop)->setAttr(kL1AccLoopAttrName, UnitAttr::get(scope.getContext()));
@@ -271,7 +293,11 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
       return success();
     }
     if (strategy == AccumulationStrategy::Dst) {
-      return scope.emitOpError("cannot lower tensor accumulation scope to DST");
+      return scope.emitOpError(
+          "cannot lower tensor accumulation scope to DST: expected a "
+          "DST-compatible same-type additive recurrence with one loop-carried "
+          "accumulator and one final store; select the automatic accumulation "
+          "strategy or l1-pack");
     }
   }
 
@@ -284,7 +310,8 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
   if (match->contribution.getType() != match->tensorType) {
     return emitL1PackError(
         "the addend must have the same tensor type as the accumulator; select "
-        "the automatic accumulation strategy or rewrite the loop as a same-type "
+        "the automatic accumulation strategy or rewrite the loop as a "
+        "same-type "
         "additive recurrence");
   }
   if (loop.getNumResults() != 1 || match->resultIndex != 0) {

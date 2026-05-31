@@ -12,7 +12,7 @@ func.func @missing_initial_mode() attributes {ttkernel.thread = #ttkernel.thread
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
-  // expected-error @below {{'scf.for' op requires ttl.l1_acc_initial overwrite or accumulate_existing metadata}}
+  // expected-error @below {{'scf.for' op requires ttl.l1_acc_initial metadata with value overwrite or accumulate_existing; run ttl-lower-accumulation-scopes before ttkernel-insert-l1-accumulation}}
   scf.for %iv = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
@@ -31,7 +31,7 @@ func.func @missing_scope_id() attributes {ttkernel.thread = #ttkernel.thread<com
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
-  // expected-error @below {{'scf.for' op requires ttl.l1_acc_scope_id metadata}}
+  // expected-error @below {{'scf.for' op requires ttl.l1_acc_scope_id metadata; run ttl-lower-accumulation-scopes before ttkernel-insert-l1-accumulation}}
   scf.for %iv = %c0 to %c4 step %c1 {
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
@@ -54,7 +54,7 @@ func.func @unsupported_l1_acc_output_format() attributes {ttkernel.thread = #ttk
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.tile_regs_commit() : () -> ()
     ttkernel.tile_regs_wait() : () -> ()
-    // expected-error @below {{'ttkernel.pack_tile' op L1 packer accumulation does not support output data type bfp_bf8}}
+    // expected-error @below {{'ttkernel.pack_tile' op L1 packer accumulation does not support output data type bfp_bf8; use a supported output data type or select another accumulation strategy}}
     ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bfp_bf8>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
   } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
@@ -70,7 +70,7 @@ func.func @nested_mismatched_scope_ids() attributes {ttkernel.thread = #ttkernel
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   scf.for %outer = %c0 to %c2 step %c1 {
-    // expected-error @below {{'scf.for' op nested L1 accumulation loops require matching ttl.l1_acc_scope_id metadata}}
+    // expected-error @below {{'scf.for' op nested independent L1 accumulation scopes are not supported (#648); nested loops that belong to one accumulation must use matching ttl.l1_acc_scope_id metadata}}
     scf.for %inner = %c0 to %c2 step %c1 {
       ttkernel.tile_regs_acquire() : () -> ()
       ttkernel.tile_regs_commit() : () -> ()

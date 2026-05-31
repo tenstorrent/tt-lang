@@ -96,11 +96,16 @@ static FailureOr<AccumulationInitialMode> getL1AccInitialMode(scf::ForOp loop) {
 static LogicalResult verifyL1AccLoopMetadata(scf::ForOp loop) {
   if (failed(getL1AccInitialMode(loop))) {
     return loop.emitOpError() << "requires " << kL1AccInitialAttrName
-                              << " overwrite or accumulate_existing metadata";
+                              << " metadata with value overwrite or "
+                                 "accumulate_existing; run "
+                                 "ttl-lower-accumulation-scopes before "
+                                 "ttkernel-insert-l1-accumulation";
   }
   if (failed(getL1AccScopeId(loop))) {
     return loop.emitOpError()
-           << "requires " << kL1AccScopeIdAttrName << " metadata";
+           << "requires " << kL1AccScopeIdAttrName
+           << " metadata; run ttl-lower-accumulation-scopes before "
+              "ttkernel-insert-l1-accumulation";
   }
   return success();
 }
@@ -142,14 +147,16 @@ static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
     auto cbType = dyn_cast<ttk::CBType>(packOp.getOutCb().getType());
     if (!cbType) {
       result = packOp.emitOpError(
-          "L1 packer accumulation requires a typed output dataflow buffer");
+          "L1 packer accumulation requires the pack output to be a typed "
+          "dataflow buffer");
       return WalkResult::interrupt();
     }
 
     auto tileType = dyn_cast<ttcore::TileType>(cbType.getElementType());
     if (!tileType) {
       result = packOp.emitOpError(
-          "L1 packer accumulation requires a tile output dataflow buffer");
+          "L1 packer accumulation requires the pack output dataflow buffer to "
+          "hold tile elements");
       return WalkResult::interrupt();
     }
 
@@ -157,7 +164,9 @@ static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
     if (!isL1AccumulationDataTypeSupported(dataType)) {
       result = packOp.emitOpError()
                << "L1 packer accumulation does not support output data type "
-               << ttcore::DataTypeEnumToString(dataType);
+               << ttcore::DataTypeEnumToString(dataType)
+               << "; use a supported output data type or select another "
+                  "accumulation strategy";
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
@@ -191,8 +200,11 @@ static FailureOr<scf::ForOp> findScopeRoot(scf::ForOp loop, int64_t scopeId) {
     FailureOr<int64_t> parentScopeId = getL1AccScopeId(parentLoop);
     assert(succeeded(parentScopeId) && "verified above");
     if (*parentScopeId != scopeId) {
-      loop.emitOpError() << "nested L1 accumulation loops require matching "
-                         << kL1AccScopeIdAttrName << " metadata";
+      loop.emitOpError()
+          << "nested independent L1 accumulation scopes are not supported "
+             "(#648); nested loops that belong to one accumulation must use "
+             "matching "
+          << kL1AccScopeIdAttrName << " metadata";
       return failure();
     }
     rootLoop = parentLoop;
@@ -229,7 +241,10 @@ collectL1AccumulationLoopGroups(
 
     FailureOr<int64_t> scopeId = getL1AccScopeId(loop);
     if (failed(scopeId)) {
-      loop.emitOpError() << "requires " << kL1AccScopeIdAttrName << " metadata";
+      loop.emitOpError()
+          << "requires " << kL1AccScopeIdAttrName
+          << " metadata; run ttl-lower-accumulation-scopes before "
+             "ttkernel-insert-l1-accumulation";
       return failure();
     }
 

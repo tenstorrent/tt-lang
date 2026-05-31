@@ -1183,7 +1183,9 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
   // TODO(#648): Define nested and conditional accumulation scope semantics
   // before accepting nested ttl.accumulation_scope operations.
   if (hasNestedAccumulationScope) {
-    return emitOpError("nested ttl.accumulation_scope is not supported");
+    return emitOpError(
+        "nested ttl.accumulation_scope is not supported (#648); split nested "
+        "accumulations into separate scopes");
   }
 
   return mlir::success();

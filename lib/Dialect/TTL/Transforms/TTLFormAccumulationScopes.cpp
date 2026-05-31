@@ -226,7 +226,7 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
     if (store->getParentOp() != loop.getOperation()) {
       store->emitError("+= inside a conditional is not supported (#504); move "
                        "the condition outside the accumulation loop or use a "
-                       "separate loop for the conditional path");
+                       "separate loop for the conditional branch");
       hadFailure = true;
       return WalkResult::interrupt();
     }
@@ -239,7 +239,7 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
   if (!stores.empty() && !plainStores.empty()) {
     plainStores.front()->emitError(
         "non-accumulating store inside a += loop is not supported (#648); "
-        "move it outside the accumulation loop");
+        "move it outside the accumulation loop or split the loop");
     hadFailure = true;
     return failure();
   }
@@ -288,28 +288,33 @@ static LogicalResult formDFBAccumulationScope(scf::ForOp loop,
       hadFailure = true;
       return store.emitError(
           "accumulating store requires an output reserve that dominates the "
-          "accumulation loop");
+          "accumulation loop; move the reserve before the loop");
     }
 
     if (!seenOutputs.insert(store.getView()).second) {
       hadFailure = true;
       return store.emitError(
           "multiple accumulating stores to the same output view in one loop "
-          "are not supported");
+          "are not supported; combine the updates before storing or split them "
+          "into separate loops");
     }
 
     FailureOr<AccumulationInitialMode> mode =
         getInitialModeForAccumulatingStore(store, loop);
     if (failed(mode)) {
       hadFailure = true;
-      return store.emitError("cannot determine L1 accumulation initial mode");
+      return store.emitError(
+          "cannot determine L1 accumulation initial mode; keep initialization "
+          "as a straight-line store before the loop or split the loop");
     }
     if (!loopMode) {
       loopMode = *mode;
     } else if (*loopMode != *mode) {
       hadFailure = true;
       return loop.emitOpError()
-             << "has accumulating stores requiring different L1 initial modes";
+             << "has accumulating stores requiring different L1 initial modes; "
+                "split outputs with different initialization requirements into "
+                "separate loops";
     }
 
     outputs.push_back(store.getView());
