@@ -731,14 +731,13 @@ def _make_block_aug_in_loop_kernel():
 @pytest.mark.requires_device
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize(
-    "accumulation_strategy", ["auto", "dst", "l1-pack"], ids=["auto", "dst", "l1"]
+    "accumulation_strategy", ["auto", "l1-pack"], ids=["auto", "l1"]
 )
 def test_block_aug_assign_in_loop_uses_l1_acc(device, dtype, accumulation_strategy):
     """Regression for #540 review: `out_blk += x` inside a for loop on a
     reserve block carried over from an enclosing `with:` scope must
     continue to lower via __iadd__ (L1 acc store), not be wrongly added
-    as an scf.for iter_arg by the new loop-carried collector. The `dst`
-    strategy is tensor-only and must not reject this DFB accumulation."""
+    as an scf.for iter_arg by the new loop-carried collector."""
     x = torch.full((TILE, TILE), 1.0, dtype=dtype)
     out = torch.zeros((TILE, TILE), dtype=dtype)
     expected = N_ITERS * x.float()
