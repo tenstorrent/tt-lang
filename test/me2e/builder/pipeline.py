@@ -75,6 +75,7 @@ def compile_ttl_to_ttkernel(
         f"ttl-validate-cb-budget,"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
+        f"ttkernel-insert-l1-accumulation,"
         f"canonicalize,"
         f"cse,"
         f"lower-affine,"
