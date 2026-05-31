@@ -44,7 +44,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLLowerAccumulationScopesOptions lowerOpts;
     lowerOpts.kind = "dfb";
-    lowerOpts.strategy = options.accumulationStrategy;
     pm.addNestedPass<func::FuncOp>(
         createTTLLowerAccumulationScopes(std::move(lowerOpts)));
   }

@@ -221,12 +221,8 @@ getSingleDFBAccumulationLoop(AccumulationScopeOp scope) {
 /// TTKernel lowering consumes the metadata after TTL stores have been converted
 /// to packs, so no TTKernel operation ordering is inspected here.
 static LogicalResult lowerDFBAccumulationScope(AccumulationScopeOp scope,
-                                               AccumulationStrategy strategy,
                                                int64_t scopeId,
                                                RewriterBase &rewriter) {
-  if (strategy == AccumulationStrategy::Dst) {
-    return scope.emitOpError("cannot lower DFB accumulation scope to DST");
-  }
   if (failed(verifyAddDFBScope(scope))) {
     return failure();
   }
@@ -282,7 +278,8 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
   if (failed(
           lowerTensorAccumulationToL1Pack(*match, loop, scopeId, rewriter))) {
     // TODO(#650): Use explicit DFB state as the correctness fallback for
-    // semantically valid scopes when no hardware accumulation strategy is legal.
+    // semantically valid scopes when no hardware accumulation strategy is
+    // legal.
     return scope.emitOpError(
         "cannot lower tensor accumulation scope to L1 packer accumulation");
   }
@@ -322,10 +319,10 @@ struct TTLLowerAccumulationScopesPass
     for (AccumulationScopeOp scope : scopes) {
       int64_t scopeId = nextScopeId++;
       LogicalResult result =
-          kind == "tensor" ? lowerTensorAccumulationScope(
-                                 scope, *selectedStrategy, scopeId, rewriter)
-                           : lowerDFBAccumulationScope(scope, *selectedStrategy,
-                                                       scopeId, rewriter);
+          kind == "tensor"
+              ? lowerTensorAccumulationScope(scope, *selectedStrategy, scopeId,
+                                             rewriter)
+              : lowerDFBAccumulationScope(scope, scopeId, rewriter);
       if (failed(result)) {
         signalPassFailure();
         return;

@@ -1514,7 +1514,7 @@ def _compile_kernel(
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-auto-sync)",
             "func.func(ttl-form-accumulation-scopes{kind=dfb})",
-            f"func.func(ttl-lower-accumulation-scopes{{kind=dfb strategy={accumulation_strategy}}})",
+            "func.func(ttl-lower-accumulation-scopes{kind=dfb})",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",

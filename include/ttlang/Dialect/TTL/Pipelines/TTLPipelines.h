@@ -28,8 +28,8 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(true)};
   Option<std::string> accumulationStrategy{
       *this, "accumulation-strategy",
-      llvm::cl::desc("Select accumulation storage strategy: auto, dst, or "
-                     "l1-pack."),
+      llvm::cl::desc("Select tensor recurrence accumulation storage strategy: "
+                     "auto, dst, or l1-pack."),
       llvm::cl::init("auto")};
   Option<bool> enableFPUBinaryOps{
       *this, "enable-fpu-binary-ops",

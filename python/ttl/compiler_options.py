@@ -44,7 +44,10 @@ def _make_parser() -> argparse.ArgumentParser:
         "--ttl-accumulation-strategy",
         default=None,
         dest="accumulation_strategy",
-        help="Select accumulation storage strategy: auto, dst, or l1-pack (default: auto).",
+        help=(
+            "Select tensor recurrence accumulation storage strategy: auto, "
+            "dst, or l1-pack (default: auto)."
+        ),
     )
     p.add_argument(
         "--ttl-fpu-binary-ops",

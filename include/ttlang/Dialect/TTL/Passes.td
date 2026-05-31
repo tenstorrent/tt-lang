@@ -200,18 +200,19 @@ def TTLLowerAccumulationScopes
     L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
     metadata for TTKernel packer reconfiguration placement.
 
-    `strategy=auto` selects DST when a tensor recurrence satisfies the DST
-    legality rules and otherwise uses L1 packer accumulation. `strategy=dst`
-    requires DST and emits an error when the scope is not DST-compatible; DFB
-    accumulation scopes are not DST-compatible. `strategy=l1-pack` always uses
-    the L1 packer strategy.
+    For tensor scopes, `strategy=auto` selects DST when a tensor recurrence
+    satisfies the DST legality rules and otherwise uses L1 packer accumulation.
+    `strategy=dst` requires DST and emits an error when the tensor scope is not
+    DST-compatible. `strategy=l1-pack` always uses the L1 packer strategy.
+    DFB scopes always lower to L1 packer metadata because their storage target
+    is the reserved output dataflow buffer slot.
   }];
 
   let options = [
     Option<"kind", "kind", "std::string", "\"tensor\"",
            "Scope lowering kind: tensor or dfb.">,
     Option<"strategy", "strategy", "std::string", "\"auto\"",
-           "Accumulation strategy: auto, dst, or l1-pack.">
+           "Tensor recurrence accumulation strategy: auto, dst, or l1-pack.">
   ];
 
   let dependentDialects = [
