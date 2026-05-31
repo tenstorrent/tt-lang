@@ -20,6 +20,8 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> lowerToEmitC{*this, "lower-to-emitc",
                             llvm::cl::desc("Lower TTKernel to EmitC."),
                             llvm::cl::init(false)};
+  // TODO(#649): Replace maximize-dst with granular options for accumulation
+  // strategy, compute subblocking, and tile-op scheduling.
   Option<bool> maximizeDST{
       *this, "maximize-dst",
       llvm::cl::desc("Enable DST maximization via subblock compute."),

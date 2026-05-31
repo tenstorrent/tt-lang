@@ -34,6 +34,8 @@ enum class AccumulationStrategy {
   Auto,
   Dst,
   L1Pack,
+  // TODO(#649): Add DFB-state as an explicit user-selectable strategy after
+  // unsupported scopes can lower through explicit DFB state.
 };
 
 /// Parse the user-facing strategy spelling used by the pass option.
@@ -58,6 +60,8 @@ verifySingleAddExplicitTensorScope(AccumulationScopeOp scope) {
 
   SmallVector<AccumulationCombiner> combiners =
       scope.getAccumulationCombiners();
+  // TODO(#646): Replace add-only validation with a combiner/strategy legality
+  // table shared by all accumulation scope lowerings.
   if (combiners.front() != AccumulationCombiner::Add) {
     return scope.emitOpError("tensor lowering requires add combiner");
   }
@@ -169,6 +173,8 @@ static LogicalResult verifyAddDFBScope(AccumulationScopeOp scope) {
     return scope.emitOpError("DFB lowering does not accept explicit inits");
   }
 
+  // TODO(#646): Replace add-only validation with a combiner/strategy legality
+  // table shared by all accumulation scope lowerings.
   for (AccumulationCombiner combiner : scope.getAccumulationCombiners()) {
     if (combiner != AccumulationCombiner::Add) {
       return scope.emitOpError("DFB lowering requires add combiner");
@@ -275,6 +281,8 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
 
   if (failed(
           lowerTensorAccumulationToL1Pack(*match, loop, scopeId, rewriter))) {
+    // TODO(#650): Use explicit DFB state as the correctness fallback for
+    // semantically valid scopes when no hardware accumulation strategy is legal.
     return scope.emitOpError(
         "cannot lower tensor accumulation scope to L1 packer accumulation");
   }

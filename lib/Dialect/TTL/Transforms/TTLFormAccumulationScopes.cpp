@@ -70,6 +70,8 @@ isContiguousSingleTensorAccumulator(scf::ForOp loop,
   // Formation normalizes the reserve before the loop and removes dead attach
   // views. Other intervening operations would need explicit strategy-lowering
   // support to preserve their relative execution order.
+  // TODO(#640): Preserve post-loop pure users by lowering them through a staged
+  // finalize region instead of requiring an immediate final store.
   for (Operation *operation = loop->getNextNode();
        operation != match.finalStore.getOperation();
        operation = operation->getNextNode()) {
@@ -94,6 +96,8 @@ static LogicalResult formTensorAccumulationScope(scf::ForOp loop,
   }
 
   MLIRContext *context = loop.getContext();
+  // TODO(#646): Select the combiner from the matched recurrence instead of
+  // forming only additive tensor accumulation scopes.
   ArrayAttr combiners = rewriter.getArrayAttr(
       {AccumulationCombinerAttr::get(context, AccumulationCombiner::Add)});
   ArrayAttr initialModes =
@@ -288,6 +292,8 @@ static LogicalResult formDFBAccumulationScope(scf::ForOp loop,
     }
 
     outputs.push_back(store.getView());
+    // TODO(#646): Carry the source combiner when DFB accumulations support
+    // non-additive update operations.
     combiners.push_back(
         AccumulationCombinerAttr::get(context, AccumulationCombiner::Add));
     initialModes.push_back(AccumulationInitialModeAttr::get(context, *mode));

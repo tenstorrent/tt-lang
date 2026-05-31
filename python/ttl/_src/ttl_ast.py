@@ -1346,6 +1346,8 @@ class TTLGenericCompiler(TTCompilerBase):
             # Get tensor type from CB for reserve/wait result
             tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
             if method_name == "reserve":
+                # TODO(#645): Parse reserve(accumulation_strategy=...) here
+                # once source-level accumulation strategy hints are specified.
                 tensor = self._emit_op_signposts(
                     "cb_reserve",
                     context_expr,
