@@ -101,8 +101,11 @@ selection. It has:
 
 - `outputs`: destination tensor views governed by the accumulation policy;
 - `explicit_inits`: initial tensors for outputs whose mode is `explicit`;
-- `combiners`: one `#ttl.accumulation_combiner` per output;
-- `initial_modes`: one `#ttl.accumulation_initial_mode` per output;
+- `combiners`: one accumulation combiner enum attribute per output
+  (`0 : i32` is add);
+- `initial_modes`: one accumulation initial-mode enum attribute per output
+  (`0 : i32` is overwrite, `1 : i32` is accumulate_existing, and
+  `2 : i32` is explicit);
 - `body`: a single-block region containing the loop or operations that
   produce accumulated values.
 
@@ -141,8 +144,8 @@ Tensor recurrence scope form:
 ttl.accumulation_scope
     outs(%out_view : tensor<...>)
     inits(%init : tensor<...>)
-    {combiners = [#ttl.accumulation_combiner<add>],
-     initial_modes = [#ttl.accumulation_initial_mode<explicit>]} {
+    {combiners = [0 : i32],
+     initial_modes = [2 : i32]} {
   %result = scf.for ... iter_args(%acc = %init) -> tensor<...> {
     %next = ttl.add %acc, %contribution : tensor<...>
     scf.yield %next : tensor<...>
@@ -157,8 +160,8 @@ Explicit DFB accumulation scope form:
 ```mlir
 ttl.accumulation_scope
     outs(%out_view : tensor<...>)
-    {combiners = [#ttl.accumulation_combiner<add>],
-     initial_modes = [#ttl.accumulation_initial_mode<overwrite>]} {
+    {combiners = [0 : i32],
+     initial_modes = [0 : i32]} {
   scf.for ... {
     ttl.store %value, %out_view {accumulate} : ...
   }

@@ -1369,6 +1369,54 @@ func.func @annotated_siblings_split_by_bare_for() attributes {ttkernel.thread = 
 
 // -----
 
+// Idempotence is checked at the semantic scope root. In accumulate-existing
+// mode, the nested loop has no per-iteration reconfiguration, so a second pass
+// run must still recognize the root-level reconfiguration.
+
+// CHECK-LABEL: func.func @nested_same_scope_accumulate_existing_idempotent
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c0_i32
+// CHECK: %[[ENABLE:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[ENABLE]]) : (i32)
+// CHECK: scf.for
+// CHECK:   scf.for
+// CHECK:     ttkernel.pack_tile
+// CHECK-NOT: arith.cmpi
+// CHECK-NOT: scf.if
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c0_i32
+// CHECK:   } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+// CHECK: ttkernel.cb_push_back
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc
+func.func @nested_same_scope_accumulate_existing_idempotent() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  scf.for %outer = %c0 to %c4 step %c1 {
+    scf.for %inner = %c0 to %c4 step %c1 {
+      ttkernel.tile_regs_acquire() : () -> ()
+      ttkernel.tile_regs_commit() : () -> ()
+      ttkernel.tile_regs_wait() : () -> ()
+      ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+      ttkernel.tile_regs_release() : () -> ()
+    } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+  } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
 // Loop accumulates into two dataflow buffers, each with a pre-loop init pack.
 // Accumulate-existing metadata makes the pre-loop reconfiguration enable L1
 // accumulation so iteration 0 accumulates onto both init values.

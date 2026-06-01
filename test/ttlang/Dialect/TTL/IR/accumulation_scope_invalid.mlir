@@ -17,6 +17,44 @@ func.func @combiner_count_mismatch() {
 
 // -----
 
+// One initial mode is required for each output tensor.
+func.func @initial_mode_count_mismatch() {
+  %out0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out1 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op requires one initial mode per output}}
+  ttl.accumulation_scope outs(%out0, %out1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                    tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ttl.yield
+  } {combiners = [0 : i32, 0 : i32], initial_modes = [0 : i32]}
+  return
+}
+
+// -----
+
+// Combiner attributes must be generated enum attributes, not arbitrary attrs.
+func.func @malformed_combiner_attr() {
+  %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op combiners must contain accumulation combiner enum attributes}}
+  ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ttl.yield
+  } {combiners = [99 : i32], initial_modes = [0 : i32]}
+  return
+}
+
+// -----
+
+// Initial-mode attributes must be generated enum attributes, not arbitrary attrs.
+func.func @malformed_initial_mode_attr() {
+  %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op initial_modes must contain accumulation initial-mode enum attributes}}
+  ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ttl.yield
+  } {combiners = [0 : i32], initial_modes = [99 : i32]}
+  return
+}
+
+// -----
+
 // Explicit initial-value mode requires a corresponding init operand.
 func.func @missing_explicit_init() {
   %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>

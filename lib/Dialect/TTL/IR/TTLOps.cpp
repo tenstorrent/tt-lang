@@ -1116,7 +1116,7 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
   for (mlir::Attribute attr : getCombiners()) {
     if (!mlir::isa<AccumulationCombinerAttr>(attr)) {
       return emitOpError(
-          "combiners must contain only AccumulationCombinerAttr");
+          "combiners must contain accumulation combiner enum attributes");
     }
   }
 
@@ -1126,7 +1126,8 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
     auto modeAttr = mlir::dyn_cast<AccumulationInitialModeAttr>(attr);
     if (!modeAttr) {
       return emitOpError(
-          "initial_modes must contain only AccumulationInitialModeAttr");
+          "initial_modes must contain accumulation initial-mode enum "
+          "attributes");
     }
     AccumulationInitialMode mode = modeAttr.getValue();
     initialModes.push_back(mode);

@@ -177,6 +177,15 @@ class CompilerOptions:
         default=frozenset(), compare=False, hash=False, repr=False
     )
 
+    def __post_init__(self):
+        """Validate options that can be constructed without argparse."""
+        if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
+            raise ValueError(
+                "Invalid accumulation strategy "
+                f"{self.accumulation_strategy!r}; expected one of "
+                f"{sorted(_ACCUMULATION_STRATEGIES)}"
+            )
+
     @staticmethod
     def from_string(options: Optional[str] = None) -> CompilerOptions:
         """Parse an option string (e.g., "--no-ttl-maximize-dst").

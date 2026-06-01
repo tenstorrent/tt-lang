@@ -194,9 +194,9 @@ def TTLLowerAccumulationScopes
   let summary = "Lower semantic accumulation scopes";
   let description = [{
     Lowers `ttl.accumulation_scope` regions to a concrete storage strategy.
-    The initial tensor implementation supports single-output additive tensor
-    recurrences formed by `ttl-form-accumulation-scopes`. DFB mode lowers
-    user-written accumulating stores to L1 packer metadata.
+    Tensor mode supports single-output additive tensor recurrences formed by
+    `ttl-form-accumulation-scopes`. DFB mode lowers user-written accumulating
+    stores to L1 packer metadata.
     L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
     metadata for TTKernel packer reconfiguration placement.
 

@@ -301,6 +301,9 @@ collectL1AccumulationLoopGroups(
         continue;
       }
       if (isa<ttk::CBReserveBackOp>(operation)) {
+        // A later reserve may introduce packs for another output before this
+        // scope's push. Disabling before that reserve is conservative because
+        // L1-acc state affects subsequent packs, not cb_push_back itself.
         break;
       }
 
@@ -338,19 +341,6 @@ struct TTKernelInsertL1AccumulationPass
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
       auto loop = findL1AccLoop(acquireOp);
       if (!loop || !visitedLoops.insert(loop).second) {
-        return;
-      }
-      bool alreadyProcessed = false;
-      if (auto *prev = loop->getPrevNode()) {
-        alreadyProcessed = isa<ttk::PackReconfigL1AccOp>(prev);
-      }
-      if (!alreadyProcessed) {
-        loop->walk([&](ttk::PackReconfigL1AccOp) {
-          alreadyProcessed = true;
-          return WalkResult::interrupt();
-        });
-      }
-      if (alreadyProcessed) {
         return;
       }
       if (failed(verifyL1AccLoopMetadata(loop))) {
@@ -405,6 +395,26 @@ struct TTKernelInsertL1AccumulationPass
 
     // Emit packer L1 accumulation reconfiguration for each semantic scope.
     for (auto &group : *groups) {
+      // The marker after the semantic scope end is unambiguous. The marker
+      // before the root loop may be the disable from a preceding independent
+      // scope when scopes are adjacent.
+      bool alreadyProcessed = false;
+      if (auto *next = group.scopeEnd->getNextNode()) {
+        while (next && isa<arith::ConstantOp>(next)) {
+          next = next->getNextNode();
+        }
+        alreadyProcessed = isa<ttk::PackReconfigL1AccOp>(next);
+      }
+      if (!alreadyProcessed) {
+        group.rootLoop->walk([&](ttk::PackReconfigL1AccOp) {
+          alreadyProcessed = true;
+          return WalkResult::interrupt();
+        });
+      }
+      if (alreadyProcessed) {
+        continue;
+      }
+
       OpBuilder builder(group.rootLoop->getContext());
       Location disableLoc = group.rootLoop->getLoc();
 

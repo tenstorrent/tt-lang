@@ -193,6 +193,25 @@ def _get_value_type(value):
     return None
 
 
+def _require_mlir_value_type(value, var_name, construct_name):
+    """Return the type for a value that will appear in an SCF result list."""
+    value_type = _get_value_type(value)
+    if value_type is not None:
+        return value_type
+    construct_display_name = (
+        "if statement" if construct_name == "an if statement" else "loop"
+    )
+    local_scope_name = "branch" if construct_name == "an if statement" else "loop body"
+    raise ValueError(
+        f"Variable '{var_name}' is reassigned inside {construct_name}, but it "
+        "is a plain Python value, such as a tuple, list, string, or integer; "
+        f"TT-Lang only supports reassigning TT-Lang tensor, block, and scalar "
+        f"values across {construct_name}; move the Python assignment outside "
+        f"the {construct_display_name} or use a different local variable name "
+        f"inside the {local_scope_name}"
+    )
+
+
 def _is_host_scalar_constant(val) -> bool:
     """True if `val` is a Float- or Integer-typed MLIR Value defined by
     arith.ConstantOp (i.e. a Python int/float captured by the AST). Index
@@ -369,7 +388,10 @@ class TTCompilerBase(PyKernelAstBase):
             _get_single_result(self._var_exists(var_name)[var_name])
             for var_name in carried_var_names
         ]
-        carried_types = [_get_value_type(value) for value in carried_initial_values]
+        carried_types = [
+            _require_mlir_value_type(value, var_name, "an if statement")
+            for var_name, value in zip(carried_var_names, carried_initial_values)
+        ]
 
         if_exp = scf.IfOp(
             cond=if_cond,
@@ -399,11 +421,16 @@ class TTCompilerBase(PyKernelAstBase):
         yield_values = []
         for var_name, initial_value in zip(carried_var_names, carried_initial_values):
             final_value = self.symbol_tables[-1].get(var_name, initial_value)
-            if _get_value_type(final_value) != _get_value_type(initial_value):
+            initial_type = _require_mlir_value_type(
+                initial_value, var_name, "an if statement"
+            )
+            final_type = _require_mlir_value_type(
+                final_value, var_name, "an if statement"
+            )
+            if final_type != initial_type:
                 raise ValueError(
-                    f"If-carried variable '{var_name}' changes type from "
-                    f"{_get_value_type(initial_value)} to "
-                    f"{_get_value_type(final_value)}"
+                    f"Variable '{var_name}' changes type across an if statement from "
+                    f"{initial_type} to {final_type}"
                 )
             yield_values.append(_get_single_result(final_value))
         scf.YieldOp(yield_values)
@@ -473,12 +500,15 @@ class TTCompilerBase(PyKernelAstBase):
             for var_name, initial_value in zip(
                 carried_var_names, carried_initial_values
             ):
-                final_value = self.symbol_tables[-1][var_name]
-                if _get_value_type(final_value) != _get_value_type(initial_value):
+                final_value = self.symbol_tables[-1].get(var_name, initial_value)
+                initial_type = _require_mlir_value_type(
+                    initial_value, var_name, "a loop"
+                )
+                final_type = _require_mlir_value_type(final_value, var_name, "a loop")
+                if final_type != initial_type:
                     raise ValueError(
-                        f"Loop-carried variable '{var_name}' changes type from "
-                        f"{_get_value_type(initial_value)} to "
-                        f"{_get_value_type(final_value)}"
+                        f"Variable '{var_name}' changes type across a loop from "
+                        f"{initial_type} to {final_type}"
                     )
                 yield_values.append(_get_single_result(final_value))
             scf.YieldOp(yield_values)

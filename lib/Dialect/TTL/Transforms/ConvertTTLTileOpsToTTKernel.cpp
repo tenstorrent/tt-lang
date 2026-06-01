@@ -111,27 +111,8 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
   return Value();
 }
 
-/// Compute the CB tile index for an operand by tracing back to its defining
-/// tensor.extract and linearizing the extract indices in the operand's
-/// row-major layout. The extract indices are the source of truth for CB tile
-/// positions -- they encode the indexing map application performed during
-/// loop lowering (generateTileProcessing), so this works correctly for any
-/// indexing map (identity, transpose, broadcast, reduction) without needing
-/// the map itself.
-///
-/// For unrolled ops, the extract indices are constants and the linearization
-/// folds to a constant. For loop-based ops, the indices are loop IVs and
-/// the result is an arith expression.
-///
-/// Precondition: the operand must trace back to a tensor.extract. This holds
-/// for all CB-input tile ops after loop lowering, since generateTileProcessing
-/// always creates tensor.extract ops for each input. The extract survives
-/// unrolling (clone preserves it) and cannot fold away (the source tensor is
-/// from attach_cb, which is opaque to canonicalization).
-///
-/// Returns failure if the precondition is violated.
-static FailureOr<Value> computeCBTileIndex(Value operand, OpBuilder &builder,
-                                           Location loc) {
+/// Return the tensor.extract that defines a tile read from a tensor view.
+static FailureOr<tensor::ExtractOp> getCBTileExtract(Value operand) {
   auto extractOp = operand.getDefiningOp<tensor::ExtractOp>();
   if (!extractOp) {
     return failure();
@@ -142,14 +123,49 @@ static FailureOr<Value> computeCBTileIndex(Value operand, OpBuilder &builder,
   if (!tensorTy) {
     return failure();
   }
+  return extractOp;
+}
 
+/// Compute the DFB tile index for `extractOp`.
+///
+/// The extract indices are the source of truth for DFB tile positions: they
+/// encode the indexing map application performed during loop lowering
+/// (`generateTileProcessing`), so this works for identity, transpose,
+/// broadcast, and reduction maps without inspecting the map again.
+static Value computeCBTileIndex(tensor::ExtractOp extractOp, OpBuilder &builder,
+                                Location loc) {
+  auto tensorTy = cast<RankedTensorType>(extractOp.getTensor().getType());
   // Linearize the extract indices within the immediate tensor's shape.
   Value localIndex = affine::AffineLinearizeIndexOp::create(
       builder, loc, extractOp.getIndices(), tensorTy.getShape());
 
   // If the tensor comes from an extract_slice (subblocking), convert
-  // the local index to a global CB index by adding the slice offset.
+  // the local index to a global DFB index by adding the slice offset.
   return utils::addSliceOffset(extractOp.getTensor(), localIndex, builder, loc);
+}
+
+/// Compute the DFB tile index for an operand by tracing back to its defining
+/// tensor.extract and linearizing the extract indices in the operand's
+/// row-major layout.
+static FailureOr<Value> computeCBTileIndex(Value operand, OpBuilder &builder,
+                                           Location loc) {
+  FailureOr<tensor::ExtractOp> extractOp = getCBTileExtract(operand);
+  if (failed(extractOp)) {
+    return failure();
+  }
+  return computeCBTileIndex(*extractOp, builder, loc);
+}
+
+/// Return the TTKernel DFB type corresponding to `cb`.
+static FailureOr<Type> getTargetCBType(Value cb) {
+  if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
+    return Type(ttkCb);
+  }
+  if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+    return Type(ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
+                                 ttlCb.getElementType()));
+  }
+  return failure();
 }
 
 /// Look up and convert a CB for an operand.
@@ -163,20 +179,17 @@ static FailureOr<Value> lookupAndConvertCB(Value operand, func::FuncOp funcOp,
     return failure();
   }
 
-  Type targetCbTy;
-  if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
-    targetCbTy = ttkCb;
-  } else if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
-    targetCbTy = ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
-                                  ttlCb.getElementType());
+  if (!typeConverter) {
+    return failure();
   }
-  if (!targetCbTy || !typeConverter) {
+  FailureOr<Type> targetCbTy = getTargetCBType(cb);
+  if (failed(targetCbTy)) {
     return failure();
   }
 
-  Value converted =
-      typeConverter->materializeTargetConversion(rewriter, loc, targetCbTy, cb);
-  if (!converted || converted.getType() != targetCbTy) {
+  Value converted = typeConverter->materializeTargetConversion(rewriter, loc,
+                                                               *targetCbTy, cb);
+  if (!converted || converted.getType() != *targetCbTy) {
     return failure();
   }
   return converted;
@@ -387,15 +400,28 @@ struct TTLTileAccumulateAddToTTKernel
       contributionSource = traceUnrealizedCasts(contributionSource);
     }
 
-    auto contributionCB = lookupAndConvertCB(
-        contributionSource, funcOp, this->getTypeConverter(), rewriter, loc);
-    auto contributionTileIndex =
-        computeCBTileIndex(contributionSource, rewriter, loc);
-    if (succeeded(contributionCB) && succeeded(contributionTileIndex)) {
+    Value contributionCBSource = lookupCBByIndex(contributionSource, funcOp);
+    FailureOr<tensor::ExtractOp> contributionExtract =
+        getCBTileExtract(contributionSource);
+    const TypeConverter *typeConverter = this->getTypeConverter();
+    FailureOr<Type> targetContributionCBType = failure();
+    if (contributionCBSource && typeConverter) {
+      targetContributionCBType = getTargetCBType(contributionCBSource);
+    }
+    if (contributionCBSource && succeeded(contributionExtract) &&
+        succeeded(targetContributionCBType)) {
+      Value contributionCB = typeConverter->materializeTargetConversion(
+          rewriter, loc, *targetContributionCBType, contributionCBSource);
+      if (!contributionCB ||
+          contributionCB.getType() != *targetContributionCBType) {
+        return rewriter.notifyMatchFailure(
+            op, "failed to materialize contribution DFB type conversion");
+      }
+      Value contributionTileIndex =
+          computeCBTileIndex(*contributionExtract, rewriter, loc);
       ttk::BinaryDestReuseTilesOp::create(
-          rewriter, loc, *contributionCB, *contributionTileIndex,
-          *accumulatorDst, ttk::EltwiseBinaryType::Add,
-          ttk::BinaryDestReuseType::DestToSrcA);
+          rewriter, loc, contributionCB, contributionTileIndex, *accumulatorDst,
+          ttk::EltwiseBinaryType::Add, ttk::BinaryDestReuseType::DestToSrcA);
 
       rewriter.replaceOp(op, adaptor.getAccumulator());
       if (contributionCopy && contributionCopy.getDstToken().use_empty() &&

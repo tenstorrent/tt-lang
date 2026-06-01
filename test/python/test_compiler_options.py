@@ -53,6 +53,10 @@ class TestFromString:
         with pytest.raises(ValueError, match="Invalid accumulation strategy"):
             CompilerOptions.from_string("--ttl-accumulation-strategy=invalid")
 
+    def test_direct_invalid_accumulation_strategy_raises(self):
+        with pytest.raises(ValueError, match="Invalid accumulation strategy"):
+            CompilerOptions(accumulation_strategy="invalid")
+
     def test_disable_fpu(self):
         opts = CompilerOptions.from_string("--no-ttl-fpu-binary-ops")
         assert opts.enable_fpu_binary_ops is False

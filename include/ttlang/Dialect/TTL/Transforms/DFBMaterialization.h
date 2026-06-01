@@ -15,7 +15,9 @@ namespace mlir::tt::ttl {
 
 // Allocates a fresh compiler-managed dataflow buffer and emits its
 // `bind_cb` at function entry, where `finalize-dfb-indices` requires every
-// compiler-allocated bind to live. The block count is set to 2, the
+// compiler-allocated bind to live. The assigned DFB index is provisional;
+// `finalize-dfb-indices` performs physical index reuse and validates the
+// hardware DFB-index limit. The block count is set to 2, the
 // smallest size that lets the producer and consumer use different slots
 // concurrently; larger counts work but waste L1 since no current caller
 // needs more than one value in flight at a time. The builder's insertion

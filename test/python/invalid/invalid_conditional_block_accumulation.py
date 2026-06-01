@@ -7,7 +7,8 @@
 
 """
 Validation test: conditional block `+=` is rejected by accumulation scope
-formation, not by the frontend's if-carried variable handling.
+formation, not by frontend handling for values reassigned across an if
+statement.
 """
 
 import os
