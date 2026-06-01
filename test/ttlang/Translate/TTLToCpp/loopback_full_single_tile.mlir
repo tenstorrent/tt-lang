@@ -24,13 +24,13 @@
 // CHECK:     auto [[ARGS_READ:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:     TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[RT_ARG_R]], [[ADDR]]);
 // CHECK-NEXT:     noc_async_read_tile([[ZERO]], [[ACC_READ]], [[CB]].get_write_ptr());
-// CHECK:     noc_async_read_barrier();
+// CHECK:     noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // Write: CB -> tensor (uses get_read_ptr for CB source)
 // CHECK:     int32_t [[RT_ARG_W:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
 // CHECK:     auto [[ARGS_WRITE:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 1>(), 1>();
 // CHECK:     TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[RT_ARG_W]], [[ADDR]]);
 // CHECK-NEXT:     noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[CB]].get_read_ptr());
-// CHECK:     noc_async_write_barrier();
+// CHECK:     noc.async_write_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   }
 // CHECK:   return;
 // CHECK-NEXT: }

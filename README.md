@@ -68,7 +68,7 @@ It does two things, both inside the venv (no sudo):
 - Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts it under `<venv>/.../ttnn/runtime/sfpi/` (for `tt-lang` installation only).
 - Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to `./tutorials/`.
 
-For finer control: `tt-lang-setup-host` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
+For finer control: `tt-lang-setup-sfpi` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 
 Run a tutorial example:
 

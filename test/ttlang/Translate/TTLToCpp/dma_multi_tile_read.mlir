@@ -41,7 +41,7 @@
 // CHECK:       noc_async_read_tile([[TILE_OFFSET]], [[ACCESSOR]], [[CB_ADDR]]);
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc_async_read_barrier();
+// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

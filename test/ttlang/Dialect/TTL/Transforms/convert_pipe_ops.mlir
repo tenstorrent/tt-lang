@@ -44,21 +44,24 @@ func.func @if_dst_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // CB -> Pipe copy (unicast): lowers to noc_async_write + semaphore inc
 // CHECK-LABEL: func.func @copy_cb_to_pipe
+// CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[ADDR_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[ADDR_READY_SEM]])
 // CHECK: ttkernel.experimental::semaphore_wait(%[[ADDR_READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[ADDR_READY_PTR]]
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK: %[[DST_X:.*]] = ttkernel.experimental::convert_logical_x_to_translated
+// CHECK: %[[DST_Y:.*]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
 // CHECK: %[[TABLE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[SCRATCH]])
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1(%[[TABLE_PTR]]
-// CHECK: %[[DST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_ADDR]])
-// CHECK: ttkernel.noc_async_write(%[[SRC_ADDR]], %[[DST_NOC]]
-// CHECK: ttkernel.noc_async_write_barrier
+// CHECK-NOT: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_ADDR]])
+// CHECK: ttkernel.noc_async_write %[[SRC_ADDR]], core[%[[DST_X]], %[[DST_Y]]], %[[DST_ADDR]], {{.*}} : (i32, index, index, i32, i32) -> ()
+// CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]])
-// CHECK: ttkernel.noc_semaphore_inc(%[[DONE_NOC]]
+// CHECK: %[[DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], %[[NOC]])
+// CHECK: ttkernel.noc_semaphore_inc(%[[DONE_NOC]], {{.*}}, %[[NOC]])
 func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -72,16 +75,18 @@ func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // Pipe -> DFB copy (unicast receiver): publish the reserved destination
 // address, then wait for sender completion.
 // CHECK-LABEL: func.func @copy_pipe_to_cb
+// CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
 // CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
-// CHECK: %[[TABLE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH]])
-// CHECK: ttkernel.noc_inline_dw_write(%[[TABLE_NOC]], %[[DST_ADDR]]
+// CHECK: %[[TABLE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH]], %[[NOC]])
+// CHECK: ttkernel.noc_inline_dw_write(%[[TABLE_NOC]], %[[DST_ADDR]], {{.*}}, %[[NOC]])
+// CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]])
-// CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]]
+// CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]], %[[NOC]])
+// CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]], {{.*}}, %[[NOC]])
 // CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[DONE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[DONE_SEM]])
 // CHECK: %[[OLD:.*]] = memref.load %[[CTR]]
@@ -110,7 +115,7 @@ func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // CHECK-DAG: %[[P1_TABLE_OFF:.*]] = arith.constant 4 : i32
 // First receive post publishes to p0 table slot and increments p0 ready sem.
 // CHECK: %[[SCRATCH0:.*]] = ttkernel.get_common_arg_val
-// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH0]])
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH0]], {{.*}})
 // CHECK: ttkernel.noc_inline_dw_write
 // CHECK: %[[P0_READY:.*]] = ttkernel.get_semaphore(%[[P0_READY_IDX]])
 // Second receive post publishes to p1 table slot and increments p1 ready sem.
@@ -187,7 +192,7 @@ func.func @same_source_pipes_keep_local_ready_counters_below_limit() attributes 
 // CHECK-LABEL: func.func @same_source_pipes_keep_local_ready_counters_at_limit
 // CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 1 : index
 // CHECK: %[[READY_POST:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
-// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]])
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[READY_SEND:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
@@ -232,7 +237,7 @@ func.func @same_source_pipes_keep_local_ready_counters_at_limit() attributes { "
 // CHECK: %[[SCRATCH_POST:.*]] = ttkernel.get_common_arg_val(%[[SCRATCH_ARG_IDX]])
 // CHECK: ttkernel.noc_inline_dw_write
 // CHECK: %[[READY_POST:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_IDX]])
-// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]])
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[READY_SEND:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_IDX]])
 // CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
@@ -281,7 +286,7 @@ func.func @same_source_pipes_use_global_ready_counters() attributes { "ttl.kerne
 // CHECK-DAG: %[[SCRATCH_ARG_IDX:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[FIRST_READY_ARG_IDX:.*]] = arith.constant 1 : index
 // CHECK: %[[READY_POST:.*]] = ttkernel.get_common_arg_val(%[[FIRST_READY_ARG_IDX]])
-// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]])
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[READY_SEND:.*]] = ttkernel.get_common_arg_val(%[[FIRST_READY_ARG_IDX]])
 // CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
@@ -289,7 +294,7 @@ func.func @same_source_pipes_use_global_ready_counters() attributes { "ttl.kerne
 // CHECK: ttkernel.get_common_arg_val(%[[SCRATCH_ARG_IDX]])
 // CHECK: ttkernel.load_from_l1
 // CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]])
+// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc
 func.func @interleaved_pipenets_use_global_ready_and_local_completion() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -332,21 +337,52 @@ func.func @interleaved_pipenets_use_global_ready_and_local_completion() attribut
 // publish a common multicast destination address, writes payload with multicast,
 // and inc_multicast signals every receiver's recvSem.
 // CHECK-LABEL: func.func @copy_cb_to_pipe_multicast
+// CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[ADDR_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[ADDR_READY_SEM]])
 // CHECK: ttkernel.experimental::semaphore_wait(%[[ADDR_READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[ADDR_READY_PTR]]
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK: %[[DST_X_START:.*]] = ttkernel.experimental::convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_END:.*]] = ttkernel.experimental::convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END:.*]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
-// CHECK: %[[MCAST_ADDR:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DST_ADDR]])
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR]], %[[MCAST_ADDR]]
-// CHECK: ttkernel.noc_async_write_barrier
+// CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[DST_ADDR]]
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_ADDR]], %[[NOC]])
+// CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[DONE_NOC:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DONE_SEM]])
-// CHECK: ttkernel.noc_semaphore_inc_multicast(%[[DONE_NOC]]
+// CHECK: %[[DONE_NOC:.*]] = ttkernel.get_noc_multicast_addr(%[[DST_X_START]], %[[DST_Y_START]], %[[DST_X_END]], %[[DST_Y_END]], %[[DONE_SEM]], %[[NOC]])
+// CHECK: ttkernel.noc_semaphore_inc_multicast(%[[DONE_NOC]], {{.*}}, {{.*}}, %[[NOC]])
+// CHECK: ttkernel.noc_async_atomic_barrier(%[[NOC]])
 // CHECK-NOT: ttkernel.noc_semaphore_set_multicast
 func.func @copy_cb_to_pipe_multicast() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
+  %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %xf : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// NOC1 multicast lowering reverses the translated destination rectangle before
+// constructing tt-metal multicast transactions and semaphore addresses.
+// CHECK-LABEL: func.func @copy_cb_to_pipe_multicast_noc1
+// CHECK: %[[NOC:.*]] = arith.constant 1 : i8
+// CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK: %[[DST_X_START:.*]] = ttkernel.experimental::convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_END:.*]] = ttkernel.experimental::convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[%[[DST_X_END]], %[[DST_Y_END]]], end_xy[%[[DST_X_START]], %[[DST_Y_START]]], %[[DST_ADDR]], %[[NOC]])
+// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: %[[DONE_NOC:.*]] = ttkernel.get_noc_multicast_addr(%[[DST_X_END]], %[[DST_Y_END]], %[[DST_X_START]], %[[DST_Y_START]], %[[DONE_SEM]], %[[NOC]])
+// CHECK: ttkernel.noc_semaphore_inc_multicast(%[[DONE_NOC]], {{.*}}, {{.*}}, %[[NOC]])
+func.func @copy_cb_to_pipe_multicast_noc1() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc>, "ttl.noc_index" = 1 : i64 } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
@@ -360,21 +396,27 @@ func.func @copy_cb_to_pipe_multicast() attributes { "ttl.kernel_thread" = #ttker
 // receiver-published common destination address. Signaling splits into
 // inc_multicast to remote receivers + local noc_semaphore_inc on self.
 // CHECK-LABEL: func.func @copy_cb_to_pipe_multicast_loopback
+// CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[ADDR_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[ADDR_READY_SEM]])
 // CHECK: ttkernel.experimental::semaphore_wait(%[[ADDR_READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[ADDR_READY_PTR]]
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK: %[[DST_X_START:.*]] = ttkernel.experimental::convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_END:.*]] = ttkernel.experimental::convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END:.*]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
-// CHECK: %[[MCAST_ADDR:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DST_ADDR]])
-// CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], %[[MCAST_ADDR]]
-// CHECK: ttkernel.noc_async_write_barrier
+// CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[DST_ADDR]]
+// CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_ADDR]], %[[NOC]])
+// CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[REMOTE_DONE_NOC:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DONE_SEM]])
-// CHECK: ttkernel.noc_semaphore_inc_multicast(%[[REMOTE_DONE_NOC]]
-// CHECK: %[[LOCAL_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]])
-// CHECK: ttkernel.noc_semaphore_inc(%[[LOCAL_DONE_NOC]]
+// CHECK: %[[REMOTE_DONE_NOC:.*]] = ttkernel.get_noc_multicast_addr(%[[DST_X_START]], %[[DST_Y_START]], %[[DST_X_END]], %[[DST_Y_END]], %[[DONE_SEM]], %[[NOC]])
+// CHECK: ttkernel.noc_semaphore_inc_multicast(%[[REMOTE_DONE_NOC]], {{.*}}, {{.*}}, %[[NOC]])
+// CHECK: %[[LOCAL_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], %[[NOC]])
+// CHECK: ttkernel.noc_semaphore_inc(%[[LOCAL_DONE_NOC]], {{.*}}, %[[NOC]])
+// CHECK: ttkernel.noc_async_atomic_barrier(%[[NOC]])
 // CHECK-NOT: ttkernel.noc_semaphore_set_multicast
 func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -397,8 +439,7 @@ func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread"
 // CHECK: ttkernel.experimental::semaphore_wait
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
-// CHECK: %[[MCAST_ADDR:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DST_ADDR]])
-// CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], %[[MCAST_ADDR]]
+// CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[{{.*}}, {{.*}}], end_xy[{{.*}}, {{.*}}], %[[DST_ADDR]], {{.*}})
 func.func @loopback_multicast_aggregate_ready_counting() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -425,8 +466,7 @@ func.func @loopback_multicast_aggregate_ready_counting() attributes { "ttl.kerne
 // CHECK: ttkernel.experimental::semaphore_wait
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
-// CHECK: %[[MCAST_ADDR:.*]] = ttkernel.experimental::get_noc_multicast_addr({{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[DST_ADDR]])
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR]], %[[MCAST_ADDR]]
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[{{.*}}, {{.*}}], end_xy[{{.*}}, {{.*}}], %[[DST_ADDR]], {{.*}})
 // CHECK-NOT: ttkernel.noc_async_write_multicast_loopback_src
 func.func @non_loopback_multicast_sram_address_table() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -454,8 +494,7 @@ func.func @non_loopback_multicast_sram_address_table() attributes { "ttl.kernel_
 // CHECK: ttkernel.experimental::semaphore_wait
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
-// CHECK: %[[DST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_ADDR]])
-// CHECK: ttkernel.noc_async_write(%[[SRC_ADDR]], %[[DST_NOC]]
+// CHECK: ttkernel.noc_async_write %[[SRC_ADDR]], core[{{.*}}, {{.*}}], %[[DST_ADDR]], {{.*}} : (i32, index, index, i32, i32) -> ()
 func.func @degenerate_multicast_aggregate_ready_counting() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -474,17 +513,19 @@ func.func @degenerate_multicast_aggregate_ready_counting() attributes { "ttl.ker
 // Pipe -> DFB (multicast receiver): publish the destination address through
 // the SRAM address table, then wait on the per-PipeNet counter.
 // CHECK-LABEL: func.func @copy_pipe_to_cb_multicast
+// CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[CTR]]
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.get_write_ptr(%[[DST_DFB]])
 // CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
-// CHECK: %[[TABLE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH]])
-// CHECK: ttkernel.noc_inline_dw_write(%[[TABLE_NOC]], %[[DST_ADDR]]
+// CHECK: %[[TABLE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SCRATCH]], %[[NOC]])
+// CHECK: ttkernel.noc_inline_dw_write(%[[TABLE_NOC]], %[[DST_ADDR]], {{.*}}, %[[NOC]])
+// CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]])
-// CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]]
+// CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]], %[[NOC]])
+// CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]], {{.*}}, %[[NOC]])
 // CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[DONE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[DONE_SEM]])
 // CHECK: %[[V:.*]] = memref.load %[[CTR]]
