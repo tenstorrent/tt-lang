@@ -16,6 +16,7 @@ from utils.correctness import assert_allclose  # noqa: E402
 
 TILE = 32
 N_ITERS = 3
+N_DFB_INITIAL_MODE_ITERS = 32
 MULTI_TILE_BLOCK_ROWS = 2
 MULTI_TILE_BLOCK_COLS = 2
 MULTI_TILE_SHAPE = (MULTI_TILE_BLOCK_ROWS, MULTI_TILE_BLOCK_COLS)
@@ -243,6 +244,75 @@ def _make_single_tile_dfb_accumulation_kernel():
         def writer():
             with out_dfb.wait() as out_blk:
                 ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+def _make_seeded_dfb_accumulate_existing_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(seed, inp, out):
+        seed_dfb = ttl.make_dataflow_buffer_like(seed, shape=(1, 1), block_count=2)
+        inp_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=(1, 1), block_count=N_DFB_INITIAL_MODE_ITERS
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with seed_dfb.wait() as seed_blk, out_dfb.reserve() as out_blk:
+                out_blk.store(seed_blk)
+                for _ in range(N_DFB_INITIAL_MODE_ITERS):
+                    with inp_dfb.wait() as inp_blk:
+                        out_blk += inp_blk
+
+        @ttl.datamovement()
+        def reader():
+            with seed_dfb.reserve() as seed_blk:
+                ttl.copy(seed[0:1, 0:1], seed_blk).wait()
+            for _ in range(N_DFB_INITIAL_MODE_ITERS):
+                with inp_dfb.reserve() as inp_blk:
+                    ttl.copy(inp[0:1, 0:1], inp_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as out_blk:
+                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+def _make_reused_slot_dfb_overwrite_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(seed, inp, out):
+        seed_dfb = ttl.make_dataflow_buffer_like(seed, shape=(1, 1), block_count=2)
+        inp_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=(1, 1), block_count=N_DFB_INITIAL_MODE_ITERS
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+        @ttl.compute()
+        def compute():
+            with seed_dfb.wait() as seed_blk, out_dfb.reserve() as out_blk:
+                out_blk.store(seed_blk)
+
+            with out_dfb.reserve() as out_blk:
+                for _ in range(N_DFB_INITIAL_MODE_ITERS):
+                    with inp_dfb.wait() as inp_blk:
+                        out_blk += inp_blk
+
+        @ttl.datamovement()
+        def reader():
+            with seed_dfb.reserve() as seed_blk:
+                ttl.copy(seed[0:1, 0:1], seed_blk).wait()
+            for _ in range(N_DFB_INITIAL_MODE_ITERS):
+                with inp_dfb.reserve() as inp_blk:
+                    ttl.copy(inp[0:1, 0:1], inp_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            for _ in range(2):
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(out_blk, out[0:1, 0:1]).wait()
 
     return kernel
 
@@ -476,6 +546,58 @@ def test_single_tile_dfb_accumulation_strategy(device, dtype, accumulation_strat
     _run_accumulation_kernel(
         _make_single_tile_dfb_accumulation_kernel(),
         [inp],
+        out,
+        expected,
+        dtype,
+        device,
+        accumulation_strategy,
+    )
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    "accumulation_strategy",
+    ACCUMULATION_STRATEGIES,
+    ids=ACCUMULATION_STRATEGY_IDS,
+)
+def test_seeded_dfb_accumulation_uses_existing_output(
+    device, dtype, accumulation_strategy
+):
+    """A prior store into the reserved output block must remain part of DFB +=."""
+    seed = _make_tiled_constant_tensor(1, 1, dtype, base=3.0)
+    inp = _make_tiled_constant_tensor(1, 1, dtype, base=0.125)
+    out = torch.zeros((TILE, TILE), dtype=dtype)
+    expected = seed.float() + N_DFB_INITIAL_MODE_ITERS * inp.float()
+    _run_accumulation_kernel(
+        _make_seeded_dfb_accumulate_existing_kernel(),
+        [seed, inp],
+        out,
+        expected,
+        dtype,
+        device,
+        accumulation_strategy,
+    )
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    "accumulation_strategy",
+    ACCUMULATION_STRATEGIES,
+    ids=ACCUMULATION_STRATEGY_IDS,
+)
+def test_reused_dfb_slot_overwrite_discards_prior_output(
+    device, dtype, accumulation_strategy
+):
+    """DFB += without an in-reservation seed must overwrite on the first update."""
+    seed = _make_tiled_constant_tensor(1, 1, dtype, base=7.0)
+    inp = _make_tiled_constant_tensor(1, 1, dtype, base=0.125)
+    out = torch.zeros((TILE, TILE), dtype=dtype)
+    expected = N_DFB_INITIAL_MODE_ITERS * inp.float()
+    _run_accumulation_kernel(
+        _make_reused_slot_dfb_overwrite_kernel(),
+        [seed, inp],
         out,
         expected,
         dtype,

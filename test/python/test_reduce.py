@@ -729,9 +729,8 @@ def test_reduce_multicore(
 
 
 # =============================================================================
-# L1 accumulation tests: multi-tile reduce_sum with maximize_dst=false.
-# Verifies per-tile L1 accumulation (pack_reconfig_l1_acc) works correctly
-# when DST accumulation is disabled.
+# L1 reduction-mode tests with maximize_dst=false. Additive reductions use
+# packer accumulation; max reductions must not be treated as additive.
 # =============================================================================
 
 # Separate kernel factory to avoid cache collision with DST-accumulation kernels.
@@ -844,13 +843,45 @@ def _make_l1_acc_kernel(
             1.0,
             "l1_sum_4x4_dim0",
         ),
+        (
+            "reduce_max",
+            (2, 2),
+            [0],
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
+            1.0,
+            "l1_max_2x2_dim0",
+        ),
+        (
+            "reduce_max",
+            (2, 2),
+            [1],
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
+            1.0,
+            "l1_max_2x2_dim1",
+        ),
+        (
+            "reduce_max",
+            (2, 2),
+            [0, 1],
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
+            1.0,
+            "l1_max_2x2_both",
+        ),
     ],
-    ids=["l1_sum_2x2_dim0", "l1_sum_2x2_dim1", "l1_sum_2x2_both", "l1_sum_4x4_dim0"],
+    ids=[
+        "l1_sum_2x2_dim0",
+        "l1_sum_2x2_dim1",
+        "l1_sum_2x2_both",
+        "l1_sum_4x4_dim0",
+        "l1_max_2x2_dim0",
+        "l1_max_2x2_dim1",
+        "l1_max_2x2_both",
+    ],
 )
 def test_reduce_l1_accumulation(
     device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id, dtype
 ):
-    """Multi-tile reduce_sum with L1 accumulation (maximize_dst=false)."""
+    """Multi-tile reductions with maximize_dst=false."""
     inp_rows, inp_cols = inp_shape
     out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
     kernel = _make_l1_acc_kernel(reduce_fn, inp_rows, inp_cols, dims, scaler_val)
