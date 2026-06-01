@@ -80,6 +80,7 @@ Deferred features are tracked separately:
 - #648: define nested and conditional accumulation scope semantics;
 - #649: replace `maximize-dst` with granular compiler options;
 - #650: synthesize explicit DFB state fallback for unsupported scopes.
+- #652: add explicit matmul K-accumulation strategy selection.
 
 The current design preserves these invariants:
 
@@ -473,6 +474,10 @@ Three placement modes:
   the reduction loop inside
 
 All computes use `DstSectionOp`, including matmul (`LowerMatmulBlock`).
+Matmul K accumulation is currently selected from block sizes, DST capacity,
+and subblocking behavior. #652 tracks an explicit
+`matmul-k-accumulation=auto|dst|l1-pack` option so users and tests can require
+DST-resident K accumulation or L1 packer accumulation directly.
 
 ## DST vs L1 Reduction Lowering
 
