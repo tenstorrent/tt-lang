@@ -10,7 +10,7 @@ import ttnn
 from utils.correctness import assert_pcc
 
 
-@ttl.operation(grid=(13, 10))
+@ttl.operation(grid=(8, 7))
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -120,7 +120,7 @@ def main() -> None:
         print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
         print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
         print(f"Total output tiles: {(M//32) * (N//32)}")
-        print("Grid: 13x10 = 130 nodes")
+        print("Grid: 8x7 = 56 nodes")
 
         tt_lang_multinode_matmul(a, b, out)
 
