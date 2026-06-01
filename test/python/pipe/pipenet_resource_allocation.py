@@ -322,7 +322,7 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # CHECK-CPP: get_semaphore([[READY]])
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait
-# CHECK-CPP: noc_async_write
+# CHECK-CPP: {{noc\.async_write\(}}
 # CHECK-CPP: noc_semaphore_inc
 #
 # RUNTIME: PASS: ksplit_resource_allocation result verified
