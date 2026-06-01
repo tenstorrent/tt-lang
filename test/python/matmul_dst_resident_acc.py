@@ -61,8 +61,21 @@ def matmul_dst_resident_acc(input_a, input_b, output):
 # CHECK-CPP:       void kernel_main()
 # CHECK-CPP-NOT:   llk_pack_reconfig_l1_acc
 # CHECK-CPP:       tile_regs_acquire();
+# CHECK-CPP-NOT:   pack_tile
+# CHECK-CPP-NOT:   tile_regs_release
 # CHECK-CPP:       for (size_t
+# CHECK-CPP-NOT:   wait_front
+# CHECK-CPP-NOT:   reserve_back
+# CHECK-CPP-NOT:   push_back
+# CHECK-CPP-NOT:   pop_front
+# CHECK-CPP-NOT:   pack_tile
 # CHECK-CPP:         matmul_block(
+# CHECK-CPP-NOT:   wait_front
+# CHECK-CPP-NOT:   reserve_back
+# CHECK-CPP-NOT:   push_back
+# CHECK-CPP-NOT:   pop_front
+# CHECK-CPP-NOT:   pack_tile
+# CHECK-CPP-NOT:   tile_regs_release
 # CHECK-CPP:       tile_regs_commit();
 # CHECK-CPP-NEXT:  tile_regs_wait();
 # CHECK-CPP-NEXT:  pack_tile_block(
