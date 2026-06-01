@@ -58,6 +58,34 @@ def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduction function type",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+//===----------------------------------------------------------------------===//
+// Accumulation enums
+//===----------------------------------------------------------------------===//
+
+def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
+
+// TODO(#646): Add max/min combiners after strategy legality is defined for
+// each storage mechanism.
+def TTL_AccumulationCombiner : I32EnumAttr<"AccumulationCombiner",
+    "TTL accumulation combiner", [TTL_AccumulationCombiner_Add]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_AccumulationInitialMode_Overwrite
+    : I32EnumAttrCase<"Overwrite", 0, "overwrite">;
+def TTL_AccumulationInitialMode_AccumulateExisting
+    : I32EnumAttrCase<"AccumulateExisting", 1, "accumulate_existing">;
+def TTL_AccumulationInitialMode_Explicit
+    : I32EnumAttrCase<"Explicit", 2, "explicit">;
+
+def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
+    "TTL accumulation initial-value mode",
+    [TTL_AccumulationInitialMode_Overwrite,
+     TTL_AccumulationInitialMode_AccumulateExisting,
+     TTL_AccumulationInitialMode_Explicit]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 // Buffer type for tensor memory placement.
 // Values match TTNN BufferType enum for compatibility.
 def TTL_BufferType_DRAM       : I32EnumAttrCase<"DRAM",       0, "dram">;
