@@ -3,22 +3,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Matmul K-accumulation precision: verify error stays bounded as K grows.
+Matmul K-accumulation precision and multicore correctness coverage.
 
-Two strategies tested:
-  - Kt=1 streaming: explicit accumulation with separate partial and acc DFBs.
-  - Kt>1 single fill: entire K in one DFB, compiler-generated K loop.
+The parameterized precision tests compare two accumulation forms as K grows:
+  - Kt=1 streaming: each K tile computes a partial result, and explicit DFB
+    state accumulates those partials.
+  - Kt>1 single fill: one input DFB contains the full K block, and
+    compiler-generated matmul_block accumulation keeps intermediate results in
+    DST when the output block fits DST capacity.
 
-Accuracy requirements (PCC > 0.999, max/mean error scaling as sqrt(K)):
-  - Each K step adds an independent bf16 rounding error. For random inputs
-    these errors are uncorrelated, so the accumulated error grows as
-    O(sqrt(K)) (random walk).
-  - Kt>1 with matmul_full_fp32 accumulates in f32 DST without intermediate
-    bf16 truncation, so error bounds are tighter than Kt=1 which truncates
-    to bf16 at each CB round-trip.
-  - Error that grows faster than sqrt(K) indicates a correctness bug
-    (e.g., wrong tile indexing, missing subblocking, or fp32_dest_acc_en
-    not propagated to all compute ops).
+For the precision tests, PCC must exceed 0.999 and max/mean error must scale
+as sqrt(K). Each K step adds an independent bf16 rounding error; for random
+inputs these errors are uncorrelated. The Kt>1 DST-resident form accumulates
+in f32 DST without intermediate bf16 truncation, so its bounds are tighter
+than Kt=1 streaming, which stores through DFB state after each K step.
+
+The multicore test uses the Kt>1 DST-resident form on a 2x2 grid to verify
+that M/N block distribution preserves the same K-accumulation semantics across
+cores.
 """
 
 import math
