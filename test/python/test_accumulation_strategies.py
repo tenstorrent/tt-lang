@@ -17,6 +17,8 @@ from utils.correctness import assert_allclose  # noqa: E402
 TILE = 32
 N_ITERS = 3
 N_DFB_INITIAL_MODE_ITERS = 32
+N_L1_PACK_PRECISION_ITERS = 32
+N_TRIP_COUNT_ONE_ITERS = 1
 MULTI_TILE_BLOCK_ROWS = 2
 MULTI_TILE_BLOCK_COLS = 2
 MULTI_TILE_SHAPE = (MULTI_TILE_BLOCK_ROWS, MULTI_TILE_BLOCK_COLS)
@@ -52,7 +54,15 @@ def _make_tiled_constant_tensor(tile_rows, tile_cols, dtype, base):
 
 
 def _run_accumulation_kernel(
-    kernel, in_tensors, out_tensor, expected, dtype, device, accumulation_strategy
+    kernel,
+    in_tensors,
+    out_tensor,
+    expected,
+    dtype,
+    device,
+    accumulation_strategy,
+    rtol=None,
+    atol=None,
 ):
     """Run one accumulation kernel with an explicit strategy option."""
     in_devs = [to_dram(tensor, device) for tensor in in_tensors]
@@ -65,7 +75,49 @@ def _run_accumulation_kernel(
     ttnn.synchronize_device(device)
 
     result = ttnn.to_torch(out_dev).float()
-    assert_allclose(result, expected.float(), **_DTYPE_TOL[dtype])
+    tolerances = dict(_DTYPE_TOL[dtype])
+    if rtol is not None:
+        tolerances["rtol"] = rtol
+    if atol is not None:
+        tolerances["atol"] = atol
+    assert_allclose(result, expected.float(), **tolerances)
+
+
+def _make_single_tile_tensor_recurrence_kernel(iterations):
+    @ttl.operation(grid=(1, 1))
+    def kernel(initial, delta, out):
+        initial_dfb = ttl.make_dataflow_buffer_like(
+            initial, shape=(1, 1), block_count=2
+        )
+        delta_dfb = ttl.make_dataflow_buffer_like(
+            delta, shape=(1, 1), block_count=iterations
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with initial_dfb.wait() as acc:
+                for _ in range(iterations):
+                    with delta_dfb.wait() as delta_blk:
+                        acc = acc + delta_blk
+
+                with out_dfb.reserve() as out_blk:
+                    out_blk.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with initial_dfb.reserve() as initial_blk:
+                ttl.copy(initial[0:1, 0:1], initial_blk).wait()
+            for _ in range(iterations):
+                with delta_dfb.reserve() as delta_blk:
+                    ttl.copy(delta[0:1, 0:1], delta_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as out_blk:
+                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
 
 
 def _make_multi_tile_tensor_recurrence_kernel():
@@ -281,12 +333,12 @@ def _make_seeded_dfb_accumulate_existing_kernel():
     return kernel
 
 
-def _make_reused_slot_dfb_overwrite_kernel():
+def _make_reused_slot_dfb_overwrite_kernel(iterations):
     @ttl.operation(grid=(1, 1))
     def kernel(seed, inp, out):
         seed_dfb = ttl.make_dataflow_buffer_like(seed, shape=(1, 1), block_count=2)
         inp_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=N_DFB_INITIAL_MODE_ITERS
+            inp, shape=(1, 1), block_count=iterations
         )
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
 
@@ -296,7 +348,7 @@ def _make_reused_slot_dfb_overwrite_kernel():
                 out_blk.store(seed_blk)
 
             with out_dfb.reserve() as out_blk:
-                for _ in range(N_DFB_INITIAL_MODE_ITERS):
+                for _ in range(iterations):
                     with inp_dfb.wait() as inp_blk:
                         out_blk += inp_blk
 
@@ -304,7 +356,7 @@ def _make_reused_slot_dfb_overwrite_kernel():
         def reader():
             with seed_dfb.reserve() as seed_blk:
                 ttl.copy(seed[0:1, 0:1], seed_blk).wait()
-            for _ in range(N_DFB_INITIAL_MODE_ITERS):
+            for _ in range(iterations):
                 with inp_dfb.reserve() as inp_blk:
                     ttl.copy(inp[0:1, 0:1], inp_blk).wait()
 
@@ -532,6 +584,26 @@ def test_multicore_multi_tile_tensor_recurrence_strategy(
 
 
 @pytest.mark.requires_device
+def test_l1_pack_fp32_non_exact_accumulation_precision(device):
+    """L1 packer accumulation handles non-exact fp32 increments."""
+    initial = torch.full((TILE, TILE), 0.3, dtype=torch.float32)
+    delta = torch.full((TILE, TILE), 0.1, dtype=torch.float32)
+    out = torch.zeros((TILE, TILE), dtype=torch.float32)
+    expected = initial + N_L1_PACK_PRECISION_ITERS * delta
+    _run_accumulation_kernel(
+        _make_single_tile_tensor_recurrence_kernel(N_L1_PACK_PRECISION_ITERS),
+        [initial, delta],
+        out,
+        expected,
+        torch.float32,
+        device,
+        "l1-pack",
+        rtol=3e-4,
+        atol=1e-4,
+    )
+
+
+@pytest.mark.requires_device
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize(
     "accumulation_strategy",
@@ -596,7 +668,31 @@ def test_reused_dfb_slot_overwrite_discards_prior_output(
     out = torch.zeros((TILE, TILE), dtype=dtype)
     expected = N_DFB_INITIAL_MODE_ITERS * inp.float()
     _run_accumulation_kernel(
-        _make_reused_slot_dfb_overwrite_kernel(),
+        _make_reused_slot_dfb_overwrite_kernel(N_DFB_INITIAL_MODE_ITERS),
+        [seed, inp],
+        out,
+        expected,
+        dtype,
+        device,
+        accumulation_strategy,
+    )
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    "accumulation_strategy",
+    ACCUMULATION_STRATEGIES,
+    ids=ACCUMULATION_STRATEGY_IDS,
+)
+def test_reused_dfb_slot_trip_count_one_overwrite(device, dtype, accumulation_strategy):
+    """A single DFB += update must discard stale output slot contents."""
+    seed = _make_tiled_constant_tensor(1, 1, dtype, base=7.0)
+    inp = _make_tiled_constant_tensor(1, 1, dtype, base=0.125)
+    out = torch.zeros((TILE, TILE), dtype=dtype)
+    expected = N_TRIP_COUNT_ONE_ITERS * inp.float()
+    _run_accumulation_kernel(
+        _make_reused_slot_dfb_overwrite_kernel(N_TRIP_COUNT_ONE_ITERS),
         [seed, inp],
         out,
         expected,
