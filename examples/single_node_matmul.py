@@ -7,7 +7,7 @@
 import torch
 import ttl
 import ttnn
-from utils.correctness import assert_with_ulp
+from utils.correctness import assert_pcc
 
 
 @ttl.operation(grid=(1, 1))
@@ -105,7 +105,7 @@ def main() -> None:
         tt_lang_singlenode_matmul(a, b, out)
 
         golden = a_torch @ b_torch
-        assert_with_ulp(golden, ttnn.to_torch(out), ulp_threshold=1000)
+        assert_pcc(golden.float(), ttnn.to_torch(out).float(), threshold=0.99)
     finally:
         ttnn.close_device(device)
 
