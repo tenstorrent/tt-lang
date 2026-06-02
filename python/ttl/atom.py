@@ -53,11 +53,15 @@ from .dataflow_buffer import (
     make_dfb,
 )
 from .dtype_utils import is_ttnn_tensor
+from .pipe import PipeNet
 
 
-# Names whose top-level ``x = <name>(...)`` assigns are lifted out of the
-# body and evaluated to DataflowBuffer capture objects before the split.
+# Names whose top-level ``x = <name>(...)`` assigns are lifted out of the body
+# and evaluated to capture objects (DataflowBuffer / Pipe / PipeNet) before the
+# split, the same way @ttl.operation constructs them in its setup body.
 _DFB_FACTORY_NAMES = {"make_dfb", "make_dataflow_buffer_like"}
+_PIPE_FACTORY_NAMES = {"Pipe", "PipeNet"}
+_SETUP_FACTORY_NAMES = _DFB_FACTORY_NAMES | _PIPE_FACTORY_NAMES
 
 
 class DFB:
@@ -176,45 +180,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     )
 
 
-def _lift_dfb_assigns(
-    fn_def: ast.FunctionDef,
-    eval_scope: Dict[str, Any],
-) -> Tuple[ast.FunctionDef, Dict[str, DataflowBuffer]]:
-    """Evaluate and strip top-level ``name = make_dfb(...)`` /
-    ``make_dataflow_buffer_like(...)`` assigns.
-
-    Returns a function with those statements removed and a mapping from
-    DFB variable name to the evaluated DataflowBuffer. The evaluation
-    order is source order, which fixes the CB-index order (matching the
-    @ttl.operation setup-body order).
-    """
-    lifted: Dict[str, DataflowBuffer] = {}
-    kept: List[ast.stmt] = []
-    ns = dict(eval_scope)
-    ns.setdefault("make_dfb", make_dfb)
-    ns.setdefault("make_dataflow_buffer_like", make_dataflow_buffer_like)
-
-    for stmt in fn_def.body:
-        target = _dfb_assign_target(stmt)
-        if target is None:
-            kept.append(stmt)
-            continue
-        value = eval(ast.unparse(stmt.value), ns)  # noqa: S307
-        if not isinstance(value, DataflowBuffer):
-            kept.append(stmt)
-            continue
-        lifted[target] = value
-        ns[target] = value
-
-    _reject_unsupported_pipes(fn_def)
-
-    new_fn = copy.copy(fn_def)
-    new_fn.body = kept
-    return new_fn, lifted
-
-
-def _dfb_assign_target(stmt: ast.stmt) -> Optional[str]:
-    """If ``stmt`` is ``name = <dfb-factory>(...)``, return ``name``."""
+def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
+    """If ``stmt`` is ``name = <dfb/pipe-factory>(...)``, return ``name``."""
     if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
         return None
     if not isinstance(stmt.targets[0], ast.Name):
@@ -222,26 +189,59 @@ def _dfb_assign_target(stmt: ast.stmt) -> Optional[str]:
     if not isinstance(stmt.value, ast.Call):
         return None
     func = stmt.value.func
-    fname = func.attr if isinstance(func, ast.Attribute) else (
-        func.id if isinstance(func, ast.Name) else None
+    fname = (
+        func.attr
+        if isinstance(func, ast.Attribute)
+        else (func.id if isinstance(func, ast.Name) else None)
     )
-    if fname not in _DFB_FACTORY_NAMES:
+    if fname not in _SETUP_FACTORY_NAMES:
         return None
     return stmt.targets[0].id
 
 
-def _reject_unsupported_pipes(fn_def: ast.FunctionDef) -> None:
-    for node in ast.walk(fn_def):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if node.func.attr in ("PipeNet", "Pipe"):
-                raise NotImplementedError(
-                    "@ttl.atom: PipeNet/Pipe support is not yet implemented"
-                )
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in ("PipeNet", "Pipe"):
-                raise NotImplementedError(
-                    "@ttl.atom: PipeNet/Pipe support is not yet implemented"
-                )
+def _lift_setup(
+    fn_def: ast.FunctionDef,
+    scope: Dict[str, Any],
+) -> Tuple[ast.FunctionDef, Dict[str, DataflowBuffer], Dict[str, PipeNet]]:
+    """Strip and evaluate the top-level DFB / Pipe / PipeNet construction
+    assigns.
+
+    Returns the kernel body with those statements removed, plus the
+    DataflowBuffer and PipeNet objects keyed by name. Each construction
+    expression is evaluated in source order in a controlled namespace, with
+    results threaded back in so a later ``PipeNet([p0])`` sees an earlier
+    ``p0`` and CB indices are assigned in source order. This runs just the
+    setup statements that @ttl.operation runs as part of executing its whole
+    body; the per-thread compiler consumes the results as captures, not as
+    in-body calls.
+    """
+    import ttl as _ttl
+
+    ns = dict(scope)
+    ns.setdefault("make_dfb", make_dfb)
+    ns.setdefault("make_dataflow_buffer_like", make_dataflow_buffer_like)
+    ns.setdefault("ttl", _ttl)
+
+    dfbs: Dict[str, DataflowBuffer] = {}
+    nets: Dict[str, PipeNet] = {}
+    kept: List[ast.stmt] = []
+    for stmt in fn_def.body:
+        name = _setup_assign_target(stmt)
+        if name is None:
+            kept.append(stmt)
+            continue
+        value = eval(ast.unparse(stmt.value), ns)  # noqa: S307
+        ns[name] = value
+        if isinstance(value, DataflowBuffer):
+            dfbs[name] = value
+        elif isinstance(value, PipeNet):
+            nets[name] = value
+        # A bare Pipe stays in ns for a later PipeNet reference but is not a
+        # capture; only DataflowBuffers and PipeNets are bound on threads.
+
+    new_fn = copy.copy(fn_def)
+    new_fn.body = kept
+    return new_fn, dfbs, nets
 
 
 def _has_real_work(body: List[ast.stmt]) -> bool:
@@ -309,10 +309,10 @@ def _compile_atom(
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
 ):
-    from ._pipenets import OperationPipeNets
     from .operators import _set_current_grid
     from .ttl_api import (
         Program,
+        _build_pipenet_graph,
         _detect_memory_space_from_tensor,
         _lower_program_to_kernel,
         _require_device,
@@ -349,24 +349,30 @@ def _compile_atom(
     _reset_cb_counter()
     _set_current_grid(grid)
 
-    stripped_fn, lifted = _lift_dfb_assigns(spec.fn_ast, eval_scope)
+    stripped_fn, dfbs, nets = _lift_setup(spec.fn_ast, eval_scope)
+
+    # Assign each PipeNet a distinct operation-local id (and validate), the
+    # same graph @ttl.operation builds; it also yields the runner's pipe
+    # semaphore count.
+    pipe_graph = _build_pipenet_graph(nets.values())
 
     split = split_function_body(
         fn_def=stripped_fn,
         dfb_param_names=set(spec.dfb_param_names),
         all_param_names={p.name for p in spec.params},
-        local_dfb_names=set(lifted),
+        local_dfb_names=set(dfbs),
     )
 
     # Captures shared by every thread: ttnn tensors and scalars (bound
-    # values) plus the lifted DFBs. Tensor/DFB captures are included on all
-    # threads to keep the tensor-accessor and CB layout stable; unused ones
-    # are removed by MLIR DCE.
+    # values), the lifted DFBs, and the lifted PipeNets. Tensor/DFB captures
+    # are included on all threads to keep the tensor-accessor and CB layout
+    # stable; unused ones are removed by MLIR DCE.
     captures: Dict[str, Any] = {}
     for pname, val in bound.arguments.items():
         if is_ttnn_tensor(val) or isinstance(val, (int, float)):
             captures[pname] = val
-    captures.update(lifted)
+    captures.update(dfbs)
+    captures.update(nets)
 
     threads = []
     for kernel_type, thread in (
@@ -401,8 +407,8 @@ def _compile_atom(
         args=args,
         launch_grid=grid,
         num_outs=num_outs,
-        cb_configs=_cb_configs_from_lifted(lifted),
-        pipenets=OperationPipeNets(),
+        cb_configs=_cb_configs_from_lifted(dfbs),
+        pipenets=pipe_graph,
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,

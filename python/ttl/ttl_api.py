@@ -1002,8 +1002,19 @@ def _build_operation_pipenets(f: Callable, threads):
     for thread in threads:
         visit(getattr(thread, "__wrapped__", None))
 
+    return _build_pipenet_graph(seen.values())
+
+
+def _build_pipenet_graph(nets):
+    """Build the OperationPipeNets graph for a sequence of PipeNet objects,
+    assigning each net (and its pipes) a dense operation-local id and
+    validating the result. Shared by @ttl.operation (closure discovery)
+    and @ttl.atom (lifted PipeNet assigns)."""
+    from ._pipenets import OperationPipeNets
+    from .pipe import _pipe_to_pipe_use
+
     graph = OperationPipeNets()
-    for net in seen.values():
+    for net in nets:
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id
         # Assign every Pipe in this net the operation-local id so the AST
