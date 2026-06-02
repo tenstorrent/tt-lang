@@ -28,10 +28,13 @@ if _SIM_ONLY_INSTALL:
 else:
     from ttl.ttl import (
         operation,
+        atom,
+        DFB,
         compute,
         datamovement,
         Program,
         make_dataflow_buffer_like,
+        make_dfb,
         copy,
         node,
         grid_size,
@@ -53,6 +56,8 @@ else:
 
     __all__ = [
         "operation",
+        "atom",
+        "DFB",
         "compute",
         "datamovement",
         "Program",
@@ -64,6 +69,7 @@ else:
         "Pipe",
         "PipeNet",
         "make_dataflow_buffer_like",
+        "make_dfb",
         "copy",
         "node",
         "grid_size",
