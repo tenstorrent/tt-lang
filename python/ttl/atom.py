@@ -374,21 +374,24 @@ def _compile_atom(
     captures.update(dfbs)
     captures.update(nets)
 
+    # TTNN interop requires exactly 3 kernels (1 compute + 2 data movement);
+    # emit all three even when a thread has no work, filling it with a pass
+    # body, the same shape @ttl.operation produces.
     threads = []
+    any_real_work = False
     for kernel_type, thread in (
         ("compute", "trisc"),
         ("datamovement", "ncrisc"),
         ("datamovement", "brisc"),
     ):
         body = split.body_for(thread)
-        if not _has_real_work(body):
-            continue
+        any_real_work = any_real_work or _has_real_work(body)
         fn_name = f"{spec.name}__{thread}"
         threads.append(
             _make_thread_callable(spec, kernel_type, fn_name, body, captures)
         )
 
-    if not threads:
+    if not any_real_work:
         raise ValueError(
             f"@ttl.atom '{spec.name}': body contained no compute or data "
             f"movement work after classification"
