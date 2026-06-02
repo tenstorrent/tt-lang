@@ -2,8 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn, tt-device
-# RUN: %python %s
+# REQUIRES: ttnn
+# UNSUPPORTED: system-darwin
+# RUN: %python -m pytest %s -v
 
 """@ttl.atom with a single unicast PipeNet across two cores. Core (1,0)
 reads a tile and sends it over the pipe; core (0,0) reads its own tile,
@@ -14,10 +15,14 @@ if_src callback (BRISC), recv_cb only in if_dst (NCRISC) -- because the
 splitter routes the two callbacks onto different RISCs and rejects a
 single reserve driven from both."""
 
+import pytest
 import torch
 
-import ttnn
 import ttl
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import assert_allclose, to_dram
 
 
 @ttl.atom(grid=(2, 1))
@@ -53,39 +58,16 @@ def atom_pipe_unicast(a, out):
         ttl.copy(out_cb.wait(), out[0:1, 0:1])
 
 
-def _to_dram(device, t):
-    return ttnn.from_torch(
-        t,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+def test_atom_pipe_unicast(device):
+    tile = ttnn.TILE_SIZE
+    # Two row-tiles: tile 0 is core (0,0)'s own, tile 1 is sent from (1,0).
+    a_t = torch.randn(2 * tile, tile, dtype=torch.bfloat16) * 0.5
+    expected = (a_t[:tile].float() + a_t[tile:].float()).to(torch.bfloat16)
 
+    a = to_dram(a_t, device)
+    out = to_dram(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
 
-def main():
-    from ttlang_test_utils import require_hardware
+    atom_pipe_unicast(a, out)
 
-    require_hardware()
-    device = ttnn.open_device(device_id=0)
-    try:
-        torch.manual_seed(2026)
-        tile = ttnn.TILE_SIZE
-        # Two row-tiles: tile 0 is core (0,0)'s own, tile 1 is sent from (1,0).
-        a_t = torch.randn(2 * tile, tile, dtype=torch.bfloat16) * 0.5
-        expected = (a_t[:tile].float() + a_t[tile:].float()).to(torch.bfloat16)
-
-        a = _to_dram(device, a_t)
-        out = _to_dram(device, torch.zeros(tile, tile, dtype=torch.bfloat16))
-
-        atom_pipe_unicast(a, out)
-
-        got = ttnn.to_torch(out).reshape(tile, tile).to(torch.bfloat16)
-        torch.testing.assert_close(got, expected, rtol=2e-2, atol=2e-2)
-        print("atom_pipe_unicast: OK")
-    finally:
-        ttnn.close_device(device)
-
-
-if __name__ == "__main__":
-    main()
+    got = ttnn.to_torch(out).reshape(tile, tile).to(torch.bfloat16)
+    assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
