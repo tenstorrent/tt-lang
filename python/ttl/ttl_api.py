@@ -1162,6 +1162,47 @@ def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
     return merged
 
 
+def _run_thread_compiler(
+    name,
+    kernel_type,
+    captures,
+    globals_,
+    args,
+    kwargs,
+    module_ast,
+    source_lines,
+    source_file,
+    verbose=False,
+):
+    """Construct a TTLGenericCompiler for one thread, visit its AST, and
+    verify. Returns the compiler instance (the compiled thread).
+
+    Shared by @ttl.operation thread wrappers (which build module_ast from
+    the thread function source) and @ttl.atom (which feeds a synthesized
+    per-thread function AST), so the per-thread lowering entry is in one
+    place.
+    """
+    b = TTLGenericCompiler(
+        name,
+        kernel_type,
+        captures,
+        *args,
+        _globals=globals_,
+        **kwargs,
+    )
+    if verbose:
+        print(ast.dump(module_ast, indent=4) + "\n")
+    b.visit(module_ast)
+    if verbose:
+        print(b.module)
+    try:
+        b.module.operation.verify()
+    except Exception as e:
+        formatted = format_mlir_error(str(e), source_lines, source_file)
+        raise RuntimeError(formatted) from None
+    return b
+
+
 def _compile(
     kernel_type: Optional[str] = None,
     verbose: bool = False,
@@ -1200,32 +1241,18 @@ def _compile(
             kwargs["debug_locations"] = True
 
             m = ast.parse(source_code)
-            line_offset = kwargs.get("_line_offset", 0)
-
-            b = TTLGenericCompiler(
+            return _run_thread_compiler(
                 f.__name__,
                 kernel_type,
                 _collect_captures(f),
-                *args,
-                _globals=f.__globals__,
-                **kwargs,
+                f.__globals__,
+                args,
+                kwargs,
+                m,
+                source_lines,
+                source_file,
+                verbose=verbose,
             )
-
-            if verbose:
-                print(ast.dump(m, indent=4) + "\n")
-
-            b.visit(m)
-
-            if verbose:
-                print(b.module)
-
-            try:
-                b.module.operation.verify()
-            except Exception as e:
-                formatted = format_mlir_error(str(e), source_lines, source_file)
-                raise RuntimeError(formatted) from None
-
-            return b
 
         _wrapper._decorator_name = kernel_type + "_thread"
         _wrapper._source_file = source_file
@@ -1427,6 +1454,47 @@ def _compile_kernel(
         kwargs=injected_program_kwargs,
     )
 
+    return _lower_program_to_kernel(
+        program=program,
+        args=args,
+        launch_grid=launch_grid,
+        num_outs=num_outs,
+        cb_configs=cb_configs,
+        pipenets=pipenets,
+        target_arch=target_arch,
+        fp32_dest_acc_en=fp32_dest_acc_en,
+        dst_full_sync_en=dst_full_sync_en,
+        compiler_options=compiler_options,
+        program_hash=program_hash,
+        l1_budget_override=l1_budget_override,
+        kernel_source_file=kernel_source_file,
+        kernel_line_offset=kernel_line_offset,
+    )
+
+
+def _lower_program_to_kernel(
+    *,
+    program,
+    args,
+    launch_grid,
+    num_outs,
+    cb_configs,
+    pipenets,
+    target_arch,
+    fp32_dest_acc_en,
+    dst_full_sync_en,
+    compiler_options,
+    program_hash,
+    l1_budget_override,
+    kernel_source_file,
+    kernel_line_offset,
+):
+    """Lower compiled threads to a CompiledTTNNKernel.
+
+    Assembles the per-thread MLIR funcs into a module, runs the TTL pass
+    pipeline, and builds the runner. Shared by @ttl.operation and @ttl.atom
+    so the compiler pipeline lives in one place.
+    """
     # Always generate source locations for error messages
     # TTLANG_DEBUG_LOCATIONS only controls whether locations are printed in MLIR output
     print_debug_locations = os.environ.get("TTLANG_DEBUG_LOCATIONS", "0") == "1"
