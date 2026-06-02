@@ -196,6 +196,14 @@ declare_mlir_python_sources(TTLangPythonCommon.Generated
     config.py
 )
 
+declare_mlir_python_sources(TTLangPythonCommon.Ops
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    ops/__init__.py
+    ops/mcast.py
+)
+
 declare_mlir_python_sources(TTLangPythonCommon.Src
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
   ADD_TO_PARENT TTLangPythonCommon
