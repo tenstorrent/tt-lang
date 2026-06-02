@@ -48,7 +48,7 @@ GRID_X = NUM_COLS * KP  # 4
 GRID_Y = NUM_ROWS  # 2
 
 
-@ttl.atom(grid=(GRID_X, GRID_Y))
+@ttl.atom(grid=(GRID_X, GRID_Y), fp32_dest_acc_en=True)
 def atom_summa_ksplit(a, w, out):
     a_cb = ttl.make_dataflow_buffer_like(a, shape=(BLOCK_M, BLOCK_K), block_count=2)
     b_cb = ttl.make_dataflow_buffer_like(w, shape=(BLOCK_K, BLOCK_N), block_count=2)
@@ -117,11 +117,16 @@ def atom_summa_ksplit(a, w, out):
         a_blk = a_cb.wait()
         b_blk = b_cb.wait()
         p += a_blk @ b_blk
+    # Finalize the partial before reading it: storing the still-reserved
+    # accumulator copies it before the matmul result is packed to L1, which
+    # ships garbage to the gather. Wait pins down the packed block.
+    pf = partial_for_sum_cb.wait()
 
-    # Mirror the accumulated partial into the DM-side CB so the send predicate
-    # has its own producer/consumer pair. Only k_p > 0 cores consume it.
+    # Mirror the finalized partial into the DM-side CB so the gather send has
+    # its own producer/consumer pair (one DFB cannot feed both compute and the
+    # send). Only k_p > 0 cores consume it.
     p_send_local = partial_for_send_cb.reserve()
-    p_send_local.store(p)
+    p_send_local.store(pf)
 
     for kb_local in range(K_BLOCKS_PER_KP):
         kb = k_offset + kb_local
@@ -155,29 +160,28 @@ def atom_summa_ksplit(a, w, out):
 
         mcast_b_net.if_dst(recv_b)
 
-    r_dst = recv_cb.reserve()
-
     if node_x < NUM_COLS:
 
+        # Reserve the receive block inside the callback: the pipe posts the
+        # block's address from here, so the reserve must be co-located with the
+        # post. Hoisting it out deadlocks.
         def recv_partial(pipe):
+            r_dst = recv_cb.reserve()
             ttl.copy(pipe, r_dst)
 
         reduce_net.if_dst(recv_partial)
 
-        # KP == 2: the root sums its local partial and the single received
-        # partial straight into the output CB. Each DFB is consumed exactly
-        # once; reusing one DFB across two reserve/wait cycles in a single
-        # atom deadlocks.
-        local = partial_for_sum_cb.wait()
+        # KP == 2: one received partial. Sum it with the finalized local
+        # partial into the output CB.
         r = recv_cb.wait()
         o = out_cb.reserve()
-        o.store(local + r)
+        o.store(pf + r)
         out_blk_done = out_cb.wait()
         ttl.copy(out_blk_done, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N])
     else:
-        p_to_send = partial_for_send_cb.wait()
 
         def send_partial(pipe):
+            p_to_send = partial_for_send_cb.wait()
             ttl.copy(p_to_send, pipe)
 
         reduce_net.if_src(send_partial)
