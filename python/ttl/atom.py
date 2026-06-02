@@ -180,23 +180,46 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     )
 
 
+def _call_name(node: ast.expr) -> Optional[str]:
+    """The callee name of a Call node (``ttl.Pipe`` -> ``Pipe``), else None."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _is_pipe_list_expr(node: ast.expr) -> bool:
+    """A list/tuple/comprehension whose elements are all ``ttl.Pipe(...)``.
+
+    Lets a PipeNet be built from a separately-named pipe list
+    (``ps = [ttl.Pipe(...) for ...]; net = ttl.PipeNet(ps)``), the natural
+    way to express multicast/reduce fan-out.
+    """
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return bool(node.elts) and all(_call_name(e) == "Pipe" for e in node.elts)
+    if isinstance(node, (ast.ListComp, ast.GeneratorExp)):
+        return _call_name(node.elt) == "Pipe"
+    return False
+
+
 def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
-    """If ``stmt`` is ``name = <dfb/pipe-factory>(...)``, return ``name``."""
+    """If ``stmt`` is a DFB/Pipe/PipeNet construction assign, return its name.
+
+    Recognizes ``name = <dfb/pipe-factory>(...)`` and ``name = [<pipes>]``
+    (a pipe list feeding a later PipeNet)."""
     if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
         return None
     if not isinstance(stmt.targets[0], ast.Name):
         return None
-    if not isinstance(stmt.value, ast.Call):
-        return None
-    func = stmt.value.func
-    fname = (
-        func.attr
-        if isinstance(func, ast.Attribute)
-        else (func.id if isinstance(func, ast.Name) else None)
-    )
-    if fname not in _SETUP_FACTORY_NAMES:
-        return None
-    return stmt.targets[0].id
+    if _call_name(stmt.value) in _SETUP_FACTORY_NAMES or _is_pipe_list_expr(
+        stmt.value
+    ):
+        return stmt.targets[0].id
+    return None
 
 
 def _lift_setup(
@@ -362,6 +385,14 @@ def _compile_atom(
         all_param_names={p.name for p in spec.params},
         local_dfb_names=set(dfbs),
     )
+
+    if os.environ.get("TTLANG_ATOM_DUMP_SPLIT"):
+        for _thread in ("trisc", "ncrisc", "brisc"):
+            _dbg = _synthesize_thread_module(
+                f"{spec.name}__{_thread}", split.body_for(_thread)
+            )
+            print(f"\n===== @ttl.atom split: {_thread} =====")
+            print(ast.unparse(_dbg))
 
     # Captures shared by every thread: ttnn tensors and scalars (bound
     # values), the lifted DFBs, and the lifted PipeNets. Tensor/DFB captures
