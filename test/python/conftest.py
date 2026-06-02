@@ -82,8 +82,13 @@ def pytest_configure(config):
 
 
 @pytest.fixture
-def ttnn_device():
-    """Fixture that provides a TTNN device, skipping if unavailable."""
+def ttnn_device(request):
+    """Fixture that provides a TTNN device, skipping if unavailable.
+
+    Accepts open_device kwargs via indirect parametrization, e.g.
+    ``@pytest.mark.parametrize("ttnn_device", [{"worker_l1_size": 1448000}],
+    indirect=True)`` to trim worker L1 and enlarge the kernel-config buffer
+    for large kernels."""
     global _ttnn_import_failed
     if not _ttnn_available or _ttnn_import_failed:
         pytest.skip("TTNN not available")
@@ -96,7 +101,8 @@ def ttnn_device():
         _ttnn_import_failed = True
         raise
 
-    device = ttnn.open_device(device_id=0)
+    open_kwargs = getattr(request, "param", None) or {}
+    device = ttnn.open_device(device_id=0, **open_kwargs)
     yield device
     ttnn.close_device(device)
 
