@@ -17,11 +17,12 @@ the cross-core tree reduce.
 at toy shapes with an 8-way K split.
 
 ``test_flash_mla_decode`` runs the same chain at production MLA-decode
-shapes (64 heads, kvpe_dim=576, kv_lora_rank=512, seq_len=32768) against the
-MLA golden: a single KV head broadcast over all heads, with V the leading
-``kv_lora_rank`` columns of the shared KV cache. The ops read plain DRAM
-tensors, so this matches the shapes / dtype / K-V coupling / golden but not
-the on-device L1 sharding of a multi-core sharded deployment.
+shapes (64 heads, kvpe_dim=576, kv_lora_rank=512, seq_len=32768) with a
+bfp8 KV cache, against the MLA golden: a single KV head broadcast over all
+heads, with V the leading ``kv_lora_rank`` columns of the shared KV cache.
+The ops read plain DRAM tensors, so this matches the shapes / dtype / K-V
+coupling / golden but not the on-device L1 sharding of a multi-core sharded
+deployment.
 """
 
 import math
@@ -39,6 +40,16 @@ from ttl.ops.flash_mla import (
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import assert_pcc, to_dram
+
+
+def to_dram_bfp8(torch_tensor, device):
+    """DRAM tensor in bfloat8_b (the KV-cache dtype). The shard typecasts
+    K/V back to bf16 for the matmuls."""
+    return ttnn.from_torch(
+        torch_tensor, dtype=ttnn.bfloat8_b, layout=ttnn.TILE_LAYOUT,
+        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
 
 TILE = ttnn.TILE_SIZE
 
@@ -66,8 +77,8 @@ def test_flash_shard_full(device):
     expected = (attn @ v_t.float()).to(torch.bfloat16)
 
     q_d = to_dram(q_t, device)
-    k_d = to_dram(k_t, device)
-    v_d = to_dram(v_t, device)
+    k_d = to_dram_bfp8(k_t, device)
+    v_d = to_dram_bfp8(v_t, device)
     o_d = to_dram(torch.zeros(PN, vD, dtype=torch.bfloat16), device)
     m_d = to_dram(torch.zeros(PN, TILE, dtype=torch.bfloat16), device)
     l_d = to_dram(torch.zeros(PN, TILE, dtype=torch.bfloat16), device)
@@ -105,8 +116,8 @@ def test_flash_chain(device):
     expected = (attn @ v_t.float()).to(torch.bfloat16)
 
     q_d = to_dram(q_t, device)
-    k_d = to_dram(k_t, device)
-    v_d = to_dram(v_t, device)
+    k_d = to_dram_bfp8(k_t, device)
+    v_d = to_dram_bfp8(v_t, device)
     # Per-core partials: N_COLS row-blocks of (PNHt, *) tiles.
     po_d = to_dram(torch.zeros(N_COLS * PN, vD, dtype=torch.bfloat16), device)
     pm_d = to_dram(torch.zeros(N_COLS * PN, TILE, dtype=torch.bfloat16), device)
@@ -167,16 +178,14 @@ QK_NOPE_HEAD_DIM = 128
 KVPE_DIM = KV_LORA_RANK + QK_ROPE_HEAD_DIM       # 576
 QK_HEAD_DIM = QK_NOPE_HEAD_DIM + QK_ROPE_HEAD_DIM  # 192
 N_CORES = 8
-K_CHUNK = 128                    # k_chunk_size
 MAX_SEQ_LEN = 32 * 1024
 
 MLA_PNHt = NUM_HEADS // TILE              # 2  (64 query rows / 32)
 MLA_DHt = KVPE_DIM // TILE                # 18
 MLA_vDHt = KV_LORA_RANK // TILE           # 16
-# bf16 K/V at k_chunk_size=128 (4 tiles) overflows one core's L1 (~1.7MB >
-# 1.46MB); a bfp8 KV cache (half the bytes) is what makes 128 fit. Until the
-# bfp8 + typecast path lands, halve the chunk to 64 positions (2 tiles). Same
-# seq coverage, same tensor shapes; only the per-chunk buffer size changes.
+# The shard typecasts each bfp8 K/V chunk to a bf16 mirror, so a 2-tile
+# compute chunk is the largest that fits one core's L1 at vDHt=16. This is
+# the compute-chunk granularity, independent of the cache layout.
 MLA_Sk_chunk_t = 2
 # Per core: (seq / n_cores) positions, split into Sk_chunk_t-tile chunks.
 MLA_N_CHUNKS = (MAX_SEQ_LEN // N_CORES) // (MLA_Sk_chunk_t * TILE)  # 64
@@ -207,8 +216,8 @@ def test_flash_mla_decode(device):
 
     PNr = MLA_PNHt * TILE
     q_d = to_dram(q_2d, device)
-    k_d = to_dram(k_2d, device)
-    v_d = to_dram(v_2d, device)
+    k_d = to_dram_bfp8(k_2d, device)
+    v_d = to_dram_bfp8(v_2d, device)
     po_d = to_dram(torch.zeros(N_CORES * PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
     pm_d = to_dram(torch.zeros(N_CORES * PNr, TILE, dtype=torch.bfloat16), device)
     pl_d = to_dram(torch.zeros(N_CORES * PNr, TILE, dtype=torch.bfloat16), device)

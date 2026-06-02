@@ -12,6 +12,8 @@ emits an unnormalized (o, m, l) partial; the tree reduce merges the
 rescale; normalize divides by the running sum.
 """
 
+import torch
+
 import ttl
 
 
@@ -23,6 +25,10 @@ def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0
     the batch. Q is read from DRAM on every core; K/V are read per-core.
     Each core writes an unnormalized ``(o, m, l)`` partial to its row
     block of ``out_o`` / ``out_m`` / ``out_l``.
+
+    K/V are typecast to bf16 before the matmuls so a lower-precision cache
+    (e.g. bfp8) feeds the bf16 compute chain; the cast is a no-op when K/V
+    are already bf16.
 
     ``scale`` is the SDPA scale; it is folded into ``qk`` per chunk.
     """
@@ -75,7 +81,7 @@ def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0
 
         q_blk = q_cb.wait()
         for _ in range(N_CHUNKS):
-            k_blk = k_cb.wait()
+            k_blk = ttl.math.typecast(k_cb.wait(), torch.bfloat16)
             sv_w = sv_cb.reserve()
             sv_w.store(ttl.mul(q_blk @ ttl.transpose(k_blk),
                                ttl.block.fill(scale, shape=sv_w.shape)))
@@ -120,7 +126,7 @@ def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0
                 alpha2, dims=[1], shape=o_old.shape), o_old))
 
             ex2 = ex_cb.wait()
-            v_blk = v_cb.wait()
+            v_blk = ttl.math.typecast(v_cb.wait(), torch.bfloat16)
             pv_w = pv_cb.reserve(); pv_w.store(ex2 @ v_blk)
 
             o_corr_blk = o_corr_cb.wait()
