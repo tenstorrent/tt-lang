@@ -761,6 +761,11 @@ def _collect_block_users(
                 visit(arg, visible, sub_dm)
             for kw in node.keywords:
                 visit(kw.value, visible, sub_dm)
+            # Recurse into the callee so a chained call such as
+            # `ttl.copy(blk, pipe).wait()` still records `blk`'s use in the
+            # inner call (the inner call is func.value, not an arg/keyword).
+            if isinstance(func, ast.Attribute):
+                visit(func.value, visible, sub_dm)
             return
         if isinstance(node, ast.BinOp):
             for side in (node.left, node.right):
