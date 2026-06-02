@@ -175,17 +175,17 @@ def format_name_to_ttnn_dtype(name: str):
         raise RuntimeError("ttnn is not available")
 
     match name:
-        case "bfloat16":
+        case "bfloat16" | "bf16":
             return ttnn.DataType.BFLOAT16
-        case "float16":
+        case "float16" | "f16":
             return ttnn.DataType.BFLOAT16  # hardware implements f16 as bf16
-        case "float32":
+        case "float32" | "f32":
             return ttnn.DataType.FLOAT32
-        case "int32":
+        case "int32" | "i32":
             return ttnn.DataType.INT32
-        case "uint32":
+        case "uint32" | "u32":
             return ttnn.DataType.UINT32
-        case "uint16":
+        case "uint16" | "u16":
             return ttnn.DataType.UINT16
         case _:
             raise ValueError(
