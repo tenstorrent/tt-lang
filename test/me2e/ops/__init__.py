@@ -19,6 +19,8 @@ import pytest
 import torch
 from torch import Tensor
 
+from ttlang_test_utils import make_compare_inputs
+
 from ..base import ME2ETestBase
 from ..config import E2EConfig
 
@@ -233,10 +235,13 @@ class OpTestBase(ME2ETestBase):
 
         # Generate random inputs.
         lo, hi = input_range
-        torch_inputs: List[Tensor] = []
-        for _ in range(self.ARITY):
-            t = torch.rand(config.tensor_shape, dtype=config.dtype) * (hi - lo) + lo
-            torch_inputs.append(t)
+        if getattr(self, "EXACT_BOOL_OUTPUT", False):
+            torch_inputs = list(make_compare_inputs(config.tensor_shape, config.dtype))
+        else:
+            torch_inputs: List[Tensor] = []
+            for _ in range(self.ARITY):
+                t = torch.rand(config.tensor_shape, dtype=config.dtype) * (hi - lo) + lo
+                torch_inputs.append(t)
 
         # Compute golden using torch.
         if self.ARITY == 1:
@@ -244,7 +249,7 @@ class OpTestBase(ME2ETestBase):
         else:
             golden = torch_op(torch_inputs[0], torch_inputs[1])
         if golden.dtype == torch.bool:
-            golden = golden.float()
+            golden = golden.to(config.dtype)
 
         # Build full ME2E module with reader, compute, and writer threads.
         mlir_str = build_e2e_module_mlir(self.OP_STR, self.ARITY, config)
