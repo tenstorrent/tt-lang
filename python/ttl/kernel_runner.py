@@ -43,6 +43,14 @@ from .dtype_utils import (
 )
 
 
+def _cb_data_format(cb):
+    """ttnn data format for a DataflowBuffer, from its (torch or ttnn) dtype."""
+    dtype = cb.dtype
+    if hasattr(dtype, "name"):  # already a ttnn.DataType enum
+        return dtype
+    return torch_dtype_to_ttnn_datatype(dtype)
+
+
 def get_min_remaining_l1_for_device(device):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
@@ -405,11 +413,7 @@ def build_cb_descriptors(
                 )
             )
         else:
-            ref_tensor = cb.tensor
-            if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-                data_format = ref_tensor.dtype
-            else:
-                data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
+            data_format = _cb_data_format(cb)
 
             page_size = tile_bytes_from_dtype(data_format)
             num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
@@ -674,11 +678,7 @@ def emit_runner_source(
         if cb is None:
             lines.append(f"    None,  # CB {i}")
             continue
-        ref_tensor = cb.tensor
-        if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-            data_format = ref_tensor.dtype
-        else:
-            data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
+        data_format = _cb_data_format(cb)
         page_size = tile_bytes_from_dtype(data_format)
         dtype_str = _dtype_to_ttnn_str(data_format)
         num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
