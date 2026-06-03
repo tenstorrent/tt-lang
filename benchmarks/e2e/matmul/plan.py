@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Matmul planner for ksplit/SUMMA kernels.
+"""Block/grid planner for the ``ttl.ops.matmul`` ksplit op.
 
 Picks block shape (bm, bn, bk) in tiles and grid partitioning
-(M_parts, N_parts, K_parts). K_parts == 1 routes to summa_kernel,
-K_parts >= 2 to ksplit_kernel.
+(M_parts, N_parts, K_parts) for a shape. The chosen plan feeds
+``make_ksplit``. K_parts == 2 runs the on-device reduce; the e2e sweep
+pins K_parts == 2 via ``require_kp`` since that is what the op supports
+today (K_parts == 1 SUMMA is a follow-on).
 
 Scoring: maximize an estimated throughput
     throughput ~= cores * bv / (pad * (bv + ALPHA))
@@ -255,19 +257,25 @@ def plan_matmul(
     alpha: float = BLOCK_OVERHEAD_ALPHA,
     kp_beta: float = KP_PENALTY_BETA,
     dtype_bytes: int = BF16_BYTES,
+    require_kp: "int | None" = None,
 ) -> MatmulPlan:
     """Plan a ksplit/SUMMA matmul for shape (M, K, N).
 
     See module docstring for the throughput objective. Raises
     ValueError if any dimension is not tile-aligned, or if no block
     shape admits a plan that fits in L1 and respects the pad rule.
+
+    ``require_kp`` pins the K-partition count (e.g. 2 to force a ksplit
+    reduce). When set the tuned SHAPE_PLANS overrides are bypassed and the
+    search only considers that K-split, so a caller that supports a single
+    Kp gets a feasible plan for that Kp or a ValueError.
     """
     if any(d <= 0 for d in (M, K, N)):
         raise ValueError(f"dims must be positive: M={M} K={K} N={N}")
     if any(d % TILE for d in (M, K, N)):
         raise ValueError(f"dims must be tile-aligned (TILE={TILE}): M={M} K={K} N={N}")
 
-    if (M, K, N) in SHAPE_PLANS:
+    if require_kp is None and (M, K, N) in SHAPE_PLANS:
         block_cfg, part_cfg = SHAPE_PLANS[(M, K, N)]
         return MatmulPlan(M=M, K=K, N=N, block_cfg=block_cfg, part_cfg=part_cfg)
 
@@ -300,7 +308,12 @@ def plan_matmul(
                         if pad > max_pad:
                             continue
 
-                        Kp = _largest_divisor(Kb, grid_n // Np)
+                        if require_kp is not None:
+                            if Kb % require_kp or Np * require_kp > grid_n:
+                                continue
+                            Kp = require_kp
+                        else:
+                            Kp = _largest_divisor(Kb, grid_n // Np)
                         cores = Mp * Np * Kp
                         if (
                             estimate_l1_bytes(bm, bn, bk, Kp, dtype_bytes)

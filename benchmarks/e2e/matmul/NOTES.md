@@ -1,5 +1,10 @@
 # Matmul benchmark: findings and gotchas
 
+> **Note:** preserved from the pre-rework `benchmarks/matmul/` sweep. References
+> to standalone kernel files (`ksplit_kernel.py`, `summa_kernel.py`) predate the
+> move to the `ttl.ops.matmul` op; the planner and tuning findings below still
+> hold.
+
 Non-obvious things we learned while tuning the ksplit/SUMMA matmul against
 `ttnn.matmul`. Not a user guide; intended as a cache of surprise.
 
