@@ -16,10 +16,10 @@ import argparse
 from pathlib import Path
 
 from benchmarks.common import run_spec
-from benchmarks.e2e import matmul, rmsnorm, topk
+from benchmarks.e2e import flash_mla, matmul, rmsnorm, topk
 
 # Each entry is a BenchSpec; order is the run order.
-E2E = [matmul.SPEC, rmsnorm.SPEC, topk.SPEC]
+E2E = [matmul.SPEC, rmsnorm.SPEC, topk.SPEC, flash_mla.SPEC]
 
 
 def main(argv=None):
