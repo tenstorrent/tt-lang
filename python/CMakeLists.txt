@@ -205,6 +205,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Ops
     ops/flash_mla.py
     ops/rmsnorm.py
     ops/topk.py
+    ops/matmul.py
 )
 
 declare_mlir_python_sources(TTLangPythonCommon.Src
