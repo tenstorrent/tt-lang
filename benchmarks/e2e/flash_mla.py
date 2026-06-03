@@ -69,6 +69,10 @@ CASES = (
     {"label": "ctx-2k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [2047], "scale": OURS_SCALE},
     {"label": "ctx-8k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [8191], "scale": OURS_SCALE},
     {"label": "ctx-32k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [32767], "scale": OURS_SCALE},
+    # The deepseek demo's exact 4-user / 128-head / 1k problem (ttnn-side only:
+    # our op reads one shared K/V so it can't run 4 distinct users, and its
+    # 128-head shard overflows L1 -- it puts every query-head tile on each core,
+    # so it tops out at 64 heads / PNHt=2, which the ctx-* cases already cover).
     {"label": "deepseek-1k", "users": 4, "heads": 128, "cache": 1024, "pos": [0, 170, 341, 512], "scale": DEEPSEEK_SCALE},
 )
 
@@ -109,18 +113,19 @@ def _open_device():
 # --------------------------------------------------------------------------
 # ttl side: the shard -> tree_reduce -> normalize chain (single user)
 # --------------------------------------------------------------------------
-def _run_ttl_chain(device, seq, scale, *, warmup, runs):
+def _run_ttl_chain(device, num_heads, seq, scale, *, warmup, runs):
+    pnht = num_heads // TILE
     n_chunks = (seq // N_CORES) // (Sk_chunk_t * TILE)
 
     torch.manual_seed(42)
-    q4 = torch.randn((1, 1, NUM_HEADS, KVPE_DIM), dtype=torch.bfloat16)
+    q4 = torch.randn((1, 1, num_heads, KVPE_DIM), dtype=torch.bfloat16)
     cache4 = torch.randn((1, 1, seq, KVPE_DIM), dtype=torch.bfloat16)
     expected = _golden(q4, cache4, seq, KV_LORA_RANK, scale)
 
-    q_2d = q4.reshape(NUM_HEADS, KVPE_DIM)
+    q_2d = q4.reshape(num_heads, KVPE_DIM)
     k_2d = cache4.reshape(seq, KVPE_DIM)
     v_2d = k_2d[:, :KV_LORA_RANK].contiguous()
-    PNr = PNHt * TILE
+    PNr = pnht * TILE
 
     q_d = _to_dev(q_2d, device)
     k_d = _to_dev_bfp8(k_2d, device)
@@ -134,11 +139,11 @@ def _run_ttl_chain(device, seq, scale, *, warmup, runs):
     norm_d = _to_dev(torch.zeros(PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
 
     shard = make_flash_shard(
-        n_cols=N_CORES, B=1, PNHt=PNHt, DHt=DHt, vDHt=vDHt,
+        n_cols=N_CORES, B=1, PNHt=pnht, DHt=DHt, vDHt=vDHt,
         Sk_chunk_t=Sk_chunk_t, N_CHUNKS=n_chunks, scale=scale,
     )
-    tree_reduce = make_flash_tree_reduce(PNHt=PNHt, vDHt=vDHt, B=1)
-    normalize = make_flash_normalize(grid=(1, 1), PNHt=PNHt, vDHt=vDHt)
+    tree_reduce = make_flash_tree_reduce(PNHt=pnht, vDHt=vDHt, B=1)
+    normalize = make_flash_normalize(grid=(1, 1), PNHt=pnht, vDHt=vDHt)
 
     def chain():
         shard(q_d, k_d, v_d, po_d, pm_d, pl_d)
@@ -146,7 +151,7 @@ def _run_ttl_chain(device, seq, scale, *, warmup, runs):
         normalize(o_d, l_d, norm_d)
 
     ttlang_s = time_runs(chain, lambda _r: None, device, warmup=warmup, runs=runs)
-    got = ttnn.to_torch(norm_d).reshape(1, 1, NUM_HEADS, KV_LORA_RANK).to(torch.bfloat16)
+    got = ttnn.to_torch(norm_d).reshape(1, 1, num_heads, KV_LORA_RANK).to(torch.bfloat16)
     pcc_v = pcc(got, expected)
 
     for t in (q_d, k_d, v_d, po_d, pm_d, pl_d, o_d, m_d, l_d, norm_d):
@@ -263,13 +268,18 @@ def run_case(device, case, *, warmup, runs):
     label = case["label"]
 
     ttlang_s = pcc_v = None
-    # The ttl chain is single-user / NUM_HEADS and compile-time fixed on its
-    # chunk count, so run it only there and only when the attended length is a
-    # multiple of its 512-element chunk.
-    if num_users == 1 and num_heads == NUM_HEADS:
+    # The ttl chain is single-user (the op reads one shared K/V; B>1 only
+    # replicates it) and compile-time fixed on its chunk count, so run it only
+    # for one user and only when the attended length is a multiple of its chunk.
+    if num_users == 1:
         attended = positions[0] + 1
         if attended % TTL_CHUNK == 0:
-            ttlang_s, pcc_v = _run_ttl_chain(device, attended, scale, warmup=warmup, runs=runs)
+            try:
+                ttlang_s, pcc_v = _run_ttl_chain(
+                    device, num_heads, attended, scale, warmup=warmup, runs=runs
+                )
+            except Exception as e:
+                print(f"  ({label}: ttl chain failed: {e})", flush=True)
         else:
             print(f"  ({label}: ttl skipped, attended {attended} not a multiple of {TTL_CHUNK})", flush=True)
 
