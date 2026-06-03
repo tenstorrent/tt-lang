@@ -15,6 +15,7 @@ rescale; normalize divides by the running sum.
 import torch
 
 import ttl
+from ttl.ops.pipe_util import pipe_send, pipe_recv
 
 
 def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
@@ -198,17 +199,9 @@ def make_flash_tree_reduce(PNHt, vDHt, B=1):
     ):
         m_a = m_in.wait(); l_a = l_in.wait(); o_a = o_in.wait()
 
-        def recv_m(pipe):
-            p = m_peer.reserve(); ttl.copy(pipe, p)
-        m_net.if_dst(recv_m)
-
-        def recv_l(pipe):
-            p = l_peer.reserve(); ttl.copy(pipe, p)
-        l_net.if_dst(recv_l)
-
-        def recv_o(pipe):
-            p = o_peer.reserve(); ttl.copy(pipe, p)
-        o_net.if_dst(recv_o)
+        pipe_recv(m_net, m_peer)
+        pipe_recv(l_net, l_peer)
+        pipe_recv(o_net, o_peer)
 
         m_b = m_peer.wait(); l_b = l_peer.wait(); o_b = o_peer.wait()
 
@@ -229,17 +222,9 @@ def make_flash_tree_reduce(PNHt, vDHt, B=1):
         m_state: ttl.DFB, l_state: ttl.DFB, o_state: ttl.DFB,
         m_net: ttl.PipeNet, l_net: ttl.PipeNet, o_net: ttl.PipeNet,
     ):
-        def send_m(pipe):
-            mb = m_state.wait(); ttl.copy(mb, pipe)
-        m_net.if_src(send_m)
-
-        def send_l(pipe):
-            lb = l_state.wait(); ttl.copy(lb, pipe)
-        l_net.if_src(send_l)
-
-        def send_o(pipe):
-            ob = o_state.wait(); ttl.copy(ob, pipe)
-        o_net.if_src(send_o)
+        pipe_send(m_net, m_state)
+        pipe_send(l_net, l_state)
+        pipe_send(o_net, o_state)
 
     @ttl.atom(grid=(8, B))
     def flash_tree_reduce(in_o, in_m, in_l, out_o, out_m, out_l):
@@ -338,17 +323,9 @@ def make_flash_tree_reduce(PNHt, vDHt, B=1):
         if s2_o.is_dst():
             m_a = m_rx2.wait(); l_a = l_rx2.wait(); o_a = o_rx2.wait()
 
-            def s2_recv_m(pipe):
-                p = m_peer.reserve(); ttl.copy(pipe, p)
-            s2_m.if_dst(s2_recv_m)
-
-            def s2_recv_l(pipe):
-                p = l_peer.reserve(); ttl.copy(pipe, p)
-            s2_l.if_dst(s2_recv_l)
-
-            def s2_recv_o(pipe):
-                p = o_peer.reserve(); ttl.copy(pipe, p)
-            s2_o.if_dst(s2_recv_o)
+            pipe_recv(s2_m, m_peer)
+            pipe_recv(s2_l, l_peer)
+            pipe_recv(s2_o, o_peer)
 
             m_b = m_peer.wait(); l_b = l_peer.wait(); o_b = o_peer.wait()
 

@@ -16,16 +16,41 @@ blocks than cores.
   - Each core accumulates its ``K_BPN``-block K-slice; non-root K-bands ship
     the partial to the ``k_p == 0`` root, which sums and writes out.
 
-Both broadcasts reuse the ``ttl.ops.mcast`` op inline. KP=2 (a single reduce
-step) is supported today; KP>2 (a multi-step / tree reduce) is a follow-on.
+Both broadcasts reuse the ``ttl.ops.mcast`` op inline, and the reduce hand-off
+is factored into the ``reduce_send`` / ``reduce_recv`` atoms. KP=2 (a single
+reduce step) is supported today; KP>2 (a multi-step / tree reduce) is a
+follow-on.
 """
 
 from typing import Tuple
 
 import ttl
 from ttl.ops.mcast import mcast, mcast_cols
+from ttl.ops.pipe_util import pipe_send, pipe_recv
 
 TILE = 32
+
+
+@ttl.atom()
+def reduce_send(net: ttl.PipeNet, partial: ttl.DFB, stage: ttl.DFB):
+    """Each source core stages its own ``partial`` and ships it over ``net``.
+    ``stage`` decouples the compute producer from the datamovement send so the
+    partial keeps a single consumer thread."""
+    pf = partial.wait()
+    ps = stage.reserve()
+    ps.store(pf)
+    pipe_send(net, stage)
+
+
+@ttl.atom()
+def reduce_recv(net: ttl.PipeNet, partial: ttl.DFB, peer: ttl.DFB, out: ttl.DFB):
+    """Each destination (root) core receives a peer partial over ``net`` and
+    sums it with its own ``partial`` into ``out``."""
+    pipe_recv(net, peer)
+    r = peer.wait()
+    pf = partial.wait()
+    o = out.reserve()
+    o.store(pf + r)
 
 
 def make_ksplit(
@@ -116,7 +141,6 @@ def make_ksplit(
                     a_blk = a_cb.wait()
                     b_blk = b_cb.wait()
                     p += a_blk @ b_blk
-                pf = partial_for_sum_cb.wait()
 
                 for kbl in range(K_BPN):
                     kc = (k_p * K_BPN + kbl) * bk
@@ -124,23 +148,10 @@ def make_ksplit(
                     mcast(mcast_b_net, w[kc : kc + bk, nc : nc + bn], tmp_b_cb, b_cb)
 
                 if col_c < Np:
-                    def recv_partial(pipe):
-                        r_dst = recv_cb.reserve()
-                        ttl.copy(pipe, r_dst)
-                    reduce_net.if_dst(recv_partial)
-
-                    r = recv_cb.wait()
-                    o = out_cb.reserve()
-                    o.store(pf + r)
+                    reduce_recv(reduce_net, partial_for_sum_cb, recv_cb, out_cb)
                     out_blk = out_cb.wait()
                     ttl.copy(out_blk, out[mr : mr + bm, nc : nc + bn])
                 else:
-                    ps = partial_for_send_cb.reserve()
-                    ps.store(pf)
-
-                    def send_partial(pipe):
-                        p_to_send = partial_for_send_cb.wait()
-                        ttl.copy(p_to_send, pipe)
-                    reduce_net.if_src(send_partial)
+                    reduce_send(reduce_net, partial_for_sum_cb, partial_for_send_cb)
 
     return ksplit
