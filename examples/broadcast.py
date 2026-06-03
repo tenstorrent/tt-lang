@@ -54,9 +54,10 @@ def __demo_kernel(a, b, c, y):
                     c_dfb.wait() as c_blk,
                     y_dfb.reserve() as y_blk,
                 ):
-                    # c_blk has shape (4, 1), needs to broadcast along dimension -1 (innermost/columns)
+                    # c_blk has shape (4, 1), broadcast along innermost (cols) to match y_blk
                     y_blk.store(
-                        a_blk * b_blk + ttl.math.broadcast(c_blk, y_blk, dims=[-1])
+                        a_blk * b_blk
+                        + ttl.block.broadcast(c_blk, dims=[-1], shape=y_blk.shape)
                     )
 
     @ttl.datamovement()

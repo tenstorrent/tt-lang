@@ -19,6 +19,7 @@ from .copyhandlers import (
 from .ttnnsim import Tensor, tile_count_from_tensor
 from .sharding import try_count_locality
 from .trace import trace
+from .pipe import Pipe, SrcPipeIdentity
 import math
 
 
@@ -87,6 +88,7 @@ class CopyTransaction:
         self._src = src
         self._dst = dst
         self._completed = False
+        self._transfer_performed = False
 
         # Lookup and store the handler for this type combination
         handler = self._lookup_handler(type(src), type(dst))
@@ -113,6 +115,16 @@ class CopyTransaction:
             src=type(src).__name__,
             dst=type(dst).__name__,
             **_copy_trace_fields(src, dst),
+        )
+
+        if self._starts_on_copy():
+            self._handler.transfer(self._src, self._dst)
+            self._transfer_performed = True
+
+    def _starts_on_copy(self) -> bool:
+        """Return true for transfers whose side effects begin at copy()."""
+        return isinstance(self._src, Block) and isinstance(
+            self._dst, (Pipe, SrcPipeIdentity)
         )
 
     @staticmethod
@@ -159,8 +171,10 @@ class CopyTransaction:
 
         block_if_needed(self, "wait")
 
-        # Transfer - let exceptions propagate to scheduler for context
-        self._handler.transfer(self._src, self._dst)
+        # Transfer - let exceptions propagate to scheduler for context.
+        if not self._transfer_performed:
+            self._handler.transfer(self._src, self._dst)
+            self._transfer_performed = True
         self._completed = True
 
         # Mark tx.wait() complete in state machine - this transitions blocks back to accessible states

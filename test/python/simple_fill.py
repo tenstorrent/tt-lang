@@ -29,8 +29,8 @@ def fill_kernel(out):
 
     @ttl.compute()
     def fill_compute():
-        with out_dfb.reserve() as out:
-            out.store(ttl.math.fill(out, 1.0))
+        with out_dfb.reserve() as out_blk:
+            out_blk.store(ttl.block.fill(1.0, shape=out_blk.shape))
 
     @ttl.datamovement()
     def dm_read():

@@ -245,7 +245,7 @@ def main() -> None:
         "--grid",
         type=str,
         metavar="ROWS,COLS",
-        help="Default grid size for kernels with grid='auto' (e.g., --grid 4,4). Defaults to 8,8",
+        help="Default grid size for kernels with grid='full' (e.g., --grid 4,4). Defaults to 8,8",
     )
 
     parser.add_argument(

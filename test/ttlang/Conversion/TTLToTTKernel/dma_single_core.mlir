@@ -256,8 +256,8 @@ module {
 // TTKERNEL: %[[CB_PTR_IDX:.*]] = arith.index_cast %[[CB_PTR]] : i32 to index
 // TTKERNEL: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
-// TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
-// TTKERNEL:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
+// TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] overflow<nsw> : index
+// TTKERNEL:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] overflow<nsw> : index
 // Compute CB address in index: cb_ptr + tile_offset * page_size
 // TTKERNEL:     %[[BYTE_OFFSET:.*]] = arith.muli %[[TILE_OFFSET_X]], %[[PAGE_SIZE]] : index
 // TTKERNEL:     %[[CB_ADDR_IDX:.*]] = arith.addi %[[CB_PTR_IDX]], %[[BYTE_OFFSET]] : index
@@ -302,8 +302,8 @@ module {
 // TTKERNEL: %[[CB_PTR_IDX:.*]] = arith.index_cast %[[CB_PTR]] : i32 to index
 // TTKERNEL: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
-// TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
-// TTKERNEL:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
+// TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] overflow<nsw> : index
+// TTKERNEL:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] overflow<nsw> : index
 // Compute CB address in index: cb_ptr + tile_offset * page_size
 // TTKERNEL:     %[[BYTE_OFFSET:.*]] = arith.muli %[[TILE_OFFSET_X]], %[[PAGE_SIZE]] : index
 // TTKERNEL:     %[[CB_ADDR_IDX:.*]] = arith.addi %[[CB_PTR_IDX]], %[[BYTE_OFFSET]] : index
@@ -347,8 +347,8 @@ module {
 // TTKERNEL: %[[CB_PTR_IDX:.*]] = arith.index_cast %[[CB_PTR]] : i32 to index
 // TTKERNEL: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
-// TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
-// TTKERNEL:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
+// TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] overflow<nsw> : index
+// TTKERNEL:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] overflow<nsw> : index
 // Compute CB address in index: cb_ptr + tile_offset * page_size
 // TTKERNEL:     %[[BYTE_OFFSET:.*]] = arith.muli %[[TILE_OFFSET_X]], %[[PAGE_SIZE]] : index
 // TTKERNEL:     %[[CB_ADDR_IDX:.*]] = arith.addi %[[CB_PTR_IDX]], %[[BYTE_OFFSET]] : index
@@ -393,8 +393,8 @@ module {
 // TTKERNEL: %[[CB_PTR_IDX:.*]] = arith.index_cast %[[CB_PTR]] : i32 to index
 // TTKERNEL: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_Y_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_X_BOUND]] step %[[TILE_STEP]]
-// TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_X_BOUND]] : index
-// TTKERNEL:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
+// TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_X_BOUND]] overflow<nsw> : index
+// TTKERNEL:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] overflow<nsw> : index
 // Compute CB address in index: cb_ptr + tile_offset * page_size
 // TTKERNEL:     %[[BYTE_OFFSET:.*]] = arith.muli %[[TILE_OFFSET_X]], %[[PAGE_SIZE]] : index
 // TTKERNEL:     %[[CB_ADDR_IDX:.*]] = arith.addi %[[CB_PTR_IDX]], %[[BYTE_OFFSET]] : index

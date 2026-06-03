@@ -78,7 +78,6 @@ class Block:
     __slots__ = (
         "_buf",
         "_shape",
-        "_element_shape",  # Element-level shape (for broadcast semantics)
         "_sm",  # BlockStateMachine: owns all access-state logic
         "_is_temporary",
         "_store_confirmation_pending",  # Set by assign_src; cleared by mark_store_read_complete
@@ -109,16 +108,11 @@ class Block:
     ):
         self._buf = tensor
         self._shape = shape
-        # Element shape is always derived from the tensor's actual shape
-        self._element_shape = tuple(tensor.shape)
         self._is_temporary = is_temporary
         self._store_confirmation_pending: bool = (
             False  # Set by assign_src; cleared by mark_store_read_complete
         )
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
-        self._broadcast_dims: Optional[tuple[int, ...]] = (
-            None  # Pending broadcast metadata
-        )
         self.dfb = dfb  # Reference to DataflowBuffer for context manager support
         self.dfb_state: Optional[DFBState] = None
         self.dfb_slot_idx: int = -1
@@ -565,19 +559,17 @@ class Block:
         elem_shape = t.shape
         if len(elem_shape) == 1:
             w = elem_shape[0]
-            if w != 1 and w % TILE_SHAPE[0] != 0:
+            if w % TILE_SHAPE[0] != 0:
                 raise ValueError(
                     f"1-D tensor dimension ({w},) must be a multiple of "
-                    f"TILE_SHAPE[0]={TILE_SHAPE[0]}, or exactly 1"
+                    f"TILE_SHAPE[0]={TILE_SHAPE[0]}"
                 )
         else:
             h, w = elem_shape[-2], elem_shape[-1]
-            if (h != 1 and h % TILE_SHAPE[0] != 0) or (
-                w != 1 and w % TILE_SHAPE[1] != 0
-            ):
+            if h % TILE_SHAPE[0] != 0 or w % TILE_SHAPE[1] != 0:
                 raise ValueError(
                     f"Last two tensor dimensions ({h}, {w}) must be multiples of "
-                    f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
+                    f"TILE_SHAPE {TILE_SHAPE}"
                 )
         tile_shape: Shape = tile_shape_from_tensor(t)
 
@@ -633,68 +625,6 @@ class Block:
             if self.dfb_state is not None:
                 self.dfb_state.buf[self.dfb_slot_idx] = tensor
 
-    @staticmethod
-    def _infer_broadcast_shape(left_shape: Shape, right_shape: Shape) -> Shape:
-        """Infer the result shape from broadcasting two shapes.
-
-        Uses standard broadcasting rules: dimensions must match or one must be 1.
-        """
-        if len(left_shape) != len(right_shape):
-            # For now, require same number of dimensions
-            raise ValueError(f"Shape dimension mismatch: {left_shape} vs {right_shape}")
-
-        # Check compatibility using pattern matching
-        for l, r in zip(left_shape, right_shape):
-            match (l, r):
-                case (1, _) | (_, 1):
-                    # One dimension is 1: broadcasting compatible
-                    pass
-                case (x, y) if x == y:
-                    # Both dimensions equal: compatible
-                    pass
-                case _:
-                    # Incompatible dimensions
-                    raise ValueError(
-                        f"Incompatible shapes for broadcasting: {left_shape} and {right_shape}"
-                    )
-
-        # Now construct result_shape knowing all dimensions are compatible
-        result_shape: Shape = tuple(max(l, r) for l, r in zip(left_shape, right_shape))
-
-        return result_shape
-
-    @staticmethod
-    def _expand_broadcast_dims(
-        block: "Block",
-        target_shape: Shape,
-        target_element_shape: Shape,
-        broadcast_dims: tuple[int, ...],
-    ) -> Tensor:
-        """Expand a block along broadcast dimensions to match target shape.
-
-        Uses PyTorch broadcasting to expand the block's tensor from its current
-        element shape to the target element shape. All validation is performed
-        by broadcast() before setting _broadcast_dims metadata.
-
-        Uses innermost-first convention: dims=[0] = last dimension in shape.
-
-        Args:
-            block: Source block with broadcast metadata
-            target_shape: Target tile shape to expand to
-            target_element_shape: Target element shape to expand to
-            broadcast_dims: Dimensions to expand (innermost-first indexing)
-
-        Returns:
-            Tensor with expanded element shape
-        """
-
-        # Use PyTorch broadcasting to expand the tensor
-        src_tensor = block._buf.to_torch()
-        expanded_tensor = src_tensor.expand(*target_element_shape)
-
-        # Return tensor directly
-        return Tensor(expanded_tensor.contiguous())
-
     def store(self, items: "Block") -> None:
         """Store data into this block.
 
@@ -725,26 +655,18 @@ class Block:
                 or blk._store_confirmation_pending
             )
 
-        # Check if source has broadcast metadata - if so, expand it
+        # Validate that tile counts match (allows different dimensionality)
         src_shape = items._shape
         dst_shape = self._shape
-
-        if hasattr(items, "_broadcast_dims") and items._broadcast_dims is not None:
-            # Source came from broadcast() - expand using metadata
-            src_tensor = self._expand_broadcast_dims(
-                items, dst_shape, self._element_shape, items._broadcast_dims
+        src_tiles = math.prod(src_shape)
+        dst_tiles = math.prod(dst_shape)
+        if src_tiles != dst_tiles:
+            raise ValueError(
+                f"Shape mismatch in store(): "
+                f"source shape {src_shape} ({src_tiles} tiles) does not match "
+                f"destination shape {dst_shape} ({dst_tiles} tiles). "
+                f"Use broadcast() to expand the source before store()."
             )
-        else:
-            # No broadcast metadata - validate tile counts match (allows different dimensionality)
-            src_tiles = math.prod(src_shape)
-            dst_tiles = math.prod(dst_shape)
-            if src_tiles != dst_tiles:
-                raise ValueError(
-                    f"Shape mismatch in store(): "
-                    f"source shape {src_shape} ({src_tiles} tiles) does not match "
-                    f"destination shape {dst_shape} ({dst_tiles} tiles). "
-                    f"Use broadcast() to expand the source if needed."
-                )
 
         # Mark source wait() blocks as consumed
         for source_block in source_blocks_to_mark:
@@ -822,57 +744,29 @@ class Block:
     ) -> "Block":
         """Element-wise binary op: self (op) other.
 
-        Applies op on the underlying Tensors (PyTorch broadcasting applies).
-        Validates that tile-grid shapes are broadcast-compatible.
+        Applies op on the underlying Tensors. Both operands must have matching
+        grid shapes; use broadcast() to expand operands before combining them.
 
         Tracks wait() Compute blocks that contribute to the result.
         """
+        # Layout consistency is checked before shape so a mismatched-layout
+        # error wins over a shape error: pairing the underlying buffers is
+        # only meaningful when both operands agree on layout, regardless of
+        # whether their declared shapes happen to match.
+        check_same_layout(self, other)
+
         left_shape = self._shape
         right_shape = other._shape
 
-        # Check if either operand has broadcast metadata
-        left_has_broadcast = (
-            hasattr(self, "_broadcast_dims") and self._broadcast_dims is not None
-        )
-        right_has_broadcast = (
-            hasattr(other, "_broadcast_dims") and other._broadcast_dims is not None
-        )
-
-        if left_has_broadcast and right_has_broadcast:
-            raise ValueError(
-                f"Cannot perform binary operation: both operands have pending broadcast. "
-                f"Materialize one operand first by storing it."
-            )
-
-        # Expand operand with broadcast metadata to match the other
-        left_buf = self._buf
-        right_buf = other._buf
-        result_shape = left_shape
-
-        if left_has_broadcast:
-            # Expand left to match right shape
-            assert self._broadcast_dims is not None  # Checked by left_has_broadcast
-            left_buf = self._expand_broadcast_dims(
-                self, right_shape, other._element_shape, self._broadcast_dims
-            )
-            result_shape = right_shape
-        elif right_has_broadcast:
-            # Expand right to match left shape
-            assert other._broadcast_dims is not None  # Checked by right_has_broadcast
-            right_buf = self._expand_broadcast_dims(
-                other, left_shape, self._element_shape, other._broadcast_dims
-            )
-            result_shape = left_shape
-        elif left_shape != right_shape:
-            # No broadcast metadata and shapes don't match - error
+        if left_shape != right_shape:
             raise ValueError(
                 f"Shape mismatch in binary operation: left shape {left_shape} does not match "
-                f"right shape {right_shape}. Use broadcast() to expand operands."
+                f"right shape {right_shape}. Use broadcast() to expand operands first."
             )
 
         # Perform operation
         return self._create_temporary_result(
-            op(left_buf, right_buf), result_shape, other
+            op(self._buf, other._buf), left_shape, other
         )
 
     # ---- forward operators ----
@@ -926,7 +820,7 @@ class Block:
         """In-place add for temporary accumulator blocks.
 
         Allows the pattern:
-            y = ttl.math.fill(0)
+            y = ttl.math.fill(0, shape=(...))
             y += a_blk @ b_blk   # repeated accumulation
             dst_blk.store(y)
 
@@ -1077,15 +971,9 @@ class DataflowBuffer:
             TILE_SIZE = TILE_SHAPE[0]  # 32
             ndims = len(shape)
             for i, (edim, tdim) in enumerate(zip(likeness_tensor.shape, shape)):
-                if edim == 1:
-                    # Degenerate dimension: tile dimension must also be 1
-                    if tdim != 1:
-                        raise ValueError(
-                            f"Element shape dimension {i} is degenerate (size 1), but tile dimension is {tdim} (expected 1). "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
-                        )
-                elif i == ndims - 1 or i == ndims - 2:
-                    # Last two dimensions are tile dimensions
+                if i == ndims - 1 or i == ndims - 2:
+                    # Last two dimensions are tile dimensions: must be a
+                    # multiple of TILE_SIZE per spec (every tile is 32x32).
                     if edim % TILE_SIZE != 0:
                         raise ValueError(
                             f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
@@ -1097,7 +985,6 @@ class DataflowBuffer:
                             f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
                         )
                 else:
-                    # Batch/other dimensions
                     if edim < tdim:
                         raise ValueError(
                             f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
@@ -1105,8 +992,8 @@ class DataflowBuffer:
                         )
 
             self._element_shape = tuple(
-                1 if edim == 1 else tdim * TILE_SIZE
-                for edim, tdim in zip(likeness_tensor.shape, shape)
+                tdim * TILE_SIZE if i >= ndims - 2 else tdim
+                for i, tdim in enumerate(shape)
             )
 
         self._pending_reserved_block: Optional[Block] = None
@@ -1564,6 +1451,26 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
                 result_source.extend(actual_source)
 
 
+def check_same_layout(*blocks: Block) -> None:
+    """Raise ``ValueError`` if not all input blocks share the same layout.
+
+    Multi-operand operations (binary / ternary / matmul) require all operands
+    to share a layout because ``TILE_LAYOUT`` and ``ROW_MAJOR_LAYOUT`` blocks
+    have different stride / padding semantics in their underlying buffers, so
+    elementwise pairing tile-by-tile is only well-defined when both sides
+    agree.  The compiler enforces the same precondition; this helper makes the
+    simulator fail fast with the same error class.
+    """
+    if len(blocks) < 2:
+        return
+    first = blocks[0].layout
+    if any(b.layout != first for b in blocks[1:]):
+        raise ValueError(
+            f"all operand blocks must share the same layout; got "
+            f"{[b.layout for b in blocks]}"
+        )
+
+
 def _matmul_tile_shape(a_shape: Shape, b_shape: Shape) -> Shape:
     """Compute the output tile-grid shape for matmul a @ b.
 
@@ -1611,6 +1518,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     Returns:
         Block whose tile shape corresponds to the matmul output shape.
     """
+    check_same_layout(a, b)
     result_tensor = a.to_tensor() @ b.to_tensor()
     result_shape = _matmul_tile_shape(a.shape, b.shape)
     result_block = Block(

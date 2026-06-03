@@ -68,13 +68,13 @@ It does two things, both inside the venv (no sudo):
 - Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts it under `<venv>/.../ttnn/runtime/sfpi/` (for `tt-lang` installation only).
 - Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to `./tutorials/`.
 
-For finer control: `tt-lang-setup-host` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
+For finer control: `tt-lang-setup-sfpi` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 
 Run a tutorial example:
 
 ```bash
-tt-lang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulated (no compilation, runs on CPU)
-python tutorials/elementwise/step_4_multinode_grid_auto.py        # compiles and runs on hardware
+tt-lang-sim tutorials/elementwise/step_4_multinode_grid_full.py    # simulated (no compilation, runs on CPU)
+python tutorials/elementwise/step_4_multinode_grid_full.py        # compiles and runs on hardware
 ```
 
 To develop tt-lang itself or debug the compiler, use the Docker images below or [build from source](#25-building-without-docker).
@@ -120,7 +120,7 @@ docker exec -it $USER-dist /bin/bash
 The environment activates automatically on login. Run an example immediately:
 
 ```bash
-python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_full.py
 ```
 
 To learn more, take a [tour](docs/sphinx/tour/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
@@ -140,6 +140,7 @@ docker run -d --name $USER-ird \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
   -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
+  -v $HOME/.ssh/known_hosts:/root/.ssh/known_hosts:ro \
   ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
   sleep infinity
 ```
@@ -169,7 +170,7 @@ ninja -C build check-ttlang-all
 Run an example:
 
 ```bash
-python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+python examples/elementwise-tutorial/step_4_multinode_grid_full.py
 ```
 
 The `-DTTLANG_USE_TOOLCHAIN=ON` flag tells CMake to use the pre-built LLVM and tt-metal from `/opt/ttlang-toolchain` instead of building them from source, which saves significant build time.

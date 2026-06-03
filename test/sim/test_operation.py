@@ -47,10 +47,10 @@ class TestGridSize:
         # Should not raise
         test_operation(a, b)
 
-    def test_grid_size_in_operation_auto(self):
+    def test_grid_size_in_operation_full(self):
         """Test grid_size with auto grid (defaults to 8x8)."""
 
-        @ttl.operation(grid="auto")
+        @ttl.operation(grid="full")
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 

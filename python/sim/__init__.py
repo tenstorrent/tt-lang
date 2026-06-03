@@ -40,6 +40,27 @@ class _SignpostContextManager:
         return None
 
 
+# Create ttl.block namespace object
+class _TTLBlockNamespace:
+    """TT-Lang block namespace for shape-manipulation and utility functions.
+
+    Contains: broadcast, fill, mask, mask_posinf, where, squeeze, unsqueeze,
+    transpose.
+    """
+
+    def __init__(self):
+        from . import block as block_module
+
+        self.broadcast = block_module.broadcast
+        self.fill = block_module.fill
+        self.mask = block_module.mask
+        self.mask_posinf = block_module.mask_posinf
+        self.where = block_module.where
+        self.squeeze = block_module.squeeze
+        self.unsqueeze = block_module.unsqueeze
+        self.transpose = block_module.transpose
+
+
 # Create ttl.math namespace object
 class _TTLMathNamespace:
     """TT-Lang math namespace for block math functions.
@@ -52,7 +73,6 @@ class _TTLMathNamespace:
         from . import math as math_module
 
         # Manually add special functions that need custom logic
-        self.broadcast = math_module.broadcast
         self.reduce_max = math_module.reduce_max
         self.reduce_sum = math_module.reduce_sum
 
@@ -76,7 +96,6 @@ class _TTLNamespace:
         from .decorators import compute, datamovement
         from .nodecontext import node, grid_size
         from .operation import operation
-        from . import math as math_module
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program
         from .typedefs import NodeCoord, NodeRange, Shape, Size
@@ -89,7 +108,6 @@ class _TTLNamespace:
         self.node = node
         self.copy = copy
         self.GroupTransfer = GroupTransfer
-        self.transpose = math_module.transpose
         self.Pipe = Pipe
         self.PipeNet = PipeNet
         self.SrcPipeIdentity = SrcPipeIdentity
@@ -103,6 +121,7 @@ class _TTLNamespace:
         self.TILE_LAYOUT = TILE_LAYOUT
         self.ROW_MAJOR_LAYOUT = ROW_MAJOR_LAYOUT
         self.Program = Program
+        self.block = _TTLBlockNamespace()
         self.math = _TTLMathNamespace()
 
     @staticmethod

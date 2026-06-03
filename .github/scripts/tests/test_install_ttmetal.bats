@@ -7,7 +7,7 @@
 # Focus: the .so binaries (_ttnn.so, _ttnncpp.so) come from $BUILD/ttnn/,
 # never from $SRC/ttnn/ttnn/. install-ttmetal.sh used to copy from $SRC,
 # which silently installed stale extensions left in the source tree by a
-# previous tt-metal build (see the v0.71.0-rc2 uplift debugging session).
+# previous tt-metal uplift debugging session.
 
 load test_helper
 

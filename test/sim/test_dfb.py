@@ -33,7 +33,7 @@ from sim.dfb import (
     DataflowBuffer,
     make_dataflow_buffer_like,
 )
-from sim.math import broadcast
+from sim.block import broadcast
 from sim.blockstate import (
     KernelType,
     BlockAcquisition,
@@ -767,9 +767,9 @@ def test_iadd_accumulates_into_temporary() -> None:
 
     with dfb.reserve() as block:
         # Use fill(0) as accumulator seed; += produces a temporary block each time.
-        from sim.math import fill
+        from sim.block import fill
 
-        acc = fill(block, 0)
+        acc = fill(0, shape=block.shape)
         acc += values1
         acc += values2
         block.store(acc)
@@ -1215,6 +1215,119 @@ def test_matmul_1x4_times_4x1_values():
 
 
 # ---------------------------------------------------------------------------
+# Layout-mismatch tests for Block operator overloads and matmul
+#
+# Block arithmetic (``+``, ``-``, ``*``, ``/`` ...) and matmul (``@`` and the
+# top-level ``matmul``) are multi-operand operations.  The simulator must
+# reject mixed ``TILE_LAYOUT`` / ``ROW_MAJOR_LAYOUT`` operands the same way
+# the compiler does, because pairing the underlying buffers tile-by-tile is
+# only well-defined when both sides agree.  The actual check lives in
+# ``dfb._check_same_layout``; these tests pin that contract down.
+# ---------------------------------------------------------------------------
+
+
+def _tile_block_1x1() -> Block:
+    """Tile-layout block of grid shape (1, 1) backed by a single 32x32 tile."""
+    return Block.from_list(
+        [Tensor(torch.zeros(32, 32, dtype=torch.float32))], shape=(1, 1)
+    )
+
+
+def _row_major_block_1x1() -> Block:
+    """Row-major-layout block of shape (1, 1) backed by a 1x1 row-major tensor."""
+    return Block.from_list(
+        [Tensor(torch.zeros(1, dtype=torch.float32), ROW_MAJOR_LAYOUT)], shape=(1, 1)
+    )
+
+
+def test_block_add_layout_mismatch_raises():
+    """``Block.__add__`` raises when operand layouts differ."""
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a + b
+
+
+def test_block_sub_layout_mismatch_raises():
+    """``Block.__sub__`` raises when operand layouts differ."""
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a - b
+
+
+def test_block_mul_layout_mismatch_raises():
+    """``Block.__mul__`` raises when operand layouts differ."""
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a * b
+
+
+def test_block_truediv_layout_mismatch_raises():
+    """``Block.__truediv__`` raises when operand layouts differ.
+
+    One sample of an arithmetic-operator-family check is enough since they
+    all share ``Block._binary_op``; the prior add/sub/mul tests pin that
+    helper from a few angles.
+    """
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a / b
+
+
+def test_block_matmul_op_layout_mismatch_raises():
+    """``Block.__matmul__`` (i.e. ``@``) raises when operand layouts differ.
+
+    ``Block.__matmul__`` delegates to the top-level ``matmul`` which has its
+    own ``_check_same_layout`` call (matmul has its own shape rules and does
+    not go through ``_binary_op``).
+    """
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        _ = a @ b
+
+
+def test_top_level_matmul_layout_mismatch_raises():
+    """The module-level ``dfb.matmul`` also rejects layout mismatches.
+
+    Direct callers of ``ttl.math.matmul`` (which re-exports ``dfb.matmul``)
+    bypass the operator overload; this test guards the direct path.
+    """
+    from sim.dfb import matmul as dfb_matmul
+
+    a = _tile_block_1x1()
+    b = _row_major_block_1x1()
+    with pytest.raises(ValueError, match="must share the same layout"):
+        dfb_matmul(a, b)
+
+
+def test_block_add_layout_error_wins_over_shape_error():
+    """When both layout AND shape mismatch, the layout error fires first.
+
+    Layout is the more fundamental error: pairing the underlying buffers is
+    only meaningful when both operands agree on layout, regardless of
+    whether their declared shapes happen to match.  Locking this ordering
+    in keeps the user-visible error message focused on the root cause.
+    """
+    a = _tile_block_1x1()  # TILE_LAYOUT, shape (1, 1)
+    b = Block.from_list(
+        [
+            Tensor(torch.zeros(2, dtype=torch.float32), ROW_MAJOR_LAYOUT),
+            Tensor(torch.zeros(2, dtype=torch.float32), ROW_MAJOR_LAYOUT),
+        ],
+        shape=(2, 2),
+    )  # ROW_MAJOR_LAYOUT, shape (2, 2) -- both shape AND layout differ from a
+
+    with pytest.raises(ValueError, match="must share the same layout") as exc_info:
+        _ = a + b
+    # The shape error must NOT be the one that surfaced.
+    assert "Shape mismatch" not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
 # 1-D tensor support tests
 # ---------------------------------------------------------------------------
 
@@ -1337,20 +1450,40 @@ def test_1d_multi_tile_dataflow_buffer():
 
 
 def test_1d_tensor_tile_aligned_validation():
-    """1-D tensors that are not tile-aligned (or size 1) are rejected by from_tensor."""
+    """1-D tensors that are not multiples of TILE_SHAPE are rejected by from_tensor."""
     from sim.dfb import Block
 
-    # Aligned: 32, 64, 1
     Block.from_tensor(Tensor(torch.zeros(32)))
     Block.from_tensor(Tensor(torch.zeros(64)))
-    Block.from_tensor(Tensor(torch.zeros(1)))
 
-    # Not aligned
+    with pytest.raises(ValueError, match="multiple of TILE_SHAPE"):
+        Block.from_tensor(Tensor(torch.zeros(1)))
+
     with pytest.raises(ValueError, match="multiple of TILE_SHAPE"):
         Block.from_tensor(Tensor(torch.zeros(33)))
 
     with pytest.raises(ValueError, match="multiple of TILE_SHAPE"):
         Block.from_tensor(Tensor(torch.zeros(16)))
+
+
+def test_tiled_dfb_rejects_degenerate_innermost_dim():
+    """Regression test for issue #601: a tile-layout DFB whose likeness tensor
+    has a non-tile-aligned innermost dim (e.g. (32, 1)) must be rejected at
+    construction.  Per spec every tile is 32x32; permitting "degenerate" 32x1
+    tiles led the spec-form ``broadcast(dims=[-1], shape=...)`` path to skip
+    the within-tile expansion and produce silently wrong outputs.
+    """
+    likeness = Tensor(torch.ones((32, 1), dtype=torch.float32), TILE_LAYOUT)
+
+    with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
+        DataflowBuffer(likeness_tensor=likeness, shape=(1, 1), block_count=2)
+
+    with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
+        make_dataflow_buffer_like(likeness, shape=(1, 1))
+
+    likeness_h = Tensor(torch.ones((1, 32), dtype=torch.float32), TILE_LAYOUT)
+    with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
+        make_dataflow_buffer_like(likeness_h, shape=(1, 1))
 
 
 def test_1d_arithmetic_on_blocks():
@@ -1444,44 +1577,31 @@ def test_5d_grid_from_tensor_infers_shape():
 
 
 def test_store_broadcast_expansion():
-    """Test that store() expands source blocks to match destination shape when using broadcast()."""
-    # Create DFBs for testing broadcast expansion with element-based semantics
-
-    # Test 1: Broadcast (1, 2) -> (3, 2) with degenerate tiles (element size 1 in first dim)
-    # Source has full buffer shape (1, 64) - 1 row, 2×32=64 columns
-    # First dim (outermost/rows) has element size 1, broadcast along dim 0 (outermost)
-    src_elem = Tensor(
-        torch.zeros(1, 64, dtype=torch.bfloat16)
-    )  # Full buffer element shape
+    """Test that broadcast() eagerly replicates tiles and the result can be stored."""
+    # Test 1: Broadcast (1, 2) -> (3, 2): row dimension expanded.
+    # Source tiles are (32, 32); after broadcast, 3 rows of 2 tiles each.
+    src_elem = Tensor(torch.zeros(32, 64, dtype=torch.bfloat16))
     src_dfb = DataflowBuffer(likeness_tensor=src_elem, shape=(1, 2), block_count=2)
 
-    # Destination has full buffer shape (96, 64) - 3×32=96 rows, 2×32=64 columns
-    dst_elem = Tensor(
-        torch.zeros(96, 64, dtype=torch.bfloat16)
-    )  # Full buffer element shape
+    dst_elem = Tensor(torch.zeros(96, 64, dtype=torch.bfloat16))
     dst_dfb = DataflowBuffer(likeness_tensor=dst_elem, shape=(3, 2), block_count=2)
 
     with src_dfb.reserve() as src_blk:
-        # Fill source with degenerate tiles: first column = 10, second column = 20
         src_tiles = [
-            Tensor(torch.full((1, 32), 10.0, dtype=torch.bfloat16)),
-            Tensor(torch.full((1, 32), 20.0, dtype=torch.bfloat16)),
+            Tensor(torch.full((32, 32), 10.0, dtype=torch.bfloat16)),
+            Tensor(torch.full((32, 32), 20.0, dtype=torch.bfloat16)),
         ]
         src_temp = Block.from_list(src_tiles, shape=(1, 2))
         src_blk.store(src_temp)
 
     with dst_dfb.reserve() as dst_blk:
         with src_dfb.wait() as src_wait:
-            # Explicitly broadcast to expand row dimension (dims=[0] = outermost in standard Python indexing)
-            broadcast_src = broadcast(src_wait, dims=[0])
-            # Store with broadcast expansion
+            broadcast_src = broadcast(src_wait, dims=[0], shape=(3, 2))
             dst_blk.store(broadcast_src)
 
-            # Check that tiles were replicated correctly
             result = dst_blk.to_list()
             assert len(result) == 6
-            # Each row should have the same values: [10, 20]
-            for i in range(3):  # 3 rows
+            for i in range(3):
                 assert torch.allclose(
                     result[i * 2].to_torch(),
                     torch.full((32, 32), 10.0, dtype=torch.bfloat16),
@@ -1491,31 +1611,23 @@ def test_store_broadcast_expansion():
                     torch.full((32, 32), 20.0, dtype=torch.bfloat16),
                 )
 
-    # Test 2: Broadcast (1, 1) -> (2, 2) with proper element shapes
-    # Source has full buffer shape (1, 1) - broadcast along both dimensions
-    src2_elem = Tensor(
-        torch.zeros(1, 1, dtype=torch.bfloat16)
-    )  # Full buffer element shape
+    # Test 2: Broadcast (1, 1) -> (2, 2): both dimensions expanded.
+    src2_elem = Tensor(torch.zeros(32, 32, dtype=torch.bfloat16))
     src2_dfb = DataflowBuffer(likeness_tensor=src2_elem, shape=(1, 1), block_count=2)
 
-    # Destination has full buffer shape (64, 64) - 2×32=64 rows, 2×32=64 columns
-    dst2_elem = Tensor(
-        torch.zeros(64, 64, dtype=torch.bfloat16)
-    )  # Full buffer element shape
+    dst2_elem = Tensor(torch.zeros(64, 64, dtype=torch.bfloat16))
     dst2_dfb = DataflowBuffer(likeness_tensor=dst2_elem, shape=(2, 2), block_count=2)
 
     with src2_dfb.reserve() as src2_blk:
-        src2_tiles = [Tensor(torch.full((1, 1), 42.0, dtype=torch.bfloat16))]
+        src2_tiles = [Tensor(torch.full((32, 32), 42.0, dtype=torch.bfloat16))]
         src2_temp = Block.from_list(src2_tiles, shape=(1, 1))
         src2_blk.store(src2_temp)
 
     with dst2_dfb.reserve() as dst2_blk:
         with src2_dfb.wait() as src2_wait:
-            # Explicitly broadcast to expand both dimensions (dims=[0, 1])
-            broadcast_src2 = broadcast(src2_wait, dims=[0, 1])
+            broadcast_src2 = broadcast(src2_wait, dims=[0, 1], shape=(2, 2))
             dst2_blk.store(broadcast_src2)
 
-            # Check all tiles are 42.0
             result2 = dst2_blk.to_list()
             assert len(result2) == 4
             for tile in result2:

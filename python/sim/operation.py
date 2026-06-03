@@ -17,28 +17,28 @@ from .context import get_context, cleanup_run_context
 
 
 def set_default_grid(grid: Shape) -> None:
-    """Set the default grid size used when kernel specifies grid='auto'.
+    """Set the default grid size used when kernel specifies grid='full'.
 
     Args:
         grid: Tuple of (rows, cols) specifying the grid size
 
     Example:
-        set_default_grid((4, 4))  # Use 4x4 grid for 'auto'
+        set_default_grid((4, 4))  # Use 4x4 grid for 'full'
     """
-    get_context().config.default_auto_grid = grid
+    get_context().config.default_full_grid = grid
 
 
 def get_default_grid() -> Shape:
-    """Get the current default grid size for grid='auto'.
+    """Get the current default grid size for grid='full'.
 
     Returns:
         Tuple of (rows, cols) specifying the default grid size
     """
-    return get_context().config.default_auto_grid
+    return get_context().config.default_full_grid
 
 
 def operation(
-    grid: Union[str, Shape] = "auto",
+    grid: Union[str, Shape] = "full",
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     **unknown: Any,
@@ -60,7 +60,7 @@ def operation(
         Decorated function with grid configuration
 
     Example:
-        @ttl.operation(grid="auto")
+        @ttl.operation(grid="full")
         def my_operation(a, b, out):
             # grid is available as a variable here
             pass
@@ -77,7 +77,7 @@ def operation(
         actual_grid: Shape = cast(
             Shape,
             (
-                get_context().config.default_auto_grid
+                get_context().config.default_full_grid
                 if grid in ("auto", "full")
                 else grid
             ),

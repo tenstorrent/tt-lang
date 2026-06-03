@@ -20,6 +20,46 @@ BIN_DIR="$(dirname "$SCRIPTS_DIR")/../bin"
 # Real tt-lang repo root (parent of .github/). Lets tests reach
 # scripts/ (top-level) without hard-coding a path.
 TTLANG_REPO_ROOT="$(dirname "$(dirname "$SCRIPTS_DIR")")"
+WHEEL_PYTAG="cp312-cp312-linux_x86_64"
+TEST_TTNN_PYPI_VERSION="99.88.77"
+TEST_TT_METAL_TAG="v99.88.77"
+TEST_TT_METAL_RC1_TAG="v99.88.77-rc1"
+TEST_TT_METAL_RC2_TAG="v99.88.77-rc2"
+
+whl()       { printf 'tt_lang-%s-%s.whl' "$1" "$WHEEL_PYTAG"; }
+whl_sim()   { printf 'tt_lang_sim-%s-py3-none-any.whl' "$1"; }
+whl_light() { printf 'tt_lang_light-%s-py3-none-any.whl' "$1"; }
+whl_build() { printf 'tt_lang-%s-%s-%s.whl' "$1" "$2" "$WHEEL_PYTAG"; }
+
+make_wheel_dir() {
+    local dir
+    dir=$(mktemp -d "$BATS_TEST_TMPDIR/wheels.XXXXXX")
+    for name in "$@"; do
+        : > "$dir/$name"
+    done
+    echo "$dir"
+}
+
+write_tt_metal_version_file() {
+    local version_file="$1"
+    local ttnn_pypi="$2"
+    local pypi_tag="$3"
+    local tt_metal_tag="$4"
+    cat > "$version_file" <<EOF
+TTNN_PYPI="$ttnn_pypi"
+TTNN_PYPI_TT_METAL_TAG="$pypi_tag"
+TT_METAL_TAG="$tt_metal_tag"
+EOF
+}
+
+make_tt_metal_version_file() {
+    local pypi_tag="$1"
+    local tt_metal_tag="$2"
+    local ttnn_pypi="${3:-$TEST_TTNN_PYPI_VERSION}"
+    local version_file="$BATS_TEST_TMPDIR/tt-metal-version.$pypi_tag.$tt_metal_tag"
+    write_tt_metal_version_file "$version_file" "$ttnn_pypi" "$pypi_tag" "$tt_metal_tag"
+    echo "$version_file"
+}
 
 # Build a synthetic git repo in $BATS_TEST_TMPDIR (auto-cleaned). Initialized
 # with one file at each UPLIFT_PATHS location, plus python/sim/example.py for
@@ -36,11 +76,11 @@ mkrepo() {
         git config user.name t
         mkdir -p third-party/llvm-project third-party/tt-metal .github/containers python/sim
         # Sourceable shell snippet matching the real third-party/tt-metal-version
-        # schema (TTNN_PYPI, TT_METAL_TAG).
-        cat > third-party/tt-metal-version <<'VERSION_EOF'
-TTNN_PYPI="0.69.0"
-TT_METAL_TAG="v0.69.0"
-VERSION_EOF
+        # schema.
+        write_tt_metal_version_file third-party/tt-metal-version \
+            "$TEST_TTNN_PYPI_VERSION" \
+            "$TEST_TT_METAL_TAG" \
+            "$TEST_TT_METAL_TAG"
         echo "llvm-content-v1" > third-party/llvm-project/sentinel
         echo "tt-metal-content-v1" > third-party/tt-metal/sentinel
         cat > .github/containers/Dockerfile.base <<'EOF'

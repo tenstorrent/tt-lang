@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Multinode fused matmul+bias: Y = A @ B + C with grid="auto".
+Multinode fused matmul+bias: Y = A @ B + C with grid="full".
 
 Each parametrized shape (M_blk, K_blk, N_blk) defines the DFB block
 dimensions in tiles. The outer M/N/K loops distribute work across the
@@ -24,7 +24,7 @@ TILE = 32
 
 
 def _make_kernel(m_blk, k_blk, n_blk):
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def matmul_bias(
         a_tensor: ttnn.Tensor,
         b_tensor: ttnn.Tensor,

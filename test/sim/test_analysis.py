@@ -27,7 +27,6 @@ from sim.analysis import (
 )
 from sim.context import get_context, reset_context
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -409,6 +408,20 @@ class TestCopyWaitAnalysis:
             blk = dfb.reserve()  # noqa: F821
             tx = ttl.copy(src, blk)  # noqa: F821
             tx.wait()
+
+        ips = analyze_kernel_function(dm).injection_points
+        assert ips == ()
+
+    def test_outer_copy_waited_in_nested_callback_not_detected(self):
+        """A transaction waited by a nested callback is explicitly waited."""
+
+        def dm():
+            recv_tx = ttl.copy(pipe, dst)  # noqa: F821
+
+            def send():
+                recv_tx.wait()
+
+            send()
 
         ips = analyze_kernel_function(dm).injection_points
         assert ips == ()
@@ -1080,9 +1093,9 @@ class TestComplexControlFlow:
             def compute():
                 # Fill slot 0 with 7.0, slot 1 with 8.0.
                 with out_cb.reserve() as v:
-                    v.store(ttl.math.fill(v, 7.0))
+                    v.store(ttl.block.fill(7.0, shape=v.shape))
                 with out_cb.reserve() as v:
-                    v.store(ttl.math.fill(v, 8.0))
+                    v.store(ttl.block.fill(8.0, shape=v.shape))
 
             @ttl.datamovement()
             def dm_read():

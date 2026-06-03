@@ -375,7 +375,7 @@ def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
     # function, so module-scope PipeNets satisfy the spec's "enclosing
     # scope" rule and must be discovered. Walks closure cells and the
     # function's globals; the compiler's _build_operation_pipenets does
-    # the same so validation and grid="auto" work extent agree.
+    # the same so validation and grid="full" work extent agree.
     closure = getattr(func, "__closure__", None) or ()
     for cell in closure:
         try:
