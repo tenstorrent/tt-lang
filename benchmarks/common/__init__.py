@@ -4,6 +4,7 @@
 """Shared, op-agnostic benchmark infrastructure (timing, reporting, plotting,
 and the spec-driven sweep/CLI harness)."""
 
+from .cycles import clear_profile_log, parse_kernel_duration, read_device_profiler
 from .harness import BenchSpec, cli, open_default_device, run_spec, sweep
 from .plot import save_ratio_plot, save_stacked_ratio_plot
 from .report import pcc, write_csv
@@ -20,4 +21,7 @@ __all__ = [
     "pcc",
     "write_csv",
     "time_runs",
+    "clear_profile_log",
+    "parse_kernel_duration",
+    "read_device_profiler",
 ]
