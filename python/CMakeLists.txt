@@ -203,6 +203,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Ops
     ops/__init__.py
     ops/mcast.py
     ops/flash_mla.py
+    ops/rmsnorm.py
 )
 
 declare_mlir_python_sources(TTLangPythonCommon.Src
