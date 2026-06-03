@@ -3,21 +3,25 @@
 
 """End-to-end Flash-MLA decode benchmark.
 
-Times the full ttl chain (shard -> tree_reduce -> normalize) at production
-MLA-decode shapes (64 heads, kvpe_dim 576, kv_lora_rank 512, bfp8 KV cache)
-across a sweep of sequence lengths. PCC is checked against the torch MLA golden
-(one shared KV head broadcast over all heads; V = leading kv_lora_rank columns).
+The reference is ``ttnn.transformer.paged_flash_multi_latent_attention_decode``
+run in the production layout (paged KV cache + height-sharded Q), mirroring the
+deepseek_v3 MLA demo. Cases:
 
-There is no drop-in ttnn equivalent for MLA decode (single shared KV head,
-asymmetric qk/v head dims), so the ratio column is a best-effort baseline
-against ``ttnn.transformer.scaled_dot_product_attention_decode`` run as generic
-MQA flash-decode; it is left blank when that op rejects the MLA shapes. The
-absolute ttl latency + correctness are always recorded.
+  - ``ctx-*``: single-user decode (1 user, 64 heads) at a fixed 32k KV cache,
+    sweeping the decode position so the attended context grows 512 -> 32k. The
+    ttl chain (shard -> tree_reduce -> normalize) processes exactly the attended
+    length, is PCC-checked against a torch MLA golden, and the ratio is taken
+    against the ttnn paged decode reading the same position via ``cur_pos``.
+    Short contexts are where ttl's fixed per-decode overhead is most exposed.
+  - ``deepseek-1k``: the deepseek_v3 demo's exact problem (4 users, 128 heads,
+    1k paged context). Our single-user op does not run multi-user batched
+    decode, so this measures the ttnn side only; ttl columns are blank.
 
-Run: ``python -m benchmarks.e2e.flash_mla [--filter 8k] [--plot]``.
+The ttl chain is compile-time fixed on its chunk count, so it only runs when the
+attended length is a multiple of 512 (its per-core chunk granularity).
+
+Run: ``python -m benchmarks.e2e.flash_mla [--filter ctx-8k] [--plot]``.
 """
-
-import math
 
 import torch
 import ttnn
@@ -38,45 +42,50 @@ QK_ROPE_HEAD_DIM = 64
 QK_NOPE_HEAD_DIM = 128
 KVPE_DIM = KV_LORA_RANK + QK_ROPE_HEAD_DIM        # 576
 QK_HEAD_DIM = QK_NOPE_HEAD_DIM + QK_ROPE_HEAD_DIM  # 192
-N_CORES = 8
+N_CORES = 8                              # ttl K-split (n_cols)
 
 PNHt = NUM_HEADS // TILE                  # 2
 DHt = KVPE_DIM // TILE                     # 18
 vDHt = KV_LORA_RANK // TILE                # 16
 Sk_chunk_t = 2
 
+# Attended length must be a multiple of the ttl op's per-core chunk.
+TTL_CHUNK = N_CORES * Sk_chunk_t * TILE   # 512
+
 # Production tile counts make the compute kernel large; trim worker L1 to
 # enlarge the kernel-config buffer past the default TENSIX limit.
 WORKER_L1 = 1448000
 
-# (seq_len, label). N_CHUNKS = (seq / N_CORES) / (Sk_chunk_t * TILE) must be an
-# integer; all of these divide cleanly.
+OURS_SCALE = QK_HEAD_DIM ** -0.5                   # 192 ** -0.5
+DEEPSEEK_SCALE = (192 + 64) ** -0.5                # deepseek qk_head_dim = 256
+
+CACHE_32K = 32 * 1024
+
+# Each case is a dict: label, users, heads, cache (KV-cache length), pos
+# (per-user decode positions), scale.
 CASES = (
-    (8 * 1024, "8k"),
-    (16 * 1024, "16k"),
-    (32 * 1024, "32k"),
+    {"label": "ctx-512", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [511], "scale": OURS_SCALE},
+    {"label": "ctx-1k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [1023], "scale": OURS_SCALE},
+    {"label": "ctx-2k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [2047], "scale": OURS_SCALE},
+    {"label": "ctx-8k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [8191], "scale": OURS_SCALE},
+    {"label": "ctx-32k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [32767], "scale": OURS_SCALE},
+    {"label": "deepseek-1k", "users": 4, "heads": 128, "cache": 1024, "pos": [0, 170, 341, 512], "scale": DEEPSEEK_SCALE},
 )
 
-FIELDS = ("label", "seq", "heads", "ttlang_ms", "ttnn_ms", "ratio", "pcc")
+FIELDS = ("label", "users", "heads", "ctx", "ttlang_ms", "ttnn_ms", "ratio", "pcc")
 
 
 def _to_dev(t, device):
     return ttnn.from_torch(
-        t.contiguous(),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        t.contiguous(), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
 
 def _to_dev_bfp8(t, device):
     return ttnn.from_torch(
-        t.contiguous(),
-        dtype=ttnn.bfloat8_b,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        t.contiguous(), dtype=ttnn.bfloat8_b, layout=ttnn.TILE_LAYOUT,
+        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
 
@@ -97,32 +106,11 @@ def _open_device():
     return ttnn.open_device(device_id=0, worker_l1_size=WORKER_L1)
 
 
-def _reference_ms(device, q4, cache4, seq, scale, *, warmup, runs):
-    """Best-effort ttnn flash-decode baseline; None if it rejects the shapes."""
-    try:
-        q_ref = _to_dev(q4, device)                 # [1, b, nh, dh]
-        kv_ref = _to_dev(cache4, device)            # [b, nkv, s, dh]
-        v_ref = _to_dev(cache4, device)
-        cur_pos = [seq - 1]
-
-        def ref():
-            return ttnn.transformer.scaled_dot_product_attention_decode(
-                q_ref, kv_ref, v_ref, is_causal=False, cur_pos=cur_pos, scale=scale
-            )
-
-        s = time_runs(ref, ttnn.deallocate, device, warmup=warmup, runs=runs)
-        for t in (q_ref, kv_ref, v_ref):
-            ttnn.deallocate(t)
-        return s
-    except Exception as e:
-        print(f"  (ttnn sdpa-decode baseline unavailable: {e})", flush=True)
-        return None
-
-
-def run_case(device, case, *, warmup, runs):
-    seq, label = case
+# --------------------------------------------------------------------------
+# ttl side: the shard -> tree_reduce -> normalize chain (single user)
+# --------------------------------------------------------------------------
+def _run_ttl_chain(device, seq, scale, *, warmup, runs):
     n_chunks = (seq // N_CORES) // (Sk_chunk_t * TILE)
-    scale = QK_HEAD_DIM ** -0.5
 
     torch.manual_seed(42)
     q4 = torch.randn((1, 1, NUM_HEADS, KVPE_DIM), dtype=torch.bfloat16)
@@ -158,35 +146,158 @@ def run_case(device, case, *, warmup, runs):
         normalize(o_d, l_d, norm_d)
 
     ttlang_s = time_runs(chain, lambda _r: None, device, warmup=warmup, runs=runs)
-
     got = ttnn.to_torch(norm_d).reshape(1, 1, NUM_HEADS, KV_LORA_RANK).to(torch.bfloat16)
     pcc_v = pcc(got, expected)
 
-    ttnn_s = _reference_ms(device, q4, cache4, seq, scale, warmup=warmup, runs=runs)
-
     for t in (q_d, k_d, v_d, po_d, pm_d, pl_d, o_d, m_d, l_d, norm_d):
         ttnn.deallocate(t)
+    return ttlang_s, pcc_v
 
-    ttnn_ms = None if ttnn_s is None else round(ttnn_s * 1000, 4)
-    ratio = None if ttnn_s is None else round(ttlang_s / ttnn_s, 4)
+
+# --------------------------------------------------------------------------
+# ttnn side: faithful paged + height-sharded MLA decode (deepseek layout)
+# --------------------------------------------------------------------------
+def _build_page_table(device, num_users, num_blocks):
+    blocks_per_user = num_blocks // num_users
+    pt = torch.randperm(num_blocks, dtype=torch.int32).reshape(num_users, blocks_per_user)
+    tt = ttnn.from_torch(
+        pt, dtype=ttnn.int32, device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG
+    )
+    return tt, pt
+
+
+def _build_paged_cache(device, num_users, seq, head_dim, num_blocks, block_size, mapping):
+    cache = torch.randn((num_users, 1, seq, head_dim), dtype=torch.bfloat16) * 0.1
+    paged = (
+        cache.reshape(num_users, 1, -1, block_size, head_dim)
+        .transpose(1, 2)
+        .reshape(num_blocks, 1, block_size, head_dim)
+    )
+    paged = paged[torch.argsort(mapping.view(-1))]
+    return ttnn.from_torch(
+        paged, dtype=ttnn.bfloat16, device=device, layout=ttnn.TILE_LAYOUT,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+
+def _reference_ms(device, num_users, num_heads, cache_seq, positions, scale, *, warmup, runs):
+    """Time the production paged + height-sharded ttnn MLA decode reading the
+    given per-user positions. Sharding keeps the per-core CBs small so it fits
+    L1. Returns mean ms, or None if the op rejects the shapes."""
+    try:
+        block_size = TILE
+        num_blocks = (cache_seq * num_users) // block_size
+        num_cores = min(num_users * num_heads, 64)  # deepseek demo core cap
+
+        torch.manual_seed(0)
+        q = torch.randn((1, num_users, num_heads, KVPE_DIM), dtype=torch.bfloat16) * 0.1
+        tt_pt, pt = _build_page_table(device, num_users, num_blocks)
+        tt_cache = _build_paged_cache(
+            device, num_users, cache_seq, KVPE_DIM, num_blocks, block_size, pt
+        )
+
+        grid = device.compute_with_storage_grid_size()
+        q_grid = ttnn.num_cores_to_corerangeset(num_cores, grid, row_wise=True)
+        q_mem = ttnn.create_sharded_memory_config(
+            shape=[TILE, KVPE_DIM], core_grid=q_grid,
+            strategy=ttnn.ShardStrategy.HEIGHT, orientation=ttnn.ShardOrientation.ROW_MAJOR,
+            use_height_and_width_as_shard_shape=True,
+        )
+        out_mem = ttnn.create_sharded_memory_config(
+            shape=[TILE, KV_LORA_RANK], core_grid=q_grid,
+            strategy=ttnn.ShardStrategy.HEIGHT, orientation=ttnn.ShardOrientation.ROW_MAJOR,
+            use_height_and_width_as_shard_shape=True,
+        )
+        tt_q = ttnn.to_memory_config(
+            ttnn.from_torch(
+                q, dtype=ttnn.bfloat16, device=device, layout=ttnn.TILE_LAYOUT,
+                memory_config=ttnn.L1_MEMORY_CONFIG,
+            ),
+            q_mem,
+        )
+        tt_pos = ttnn.from_torch(
+            torch.tensor(positions, dtype=torch.int32),
+            dtype=ttnn.int32, device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        pc = ttnn.SDPAProgramConfig(
+            compute_with_storage_grid_size=grid,
+            q_chunk_size=0,        # unused in decode
+            k_chunk_size=128,
+            exp_approx_mode=True,
+        )
+        ckc = ttnn.init_device_compute_kernel_config(
+            device.arch(),
+            math_fidelity=ttnn.MathFidelity.HiFi4,
+            math_approx_mode=True,
+            fp32_dest_acc_en=False,
+            packer_l1_acc=False,
+        )
+
+        def ref():
+            return ttnn.transformer.paged_flash_multi_latent_attention_decode(
+                tt_q, tt_cache,
+                page_table_tensor=tt_pt,
+                cur_pos_tensor=tt_pos,
+                head_dim_v=KV_LORA_RANK,
+                scale=scale,
+                program_config=pc,
+                compute_kernel_config=ckc,
+                memory_config=out_mem,
+            )
+
+        s = time_runs(ref, ttnn.deallocate, device, warmup=warmup, runs=runs)
+        for t in (tt_q, tt_cache, tt_pt, tt_pos):
+            ttnn.deallocate(t)
+        return s
+    except Exception as e:
+        print(f"  (ttnn paged MLA-decode baseline unavailable: {e})", flush=True)
+        return None
+
+
+def run_case(device, case, *, warmup, runs):
+    num_users = case["users"]
+    num_heads = case["heads"]
+    cache_seq = case["cache"]
+    positions = case["pos"]
+    scale = case["scale"]
+    label = case["label"]
+
+    ttlang_s = pcc_v = None
+    # The ttl chain is single-user / NUM_HEADS and compile-time fixed on its
+    # chunk count, so run it only there and only when the attended length is a
+    # multiple of its 512-element chunk.
+    if num_users == 1 and num_heads == NUM_HEADS:
+        attended = positions[0] + 1
+        if attended % TTL_CHUNK == 0:
+            ttlang_s, pcc_v = _run_ttl_chain(device, attended, scale, warmup=warmup, runs=runs)
+        else:
+            print(f"  ({label}: ttl skipped, attended {attended} not a multiple of {TTL_CHUNK})", flush=True)
+
+    ttnn_s = _reference_ms(
+        device, num_users, num_heads, cache_seq, positions, scale, warmup=warmup, runs=runs
+    )
+
+    ratio = round(ttlang_s / ttnn_s, 4) if (ttlang_s is not None and ttnn_s) else None
     return {
         "label": label,
-        "seq": seq,
-        "heads": NUM_HEADS,
-        "ttlang_ms": round(ttlang_s * 1000, 4),
-        "ttnn_ms": ttnn_ms,
+        "users": num_users,
+        "heads": num_heads,
+        "ctx": max(positions) + 1,
+        "ttlang_ms": None if ttlang_s is None else round(ttlang_s * 1000, 4),
+        "ttnn_ms": None if ttnn_s is None else round(ttnn_s * 1000, 4),
         "ratio": ratio,
-        "pcc": round(pcc_v, 6),
+        "pcc": None if pcc_v is None else round(pcc_v, 6),
     }
 
 
 def _format_row(r):
-    ref = "n/a" if r["ttnn_ms"] is None else f"{r['ttnn_ms']:>8.3f}ms"
+    tl = "     n/a" if r["ttlang_ms"] is None else f"{r['ttlang_ms']:>8.3f}ms"
+    rf = "     n/a" if r["ttnn_ms"] is None else f"{r['ttnn_ms']:>8.3f}ms"
     ratio = "  n/a " if r["ratio"] is None else f"{r['ratio']:.3f}"
+    p = " n/a  " if r["pcc"] is None else f"{r['pcc']:.4f}"
     return (
-        f"seq={r['label']:<6}  "
-        f"ttlang={r['ttlang_ms']:>8.3f}ms  ttnn={ref}  "
-        f"ratio={ratio}  pcc={r['pcc']:.4f}"
+        f"{r['label']:<12} u{r['users']} h{r['heads']:<3} ctx{r['ctx']:<6}  "
+        f"ttlang={tl}  ttnn={rf}  ratio={ratio}  pcc={p}"
     )
 
 
@@ -195,11 +306,11 @@ SPEC = BenchSpec(
     fields=FIELDS,
     cases=CASES,
     run_case=run_case,
-    label_of=lambda case: case[1],
+    label_of=lambda case: case["label"],
     open_device=_open_device,
     format_row=_format_row,
-    plot_title="ttlang flash-MLA decode vs ttnn sdpa-decode  (bar = ratio)",
-    plot_label_of=lambda r: f"seq={r['label']}\n{r['heads']} heads",
+    plot_title="ttlang flash-MLA decode vs ttnn paged MLA-decode  (bar = ratio)",
+    plot_label_of=lambda r: f"{r['label']}\nu{r['users']} h{r['heads']}",
 )
 
 
