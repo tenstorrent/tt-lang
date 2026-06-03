@@ -201,6 +201,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Ops
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     ops/__init__.py
+    ops/pipe_util.py
     ops/mcast.py
     ops/flash_mla.py
     ops/rmsnorm.py
