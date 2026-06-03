@@ -691,6 +691,31 @@ def TTLDumpCBFlowGraph
   ];
 }
 
+def TTLLowerScalarCmpF
+    : Pass<"ttl-lower-scalar-cmpf", "::mlir::ModuleOp"> {
+  let summary = "Lower arith.cmpf on scalar floats to TTKernel soft-float ops";
+  let description = [{
+    Converts `arith.cmpf` operations on scalar floats (from `raw_element_read`
+    lowering) to TTKernel soft-float comparison ops. After
+    `convert-ttl-to-ttkernel`, float values from L1 loads are represented as
+    integer bit patterns with `unrealized_conversion_cast` bridging to float
+    types. This pass resolves those casts and emits the appropriate TTKernel
+    comparison op.
+
+    Supported predicates:
+    - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
+    - `olt` -> same ops with swapped operands
+    - `oeq` / `one` -> `arith.cmpi eq` / `ne` on unsigned integer bit patterns
+
+    Unsupported predicates emit an error diagnostic.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTKernelInsertInits
     : Pass<"ttkernel-insert-inits", "::mlir::ModuleOp"> {
   let summary = "Insert minimal init ops before TTKernel compute ops";

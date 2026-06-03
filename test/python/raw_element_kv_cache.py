@@ -18,16 +18,11 @@ ttnn's update_cache writer kernel and deepseek's KVCacheUpdate op:
      for the separate input tensor in a real KV cache update).
   2. Loop over every column in the cache row, copying each element to
      the output tile.
-  3. At positions where the cache value matches the new value (bogus
-     equality check standing in for the real position comparison
-     ``col == cur_pos``), overwrite with the new value.
+  3. At positions where the cache value matches the new value, overwrite
+     with the new value. Uses float equality (arith.cmpf oeq) on the
+     raw element values.
 
 Compile-only test.
-
-WARNING: The equality comparison (==) on raw_element_read results requires
-arith.cmpf lowering which is not yet implemented for TTKernel. This test
-will fail to compile until that lowering is added.
-See https://github.com/tenstorrent/tt-lang/issues/572
 """
 
 import os
@@ -83,11 +78,12 @@ def kv_cache_update_kernel(inp, out):
 # CHECK-LABEL: func.func @dm_write
 # CHECK: ttl.raw_element_read
 # CHECK: ttl.raw_element_read
+# CHECK: arith.cmpf oeq
 # CHECK: ttl.raw_element_write
 # CHECK: ttl.raw_element_write
 
 # =============================================================================
-# C++ Checks -- loop, conditional, ptr operations
+# C++ Checks -- loop, conditional, ptr operations, bitwise equality
 # =============================================================================
 
 # CHECK-CPP: // dm_write

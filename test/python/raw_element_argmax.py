@@ -23,11 +23,6 @@ Two reduction passes over different tile rows:
          (matching the position encoding from reader_argmax_interleaved).
 
 Compile-only test.
-
-WARNING: Comparisons use equality (==) as a placeholder because
-arith.cmpf lowering is not yet implemented for TTKernel. This test will
-fail to compile until that lowering is added.
-See https://github.com/tenstorrent/tt-lang/issues/572
 """
 
 import os
@@ -67,7 +62,7 @@ def argmax_element_kernel(inp, out):
                 max_val = ttl.raw_element_read(rblk, 0, 0)
                 for c in range(32):
                     val = ttl.raw_element_read(rblk, 0, c)
-                    if val == max_val:
+                    if val > max_val:
                         max_val = val
                 ttl.raw_element_write(wblk, 0, 0, max_val)
 
@@ -75,7 +70,7 @@ def argmax_element_kernel(inp, out):
                 best = ttl.raw_element_read(rblk, 1, 0)
                 for c in range(32):
                     val = ttl.raw_element_read(rblk, 1, c)
-                    if val == best:
+                    if val > best:
                         best = val
                         ttl.raw_element_write(wblk, 1, 0, c * 32 + 1)
                 ttl.raw_element_write(wblk, 1, 1, best)
@@ -91,19 +86,22 @@ def argmax_element_kernel(inp, out):
 # CHECK-LABEL: func.func @dm_write
 # CHECK: ttl.raw_element_read
 # CHECK: ttl.raw_element_read
+# CHECK: arith.cmpf ogt
 # CHECK: ttl.raw_element_write
 # CHECK: ttl.raw_element_read
 # CHECK: ttl.raw_element_read
+# CHECK: arith.cmpf ogt
 # CHECK: ttl.raw_element_write
 # CHECK: ttl.raw_element_write
 
 # =============================================================================
-# C++ Checks -- cross-scope vars, conditionals, ptr operations
+# C++ Checks -- cross-scope vars, conditionals, soft-float comparison
 # =============================================================================
 
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
+# CHECK-CPP: float32_greater(
 
 
 device = ttnn.open_device(device_id=0)

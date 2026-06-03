@@ -21,11 +21,6 @@ Mirrors the control flow of tt-metal's bitonic topk (ckernel_sfpu_topk.h):
            _bitonic_topk_merge).
 
 Compile-only test.
-
-WARNING: Comparisons use equality (==) as a placeholder because
-arith.cmpf lowering is not yet implemented for TTKernel. This test will
-fail to compile until that lowering is added.
-See https://github.com/tenstorrent/tt-lang/issues/572
 """
 
 import os
@@ -66,7 +61,7 @@ def topk_element_kernel(inp, out):
                 best = ttl.raw_element_read(rblk, 0, 0)
                 for c in range(32):
                     val = ttl.raw_element_read(rblk, 0, c)
-                    if val == best:
+                    if val > best:
                         best = val
                 ttl.raw_element_write(wblk, 0, 0, best)
 
@@ -76,7 +71,7 @@ def topk_element_kernel(inp, out):
                     b = ttl.raw_element_read(rblk, 0, i + 16)
                     ttl.raw_element_write(wblk, 1, i, a)
                     ttl.raw_element_write(wblk, 1, i + 16, b)
-                    if a == b:
+                    if a > b:
                         ttl.raw_element_write(wblk, 1, i, b)
                         ttl.raw_element_write(wblk, 1, i + 16, a)
 
@@ -91,19 +86,22 @@ def topk_element_kernel(inp, out):
 # CHECK-LABEL: func.func @dm_write
 # CHECK: ttl.raw_element_read
 # CHECK: ttl.raw_element_read
+# CHECK: arith.cmpf ogt
 # CHECK: ttl.raw_element_write
 # CHECK: ttl.raw_element_read
 # CHECK: ttl.raw_element_read
+# CHECK: arith.cmpf ogt
 # CHECK: ttl.raw_element_write
 # CHECK: ttl.raw_element_write
 
 # =============================================================================
-# C++ Checks -- loops, conditionals, and ptr operations
+# C++ Checks -- loops, conditionals, and soft-float comparison
 # =============================================================================
 
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
+# CHECK-CPP: float32_greater(
 
 
 device = ttnn.open_device(device_id=0)
