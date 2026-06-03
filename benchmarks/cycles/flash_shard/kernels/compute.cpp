@@ -9,6 +9,7 @@
 // packed out. V is the leading num_tiles_v tiles of each K chunk (MLA coupling).
 //
 // sdpa.h is referenced in-place via the KernelDescriptor compiler_include_paths.
+// The call convention here tracks the pinned tt-metal (v0.71.0-rc2).
 
 #include <cstdint>
 
@@ -44,12 +45,15 @@ void kernel_main() {
     constexpr uint32_t corr_exp_dst_offset = max_dst_offset + packed_tile_size;
     constexpr uint32_t mm1_dst_offset = corr_exp_dst_offset + packed_tile_size;
 
-    PACK((llk_math_sfpu_sdpa_reduce_row_init<false, DST_ACCUM_MODE, DataFormat::Float16_b>()));
-    PACK(SFPU_TEMPLATE_INIT_KERNEL(exponential, sfpu::exp_init, true, true, scale_fp32, true));
-    sdpa_custom_mm_block_init<transpose_k>(cb_q, cb_k, cb_out, chunk_size);
+    constexpr uint32_t output_granularity = num_tiles_v;
 
     MATH(ckernel::t6_semaphore_init(ckernel::semaphore::FPU_SFPU, 0, 1));
     PACK(ckernel::t6_semaphore_init(SFPU_FPU, 0, 1));
+
+    PACK((llk_math_sfpu_sdpa_reduce_row_init<false, DST_ACCUM_MODE, DataFormat::Float16_b>()));
+    PACK(SFPU_TEMPLATE_INIT_KERNEL(exponential, sfpu::exp_init, true, scale_fp32, true));
+    sdpa_custom_mm_block_init<transpose_k>(cb_q, cb_k, cb_out, chunk_size);
+    pack_block_contiguous_init(cb_out);
 
     cb_wait_front(cb_q, num_tiles_k);
     cb_reserve_back(cb_out, num_tiles_v);
@@ -65,7 +69,8 @@ void kernel_main() {
             transpose_k,
             transpose_v,
             packed_tile_size,
-            exp_approx_mode>(
+            exp_approx_mode,
+            output_granularity>(
             cb_q,
             cb_k,
             0,  // cb_mask (unused)
@@ -80,16 +85,15 @@ void kernel_main() {
             false /* mask_chunk */);
     }
 
-    // Pack the O accumulator (sem incremented once per 2 tiles -- it caps at 15).
-    for (uint32_t i = 0; i < num_tiles_v; i += 2) {
+    // Pack the O accumulator (sem incremented once per output_granularity tiles).
+    for (uint32_t i = 0; i < num_tiles_v; i += output_granularity) {
         PACK(t6_semaphore_wait_on_zero<p_stall::STALL_PACK>(semaphore::FPU_SFPU));
-        pack_tile(mm2_dst_tile_offset + i, cb_out);
-        pack_tile(mm2_dst_tile_offset + i + 1, cb_out);
+        pack_block_contiguous(mm2_dst_tile_offset + i, cb_out, output_granularity);
         PACK(t6_semaphore_get<p_stall::PACK>(semaphore::FPU_SFPU));
     }
     // Stall for the reduce-sum to finish, then pack the running max as stats.
     PACK(TTI_STALLWAIT(p_stall::STALL_PACK, p_stall::WAIT_SFPU));
-    pack_tile(max_dst_tile_offset, cb_stats);
+    pack_block_contiguous(max_dst_tile_offset, cb_stats, 1);
 
     cb_push_back(cb_out, num_tiles_v);
     cb_push_back(cb_stats, num_tiles_stats);

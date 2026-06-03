@@ -29,9 +29,17 @@ from . import shapes
 from .shapes import DHt, PNHt, SCALE, Sk_chunk_t, TILE, vDHt
 
 _KERNELS = os.path.join(os.path.dirname(__file__), "kernels")
-# sdpa.h lives here in the public tt-metal tree; referenced in-place so we track
-# any upstream improvements to compute_sdpa_chunk.
-_SDPA_INCLUDE = "models/demos/deepseek_v3_b1/kernel_includes/tt_metal/include"
+# sdpa.h lives in the tt-metal submodule (third-party/tt-metal); referenced
+# in-place so we track upstream improvements to compute_sdpa_chunk. The custom
+# LLK subtree it pulls in is header-only, so the submodule need not be built.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_SDPA_INCLUDE = os.environ.get(
+    "CYCLES_SDPA_INCLUDE",
+    os.path.join(
+        _REPO_ROOT,
+        "third-party/tt-metal/models/demos/deepseek_v3_b1/kernel_includes/tt_metal/include",
+    ),
+)
 
 _FILE = ttnn.KernelDescriptor.SourceType.FILE_PATH
 
@@ -98,7 +106,7 @@ def run(n_chunks=shapes.N_CHUNKS):
                 chunk_size, n_chunks, num_tiles_k, num_tiles_v, num_tiles_stats,
                 _float_to_uint32(SCALE),
             ],
-            compiler_include_paths=[os.path.join(os.environ["TT_METAL_HOME"], _SDPA_INCLUDE)],
+            compiler_include_paths=[_SDPA_INCLUDE],
             config=ttnn.ComputeConfigDescriptor(
                 math_fidelity=ttnn.MathFidelity.LoFi, math_approx_mode=False,
                 fp32_dest_acc_en=False, dst_full_sync_en=False,
