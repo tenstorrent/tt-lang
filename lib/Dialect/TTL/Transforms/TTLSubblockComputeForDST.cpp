@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/Interfaces/TilingInterface.h"
 
+#include <algorithm>
 #include <numeric>
 
 #define DEBUG_TYPE "ttl-subblock-compute-for-dst"
@@ -227,6 +228,42 @@ private:
     SmallVector<int64_t> parallelSubblockSizes =
         computeMultiDimSubblockSizes(parallelDimSizes, parallelBudget);
 
+    // Rescue the prime-fallback case: when the divisor heuristic could not find
+    // ANY subblock -- every parallel dimension forced to size 1, e.g. an
+    // all-prime block larger than the DST budget like 11x11 -- raise dimensions
+    // to the largest power of two <= min(dim, remaining budget) and let
+    // remainder peeling (below) handle the leftover tiles. Inner (higher-index)
+    // dimensions are rescued first to match the heuristic's inner-dimension
+    // preference.
+    //
+    // Only this no-subblocking-at-all case is rescued: if the heuristic already
+    // found a subblock > 1 (e.g. 3x3 -> (1,3), 11x3 -> (1,3)) the result is left
+    // unchanged. Skipped for matmul, whose M*N subblocking interacts with in-DST
+    // K accumulation and L1-accumulation guards.
+    int64_t parallelProduct =
+        std::accumulate(parallelSubblockSizes.begin(),
+                        parallelSubblockSizes.end(), int64_t{1},
+                        std::multiplies<>());
+    if (!hasMatmulBlock && parallelProduct == 1) {
+      int64_t usedProduct = 1;
+      for (int64_t pd = static_cast<int64_t>(parallelDimSizes.size()) - 1;
+           pd >= 0; --pd) {
+        if (parallelSubblockSizes[pd] != 1 || parallelDimSizes[pd] <= 1) {
+          continue;
+        }
+        int64_t remaining = parallelBudget / usedProduct;
+        int64_t cap = std::min<int64_t>(parallelDimSizes[pd], remaining);
+        int64_t pow = 1;
+        while (pow * 2 <= cap) {
+          pow *= 2;
+        }
+        if (pow > 1) {
+          parallelSubblockSizes[pd] = pow;
+          usedProduct *= pow;
+        }
+      }
+    }
+
     // Reduction dims keep their full size. For matmul, K accumulates
     // in-place in DST via matmul_block(kt=K_block). L1 accumulation
     // across user-managed outer K iterations is handled separately by
@@ -257,6 +294,140 @@ private:
     // falls back to single-tile. In practice, users can avoid this by choosing
     // block sizes with non-prime dimensions (e.g. 8x1 instead of 7x1).
     if (subblockProduct <= 1 && !hasMatmulBlock) {
+      return success();
+    }
+
+    // When a chosen subblock size does not evenly divide its dimension -- e.g.
+    // a prime/awkward dimension rescued to a power of two above -- tile-and-
+    // peel. Split each dimension into a main region (a multiple of the subblock
+    // size, emitted as a step loop when it spans more than one subblock) and a
+    // remainder region (the leftover tiles). The cartesian product of the
+    // per-dimension segments yields statically-shaped inner ttl.compute ops.
+    // Remainder subblocks are emitted loop-free: the tile offset rides on the
+    // tensor.extract_slice that getTiledImplementation bakes in, so no
+    // subblock-loop annotation is required (a single-trip loop would be folded
+    // away downstream regardless). subblock-sync is not applied on this path.
+    bool hasPeeling = false;
+    for (int64_t d = 0; d < rank; ++d) {
+      if (subblockSizes[d] < dimSizes[d] &&
+          dimSizes[d] % subblockSizes[d] != 0) {
+        hasPeeling = true;
+        break;
+      }
+    }
+
+    if (hasPeeling) {
+      bool subblockingFailed = false;
+      auto emitTiled = [&](OpBuilder &bld, ArrayRef<OpFoldResult> offsets,
+                           ArrayRef<OpFoldResult> sizes) {
+        auto tiledResult =
+            computeOp.getTiledImplementation(bld, offsets, sizes);
+        if (failed(tiledResult)) {
+          subblockingFailed = true;
+          return;
+        }
+        for (Operation *tiledOp : tiledResult->tiledOps) {
+          tiledOp->removeAttr(kUnrollFactorAttrName);
+          tiledOp->setAttr(kFullLinStridesAttrName,
+                           bld.getDenseI64ArrayAttr(blockStrides));
+        }
+      };
+
+      // Per-dimension segments: a main segment (loop when q > 1, else a single
+      // block) plus an optional remainder segment.
+      struct Segment {
+        int64_t offset;     // constant tile offset within the block
+        int64_t size;       // subblock extent along this dimension
+        bool isLoop;        // emit scf.for over [0, loopExtent) step size
+        int64_t loopExtent; // valid when isLoop
+      };
+      SmallVector<SmallVector<Segment>> dimSegments(rank);
+      for (int64_t d = 0; d < rank; ++d) {
+        int64_t s = subblockSizes[d];
+        int64_t dim = dimSizes[d];
+        if (s >= dim) {
+          dimSegments[d].push_back({0, dim, /*isLoop=*/false, 0});
+          continue;
+        }
+        int64_t q = dim / s;
+        int64_t r = dim % s;
+        if (q > 1) {
+          dimSegments[d].push_back({0, s, /*isLoop=*/true, q * s});
+        } else {
+          dimSegments[d].push_back({0, s, /*isLoop=*/false, 0});
+        }
+        if (r > 0) {
+          dimSegments[d].push_back({q * s, r, /*isLoop=*/false, 0});
+        }
+      }
+
+      // Emit one (possibly loop-nested) tiled compute per cartesian
+      // combination of per-dimension segments (innermost dimension fastest).
+      SmallVector<size_t> segIdx(rank, 0);
+      while (true) {
+        // Emit each combination's ops in order, immediately before the
+        // original compute op (independent of where buildLoopNest leaves the
+        // builder's insertion point).
+        b.setInsertionPoint(computeOp);
+        SmallVector<Value> lbs, ubs, steps;
+        SmallVector<int64_t> loopDims;
+        SmallVector<OpFoldResult> offsets(rank), sizes(rank);
+        for (int64_t d = 0; d < rank; ++d) {
+          const Segment &seg = dimSegments[d][segIdx[d]];
+          sizes[d] = b.getIndexAttr(seg.size);
+          if (seg.isLoop) {
+            lbs.push_back(arith::ConstantIndexOp::create(b, loc, 0));
+            ubs.push_back(
+                arith::ConstantIndexOp::create(b, loc, seg.loopExtent));
+            steps.push_back(arith::ConstantIndexOp::create(b, loc, seg.size));
+            loopDims.push_back(d);
+            offsets[d] = b.getIndexAttr(0); // replaced by IV in the loop body
+          } else {
+            offsets[d] = b.getIndexAttr(seg.offset);
+          }
+        }
+
+        if (loopDims.empty()) {
+          emitTiled(b, offsets, sizes);
+        } else {
+          scf::LoopNest nest = scf::buildLoopNest(
+              b, loc, lbs, ubs, steps, ValueRange{},
+              [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange ivs,
+                  ValueRange) -> scf::ValueVector {
+                SmallVector<OpFoldResult> off(offsets.begin(), offsets.end());
+                for (size_t i = 0; i < loopDims.size(); ++i) {
+                  off[loopDims[i]] = ivs[i];
+                }
+                emitTiled(nestedBuilder, off, sizes);
+                return {};
+              });
+          for (size_t i = 0; i < loopDims.size(); ++i) {
+            nest.loops[i]->setAttr(kSubblockLoopStrideAttrName,
+                                   b.getIndexAttr(blockStrides[loopDims[i]]));
+            nest.loops[i]->setAttr(kSubblockDimAttrName,
+                                   b.getIndexAttr(loopDims[i]));
+          }
+        }
+
+        if (subblockingFailed) {
+          return failure();
+        }
+
+        // Advance the mixed-radix segment index.
+        int64_t d = rank - 1;
+        for (; d >= 0; --d) {
+          if (++segIdx[d] < dimSegments[d].size()) {
+            break;
+          }
+          segIdx[d] = 0;
+        }
+        if (d < 0) {
+          break;
+        }
+      }
+
+      computeOp.replaceAllUsesWith(computeOp.getOutputs());
+      computeOp.erase();
       return success();
     }
 
