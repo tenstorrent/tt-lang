@@ -74,6 +74,10 @@ CASES = (
     # 128-head shard overflows L1 -- it puts every query-head tile on each core,
     # so it tops out at 64 heads / PNHt=2, which the ctx-* cases already cover).
     {"label": "deepseek-1k", "users": 4, "heads": 128, "cache": 1024, "pos": [0, 170, 341, 512], "scale": DEEPSEEK_SCALE},
+    # A single-user slice at deepseek's 128-head count. The ttl shard overflows
+    # L1 at PNHt=4, so this records the ttnn side and a guarded ttl=n/a -- a
+    # standing marker of the op's per-core head ceiling.
+    {"label": "deepseek-near", "users": 1, "heads": 128, "cache": 1024, "pos": [511], "scale": DEEPSEEK_SCALE},
 )
 
 FIELDS = ("label", "users", "heads", "ctx", "ttlang_ms", "ttnn_ms", "ratio", "pcc")
