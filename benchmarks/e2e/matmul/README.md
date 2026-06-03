@@ -1,5 +1,13 @@
 # Matmul benchmark
 
+> **Note:** preserved from the pre-rework `benchmarks/matmul/` sweep. Parts below
+> (standalone `sweep.py` / `ksplit_kernel.py` / `summa_kernel.py`, the
+> `python3 sweep.py` invocation) describe the old layout and are no longer
+> accurate. The benchmark now lives in `benchmarks/e2e/matmul/` and measures the
+> `ttl.ops.matmul` op directly; run it with
+> `python -m benchmarks.e2e.matmul --plot`. The planner notes and tuning history
+> here remain valid and are kept for reference.
+
 Sweeps a ksplit/SUMMA matmul against `ttnn.matmul` across shapes. **All inputs and outputs are DRAM interleaved.**
 
 ![ratio plot](ksplit_sweep.png)
