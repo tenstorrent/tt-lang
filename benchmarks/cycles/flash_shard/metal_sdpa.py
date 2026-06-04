@@ -5,9 +5,10 @@
 
 Drives the public ``compute_sdpa_chunk`` primitive (sdpa.h, referenced in-place)
 on one core over the same per-core decode slice as ``ttl_shard.py``, via
-``ttnn.generic_op`` with three plain kernel files. Q/K/out/stats are single-core
-L1 shards (no DRAM streaming) so the whole K slice stays resident and the
-measured cycles are the compute, not the reader. Run on hardware:
+``ttnn.generic_op`` with three plain kernel files. Q/out/stats are single-core
+L1 shards; K streams from a DRAM-interleaved tensor into a double-buffered cb_k
+(the reader mirrors tt-lang's emitted ncrisc DRAM stream), so the per-core K
+slice need not be L1-resident and the baseline reaches 32k+ seq. Run on hardware:
 
     TT_METAL_DEVICE_PROFILER=1 python3 -m benchmarks.cycles.flash_shard.metal_sdpa
 """
@@ -56,6 +57,10 @@ def _float_to_uint32(f):
 # query row); K uses a full 32x32 tile. This matches the deepseek sdpa test.
 Q_TILE_H = 8
 
+# cb_k holds CB_BLOCKS chunks at once (>= 2 so the reader's next DRAM chunk
+# overlaps the compute of the current one; raise if the stream becomes a bottleneck).
+CB_BLOCKS = int(os.environ.get("CYCLES_CB_BLOCKS", "2"))
+
 
 def _shard(torch_t, device, tile):
     """Single-core (0,0) HEIGHT-sharded L1 tensor; its CB aliases this shard."""
@@ -84,26 +89,49 @@ def run(num_chunks=shapes.METAL_NUM_CHUNKS, chunk_size=shapes.METAL_CHUNK_SIZE):
     out_shape = (Q_TILE_H, num_tiles_v * TILE)
     stats_shape = (Q_TILE_H, TILE)
 
+    # bfp8 K matches the ttl shard's KV-cache dtype (fair A/B) and halves the DRAM
+    # read traffic vs bf16 (1088 vs 2048 B/tile), keeping the stream off the
+    # critical path; Q stays bf16. 32x32 bfp8 = 1024 mantissa + 64 exponent bytes.
+    k_page_bytes = TILE * TILE + (TILE * TILE) // 16
+    tiles_per_chunk = num_tiles_k * chunk_size
+
     device = ttnn.open_device(device_id=0)
     try:
         q_t = torch.randn(q_shape, dtype=torch.bfloat16) * 0.1
         k_t = torch.randn(k_shape, dtype=torch.bfloat16) * 0.1
         q = _shard(q_t, device, q_tile)
-        k = _shard(k_t, device, k_tile)
+        # K is DRAM-interleaved: the reader streams it tile-by-tile into cb_k.
+        k = ttnn.from_torch(
+            k_t, dtype=ttnn.bfloat8_b, layout=ttnn.TILE_LAYOUT, device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG, tile=k_tile,
+        )
         out = _shard(torch.zeros(out_shape, dtype=torch.bfloat16), device, q_tile)
         stats = _shard(torch.zeros(stats_shape, dtype=torch.bfloat16), device, q_tile)
         cores = q.memory_config().shard_spec.grid
 
+        # cb_k is program-allocated (double-buffered DRAM stream target); the
+        # rest alias their single-core L1 shards.
+        cb_k_desc = ttnn.CBDescriptor(
+            total_size=CB_BLOCKS * tiles_per_chunk * k_page_bytes,
+            core_ranges=cores,
+            format_descriptors=[ttnn.CBFormatDescriptor(
+                buffer_index=cb_k, data_format=ttnn.bfloat8_b, page_size=k_page_bytes,
+            )],
+        )
         cbs = [
             ttnn.cb_descriptor_from_sharded_tensor(cb_q, q),
-            ttnn.cb_descriptor_from_sharded_tensor(cb_k, k),
+            cb_k_desc,
             ttnn.cb_descriptor_from_sharded_tensor(cb_out, out),
             ttnn.cb_descriptor_from_sharded_tensor(cb_stats, stats),
         ]
 
         reader = ttnn.KernelDescriptor(
             kernel_source=f"{_KERNELS}/reader.cpp", source_type=_FILE, core_ranges=cores,
-            compile_time_args=[cb_q, cb_k, chunk_size, num_chunks, num_tiles_k],
+            compile_time_args=(
+                [cb_q, cb_k, chunk_size, num_chunks, num_tiles_k]
+                + list(ttnn.TensorAccessorArgs(k).get_compile_time_args())
+            ),
+            common_runtime_args=[k.buffer_address()],
             config=ttnn.ReaderConfigDescriptor(),
         )
         writer = ttnn.KernelDescriptor(
