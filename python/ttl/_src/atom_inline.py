@@ -186,20 +186,20 @@ def _check_callee_buffers(spec, caller_name: str, top_level: bool) -> Set[str]:
         _setup_assign_target,
     )
 
+    # Whitelist every factory call inside a top-level setup-assign's value:
+    # the whole RHS is evaluated when the assign is hoisted, so pipes nested in
+    # a ``PipeNet([Pipe(...)])`` argument are fine. Factory calls anywhere else
+    # (a compound block, a non-decl expression) cannot be hoisted.
     dfb_names: Set[str] = set()
     top_level_decl_calls: Set[int] = set()
     for stmt in spec.fn_ast.body:
         if _setup_assign_target(stmt) is None:
             continue
-        value = stmt.value
-        if isinstance(value, (ast.List, ast.Tuple)):
-            top_level_decl_calls.update(id(e) for e in value.elts)
-        elif isinstance(value, (ast.ListComp, ast.GeneratorExp)):
-            top_level_decl_calls.add(id(value.elt))
-        else:
-            top_level_decl_calls.add(id(value))
-            if _call_name(value) in _DFB_FACTORY_NAMES:
-                dfb_names.add(stmt.targets[0].id)
+        for sub in ast.walk(stmt.value):
+            if isinstance(sub, ast.Call) and _call_name(sub) in _SETUP_FACTORY_NAMES:
+                top_level_decl_calls.add(id(sub))
+        if _call_name(stmt.value) in _DFB_FACTORY_NAMES:
+            dfb_names.add(stmt.targets[0].id)
 
     declares = False
     for node in ast.walk(spec.fn_ast):
