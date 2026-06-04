@@ -14,7 +14,11 @@
 #include <cstdint>
 
 #include "api/compute/compute_kernel_api.h"
+#ifndef SDPA_NOOP
 #include "compute_kernel_api/sdpa.h"
+#else
+#include "api/compute/cb_api.h"
+#endif
 
 void kernel_main() {
     constexpr uint32_t cb_q = get_compile_time_arg_val(0);
@@ -28,6 +32,21 @@ void kernel_main() {
     constexpr uint32_t num_tiles_stats = get_compile_time_arg_val(8);
     constexpr uint32_t scale_fp32 = get_compile_time_arg_val(9);
     static_assert(num_tiles_stats == 1, "num_tiles_stats must be 1");
+
+#ifdef SDPA_NOOP
+    // Harness-only path: drive the CB protocol with no compute, to isolate the
+    // generic_op + sharded-CB plumbing from the compute_sdpa_chunk LLKs.
+    cb_wait_front(cb_q, num_tiles_k);
+    for (uint32_t chunk = 0; chunk < num_chunks; chunk++) {
+        cb_wait_front(cb_k, num_tiles_k * chunk_size);
+        cb_pop_front(cb_k, num_tiles_k * chunk_size);
+    }
+    cb_reserve_back(cb_out, num_tiles_v);
+    cb_push_back(cb_out, num_tiles_v);
+    cb_reserve_back(cb_stats, num_tiles_stats);
+    cb_push_back(cb_stats, num_tiles_stats);
+    cb_pop_front(cb_q, num_tiles_k);
+#else
     constexpr uint16_t scale_bf16 = scale_fp32 >> 16;
 
     constexpr bool transpose_k = true;
@@ -101,4 +120,5 @@ void kernel_main() {
     tile_regs_commit();
     tile_regs_release();
     sdpa_custom_mm_block_uninit();
+#endif
 }

@@ -26,6 +26,13 @@ Sk_chunk_t = 1
 # DRAM and can go higher (Phase A ran 128).
 N_CHUNKS = int(os.environ.get("CYCLES_N_CHUNKS", "16"))
 
+# The metal compute_sdpa_chunk caller groups K into `chunk_size` tile-rows per
+# call (the deepseek test uses 4/8, never 1). We pick chunk_size and num_chunks
+# so the total K-tile-rows (num_chunks * chunk_size) equals the ttl shard's
+# (N_CHUNKS * Sk_chunk_t), keeping the two sides on the same total work.
+METAL_CHUNK_SIZE = int(os.environ.get("CYCLES_METAL_CHUNK_SIZE", "8"))
+METAL_NUM_CHUNKS = max(1, (N_CHUNKS * Sk_chunk_t) // METAL_CHUNK_SIZE)
+
 WORKER_L1 = 1100000
 
 SCALE = 1.0 / math.sqrt(DHt * TILE)
