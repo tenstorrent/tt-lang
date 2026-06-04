@@ -12,10 +12,13 @@ local variables to avoid collisions with the caller's scope.
 
 Constraints on inlined callees:
 
-  - The callee body must not declare its own DFBs or PipeNets. All
-    DataFlow buffers and PipeNets used by the callee must be passed
-    in as parameters. Operating on existing PipeNets (e.g.
-    ``.if_src``/``.if_dst``) and emitting copies is fine.
+  - A callee may declare its own DFBs / PipeNets, but only when it is
+    inlined at the caller body's top level: the decls are hoisted to the
+    top level (where ``_lift_setup`` evaluates them), so a callee that
+    declares buffers cannot be inlined inside a for / if / while / with.
+    The buffer decls must themselves be top-level statements of the
+    callee for the same reason. Operating on existing PipeNets (e.g.
+    ``.if_src``/``.if_dst``) and emitting copies is always fine.
   - The callee must be invoked as a bare statement (``Callee(...)``);
     using the result as an expression is not supported.
   - The callee's parameters must all be provided at the call site; no
@@ -33,8 +36,6 @@ if TYPE_CHECKING:
     from ttl.atom import Atom
 
 
-_FORBIDDEN_CALLEE_NAMES = {"make_dataflow_buffer_like", "PipeNet"}
-
 _inline_counter = itertools.count()
 
 
@@ -42,32 +43,43 @@ def inline_atom_calls(
     fn_def: ast.FunctionDef,
     fn_globals: Dict[str, object],
     caller_name: str,
-) -> None:
+) -> Dict[str, int]:
     """Rewrite ``fn_def`` in place: inline statement-level calls to
     @ttl.atom kernels reachable through ``fn_globals``.
 
     ``fn_def.body`` is replaced with the post-inline statement list.
     Nested compound bodies (if / for / while / with) are inlined
-    recursively. Raises ``ValueError`` if a discovered callee's body
-    declares its own DFBs or PipeNets.
+    recursively. Returns a map from each (alpha-renamed) inlined DFB name to
+    the id of the inline site it came from, so the caller can overlay the
+    scratch of distinct sibling sites onto shared CB indices. Raises
+    ``ValueError`` if a callee that declares its own buffers is inlined
+    anywhere but the body top level.
     """
-    fn_def.body = _inline_stmts(fn_def.body, fn_globals, caller_name)
+    inlined_dfb_tags: Dict[str, int] = {}
+    fn_def.body = _inline_stmts(
+        fn_def.body, fn_globals, caller_name, inlined_dfb_tags, top_level=True
+    )
+    return inlined_dfb_tags
 
 
 def _inline_stmts(
     stmts: List[ast.stmt],
     fn_globals: Dict[str, object],
     caller_name: str,
+    inlined_dfb_tags: Dict[str, int],
+    top_level: bool,
 ) -> List[ast.stmt]:
     out: List[ast.stmt] = []
     for stmt in stmts:
-        _inline_inside_compound(stmt, fn_globals, caller_name)
+        _inline_inside_compound(stmt, fn_globals, caller_name, inlined_dfb_tags)
         match = _match_atom_call(stmt, fn_globals)
         if match is None:
             out.append(stmt)
             continue
         callee, call = match
-        out.extend(_expand_call(callee, call, caller_name))
+        out.extend(
+            _expand_call(callee, call, caller_name, top_level, inlined_dfb_tags)
+        )
     return out
 
 
@@ -75,18 +87,31 @@ def _inline_inside_compound(
     stmt: ast.stmt,
     fn_globals: Dict[str, object],
     caller_name: str,
+    inlined_dfb_tags: Dict[str, int],
 ) -> None:
-    """Recurse into compound-statement bodies so nested calls inline too."""
+    """Recurse into compound-statement bodies so nested calls inline too.
+
+    Calls discovered here are not at the body top level, so a callee that
+    declares its own buffers cannot be inlined into them.
+    """
     for attr in ("body", "orelse", "finalbody"):
         body = getattr(stmt, attr, None)
         if isinstance(body, list) and body and isinstance(body[0], ast.stmt):
-            setattr(stmt, attr, _inline_stmts(body, fn_globals, caller_name))
+            setattr(
+                stmt,
+                attr,
+                _inline_stmts(
+                    body, fn_globals, caller_name, inlined_dfb_tags, top_level=False
+                ),
+            )
     # try/except handler bodies
     handlers = getattr(stmt, "handlers", None)
     if isinstance(handlers, list):
         for h in handlers:
             if isinstance(h, ast.ExceptHandler):
-                h.body = _inline_stmts(h.body, fn_globals, caller_name)
+                h.body = _inline_stmts(
+                    h.body, fn_globals, caller_name, inlined_dfb_tags, top_level=False
+                )
 
 
 def _match_atom_call(
@@ -112,14 +137,22 @@ def _expand_call(
     callee: "Atom",
     call: ast.Call,
     caller_name: str,
+    top_level: bool,
+    inlined_dfb_tags: Dict[str, int],
 ) -> List[ast.stmt]:
     spec = callee._spec
-    _validate_callee_for_inline(spec, caller_name)
+    dfb_decl_names = _check_callee_buffers(spec, caller_name, top_level)
 
     bindings = _bind_args_to_params(spec, call, caller_name)
     locals_in_callee = _collect_local_names(spec.fn_ast) - set(bindings)
-    suffix = f"__{spec.name}_inl{next(_inline_counter)}"
+    site = next(_inline_counter)
+    suffix = f"__{spec.name}_inl{site}"
     rename_map = {n: n + suffix for n in locals_in_callee}
+
+    # The callee's local DFBs are hoisted into the caller; tag their renamed
+    # names with this inline site so sibling sites can overlay CB indices.
+    for n in dfb_decl_names:
+        inlined_dfb_tags[rename_map.get(n, n)] = site
 
     transformer = _SubstituteTransformer(
         bindings=bindings,
@@ -135,24 +168,59 @@ def _expand_call(
     return inlined
 
 
-def _validate_callee_for_inline(spec, caller_name: str) -> None:
-    """Forbid DFB / PipeNet declarations in a callee that's being inlined."""
-    for node in ast.walk(spec.fn_ast):
-        if not isinstance(node, ast.Call):
+def _check_callee_buffers(spec, caller_name: str, top_level: bool) -> Set[str]:
+    """Validate a callee's buffer declarations and return its top-level
+    DFB-decl names.
+
+    A callee may declare its own DFBs / Pipes / PipeNets only as top-level
+    statements (so they can be hoisted) and only when inlined at the caller
+    body top level (so the hoist target is the caller's top level too).
+    Returns the names of the callee's top-level ``make_dfb`` /
+    ``make_dataflow_buffer_like`` assigns (the scratch buffers eligible for
+    reuse); Pipes / PipeNets are hoisted but not reused.
+    """
+    from ttl.atom import (
+        _DFB_FACTORY_NAMES,
+        _SETUP_FACTORY_NAMES,
+        _call_name,
+        _setup_assign_target,
+    )
+
+    dfb_names: Set[str] = set()
+    top_level_decl_calls: Set[int] = set()
+    for stmt in spec.fn_ast.body:
+        if _setup_assign_target(stmt) is None:
             continue
-        func = node.func
-        attr = None
-        if isinstance(func, ast.Attribute):
-            attr = func.attr
-        elif isinstance(func, ast.Name):
-            attr = func.id
-        if attr in _FORBIDDEN_CALLEE_NAMES:
+        value = stmt.value
+        if isinstance(value, (ast.List, ast.Tuple)):
+            top_level_decl_calls.update(id(e) for e in value.elts)
+        elif isinstance(value, (ast.ListComp, ast.GeneratorExp)):
+            top_level_decl_calls.add(id(value.elt))
+        else:
+            top_level_decl_calls.add(id(value))
+            if _call_name(value) in _DFB_FACTORY_NAMES:
+                dfb_names.add(stmt.targets[0].id)
+
+    declares = False
+    for node in ast.walk(spec.fn_ast):
+        if not (isinstance(node, ast.Call) and _call_name(node) in _SETUP_FACTORY_NAMES):
+            continue
+        declares = True
+        if id(node) not in top_level_decl_calls:
             raise ValueError(
-                f"@ttl.atom: cannot inline {spec.name!r} into "
-                f"{caller_name!r}: callee body invokes {attr!r}. "
-                "Inlined callees must take all DFBs / PipeNets as "
-                "parameters; declare them in the caller and pass them in."
+                f"@ttl.atom: cannot inline {spec.name!r} into {caller_name!r}: "
+                "buffer declarations must be top-level statements of the callee "
+                "so they can be hoisted; found one nested in its body."
             )
+
+    if declares and not top_level:
+        raise ValueError(
+            f"@ttl.atom: cannot inline {spec.name!r} into {caller_name!r}: it "
+            "declares its own DFBs / PipeNets, so it must be called at the atom "
+            "body top level, not inside a for / if / while / with."
+        )
+
+    return dfb_names
 
 
 def _bind_args_to_params(spec, call: ast.Call, caller_name: str) -> Dict[str, ast.expr]:
