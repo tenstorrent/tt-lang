@@ -20,7 +20,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_dram, to_l1
 
 
 @ttl.atom()
@@ -96,6 +96,44 @@ def _scratch_dm_then_compute(in_t, out_t):
 @ttl.atom(grid=(1, 1))
 def atom_cross_thread_scratch(in_t, out_t):
     _scratch_dm_then_compute(in_t, out_t)
+
+
+@ttl.atom()
+def _forward_pipe(a, send_cb: ttl.DFB, recv_cb: ttl.DFB):
+    """Inlined helper that declares its OWN PipeNet (pure hoist, no reuse):
+    core (1,0) sends a[1] over the pipe, core (0,0) receives it into recv_cb."""
+    fwd_net = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
+    s_blk = send_cb.reserve()
+    r_dst = recv_cb.reserve()
+
+    def send(pipe):
+        ttl.copy(a[1:2, 0:1], s_blk)
+        ttl.copy(s_blk, pipe)
+
+    fwd_net.if_src(send)
+
+    def recv(pipe):
+        ttl.copy(pipe, r_dst)
+
+    fwd_net.if_dst(recv)
+
+
+@ttl.atom(grid=(2, 1))
+def atom_inline_pipenet(a, out):
+    own_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    send_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    node_x, _ = ttl.node(dims=2)
+
+    _forward_pipe(a, send_cb, recv_cb)  # inlined; declares its own PipeNet
+
+    if node_x == 0:
+        own_blk = own_cb.reserve()
+        ttl.copy(a[0:1, 0:1], own_blk)
+        s = out_cb.reserve()
+        s.store(own_cb.wait() + recv_cb.wait())
+        ttl.copy(out_cb.wait(), out[0:1, 0:1])
 
 
 def test_dfb_callee_in_loop_rejected():
@@ -190,6 +228,21 @@ def test_atom_outer_exp(device):
     atom_outer_exp(in_t, out_t)
 
     got = ttnn.to_torch(out_t).reshape(tile, tile).to(torch.bfloat16)
+    assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
+
+
+def test_atom_inline_pipenet(device):
+    """An inlined callee that declares its own PipeNet is hoisted and runs."""
+    tile = ttnn.TILE_SIZE
+    a_t = torch.randn(2 * tile, tile, dtype=torch.bfloat16) * 0.5
+    expected = (a_t[:tile].float() + a_t[tile:].float()).to(torch.bfloat16)
+
+    a = to_dram(a_t, device)
+    out = to_dram(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
+
+    atom_inline_pipenet(a, out)
+
+    got = ttnn.to_torch(out).reshape(tile, tile).to(torch.bfloat16)
     assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
 
 
