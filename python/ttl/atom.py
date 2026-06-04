@@ -90,6 +90,7 @@ class _AtomSpec:
     fn_ast: ast.FunctionDef  # post-inline
     params: List[_ParamInfo]
     dfb_param_names: List[str]
+    inlined_dfb_tags: Dict[str, int]  # inlined scratch DFB name -> inline site id
 
 
 def _function_scope(fn: Callable) -> Dict[str, Any]:
@@ -164,7 +165,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other @ttl.atom functions, then keep
     # the post-inline AST + source.
-    inline_atom_calls(fn_def, _function_scope(fn), caller_name=name)
+    inlined_dfb_tags = inline_atom_calls(
+        fn_def, _function_scope(fn), caller_name=name
+    )
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -177,6 +180,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         fn_ast=fn_def,
         params=params,
         dfb_param_names=[p.name for p in params if p.kind == "dfb"],
+        inlined_dfb_tags=inlined_dfb_tags,
     )
 
 
@@ -293,6 +297,70 @@ def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
     return [by_index.get(i) for i in range(max(by_index) + 1)]
 
 
+def _reuse_inlined_dfb_indices(
+    dfbs: Dict[str, DataflowBuffer],
+    inlined_dfb_tags: Dict[str, int],
+) -> None:
+    """Overlay the scratch DFBs of distinct inline sites onto shared CB indices.
+
+    Each inlined callee's body is substituted as one contiguous block, so its
+    scratch DFBs are confined to that inline site. Sibling sites are sequenced
+    by the bridge DFBs that carry data between them (a site's outputs are only
+    pushed once its scratch has quiesced, and the next site waits on those
+    outputs), so identically-configured scratch from *different* sites can share
+    a CB index / L1 allocation.
+
+    This is structural, not lifetime-based: scratch within one site stays
+    distinct (it is that atom's working set, live across its own async threads),
+    and caller-declared (bridge) DFBs are left untouched. We never consult the
+    statement order of the unified body, because after the thread split the
+    compute and data-movement statements run concurrently and that order is not
+    a runtime order.
+    """
+    if not inlined_dfb_tags:
+        return
+
+    def cfg(name: str) -> tuple:
+        d = dfbs[name]
+        return (tuple(d.shape), d.block_count, d.dtype)
+
+    bridges = [n for n in dfbs if n not in inlined_dfb_tags]
+    # site id -> CB config -> scratch names declared by that site.
+    sites: Dict[int, Dict[tuple, List[str]]] = {}
+    for name in dfbs:
+        if name not in inlined_dfb_tags:
+            continue
+        sites.setdefault(inlined_dfb_tags[name], {}).setdefault(cfg(name), []).append(
+            name
+        )
+    if not sites:
+        return
+
+    # Per config, the overlaid width is the most any single site needs; lay the
+    # configs out contiguously above the bridge DFBs.
+    cfg_width: Dict[tuple, int] = {}
+    for per_cfg in sites.values():
+        for c, names in per_cfg.items():
+            cfg_width[c] = max(cfg_width.get(c, 0), len(names))
+
+    base = len(bridges)
+    cfg_base: Dict[tuple, int] = {}
+    offset = 0
+    for c, width in cfg_width.items():
+        cfg_base[c] = base + offset
+        offset += width
+
+    # Bridges keep indices [0, base) in their original order; every site
+    # overlays the same per-config block, so slot k of one site shares an
+    # index with slot k of any sibling site of the same config.
+    for new_index, name in enumerate(sorted(bridges, key=lambda n: dfbs[n]._cb_index)):
+        dfbs[name]._cb_index = new_index
+    for per_cfg in sites.values():
+        for c, names in per_cfg.items():
+            for slot, name in enumerate(names):
+                dfbs[name]._cb_index = cfg_base[c] + slot
+
+
 def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
     from .ttl_api import _run_thread_compiler
 
@@ -371,6 +439,7 @@ def _compile_atom(
     _set_current_grid(grid)
 
     stripped_fn, dfbs, nets = _lift_setup(spec.fn_ast, eval_scope)
+    _reuse_inlined_dfb_indices(dfbs, spec.inlined_dfb_tags)
 
     # Assign each PipeNet a distinct operation-local id (and validate), the
     # same graph @ttl.operation builds; it also yields the runner's pipe
