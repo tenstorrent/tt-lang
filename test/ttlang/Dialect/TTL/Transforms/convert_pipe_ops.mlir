@@ -62,6 +62,7 @@ func.func @if_dst_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], %[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc(%[[DONE_NOC]], {{.*}}, %[[NOC]])
+// CHECK-NOT: ttkernel.noc_async_write_barrier
 func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -655,6 +656,7 @@ func.func @interleaved_pipenets_use_global_ready_and_local_completion() attribut
 // CHECK: %[[DONE_NOC:.*]] = ttkernel.get_noc_multicast_addr(%[[DST_X_START]], %[[DST_Y_START]], %[[DST_X_END]], %[[DST_Y_END]], %[[DONE_SEM]], %[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc_multicast(%[[DONE_NOC]], {{.*}}, {{.*}}, %[[NOC]])
 // CHECK: ttkernel.noc_async_atomic_barrier(%[[NOC]])
+// CHECK-NOT: ttkernel.noc_async_write_barrier
 // CHECK-NOT: ttkernel.noc_semaphore_set_multicast
 func.func @copy_cb_to_pipe_multicast() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -716,6 +718,7 @@ func.func @copy_cb_to_pipe_multicast_noc1() attributes { "ttl.kernel_thread" = #
 // CHECK: %[[LOCAL_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], %[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc(%[[LOCAL_DONE_NOC]], {{.*}}, %[[NOC]])
 // CHECK: ttkernel.noc_async_atomic_barrier(%[[NOC]])
+// CHECK-NOT: ttkernel.noc_async_write_barrier
 // CHECK-NOT: ttkernel.noc_semaphore_set_multicast
 func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
