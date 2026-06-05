@@ -28,11 +28,13 @@ jobs:
         with:
           bats-version: 1.11.0
           support-install: true
+          support-path: ${{ runner.temp }}/bats-libs/bats-support
           assert-install: true
+          assert-path: ${{ runner.temp }}/bats-libs/bats-assert
           detik-install: false
           file-install: false
 
       - name: Run bats suite
         env:
-          BATS_LIB_PATH: /usr/lib
+          BATS_LIB_PATH: ${{ runner.temp }}/bats-libs
         run: bats --print-output-on-failure .github/scripts/tests/
