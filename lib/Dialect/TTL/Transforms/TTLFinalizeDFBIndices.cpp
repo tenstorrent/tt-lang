@@ -47,53 +47,71 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
 
   Block &body = funcOp.getBody().front();
 
-  // Assign sequential indices to all operations in the body block.
+  // Number every operation in pre-order so the lifetimes below reflect true
+  // program order, including ops nested in loops or compute regions (after
+  // LowerToLoops / SubblockComputeForDST). Projecting a nested op onto its
+  // body-block ancestor would collapse a whole loop body to one position and
+  // let concurrently-live intermediates falsely share a slot.
   DenseMap<Operation *, int64_t> opIndex;
   int64_t idx = 0;
-  for (Operation &op : body) {
-    opIndex[&op] = idx++;
-  }
+  funcOp.walk<WalkOrder::PreOrder>([&](Operation *op) { opIndex[op] = idx++; });
   int64_t lastOpIdx = idx - 1;
 
-  // Project a nested operation to its ancestor in the body block.
-  // After LowerToLoops or SubblockComputeForDST, CBPopOps may end up
-  // inside loops or compute regions.
   auto getBodyIndex = [&](Operation *op) -> int64_t {
-    if (op->getBlock() == &body) {
-      return opIndex[op];
-    }
-    Operation *ancestor = body.findAncestorOpInBlock(*op);
-    assert(ancestor && "operation must be reachable from function body");
-    return opIndex[ancestor];
+    auto it = opIndex.find(op);
+    assert(it != opIndex.end() && "operation must have been indexed");
+    return it->second;
   };
 
-  // Build intervals grouped by CircularBufferType.
-  llvm::MapVector<Type, SmallVector<Interval>> typeToIntervals;
+  // Build intervals grouped by reuse class. Two compiler-allocated DFBs may
+  // share a physical index when they have the same element type and block
+  // count: each per-op reserve/wait carries its own tile count (derived from
+  // the unchanged bind_cb type), and the L1 slot is sized to the largest
+  // member, so a smaller buffer reusing a larger slot only touches a prefix.
+  using ReuseClass = std::pair<Type, int64_t>;
+  llvm::MapVector<ReuseClass, SmallVector<Interval>> classToIntervals;
   DenseMap<Value, BindCBOp> valueToBindOp;
 
   for (BindCBOp bindOp : dfbOps) {
     assert(bindOp->getBlock() == &body &&
            "compiler-allocated BindCBOp must be in function body block");
 
+    auto cbType = mlir::cast<CircularBufferType>(bindOp.getResult().getType());
     Value cbVal = bindOp.getResult();
     // Lifetime starts at the first acquire (reserve/wait) on this CB, not
     // at the bind_cb itself: bind_cb is just a declaration, and hoisting
     // it to the function body entry would otherwise collapse all compiler-
     // allocated DFB starts together and defeat reuse. If there is no
     // acquire (synthetic IR, pop-only), fall back to the bind_cb position.
+    //
+    // The end is the last op that reads the buffer. cb_pop ops do not exist
+    // yet here (TTLInsertCBSync runs later), so follow the consumer chain
+    // wait -> attach_cb -> compute consumer rather than relying on pops; an
+    // intermediate is dead once its consuming op has executed.
     int64_t start = lastOpIdx;
     int64_t end = opIndex[bindOp];
     bool sawAcquire = false;
+    auto extendEnd = [&](Operation *op) { end = std::max(end, getBodyIndex(op)); };
 
     for (OpOperand &use : cbVal.getUses()) {
       Operation *user = use.getOwner();
-      int64_t useIdx = getBodyIndex(user);
       if (isa<CBReserveOp, CBWaitOp>(user)) {
-        start = std::min(start, useIdx);
+        start = std::min(start, getBodyIndex(user));
         sawAcquire = true;
+        extendEnd(user);
       }
       if (isa<CBPopOp>(user)) {
-        end = std::max(end, useIdx);
+        extendEnd(user);
+      }
+      if (auto waitOp = dyn_cast<CBWaitOp>(user)) {
+        for (Operation *reader : waitOp.getResult().getUsers()) {
+          extendEnd(reader);
+          if (auto attachOp = dyn_cast<AttachCBOp>(reader)) {
+            for (Operation *consumer : attachOp.getResult().getUsers()) {
+              extendEnd(consumer);
+            }
+          }
+        }
       }
     }
 
@@ -101,13 +119,13 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
       start = opIndex[bindOp];
     }
 
-    // No cb_pop means the DFB's L1 is never explicitly released --
-    // conservatively treat it as live for the entire function.
-    if (end <= start) {
+    // Degenerate (no consumer found): treat as live for the whole function.
+    if (end < start) {
       end = lastOpIdx;
     }
 
-    typeToIntervals[cbVal.getType()].push_back({start, end, cbVal});
+    ReuseClass key(cbType.getElementType(), cbType.getBlockCount());
+    classToIntervals[key].push_back({start, end, cbVal});
     valueToBindOp[cbVal] = bindOp;
   }
 
@@ -118,13 +136,13 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
     baseIndex = std::min(baseIndex, cbIdx);
   }
 
-  // Linear scan per type partition. Each partition gets a contiguous
-  // block of physical DFB indices starting at baseIndex + cumulative
-  // offset from prior partitions.
+  // Linear scan per reuse class. Each class gets a contiguous block of
+  // physical DFB indices starting at baseIndex + cumulative offset from
+  // prior classes.
   MLIRContext *ctx = funcOp.getContext();
   int32_t nextSlotOffset = 0;
 
-  for (auto &[type, intervals] : typeToIntervals) {
+  for (auto &[key, intervals] : classToIntervals) {
     llvm::sort(intervals, [](const Interval &lhs, const Interval &rhs) {
       return lhs.start < rhs.start;
     });
@@ -249,17 +267,21 @@ struct TTLFinalizeDFBIndicesPass
     }
 
     // Deduplicate entries by physical index. After reuse, multiple
-    // BindCBOps may share the same index. The module attribute needs
-    // one entry per unique physical DFB.
+    // BindCBOps may share the same index, possibly with different shapes.
+    // The module attribute needs one entry per unique physical DFB, sized
+    // to the largest member so every reuser's tiles fit in the slot.
     llvm::DenseMap<int32_t, BindCBOp> uniqueByIndex;
     for (BindCBOp bindOp : compilerAllocatedOps) {
       int32_t dfbIdx = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
       auto [it, inserted] = uniqueByIndex.try_emplace(dfbIdx, bindOp);
       if (!inserted) {
-        assert(it->second.getResult().getType() ==
-                   bindOp.getResult().getType() &&
-               "compiler-allocated DFBs sharing an index must have the "
-               "same CircularBufferType");
+        auto existing =
+            mlir::cast<CircularBufferType>(it->second.getResult().getType());
+        auto current =
+            mlir::cast<CircularBufferType>(bindOp.getResult().getType());
+        if (current.getElementsPerBlock() > existing.getElementsPerBlock()) {
+          it->second = bindOp;
+        }
       }
     }
 
