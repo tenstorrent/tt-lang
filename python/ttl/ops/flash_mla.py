@@ -5,68 +5,51 @@
 """Flash MLA decode ops: a per-core online-softmax shard, an 8-core tree
 reduce that merges the per-core partials, and a normalize tail.
 
-Each op is a standalone @ttl.atom factory parametrized by tile shapes. A
-shard core runs flash attention over its slice of the K/V sequence and
-emits an unnormalized (o, m, l) partial; the tree reduce merges the
-``n_cols`` partials of each batch row with the flash online-softmax
-rescale; normalize divides by the running sum.
+Each phase is split into an inlinable **core** atom whose boundary buffers are
+``ttl.DFB`` params (pure compute, no DRAM) and a thin **wrapper** atom that
+stages DRAM <-> DFB and inlines the core. The wrappers are the standalone ops;
+``make_flash_mla`` fuses all three cores into one kernel, moving every
+inter-phase value through DFBs (q is multicast, partials and merged stats never
+touch DRAM) instead of round-tripping DRAM between separate launches.
 """
 
 import torch
 
 import ttl
+from ttl.ops.mcast import mcast, mcast_rows
 from ttl.ops.pipe_util import pipe_send, pipe_recv
 
 
-def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
-    """Per-core flash attention over a K-dim split.
+def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
+    """Per-core flash attention over a K-dim split, as an inlinable core.
 
-    The grid is ``(n_cols, B)``: column ``col_c`` owns the K/V slice
-    starting at ``col_c * Sk_chunk_t * N_CHUNKS`` tiles, row ``row_c`` is
-    the batch. Q is read from DRAM on every core; K/V are read per-core.
-    Each core writes an unnormalized ``(o, m, l)`` partial to its row
-    block of ``out_o`` / ``out_m`` / ``out_l``.
-
-    K/V are typecast to bf16 before the matmuls so a lower-precision cache
-    (e.g. bfp8) feeds the bf16 compute chain; the cast is a no-op when K/V
-    are already bf16.
-
-    ``scale`` is the SDPA scale; it is folded into ``qk`` per chunk.
+    ``q`` arrives in the ``q_in`` DFB (multicast or staged by the wrapper);
+    K/V are read per-core from DRAM and typecast to bf16 before the matmuls so
+    a bfp8 cache feeds the bf16 chain. The unnormalized ``(o, m, l)`` partial is
+    pushed to the ``o_out`` / ``m_out`` / ``l_out`` DFBs (the caller drains or
+    consumes them). ``scale`` is folded into ``qk`` per chunk.
     """
     St_per_core = Sk_chunk_t * N_CHUNKS
 
-    @ttl.atom(grid=(n_cols, B))
-    def flash_shard(q, k, v, out_o, out_m, out_l):
+    @ttl.atom()
+    def flash_shard_core(q_in: ttl.DFB, k, v, o_out: ttl.DFB, m_out: ttl.DFB, l_out: ttl.DFB):
         col_c, row_c = ttl.node(dims=2)
 
-        q_cb = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
         k_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, DHt), block_count=2)
         v_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, vDHt), block_count=2)
 
-        sv_cb        = ttl.make_dataflow_buffer_like(q, shape=(PNHt, Sk_chunk_t), block_count=2)
-        ex_cb        = ttl.make_dataflow_buffer_like(q, shape=(PNHt, Sk_chunk_t), block_count=2)
-        chunk_max_cb = ttl.make_dataflow_buffer_like(q, shape=(PNHt, 1),          block_count=2)
-        chunk_sum_cb = ttl.make_dataflow_buffer_like(q, shape=(PNHt, 1),          block_count=2)
-        alpha_cb     = ttl.make_dataflow_buffer_like(q, shape=(PNHt, 1),          block_count=2)
-        m_new_cb     = ttl.make_dataflow_buffer_like(q, shape=(PNHt, 1),          block_count=2)
-        o_corr_cb    = ttl.make_dataflow_buffer_like(q, shape=(PNHt, vDHt),       block_count=2)
-        pv_cb        = ttl.make_dataflow_buffer_like(q, shape=(PNHt, vDHt),       block_count=2)
+        sv_cb        = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
+        ex_cb        = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
+        # Two (PNHt, 1) scratch slots cycled across the per-chunk stats: stat_a
+        # carries chunk_max, then m_new, then chunk_sum (their lifetimes are
+        # disjoint); stat_b carries alpha, which overlaps all three.
+        stat_a       = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
+        stat_b       = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
+        pv_cb        = ttl.make_dfb("bf16", shape=(PNHt, vDHt),       block_count=2)
 
-        m_state_cb   = ttl.make_dataflow_buffer_like(q, shape=(PNHt, 1),    block_count=2)
-        l_state_cb   = ttl.make_dataflow_buffer_like(q, shape=(PNHt, 1),    block_count=2)
-        o_state_cb   = ttl.make_dataflow_buffer_like(q, shape=(PNHt, vDHt), block_count=2)
-
-        # Dedicated single-push output CBs: the compute thread waits the
-        # state CBs and stores the finals here; the datamovement thread waits
-        # these to copy to DRAM. We could copy each state CB straight to DRAM,
-        # but then the state CB would be waited on the datamovement thread too
-        # and the SPSC verifier rejects that cross-thread second consumer.
-        out_o_cb = ttl.make_dataflow_buffer_like(out_o, shape=(PNHt, vDHt), block_count=2)
-        out_m_cb = ttl.make_dataflow_buffer_like(out_m, shape=(PNHt, 1),    block_count=2)
-        out_l_cb = ttl.make_dataflow_buffer_like(out_l, shape=(PNHt, 1),    block_count=2)
-
-        qd = q_cb.reserve()
-        ttl.copy(q[0:PNHt, 0:DHt], qd)
+        m_state_cb   = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
+        l_state_cb   = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
+        o_state_cb   = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
 
         k_base = col_c * St_per_core
         for c in range(N_CHUNKS):
@@ -80,7 +63,7 @@ def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0
         l0 = l_state_cb.reserve(); l0.store(ttl.block.fill(0.0,   shape=l0.shape))
         o0 = o_state_cb.reserve(); o0.store(ttl.block.fill(0.0,   shape=o0.shape))
 
-        q_blk = q_cb.wait()
+        q_blk = q_in.wait()
         for _ in range(N_CHUNKS):
             k_blk = ttl.math.typecast(k_cb.wait(), torch.bfloat16)
             sv_w = sv_cb.reserve()
@@ -88,20 +71,20 @@ def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0
                                ttl.block.fill(scale, shape=sv_w.shape)))
 
             sv = sv_cb.wait()
-            cm_w = chunk_max_cb.reserve()
+            cm_w = stat_a.reserve()
             cm_w.store(ttl.math.reduce_max(sv, dims=[1]))
             sv_re = sv_cb.reserve(); sv_re.store(sv)
 
             m_old = m_state_cb.wait()
-            cm = chunk_max_cb.wait()
-            mn_w = m_new_cb.reserve(); mn_w.store(ttl.math.max(m_old, cm))
+            cm = stat_a.wait()
+            mn_w = stat_a.reserve(); mn_w.store(ttl.math.max(m_old, cm))
 
-            mn_for_alpha = m_new_cb.wait()
-            alpha_w = alpha_cb.reserve()
+            mn_for_alpha = stat_a.wait()
+            alpha_w = stat_b.reserve()
             alpha_w.store(ttl.exp(ttl.sub(m_old, mn_for_alpha)))
-            mn_re = m_new_cb.reserve(); mn_re.store(mn_for_alpha)
+            mn_re = stat_a.reserve(); mn_re.store(mn_for_alpha)
 
-            mn_for_state = m_new_cb.wait()
+            mn_for_state = stat_a.wait()
             sv2 = sv_cb.wait()
             ex_w = ex_cb.reserve()
             ex_w.store(ttl.exp(ttl.sub(sv2, ttl.block.broadcast(
@@ -109,85 +92,151 @@ def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0
             m_next = m_state_cb.reserve(); m_next.store(mn_for_state)
 
             ex = ex_cb.wait()
-            cs_w = chunk_sum_cb.reserve()
+            cs_w = stat_a.reserve()
             cs_w.store(ttl.math.reduce_sum(ex, dims=[1]))
             ex_re = ex_cb.reserve(); ex_re.store(ex)
 
-            alpha = alpha_cb.wait()
+            alpha = stat_b.wait()
             l_old = l_state_cb.wait()
-            cs = chunk_sum_cb.wait()
+            cs = stat_a.wait()
             l_next = l_state_cb.reserve()
             l_next.store(ttl.add(ttl.mul(alpha, l_old), cs))
-            alpha_re = alpha_cb.reserve(); alpha_re.store(alpha)
+            alpha_re = stat_b.reserve(); alpha_re.store(alpha)
 
-            alpha2 = alpha_cb.wait()
+            alpha2 = stat_b.wait()
             o_old = o_state_cb.wait()
-            o_corr_w = o_corr_cb.reserve()
-            o_corr_w.store(ttl.mul(ttl.block.broadcast(
-                alpha2, dims=[1], shape=o_old.shape), o_old))
 
             ex2 = ex_cb.wait()
             v_blk = ttl.math.typecast(v_cb.wait(), torch.bfloat16)
             pv_w = pv_cb.reserve(); pv_w.store(ex2 @ v_blk)
 
-            o_corr_blk = o_corr_cb.wait()
             pv_blk = pv_cb.wait()
             o_next = o_state_cb.reserve()
-            o_next.store(ttl.add(o_corr_blk, pv_blk))
+            o_next.store(ttl.add(ttl.mul(ttl.block.broadcast(
+                alpha2, dims=[1], shape=o_old.shape), o_old), pv_blk))
+
+        m_final = m_state_cb.wait()
+        mo = m_out.reserve(); mo.store(m_final)
+        l_final = l_state_cb.wait()
+        lo = l_out.reserve(); lo.store(l_final)
+        o_final = o_state_cb.wait()
+        oo = o_out.reserve(); oo.store(o_final)
+
+    return flash_shard_core
+
+
+def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
+    """Standalone shard: q is multicast (col 0 reads DRAM, broadcasts to all
+    columns), the core computes the per-core partial, and the wrapper drains it
+    to ``out_o`` / ``out_m`` / ``out_l`` DRAM."""
+    core = make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale)
+
+    @ttl.atom(grid=(n_cols, B))
+    def flash_shard(q, k, v, out_o, out_m, out_l):
+        col_c, row_c = ttl.node(dims=2)
+
+        q_net = ttl.PipeNet(mcast_rows(B, n_cols))
+        q_stage = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
+        q_recv = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
+        o_b = ttl.make_dataflow_buffer_like(out_o, shape=(PNHt, vDHt), block_count=2)
+        m_b = ttl.make_dataflow_buffer_like(out_m, shape=(PNHt, 1), block_count=2)
+        l_b = ttl.make_dataflow_buffer_like(out_l, shape=(PNHt, 1), block_count=2)
+
+        mcast(q_net, q[0:PNHt, 0:DHt], q_stage, q_recv)
+        core(q_recv, k, v, o_b, m_b, l_b)
 
         base = (row_c * n_cols + col_c) * PNHt
-        m_final = m_state_cb.wait()
-        mo = out_m_cb.reserve(); mo.store(m_final)
-        ttl.copy(out_m_cb.wait(), out_m[base:base + PNHt, 0:1])
-        l_final = l_state_cb.wait()
-        lo = out_l_cb.reserve(); lo.store(l_final)
-        ttl.copy(out_l_cb.wait(), out_l[base:base + PNHt, 0:1])
-        o_final = o_state_cb.wait()
-        oo = out_o_cb.reserve(); oo.store(o_final)
-        ttl.copy(out_o_cb.wait(), out_o[base:base + PNHt, 0:vDHt])
+        ttl.copy(m_b.wait(), out_m[base:base + PNHt, 0:1])
+        ttl.copy(l_b.wait(), out_l[base:base + PNHt, 0:1])
+        ttl.copy(o_b.wait(), out_o[base:base + PNHt, 0:vDHt])
 
     return flash_shard
 
 
-def make_flash_normalize(grid, PNHt, vDHt):
-    """Finalize flash output: ``o_norm = o_unnorm / l``.
+def make_flash_normalize_core(PNHt, vDHt):
+    """Finalize flash output ``o_norm = o_unnorm / l`` on column 0, as a core.
 
-    ``l`` is broadcast from ``(PNHt, 1)`` to ``(PNHt, vDHt)`` and applied
-    via reciprocal + multiply.
+    ``o_in`` / ``l_in`` carry the merged unnormalized output and running sum;
+    only column 0 holds them (the reduce roots there), so the work is guarded.
     """
+
+    @ttl.atom()
+    def flash_normalize_core(o_in: ttl.DFB, l_in: ttl.DFB, o_out: ttl.DFB):
+        col_c, row_c = ttl.node(dims=2)
+        if col_c == 0:
+            o = o_in.wait()
+            l = l_in.wait()
+            l_recip_bc = ttl.block.broadcast(
+                ttl.math.recip(l), dims=[1], shape=o.shape,
+            )
+            ow = o_out.reserve()
+            ow.store(ttl.mul(o, l_recip_bc))
+
+    return flash_normalize_core
+
+
+def make_flash_normalize(grid, PNHt, vDHt):
+    """Standalone normalize: stage ``o`` / ``l`` from DRAM, run the core, drain
+    the normalized output to DRAM."""
+    core = make_flash_normalize_core(PNHt, vDHt)
 
     @ttl.atom(grid=grid)
     def flash_normalize(o_in, l_in, o_out):
         col_c, row_c = ttl.node(dims=2)
         base = row_c * PNHt
 
-        o_cb = ttl.make_dataflow_buffer_like(o_in, shape=(PNHt, vDHt), block_count=2)
-        l_cb = ttl.make_dataflow_buffer_like(l_in, shape=(PNHt, 1),    block_count=2)
-        out_cb = ttl.make_dataflow_buffer_like(o_out, shape=(PNHt, vDHt), block_count=2)
+        o_b = ttl.make_dataflow_buffer_like(o_in, shape=(PNHt, vDHt), block_count=2)
+        l_b = ttl.make_dataflow_buffer_like(l_in, shape=(PNHt, 1), block_count=2)
+        out_b = ttl.make_dataflow_buffer_like(o_out, shape=(PNHt, vDHt), block_count=2)
 
-        od = o_cb.reserve(); ttl.copy(o_in[base:base + PNHt, 0:vDHt], od)
-        ld = l_cb.reserve(); ttl.copy(l_in[base:base + PNHt, 0:1], ld)
+        od = o_b.reserve(); ttl.copy(o_in[base:base + PNHt, 0:vDHt], od)
+        ld = l_b.reserve(); ttl.copy(l_in[base:base + PNHt, 0:1], ld)
 
-        o = o_cb.wait()
-        l = l_cb.wait()
-        l_recip_bc = ttl.block.broadcast(
-            ttl.math.recip(l), dims=[1], shape=o.shape,
-        )
-        ow = out_cb.reserve()
-        ow.store(ttl.mul(o, l_recip_bc))
-        o_blk = out_cb.wait()
-        ttl.copy(o_blk, o_out[base:base + PNHt, 0:vDHt])
+        core(o_b, l_b, out_b)
+
+        ttl.copy(out_b.wait(), o_out[base:base + PNHt, 0:vDHt])
 
     return flash_normalize
 
 
-def make_flash_tree_reduce(PNHt, vDHt, B=1):
-    """8-core 3-step intra-row tree reduce, replicated across ``B`` rows.
+"""
+                           ┌──────────────────────────────┐
+                           │  q  (read ONCE from DRAM,    │
+                           │      column 0)               │
+                           └───────────────┬──────────────┘
+                                           │   M U L T I C A S T  (1 → 8)
+          ┌──────┬──────┬──────┬──────┬────┴─┬──────┬──────┬──────┐
+          ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
+        ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐
+        │ c0 │ │ c1 │ │ c2 │ │ c3 │ │ c4 │ │ c5 │ │ c6 │ │ c7 │   each column owns a
+        └────┘ └────┘ └────┘ └────┘ └────┘ └────┘ └────┘ └────┘   slice of the K/V
+          │      │      │      │      │      │      │      │       sequence and computes
+          │      │      │      │      │      │      │      │       a partial (m,l,o) =
+          ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼       flash(q, Kᵢ, Vᵢ)
 
-    Grid is ``(8, B)``: ``col_c`` is the partial column, ``row_c`` the
-    batch row. Each row independently merges its 8 ``(m, l, o)`` partials
-    with the flash online-softmax rescale. On ``col_c == 0`` the merged
-    unnormalized ``(o, m, l)`` is written to the row block of the outputs.
+  Then the partials collapse to column 0 with unicast pipes — odd→even, then quarter, then half:
+
+     c0     c1     c2     c3     c4     c5     c6     c7
+      │      │      │      │      │      │      │      │
+      │◄─────┘      │◄─────┘      │◄─────┘      │◄─────┘     step 0 (unicast):
+      │             │             │             │             1→0  3→2  5→4  7→6
+      │             │             │             │
+      │◄────────────┘             │◄────────────┘            step 1 (unicast):
+      │                           │                           2→0       6→4
+      │                           │
+      │◄──────────────────────────┘                          step 2 (unicast):
+      │                                                        4→0
+      ▼
+    (m,l,o) fully merged on c0  ──►  normalize (o / l)  ──►  output
+"""
+
+def make_flash_tree_reduce_core(PNHt, vDHt, B=1):
+    """8-core 3-step intra-row tree reduce as a core: each core's ``(o, m, l)``
+    partial arrives in the ``*_in`` DFBs, peers are exchanged over PipeNets, and
+    column 0 pushes the merged unnormalized ``(o, l)`` to ``o_out`` / ``l_out``.
+
+    The running max is consumed internally for the rescale but not emitted (the
+    normalized output needs only ``o`` and ``l``).
     """
 
     @ttl.atom()
@@ -226,8 +275,11 @@ def make_flash_tree_reduce(PNHt, vDHt, B=1):
         pipe_send(l_net, l_state)
         pipe_send(o_net, o_state)
 
-    @ttl.atom(grid=(8, B))
-    def flash_tree_reduce(in_o, in_m, in_l, out_o, out_m, out_l):
+    @ttl.atom()
+    def flash_tree_reduce_core(
+        o_in: ttl.DFB, m_in: ttl.DFB, l_in: ttl.DFB,
+        o_out: ttl.DFB, l_out: ttl.DFB,
+    ):
         col_c, row_c = ttl.node(dims=2)
 
         s0_m = ttl.PipeNet([ttl.Pipe(src=(2 * i + 1, b), dst=(2 * i, b)) for b in range(B) for i in range(4)])
@@ -240,88 +292,46 @@ def make_flash_tree_reduce(PNHt, vDHt, B=1):
         s2_l = ttl.PipeNet([ttl.Pipe(src=(4, b), dst=(0, b)) for b in range(B)])
         s2_o = ttl.PipeNet([ttl.Pipe(src=(4, b), dst=(0, b)) for b in range(B)])
 
-        # A single (m, l, o) DFB per stage would suffice: every wait is
-        # sequential and a core only ever plays one role. But the SPSC
-        # verifier counts a DFB's waits across all threads of the kernel, and
-        # the same stage buffer is consumed by the recv path on the compute
-        # thread and by the send path on the datamovement thread. We split
-        # each stage buffer into a recv-side (`_rx`, compute consumer) and a
-        # send-side (`_tx`, datamovement consumer) copy so each has a single
-        # consumer thread; each recv routes its result into the copy whose
-        # thread matches the next stage's consumer.
-        #
-        # TODO: these could be substantially reduced (to just 3 dfbs) if the
-        # verifier was smarter about what actually might cause a race.
-        m_rx0 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        l_rx0 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        o_rx0 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, vDHt), block_count=2)
-        m_tx0 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        l_tx0 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        o_tx0 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, vDHt), block_count=2)
-        m_rx1 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        l_rx1 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        o_rx1 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, vDHt), block_count=2)
-        m_rx2 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        l_rx2 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        o_rx2 = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, vDHt), block_count=2)
-        # Send-side buffer for stages 1 and 2: both are compute-produced and
-        # datamovement-consumed, and no single core sends in both stages, so
-        # they share one DFB (keeps us under the 32 hardware DFB limit).
-        m_txc = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        l_txc = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=2)
-        o_txc = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, vDHt), block_count=2)
+        # With the SPSC verifier relaxed (--ttl-relax-dfb-spsc), each stage's
+        # working buffer can feed either the next compute-recv or the
+        # datamovement-send -- the role guards make those mutually exclusive per
+        # core -- so we keep one (m,l,o) buffer per stage instead of the
+        # recv-side/send-side split that the verifier would otherwise require.
+        m_s0 = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
+        l_s0 = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
+        o_s0 = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
+        m_s1 = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
+        l_s1 = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
+        o_s1 = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
 
-        # Peer DFBs receive the partner's partial and are reused across all
-        # 3 steps; block_count=3 = one slot per pipe that targets them.
-        m_peer = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=3)
-        l_peer = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, 1),    block_count=3)
-        o_peer = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, vDHt), block_count=3)
+        m_peer = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=3)
+        l_peer = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=3)
+        o_peer = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=3)
 
-        # Dedicated single-push output CBs: the compute thread stores the
-        # merged result here and the datamovement thread copies it to DRAM.
-        # The merge could write to DRAM directly, but then the state CB would
-        # be waited on the datamovement thread too; the SPSC verifier rejects
-        # that cross-thread second consumer.
-        out_o_cb = ttl.make_dataflow_buffer_like(out_o, shape=(PNHt, vDHt), block_count=2)
-        out_m_cb = ttl.make_dataflow_buffer_like(out_m, shape=(PNHt, 1),    block_count=2)
-        out_l_cb = ttl.make_dataflow_buffer_like(out_l, shape=(PNHt, 1),    block_count=2)
-
-        # Load this core's partial into the rx/tx copy matching its stage-0
-        # role: receivers feed the compute thread, senders the datamovement.
-        base = (row_c * 8 + col_c) * PNHt
+        # Stage 0: receivers (cols 0,2,4,6) merge their own partial (*_in) with
+        # the s0 peer into the stage-0 buffer; senders (cols 1,3,5,7) stage
+        # their partial there and ship it.
         if s0_o.is_dst():
-            od = o_rx0.reserve(); ttl.copy(in_o[base:base + PNHt, 0:vDHt], od)
-            md = m_rx0.reserve(); ttl.copy(in_m[base:base + PNHt, 0:1], md)
-            ld = l_rx0.reserve(); ttl.copy(in_l[base:base + PNHt, 0:1], ld)
+            tree_step_recv(m_in, l_in, o_in, m_s0, l_s0, o_s0,
+                           m_peer, l_peer, o_peer, s0_m, s0_l, s0_o)
         elif s0_o.is_src():
-            od = o_tx0.reserve(); ttl.copy(in_o[base:base + PNHt, 0:vDHt], od)
-            md = m_tx0.reserve(); ttl.copy(in_m[base:base + PNHt, 0:1], md)
-            ld = l_tx0.reserve(); ttl.copy(in_l[base:base + PNHt, 0:1], ld)
+            md = m_s0.reserve(); md.store(m_in.wait())
+            ld = l_s0.reserve(); ld.store(l_in.wait())
+            od = o_s0.reserve(); od.store(o_in.wait())
+            tree_step_send(m_s0, l_s0, o_s0, s0_m, s0_l, s0_o)
 
-        # Stage 0: receivers (cols 0,2,4,6) merge with their s0 peer and route
-        # the result to rx1 if they receive again next, or tx1 if they send.
+        # Stage 1: receivers (cols 0,4) merge s0 with the s1 peer into s1;
+        # senders (cols 2,6) ship their s0 result.
         if s1_o.is_dst():
-            tree_step_recv(m_rx0, l_rx0, o_rx0, m_rx1, l_rx1, o_rx1,
-                           m_peer, l_peer, o_peer, s0_m, s0_l, s0_o)
-        elif s1_o.is_src():
-            tree_step_recv(m_rx0, l_rx0, o_rx0, m_txc, l_txc, o_txc,
-                           m_peer, l_peer, o_peer, s0_m, s0_l, s0_o)
-        elif s0_o.is_src():
-            tree_step_send(m_tx0, l_tx0, o_tx0, s0_m, s0_l, s0_o)
-
-        # Stage 1: receivers (cols 0,4) merge with their s1 peer and route to
-        # rx2 (col 0, receives again) or tx2 (col 4, sends to col 0).
-        if s2_o.is_dst():
-            tree_step_recv(m_rx1, l_rx1, o_rx1, m_rx2, l_rx2, o_rx2,
-                           m_peer, l_peer, o_peer, s1_m, s1_l, s1_o)
-        elif s2_o.is_src():
-            tree_step_recv(m_rx1, l_rx1, o_rx1, m_txc, l_txc, o_txc,
+            tree_step_recv(m_s0, l_s0, o_s0, m_s1, l_s1, o_s1,
                            m_peer, l_peer, o_peer, s1_m, s1_l, s1_o)
         elif s1_o.is_src():
-            tree_step_send(m_txc, l_txc, o_txc, s1_m, s1_l, s1_o)
+            tree_step_send(m_s0, l_s0, o_s0, s1_m, s1_l, s1_o)
 
+        # Stage 2: col 0 merges s1 with the final peer and writes the output;
+        # col 4 ships its s1 result.
         if s2_o.is_dst():
-            m_a = m_rx2.wait(); l_a = l_rx2.wait(); o_a = o_rx2.wait()
+            m_a = m_s1.wait(); l_a = l_s1.wait(); o_a = o_s1.wait()
 
             pipe_recv(s2_m, m_peer)
             pipe_recv(s2_l, l_peer)
@@ -337,14 +347,80 @@ def make_flash_tree_reduce(PNHt, vDHt, B=1):
             ab_bc = ttl.block.broadcast(ab, dims=[1], shape=o_b.shape)
             o_unnorm = ttl.add(ttl.mul(aa_bc, o_a), ttl.mul(ab_bc, o_b))
 
-            obase = row_c * PNHt
-            mw = out_m_cb.reserve(); mw.store(m_fin)
-            ttl.copy(out_m_cb.wait(), out_m[obase:obase + PNHt, 0:1])
-            lw = out_l_cb.reserve(); lw.store(l_fin)
-            ttl.copy(out_l_cb.wait(), out_l[obase:obase + PNHt, 0:1])
-            ow = out_o_cb.reserve(); ow.store(o_unnorm)
-            ttl.copy(out_o_cb.wait(), out_o[obase:obase + PNHt, 0:vDHt])
+            lw = l_out.reserve(); lw.store(l_fin)
+            ow = o_out.reserve(); ow.store(o_unnorm)
         elif s2_o.is_src():
-            tree_step_send(m_txc, l_txc, o_txc, s2_m, s2_l, s2_o)
+            tree_step_send(m_s1, l_s1, o_s1, s2_m, s2_l, s2_o)
+
+    return flash_tree_reduce_core
+
+
+def make_flash_tree_reduce(PNHt, vDHt, B=1):
+    """Standalone tree reduce: stage each core's partial from DRAM, run the
+    core, drain the merged ``(o, l)`` to DRAM on column 0."""
+    core = make_flash_tree_reduce_core(PNHt, vDHt, B)
+
+    @ttl.atom(grid=(8, B), options="--ttl-relax-dfb-spsc")
+    def flash_tree_reduce(in_o, in_m, in_l, out_o, out_l):
+        col_c, row_c = ttl.node(dims=2)
+        base = (row_c * 8 + col_c) * PNHt
+
+        o_b = ttl.make_dataflow_buffer_like(in_o, shape=(PNHt, vDHt), block_count=2)
+        m_b = ttl.make_dataflow_buffer_like(in_m, shape=(PNHt, 1), block_count=2)
+        l_b = ttl.make_dataflow_buffer_like(in_l, shape=(PNHt, 1), block_count=2)
+        o_t = ttl.make_dataflow_buffer_like(out_o, shape=(PNHt, vDHt), block_count=2)
+        l_t = ttl.make_dataflow_buffer_like(out_l, shape=(PNHt, 1), block_count=2)
+
+        od = o_b.reserve(); ttl.copy(in_o[base:base + PNHt, 0:vDHt], od)
+        md = m_b.reserve(); ttl.copy(in_m[base:base + PNHt, 0:1], md)
+        ld = l_b.reserve(); ttl.copy(in_l[base:base + PNHt, 0:1], ld)
+
+        core(o_b, m_b, l_b, o_t, l_t)
+
+        obase = row_c * PNHt
+        if col_c == 0:
+            ttl.copy(l_t.wait(), out_l[obase:obase + PNHt, 0:1])
+            ttl.copy(o_t.wait(), out_o[obase:obase + PNHt, 0:vDHt])
 
     return flash_tree_reduce
+
+
+def make_flash_mla(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
+    """Fully fused flash MLA decode: one kernel on grid ``(n_cols, B)``.
+
+    q is multicast (column 0 reads DRAM, fans out to all columns); the shard,
+    tree reduce, and normalize cores are inlined back to back with their
+    boundary values carried through DFB bridges, so no partial or merged stat
+    round-trips DRAM. Column 0 drains the normalized output. Requires
+    ``n_cols == 8`` (the tree reduce topology).
+    """
+    shard = make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale)
+    reduce = make_flash_tree_reduce_core(PNHt, vDHt, B)
+    normalize = make_flash_normalize_core(PNHt, vDHt)
+
+    @ttl.atom(grid=(n_cols, B), options="--ttl-relax-dfb-spsc")
+    def flash_mla(q, k, v, norm_out):
+        col_c, row_c = ttl.node(dims=2)
+
+        q_net = ttl.PipeNet(mcast_rows(B, n_cols))
+        q_stage = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
+        q_recv = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
+
+        # shard -> tree bridges (this core's own partial)
+        so = ttl.make_dataflow_buffer_like(q, shape=(PNHt, vDHt), block_count=2)
+        sm = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
+        sl = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
+        # tree -> normalize bridges (merged, column 0 only)
+        to = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
+        tl = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
+        nout = ttl.make_dataflow_buffer_like(norm_out, shape=(PNHt, vDHt), block_count=2)
+
+        mcast(q_net, q[0:PNHt, 0:DHt], q_stage, q_recv)
+        shard(q_recv, k, v, so, sm, sl)
+        reduce(so, sm, sl, to, tl)
+        normalize(to, tl, nout)
+
+        if col_c == 0:
+            ttl.copy(nout.wait(), norm_out[row_c * PNHt:row_c * PNHt + PNHt, 0:vDHt])
+
+    return flash_mla
