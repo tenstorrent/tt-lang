@@ -96,7 +96,7 @@ stateDiagram-v2
 
     [*] --> NoReceivePosted
     NoReceivePosted --> ReceivePosted: ttl.copy(pipe, dst_blk) publishes address
-    ReceivePosted --> ReceiveComplete: matching send writes payload and signals completion
+    ReceivePosted --> ReceiveComplete: matching send signals completion
     ReceiveComplete --> ReceiverMayUseBlock: recv_tx.wait() returns
     ReceivePosted --> ReceivePosted: recv_tx.wait() blocks
 
@@ -117,16 +117,18 @@ stateDiagram-v2
     state "Inside ttl.copy: waiting for destination addresses" as WaitingForDestinationAddresses
     state "Inside ttl.copy: payload write in progress" as PayloadWriteInProgress
     state "Send complete" as SendComplete
+    state "Send handle returned" as SendHandleReturned
     state "send_tx.wait() returned" as SourceBlockMayBeReleased
 
     [*] --> NoSendPosted
     NoSendPosted --> WaitingForDestinationAddresses: ttl.copy(src_blk, pipe) begins
-    WaitingForDestinationAddresses --> PayloadWriteInProgress: all destinations have posted destination addresses
-    PayloadWriteInProgress --> SendComplete: payload write barrier finishes and receivers are signaled
-    SendComplete --> SourceBlockMayBeReleased: ttl.copy returns handle; send_tx.wait() is no-op
+    WaitingForDestinationAddresses --> PayloadWriteInProgress: destination addresses are posted
+    PayloadWriteInProgress --> SendComplete: payload writes complete
+    SendComplete --> SendHandleReturned: ttl.copy returns handle
+    SendHandleReturned --> SourceBlockMayBeReleased: send_tx.wait() is no op
 
     classDef pipeState fill:#1e3a8a,stroke:#93c5fd,color:#ffffff
-    class NoSendPosted,WaitingForDestinationAddresses,PayloadWriteInProgress,SendComplete,SourceBlockMayBeReleased pipeState
+    class NoSendPosted,WaitingForDestinationAddresses,PayloadWriteInProgress,SendComplete,SendHandleReturned,SourceBlockMayBeReleased pipeState
 ```
 
 The source thread cannot execute `send_tx.wait()` before `SendComplete`
