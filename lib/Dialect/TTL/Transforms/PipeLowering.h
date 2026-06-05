@@ -31,7 +31,7 @@ struct PipeSramAddressTableInfo {
 };
 
 struct PipeLocalReadyCounterInfo {
-  int64_t senderReadySemIdx = 0;
+  int64_t senderReadyCounterSemIdx = 0;
 };
 
 struct PipeGlobalReadyCounterInfo {
@@ -43,7 +43,7 @@ using PipeReadyCounterInfo =
 
 struct PipeCompletionWaitInfo {
   int64_t pipeNetId;
-  int64_t receiverSemIdx;
+  int64_t receiverCompletionSemIdx;
 };
 
 /// Address storage used by one transfer-allocation unit. Each receiver
@@ -118,7 +118,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info);
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
 /// Lower the sender-side pipe transfer. Uses receiver-published destination
-/// addresses and signals destinations via semaphore.
+/// addresses and signals receiver completion.
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
                                     const PipeResourcePlan *pipeResourcePlan,
