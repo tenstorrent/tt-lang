@@ -508,6 +508,14 @@ static CopyOp findPipeReceiveCopy(Value value) {
       seen);
 }
 
+static PipeTransferSendOp findPipeTransferSend(Value value) {
+  llvm::SmallPtrSet<Value, 16> seen;
+  return traceTransferHandleSource<PipeTransferSendOp>(
+      value,
+      [](Value source) { return source.getDefiningOp<PipeTransferSendOp>(); },
+      seen);
+}
+
 static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
   return isCollectiveTransfer(contract) ? PipeTransferKind::Collective
                                         : PipeTransferKind::PointToPoint;
@@ -1122,6 +1130,13 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   LogicalResult
   matchAndRewrite(WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (findPipeTransferSend(op.getXf())) {
+      // Pipe sends wait for the payload write before signaling receiver
+      // completion, so the send handle is complete when the send op returns.
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
     // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
