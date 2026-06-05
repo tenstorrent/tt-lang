@@ -137,7 +137,7 @@ def test_flash_chain(device):
     normalize = make_flash_normalize(grid=(1, 1), PNHt=PNHt, vDHt=vDHt)
 
     shard(q_d, k_d, v_d, po_d, pm_d, pl_d)
-    tree_reduce(po_d, pm_d, pl_d, o_d, m_d, l_d)
+    tree_reduce(po_d, pm_d, pl_d, o_d, l_d)
     normalize(o_d, l_d, norm_d)
 
     got = ttnn.to_torch(norm_d).reshape(PN, vD).to(torch.bfloat16)
@@ -235,8 +235,48 @@ def test_flash_mla_decode(device):
     normalize = make_flash_normalize(grid=(1, 1), PNHt=MLA_PNHt, vDHt=MLA_vDHt)
 
     shard(q_d, k_d, v_d, po_d, pm_d, pl_d)
-    tree_reduce(po_d, pm_d, pl_d, o_d, m_d, l_d)
+    tree_reduce(po_d, pm_d, pl_d, o_d, l_d)
     normalize(o_d, l_d, norm_d)
+
+    got = ttnn.to_torch(norm_d).reshape(1, 1, NUM_HEADS, KV_LORA_RANK).to(torch.bfloat16)
+    assert_pcc(expected, got, threshold=0.99)
+
+
+@pytest.mark.parametrize("ttnn_device", [{"worker_l1_size": 1448000}], indirect=True)
+def test_flash_mla_decode_fused(device):
+    """The fully fused single-kernel MLA: q multicast, partials and merged
+    stats carried through DFB bridges (no inter-phase DRAM), one launch."""
+    from ttl.ops.flash_mla import make_flash_mla
+
+    torch.manual_seed(42)
+    scale = QK_HEAD_DIM ** -0.5
+    decode_position = MAX_SEQ_LEN - 1
+
+    torch_q = torch.randn((1, 1, NUM_HEADS, KVPE_DIM), dtype=torch.bfloat16)
+    torch_cache = torch.randn((1, 1, MAX_SEQ_LEN, KVPE_DIM), dtype=torch.bfloat16)
+    position_ids = torch.ones(1, dtype=torch.int32) * decode_position
+
+    expected = flash_mla_golden(
+        q=torch_q, kv_cache=torch_cache, position_ids=position_ids,
+        head_dim_v=KV_LORA_RANK, scale=scale,
+    )
+
+    q_2d = torch_q.reshape(NUM_HEADS, KVPE_DIM)
+    k_2d = torch_cache.reshape(MAX_SEQ_LEN, KVPE_DIM)
+    v_2d = k_2d[:, :KV_LORA_RANK].contiguous()
+
+    PNr = MLA_PNHt * TILE
+    q_d = to_dram(q_2d, device)
+    k_d = to_dram_bfp8(k_2d, device)
+    v_d = to_dram_bfp8(v_2d, device)
+    norm_d = to_dram(torch.zeros(PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
+
+    flash = make_flash_mla(
+        n_cols=N_CORES, B=1,
+        PNHt=MLA_PNHt, DHt=MLA_DHt, vDHt=MLA_vDHt,
+        Sk_chunk_t=MLA_Sk_chunk_t, N_CHUNKS=MLA_N_CHUNKS, scale=scale,
+    )
+    flash(q_d, k_d, v_d, norm_d)
 
     got = ttnn.to_torch(norm_d).reshape(1, 1, NUM_HEADS, KV_LORA_RANK).to(torch.bfloat16)
     assert_pcc(expected, got, threshold=0.99)

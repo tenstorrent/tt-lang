@@ -146,6 +146,11 @@ def _expand_call(
     dfb_decl_names = _check_callee_buffers(spec, caller_name, top_level)
 
     bindings = _bind_args_to_params(spec, call, caller_name)
+    # Fold the callee's constant closure freevars (e.g. factory tile-count
+    # params) into the body: after substitution they live in the caller, whose
+    # scope does not carry the callee's closure.
+    for name, value in _closure_consts(spec.fn).items():
+        bindings.setdefault(name, ast.Constant(value=value))
     locals_in_callee = _collect_local_names(spec.fn_ast) - set(bindings)
     site = next(_inline_counter)
     suffix = f"__{spec.name}_inl{site}"
@@ -223,6 +228,27 @@ def _check_callee_buffers(spec, caller_name: str, top_level: bool) -> Set[str]:
         )
 
     return dfb_names
+
+
+def _closure_consts(fn) -> Dict[str, object]:
+    """Constant closure freevars of ``fn`` (e.g. a factory's tile-count params).
+
+    These are folded into the body as literals when it is inlined, since the
+    caller's scope does not carry the callee's closure cells. Only simple
+    constants are folded; other freevars (atoms, modules) resolve through the
+    caller's globals or are themselves inlined.
+    """
+    closure = getattr(fn, "__closure__", None) or ()
+    freevars = getattr(getattr(fn, "__code__", None), "co_freevars", ())
+    consts: Dict[str, object] = {}
+    for name, cell in zip(freevars, closure):
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        if value is None or isinstance(value, (int, float, str, bool)):
+            consts[name] = value
+    return consts
 
 
 def _bind_args_to_params(spec, call: ast.Call, caller_name: str) -> Dict[str, ast.expr]:
