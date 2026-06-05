@@ -47,20 +47,28 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
 
   Block &body = funcOp.getBody().front();
 
-  // Number every operation in pre-order so the lifetimes below reflect true
-  // program order, including ops nested in loops or compute regions (after
-  // LowerToLoops / SubblockComputeForDST). Projecting a nested op onto its
-  // body-block ancestor would collapse a whole loop body to one position and
-  // let concurrently-live intermediates falsely share a slot.
+  // Number top-level body ops only, and project a nested op onto its
+  // body-block ancestor. This runs after LowerToLoops, so a circular buffer
+  // used inside a loop is acquired/released every iteration: across the loop
+  // back-edge it is live for the WHOLE loop, not just one static interval
+  // within the body. Projecting every in-loop use to the single loop op index
+  // collapses all buffers used in one loop to the same position so they
+  // overlap and never share a slot; only buffers in different top-level
+  // regions (e.g. distinct phases/loops) can reuse, which is sound.
   DenseMap<Operation *, int64_t> opIndex;
   int64_t idx = 0;
-  funcOp.walk<WalkOrder::PreOrder>([&](Operation *op) { opIndex[op] = idx++; });
+  for (Operation &op : body) {
+    opIndex[&op] = idx++;
+  }
   int64_t lastOpIdx = idx - 1;
 
   auto getBodyIndex = [&](Operation *op) -> int64_t {
-    auto it = opIndex.find(op);
-    assert(it != opIndex.end() && "operation must have been indexed");
-    return it->second;
+    if (op->getBlock() == &body) {
+      return opIndex[op];
+    }
+    Operation *ancestor = body.findAncestorOpInBlock(*op);
+    assert(ancestor && "operation must be reachable from function body");
+    return opIndex[ancestor];
   };
 
   // Build intervals grouped by reuse class. Two compiler-allocated DFBs may
@@ -154,10 +162,15 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
     int32_t maxSlot = -1;
 
     for (Interval &interval : intervals) {
-      // Expire intervals whose lifetime ended before this one starts.
+      // Expire intervals whose lifetime ended strictly before this one
+      // starts. Intervals are closed [start, end] (both endpoints live), so a
+      // slot frees only when act->end < interval.start; sharing an endpoint
+      // means both are live at that op and must keep distinct slots. Two
+      // buffers projected onto the same enclosing loop op share that point and
+      // so never reuse, which is what loop liveness requires.
       SmallVector<Interval *> expired;
       for (Interval *act : active) {
-        if (act->end <= interval.start) {
+        if (act->end < interval.start) {
           freeSlots.set(slotAssignment[act->value]);
           expired.push_back(act);
         }
