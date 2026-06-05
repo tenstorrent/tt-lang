@@ -36,7 +36,9 @@ def _host_ttnn(tensor_shape):
 @ttl.operation(grid=(2, 1))
 def overlapping_dfb_consumers(input_tensor, output_tensor):
     shared_cb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
-    scratch_cb = ttl.make_dataflow_buffer_like(output_tensor, shape=(1, 1), block_count=2)
+    scratch_cb = ttl.make_dataflow_buffer_like(
+        output_tensor, shape=(1, 1), block_count=2
+    )
 
     @ttl.compute()
     def compute_consumer():
