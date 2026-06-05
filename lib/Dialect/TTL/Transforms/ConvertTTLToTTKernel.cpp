@@ -1240,13 +1240,30 @@ resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
 }
 
 /// Materialize an i32/i16 integer value from a float-typed SSA value.
-/// Handles two cases:
-///  1. The value is an unrealized_conversion_cast(iN -> fN) from a prior
-///     RawElementReadLowering -- unwrap to get the integer directly.
-///  2. The value is an arith.constant float -- create the integer bit pattern.
+/// Handles three cases (checked in order):
+///  1. arith.truncf (e.g. f32 -> bf16) -- recursively materialize the wider
+///     source bits, then extract the upper target-width bits via shift+trunc.
+///     bf16 is the upper 16 bits of the f32 IEEE-754 encoding.
+///  2. unrealized_conversion_cast(iN -> fN) from a prior RawElementReadLowering
+///     -- unwrap to get the integer directly.
+///  3. arith.constant float -- create the integer bit pattern.
 static Value materializeIntBits(Value floatVal, Type intTy,
                                 ConversionPatternRewriter &rewriter,
                                 Location loc) {
+  if (auto truncOp = floatVal.getDefiningOp<arith::TruncFOp>()) {
+    Value src = truncOp.getOperand();
+    unsigned srcWidth = src.getType().getIntOrFloatBitWidth();
+    unsigned dstWidth = floatVal.getType().getIntOrFloatBitWidth();
+    auto srcIntTy = IntegerType::get(rewriter.getContext(), srcWidth);
+    Value srcBits = materializeIntBits(src, srcIntTy, rewriter, loc);
+    if (!srcBits) {
+      return Value();
+    }
+    Value shift = arith::ConstantIntOp::create(rewriter, loc,
+                                               srcWidth - dstWidth, srcWidth);
+    Value shifted = arith::ShRUIOp::create(rewriter, loc, srcBits, shift);
+    return arith::TruncIOp::create(rewriter, loc, intTy, shifted);
+  }
   if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>()) {
     if (cast.getInputs().size() == 1 &&
         cast.getInputs()[0].getType() == intTy) {
