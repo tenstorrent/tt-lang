@@ -15,11 +15,12 @@ load_tt_metal_version
 
 if ! ttnn_pypi_aligned; then
   cat >&2 <<EOF
-Public PyPI publish requires ttnn provenance to match TT_METAL_TAG.
+Public PyPI publish requires the pypi ttnn package version to match TT_METAL_TAG.
 TTNN_PYPI=$TTNN_PYPI was built from TTNN_PYPI_TT_METAL_TAG=$TTNN_PYPI_TT_METAL_TAG,
 but this release builds against TT_METAL_TAG=$TT_METAL_TAG.
 Use the S3 bundled wheel workflow for this tt-metal selection, or publish after
 ttnn is available for TT_METAL_TAG=$TT_METAL_TAG.
+See: https://pypi.eng.aws.tenstorrent.com/tt-lang/
 EOF
   exit 1
 fi
