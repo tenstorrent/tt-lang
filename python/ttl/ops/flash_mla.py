@@ -413,6 +413,10 @@ def make_flash_mla(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
         # tree -> normalize bridges (merged, column 0 only)
         to = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
         tl = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
+        # Normalize gets its own output DFB: the datamovement drain below waits
+        # it on NCRISC, and aliasing it onto `so` (still carrying the
+        # unnormalized partial through the compute-side reduce) lets NCRISC read
+        # the wrong tile under the relaxed SPSC guard.
         nout = ttl.make_dataflow_buffer_like(norm_out, shape=(PNHt, vDHt), block_count=2)
 
         mcast(q_net, q[0:PNHt, 0:DHt], q_stage, q_recv)
