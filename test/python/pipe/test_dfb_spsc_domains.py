@@ -9,7 +9,7 @@ movement thread waits on the DFB only on the PipeNet source node, while the
 compute thread waits on the same DFB only on the destination node. The verifier
 must accept this because the consumer launch-node domains are disjoint.
 
-Issue 663: SPSC checking must compare DFB users per launched node, not only per
+Issue #663: SPSC checking must compare DFB users per launched node, not only per
 kernel thread.
 """
 
