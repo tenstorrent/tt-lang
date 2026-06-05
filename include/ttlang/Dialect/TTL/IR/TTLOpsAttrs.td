@@ -27,6 +27,20 @@ def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   }];
 }
 
+def TTL_PipeTransferKindAttr : TTL_Attr<"PipeTransferKind",
+                                        "pipe_transfer_kind"> {
+  let summary = "Pipe transfer kind";
+  let description = [{
+    Encodes whether a pipe transfer is point-to-point or collective. The kind
+    describes the logical transfer contract before hardware lowering chooses
+    concrete synchronization and data movement resources.
+  }];
+  let parameters = (ins
+    "PipeTransferKind":$value
+  );
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let summary = "Tensor layout encoding for grid distribution and memory placement";
   let description = [{

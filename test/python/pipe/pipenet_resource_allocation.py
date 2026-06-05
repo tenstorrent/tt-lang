@@ -312,7 +312,7 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 
 
 # FINAL-LABEL: module attributes
-# FINAL-SAME: ttl.pipe_sram_scratch_bytes = 64 : i64
+# FINAL-SAME: ttl.pipe_sram_scratch_bytes = 32 : i64
 # FINAL-SAME: ttl.pipe_sync_semaphore_count = 11 : i64
 # FINAL-NOT: ttl.pipe_global_semaphore_count
 #

@@ -32,8 +32,8 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
          existing->second.staticTileOffset != staticTileOffset)) {
       auto diag = emitError(loc)
                   << "collective pipe receive posts publish different "
-                     "destination addresses; per-receiver destination "
-                     "addresses are tracked by issue #617";
+                     "destination addresses; TT-Metal NoC multicast requires "
+                     "one destination SRAM address for all receivers";
       diag.attachNote(existing->second.loc)
           << "previous collective receive post for this pipe was here";
       return failure();
@@ -168,8 +168,8 @@ static PipeKey getPipeKey(PipeType pipeType) {
 static llvm::MapVector<PipeKey, PipeTransferContract>
 collectPipeTransferContracts(ModuleOp mod) {
   llvm::MapVector<PipeKey, PipeTransferContract> contracts;
-  mod.walk([&](CreatePipeOp op) {
-    auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
+  mod.walk([&](PipeTransferCreateOp op) {
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
     PipeTransferContract contract = getPipeTransferContract(op);
     PipeKey key = getPipeKey(pipeType);
     auto existing = contracts.find(key);
@@ -177,8 +177,8 @@ collectPipeTransferContracts(ModuleOp mod) {
       contracts.insert({key, contract});
       return;
     }
-    // Duplicate create_pipe ops for the same PipeKey can arise from cloned
-    // regions. Collective is the stronger contract and must be preserved.
+    // Duplicate transfers for the same PipeKey can arise from cloned regions.
+    // Collective is the stronger contract and must be preserved.
     if (isCollectiveTransfer(contract)) {
       existing->second = PipeTransferContract::Collective;
     }
@@ -190,8 +190,8 @@ static LogicalResult
 emitUntraceableCollectiveDestinationAddress(Operation *op) {
   return op->emitError()
          << "collective pipe destination address could not be "
-            "determined statically; per-receiver destination addresses are "
-            "tracked by issue #617";
+            "determined statically; TT-Metal NoC multicast requires one "
+            "statically proven destination SRAM address for all receivers";
 }
 
 static LogicalResult addStaticCoordinates(ArrayRef<OpFoldResult> mixedOffsets,
@@ -217,8 +217,8 @@ static LogicalResult addStaticCoordinates(ArrayRef<OpFoldResult> mixedOffsets,
 
 /// Return the static tile offset within the receiver DFB for a receive
 /// destination. Collective lowering has one sender-visible address-table entry
-/// per pipe, so each destination must publish the same static DFB address until
-/// issue #617 adds explicit per-destination addresses.
+/// per pipe because NoC multicast writes one destination SRAM address to every
+/// receiver.
 static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
   Value view = traceUnrealizedCasts(dst);
   SmallVector<int64_t> coordinates;
@@ -328,12 +328,20 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   llvm::MapVector<PipeKey, PipeTransferContract> transferContracts =
       collectPipeTransferContracts(mod);
 
-  WalkResult walkResult = mod.walk([&](PipeRecvPostOp postOp) {
-    auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
+  WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
+    auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
+    if (!createOp) {
+      postOp.emitError(
+          "pipe transfer post must reference a transfer derived from "
+          "ttl.pipe_transfer.create");
+      return WalkResult::interrupt();
+    }
+    auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
     PipeKey key = getPipeKey(pipeType);
     auto contractIt = transferContracts.find(key);
     if (contractIt == transferContracts.end()) {
-      postOp.emitError("pipe receive must use a ttl.create_pipe result");
+      postOp.emitError(
+          "pipe transfer post must reference a known pipe transfer");
       return WalkResult::interrupt();
     }
     PipeTransferContract contract = contractIt->second;
