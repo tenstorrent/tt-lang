@@ -4,11 +4,11 @@
 
 // -----
 
-// f32 ogt -> ttkernel.float32_greater(lhs, rhs)
+// f32 ogt -> ttkernel.float32_greater(lhs, rhs) on signless i32 bit patterns
 // CHECK-LABEL: func.func @cmpf_ogt_f32
 // CHECK-NOT: arith.cmpf
 // CHECK: ttkernel.float32_greater(
-// CHECK-SAME: ) : (ui32, ui32) -> i1
+// CHECK-SAME: ) : (i32, i32) -> i1
 module {
   func.func @cmpf_ogt_f32(%a_int: i32, %b_int: i32) -> i1 {
     %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
@@ -20,11 +20,11 @@ module {
 
 // -----
 
-// bf16 ogt -> ttkernel.bfloat16_greater(lhs, rhs)
+// bf16 ogt -> ttkernel.bfloat16_greater(lhs, rhs) on signless i16 bit patterns
 // CHECK-LABEL: func.func @cmpf_ogt_bf16
 // CHECK-NOT: arith.cmpf
 // CHECK: ttkernel.bfloat16_greater(
-// CHECK-SAME: ) : (ui16, ui16) -> i1
+// CHECK-SAME: ) : (i16, i16) -> i1
 module {
   func.func @cmpf_ogt_bf16(%a_int: i16, %b_int: i16) -> i1 {
     %a = builtin.unrealized_conversion_cast %a_int : i16 to bf16

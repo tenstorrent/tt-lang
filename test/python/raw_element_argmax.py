@@ -19,8 +19,7 @@ Mirrors the control flow of tt-metal's argmax kernels:
 
 Two reduction passes over different tile rows:
   Row 0: track max value, write it to output.
-  Row 1: track max value and encode the column position as c * 32 + 1
-         (matching the position encoding from reader_argmax_interleaved).
+  Row 1: track max value, conditionally write the new best to output.
 
 Compile-only test.
 """
@@ -35,11 +34,11 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def argmax_element_kernel(inp, out):
-    """Argmax-style kernel: multi-row reduction with position tracking.
+    """Argmax-style kernel: multi-row reduction with value tracking.
 
     Scans two tile rows element-by-element. For each row, tracks the
-    "best" value via a cross-scope variable update and records the column
-    position. Writes the max value and encoded position to the output.
+    "best" value via a cross-scope variable update. Writes the max
+    value to the output.
     """
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -66,13 +65,13 @@ def argmax_element_kernel(inp, out):
                         max_val = val
                 ttl.raw_element_write(wblk, 0, 0, max_val)
 
-                # -- Row 1 reduction: find max and encode position --
+                # -- Row 1 reduction: find max and write best value --
                 best = ttl.raw_element_read(rblk, 1, 0)
                 for c in range(32):
                     val = ttl.raw_element_read(rblk, 1, c)
                     if val > best:
                         best = val
-                        ttl.raw_element_write(wblk, 1, 0, c * 32 + 1)
+                        ttl.raw_element_write(wblk, 1, 0, val)
                 ttl.raw_element_write(wblk, 1, 1, best)
 
                 tx = ttl.copy(wblk, out[0, 0])

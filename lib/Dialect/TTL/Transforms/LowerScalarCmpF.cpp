@@ -47,16 +47,6 @@ static Value resolveIntBits(Value floatVal, unsigned bitWidth,
   return Value();
 }
 
-/// Cast a signless iN value to unsigned uiN for TTKernel numeric ops.
-static Value toUnsigned(Value signlessVal, OpBuilder &builder, Location loc) {
-  auto intTy = cast<IntegerType>(signlessVal.getType());
-  auto unsignedTy = IntegerType::get(builder.getContext(), intTy.getWidth(),
-                                     IntegerType::Unsigned);
-  return UnrealizedConversionCastOp::create(builder, loc, unsignedTy,
-                                            signlessVal)
-      .getResult(0);
-}
-
 struct TTLLowerScalarCmpFPass
     : impl::TTLLowerScalarCmpFBase<TTLLowerScalarCmpFPass> {
   using TTLLowerScalarCmpFBase::TTLLowerScalarCmpFBase;
@@ -99,26 +89,22 @@ struct TTLLowerScalarCmpFPass
 
       switch (pred) {
       case arith::CmpFPredicate::OGT: {
-        Value lhsU = toUnsigned(lhsInt, builder, loc);
-        Value rhsU = toUnsigned(rhsInt, builder, loc);
         if (bitWidth == 32) {
           result = ttk::Float32GreaterOp::create(
-              builder, loc, builder.getI1Type(), lhsU, rhsU);
+              builder, loc, builder.getI1Type(), lhsInt, rhsInt);
         } else {
           result = ttk::Bfloat16GreaterOp::create(
-              builder, loc, builder.getI1Type(), lhsU, rhsU);
+              builder, loc, builder.getI1Type(), lhsInt, rhsInt);
         }
         break;
       }
       case arith::CmpFPredicate::OLT: {
-        Value lhsU = toUnsigned(lhsInt, builder, loc);
-        Value rhsU = toUnsigned(rhsInt, builder, loc);
         if (bitWidth == 32) {
           result = ttk::Float32GreaterOp::create(
-              builder, loc, builder.getI1Type(), rhsU, lhsU);
+              builder, loc, builder.getI1Type(), rhsInt, lhsInt);
         } else {
           result = ttk::Bfloat16GreaterOp::create(
-              builder, loc, builder.getI1Type(), rhsU, lhsU);
+              builder, loc, builder.getI1Type(), rhsInt, lhsInt);
         }
         break;
       }

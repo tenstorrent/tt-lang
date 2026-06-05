@@ -1094,8 +1094,9 @@ static bool isBlockFromCBWait(Value block) {
 /// f32 -> (i32, 32), bf16 -> (i16, 16).
 static std::pair<Type, unsigned> getIntTypeForFloat(MLIRContext *ctx,
                                                     Type floatTy) {
-  if (floatTy.isF32())
+  if (floatTy.isF32()) {
     return {IntegerType::get(ctx, 32), 32};
+  }
   assert(floatTy.isBF16());
   return {IntegerType::get(ctx, 16), 16};
 }
@@ -1148,8 +1149,7 @@ static Value computeRawElementOffset(RankedTensorType blockType,
     Value coord = toI32(coords[0]);
     Value tileElemsC = cst(tileElems);
     tileIdx = arith::DivUIOp::create(rewriter, loc, coord, tileElemsC);
-    Value intraFlat =
-        arith::RemUIOp::create(rewriter, loc, coord, tileElemsC);
+    Value intraFlat = arith::RemUIOp::create(rewriter, loc, coord, tileElemsC);
     Value tileWC = cst(tileW);
     intraRow = arith::DivUIOp::create(rewriter, loc, intraFlat, tileWC);
     intraCol = arith::RemUIOp::create(rewriter, loc, intraFlat, tileWC);
@@ -1170,8 +1170,9 @@ static Value computeRawElementOffset(RankedTensorType blockType,
 
     for (int64_t i = rank - 3; i >= 0; --i) {
       int64_t stride = 1;
-      for (int64_t j = i + 1; j < rank; ++j)
+      for (int64_t j = i + 1; j < rank; ++j) {
         stride *= gridShape[j];
+      }
       Value contrib =
           arith::MulIOp::create(rewriter, loc, toI32(coords[i]), cst(stride));
       tileIdx = arith::AddIOp::create(rewriter, loc, tileIdx, contrib);
@@ -1203,19 +1204,16 @@ static Value computeRawElementOffset(RankedTensorType blockType,
 /// Emit the common L1 pointer setup: get_read_ptr or get_write_ptr, then
 /// reinterpret_cast to the appropriate L1 typed pointer.
 static std::pair<Value, Value>
-emitL1PtrAndOffset(Value cb, Value originalBlock,
-                   RankedTensorType blockType, ValueRange coords,
-                   unsigned elemWidth, ConversionPatternRewriter &rewriter,
-                   Location loc) {
+emitL1PtrAndOffset(Value cb, Value originalBlock, RankedTensorType blockType,
+                   ValueRange coords, unsigned elemWidth,
+                   ConversionPatternRewriter &rewriter, Location loc) {
   bool fromWait = isBlockFromCBWait(originalBlock);
   Value baseAddr =
-      fromWait
-          ? ttk::GetReadPtrOp::create(rewriter, loc, cb).getResult()
-          : ttk::GetWritePtrOp::create(rewriter, loc, cb).getResult();
+      fromWait ? ttk::GetReadPtrOp::create(rewriter, loc, cb).getResult()
+               : ttk::GetWritePtrOp::create(rewriter, loc, cb).getResult();
 
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), elemWidth);
-  Value l1Ptr =
-      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, baseAddr);
+  Value l1Ptr = ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, baseAddr);
 
   Value offset = computeRawElementOffset(blockType, coords, rewriter, loc);
   return {l1Ptr, offset};
@@ -1229,12 +1227,14 @@ resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
                        ConversionPatternRewriter &rewriter, Location loc,
                        const TypeConverter *typeConverter) {
   auto cb = getCBFromView(adaptedBlock);
-  if (succeeded(cb))
+  if (succeeded(cb)) {
     return cb;
+  }
 
   Value origCB = getAttachedCB(originalBlock);
-  if (!origCB)
+  if (!origCB) {
     return failure();
+  }
 
   return utils::convertTTLCBToTTKernel(origCB, rewriter, loc, typeConverter);
 }
@@ -1278,19 +1278,18 @@ struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
     auto cb = resolveCBForRawElement(adaptor.getBlock(), op.getBlock(),
                                      rewriter, loc, this->getTypeConverter());
     if (failed(cb)) {
-      return rewriter.notifyMatchFailure(
-          op, "block does not trace to a CB");
+      return rewriter.notifyMatchFailure(op, "block does not trace to a CB");
     }
 
     auto [l1Ptr, offset] =
-        emitL1PtrAndOffset(*cb, op.getBlock(), blockType,
-                           adaptor.getCoords(), elemWidth, rewriter, loc);
+        emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
+                           elemWidth, rewriter, loc);
 
     Value loaded =
         ttk::LoadFromL1Op::create(rewriter, loc, intTy, l1Ptr, offset);
 
-    auto viewCast = UnrealizedConversionCastOp::create(rewriter, loc,
-                                                       scalarTy, loaded);
+    auto viewCast =
+        UnrealizedConversionCastOp::create(rewriter, loc, scalarTy, loaded);
     rewriter.replaceOp(op, viewCast.getResult(0));
     return success();
   }
@@ -1311,8 +1310,7 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
     auto cb = resolveCBForRawElement(adaptor.getBlock(), op.getBlock(),
                                      rewriter, loc, this->getTypeConverter());
     if (failed(cb)) {
-      return rewriter.notifyMatchFailure(
-          op, "block does not trace to a CB");
+      return rewriter.notifyMatchFailure(op, "block does not trace to a CB");
     }
 
     Value intVal = materializeIntBits(adaptor.getValue(), intTy, rewriter, loc);
@@ -1322,8 +1320,8 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
     }
 
     auto [l1Ptr, offset] =
-        emitL1PtrAndOffset(*cb, op.getBlock(), blockType,
-                           adaptor.getCoords(), elemWidth, rewriter, loc);
+        emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
+                           elemWidth, rewriter, loc);
 
     ttk::StoreToL1Op::create(rewriter, loc, intVal, l1Ptr, offset);
     rewriter.eraseOp(op);
@@ -1362,8 +1360,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // until the tile ops lowering phase. Raw element access ops are lowered here
   // despite carrying the DataMovement trait.
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
-    if (llvm::isa<RawElementReadOp, RawElementWriteOp>(op))
+    if (llvm::isa<RawElementReadOp, RawElementWriteOp>(op)) {
       return false;
+    }
     return tt::ttl::isTileComputeOp(op) ||
            op->hasTrait<TTLDataMovementOpTrait>();
   });
@@ -1436,8 +1435,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering>(
-      typeConverter, &ctx);
+               RawElementReadLowering, RawElementWriteLowering>(typeConverter,
+                                                                &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

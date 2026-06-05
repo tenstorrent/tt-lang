@@ -78,8 +78,8 @@ def kv_cache_update_kernel(inp, out):
 # CHECK-LABEL: func.func @dm_write
 # CHECK: ttl.raw_element_read
 # CHECK: ttl.raw_element_read
-# CHECK: arith.cmpf oeq
 # CHECK: ttl.raw_element_write
+# CHECK: arith.cmpf oeq
 # CHECK: ttl.raw_element_write
 
 # =============================================================================
