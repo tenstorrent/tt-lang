@@ -44,17 +44,21 @@ constexpr unsigned kMaxPipeScheduleCycleNotes = 8;
 // Module state collected before the analysis runs and updated during it.
 //===----------------------------------------------------------------------===//
 
+/// A dataflow buffer wait and the launch-node domain where it executes.
 struct WaitUse {
   CBWaitOp op;
   LaunchNodeDomain domain;
   int64_t cbIndex;
 };
 
+/// Return true if `copyOp` publishes a destination dataflow buffer slot for a
+/// pipe receive.
 bool isPipeReceiveCopy(CopyOp copyOp) {
   return mlir::isa<PipeType>(copyOp.getSrc().getType()) &&
          getAttachedCB(copyOp.getDst());
 }
 
+/// Trace a `ttl.wait` transfer handle back to its receive-side pipe copy.
 std::optional<CopyOp> findDefiningPipeReceiveCopy(Value value) {
   llvm::SmallPtrSet<Value, 16> seen;
   return traceTransferHandleSource<std::optional<CopyOp>>(
@@ -69,8 +73,10 @@ std::optional<CopyOp> findDefiningPipeReceiveCopy(Value value) {
       seen);
 }
 
+/// Pipe synchronization event used by the wait-for graph verifier.
 enum class PipeEventKind { Send, ReceivePost, ReceiveWait };
 
+/// One pipe synchronization event on the launch-node domain where it executes.
 struct PipeEvent {
   Operation *op = nullptr;
   PipeType pipeType;
@@ -91,6 +97,7 @@ struct ModuleState : LaunchNodeDomainState {
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, unsigned> pipeEventIndices;
 
+  /// Record pipe sends and receive posts from `ttl.copy` operations.
   void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain) {
     PipeEvent event;
     event.op = copyOp.getOperation();
@@ -121,6 +128,8 @@ struct ModuleState : LaunchNodeDomainState {
     pipeEvents[it->second] = event;
   }
 
+  /// Record a receive completion wait and verify that it is
+  /// destination-guarded.
   void recordPipeWaitEvent(WaitOp waitOp, const LaunchNodeDomain &domain,
                            Operation *unanalyzableOp) {
     std::optional<CopyOp> copyOp = findDefiningPipeReceiveCopy(waitOp.getXf());
@@ -284,6 +293,8 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
   }
 }
 
+/// Verify that a `ttl.pipenet_scope` body only executes on nodes participating
+/// in at least one selected PipeNet role.
 void verifyPipeNetScope(PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
                         const PipeNetScopeLaunchNodeDomains &scope,
                         ModuleState &state) {
@@ -313,6 +324,8 @@ void verifyPipeNetScope(PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
                    /*unanalyzableOp=*/nullptr, msg, scope.roles, state);
 }
 
+/// Dispatch the generic launch-domain callback to the checks that care about
+/// a specific operation kind.
 void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
                           Operation *unanalyzableOp, ModuleState &state) {
   TypeSwitch<Operation *>(op)
@@ -362,17 +375,20 @@ void verifyCBWaits(ModuleState &state) {
 }
 
 enum class PipeScheduleNodeKind { Send, ReceivePost, ReceiveWait };
+
 enum class PipeScheduleEdgeKind {
   ProgramOrder,
   ReceivePostEnablesSend,
   SendCompletesReceive
 };
 
+/// Directed wait-for edge in the pipe schedule graph.
 struct PipeScheduleEdge {
   unsigned successor;
   PipeScheduleEdgeKind kind;
 };
 
+/// Pipe synchronization event specialized to one launch node.
 struct PipeScheduleNode {
   Operation *op;
   PipeType pipeType;
@@ -383,12 +399,16 @@ struct PipeScheduleNode {
 
 using PipeIdentity =
     std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
+
 using PipeCoordIdentity =
     std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                int64_t, int64_t>;
+
 using PipeNodeIdentity = std::tuple<Operation *, int64_t, int64_t, int64_t>;
+
 using ProgramPointIdentity = std::tuple<Operation *, int64_t, int64_t>;
 
+/// Return a stable identity for one pipe endpoint relation.
 PipeIdentity getPipeIdentity(PipeType pipeType) {
   return {pipeType.getPipeNetId(), pipeType.getSrcX(),
           pipeType.getSrcY(),      pipeType.getDstStartX(),
@@ -396,6 +416,7 @@ PipeIdentity getPipeIdentity(PipeType pipeType) {
           pipeType.getDstEndY()};
 }
 
+/// Return a stable identity for one pipe endpoint relation at one launch node.
 PipeCoordIdentity getPipeCoordIdentity(PipeType pipeType,
                                        LaunchNodeCoord coord) {
   auto [pipeNetId, srcX, srcY, dstStartX, dstEndX, dstStartY, dstEndY] =
@@ -404,11 +425,13 @@ PipeCoordIdentity getPipeCoordIdentity(PipeType pipeType,
           dstStartY, dstEndY, coord.x, coord.y};
 }
 
+/// Return a stable identity for one schedule node in the wait-for graph.
 PipeNodeIdentity getPipeNodeIdentity(Operation *op, LaunchNodeCoord coord,
                                      PipeScheduleNodeKind kind) {
   return {op, coord.x, coord.y, static_cast<int64_t>(kind)};
 }
 
+/// Add or reuse the graph node for one pipe synchronization event.
 unsigned
 addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
                     llvm::DenseMap<PipeNodeIdentity, unsigned> &nodeIds,
@@ -422,6 +445,7 @@ addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
   return it->second;
 }
 
+/// Add a directed graph edge unless the same typed edge already exists.
 void addPipeScheduleEdge(SmallVectorImpl<PipeScheduleNode> &nodes,
                          unsigned predecessor, unsigned successor,
                          PipeScheduleEdgeKind kind) {
@@ -433,6 +457,7 @@ void addPipeScheduleEdge(SmallVectorImpl<PipeScheduleNode> &nodes,
   }
 }
 
+/// Find any directed cycle in the pipe schedule graph.
 std::optional<SmallVector<unsigned>>
 findPipeScheduleCycle(ArrayRef<PipeScheduleNode> nodes) {
   SmallVector<unsigned> stack;
@@ -471,6 +496,7 @@ findPipeScheduleCycle(ArrayRef<PipeScheduleNode> nodes) {
   return std::nullopt;
 }
 
+/// Return the first edge kind between two schedule nodes, if present.
 std::optional<PipeScheduleEdgeKind>
 getPipeScheduleEdgeKind(ArrayRef<PipeScheduleNode> nodes, unsigned predecessor,
                         unsigned successor) {
@@ -482,6 +508,7 @@ getPipeScheduleEdgeKind(ArrayRef<PipeScheduleNode> nodes, unsigned predecessor,
   return std::nullopt;
 }
 
+/// Return true if a reported cycle contains the requested typed edge.
 bool cycleContainsEdge(ArrayRef<PipeScheduleNode> nodes,
                        ArrayRef<unsigned> cycle, unsigned predecessor,
                        unsigned successor, PipeScheduleEdgeKind kind) {
@@ -498,6 +525,7 @@ bool cycleContainsEdge(ArrayRef<PipeScheduleNode> nodes,
   return false;
 }
 
+/// Return true if a section of a reported cycle is entirely program order.
 bool cycleHasProgramOrderPath(ArrayRef<PipeScheduleNode> nodes,
                               ArrayRef<unsigned> cycle,
                               unsigned startCycleIndex,
@@ -514,6 +542,7 @@ bool cycleHasProgramOrderPath(ArrayRef<PipeScheduleNode> nodes,
   return true;
 }
 
+/// Render a schedule node as a diagnostic phrase.
 std::string describePipeScheduleNode(const PipeScheduleNode &node) {
   std::string buffer;
   llvm::raw_string_ostream os(buffer);
@@ -532,6 +561,7 @@ std::string describePipeScheduleNode(const PipeScheduleNode &node) {
   return buffer;
 }
 
+/// Render a wait-for edge as a diagnostic explanation.
 std::string describePipeScheduleEdge(const PipeScheduleNode &predecessor,
                                      const PipeScheduleNode &successor,
                                      PipeScheduleEdgeKind kind) {
@@ -554,6 +584,8 @@ std::string describePipeScheduleEdge(const PipeScheduleNode &predecessor,
   return buffer;
 }
 
+/// Identify the common single-thread bug where a receive wait is ordered before
+/// the send that can complete it.
 std::optional<std::pair<unsigned, unsigned>>
 findReceiveWaitBeforeCompletingSend(ArrayRef<PipeScheduleNode> nodes,
                                     ArrayRef<unsigned> cycle) {
@@ -582,6 +614,8 @@ findReceiveWaitBeforeCompletingSend(ArrayRef<PipeScheduleNode> nodes,
   return std::nullopt;
 }
 
+/// Identify the common single-thread bug where a send is ordered before the
+/// receive post that enables it.
 std::optional<std::pair<unsigned, unsigned>>
 findSendBeforeReceivePost(ArrayRef<PipeScheduleNode> nodes,
                           ArrayRef<unsigned> cycle) {
@@ -610,6 +644,7 @@ findSendBeforeReceivePost(ArrayRef<PipeScheduleNode> nodes,
   return std::nullopt;
 }
 
+/// Attach a bounded set of edge notes for a reported schedule cycle.
 void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
                                 ArrayRef<PipeScheduleNode> nodes,
                                 ArrayRef<unsigned> cycle) {
@@ -631,6 +666,7 @@ void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
   }
 }
 
+/// Emit the most specific diagnostic available for a pipe schedule cycle.
 void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
                                      ArrayRef<unsigned> cycle,
                                      ModuleState &state) {

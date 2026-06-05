@@ -30,11 +30,13 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+/// Result of evaluating a predicate over the launch grid.
 struct LaunchNodeDomainResult {
   LaunchNodeDomain domain;
   Operation *unanalyzableOp = nullptr;
 };
 
+/// Domains reached by the true and false successors of a branch.
 struct BranchLaunchNodeDomains {
   LaunchNodeDomain thenDomain;
   LaunchNodeDomain elseDomain;
@@ -125,6 +127,7 @@ LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType) {
   return result;
 }
 
+/// Normalize integer-array attributes before verifier-specific interpretation.
 static bool readI64ArrayAttr(Operation *op, llvm::StringLiteral name,
                              SmallVectorImpl<int64_t> &values) {
   if (auto dense = op->getAttrOfType<DenseI64ArrayAttr>(name)) {
@@ -217,6 +220,8 @@ LogicalResult LaunchNodeDomainState::initialize(ModuleOp module) {
   return success();
 }
 
+/// Evaluate index expressions that are affine over `ttl.core_x`,
+/// `ttl.core_y`, and integer constants for one launch coordinate.
 static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
   if (value.getDefiningOp<CoreXOp>()) {
     return coord.x;
@@ -254,6 +259,8 @@ static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
   return std::nullopt;
 }
 
+/// Evaluate boolean predicates composed from statically evaluable comparisons
+/// and integer boolean operations for one launch coordinate.
 static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord) {
   if (value.getType().isInteger(1)) {
     if (auto constant = getConstantIntValue(value)) {
@@ -309,6 +316,8 @@ static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord) {
   return std::nullopt;
 }
 
+/// Return true if evaluating `value` can depend on the current launch
+/// coordinate.
 static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
   if (auto it = cache.find(value); it != cache.end()) {
     return it->second;
@@ -331,6 +340,7 @@ static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
   return result;
 }
 
+/// Compute the exact set of launch nodes satisfying an `affine.if` integer set.
 static LaunchNodeDomainResult
 getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
                             const LaunchNodeDomain &baseDomain) {
@@ -384,6 +394,7 @@ getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
   return {result, nullptr};
 }
 
+/// Find a source file location through common composed MLIR location wrappers.
 static FileLineColLoc findFileLineColLoc(Location loc) {
   if (auto fileLoc = mlir::dyn_cast<FileLineColLoc>(loc)) {
     return fileLoc;
@@ -429,6 +440,7 @@ Operation *pickEarlierBySourceLoc(Operation *lhs, Operation *rhs) {
   return lhsStr <= rhsStr ? lhs : rhs;
 }
 
+/// Split the current domain using an exactly known true-domain.
 static BranchLaunchNodeDomains
 exactBranches(const LaunchNodeDomain &trueDomain,
               const LaunchNodeDomain &current,
@@ -437,6 +449,8 @@ exactBranches(const LaunchNodeDomain &trueDomain,
           current.intersectWith(baseDomain.subtract(trueDomain))};
 }
 
+/// Recursively compute branch domains for PipeNet predicates and coordinate
+/// predicates while preserving unknown domains for unevaluable expressions.
 static BranchLaunchNodeDomains
 getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
                      const LaunchNodeDomainState &state,
@@ -488,6 +502,7 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
   return {result.thenDomain, result.elseDomain, nullptr};
 }
 
+/// Compute the true and false launch domains for a branch condition.
 static BranchLaunchNodeDomains
 getBranchLaunchNodeDomains(Value condition, const LaunchNodeDomain &current,
                            const LaunchNodeDomainState &state) {
@@ -495,6 +510,7 @@ getBranchLaunchNodeDomains(Value condition, const LaunchNodeDomain &current,
   return getBranchDomainsImpl(condition, current, state, coordCache);
 }
 
+/// Decode the PipeNet role metadata carried by one `ttl.pipenet_scope`.
 static std::optional<PipeNetScopeLaunchNodeDomains>
 getPipeNetScopeLaunchNodeDomains(PipeNetScopeOp scopeOp,
                                  LaunchNodeDomainState &state) {
