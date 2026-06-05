@@ -388,6 +388,72 @@ module {
 
 // -----
 
+// Write f32 value truncated to bf16: materializeIntBits handles arith.truncf
+// by extracting the upper 16 bits of the f32 encoding via shift+trunc.
+// CHECK-LABEL: func.func @write_tiled_bf16_truncf
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
+// CHECK-DAG: %[[SHIFTED:.*]] = arith.shrui %arg0, {{.*}} : i32
+// CHECK-DAG: %[[TRUNC:.*]] = arith.trunci %[[SHIFTED]] : i32 to i16
+// CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast<tt_l1_ptr uint32_t*>({{.*}}) : (i32) -> !ttkernel.l1_addr_ptr<16>
+// CHECK: ttkernel.store_to_l1(%[[TRUNC]], %[[L1]], %[[C0]]) : (i16, !ttkernel.l1_addr_ptr<16>, i32) -> ()
+module {
+  func.func @write_tiled_bf16_truncf(%a_int: i32)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %block = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %f32val = builtin.unrealized_conversion_cast %a_int : i32 to f32
+    %bf16val = arith.truncf %f32val : f32 to bf16
+    ttl.raw_element_write %block[%c0, %c0], %bf16val : tensor<1x1x!ttcore.tile<32x32, bf16>>, bf16
+    func.return
+  }
+}
+
+// -----
+
+// Write bf16 constant (2.5) to row-major block at (1, 3) -> offset = 1*8 + 3 = 11.
+// 2.5 bf16 = 0x4020 = 16416.
+// CHECK-LABEL: func.func @write_row_major_bf16
+// CHECK-DAG: %[[C11:.*]] = arith.constant 11 : i32
+// CHECK-DAG: %[[BITS:.*]] = arith.constant 16416 : i16
+// CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast<tt_l1_ptr uint32_t*>({{.*}}) : (i32) -> !ttkernel.l1_addr_ptr<16>
+// CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], %[[C11]]) : (i16, !ttkernel.l1_addr_ptr<16>, i32) -> ()
+module {
+  func.func @write_row_major_bf16()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 8], bf16, 2>
+    %block = ttl.cb_reserve %cb : <[4, 8], bf16, 2> -> tensor<4x8xbf16>
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %cst = arith.constant 2.500000e+00 : bf16
+    ttl.raw_element_write %block[%c1, %c3], %cst : tensor<4x8xbf16>, bf16
+    func.return
+  }
+}
+
+// -----
+
+// Read from multi-tile [1,3] grid at coordinate (0, 48).
+// col 48 spans into tile [0,1] (tileCol = 48/32 = 1), intraCol = 48 - 32 = 16.
+// tileIdx = 0*3 + 1 = 1. IntraRow=0, intraCol=16 -> face1 origin, faceOff = 256.
+// offset = 1*1024 + 256 = 1280.
+// CHECK-LABEL: func.func @read_multitile_offset
+// CHECK-DAG: %[[C1280:.*]] = arith.constant 1280 : i32
+// CHECK: ttkernel.load_from_l1({{.*}}, %[[C1280]]) : (!ttkernel.l1_addr_ptr, i32) -> i32
+module {
+  func.func @read_multitile_offset()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 3], !ttcore.tile<32x32, f32>, 2>
+    %block = ttl.cb_wait %cb : <[1, 3], !ttcore.tile<32x32, f32>, 2> -> tensor<1x3x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %c48 = arith.constant 48 : index
+    %val = ttl.raw_element_read %block[%c0, %c48] : tensor<1x3x!ttcore.tile<32x32, f32>> -> f32
+    func.return
+  }
+}
+
+// -----
+
 // Raw element access inside a loop with dynamic iteration variable.
 // CHECK-LABEL: func.func @read_in_loop
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)

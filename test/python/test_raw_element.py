@@ -177,13 +177,18 @@ def test_f32_constant_write(device):
 
 
 def test_bf16_constant_write(device):
-    """bf16 raw_element_write truncates an f32 literal and writes it."""
+    """bf16 raw_element_write truncates an f32 literal and writes it.
+
+    Uses 1.23456789 where bf16 truncation is lossy. The expected result
+    matches torch's bf16 truncation of the same value.
+    """
     out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
 
     bf16_constant_write_kernel(out)
     result = ttnn.to_torch(out)
 
-    assert result[0, 0].item() == pytest.approx(3.14, abs=5e-2)
+    expected_truncated = torch.tensor(3.14, dtype=torch.bfloat16).item()
+    assert result[0, 0].item() == pytest.approx(expected_truncated, abs=1e-3)
 
 
 # =============================================================================
@@ -436,3 +441,389 @@ def test_bf16_kv_cache(device):
     assert result[0, 1].item() == pytest.approx(3.0, abs=1e-2)
     assert result[0, 2].item() == pytest.approx(7.0, abs=1e-2)
     assert result[0, 3].item() == pytest.approx(5.0, abs=1e-2)
+
+
+# =============================================================================
+# Pattern 5: Min-pair via olt  (exercises operand-swap path in LowerScalarCmpF)
+# =============================================================================
+
+
+@ttl.operation(grid=(1, 1))
+def f32_min_pair_kernel(inp, out):
+    """Find the minimum of elements [0,0] and [0,1] via less-than comparison."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as rblk:
+            with out_dfb.reserve() as wblk:
+                a = ttl.raw_element_read(rblk, 0, 0)
+                b = ttl.raw_element_read(rblk, 0, 1)
+                ttl.raw_element_write(wblk, 0, 0, a)
+                ttl.raw_element_write(wblk, 0, 1, b)
+                if a < b:
+                    ttl.raw_element_write(wblk, 0, 0, a)
+                    ttl.raw_element_write(wblk, 0, 1, b)
+                else:
+                    ttl.raw_element_write(wblk, 0, 0, b)
+                    ttl.raw_element_write(wblk, 0, 1, a)
+
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+
+
+@ttl.operation(grid=(1, 1))
+def bf16_min_pair_kernel(inp, out):
+    """Find the minimum of bf16 elements [0,0] and [0,1] via less-than."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as rblk:
+            with out_dfb.reserve() as wblk:
+                a = ttl.raw_element_read(rblk, 0, 0)
+                b = ttl.raw_element_read(rblk, 0, 1)
+                ttl.raw_element_write(wblk, 0, 0, a)
+                ttl.raw_element_write(wblk, 0, 1, b)
+                if a < b:
+                    ttl.raw_element_write(wblk, 0, 0, a)
+                    ttl.raw_element_write(wblk, 0, 1, b)
+                else:
+                    ttl.raw_element_write(wblk, 0, 0, b)
+                    ttl.raw_element_write(wblk, 0, 1, a)
+
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+
+
+def test_f32_min_pair(device):
+    """f32 olt correctly places the minimum at [0,0]."""
+    inp_torch = _make_sort_pair_input(5.0, 2.0, torch.float32)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
+
+    f32_min_pair_kernel(inp, out)
+    result = ttnn.to_torch(out).float()
+
+    assert result[0, 0].item() == pytest.approx(2.0, abs=1e-5)
+    assert result[0, 1].item() == pytest.approx(5.0, abs=1e-5)
+
+
+def test_bf16_min_pair(device):
+    """bf16 olt correctly places the minimum at [0,0]."""
+    inp_torch = _make_sort_pair_input(5.0, 2.0, torch.bfloat16)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    bf16_min_pair_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert result[0, 0].item() == pytest.approx(2.0, abs=1e-2)
+    assert result[0, 1].item() == pytest.approx(5.0, abs=1e-2)
+
+
+# =============================================================================
+# Pattern 6: Filter not-equal  (exercises arith.cmpi ne / one predicate)
+# =============================================================================
+
+
+@ttl.operation(grid=(1, 1))
+def f32_filter_ne_kernel(inp, out):
+    """Replace zero-valued elements in row 0 with a sentinel (-1.0).
+
+    Copies row 0 from input to output. Positions equal to zero are
+    overwritten with -1.0. Exercises the arith.cmpf one (not-equal)
+    comparison path.
+    """
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as rblk:
+            with out_dfb.reserve() as wblk:
+                zero = 0.0
+                sentinel = -1.0
+                for c in range(8):
+                    val = ttl.raw_element_read(rblk, 0, c)
+                    if val != zero:
+                        ttl.raw_element_write(wblk, 0, c, val)
+                    else:
+                        ttl.raw_element_write(wblk, 0, c, sentinel)
+
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+
+
+@ttl.operation(grid=(1, 1))
+def bf16_filter_ne_kernel(inp, out):
+    """Replace zero-valued bf16 elements in row 0 with a sentinel.
+
+    Reads the reference zero value from row 1 col 0 and the sentinel
+    from row 1 col 1 to avoid f32/bf16 type mismatch with constants.
+    """
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as rblk:
+            with out_dfb.reserve() as wblk:
+                zero_ref = ttl.raw_element_read(rblk, 1, 0)
+                sentinel_ref = ttl.raw_element_read(rblk, 1, 1)
+                for c in range(8):
+                    val = ttl.raw_element_read(rblk, 0, c)
+                    if val != zero_ref:
+                        ttl.raw_element_write(wblk, 0, c, val)
+                    else:
+                        ttl.raw_element_write(wblk, 0, c, sentinel_ref)
+
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+
+
+def _make_filter_ne_input(dtype):
+    """Build input: row 0 = [3, 0, 7, 0, 1, 0, 5, 2] + zeros.
+
+    For bf16 variant: row 1 col 0 = 0.0 (reference zero),
+    row 1 col 1 = -1.0 (sentinel value).
+    """
+    t = torch.zeros(32, 32, dtype=dtype)
+    t[0, 0] = 3.0
+    t[0, 2] = 7.0
+    t[0, 4] = 1.0
+    t[0, 6] = 5.0
+    t[0, 7] = 2.0
+    t[1, 1] = -1.0
+    return t
+
+
+def test_f32_filter_ne(device):
+    """f32 not-equal replaces zero positions with sentinel."""
+    inp_torch = _make_filter_ne_input(torch.float32)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
+
+    f32_filter_ne_kernel(inp, out)
+    result = ttnn.to_torch(out).float()
+
+    assert result[0, 0].item() == pytest.approx(3.0, abs=1e-5)
+    assert result[0, 1].item() == pytest.approx(-1.0, abs=1e-5)
+    assert result[0, 2].item() == pytest.approx(7.0, abs=1e-5)
+    assert result[0, 3].item() == pytest.approx(-1.0, abs=1e-5)
+    assert result[0, 4].item() == pytest.approx(1.0, abs=1e-5)
+    assert result[0, 5].item() == pytest.approx(-1.0, abs=1e-5)
+    assert result[0, 6].item() == pytest.approx(5.0, abs=1e-5)
+    assert result[0, 7].item() == pytest.approx(2.0, abs=1e-5)
+
+
+def test_bf16_filter_ne(device):
+    """bf16 not-equal replaces zero positions with sentinel."""
+    inp_torch = _make_filter_ne_input(torch.bfloat16)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    bf16_filter_ne_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert result[0, 0].item() == pytest.approx(3.0, abs=1e-2)
+    assert result[0, 1].item() == pytest.approx(-1.0, abs=1e-2)
+    assert result[0, 2].item() == pytest.approx(7.0, abs=1e-2)
+    assert result[0, 3].item() == pytest.approx(-1.0, abs=1e-2)
+    assert result[0, 4].item() == pytest.approx(1.0, abs=1e-2)
+    assert result[0, 5].item() == pytest.approx(-1.0, abs=1e-2)
+    assert result[0, 6].item() == pytest.approx(5.0, abs=1e-2)
+    assert result[0, 7].item() == pytest.approx(2.0, abs=1e-2)
+
+
+# =============================================================================
+# Pattern 3 extended: Negative/mixed-sign/zero test vectors for sort-pair (4c)
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "a_val,b_val,expect_first,expect_second",
+    [
+        (-3.0, -1.0, -3.0, -1.0),
+        (-2.0, 4.0, -2.0, 4.0),
+        (4.0, -2.0, -2.0, 4.0),
+    ],
+    ids=["both-negative", "mixed-neg-pos", "mixed-pos-neg"],
+)
+def test_f32_sort_pair_signed(device, a_val, b_val, expect_first, expect_second):
+    """f32 sort-pair with negative and mixed-sign inputs."""
+    inp_torch = _make_sort_pair_input(a_val, b_val, torch.float32)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
+
+    f32_sort_pair_kernel(inp, out)
+    result = ttnn.to_torch(out).float()
+
+    assert result[0, 0].item() == pytest.approx(expect_first, abs=1e-5)
+    assert result[0, 1].item() == pytest.approx(expect_second, abs=1e-5)
+
+
+@pytest.mark.parametrize(
+    "a_val,b_val,expect_first,expect_second",
+    [
+        (-3.0, -1.0, -3.0, -1.0),
+        (-2.0, 4.0, -2.0, 4.0),
+        (4.0, -2.0, -2.0, 4.0),
+    ],
+    ids=["both-negative", "mixed-neg-pos", "mixed-pos-neg"],
+)
+def test_bf16_sort_pair_signed(device, a_val, b_val, expect_first, expect_second):
+    """bf16 sort-pair with negative and mixed-sign inputs (sign-magnitude guard)."""
+    inp_torch = _make_sort_pair_input(a_val, b_val, torch.bfloat16)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    bf16_sort_pair_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert result[0, 0].item() == pytest.approx(expect_first, abs=1e-1)
+    assert result[0, 1].item() == pytest.approx(expect_second, abs=1e-1)
+
+
+# =============================================================================
+# Pattern 7: Row-scan argmax  (4d -- realistic pattern with negative values)
+# =============================================================================
+
+
+@ttl.operation(grid=(1, 1))
+def f32_argmax_row_kernel(inp, out):
+    """Scan 32 elements in row 0, write the maximum to output [0,0]."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as rblk:
+            with out_dfb.reserve() as wblk:
+                max_val = ttl.raw_element_read(rblk, 0, 0)
+                for c in range(1, 32):
+                    val = ttl.raw_element_read(rblk, 0, c)
+                    if val > max_val:
+                        max_val = val
+                ttl.raw_element_write(wblk, 0, 0, max_val)
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+
+
+@ttl.operation(grid=(1, 1))
+def bf16_argmax_row_kernel(inp, out):
+    """Scan 32 bf16 elements in row 0, write the maximum to output [0,0]."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as rblk:
+            with out_dfb.reserve() as wblk:
+                max_val = ttl.raw_element_read(rblk, 0, 0)
+                for c in range(1, 32):
+                    val = ttl.raw_element_read(rblk, 0, c)
+                    if val > max_val:
+                        max_val = val
+                ttl.raw_element_write(wblk, 0, 0, max_val)
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+
+
+def _make_argmax_row_input(dtype):
+    """Build input with mixed positive/negative values in row 0.
+
+    Row 0: [-5, 3, -1, 8, -2, 0, 7, -4, 1, 6, ...zeros].
+    Expected max = 8.0 at index 3.
+    """
+    t = torch.zeros(32, 32, dtype=dtype)
+    row_vals = [-5.0, 3.0, -1.0, 8.0, -2.0, 0.0, 7.0, -4.0, 1.0, 6.0]
+    for i, v in enumerate(row_vals):
+        t[0, i] = v
+    return t
+
+
+def test_f32_argmax_row(device):
+    """f32 row-scan argmax finds the maximum across mixed-sign values."""
+    inp_torch = _make_argmax_row_input(torch.float32)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
+
+    f32_argmax_row_kernel(inp, out)
+    result = ttnn.to_torch(out).float()
+
+    assert result[0, 0].item() == pytest.approx(8.0, abs=1e-5)
+
+
+def test_bf16_argmax_row(device):
+    """bf16 row-scan argmax finds the maximum across mixed-sign values."""
+    inp_torch = _make_argmax_row_input(torch.bfloat16)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    bf16_argmax_row_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert result[0, 0].item() == pytest.approx(8.0, abs=1e-1)

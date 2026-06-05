@@ -705,9 +705,25 @@ def TTLLowerScalarCmpF
     Supported predicates:
     - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
     - `olt` -> same ops with swapped operands
-    - `oeq` / `one` -> `arith.cmpi eq` / `ne` on unsigned integer bit patterns
+    - `oeq` / `one` -> `arith.cmpi eq` / `ne` on integer bit patterns
 
-    Unsupported predicates emit an error diagnostic.
+    Unsupported predicates (`oge`, `ole`, and all unordered predicates
+    `uno`, `ueq`, `ugt`, `uge`, `ult`, `ule`, `une`) emit an error
+    diagnostic and signal pass failure.
+
+    Operand requirements: each `arith.cmpf` operand must resolve to an
+    integer bit pattern via one of two sources:
+    1. `unrealized_conversion_cast(iN -> fN)` from a prior
+       `RawElementReadLowering` (unwraps to the integer directly).
+    2. `arith.constant <float>` (materializes the IEEE-754 bit pattern
+       as an integer constant).
+
+    Operands from other sources (e.g., `arith.addf` results) cannot be
+    resolved and cause a diagnostic: "could not resolve float operand to
+    integer bit pattern".
+
+    Note: `oeq` and `one` use bitwise integer comparison, which is correct
+    for exact-match semantics but is not NaN-aware.
   }];
 
   let dependentDialects = [

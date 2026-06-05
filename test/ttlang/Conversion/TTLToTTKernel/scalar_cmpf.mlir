@@ -98,6 +98,38 @@ module {
 
 // -----
 
+// bf16 olt -> ttkernel.bfloat16_greater with swapped operands
+// CHECK-LABEL: func.func @cmpf_olt_bf16
+// CHECK-NOT: arith.cmpf
+// CHECK: ttkernel.bfloat16_greater(
+// CHECK-SAME: ) : (i16, i16) -> i1
+module {
+  func.func @cmpf_olt_bf16(%a_int: i16, %b_int: i16) -> i1 {
+    %a = builtin.unrealized_conversion_cast %a_int : i16 to bf16
+    %b = builtin.unrealized_conversion_cast %b_int : i16 to bf16
+    %cmp = arith.cmpf olt, %a, %b : bf16
+    return %cmp : i1
+  }
+}
+
+// -----
+
+// bf16 one -> arith.cmpi ne on i16
+// CHECK-LABEL: func.func @cmpf_one_bf16
+// CHECK-NOT: arith.cmpf
+// CHECK: arith.cmpi ne,
+// CHECK-SAME: : i16
+module {
+  func.func @cmpf_one_bf16(%a_int: i16, %b_int: i16) -> i1 {
+    %a = builtin.unrealized_conversion_cast %a_int : i16 to bf16
+    %b = builtin.unrealized_conversion_cast %b_int : i16 to bf16
+    %cmp = arith.cmpf one, %a, %b : bf16
+    return %cmp : i1
+  }
+}
+
+// -----
+
 // bf16 oeq -> arith.cmpi eq on i16
 // CHECK-LABEL: func.func @cmpf_oeq_bf16
 // CHECK-NOT: arith.cmpf
