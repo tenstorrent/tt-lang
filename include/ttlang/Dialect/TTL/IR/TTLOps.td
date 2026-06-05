@@ -481,18 +481,21 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let summary = "Create a pipe for core-to-core communication";
   let description = [{
-    Creates a pipe that defines a communication channel from a source core to
-    one or more destination cores.
+    Creates a pipe that defines a transfer relation from a source core to
+    one or more receiver cores.
 
-    For unicast (single destination), only specify `dst(x, y)`.
-    For multicast (rectangular grid), specify `dst(x1, y1) to (x2, y2)`.
+    A point-to-point pipe has one receiver. A collective pipe has a receiver
+    set. The receiver-set syntax records the collective transfer contract; it
+    does not determine which TTKernel NOC operation is emitted later.
+    `isCollective = true` records a collective transfer contract when the
+    receiver set contains a single point.
 
     Example:
     ```mlir
-    // Unicast: (0,0) -> (1,0)
+    // Point-to-point: (0,0) -> (1,0)
     %p = ttl.create_pipe src(0, 0) dst(1, 0) : !ttl.pipe
 
-    // Multicast: (0,0) -> rectangular region (1,0)-(1,3)
+    // Collective: (0,0) -> receiver set (1,0)-(1,3)
     %p = ttl.create_pipe src(0, 0) dst(1, 0) to (1, 3) : !ttl.pipe
     ```
   }];
@@ -506,9 +509,10 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$pipeNetId,
     // Optional user-facing name for the owning PipeNet, used only to
     // render diagnostics in source-level terms (e.g.
-    // `mcast_a_net.is_active()` instead of `net_<id>.is_active()`).
+    // `a_pipe_net.is_active()` instead of `net_<id>.is_active()`).
     // No effect on op semantics.
-    OptionalAttr<StrAttr>:$pipeNetName
+    OptionalAttr<StrAttr>:$pipeNetName,
+    OptionalAttr<BoolAttr>:$isCollective
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
@@ -517,7 +521,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let hasVerifier = 1;
 
   let builders = [
-    // Builder for unicast pipe (single destination, pipeNetId = 0)
+    // Builder for a single-receiver pipe with pipeNetId = 0.
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstX, "int64_t":$dstY), [{
       build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);
@@ -538,7 +542,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
             $_builder.getI64IntegerAttr(dstEndX),
             $_builder.getI64IntegerAttr(dstEndY),
             $_builder.getI64IntegerAttr(pipeNetId),
-            /*pipeNetName=*/StringAttr());
+            /*pipeNetName=*/StringAttr(),
+            /*isCollective=*/BoolAttr());
     }]>
   ];
 }

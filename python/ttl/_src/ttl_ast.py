@@ -176,9 +176,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _set_var(self, var_name, value):
         # Capture PipeNet variable names so the verifier can render
-        # diagnostics in user-facing terms (e.g. `mcast_a_net.is_active()`
+        # diagnostics in user-facing terms (e.g. `a_pipe_net.is_active()`
         # instead of `net_0.is_active()`). Body-local PipeNet assignments
-        # are recorded here too — `mcast_a_net = ttl.PipeNet(a_pipes)`
+        # are recorded here too — `a_pipe_net = ttl.PipeNet(a_pipes)`
         # evaluates the RHS at trace time and stores the resulting object.
         from ..pipe import PipeNet
 
@@ -804,7 +804,7 @@ class TTLGenericCompiler(TTCompilerBase):
         `pipe_net_name`, when provided, becomes the `pipeNetName` attr
         on `ttl.create_pipe` and renders in verifier diagnostics
         verbatim. Callers pass the user's Python variable name
-        (e.g. `mcast_a_net`) recovered from `_pipe_net_names`.
+        (e.g. `a_pipe_net`) recovered from `_pipe_net_names`.
 
         `source_file` / `source_line` come from the `PipeNet([...])`
         construction site captured by `PipeNet.__init__`. When set, the
@@ -825,6 +825,8 @@ class TTLGenericCompiler(TTCompilerBase):
         kwargs = {}
         if pipe_net_name:
             kwargs["pipe_net_name"] = pipe_net_name
+        if pipe.is_collective:
+            kwargs["is_collective"] = True
         if source_file and source_line is not None:
             kwargs["loc"] = Location.file(source_file, source_line, 1, self.ctx)
         return ttl.create_pipe(

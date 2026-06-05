@@ -14,6 +14,7 @@ PipeNet supports the spec's callback API:
 """
 
 import inspect
+import warnings
 from typing import Callable, List, Optional, Tuple, Union
 
 # Type aliases matching the spec
@@ -34,8 +35,8 @@ class SrcPipeIdentity:
 
     @property
     def dst(self) -> Union[CoreCoord, Tuple[CoreCoord, CoreCoord]]:
-        """Get destination: single coord for unicast, (start, end) for multicast."""
-        if self._pipe.is_unicast:
+        """Get destination: coord for point-to-point, range for collective."""
+        if self._pipe.is_point_to_point:
             return self._pipe.dst_start
         return (self._pipe.dst_start, self._pipe.dst_end)
 
@@ -61,19 +62,21 @@ class Pipe:
     """
     A pipe for core-to-core data transfer.
 
-    A pipe defines a communication channel from a source core to one or more
-    destination cores. When dst is a single coordinate, it's unicast.
-    When dst is a range (using slices), it's multicast.
+    A pipe defines a communication edge from a source core to one or more
+    destination cores. When dst is a single coordinate, the transfer contract
+    is point-to-point. When dst is a range, the transfer contract is
+    collective.
 
     Args:
         src: Source core coordinate (x, y)
-        dst: Destination - either CoreCoord for unicast or CoreRange for multicast
+        dst: Destination - either CoreCoord for point-to-point or CoreRange for
+            collective
 
     Example:
-        # Unicast from (0, 0) to (1, 0)
+        # Point-to-point transfer from (0, 0) to (1, 0)
         pipe = ttl.Pipe(src=(0, 0), dst=(1, 0))
 
-        # Multicast from (0, 0) to column 1, rows 0-3
+        # Collective transfer from (0, 0) to column 1, rows 0-3
         pipe = ttl.Pipe(src=(0, 0), dst=(1, slice(0, 4)))
     """
 
@@ -109,7 +112,7 @@ class Pipe:
         if s.step is not None and s.step != 1:
             raise ValueError(
                 f"dst {name} slice step must be 1 or None "
-                f"(strided multicast is not supported), got step={s.step}"
+                f"(strided collective destinations are not supported), got step={s.step}"
             )
 
     def _parse_dst(self):
@@ -119,38 +122,55 @@ class Pipe:
         if isinstance(dst, tuple) and len(dst) == 2:
             x, y = dst
             if isinstance(x, int) and isinstance(y, int):
-                # Unicast: dst is (x, y)
                 self.dst_start = (x, y)
                 self.dst_end = (x, y)
-                self._is_multicast = False
+                self._is_collective = False
             elif isinstance(x, int) and isinstance(y, slice):
                 self._validate_slice(y, "y")
                 self.dst_start = (x, y.start)
                 self.dst_end = (x, y.stop - 1)
-                self._is_multicast = True
+                self._is_collective = True
             elif isinstance(x, slice) and isinstance(y, int):
                 self._validate_slice(x, "x")
                 self.dst_start = (x.start, y)
                 self.dst_end = (x.stop - 1, y)
-                self._is_multicast = True
+                self._is_collective = True
             elif isinstance(x, slice) and isinstance(y, slice):
                 self._validate_slice(x, "x")
                 self._validate_slice(y, "y")
                 self.dst_start = (x.start, y.start)
                 self.dst_end = (x.stop - 1, y.stop - 1)
-                self._is_multicast = True
+                self._is_collective = True
             else:
                 raise ValueError(f"Invalid dst format: {dst}")
         else:
             raise ValueError(f"dst must be a 2-tuple, got {dst}")
 
     @property
+    def is_point_to_point(self) -> bool:
+        return not self._is_collective
+
+    @property
+    def is_collective(self) -> bool:
+        return self._is_collective
+
+    @property
     def is_unicast(self) -> bool:
-        return not self._is_multicast
+        warnings.warn(
+            "Pipe.is_unicast is deprecated; use Pipe.is_point_to_point",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.is_point_to_point
 
     @property
     def is_multicast(self) -> bool:
-        return self._is_multicast
+        warnings.warn(
+            "Pipe.is_multicast is deprecated; use Pipe.is_collective",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.is_collective
 
 
 def _pipe_to_pipe_use(pipe: Pipe):
@@ -158,7 +178,7 @@ def _pipe_to_pipe_use(pipe: Pipe):
     from ._pipenets import NodeCoord, NodeRange, PipeUse
 
     src = NodeCoord(coords=tuple(pipe.src))
-    if pipe.is_unicast:
+    if pipe.is_point_to_point:
         dst = NodeCoord(coords=tuple(pipe.dst_start))
     else:
         dst = NodeRange(
@@ -183,8 +203,8 @@ class PipeNet:
     `ttl-verify-pipenet-guards` pass accepts the program. Pipe coordinates
     should be sized from the operation's work extent, not the launch extent.
 
-    A PipeNet's pipes must all be the same kind (all unicast or all
-    multicast). The unicast and multicast handshakes use the PipeNet's
+    A PipeNet's pipes must all have the same transfer contract: all
+    point-to-point or all collective. The two contracts use the PipeNet's
     synchronization state with incompatible semantics; mixing them in one
     PipeNet can race when the same node participates in both. Use separate
     PipeNets.

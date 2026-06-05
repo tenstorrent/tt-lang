@@ -1267,7 +1267,7 @@ std::string describePipeScheduleNode(const PipeScheduleNode &node) {
     os << "send";
     break;
   case PipeScheduleNodeKind::ReceivePost:
-    os << "receive address publication";
+    os << "destination address publication";
     break;
   case PipeScheduleNodeKind::ReceiveWait:
     os << "receive completion";
@@ -1410,7 +1410,8 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
         << "this send waits for each destination to execute "
            "`ttl.copy(pipe, dst)`";
     diag.attachNote(postNode.op->getLoc())
-        << "this receive address publication is ordered after the send in the "
+        << "this destination address publication is ordered after the send in "
+           "the "
            "same data-movement thread";
     diag.attachNote(sendNode.op->getLoc())
         << "move `ttl.copy(pipe, dst)` before the dependent send, or place "
@@ -1431,10 +1432,10 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   state.sawError = true;
 }
 
-// Verify the hidden rendezvous introduced by receiver-advertised pipe lowering.
-// Receive-side ttl.copy publishes the address; ttl.wait on that handle waits
-// for completion. Modeling those as distinct events preserves async copy
-// semantics while rejecting wait-for cycles.
+// Verify the hidden pipe synchronization introduced by receiver-advertised pipe
+// lowering. Receive-side ttl.copy publishes the address; ttl.wait on that
+// handle waits for completion. Modeling those as distinct events preserves
+// async copy semantics while rejecting wait-for cycles.
 void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   SmallVector<PipeScheduleNode> nodes;
   SmallVector<std::pair<unsigned, PipeType>> sendNodes;

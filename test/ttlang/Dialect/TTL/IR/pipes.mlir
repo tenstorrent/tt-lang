@@ -1,18 +1,27 @@
 // RUN: ttlang-opt %s --split-input-file | FileCheck %s
 
-// CHECK-LABEL: func.func @create_pipe_unicast
+// CHECK-LABEL: func.func @create_pipe_point_to_point
 // CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : <src(0, 0) dst(1, 0) to(1, 0) net 0>
-func.func @create_pipe_unicast() {
+func.func @create_pipe_point_to_point() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   func.return
 }
 
 // -----
 
-// CHECK-LABEL: func.func @create_pipe_multicast
+// CHECK-LABEL: func.func @create_pipe_collective
 // CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : <src(0, 0) dst(1, 0) to(1, 3) net 0>
-func.func @create_pipe_multicast() {
+func.func @create_pipe_collective() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
+  func.return
+}
+
+// -----
+
+// CHECK-LABEL: func.func @create_pipe_single_receiver_collective
+// CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 {isCollective = true} : <src(0, 0) dst(1, 0) to(1, 0) net 0>
+func.func @create_pipe_single_receiver_collective() {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 {isCollective = true} : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   func.return
 }
 
