@@ -29,6 +29,7 @@
 #include "llvm/Support/Debug.h"
 
 #include <algorithm>
+#include <functional>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
@@ -109,7 +110,10 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
       end = lastOpIdx;
     }
 
-    typeToIntervals[cbVal.getType()].push_back({start, end, cbVal});
+    SmallVector<ValueLiveInterval> &intervals =
+        typeToIntervals[cbVal.getType()];
+    int64_t ordinal = static_cast<int64_t>(intervals.size());
+    intervals.push_back({start, end, cbVal, ordinal});
     valueToBindOp[cbVal] = bindOp;
   }
 
@@ -128,28 +132,12 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
 
   for (auto &entry : typeToIntervals) {
     SmallVector<ValueLiveInterval> &intervals = entry.second;
-    SmallVector<unsigned> intervalIndices;
-    intervalIndices.reserve(intervals.size());
-    for (unsigned index = 0, size = intervals.size(); index < size; ++index) {
-      intervalIndices.push_back(index);
-    }
 
-    SmallVector<SmallVector<unsigned>> colorUsers =
-        assignGreedyIntervalColors<unsigned>(
-            intervalIndices,
-            [&](unsigned lhsIndex, unsigned rhsIndex) {
-              const ValueLiveInterval &lhs = intervals[lhsIndex];
-              const ValueLiveInterval &rhs = intervals[rhsIndex];
-              if (lhs.start != rhs.start) {
-                return lhs.start < rhs.start;
-              }
-              if (lhs.end != rhs.end) {
-                return lhs.end < rhs.end;
-              }
-              return lhsIndex < rhsIndex;
-            },
-            [&](unsigned lhsIndex, unsigned rhsIndex) {
-              return intervalsOverlap(intervals[lhsIndex], intervals[rhsIndex]);
+    SmallVector<SmallVector<ValueLiveInterval>> colorUsers =
+        assignGreedyIntervalColors<ValueLiveInterval>(
+            intervals, std::less<ValueLiveInterval>(),
+            [](const ValueLiveInterval &lhs, const ValueLiveInterval &rhs) {
+              return intervalsOverlap(lhs, rhs);
             });
 
     DenseMap<Value, int32_t> slotAssignment;
@@ -158,8 +146,7 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
     for (auto indexedColor : llvm::enumerate(colorUsers)) {
       int32_t slotIndex = static_cast<int32_t>(indexedColor.index());
       maxSlot = std::max(maxSlot, slotIndex);
-      for (unsigned intervalIndex : indexedColor.value()) {
-        ValueLiveInterval &interval = intervals[intervalIndex];
+      for (const ValueLiveInterval &interval : indexedColor.value()) {
         slotAssignment[interval.value] = slotIndex;
 
         LLVM_DEBUG({

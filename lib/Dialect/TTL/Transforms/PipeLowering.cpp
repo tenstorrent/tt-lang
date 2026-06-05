@@ -28,6 +28,7 @@
 #include "llvm/ADT/SetVector.h"
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -187,37 +188,70 @@ getFirstPipeGlobalSemaphoreArgOffset(const PipeResourcePlan &info) {
   return info.sramScratch.bytes > 0 ? 1 : 0;
 }
 
-enum class ReadyCounterAddressStorage {
-  LocalSemaphore,
-  GlobalSemaphoreRuntimeArg,
-};
+namespace {
 
-/// Sender-ready counters can live either in local semaphore space or in
-/// GlobalSemaphore-backed SRAM. The storage kind disambiguates the index value.
-struct ReadyCounterAddressInfo {
-  ReadyCounterAddressStorage storage;
+/// Ready counter backed by a TTKernel local semaphore id.
+class LocalSemaphoreReadyCounterInfo final : public PipeReadyCounterInfo {
+public:
+  explicit LocalSemaphoreReadyCounterInfo(int64_t index) : index(index) {}
+
+  ReadyCounterAddressInfo
+  getAddressInfo(Operation *op,
+                 const PipeResourcePlan &pipeResourcePlan) const override {
+    (void)op;
+    (void)pipeResourcePlan;
+    return {ReadyCounterAddressStorage::LocalSemaphore, index};
+  }
+
+  void observe(PipeReadyCounterObserver &observer) const override {
+    observer.observeLocalSemaphore(index);
+  }
+
+private:
   int64_t index;
 };
+
+/// Ready counter backed by a GlobalSemaphore address passed as a runtime arg.
+class GlobalSemaphoreReadyCounterInfo final : public PipeReadyCounterInfo {
+public:
+  explicit GlobalSemaphoreReadyCounterInfo(int64_t index) : index(index) {}
+
+  ReadyCounterAddressInfo
+  getAddressInfo(Operation *op,
+                 const PipeResourcePlan &pipeResourcePlan) const override {
+    int64_t argIndex = getPipeRuntimeCommonArgIndex(
+        op, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) + index);
+    return {ReadyCounterAddressStorage::GlobalSemaphoreRuntimeArg, argIndex};
+  }
+
+  void observe(PipeReadyCounterObserver &observer) const override {
+    observer.observeGlobalSemaphore(index);
+  }
+
+private:
+  int64_t index;
+};
+
+} // namespace
+
+std::shared_ptr<const PipeReadyCounterInfo>
+PipeReadyCounterInfo::localSemaphore(int64_t senderReadyCounterSemIdx) {
+  return std::make_shared<LocalSemaphoreReadyCounterInfo>(
+      senderReadyCounterSemIdx);
+}
+
+std::shared_ptr<const PipeReadyCounterInfo>
+PipeReadyCounterInfo::globalSemaphore(int64_t globalSemaphoreIndex) {
+  return std::make_shared<GlobalSemaphoreReadyCounterInfo>(
+      globalSemaphoreIndex);
+}
 
 /// Resolve the resource-plan ready-counter allocation to the addressing form
 /// used by TTKernel lowering at this operation site.
 static ReadyCounterAddressInfo
 getReadyCounterAddressInfo(Operation *op, const PipeResourceInfo &pipeResource,
                            const PipeResourcePlan &pipeResourcePlan) {
-  if (auto *globalCounter =
-          std::get_if<PipeGlobalReadyCounterInfo>(&pipeResource.readyCounter)) {
-    int64_t argIndex = getPipeRuntimeCommonArgIndex(
-        op, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) +
-                globalCounter->globalSemaphoreIndex);
-    return ReadyCounterAddressInfo{
-        ReadyCounterAddressStorage::GlobalSemaphoreRuntimeArg, argIndex};
-  }
-
-  auto *localCounter =
-      std::get_if<PipeLocalReadyCounterInfo>(&pipeResource.readyCounter);
-  assert(localCounter && "unknown ready counter info");
-  return ReadyCounterAddressInfo{ReadyCounterAddressStorage::LocalSemaphore,
-                                 localCounter->senderReadyCounterSemIdx};
+  return pipeResource.getReadyCounter().getAddressInfo(op, pipeResourcePlan);
 }
 
 /// Build the L1 address for the sender-ready counter for either storage kind.
@@ -1002,12 +1036,31 @@ enum class PipeTransferRendezvousEventKind {
   Send,
 };
 
+struct PipeTransferAllocationUnit;
+
 /// One ordered post/send operation used to validate bounded rendezvous depth.
 struct PipeTransferRendezvousEvent {
+  static PipeTransferRendezvousEvent post(Operation *op) {
+    return {op, PipeTransferRendezvousEventKind::Post};
+  }
+
+  static PipeTransferRendezvousEvent send(Operation *op) {
+    return {op, PipeTransferRendezvousEventKind::Send};
+  }
+
   /// Pipe transfer post or send operation.
   Operation *op;
   /// Whether the operation creates or consumes one posted rendezvous phase.
   PipeTransferRendezvousEventKind kind;
+
+  /// Block-local operation order used for queue-depth validation.
+  bool operator<(const PipeTransferRendezvousEvent &rhs) const {
+    return op->isBeforeInBlock(rhs.op);
+  }
+
+  /// Update live post count for one event in block order.
+  LogicalResult updateLivePosts(const PipeTransferAllocationUnit &unit,
+                                int64_t &livePosts, int64_t maxLivePosts) const;
 };
 
 /// Allocation unit for source-node pipe rendezvous resources.
@@ -1046,6 +1099,17 @@ struct PipeTransferAllocationUnit {
 
   /// Assigned first-fit color within the source node's allocation group.
   int64_t resourceColor = 0;
+
+  /// Deterministic order used by first-fit interval coloring.
+  bool operator<(const PipeTransferAllocationUnit &rhs) const {
+    return std::make_tuple(interval.startOrdinal, pipe.srcX, pipe.srcY,
+                           pipe.pipeNetId, pipe.dstStartX, pipe.dstStartY,
+                           pipe.dstEndX, pipe.dstEndY, ordinal) <
+           std::make_tuple(rhs.interval.startOrdinal, rhs.pipe.srcX,
+                           rhs.pipe.srcY, rhs.pipe.pipeNetId,
+                           rhs.pipe.dstStartX, rhs.pipe.dstStartY,
+                           rhs.pipe.dstEndX, rhs.pipe.dstEndY, rhs.ordinal);
+  }
 };
 
 } // namespace
@@ -1060,6 +1124,25 @@ emitUnsupportedQueueDepth(Operation *op,
          << unit.pipe.dstEndX << ", " << unit.pipe.dstEndY
          << ") requires queue depth greater than 1; current lowering supports "
             "one live receive post per pipe before each send in a linear block";
+}
+
+LogicalResult PipeTransferRendezvousEvent::updateLivePosts(
+    const PipeTransferAllocationUnit &unit, int64_t &livePosts,
+    int64_t maxLivePosts) const {
+  switch (kind) {
+  case PipeTransferRendezvousEventKind::Post:
+    ++livePosts;
+    if (livePosts > maxLivePosts) {
+      return emitUnsupportedQueueDepth(op, unit);
+    }
+    return success();
+  case PipeTransferRendezvousEventKind::Send:
+    if (livePosts > 0) {
+      --livePosts;
+    }
+    return success();
+  }
+  llvm_unreachable("unknown pipe transfer rendezvous event kind");
 }
 
 static LogicalResult
@@ -1081,25 +1164,12 @@ validateMaxLivePostsPerLinearBlock(const PipeTransferAllocationUnit &unit,
       continue;
     }
 
-    llvm::sort(events, [](const PipeTransferRendezvousEvent &lhs,
-                          const PipeTransferRendezvousEvent &rhs) {
-      return lhs.op->isBeforeInBlock(rhs.op);
-    });
+    llvm::sort(events, std::less<PipeTransferRendezvousEvent>());
 
     int64_t livePosts = 0;
     for (const PipeTransferRendezvousEvent &event : events) {
-      switch (event.kind) {
-      case PipeTransferRendezvousEventKind::Post:
-        ++livePosts;
-        if (livePosts > maxLivePosts) {
-          return emitUnsupportedQueueDepth(event.op, unit);
-        }
-        break;
-      case PipeTransferRendezvousEventKind::Send:
-        if (livePosts > 0) {
-          --livePosts;
-        }
-        break;
+      if (failed(event.updateLivePosts(unit, livePosts, maxLivePosts))) {
+        return failure();
       }
     }
   }
@@ -1178,7 +1248,7 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
       }
       (*unit)->hasPost = true;
       (*unit)->rendezvousEvents.push_back(
-          {op, PipeTransferRendezvousEventKind::Post});
+          PipeTransferRendezvousEvent::post(op));
       updateIntervalStart((*unit)->interval, op, eventOrdinal, dominanceInfo);
       return WalkResult::advance();
     }
@@ -1191,7 +1261,7 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
       }
       (*unit)->hasSend = true;
       (*unit)->rendezvousEvents.push_back(
-          {op, PipeTransferRendezvousEventKind::Send});
+          PipeTransferRendezvousEvent::send(op));
       updateIntervalEnd((*unit)->interval, op, dominanceInfo);
       return WalkResult::advance();
     }
@@ -1214,19 +1284,6 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
   return units;
 }
 
-static bool
-isBeforeForDeterministicAllocation(const PipeTransferAllocationUnit &lhs,
-                                   const PipeTransferAllocationUnit &rhs) {
-  return std::make_tuple(lhs.interval.startOrdinal, lhs.pipe.srcX,
-                         lhs.pipe.srcY, lhs.pipe.pipeNetId, lhs.pipe.dstStartX,
-                         lhs.pipe.dstStartY, lhs.pipe.dstEndX, lhs.pipe.dstEndY,
-                         lhs.ordinal) <
-         std::make_tuple(rhs.interval.startOrdinal, rhs.pipe.srcX,
-                         rhs.pipe.srcY, rhs.pipe.pipeNetId, rhs.pipe.dstStartX,
-                         rhs.pipe.dstStartY, rhs.pipe.dstEndX, rhs.pipe.dstEndY,
-                         rhs.ordinal);
-}
-
 using SourceColorMap =
     llvm::MapVector<PipeSourceKey, SmallVector<SmallVector<unsigned>>>;
 
@@ -1245,8 +1302,8 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
         assignGreedyIntervalColors<unsigned>(
             entry.second,
             [&](unsigned lhsIndex, unsigned rhsIndex) {
-              return isBeforeForDeterministicAllocation(units[lhsIndex],
-                                                        units[rhsIndex]);
+              return std::less<PipeTransferAllocationUnit>()(units[lhsIndex],
+                                                             units[rhsIndex]);
             },
             [&](unsigned lhsIndex, unsigned rhsIndex) {
               return pipeTransferIntervalsOverlap(
@@ -1338,11 +1395,11 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
       assert(globalIt != globalIndexBySourceColor.end());
       assert(unit.resourceColor <
              static_cast<int64_t>(globalIt->second.size()));
-      pipeResource.readyCounter =
-          PipeGlobalReadyCounterInfo{globalIt->second[unit.resourceColor]};
+      pipeResource.readyCounter = PipeReadyCounterInfo::globalSemaphore(
+          globalIt->second[unit.resourceColor]);
     } else {
-      pipeResource.readyCounter = PipeLocalReadyCounterInfo{
-          firstSourceLocalReadyCounterSemIdx + unit.resourceColor};
+      pipeResource.readyCounter = PipeReadyCounterInfo::localSemaphore(
+          firstSourceLocalReadyCounterSemIdx + unit.resourceColor);
     }
     pipeResource.addressStorage.sramAddressTable =
         PipeSramAddressTableInfo{unit.resourceColor * kPipeAddressWordBytes};
@@ -1358,55 +1415,44 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
   return success();
 }
 
-/// TTKernel local semaphores are allocated as a contiguous prefix, so the
-/// required count is the highest referenced hardware semaphore id plus one.
-/// GlobalSemaphore-backed ready counters are common-arg resources and are
-/// counted separately.
-int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info) {
-  int64_t highestSemaphoreIdx = -1;
-  auto observe = [&](int64_t index) {
-    highestSemaphoreIdx = std::max(highestSemaphoreIdx, index);
+PipeResourceRequirements
+getPipeResourceRequirements(const PipeResourcePlan &info) {
+  struct RequirementsObserver final : PipeReadyCounterObserver {
+    int64_t highestSyncSemaphoreIndex = -1;
+    int64_t highestGlobalSemaphoreIndex = -1;
+
+    void observeLocalSemaphore(int64_t index) override {
+      highestSyncSemaphoreIndex = std::max(highestSyncSemaphoreIndex, index);
+    }
+
+    void observeGlobalSemaphore(int64_t index) override {
+      highestGlobalSemaphoreIndex =
+          std::max(highestGlobalSemaphoreIndex, index);
+    }
   };
 
+  RequirementsObserver observer;
   for (const auto &[pipeNetId, completion] : info.completionWaits) {
     (void)pipeNetId;
-    observe(completion.receiverCompletionSemIdx);
+    observer.observeLocalSemaphore(completion.receiverCompletionSemIdx);
   }
   for (const auto &[transferCreateOp, resource] : info.resources) {
     (void)transferCreateOp;
-    if (auto *localCounter =
-            std::get_if<PipeLocalReadyCounterInfo>(&resource.readyCounter)) {
-      observe(localCounter->senderReadyCounterSemIdx);
-    }
+    resource.getReadyCounter().observe(observer);
   }
-  return highestSemaphoreIdx + 1;
-}
 
-/// Host-side GlobalSemaphore descriptors are allocated densely from the
-/// compiler-assigned indices used by GlobalSemaphore-backed ready counters.
-int64_t getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info) {
-  int64_t highestGlobalSemaphoreIndex = -1;
-  for (const auto &[transferCreateOp, resource] : info.resources) {
-    (void)transferCreateOp;
-    if (auto *globalCounter =
-            std::get_if<PipeGlobalReadyCounterInfo>(&resource.readyCounter)) {
-      highestGlobalSemaphoreIndex = std::max(
-          highestGlobalSemaphoreIndex, globalCounter->globalSemaphoreIndex);
-    }
-  }
-  return highestGlobalSemaphoreIndex + 1;
-}
-
-/// SRAM scratch stores receiver-authored address-table entries only; ready and
-/// completion counters are accounted for by the semaphore count helpers.
-int64_t getRequiredPipeSramScratchBytes(const PipeResourcePlan &info) {
-  return info.sramScratch.bytes;
+  return PipeResourceRequirements{
+      observer.highestSyncSemaphoreIndex + 1,
+      observer.highestGlobalSemaphoreIndex + 1,
+      info.sramScratch.bytes,
+  };
 }
 
 /// Verify local semaphore ids before emitting ttkernel.get_semaphore. The
 /// highest-id owner is tracked only to make over-limit diagnostics actionable.
-LogicalResult verifyPipeResourcePlanFitsHardware(ModuleOp mod,
-                                                 const PipeResourcePlan &info) {
+LogicalResult
+verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
+                                   const PipeResourceRequirements &reqs) {
   enum class PipeSemaphoreKind {
     ReceiverCompletion,
     SenderReady,
@@ -1418,29 +1464,36 @@ LogicalResult verifyPipeResourcePlanFitsHardware(ModuleOp mod,
     std::optional<PipeKey> pipe;
   };
 
-  HighestSemaphore highest;
-  auto observe = [&](int64_t index, PipeSemaphoreKind kind,
-                     std::optional<PipeKey> pipe = std::nullopt) {
-    if (index > highest.index) {
-      highest = HighestSemaphore{index, kind, pipe};
+  struct SenderReadyObserver final : PipeReadyCounterObserver {
+    HighestSemaphore &highest;
+    const PipeKey &pipe;
+
+    SenderReadyObserver(HighestSemaphore &highest, const PipeKey &pipe)
+        : highest(highest), pipe(pipe) {}
+
+    void observeLocalSemaphore(int64_t index) override {
+      if (index > highest.index) {
+        highest = HighestSemaphore{index, PipeSemaphoreKind::SenderReady, pipe};
+      }
     }
   };
 
+  HighestSemaphore highest;
   for (const auto &[pipeNetId, completion] : info.completionWaits) {
     (void)pipeNetId;
-    observe(completion.receiverCompletionSemIdx,
-            PipeSemaphoreKind::ReceiverCompletion);
+    if (completion.receiverCompletionSemIdx > highest.index) {
+      highest =
+          HighestSemaphore{completion.receiverCompletionSemIdx,
+                           PipeSemaphoreKind::ReceiverCompletion, std::nullopt};
+    }
   }
   for (const auto &[transferCreateOp, resource] : info.resources) {
     (void)transferCreateOp;
-    if (auto *localCounter =
-            std::get_if<PipeLocalReadyCounterInfo>(&resource.readyCounter)) {
-      observe(localCounter->senderReadyCounterSemIdx,
-              PipeSemaphoreKind::SenderReady, resource.pipe);
-    }
+    SenderReadyObserver observer(highest, resource.pipe);
+    resource.getReadyCounter().observe(observer);
   }
 
-  int64_t requiredSemaphoreIds = getRequiredPipeSyncSemaphoreCount(info);
+  int64_t requiredSemaphoreIds = reqs.syncSemaphoreCount;
   if (requiredSemaphoreIds <= kMaxHardwareSemaphoreIds) {
     return success();
   }

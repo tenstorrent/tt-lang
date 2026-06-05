@@ -41,6 +41,19 @@ struct ValueLiveInterval {
   int64_t start = 0;
   int64_t end = 0;
   Value value;
+  /// Stable tie breaker for intervals with identical event ranges.
+  int64_t ordinal = 0;
+
+  /// Deterministic order used by first-fit interval coloring.
+  bool operator<(const ValueLiveInterval &rhs) const {
+    if (start != rhs.start) {
+      return start < rhs.start;
+    }
+    if (end != rhs.end) {
+      return end < rhs.end;
+    }
+    return ordinal < rhs.ordinal;
+  }
 };
 
 /// Return true when two half-open integer intervals overlap.

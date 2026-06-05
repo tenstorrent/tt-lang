@@ -1332,26 +1332,25 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   if (failed(buildPipeResourcePlan(mod, pipeResourcePlan))) {
     return failure();
   }
-  if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan))) {
+  PipeResourceRequirements pipeResourceRequirements =
+      getPipeResourceRequirements(pipeResourcePlan);
+  if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan,
+                                                pipeResourceRequirements))) {
     return failure();
   }
-  mod->setAttr(
-      kPipeSyncSemaphoreCountAttrName,
-      IntegerAttr::get(IntegerType::get(&ctx, 64),
-                       getRequiredPipeSyncSemaphoreCount(pipeResourcePlan)));
-  int64_t pipeGlobalSemaphoreCount =
-      getRequiredPipeGlobalSemaphoreCount(pipeResourcePlan);
-  if (pipeGlobalSemaphoreCount > 0) {
+  mod->setAttr(kPipeSyncSemaphoreCountAttrName,
+               IntegerAttr::get(IntegerType::get(&ctx, 64),
+                                pipeResourceRequirements.syncSemaphoreCount));
+  if (pipeResourceRequirements.globalSemaphoreCount > 0) {
     mod->setAttr(
         kPipeGlobalSemaphoreCountAttrName,
-        IntegerAttr::get(IntegerType::get(&ctx, 64), pipeGlobalSemaphoreCount));
+        IntegerAttr::get(IntegerType::get(&ctx, 64),
+                         pipeResourceRequirements.globalSemaphoreCount));
   }
-  int64_t pipeSramScratchBytes =
-      getRequiredPipeSramScratchBytes(pipeResourcePlan);
-  if (pipeSramScratchBytes > 0) {
-    mod->setAttr(
-        kPipeSramScratchBytesAttrName,
-        IntegerAttr::get(IntegerType::get(&ctx, 64), pipeSramScratchBytes));
+  if (pipeResourceRequirements.sramScratchBytes > 0) {
+    mod->setAttr(kPipeSramScratchBytesAttrName,
+                 IntegerAttr::get(IntegerType::get(&ctx, 64),
+                                  pipeResourceRequirements.sramScratchBytes));
   }
   // [Device 2.0] The kPipeSyncSemaphoreCountAttrName,
   // kPipeGlobalSemaphoreCountAttrName, and kPipeSramScratchBytesAttrName attrs
