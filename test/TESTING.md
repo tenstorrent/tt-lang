@@ -316,6 +316,54 @@ them for inspection:
 TTLANG_KEEP_GENERATED_KERNELS=1 pytest -v test/python/test_elementwise_ops.py
 ```
 
+### Isolating a bug in a large operation (bisect by reproducer)
+
+When a large multi-op kernel miscompiles or deadlocks, don't debug it whole.
+Bisect it into a small standalone `@ttl.operation` and change one construct at a
+time until the failure flips. Keep two anchors that differ by a single
+construct: a **passing** variant and a **failing** variant. The construct that
+flips the result is the trigger, and the pair is a ready-made bug reproducer.
+
+- **Grow from a known-good base** (preferred): start from a trivially-correct
+  op and add one element per step — an extra op, a reused SSA value, a
+  loop-carried recurrence, a second matmul — re-running on device after each.
+  Stop at the first step that fails.
+- **Or shrink from the failing kernel**: remove ops/DFBs until it passes.
+- Select the variant with an env var (`REPRO=...`) so one file holds both and
+  the diff is obvious. Avoid introducing unrelated back-pressure when isolating
+  (e.g. size an output DFB `block_count >= num_iters` so the output side never
+  stalls).
+
+Make device behavior legible:
+
+- `PYTHONUNBUFFERED=1` — without it, a redirected (`> log`) run is block
+  buffered, so the last printed line lags the real progress point and a hang
+  looks like it happened earlier than it did.
+- `TT_METAL_WATCHER=10` — detects on-device hangs and dumps per-core waypoints.
+  Waypoint suffix convention: `W` = **Wait** (blocked, e.g. `CRBW` =
+  `cb_reserve_back` wait), `D` = **Done** (passed it, e.g. `UABD`, `MWDD`). Only
+  `*W` waypoints are confirmed blocks; `*D` are completion markers, not stalls.
+- `TTLANG_COMPILE_ONLY=1` compiles and builds kernels but skips device
+  execution. If compile-only passes and the full run hangs, the bug is a
+  **runtime** deadlock, not compilation.
+- A balanced `cb_reserve`/`cb_push`/`cb_wait`/`cb_pop` schedule plus a hang that
+  does **not** clear when cross-thread `block_count` is raised points below the
+  circular-buffer layer (DST-register / `ttl.dst_section` scheduling) rather than
+  CB back-pressure.
+
+Device hygiene during a hang hunt: a killed or timed-out run leaves a stale chip
+lock, and the next run blocks on it — looking exactly like a fresh kernel hang.
+After any hang, kill the in-container python and clear the lock (and reset the
+device if needed):
+```bash
+pkill -9 -f python; rm -f /dev/shm/TT_UMD_LOCK.CHIP_IN_USE_0_PCIe
+tt-smi -r 0   # full reset if the device is wedged
+```
+
+This workflow produced the minimal reproducer in
+[#666](https://github.com/tenstorrent/tt-lang/issues/666) from an 8-core flash
+attention kernel.
+
 ## Environment Variables
 
 Several environment variables control compilation, debugging, profiling, and
