@@ -243,10 +243,15 @@ def test_flash_mla_decode(device):
 
 
 @pytest.mark.parametrize("ttnn_device", [{"worker_l1_size": 1430000}], indirect=True)
-def test_flash_mla_decode_fused(device):
+@pytest.mark.parametrize("sk", [1, 2])
+def test_flash_mla_decode_fused(device, sk):
     """The fully fused single-kernel MLA: q multicast, partials and merged
-    stats carried through DFB bridges (no inter-phase DRAM), one launch."""
+    stats carried through DFB bridges (no inter-phase DRAM), one launch.
+    Swept over the 1- and 2-tile compute chunk, the largest that fits one
+    fused kernel's L1."""
     from ttl.ops.flash_mla import make_flash_mla
+
+    n_chunks = (MAX_SEQ_LEN // N_CORES) // (sk * TILE)
 
     torch.manual_seed(42)
     scale = QK_HEAD_DIM ** -0.5
@@ -274,7 +279,7 @@ def test_flash_mla_decode_fused(device):
     flash = make_flash_mla(
         n_cols=N_CORES, B=1,
         PNHt=MLA_PNHt, DHt=MLA_DHt, vDHt=MLA_vDHt,
-        Sk_chunk_t=MLA_Sk_chunk_t, N_CHUNKS=MLA_N_CHUNKS, scale=scale,
+        Sk_chunk_t=sk, N_CHUNKS=n_chunks, scale=scale,
     )
     flash(q_d, k_d, v_d, norm_d)
 
