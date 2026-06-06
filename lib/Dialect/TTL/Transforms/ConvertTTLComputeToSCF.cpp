@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -24,8 +25,11 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
+
+#include <optional>
 
 #define DEBUG_TYPE "ttl-lower-to-loops"
 
@@ -86,6 +90,52 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   return success();
 }
 
+/// Return the initial mode declared by a reduction-capable `ttl.compute` when
+/// it can be lowered through packer L1 accumulation metadata. An inactive
+/// interface means the compute either is not an accumulation or requires a
+/// separate DST-only rule.
+static std::optional<AccumulationInitialMode>
+getL1AccumulationInitialMode(ComputeOp op) {
+  auto accumulation = cast<AccumulationScopeOpInterface>(op.getOperation());
+  if (!accumulation.isAccumulation()) {
+    return std::nullopt;
+  }
+
+  SmallVector<AccumulationCombiner> combiners =
+      accumulation.getAccumulationCombiners();
+  // TODO(#646): Use the shared combiner/strategy legality table when
+  // non-additive reduction combiners implement AccumulationScopeOpInterface.
+  if (!llvm::all_of(combiners, [](AccumulationCombiner combiner) {
+        return combiner == AccumulationCombiner::Add;
+      })) {
+    return std::nullopt;
+  }
+
+  SmallVector<AccumulationInitialMode> initialModes =
+      accumulation.getAccumulationInitialModes();
+  if (initialModes.size() != 1) {
+    return std::nullopt;
+  }
+  return initialModes.front();
+}
+
+/// Return true when L1 packer accumulation cannot represent the compute
+/// semantics, so the reduction must keep its current DST-resident lowering.
+static bool requiresDstAccumulation(ComputeOp op) {
+  if (op.containsOp<TileAccumulateAddOp>()) {
+    return true;
+  }
+  // TODO(#646): Route non-additive combiners through the accumulation strategy
+  // interface once max/min storage contracts are defined.
+  return op.getBody()
+      .walk([](TileReduceOp reduce) {
+        return reduce.getReduceType() == ReduceType::Max
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
 /// Generate parallel-outer / reduction-inner loop structure for accumulating
 /// computes. DstSectionOp wraps the reduction loop + stores so DST persists
 /// across reduction iterations.
@@ -93,15 +143,17 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 /// Structure:
 ///   for each parallel dim:
 ///     dst_section {
+///       <accumulator initialization, if required>
 ///       for each reduction dim:
-///         <tile ops from body>
+///         <tile ops from body, excluding stores and accumulator
+///         initialization>
 ///       <stores with placeholder tile + explicit dst_index>
 ///     }
 static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
     ArrayRef<Range> iterDomain, ArrayRef<AffineMap> indexingMaps,
     ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
-    ArrayRef<Value> upperBounds, ArrayRef<Value> steps) {
+    ArrayRef<Value> upperBounds, ArrayRef<Value> steps, int64_t scopeId) {
 
   // Separate parallel and reduction dim indices.
   SmallVector<unsigned> parallelDims, reductionDims;
@@ -142,11 +194,41 @@ static scf::LoopNest generateAccumulatingLoops(
   // Collect store ops and their dst_index from the compute body.
   Block &bodyBlock = op.getBody().front();
   SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
+  llvm::SmallPtrSet<Operation *, 4> accumulatorInitOps;
+  auto collectAccumulatorInitOps = [&](auto &&self, Value value) -> void {
+    Operation *definingOp = value.getDefiningOp();
+    if (!definingOp || definingOp->getBlock() != &bodyBlock ||
+        isa<IterIndexOp>(definingOp)) {
+      return;
+    }
+    if (definingOp->hasTrait<TTLAccumulatingOpTrait>()) {
+      return;
+    }
+    if (!accumulatorInitOps.insert(definingOp).second) {
+      return;
+    }
+    for (Value operand : definingOp->getOperands()) {
+      self(self, operand);
+    }
+  };
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       auto dstIdx = getConstantIntValue(store.getDstIndex());
       storeInfos.emplace_back(store,
                               dstIdx ? static_cast<int32_t>(*dstIdx) : 0);
+      continue;
+    }
+
+    auto accumulateAdd = dyn_cast<TileAccumulateAddOp>(&bodyOp);
+    if (!accumulateAdd) {
+      continue;
+    }
+
+    Operation *accumulatorDef = accumulateAdd.getAccumulator().getDefiningOp();
+    if (accumulatorDef && accumulatorDef->getBlock() == &bodyBlock &&
+        !accumulatorDef->hasTrait<TTLAccumulatingOpTrait>()) {
+      collectAccumulatorInitOps(collectAccumulatorInitOps,
+                                accumulateAdd.getAccumulator());
     }
   }
 
@@ -166,9 +248,23 @@ static scf::LoopNest generateAccumulatingLoops(
     return fullIVs;
   };
 
-  // Generate tile ops (excluding stores) inside the reduction loop body.
-  auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
-                                 ValueRange fullIVs) {
+  auto remapIndexValue = [&](OpBuilder &builder, Location valueLoc,
+                             IRMapping &mapping, Value value) -> Value {
+    if (mapping.contains(value)) {
+      return mapping.lookup(value);
+    }
+    if (auto constant = foldIndexToConstant(value)) {
+      return arith::ConstantIndexOp::create(builder, valueLoc, *constant);
+    }
+    return value;
+  };
+
+  auto cloneAccumulatorInits = [&](OpBuilder &builder, Location bodyLoc,
+                                   ValueRange fullIVs) -> IRMapping {
+    if (accumulatorInitOps.empty()) {
+      return IRMapping();
+    }
+
     size_t numInputs = op.getInputs().size();
     auto extractedInputs = extractTilesAtIndices(
         builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
@@ -179,7 +275,50 @@ static scf::LoopNest generateAccumulatingLoops(
     mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {
+      if (!accumulatorInitOps.contains(&bodyOp)) {
+        continue;
+      }
+      if (auto copyTile = dyn_cast<CopyTileOp>(&bodyOp)) {
+        // Accumulator setup moves outside the reduction loop. Recreate
+        // copy_tile so its indices are valid at the new insertion point.
+        SmallVector<Value> srcIndices;
+        for (Value index : copyTile.getSrcIndices()) {
+          srcIndices.push_back(
+              remapIndexValue(builder, bodyLoc, mapping, index));
+        }
+        auto clonedCopy = CopyTileOp::create(
+            builder, bodyLoc,
+            TypeRange{copyTile.getDstToken().getType(),
+                      copyTile.getDstTile().getType()},
+            mapping.lookupOrDefault(copyTile.getSrc()), srcIndices,
+            remapIndexValue(builder, bodyLoc, mapping, copyTile.getDstIndex()));
+        mapping.map(copyTile.getDstToken(), clonedCopy.getDstToken());
+        mapping.map(copyTile.getDstTile(), clonedCopy.getDstTile());
+        continue;
+      }
+
+      builder.clone(bodyOp, mapping);
+    }
+    return mapping;
+  };
+
+  // Generate tile ops (excluding stores and accumulator initialization) inside
+  // the reduction loop body.
+  auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
+                                 ValueRange fullIVs,
+                                 const IRMapping &baseMapping) {
+    size_t numInputs = op.getInputs().size();
+    auto extractedInputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
+    auto extractedOutputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
+
+    IRMapping mapping = baseMapping;
+    mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
+
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (isa<IterIndexOp, TileStoreOp>(&bodyOp) ||
+          accumulatorInitOps.contains(&bodyOp)) {
         continue;
       }
       builder.clone(bodyOp, mapping);
@@ -197,6 +336,13 @@ static scf::LoopNest generateAccumulatingLoops(
         OpBuilder secBuilder(&sectionBody,
                              Block::iterator(sectionBody.getTerminator()));
 
+        Value zeroIdx = arith::ConstantIndexOp::create(secBuilder, parLoc, 0);
+        SmallVector<Value> zeroReductionIVs(reductionDims.size(), zeroIdx);
+        SmallVector<Value> initIVs =
+            buildFullIVs(parallelIVs, zeroReductionIVs);
+        IRMapping accumulatorInitMapping =
+            cloneAccumulatorInits(secBuilder, parLoc, initIVs);
+
         // Inner: reduction loops.
         scf::LoopNest redNest = scf::buildLoopNest(
             secBuilder, parLoc, redLBs, redUBs, redSteps, ValueRange{},
@@ -204,7 +350,8 @@ static scf::LoopNest generateAccumulatingLoops(
                 ValueRange) -> scf::ValueVector {
               SmallVector<Value> fullIVs =
                   buildFullIVs(parallelIVs, reductionIVs);
-              generateTileOpsOnly(redBuilder, redLoc, fullIVs);
+              generateTileOpsOnly(redBuilder, redLoc, fullIVs,
+                                  accumulatorInitMapping);
               return {};
             });
 
@@ -214,6 +361,12 @@ static scf::LoopNest generateAccumulatingLoops(
           loop->setAttr(kTileLoopStrideAttrName,
                         parBuilder.getIndexAttr(domainStrides[origDim]));
           loop->setAttr(kReductionLoopAttrName, parBuilder.getUnitAttr());
+          loop->setAttr(
+              kL1AccInitialAttrName,
+              AccumulationInitialModeAttr::get(
+                  loop.getContext(), AccumulationInitialMode::Overwrite));
+          loop->setAttr(kL1AccScopeIdAttrName,
+                        parBuilder.getI64IntegerAttr(scopeId));
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
@@ -234,8 +387,6 @@ static scf::LoopNest generateAccumulatingLoops(
           for (auto [idx, dim] : llvm::enumerate(parallelDims)) {
             fullIVs[dim] = parallelIVs[idx];
           }
-          Value zeroIdx =
-              arith::ConstantIndexOp::create(storeBuilder, parLoc, 0);
           for (unsigned dim : reductionDims) {
             fullIVs[dim] = zeroIdx;
           }
@@ -273,13 +424,17 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   /// Outermost tile loops from subblocked computes that need unrolling.
   /// Populated during pattern application, consumed by runOnOperation.
   SmallVector<scf::ForOp> &loopsToUnroll;
+  /// Pass-local allocator for explicit L1 accumulation scope ids.
+  int64_t &nextL1AccScopeId;
   bool dstAccumulation;
   bool useBlockMatmul;
 
   LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll,
-                      bool dstAccumulation, bool useBlockMatmul)
+                      int64_t &nextL1AccScopeId, bool dstAccumulation,
+                      bool useBlockMatmul)
       : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll),
-        dstAccumulation(dstAccumulation), useBlockMatmul(useBlockMatmul) {}
+        nextL1AccScopeId(nextL1AccScopeId), dstAccumulation(dstAccumulation),
+        useBlockMatmul(useBlockMatmul) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -306,17 +461,25 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     }
 
     bool isSubblocked = op->hasAttr(kFullLinStridesAttrName);
-    bool isAccumulating = op.getBody()
-                              .walk([](Operation *inner) {
-                                return inner->hasTrait<TTLAccumulatingOpTrait>()
-                                           ? WalkResult::interrupt()
-                                           : WalkResult::advance();
-                              })
-                              .wasInterrupted();
+    std::optional<AccumulationInitialMode> l1InitialMode =
+        getL1AccumulationInitialMode(op);
+    bool mustUseDstAccumulation = requiresDstAccumulation(op);
+    bool isAccumulating = l1InitialMode.has_value() || mustUseDstAccumulation;
 
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {
       iterTypes.push_back(mlir::cast<StringAttr>(attr));
+    }
+
+    std::optional<int64_t> reductionScopeId;
+    for (StringAttr iterType : iterTypes) {
+      if (iterType.getValue() == "reduction") {
+        // All reduction loops emitted for one compute participate in the same
+        // packer L1 accumulation region. The explicit id prevents later
+        // lowering from inferring grouping from dataflow buffer placement.
+        reductionScopeId = nextL1AccScopeId++;
+        break;
+      }
     }
 
     // Block-level matmul: a single DstSectionOp with the matmul_block call,
@@ -350,26 +513,18 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
             });
       }
 
-      // DST accumulation: reorder loops (parallel-outer, reduction-inner)
-      // so DST persists across reduction iterations. Required for
-      // reduce_max because L1 accumulation (pack_reconfig_l1_acc)
-      // accumulates via addition, which is only correct for sum.
-      // TODO: reduce_max without dst-accumulation could use a compiler-
-      // introduced intermediate DFB for L1-based max accumulation.
+      // DST accumulation reorders loops so DST persists across reduction
+      // iterations. Max reductions and tile_accumulate_add have no L1 packer
+      // representation in this lowering, so they remain DST-resident
+      // independent of the reduction strategy option.
       if (isAccumulating) {
-        bool hasReduceMax =
-            op.getBody()
-                .walk([](TileReduceOp reduce) {
-                  return reduce.getReduceType() == ReduceType::Max
-                             ? WalkResult::interrupt()
-                             : WalkResult::advance();
-                })
-                .wasInterrupted();
-        if (dstAccumulation || hasReduceMax) {
+        if (dstAccumulation || mustUseDstAccumulation) {
+          assert(reductionScopeId &&
+                 "accumulating compute must have a reduction iterator");
           usedDstAccumulation = true;
-          return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
-                                           indexingMaps, iterTypes, lowerBounds,
-                                           upperBounds, steps);
+          return generateAccumulatingLoops(
+              rewriter, loc, op, iterDomain, indexingMaps, iterTypes,
+              lowerBounds, upperBounds, steps, *reductionScopeId);
         }
       }
 
@@ -416,8 +571,13 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         int64_t stride =
             fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
         loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
-        if (iterTypes[idx].getValue() == "reduction") {
+        if (iterTypes[idx].getValue() == "reduction" && l1InitialMode) {
           loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+          loop->setAttr(kL1AccInitialAttrName,
+                        AccumulationInitialModeAttr::get(loop.getContext(),
+                                                         *l1InitialMode));
+          loop->setAttr(kL1AccScopeIdAttrName,
+                        rewriter.getI64IntegerAttr(*reductionScopeId));
         }
       }
     }
@@ -644,9 +804,11 @@ struct TTLLowerToLoopsPass
     // The pattern collects outermost tile loops from subblocked computes
     // into loopsToUnroll for step 2.
     SmallVector<scf::ForOp> loopsToUnroll;
+    int64_t nextL1AccScopeId = getNextL1AccScopeId(func);
     RewritePatternSet patterns(func.getContext());
     patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll,
-                                      dstAccumulation, useBlockMatmul);
+                                      nextL1AccScopeId, dstAccumulation,
+                                      useBlockMatmul);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();

@@ -228,6 +228,7 @@ class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
 def TTL_ComputeOp : TTL_Op<"compute", [
     AttrSizedOperandSegments,
     SingleBlockImplicitTerminator<"YieldOp">,
+    DeclareOpInterfaceMethods<TTL_AccumulationScopeOpInterface>,
     DeclareOpInterfaceMethods<DestinationStyleOpInterface>,
     IndexingMapOpInterface,
     DeclareOpInterfaceMethods<TilingInterface,
@@ -319,16 +320,55 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
-                 "PipeNetScopeOp"]>]> {
+                 "PipeNetScopeOp", "AccumulationScopeOp"]>]> {
   let summary = "Terminate a TTL region body";
   let description = [{
     `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
-    `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. It carries no
-    operands and produces no results; the trait
+    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`, and
+    `ttl.accumulation_scope`. It carries no operands and produces no results; the trait
     `SingleBlockImplicitTerminator` auto-inserts it.
   }];
   let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+}
+
+//===----------------------------------------------------------------------===//
+// Accumulation scope
+//===----------------------------------------------------------------------===//
+
+def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
+    AttrSizedOperandSegments,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    RecursiveMemoryEffects,
+    NoRegionArguments,
+    DeclareOpInterfaceMethods<TTL_AccumulationScopeOpInterface>
+  ]> {
+  let summary = "Structured accumulation scope";
+  let description = [{
+    `ttl.accumulation_scope` records an accumulation policy for one or more
+    destination tensors. The operation does not prescribe whether the accumulated value is
+    stored in DST, a dataflow buffer, or another target-specific storage
+    mechanism.
+
+    The `combiners` and `initial_modes` attributes contain one entry per
+    output. `explicit_inits` contains one operand for each output whose initial
+    mode is `explicit`, in output order.
+  }];
+
+  let arguments = (ins
+    Variadic<AnyRankedTensor>:$outputs,
+    Variadic<AnyRankedTensor>:$explicit_inits,
+    ArrayAttr:$combiners,
+    ArrayAttr:$initial_modes
+  );
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    `outs` `(` $outputs `:` type($outputs) `)`
+    (`inits` `(` $explicit_inits^ `:` type($explicit_inits) `)`)?
+    $body attr-dict
+  }];
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -952,6 +992,28 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
   let assemblyFormat = "$input `into` `dst` `[` $dst_index `]` attr-dict `:` type($input) `->` type($result)";
 }
 
+def TTL_TileAccumulateAddOp : TTL_TileOp<"tile_accumulate_add",
+    [TTL_TileBinaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_AccumulatingOpTrait, TTL_DstResultOpTrait,
+     AllTypesMatch<["accumulator", "contribution", "result"]>]> {
+  let summary = "In-DST additive tile recurrence";
+  let description = [{
+    Adds `contribution` into `accumulator` and writes the result back to the
+    accumulator DST register. The accumulator operand and result use the same
+    DST slot; the contribution operand is read from its own DST slot.
+
+    This operation represents recurrence semantics explicitly. It is distinct
+    from `ttl.tile_add`, whose result may be assigned to a different DST slot.
+  }];
+  let arguments = (ins TTL_TileType:$accumulator, TTL_TileType:$contribution,
+                       Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat =
+      "$accumulator `,` $contribution `into` `dst` `[` $dst_index `]` "
+      "attr-dict `:` type($accumulator) `,` type($contribution) "
+      "`->` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
@@ -1444,9 +1506,9 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     (accumulate). During `convert-ttl-to-compute`, this op is transformed
     into a `ttl.tile_store` inside the compute body.
 
-    When `accumulate` is set, the enclosing loop is annotated for L1
-    packer accumulation so that each iteration adds to the existing L1
-    value instead of overwriting.
+    When `accumulate` is set, accumulation scope formation records the
+    enclosing loop's accumulation policy before concrete storage strategy
+    lowering.
 
     Example:
     ```mlir

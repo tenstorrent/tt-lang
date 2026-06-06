@@ -1,49 +1,460 @@
 # Accumulating Compute Lowering
 
 This document describes how the tt-lang compiler lowers operations that
-accumulate results across multiple invocations — reductions, matmul
-K-accumulation, and user-written `+=` loops — onto the Tenstorrent
+accumulate results across multiple invocations - reductions, matmul
+K-accumulation, and user-written `+=` loops - onto the Tenstorrent
 compute engines.
 
 ## Overview
 
-Tenstorrent hardware supports two accumulation mechanisms, and the
-compiler maps each accumulation source to one of them.
+An accumulation in tt-lang can be compiled in three ways with the same
+program semantics and different thread-local data movement:
 
-**DST register accumulation.** The compute engines hold partial results
-in a destination register file (DST) that persists across tile ops as
-long as it stays acquired (not released). Per-tile accumulation (matmul
-K-reduction, reduce across a reduction dim) happens inside one
-acquire/release cycle.
+1. Keep the partial value in the destination register file (DST). This
+   avoids intermediate L1 traffic while the computation fits in one acquired
+   DST lifetime, and matches the preferred form in handwritten tt-blaze
+   kernels when live DST capacity is sufficient.
+2. Add packed output tiles into L1 through the packer. This uses hardware L1
+   accumulation for additive recurrences that must persist across separate DST
+   lifetimes.
+3. Carry the partial value through an explicit compiler-managed dataflow
+   buffer (DFB). This is the general lowering, but additive recurrences pay an
+   L1 wait/store cost on each iteration. Handwritten tt-blaze kernels use
+   scratch DFBs for intermediates that must be reused by later compute stages
+   or cannot remain live in one DST lifetime.
 
-**L1 packer accumulation.** The pack unit can add each packed tile to
-the existing L1 value instead of overwriting, controlled by
-`pack_reconfig_l1_acc(1)` (enable) and `pack_reconfig_l1_acc(0)`
-(disable). Accumulation across separate acquire/release cycles uses
-this mechanism because DST is released between iterations.
+DST residency and L1 packer accumulation use hardware accumulation
+mechanisms. Explicit DFB state is the general lowering for recurrences that
+cannot use either optimized form, such as values reused by later compute
+stages or, in future conditional accumulation support, updates that require
+explicit `has_value` state across dynamic control flow.
 
-The compiler surface covers three accumulation sources:
+The compiler recognizes these accumulation forms and initial-state cases:
 
 - `reduce_tile` and `matmul_tiles` accumulate per-tile over a reduction
-  dim. The `dst-accumulation` pass option on `ttl-lower-to-loops`
-  selects DST (loops reordered so DST spans the reduction) or L1 (loops
-  in declaration order with per-iteration pack acc). `reduce_max` is
-  L1-incompatible (L1 acc only adds) and is always lowered to DST acc.
+  dim. Additive reductions can use DST or L1 packer accumulation.
+  `reduce_max` remains DST-resident because L1 packer accumulation is
+  additive.
 
-- User-written `out_blk += ...` loops lower to L1 accumulation. The
-  `TTKernelInsertL1Accumulation` pass brackets each annotated loop
-  group with `pack_reconfig_l1_acc` calls.
+- User-written `out_blk += ...` loops lower to L1 packer accumulation.
+  The lowering records whether iteration 0 overwrites or accumulates onto
+  a prior output value. The store-then-accumulate pattern
+  (`out_blk.store(v); for K-1: out_blk += ...`) is represented as
+  accumulation onto an existing value.
 
-- The store-then-accumulate pattern (`out_blk.store(v); for K-1: out_blk
-  += ...`) is lowered via L1 acc with a modified guard sequence: the
-  pre-group reconfig enables L1 acc so iteration 0 accumulates onto the
-  prior-pack value rather than overwriting it. `precededByNonAccumulatingPack`
-  detects the preceding non-accumulating pack.
+- Loop-carried additive recurrences inside an `scf.for` (`acc = acc +
+  x` or `acc = x + acc`, plain tensor target) use semantic accumulation
+  IR before general tensor state materialization. Strategy lowering keeps
+  them in DST when legal and otherwise uses L1 packer accumulation seeded
+  by a pre-loop store.
 
-The rest of this document details each piece: `DstSectionOp` as the IR
-primitive that keeps DST live, the choice between DST and L1
-accumulation, the emitted loop structure, per-op init insertion, and
-the L1-acc guard placement (standard and prior-value variants).
+- General tensor recurrences that are not recognized as additive
+  accumulation use explicit compiler-managed DFB state.
+
+The rest of this document details each piece: semantic accumulation
+scopes, loop-carried tensor state elimination
+(`ttl-materialize-loop-state`), `DstSectionOp` as the IR primitive that
+keeps DST live, the choice between DST, L1, and explicit DFB state
+materialization, the emitted loop structure, per-op init insertion, and L1
+accumulation reconfiguration placement.
+
+## Implemented Semantics and Deferred Features
+
+The current implementation supports additive accumulation with two optimized
+storage strategies, while general tensor state still uses explicit DFB
+materialization:
+
+- `auto`, `dst`, and `l1-pack` strategy selection for tensor additive
+  recurrences;
+- L1 packer metadata lowering for explicit DFB `+=`;
+- reduction-capable `ttl.compute` lowering through the same accumulation
+  metadata contract;
+- metadata-driven TTKernel L1 reconfiguration insertion using
+  `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`.
+
+Deferred features are tracked separately:
+
+- #640: optimize additive tensor recurrences with post-loop pure users;
+- #645: add source-level accumulation strategy hints;
+- #646: support non-additive accumulation combiners;
+- #648: define nested and conditional accumulation scope semantics;
+- #649: replace `maximize-dst` with granular compiler options;
+- #650: synthesize explicit DFB state fallback for unsupported scopes.
+- #652: add explicit matmul K-accumulation strategy selection.
+
+The current design preserves these invariants:
+
+- `ttl.accumulation_scope` is semantic and storage-agnostic. It does not
+  encode DST, L1 packer, or explicit DFB state.
+- Conditional rejection belongs in `ttl-form-accumulation-scopes`, not in
+  the `ttl.accumulation_scope` verifier. The verifier remains structural.
+- `ttl.l1_acc_loop` plus `ttl.l1_acc_initial` is static first-update
+  lowering metadata, not the full accumulation model.
+- TTKernel passes must not infer accumulation semantics from neighboring DFB
+  or pack operations.
+- Future conditional support should add update-site metadata or explicit
+  lowered state transitions before TTKernel L1 insertion.
+
+## Semantic Accumulation IR
+
+`ttl.accumulation_scope` records accumulation semantics before storage
+selection. It has:
+
+- `outputs`: destination tensor views governed by the accumulation policy;
+- `explicit_inits`: initial tensors for outputs whose mode is `explicit`;
+- `combiners`: one accumulation combiner enum attribute per output
+  (`0 : i32` is add);
+- `initial_modes`: one accumulation initial-mode enum attribute per output
+  (`0 : i32` is overwrite, `1 : i32` is accumulate_existing, and
+  `2 : i32` is explicit);
+- `body`: a single-block region containing the loop or operations that
+  produce accumulated values.
+
+The op has `RecursiveMemoryEffects`; its effects are the effects of the
+body. It produces no tensor results. Tensor recurrence scopes are consumed
+before general loop-state materialization, so value-style accumulation is a
+deferred feature rather than part of the current op contract.
+
+The verifier is structural:
+
+- combiner count equals output count;
+- initial-mode count equals output count;
+- explicit modes have matching explicit init operands;
+- explicit init types match their corresponding outputs;
+- nested `ttl.accumulation_scope` is rejected until #648 defines nesting
+  semantics.
+
+The verifier does not prove that stores target the declared outputs or that
+control flow reaches an update. Those are nonlocal formation and strategy
+lowering responsibilities.
+
+Initial modes have these meanings:
+
+- `overwrite`: the first executed contribution defines the accumulator
+  value. Current L1 lowering supports only the static case where that first
+  contribution is unconditionally ordered.
+- `accumulate_existing`: an existing value in the output location
+  participates in the result. For L1 packer accumulation, iteration 0 must
+  pack with L1 accumulation enabled.
+- `explicit`: an explicit init operand seeds the accumulator, independent of
+  the final output location. Tensor additive recurrences use this mode.
+
+Tensor recurrence scope form:
+
+```mlir
+ttl.accumulation_scope
+    outs(%out_view : tensor<...>)
+    inits(%init : tensor<...>)
+    {combiners = [0 : i32],
+     initial_modes = [2 : i32]} {
+  %result = scf.for ... iter_args(%acc = %init) -> tensor<...> {
+    %next = ttl.add %acc, %contribution : tensor<...>
+    scf.yield %next : tensor<...>
+  }
+  ttl.store %result, %out_view : tensor<...>, tensor<...>
+  ttl.yield
+}
+```
+
+Explicit DFB accumulation scope form:
+
+```mlir
+ttl.accumulation_scope
+    outs(%out_view : tensor<...>)
+    {combiners = [0 : i32],
+     initial_modes = [0 : i32]} {
+  scf.for ... {
+    ttl.store %value, %out_view {accumulate} : ...
+  }
+  ttl.yield
+}
+```
+
+`AccumulationScopeOpInterface` is implemented by `ttl.accumulation_scope`
+and reduction-capable `ttl.compute`. Consumers call `isAccumulation()` before
+reading outputs, combiners, initial modes, and the accumulation body. This
+keeps reduction L1 metadata and `ttl.accumulation_scope` L1 metadata on one
+contract without forcing reductions to be wrapped in `ttl.accumulation_scope`.
+
+## Pipeline Ownership
+
+The TTL-to-TTKernel pipeline handles accumulation in this order:
+
+1. `ttl-form-accumulation-scopes{kind=tensor}` runs before
+   `ttl-materialize-loop-state`. It forms semantic scopes around recognized
+   single-output additive tensor recurrences and records `explicit` initial
+   mode.
+
+2. `ttl-lower-accumulation-scopes{kind=tensor}` consumes those scopes. It
+   selects DST or L1 packer accumulation according to
+   `accumulation-strategy`. It removes the semantic wrapper before general
+   loop-state materialization.
+
+3. `ttl-materialize-loop-state` handles remaining tensor `scf.for`
+   iter_args through compiler-allocated DFB state. Additive recurrences
+   recognized by scope formation do not reach this pass.
+
+4. DFB canonicalization and synchronization run:
+   `ttl-insert-intermediate-dfbs`, `ttl-insert-copy-wait`, and
+   `ttl-auto-sync`.
+
+5. `ttl-form-accumulation-scopes{kind=dfb}` forms semantic scopes around
+   user-written accumulating stores. It computes `overwrite` versus
+   `accumulate_existing` before any TTKernel conversion.
+
+6. `ttl-lower-accumulation-scopes{kind=dfb}` consumes DFB scopes and emits
+   L1 packer metadata. DFB scopes always lower to L1 in the current
+   implementation because the source construct updates an output block, not a
+   loop-carried tensor value.
+
+7. Compute conversion, DST assignment, optional subblocking, and
+   `ttl-lower-to-loops` run. Reduction-capable `ttl.compute` uses
+   `AccumulationScopeOpInterface` to emit L1 metadata when it lowers to the
+   L1 reduction form.
+
+8. After TTL-to-TTKernel conversion, `ttkernel-insert-l1-accumulation`
+   consumes L1 metadata and inserts `pack_reconfig_l1_acc` operations.
+
+Formation and lowering are adjacent for each scope kind. Do not insert
+canonicalization or CSE between them; the scope body is a temporary semantic
+region, not a long-lived optimization boundary.
+
+## Strategy Selection and Legality
+
+The public `accumulation-strategy` option currently accepts `auto`, `dst`,
+and `l1-pack`. It controls tensor recurrence scopes only. Explicit DFB
+accumulation scopes always lower to L1 packer metadata; `dst` is ignored for
+DFB scopes because DFB state cannot reside in DST.
+
+| Source form | `auto` | `dst` | `l1-pack` |
+| --- | --- | --- | --- |
+| Tensor additive recurrence | DST if legal, otherwise L1 packer accumulation | require DST; diagnose if illegal | use L1 packer accumulation |
+| Explicit DFB `+=` | L1 packer accumulation | L1 packer accumulation | L1 packer accumulation |
+| Additive reductions in `ttl.compute` | Existing `maximize-dst` / `dst-accumulation` policy | Existing `maximize-dst` / `dst-accumulation` policy | Existing `maximize-dst` / `dst-accumulation` policy |
+
+Tensor DST lowering requires the normalized additive recurrence form:
+
+- exactly one output and one explicit init;
+- add combiner and `explicit` initial mode;
+- output from `ttl.cb_reserve`;
+- a top-level `scf.for` followed by the final non-accumulating `ttl.store`;
+- recurrence dataflow matching `acc = acc + contribution` or
+  `acc = contribution + acc`;
+- no post-loop pure users between the loop and final store, except removable
+  reserve/attach operations. #640 tracks fused epilogue-style support.
+
+Tensor L1 packer lowering creates a non-accumulating store of the explicit
+init before the loop and per-iteration accumulating stores into the same
+output reservation. The generated loop carries
+`ttl.l1_acc_initial = accumulate_existing` because the pre-loop store has
+already materialized the accumulator baseline in L1.
+
+Reduction L1 lowering is additive only. `reduce_max` and
+`ttl.tile_accumulate_add` have no L1 packer representation in this lowering,
+so they remain DST-resident. #646 tracks non-additive combiner support and
+the shared legality table for combiner and strategy pairs.
+
+Unsupported L1 output formats are diagnosed in
+`TTKernelInsertL1Accumulation`, where the final pack output type is visible.
+The supported formats are Float32, Float16, BFloat16, Int32, and UInt8,
+matching the current TTKernel lowering allowlist.
+
+## Unsupported Structured Control Flow
+
+Conditional DFB `+=` is rejected in `ttl-form-accumulation-scopes`. The
+current L1 metadata represents a static first-update policy: iteration 0
+overwrites or accumulates according to `ttl.l1_acc_initial`. It cannot
+represent "the first dynamically executed update overwrites, later executed
+updates accumulate" when a pack may be skipped by an `scf.if`.
+
+Future conditional support (#648) should add explicit update-site metadata
+or lowered state transitions before TTKernel L1 insertion. The required
+semantic state is:
+
+```
+if update_executes:
+    if has_value:
+        accumulate contribution
+    else:
+        overwrite with contribution
+        has_value = true
+```
+
+Initial modes define the initial `has_value` state: true for `explicit` and
+`accumulate_existing`, false for `overwrite`.
+
+Nested `ttl.accumulation_scope` is rejected by the op verifier until #648
+defines how nested scopes compose. Nested independent L1 packer scopes need
+explicit state transitions on scope entry and exit; current TTKernel
+metadata supports one active packer L1 accumulation lifecycle per lexical
+loop nest.
+
+## L1 Packer Metadata Contract
+
+Strategy lowering and reduction lowering use these attributes after semantic
+scope consumption:
+
+- `ttl.l1_acc_loop`: marks a user or compiler-generated loop containing L1
+  packer accumulation stores.
+- `ttl.reduction_loop`: marks a loop generated from reduction-capable
+  `ttl.compute` that lowered to L1 packer accumulation.
+- `ttl.l1_acc_initial`: records `overwrite` or `accumulate_existing`.
+- `ttl.l1_acc_scope_id`: groups loops that belong to one semantic
+  accumulation lifecycle.
+
+`TTKernelInsertL1Accumulation` validates that annotated loops have both
+`ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`. It groups adjacent loops by
+scope id, validates pack output formats, and inserts packer reconfiguration
+operations. It does not infer initial mode from neighboring DFB
+reserve/push/store operations or from TTKernel pack order.
+
+Nested annotated loops with different scope ids are rejected until #648 adds
+explicit packer state transitions.
+
+## Loop-Carried Tensor State and Accumulation Scopes
+
+A Python `for` loop that reassigns a tensor variable read on the next
+iteration (`acc = acc + x`, `acc = relu(acc)`) compiles to an `scf.for`
+with a ranked-tensor `iter_arg`. The accumulation pipeline first forms
+`ttl.accumulation_scope` around recognized additive recurrences. General
+tensor recurrences that remain after strategy lowering are eliminated by
+`ttl-materialize-loop-state` before compute lowering.
+
+### Why Tensor `iter_args`, Not DFBs Directly
+
+The frontend could emit DFB state directly from the AST and skip the
+tensor `iter_arg` form. It does not, for the following reasons.
+
+**Layering.** A rebound Python loop variable is a value carried to the
+next iteration; a tensor `scf.for` iter_arg is its direct translation.
+Emitting DFBs would force the AST walker to choose DFB identifiers, block
+counts, and slot flow control, which are backend concerns.
+
+**Strategy decided in MLIR.** Additive-vs-general classification depends
+on use-def structure - the single add, its single use, the consumer
+store, and the reserve feeding it - which
+`matchAdditiveTensorAccumulation` matches reliably and the AST cannot.
+The frontend stays a correctness-only component that identifies
+loop-carried variables; MLIR scope formation and strategy lowering
+choose DST, L1 packer accumulation, or general DFB state.
+
+**Shared state materialization.** Additive, elementwise, and tuple
+recurrences are all tensor iter_args at the frontend. Additive
+recurrences are consumed by accumulation strategy lowering, while
+remaining tensor state uses the same reserve/store/wait/attach helper
+code as `ttl-insert-intermediate-dfbs` through `DFBMaterialization`.
+
+Tensor-level loops also remain subject to standard canonicalization, CSE,
+and dead-code elimination, which do not apply to side-effecting DFB ops.
+
+### Why Not One-Shot Bufferization
+
+Upstream MLIR eliminates tensor `scf.for` iter_args with one-shot
+bufferization: `scf::ForOp`'s `BufferizableOpInterface` implementation
+threads each tensor iter_arg through the loop as a memref and drops the
+tensor result. tt-lang does not bufferize tensors to memref. On-chip a
+tensor value lives in the DST register file or in a dataflow buffer (DFB)
+accessed through `cb_reserve`/`store`/`cb_wait`/`attach_cb`; neither is a
+memref. This pass eliminates the tensor iter_arg by realizing the carried
+state as DFB state. Additive recurrences are handled before this pass by
+`ttl.accumulation_scope` lowering because strategy selection must choose
+between DST residency and L1 packer accumulation. Generic bufferization
+would emit memref load/store and would not produce either hardware
+accumulation mechanism. The pass therefore implements iter_arg
+elimination directly against DFB ops. It does not reuse bufferization's
+conflict/aliasing analysis. Instead, it relies on the double-buffer invariant
+described below.
+
+### Lowering Strategies
+
+Additive tensor recurrences use `ttl-form-accumulation-scopes` followed
+by `ttl-lower-accumulation-scopes`.
+
+**DST strategy:** when the recurrence satisfies the DST legality rules,
+the lowering creates a reduction-style `ttl.compute` with
+`ttl.tile_accumulate_add`. The generated `ttl.dst_section` spans the
+reduction loop, so the accumulator stays in the destination register file
+until the final store. This requires one acquire/release cycle around the
+full reduction; releasing DST inside the reduction would lose the register
+resident partial value.
+
+**L1 packer strategy:** when DST is not selected, the lowering creates a
+pre-loop non-accumulating store of the initial value and per-iteration
+accumulating stores into the same output reservation. The loop is
+annotated with `ttl.l1_acc_loop`, `ttl.l1_acc_initial =
+accumulate_existing`, and `ttl.l1_acc_scope_id`. After TTKernel lowering,
+`TTKernelInsertL1Accumulation` converts that metadata into
+`pack_reconfig_l1_acc(1)` before the accumulating stores and
+`pack_reconfig_l1_acc(0)` after them. With L1 accumulation enabled, the
+packer adds each packed DST tile to the existing L1 tile instead of
+overwriting it.
+
+**General recurrence:** any tensor iter_arg that remains after
+accumulation scope lowering uses compiler-allocated double-buffered DFB
+state. The init is stored before the loop; each iteration consumes the
+current state (`cb_wait`/`attach_cb`), computes, and produces the next
+state (`cb_reserve`/`store`); a post-loop `cb_wait`/`attach_cb` yields
+the final state value that replaces the loop result. This is not a
+hardware accumulation optimization; it is the fallback representation for
+recurrences that cannot be expressed as DST or L1 packer accumulation.
+
+### Invariants
+
+Preconditions:
+
+- Runs on `func.func` nested in a `ModuleOp`, once per `scf.for`.
+- Additive scope formation matches only when all of the following hold;
+  any tensor iter_arg failing them remains for general DFB state
+  materialization:
+  - the loop result has exactly one use, a non-accumulate `ttl.store`;
+  - the yielded value is a single-use `ttl.add` in the loop body;
+  - the iter_arg is one add operand and has no other use;
+  - the other operand (the contribution) is not the iter_arg;
+  - the store's destination is a `cb_reserve` whose only other uses are
+    result-unused `attach_cb`s;
+  - that `cb_reserve` and the store sit in the loop's parent block.
+
+Postconditions:
+
+- The rewritten `scf.for` carries no tensor iter_args or results;
+  non-tensor iter_args keep their relative order.
+- Additive scope lowering consumes every formed `ttl.accumulation_scope`.
+  `ttl-materialize-loop-state` then removes any remaining tensor iter_arg,
+  so no tensor iter_arg reaches compute lowering.
+
+Structural invariants:
+
+- Each compiler-allocated state DFB is created with block count 2
+  (`DFBMaterialization.cpp`), a fixed double buffer. The pass does not
+  size it from the loop; it assumes one carried value in flight per
+  iteration, so two slots suffice and larger counts would only waste L1.
+  Its `bind_cb` is emitted at function entry, where `finalize-dfb-indices`
+  requires compiler-allocated binds to live.
+- The general strategy emits exactly one consume and one produce of the
+  state DFB per iteration, keeping `cb_reserve`/`cb_wait` accounting
+  balanced.
+- Correctness assumes the loop-carried state is consumed before it is
+  reproduced within an iteration, so two slots suffice. The pass does not
+  verify this; it holds for the recurrences the frontend emits.
+
+### Performance
+
+DST-resident accumulation is the preferred mechanism when the compiler
+can keep the recurrence inside one acquire/release cycle. The partial
+value never leaves the register file, and the final result is packed
+once.
+
+L1 packer accumulation is used when the selected strategy materializes
+the recurrence as stores to an output DFB across loop iterations. The
+packer adds in place in L1 and avoids the DFB-to-DST load that an
+explicit add would perform every iteration. Enabling L1 accumulation by
+default in the d2m backend produced a significant measured speedup:
+https://github.com/tenstorrent/tt-mlir/pull/8387.
+
+General DFB state materialization does not use a hardware accumulation
+mechanism. It round-trips the state through L1 each iteration because a
+non-additive recurrence cannot be expressed as DST or packer
+accumulation.
 
 ## DstSectionOp
 
@@ -63,10 +474,14 @@ Three placement modes:
   the reduction loop inside
 
 All computes use `DstSectionOp`, including matmul (`LowerMatmulBlock`).
+Matmul K accumulation is currently selected from block sizes, DST capacity,
+and subblocking behavior. #652 tracks an explicit
+`matmul-k-accumulation=auto|dst|l1-pack` option so users and tests can require
+DST-resident K accumulation or L1 packer accumulation directly.
 
-## DST vs L1 accumulation
+## DST vs L1 Reduction Lowering
 
-Two mechanisms for multi-tile reduction:
+Two optimized lowerings exist for additive multi-tile reductions:
 
 **DST accumulation** (`dst-accumulation=true`): Reorders loops so
 parallel dims are outer and reduction dims are inner. `DstSectionOp`
@@ -75,22 +490,24 @@ pack after the entire reduction. More efficient (no L1 round-trip)
 but holds the output DFB reserve longer.
 
 **L1 accumulation** (`dst-accumulation=false`): Loops in declaration
-order with per-tile `DstSectionOp`. Each iteration acquires DST,
-computes, packs. `pack_reconfig_l1_acc(1)` makes the packer add to
-the existing L1 value from the second iteration onward. See the
-"Guard placement around L1 accumulation loops" section below for the
-full enable/disable sequence and how it changes when a non-accumulating
-pack precedes the loop.
+order with per-tile `DstSectionOp`. Each iteration acquires DST, computes,
+and packs. For overwrite-mode reductions, `pack_reconfig_l1_acc(1)` is
+inserted after iteration 0 so later iterations add to the existing L1
+value. See the "Reconfiguration placement around L1 accumulation loops"
+section below for the full enable/disable sequence and the
+`accumulate_existing` variant.
 
 Selection: the `dst-accumulation` pass option on `ttl-lower-to-loops`
-controls the mode. The pipeline maps `maximize_dst` to this option.
+controls reduction lowering. The pipeline maps `maximize_dst` to this
+option. This is separate from `accumulation-strategy`, which controls tensor
+recurrence scopes.
 `reduce_max` always uses DST accumulation because L1 accumulation
 (`pack_reconfig_l1_acc`) accumulates via addition, which is only
 correct for sum.
 
-## Loop structure
+## Loop Structure
 
-### DST accumulation (parallel-outer, reduction-inner)
+### DST Accumulation (parallel-outer, reduction-inner)
 
 `generateAccumulatingLoops` separates parallel and reduction dims
 from `iterator_types`:
@@ -108,7 +525,7 @@ Stores use a placeholder tile value (via `UnrealizedConversionCastOp`)
 with an explicit `dst_index` operand, since the SSA tile value from
 `reduce_tile` is loop-local.
 
-### L1 accumulation (declaration-order loops)
+### L1 Accumulation (declaration-order loops)
 
 ```
 for each dim (declaration order):
@@ -118,18 +535,20 @@ for each dim (declaration order):
     }
 ```
 
-Reduction loops are annotated with `ttl.reduction_loop`.
-`TTKernelInsertL1Accumulation` inserts the guard after
-`tile_regs_acquire` inside reduction loops.
+Reduction loops are annotated with `ttl.reduction_loop`,
+`ttl.l1_acc_initial`, and `ttl.l1_acc_scope_id`.
+`TTKernelInsertL1Accumulation` consumes that metadata after conversion to
+place packer L1 accumulation reconfiguration.
 
-### Guard placement around L1 accumulation loops
+### Reconfiguration Placement Around L1 Accumulation Loops
 
-`TTKernelInsertL1Accumulation` brackets each loop group (consecutive
-sibling loops sharing a pack CB, collected by `collectLoopGroups`) with
-`pack_reconfig_l1_acc` calls. The standard sequence disables L1 acc
-before the group, conditionally enables it inside the first iteration's
-last pack so subsequent iterations accumulate, and disables it again
-after the group:
+`TTKernelInsertL1Accumulation` brackets each semantic scope group with
+`pack_reconfig_l1_acc` calls. Scope groups are formed from
+`ttl.l1_acc_scope_id`; the pass no longer infers semantic grouping from
+shared pack dataflow buffers. The standard overwrite sequence disables
+L1 accumulation before the group, conditionally enables it after the
+first iteration's last pack so subsequent iterations accumulate, and
+disables it again after the group:
 
 ```
 pack_reconfig_l1_acc(0)
@@ -139,55 +558,69 @@ for iv = lb..ub:
 pack_reconfig_l1_acc(0)
 ```
 
-When a non-accumulating pack into the loop's pack CB precedes the loop in
-the same parent block, L1 already holds a value the loop must accumulate
-onto. The reconfig before the group becomes enable, and the
-per-iteration conditional enable on the root loop is omitted because
-every iteration must accumulate from iteration 0 onward:
+When `ttl.l1_acc_initial = accumulate_existing`, lowering has already
+proved that L1 holds the initial value for the scope. The reconfiguration
+before the group enables L1 accumulation, and the per-iteration
+conditional enable on the root loop is omitted because every iteration
+must accumulate from iteration 0 onward:
 
 ```
-pack_tile(...)                  // prior pack runs with L1 acc disabled
+pack_tile(...)                  // prior pack runs with L1 accumulation disabled
 pack_reconfig_l1_acc(1)
 for iv = lb..ub:
     ...pack...
 pack_reconfig_l1_acc(0)
 ```
 
-`precededByNonAccumulatingPack` selects between the two sequences by
-walking backward over the L1-acc loop's parent block and classifying
-each predecessor op as a contributor (a pack that leaves a prior value
-in L1) or a boundary (an op that resets or shadows the L1 slot, or one
-whose execution semantics the walk cannot model). See the helper's
-implementation for the exact classification rules.
+The loop producer selects between the two sequences with
+`ttl.l1_acc_initial`. `overwrite` disables L1 accumulation before the loop so
+iteration 0 writes the baseline tile. `accumulate_existing` enables L1
+accumulation before the loop so iteration 0 adds onto a value materialized
+by an earlier store.
 
 The pass is idempotent: a prior run leaves a `pack_reconfig_l1_acc`
-either inside the L1-acc loop body or immediately preceding the loop,
+either inside the L1 accumulation loop body or immediately preceding the loop,
 and the second run detects either signal and returns.
 
-## Per-op init insertion
+## Per-Op Init Insertion
 
 `TTKernelInsertInits` uses two targeted walks instead of a block walk:
 
 1. `walk(TileRegsAcquireOp)`: iterates top-level ops between acquire and
    release. Each top-level op may contain compute ops in nested regions
    (e.g., `reduce_tile` inside a reduction `scf.for`); these are
-   discovered via `op.walk()`. Init is inserted before the flat
-   container op. Consecutive ops with the same init key share one
-   init (forward-order dedup via `prevKey`).
+   discovered via `op.walk()`. Init is inserted before the top-level
+   container op. Consecutive ops with the same init configuration share one
+   init by tracking the previous configuration while walking forward.
 
 2. `walk(func::FuncOp)`: handles compute ops outside sync regions
    (unit tests). Skips ops already processed by walk 1.
 
-Bcast, reduce, and transpose inits resolve their output DFB from a
+Broadcast, reduce, and transpose inits resolve their output DFB from a
 `ttl.*_output_cb_index` attribute propagated during TTL-to-TTKernel
 conversion.
 
-## IR trace: 2x2 reduce_sum along dim 0
+## External References
+
+Hardware statements about DST registers, L1 packer accumulation, and
+`fp32_dest_acc_en` are based on these commit-pinned tt-metal references:
+
+- [Compute engines and dataflow within Tensix](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/docs/source/tt-metalium/tt_metal/advanced_topics/compute_engines_and_dataflow_within_tensix.rst).
+- [Matrix engine technical report](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tech_reports/matrix_engine/matrix_engine.md).
+- [L1 accumulation FP32 analysis](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/docs/L1_ACCUMULATION_FP32_ANALYSIS.md).
+
+The handwritten-kernel observations are based on these commit-pinned
+tt-blaze references:
+
+- [Fused matmul-SwiGLU kernel](https://github.com/tenstorrent/tt-blaze/blob/59f1478e287fb6b5895a66e3ddaabe96162dcb01/blaze/ops/matmul_swiglu/kernels/op.hpp).
+- [SoftmaxK kernel](https://github.com/tenstorrent/tt-blaze/blob/59f1478e287fb6b5895a66e3ddaabe96162dcb01/blaze/ops/softmax_k/kernels/op.hpp).
+
+## IR Trace: 2x2 reduce_sum along dim 0
 
 Input: `tensor<2x2xtile>`, scaler: `tensor<1x1xtile>`,
 output: `tensor<1x2xtile>`.
 
-### DST accumulation (dst-accumulation=true)
+### DST Accumulation (dst-accumulation=true)
 
 After LowerToLoops:
 ```mlir
@@ -219,7 +652,7 @@ for j = 0..2:                              // parallel
 cb_push_back(cb2, 2)
 ```
 
-### L1 accumulation (dst-accumulation=false)
+### L1 Accumulation (dst-accumulation=false)
 
 After LowerToLoops:
 ```mlir
@@ -233,18 +666,20 @@ scf.for %i = %c0 to %c2 step %c1 {       // reduction (declaration order)
 } {ttl.reduction_loop, ttl.tile_loop_stride = 2}
 ```
 
-After TTKernel conversion + insert-inits + L1 acc:
+After TTKernel conversion + insert-inits + L1 accumulation:
 ```
 init_sfpu(cb0, cb2)
+pack_reconfig_l1_acc(0)
 for i = 0..2:                              // reduction
     for j = 0..2:                          // parallel
         tile_regs_acquire()
-        if (i != 0) pack_reconfig_l1_acc(1)
         reduce_init(...)
         reduce_tile(cb0, cb1, i*2+j, 0, 0, SUM, REDUCE_COL)
         reduce_uninit()
         tile_regs_commit() / tile_regs_wait()
         pack_tile(0, cb2, j)               // overwrites or adds to L1
         tile_regs_release()
+    if (i == 0) pack_reconfig_l1_acc(1)
 cb_push_back(cb2, 2)
+pack_reconfig_l1_acc(0)
 ```

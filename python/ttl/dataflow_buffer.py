@@ -96,6 +96,8 @@ class DataflowBuffer:
         tensor = ttl.cb_wait(tensor_type, ast_self)
         return ttl.attach_cb(tensor.type, tensor, ast_self)
 
+    # TODO(#645): Add an accumulation_strategy keyword after source-level
+    # strategy hints have defined precedence and legality diagnostics.
     def reserve(ast_self: "DataflowBuffer") -> "TensorBlock":
         """
         Reserve space in the dataflow buffer (producer acquire).

@@ -18,6 +18,9 @@ def test_ttl_passes_registered():
 
     # Function-level passes.
     func_passes = [
+        "ttl-form-accumulation-scopes",
+        "ttl-lower-accumulation-scopes",
+        "ttl-materialize-loop-state",
         "convert-ttl-to-compute",
         "ttl-assign-dst",
         "ttl-lower-to-loops",
@@ -27,6 +30,9 @@ def test_ttl_passes_registered():
     for pass_name in func_passes:
         PassManager.parse(f"builtin.module(func.func({pass_name}))", context=ctx)
         print(f"{pass_name} pass registered")
+        # CHECK: ttl-form-accumulation-scopes pass registered
+        # CHECK: ttl-lower-accumulation-scopes pass registered
+        # CHECK: ttl-materialize-loop-state pass registered
         # CHECK: convert-ttl-to-compute pass registered
         # CHECK: ttl-assign-dst pass registered
         # CHECK: ttl-lower-to-loops pass registered

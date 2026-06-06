@@ -63,6 +63,23 @@ func.func @tile_add(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) 
   func.return %sum : !ttcore.tile<32x32, f32>
 }
 
+// Test explicit in-DST additive recurrence lowering.
+// The destination index is the accumulator's DST slot.
+// CHECK-LABEL: func.func @tile_accumulate_add
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+// CHECK: ttkernel.tile_regs_acquire
+// CHECK: ttkernel.add_binary_tile_init
+// CHECK-NEXT: ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
+// CHECK: ttkernel.tile_regs_release
+func.func @tile_accumulate_add(%accumulator: !ttcore.tile<32x32, f32>, %contribution: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  %result = ttl.tile_accumulate_add %accumulator, %contribution into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  ttkernel.tile_regs_release() : () -> ()
+  func.return %result : !ttcore.tile<32x32, f32>
+}
+
 // CHECK-LABEL: func.func @tile_sub
 // CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.sub_binary_tile_init

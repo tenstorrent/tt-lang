@@ -1,30 +1,34 @@
 add_mlir_dialect_library(TTLangTTLTransforms
-  ConvertTTLToTTKernel.cpp
-  PipeGraph.cpp
-  PipeLowering.cpp
-  ConvertTTLToCompute.cpp
+  AccumulationUtils.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
+  ConvertTTLToCompute.cpp
+  ConvertTTLToTTKernel.cpp
+  DFBMaterialization.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
+  PipeGraph.cpp
+  PipeLowering.cpp
   TTLAnnotateCBAssociations.cpp
-  TTLAnnotateL1AccLoops.cpp
+  TTLAssignDST.cpp
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
+  TTLErasePipeNetScopes.cpp
   TTLFinalizeDFBIndices.cpp
-  TTLValidateCBBudget.cpp
+  TTLFormAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
-  TTLVerifyDFBSPSC.cpp
-  TTLVerifyPipeNetGuards.cpp
-  TTLErasePipeNetScopes.cpp
-  TTLAssignDST.cpp
+  TTLLowerAccumulationScopes.cpp
+  TTLMaterializeLoopState.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
   TTLSubblockComputeForDST.cpp
+  TTLValidateCBBudget.cpp
+  TTLVerifyDFBSPSC.cpp
+  TTLVerifyPipeNetGuards.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen

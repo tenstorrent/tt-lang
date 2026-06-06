@@ -13,6 +13,9 @@ The hardware supports at most 32 DFBs per node (indices 0--31). User and compile
 The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
 
 ```
+ttl-form-accumulation-scopes   (FuncOp)   Form eligible tensor accumulation scopes
+ttl-lower-accumulation-scopes  (FuncOp)   Select accumulation storage strategy
+ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
 ttl-insert-intermediate-dfbs   (FuncOp)   Create compiler-allocated DFBs
 ttl-insert-cb-sync             (FuncOp)   Insert cb_push / cb_pop
   ... compute lowering, DST assignment, loop lowering ...
@@ -157,6 +160,8 @@ users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
 ## Intermediate DFB Insertion
 
 `TTLInsertIntermediateDFBs` walks all operations implementing `DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that the interface marks as requiring a CB-attached value, the pass checks whether the operand traces to an existing CB via `getAttachedCB`. If not, the pass materializes the value through a fresh DFB: `bind_cb`, `cb_reserve`, `store`, `cb_wait`, `attach_cb`. The new DFB receives the `ttl.compiler_allocated` marker attribute.
+
+`TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args that remain after accumulation strategy lowering. Additive recurrences (`acc = acc + x`) are formed as `ttl.accumulation_scope` earlier in the pipeline and lowered according to the selected accumulation strategy.
 
 When multiple `DFBInputOpInterface` operations consume the same non-CB-attached value, the materialization is shared -- only one DFB is created and the second consumer's operand is rewritten to the existing attached value.
 

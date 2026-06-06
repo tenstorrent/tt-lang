@@ -7,6 +7,8 @@
 
 #include "mlir/Pass/PassOptions.h"
 
+#include <string>
+
 namespace mlir {
 class OpPassManager;
 } // namespace mlir
@@ -18,10 +20,17 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> lowerToEmitC{*this, "lower-to-emitc",
                             llvm::cl::desc("Lower TTKernel to EmitC."),
                             llvm::cl::init(false)};
+  // TODO(#649): Replace maximize-dst with granular options for accumulation
+  // strategy, compute subblocking, and tile-op scheduling.
   Option<bool> maximizeDST{
       *this, "maximize-dst",
       llvm::cl::desc("Enable DST maximization via subblock compute."),
       llvm::cl::init(true)};
+  Option<std::string> accumulationStrategy{
+      *this, "accumulation-strategy",
+      llvm::cl::desc("Select tensor recurrence accumulation storage strategy: "
+                     "auto, dst, or l1-pack."),
+      llvm::cl::init("auto")};
   Option<bool> enableFPUBinaryOps{
       *this, "enable-fpu-binary-ops",
       llvm::cl::desc("Use FPU for binary add/sub/mul."), llvm::cl::init(true)};

@@ -119,6 +119,15 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
         ttk::CopyDestValuesInitOp::create(b, l);
       }};
 
+  map[mlir::TypeID::get<ttk::BinaryDestReuseTilesOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto binaryDestReuse = cast<ttk::BinaryDestReuseTilesOp>(computeOp);
+        ttk::BinaryDestReuseTilesInitOp::create(
+            b, l, binaryDestReuse.getInCb(),
+            binaryDestReuse.getEltwiseBinaryType(),
+            binaryDestReuse.getReuseType());
+      }};
+
   map[mlir::TypeID::get<ttk::MatmulBlockOp>()] = {[](OpBuilder &b, Location l,
                                                      Operation *computeOp) {
     auto matmul = cast<ttk::MatmulBlockOp>(computeOp);
@@ -200,6 +209,13 @@ static InitKey computeInitKey(Operation *op) {
 
   if (isa<ttk::AddTilesOp, ttk::SubTilesOp, ttk::MulTilesOp>(op)) {
     return {typeId, {op->getOperand(0), op->getOperand(1)}};
+  }
+
+  if (auto binaryDestReuse = dyn_cast<ttk::BinaryDestReuseTilesOp>(op)) {
+    int64_t disc =
+        (static_cast<int64_t>(binaryDestReuse.getEltwiseBinaryType()) << 8) |
+        static_cast<int64_t>(binaryDestReuse.getReuseType());
+    return {typeId, {binaryDestReuse.getInCb()}, disc};
   }
 
   if (isa<ttk::MatmulBlockOp>(op)) {
@@ -296,6 +312,13 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         if (!in0CB) {
           in0CB = inner->getOperand(0);
           in1CB = inner->getOperand(1);
+        }
+      } else if (auto binaryDestReuse =
+                     dyn_cast<ttk::BinaryDestReuseTilesOp>(inner)) {
+        result.hasFPUBinary = true;
+        if (!in0CB) {
+          in0CB = binaryDestReuse.getInCb();
+          in1CB = binaryDestReuse.getInCb();
         }
       } else if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(inner)) {
         result.hasMatmul = true;

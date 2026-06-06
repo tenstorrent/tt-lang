@@ -92,17 +92,27 @@ static inline bool wantsUnpackToDestFp32(Operation *op) {
   return isDstInputTileComputeOp(op) && !isa<TileBcastOp, TileTransposeOp>(op);
 }
 
+/// Return true for the tile_accumulate_add contribution operand. When this
+/// operand is DFB-backed, TTKernel lowering reads it through
+/// binary_dest_reuse_tiles.
+static bool isAccumulateContributionOperand(Operation *op, Value operand) {
+  auto accumulateAdd = dyn_cast<TileAccumulateAddOp>(op);
+  return accumulateAdd && operand == accumulateAdd.getContribution();
+}
+
 /// Return the CB index when `value` is an f32 input block argument of
 /// `computeOp` consumed by a tile op that must keep its source CB in `Default`
 /// unpack mode. FPU-style ops (reduce, matmul, FPU-eligible add/sub/mul) route
 /// the operand through SRCA/SRCB; `tile_bcast`/`tile_transpose` lower to
 /// `unary_bcast`/`transpose_dest`, which produce incorrect results under
-/// `UnpackToDestFp32` on their source CB (tt-llk #1338). Both are incompatible
-/// with the mode.
+/// `UnpackToDestFp32` on their source CB (tt-llk #1338). A DFB-backed
+/// tile_accumulate_add contribution also uses source registers via
+/// binary_dest_reuse_tiles. These consumers are incompatible with the mode.
 static std::optional<int64_t>
 getF32DefaultUnpackCBIndex(Operation *op, Value operand, ComputeOp computeOp) {
   if (!isa<TileReduceOp, TileMatmulBlockOp, TileBcastOp, TileTransposeOp>(op) &&
-      !isFPUEligibleBinaryOp(op)) {
+      !isFPUEligibleBinaryOp(op) &&
+      !isAccumulateContributionOperand(op, operand)) {
     return std::nullopt;
   }
   return getF32InputCBIndexForBlockArg(operand, computeOp);
@@ -137,6 +147,9 @@ static F32InputCBUsage collectF32InputCBUsage(ComputeOp computeOp) {
       continue;
     }
     for (Value operand : op.getOperands()) {
+      if (isAccumulateContributionOperand(&op, operand)) {
+        continue;
+      }
       if (std::optional<int64_t> cbIdx =
               getF32InputCBIndexForBlockArg(operand, computeOp)) {
         usage.sfpuCBs.insert(*cbIdx);

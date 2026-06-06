@@ -19,6 +19,7 @@ def compile_ttl_to_ttkernel(
     module: Module,
     device: Optional[Any] = None,
     maximize_dst: bool = True,
+    accumulation_strategy: str = "auto",
     enable_fpu_binary_ops: bool = True,
 ) -> Module:
     """
@@ -30,6 +31,7 @@ def compile_ttl_to_ttkernel(
         module: TTL MLIR module to compile.
         device: Optional TTNN device (unused, kept for API compat).
         maximize_dst: Enable DST maximization (subblocking + scheduling).
+        accumulation_strategy: Accumulation storage strategy.
         enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
 
     Returns:
@@ -42,9 +44,14 @@ def compile_ttl_to_ttkernel(
 
     # Build per-function passes.
     func_passes = [
+        "ttl-form-accumulation-scopes",
+        f"ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}}",
+        "ttl-materialize-loop-state",
         "ttl-insert-intermediate-dfbs",
         "ttl-insert-copy-wait",
         "ttl-auto-sync",
+        "ttl-form-accumulation-scopes{kind=dfb}",
+        "ttl-lower-accumulation-scopes{kind=dfb}",
         "convert-ttl-to-compute",
         set_compute_config_pass,
         "ttl-assign-dst",
@@ -68,6 +75,7 @@ def compile_ttl_to_ttkernel(
         f"ttl-validate-cb-budget,"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
+        f"ttkernel-insert-l1-accumulation,"
         f"canonicalize,"
         f"cse,"
         f"lower-affine,"
