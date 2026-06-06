@@ -627,11 +627,10 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
       rewriter, loc, arith::CmpIPredicate::ne, fields.numDests, oneDst);
 
   int64_t nocIdx = getNocIndex(op);
-  Value nocVal;
-  if (nocIdx > 0) {
-    nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
-                                       rewriter.getI8IntegerAttr(nocIdx));
-  }
+  // The NOC ops take a required `noc` operand; always materialize it (noc 0
+  // is a valid index), matching the static-pipe send path.
+  Value nocVal = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(nocIdx));
 
   Value tableAddress = buildSelectedAddressTableAddress(
       op, loc, resources, fields.recordIndex, *pipeResourcePlan, rewriter);
@@ -643,29 +642,26 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(&writeIf.getThenRegion().front());
-    auto mcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
-        rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-        dstAddr, nocVal);
     auto loopbackIf = scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
                                         /*withElseRegion=*/true);
     {
       OpBuilder::InsertionGuard loopbackGuard(rewriter);
       rewriter.setInsertionPointToStart(&loopbackIf.getThenRegion().front());
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
-          rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
-          numDestsVal, /*linked=*/nullptr,
-          /*multicast_path_reserve=*/nullptr, nocVal);
+          rewriter, loc, srcAddr, totalSizeVal, numDestsVal, dstStartXVal,
+          dstStartYVal, dstEndXVal, dstEndYVal, dstAddr, nocVal,
+          /*linked=*/nullptr);
       rewriter.setInsertionPointToStart(&loopbackIf.getElseRegion().front());
       ttk::NocAsyncWriteMulticastOp::create(
-          rewriter, loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
-          numDestsVal, /*linked=*/nullptr,
-          /*multicast_path_reserve=*/nullptr, nocVal);
+          rewriter, loc, srcAddr, totalSizeVal, numDestsVal, dstStartXVal,
+          dstStartYVal, dstEndXVal, dstEndYVal, dstAddr, nocVal,
+          /*linked=*/nullptr);
     }
 
     rewriter.setInsertionPointToStart(&writeIf.getElseRegion().front());
-    auto nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
-                                             dstStartYVal, dstAddr);
-    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr, nocAddr.getResult(),
+    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
+                                 ValueRange{dstStartXVal, dstStartYVal},
+                                 /*dstBankId=*/ValueRange{}, dstAddr,
                                  totalSizeVal);
   }
   rewriter.setInsertionPointAfter(writeIf);
@@ -681,7 +677,7 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(&completionIf.getThenRegion().front());
-    auto recvSemMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
+    auto recvSemMcastAddr = ttk::GetNocMulticastAddrOp::create(
         rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
         recvSemAddr, nocVal);
     auto oneI32 = arith::ConstantOp::create(
