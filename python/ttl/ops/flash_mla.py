@@ -38,13 +38,20 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
         k_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, DHt), block_count=2)
         v_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, vDHt), block_count=2)
 
+        # These four stay explicit because their consumers are not DFB-input
+        # ops, so the compiler cannot back them with implicit intermediates:
+        # sv feeds reduce_max then a later exp, alpha feeds the l rescale then a
+        # later o rescale (both second uses elementwise), and red_cb's reduce
+        # results feed max/add binary combines. pv backs the ex @ v result that
+        # the elementwise o update consumes. red_cb carries chunk_max then
+        # chunk_sum (disjoint lifetimes). The exp(sv - max) result is left as
+        # plain SSA: it feeds reduce_sum and the ex @ v matmul, both DFB-input
+        # ops, so the compiler materializes it into one shared intermediate DFB.
         sv_cb        = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
         ex_cb        = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
-        # Two (PNHt, 1) scratch slots cycled across the per-chunk stats: stat_a
-        # carries chunk_max, then m_new, then chunk_sum (their lifetimes are
-        # disjoint); stat_b carries alpha, which overlaps all three.
-        stat_a       = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
-        stat_b       = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
+        red_cb       = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
+        mn_cb        = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
+        alpha_cb     = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
         pv_cb        = ttl.make_dfb("bf16", shape=(PNHt, vDHt),       block_count=2)
 
         m_state_cb   = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
@@ -71,20 +78,19 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
                                ttl.block.fill(scale, shape=sv_w.shape)))
 
             sv = sv_cb.wait()
-            cm_w = stat_a.reserve()
-            cm_w.store(ttl.math.reduce_max(sv, dims=[1]))
+            cm_w = red_cb.reserve(); cm_w.store(ttl.math.reduce_max(sv, dims=[1]))
             sv_re = sv_cb.reserve(); sv_re.store(sv)
 
             m_old = m_state_cb.wait()
-            cm = stat_a.wait()
-            mn_w = stat_a.reserve(); mn_w.store(ttl.math.max(m_old, cm))
+            cm = red_cb.wait()
+            mn_w = mn_cb.reserve(); mn_w.store(ttl.math.max(m_old, cm))
 
-            mn_for_alpha = stat_a.wait()
-            alpha_w = stat_b.reserve()
+            mn_for_alpha = mn_cb.wait()
+            alpha_w = alpha_cb.reserve()
             alpha_w.store(ttl.exp(ttl.sub(m_old, mn_for_alpha)))
-            mn_re = stat_a.reserve(); mn_re.store(mn_for_alpha)
+            mn_re = mn_cb.reserve(); mn_re.store(mn_for_alpha)
 
-            mn_for_state = stat_a.wait()
+            mn_for_state = mn_cb.wait()
             sv2 = sv_cb.wait()
             ex_w = ex_cb.reserve()
             ex_w.store(ttl.exp(ttl.sub(sv2, ttl.block.broadcast(
@@ -92,24 +98,22 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
             m_next = m_state_cb.reserve(); m_next.store(mn_for_state)
 
             ex = ex_cb.wait()
-            cs_w = stat_a.reserve()
-            cs_w.store(ttl.math.reduce_sum(ex, dims=[1]))
+            cs_w = red_cb.reserve(); cs_w.store(ttl.math.reduce_sum(ex, dims=[1]))
             ex_re = ex_cb.reserve(); ex_re.store(ex)
 
-            alpha = stat_b.wait()
+            alpha = alpha_cb.wait()
             l_old = l_state_cb.wait()
-            cs = stat_a.wait()
+            cs = red_cb.wait()
             l_next = l_state_cb.reserve()
             l_next.store(ttl.add(ttl.mul(alpha, l_old), cs))
-            alpha_re = stat_b.reserve(); alpha_re.store(alpha)
-
-            alpha2 = stat_b.wait()
-            o_old = o_state_cb.wait()
+            alpha_re = alpha_cb.reserve(); alpha_re.store(alpha)
 
             ex2 = ex_cb.wait()
             v_blk = ttl.math.typecast(v_cb.wait(), torch.bfloat16)
             pv_w = pv_cb.reserve(); pv_w.store(ex2 @ v_blk)
 
+            alpha2 = alpha_cb.wait()
+            o_old = o_state_cb.wait()
             pv_blk = pv_cb.wait()
             o_next = o_state_cb.reserve()
             o_next.store(ttl.add(ttl.mul(ttl.block.broadcast(
@@ -398,33 +402,41 @@ def make_flash_mla(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
     reduce = make_flash_tree_reduce_core(PNHt, vDHt, B)
     normalize = make_flash_normalize_core(PNHt, vDHt)
 
-    @ttl.atom(grid=(n_cols, B), options="--ttl-relax-dfb-spsc")
-    def flash_mla(q, k, v, norm_out):
-        col_c, row_c = ttl.node(dims=2)
-
+    # The fused kernel is two inline sites bridged by (so, sm, sl): the first
+    # multicasts q and computes this core's shard partial, the second tree-
+    # reduces the partials and normalizes. q_stage/q_recv live only in the first
+    # site and the merged-stat scratch only in the second, so their L1 collapses
+    # across the two sites; only the bridges stay at the fused top level.
+    @ttl.atom()
+    def q_shard(q, k, v, o_out: ttl.DFB, m_out: ttl.DFB, l_out: ttl.DFB):
         q_net = ttl.PipeNet(mcast_rows(B, n_cols))
         q_stage = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
         q_recv = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
+        mcast(q_net, q[0:PNHt, 0:DHt], q_stage, q_recv)
+        shard(q_recv, k, v, o_out, m_out, l_out)
 
+    @ttl.atom()
+    def reduce_norm(o_in: ttl.DFB, m_in: ttl.DFB, l_in: ttl.DFB, norm_out):
+        col_c, row_c = ttl.node(dims=2)
+        to = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
+        tl = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
+        # nout gets its own DFB: the datamovement drain below waits it on
+        # NCRISC, and aliasing it onto the unnormalized partial lets NCRISC read
+        # the wrong tile under the relaxed SPSC guard.
+        nout = ttl.make_dataflow_buffer_like(norm_out, shape=(PNHt, vDHt), block_count=2)
+        reduce(o_in, m_in, l_in, to, tl)
+        normalize(to, tl, nout)
+        if col_c == 0:
+            ttl.copy(nout.wait(), norm_out[row_c * PNHt:row_c * PNHt + PNHt, 0:vDHt])
+
+    @ttl.atom(grid=(n_cols, B), options="--ttl-relax-dfb-spsc")
+    def flash_mla(q, k, v, norm_out):
         # shard -> tree bridges (this core's own partial)
         so = ttl.make_dataflow_buffer_like(q, shape=(PNHt, vDHt), block_count=2)
         sm = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
         sl = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
-        # tree -> normalize bridges (merged, column 0 only)
-        to = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
-        tl = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
-        # Normalize gets its own output DFB: the datamovement drain below waits
-        # it on NCRISC, and aliasing it onto `so` (still carrying the
-        # unnormalized partial through the compute-side reduce) lets NCRISC read
-        # the wrong tile under the relaxed SPSC guard.
-        nout = ttl.make_dataflow_buffer_like(norm_out, shape=(PNHt, vDHt), block_count=2)
 
-        mcast(q_net, q[0:PNHt, 0:DHt], q_stage, q_recv)
-        shard(q_recv, k, v, so, sm, sl)
-        reduce(so, sm, sl, to, tl)
-        normalize(to, tl, nout)
-
-        if col_c == 0:
-            ttl.copy(nout.wait(), norm_out[row_c * PNHt:row_c * PNHt + PNHt, 0:vDHt])
+        q_shard(q, k, v, so, sm, sl)
+        reduce_norm(so, sm, sl, norm_out)
 
     return flash_mla
