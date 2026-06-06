@@ -25,9 +25,10 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
 
     ``q`` arrives in the ``q_in`` DFB (multicast or staged by the wrapper);
     K/V are read per-core from DRAM and typecast to bf16 before the matmuls so
-    a bfp8 cache feeds the bf16 chain. The unnormalized ``(o, m, l)`` partial is
-    pushed to the ``o_out`` / ``m_out`` / ``l_out`` DFBs (the caller drains or
-    consumes them). ``scale`` is folded into ``qk`` per chunk.
+    a bfp8 cache feeds the bf16 chain. The running ``(o, m, l)`` accumulators
+    live in the ``o_out`` / ``m_out`` / ``l_out`` DFBs directly, so the final
+    chunk leaves the unnormalized partial there for the caller to drain or
+    consume. ``scale`` is folded into ``qk`` per chunk.
     """
     St_per_core = Sk_chunk_t * N_CHUNKS
 
@@ -54,10 +55,9 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
         alpha_cb     = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
         pv_cb        = ttl.make_dfb("bf16", shape=(PNHt, vDHt),       block_count=2)
 
-        m_state_cb   = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
-        l_state_cb   = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
-        o_state_cb   = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
-
+        # The running m / l / o accumulators live in the output DFBs directly:
+        # each chunk waits the prior value and reserves the next, and the final
+        # chunk leaves exactly one block pushed for the consumer to drain.
         k_base = col_c * St_per_core
         for c in range(N_CHUNKS):
             kc = k_base + c * Sk_chunk_t
@@ -66,9 +66,9 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
             v_dst = v_cb.reserve()
             ttl.copy(v[kc:kc + Sk_chunk_t, 0:vDHt], v_dst)
 
-        m0 = m_state_cb.reserve(); m0.store(ttl.block.fill(-1e30, shape=m0.shape))
-        l0 = l_state_cb.reserve(); l0.store(ttl.block.fill(0.0,   shape=l0.shape))
-        o0 = o_state_cb.reserve(); o0.store(ttl.block.fill(0.0,   shape=o0.shape))
+        m0 = m_out.reserve(); m0.store(ttl.block.fill(-1e30, shape=m0.shape))
+        l0 = l_out.reserve(); l0.store(ttl.block.fill(0.0,   shape=l0.shape))
+        o0 = o_out.reserve(); o0.store(ttl.block.fill(0.0,   shape=o0.shape))
 
         q_blk = q_in.wait()
         for _ in range(N_CHUNKS):
@@ -81,7 +81,7 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
             cm_w = red_cb.reserve(); cm_w.store(ttl.math.reduce_max(sv, dims=[1]))
             sv_re = sv_cb.reserve(); sv_re.store(sv)
 
-            m_old = m_state_cb.wait()
+            m_old = m_out.wait()
             cm = red_cb.wait()
             mn_w = mn_cb.reserve(); mn_w.store(ttl.math.max(m_old, cm))
 
@@ -95,16 +95,16 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
             ex_w = ex_cb.reserve()
             ex_w.store(ttl.exp(ttl.sub(sv2, ttl.block.broadcast(
                 mn_for_state, dims=[1], shape=sv2.shape))))
-            m_next = m_state_cb.reserve(); m_next.store(mn_for_state)
+            m_next = m_out.reserve(); m_next.store(mn_for_state)
 
             ex = ex_cb.wait()
             cs_w = red_cb.reserve(); cs_w.store(ttl.math.reduce_sum(ex, dims=[1]))
             ex_re = ex_cb.reserve(); ex_re.store(ex)
 
             alpha = alpha_cb.wait()
-            l_old = l_state_cb.wait()
+            l_old = l_out.wait()
             cs = red_cb.wait()
-            l_next = l_state_cb.reserve()
+            l_next = l_out.reserve()
             l_next.store(ttl.add(ttl.mul(alpha, l_old), cs))
             alpha_re = alpha_cb.reserve(); alpha_re.store(alpha)
 
@@ -113,18 +113,11 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
             pv_w = pv_cb.reserve(); pv_w.store(ex2 @ v_blk)
 
             alpha2 = alpha_cb.wait()
-            o_old = o_state_cb.wait()
+            o_old = o_out.wait()
             pv_blk = pv_cb.wait()
-            o_next = o_state_cb.reserve()
+            o_next = o_out.reserve()
             o_next.store(ttl.add(ttl.mul(ttl.block.broadcast(
                 alpha2, dims=[1], shape=o_old.shape), o_old), pv_blk))
-
-        m_final = m_state_cb.wait()
-        mo = m_out.reserve(); mo.store(m_final)
-        l_final = l_state_cb.wait()
-        lo = l_out.reserve(); lo.store(l_final)
-        o_final = o_state_cb.wait()
-        oo = o_out.reserve(); oo.store(o_final)
 
     return flash_shard_core
 
@@ -145,14 +138,24 @@ def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0
         o_b = ttl.make_dataflow_buffer_like(out_o, shape=(PNHt, vDHt), block_count=2)
         m_b = ttl.make_dataflow_buffer_like(out_m, shape=(PNHt, 1), block_count=2)
         l_b = ttl.make_dataflow_buffer_like(out_l, shape=(PNHt, 1), block_count=2)
+        # The core accumulates the partial into o_b/m_b/l_b across chunks and
+        # consumes them on compute, so the NCRISC drain needs its own buffer:
+        # re-store the final partial on compute, then copy that to DRAM.
+        o_d = ttl.make_dataflow_buffer_like(out_o, shape=(PNHt, vDHt), block_count=2)
+        m_d = ttl.make_dataflow_buffer_like(out_m, shape=(PNHt, 1), block_count=2)
+        l_d = ttl.make_dataflow_buffer_like(out_l, shape=(PNHt, 1), block_count=2)
 
         mcast(q_net, q[0:PNHt, 0:DHt], q_stage, q_recv)
         core(q_recv, k, v, o_b, m_b, l_b)
 
+        m_dw = m_d.reserve(); m_dw.store(m_b.wait())
+        l_dw = l_d.reserve(); l_dw.store(l_b.wait())
+        o_dw = o_d.reserve(); o_dw.store(o_b.wait())
+
         base = (row_c * n_cols + col_c) * PNHt
-        ttl.copy(m_b.wait(), out_m[base:base + PNHt, 0:1])
-        ttl.copy(l_b.wait(), out_l[base:base + PNHt, 0:1])
-        ttl.copy(o_b.wait(), out_o[base:base + PNHt, 0:vDHt])
+        ttl.copy(m_d.wait(), out_m[base:base + PNHt, 0:1])
+        ttl.copy(l_d.wait(), out_l[base:base + PNHt, 0:1])
+        ttl.copy(o_d.wait(), out_o[base:base + PNHt, 0:vDHt])
 
     return flash_shard
 

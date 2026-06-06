@@ -44,10 +44,7 @@ N_CORES = 8                              # ttl K-split (n_cols)
 PNHt = NUM_HEADS // TILE                  # 2
 DHt = KVPE_DIM // TILE                     # 18
 vDHt = KV_LORA_RANK // TILE                # 16
-# The fused single-kernel op inlines all three phases, so its per-chunk K/V/sv
-# buffers must fit alongside the tree-reduce and normalize scratch in one L1
-# budget; a 1-tile chunk is what fits (Sk_chunk_t=2 overflows by ~250KB).
-Sk_chunk_t = 1
+Sk_chunk_t = 2
 
 # Attended length must be a multiple of the ttl op's per-core chunk.
 TTL_CHUNK = N_CORES * Sk_chunk_t * TILE   # 512
