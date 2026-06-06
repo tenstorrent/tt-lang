@@ -659,10 +659,14 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
           completionIncrement, nocVal, /*posted=*/BoolAttr());
     }
 
-    // Flush the (non-posted) atomic increments before the kernel can move
-    // on. Without this barrier, receivers can observe stale completion counts.
-    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
   }
+
+  // Flush the (non-posted) atomic increments before the kernel can move on.
+  // Point-to-point and collective sends both signal completion with a
+  // non-posted semaphore increment; without this barrier the sending kernel
+  // can exit with the increment still in flight, so receivers observe stale
+  // completion counts and the watcher trips an inter-kernel NOC race assert.
+  ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
