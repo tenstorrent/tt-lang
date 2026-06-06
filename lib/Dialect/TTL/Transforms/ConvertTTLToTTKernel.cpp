@@ -501,6 +501,10 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
     TargetOp::create(rewriter, loc, *convertedCb, numTiles);
 
     if constexpr (HasResult) {
+      if (op.getResult().use_empty()) {
+        rewriter.eraseOp(op);
+        return success();
+      }
       auto viewCast = UnrealizedConversionCastOp::create(
           rewriter, loc, op.getResult().getType(), *convertedCb);
       rewriter.replaceOp(op, viewCast.getResult(0));
