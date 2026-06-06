@@ -650,11 +650,12 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
           rewriter, loc, localReceiverCompletionNocAddr.getResult(),
           completionIncrement, nocVal, /*posted=*/BoolAttr());
     }
-
-    // Flush the (non-posted) atomic increments before the kernel can move
-    // on. Without this barrier, receivers can observe stale completion counts.
-    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
   }
+
+  // Both branches signal completion with non-posted atomics; the send ttl.wait
+  // lowers to a no-op, so this barrier is the only flush before the kernel
+  // exits. Without it receivers can observe stale completion counts.
+  ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
