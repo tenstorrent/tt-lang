@@ -9,9 +9,10 @@ deepseek_v3 MLA demo. Cases:
 
   - ``ctx-*``: single-user decode (1 user, 64 heads) at a fixed 32k KV cache,
     sweeping the decode position so the attended context grows 512 -> 32k. The
-    ttl chain (shard -> tree_reduce -> normalize) processes exactly the attended
-    length, is PCC-checked against a torch MLA golden, and the ratio is taken
-    against the ttnn paged decode reading the same position via ``cur_pos``.
+    fused single-kernel ttl op (shard + tree_reduce + normalize inlined into one
+    launch) processes exactly the attended length, is PCC-checked against a torch
+    MLA golden, and the ratio is taken against the ttnn paged decode reading the
+    same position via ``cur_pos``.
     Short contexts are where ttl's fixed per-decode overhead is most exposed.
   - ``deepseek-1k``: the deepseek_v3 demo's exact problem (4 users, 128 heads,
     1k paged context). Our single-user op does not run multi-user batched
@@ -26,11 +27,7 @@ Run: ``python -m benchmarks.e2e.flash_mla [--filter ctx-8k] [--plot]``.
 import torch
 import ttnn
 
-from ttl.ops.flash_mla import (
-    make_flash_shard,
-    make_flash_tree_reduce,
-    make_flash_normalize,
-)
+from ttl.ops.flash_mla import make_flash_mla
 
 from benchmarks.common import BenchSpec, cli, pcc, time_runs
 
@@ -47,14 +44,18 @@ N_CORES = 8                              # ttl K-split (n_cols)
 PNHt = NUM_HEADS // TILE                  # 2
 DHt = KVPE_DIM // TILE                     # 18
 vDHt = KV_LORA_RANK // TILE                # 16
-Sk_chunk_t = 2
+# The fused single-kernel op inlines all three phases, so its per-chunk K/V/sv
+# buffers must fit alongside the tree-reduce and normalize scratch in one L1
+# budget; a 1-tile chunk is what fits (Sk_chunk_t=2 overflows by ~250KB).
+Sk_chunk_t = 1
 
 # Attended length must be a multiple of the ttl op's per-core chunk.
 TTL_CHUNK = N_CORES * Sk_chunk_t * TILE   # 512
 
 # Production tile counts make the compute kernel large; trim worker L1 to
-# enlarge the kernel-config buffer past the default TENSIX limit.
-WORKER_L1 = 1448000
+# enlarge the kernel-config buffer past the default TENSIX limit. The fused
+# single-kernel op inlines all three phases, so it needs the larger buffer.
+WORKER_L1 = 1430000
 
 OURS_SCALE = QK_HEAD_DIM ** -0.5                   # 192 ** -0.5
 DEEPSEEK_SCALE = (192 + 64) ** -0.5                # deepseek qk_head_dim = 256
@@ -110,12 +111,14 @@ def _golden(q, kv_cache, seq_len, head_dim_v, scale):
     return out.squeeze(1).reshape(1, 1, num_heads, head_dim_v)
 
 
-def _open_device():
-    return ttnn.open_device(device_id=0, worker_l1_size=WORKER_L1)
+# The fused ttl op and the ttnn baseline want opposite L1 splits (the fused
+# single kernel needs a large kernel-config region -> small worker L1; the 32k
+# ttnn decode needs a large CB region -> default worker L1), so they cannot
+# share one device open. run_case opens and closes a device per side instead.
 
 
 # --------------------------------------------------------------------------
-# ttl side: the shard -> tree_reduce -> normalize chain (single user)
+# ttl side: the fused single-kernel flash-MLA op (single user)
 # --------------------------------------------------------------------------
 def _run_ttl_chain(device, num_heads, seq, scale, *, warmup, runs):
     pnht = num_heads // TILE
@@ -134,31 +137,21 @@ def _run_ttl_chain(device, num_heads, seq, scale, *, warmup, runs):
     q_d = _to_dev(q_2d, device)
     k_d = _to_dev_bfp8(k_2d, device)
     v_d = _to_dev_bfp8(v_2d, device)
-    po_d = _to_dev(torch.zeros(N_CORES * PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
-    pm_d = _to_dev(torch.zeros(N_CORES * PNr, TILE, dtype=torch.bfloat16), device)
-    pl_d = _to_dev(torch.zeros(N_CORES * PNr, TILE, dtype=torch.bfloat16), device)
-    o_d = _to_dev(torch.zeros(PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
-    m_d = _to_dev(torch.zeros(PNr, TILE, dtype=torch.bfloat16), device)
-    l_d = _to_dev(torch.zeros(PNr, TILE, dtype=torch.bfloat16), device)
     norm_d = _to_dev(torch.zeros(PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
 
-    shard = make_flash_shard(
+    flash = make_flash_mla(
         n_cols=N_CORES, B=1, PNHt=pnht, DHt=DHt, vDHt=vDHt,
         Sk_chunk_t=Sk_chunk_t, N_CHUNKS=n_chunks, scale=scale,
     )
-    tree_reduce = make_flash_tree_reduce(PNHt=pnht, vDHt=vDHt, B=1)
-    normalize = make_flash_normalize(grid=(1, 1), PNHt=pnht, vDHt=vDHt)
 
-    def chain():
-        shard(q_d, k_d, v_d, po_d, pm_d, pl_d)
-        tree_reduce(po_d, pm_d, pl_d, o_d, m_d, l_d)
-        normalize(o_d, l_d, norm_d)
+    def fused():
+        flash(q_d, k_d, v_d, norm_d)
 
-    ttlang_s = time_runs(chain, lambda _r: None, device, warmup=warmup, runs=runs)
+    ttlang_s = time_runs(fused, lambda _r: None, device, warmup=warmup, runs=runs)
     got = ttnn.to_torch(norm_d).reshape(1, 1, num_heads, KV_LORA_RANK).to(torch.bfloat16)
     pcc_v = pcc(got, expected)
 
-    for t in (q_d, k_d, v_d, po_d, pm_d, pl_d, o_d, m_d, l_d, norm_d):
+    for t in (q_d, k_d, v_d, norm_d):
         ttnn.deallocate(t)
     return ttlang_s, pcc_v
 
@@ -272,24 +265,33 @@ def run_case(device, case, *, warmup, runs):
     label = case["label"]
 
     ttlang_s = pcc_v = None
-    # The ttl chain is single-user (the op reads one shared K/V; B>1 only
-    # replicates it) and compile-time fixed on its chunk count, so run it only
-    # for one user and only when the attended length is a multiple of its chunk.
+    # The fused op is single-user (it reads one shared K/V; B>1 only replicates
+    # it) and compile-time fixed on its chunk count, so run it only for one user
+    # and only when the attended length is a multiple of its chunk. It opens its
+    # own device (trimmed worker L1 for kernel-config headroom), separate from
+    # the ttnn baseline below.
     if num_users == 1:
         attended = positions[0] + 1
         if attended % TTL_CHUNK == 0:
+            ttl_dev = ttnn.open_device(device_id=0, worker_l1_size=WORKER_L1)
             try:
                 ttlang_s, pcc_v = _run_ttl_chain(
-                    device, num_heads, attended, scale, warmup=warmup, runs=runs
+                    ttl_dev, num_heads, attended, scale, warmup=warmup, runs=runs
                 )
             except Exception as e:
-                print(f"  ({label}: ttl chain failed: {e})", flush=True)
+                print(f"  ({label}: ttl fused failed: {e})", flush=True)
+            finally:
+                ttnn.close_device(ttl_dev)
         else:
             print(f"  ({label}: ttl skipped, attended {attended} not a multiple of {TTL_CHUNK})", flush=True)
 
-    ttnn_s = _reference_ms(
-        device, num_users, num_heads, cache_seq, positions, scale, warmup=warmup, runs=runs
-    )
+    ttnn_dev = ttnn.open_device(device_id=0)
+    try:
+        ttnn_s = _reference_ms(
+            ttnn_dev, num_users, num_heads, cache_seq, positions, scale, warmup=warmup, runs=runs
+        )
+    finally:
+        ttnn.close_device(ttnn_dev)
 
     ratio = round(ttlang_s / ttnn_s, 4) if (ttlang_s is not None and ttnn_s) else None
     return {
@@ -321,7 +323,7 @@ SPEC = BenchSpec(
     cases=CASES,
     run_case=run_case,
     label_of=lambda case: case["label"],
-    open_device=_open_device,
+    open_device=lambda: None,  # run_case opens a device per side (see above)
     format_row=_format_row,
     plot_title="ttlang flash-MLA decode vs ttnn paged MLA-decode  (bar = ratio)",
     plot_label_of=lambda r: f"{r['label']}\nu{r['users']} h{r['heads']}",
