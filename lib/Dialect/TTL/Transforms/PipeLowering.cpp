@@ -1028,8 +1028,8 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   int64_t nocIdx = getNocIndex(op);
   // The NOC ops take a required `noc` operand; always materialize it (noc 0
   // is a valid index), matching the static-pipe send path.
-  Value nocVal = arith::ConstantOp::create(
-      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(nocIdx));
+  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                           rewriter.getI8IntegerAttr(nocIdx));
 
   Value tableAddress = buildSelectedAddressTableAddress(
       op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
@@ -1068,10 +1068,9 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
     }
 
     rewriter.setInsertionPointToStart(&writeIf.getElseRegion().front());
-    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
-                                 ValueRange{dstStartXVal, dstStartYVal},
-                                 /*dstBankId=*/ValueRange{}, dstAddr,
-                                 totalSizeVal);
+    ttk::NocAsyncWriteOp::create(
+        rewriter, loc, srcAddr, ValueRange{dstStartXVal, dstStartYVal},
+        /*dstBankId=*/ValueRange{}, dstAddr, totalSizeVal);
   }
   rewriter.setInsertionPointAfter(writeIf);
 

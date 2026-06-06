@@ -367,9 +367,10 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
       });
 }
 
-static mlir::LogicalResult verifySelectedPipeRecords(
-    mlir::Operation *op, mlir::tt::ttl::PipeNetRecordsAttr records,
-    int64_t pipeNetId, bool isMulticast) {
+static mlir::LogicalResult
+verifySelectedPipeRecords(mlir::Operation *op,
+                          mlir::tt::ttl::PipeNetRecordsAttr records,
+                          int64_t pipeNetId, bool isMulticast) {
   if (records.getPipeNetId() != pipeNetId) {
     return op->emitOpError() << "records pipeNetId must match net attribute";
   }
@@ -385,23 +386,21 @@ static mlir::LogicalResult verifySelectedPipeRecords(
 }
 
 mlir::LogicalResult mlir::tt::ttl::SelectPipeSrcOp::verify() {
-  return verifySelectedPipeRecords(getOperation(), getRecords(),
-                                   getPipeNetId(), getIsMulticast());
+  return verifySelectedPipeRecords(getOperation(), getRecords(), getPipeNetId(),
+                                   getIsMulticast());
 }
 
 mlir::LogicalResult mlir::tt::ttl::SelectPipeDstOp::verify() {
-  return verifySelectedPipeRecords(getOperation(), getRecords(),
-                                   getPipeNetId(), getIsMulticast());
+  return verifySelectedPipeRecords(getOperation(), getRecords(), getPipeNetId(),
+                                   getIsMulticast());
 }
 
 static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {
   pipe = mlir::tt::ttl::traceUnrealizedCasts(pipe);
-  if (auto selectedSrc =
-          pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
+  if (auto selectedSrc = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
     return selectedSrc.getOperation();
   }
-  if (auto selectedDst =
-          pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>()) {
+  if (auto selectedDst = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>()) {
     return selectedDst.getOperation();
   }
   return nullptr;
@@ -425,8 +424,7 @@ static int64_t getPipeNetIdFromReference(mlir::Value pipe) {
   if (auto pipeType = mlir::dyn_cast<mlir::tt::ttl::PipeType>(pipe.getType())) {
     return pipeType.getPipeNetId();
   }
-  if (auto selectedSrc =
-          pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
+  if (auto selectedSrc = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
     return selectedSrc.getPipeNetId();
   }
   auto selectedDst = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>();
@@ -434,12 +432,12 @@ static int64_t getPipeNetIdFromReference(mlir::Value pipe) {
   return selectedDst.getPipeNetId();
 }
 
-static bool selectedPipeKindMatchesTransfer(mlir::Value pipe,
-                                            mlir::tt::ttl::PipeTransferKind kind) {
+static bool
+selectedPipeKindMatchesTransfer(mlir::Value pipe,
+                                mlir::tt::ttl::PipeTransferKind kind) {
   pipe = mlir::tt::ttl::traceUnrealizedCasts(pipe);
   bool isMulticast = false;
-  if (auto selectedSrc =
-          pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
+  if (auto selectedSrc = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
     isMulticast = selectedSrc.getIsMulticast();
   } else if (auto selectedDst =
                  pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>()) {
@@ -448,8 +446,7 @@ static bool selectedPipeKindMatchesTransfer(mlir::Value pipe,
     return true;
   }
 
-  return isMulticast ==
-         (kind == mlir::tt::ttl::PipeTransferKind::Collective);
+  return isMulticast == (kind == mlir::tt::ttl::PipeTransferKind::Collective);
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
@@ -494,7 +491,8 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
            << "requires a static pipe or destination-selected pipe transfer";
   }
   auto tokenType = mlir::cast<PipeTokenType>(getToken().getType());
-  if (tokenType.getPipeNetId() != getPipeNetIdFromReference(createOp.getPipe())) {
+  if (tokenType.getPipeNetId() !=
+      getPipeNetIdFromReference(createOp.getPipe())) {
     return emitOpError() << "token pipeNetId must match transfer pipeNetId";
   }
 
