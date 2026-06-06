@@ -74,7 +74,8 @@ def sweep(spec: BenchSpec, *, filter: Optional[str] = None, warmup=3, runs=5) ->
             rows.append(row)
             print(_line(spec, row), flush=True)
     finally:
-        ttnn.close_device(device)
+        if device is not None:
+            ttnn.close_device(device)
     return rows
 
 
