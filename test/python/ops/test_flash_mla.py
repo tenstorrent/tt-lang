@@ -186,7 +186,7 @@ MLA_vDHt = KV_LORA_RANK // TILE           # 16
 # The shard typecasts each bfp8 K/V chunk to a bf16 mirror, so a 2-tile
 # compute chunk is the largest that fits one core's L1 at vDHt=16. This is
 # the compute-chunk granularity, independent of the cache layout.
-MLA_Sk_chunk_t = 2
+MLA_Sk_chunk_t = 1
 # Per core: (seq / n_cores) positions, split into Sk_chunk_t-tile chunks.
 MLA_N_CHUNKS = (MAX_SEQ_LEN // N_CORES) // (MLA_Sk_chunk_t * TILE)  # 64
 
@@ -242,7 +242,7 @@ def test_flash_mla_decode(device):
     assert_pcc(expected, got, threshold=0.99)
 
 
-@pytest.mark.parametrize("ttnn_device", [{"worker_l1_size": 1448000}], indirect=True)
+@pytest.mark.parametrize("ttnn_device", [{"worker_l1_size": 1430000}], indirect=True)
 def test_flash_mla_decode_fused(device):
     """The fully fused single-kernel MLA: q multicast, partials and merged
     stats carried through DFB bridges (no inter-phase DRAM), one launch."""

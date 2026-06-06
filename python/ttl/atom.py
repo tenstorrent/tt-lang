@@ -291,76 +291,129 @@ def _synthesize_thread_module(fn_name: str, body: List[ast.stmt]) -> ast.Module:
     return ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[]))
 
 
+def _dfb_l1_elems(dfb: DataflowBuffer) -> int:
+    """Total tiles a DFB occupies in L1 (per-block elements x block_count)."""
+    n = dfb.block_count
+    for s in dfb.shape:
+        n *= s
+    return n
+
+
 def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
-    """DataflowBuffer list indexed by CB index, matching _collect_cb_configs."""
-    by_index = {dfb._cb_index: dfb for dfb in lifted.values()}
+    """DataflowBuffer list indexed by CB index, matching _collect_cb_configs.
+
+    When reuse overlays several DFBs of different shapes on one index, the slot
+    must be sized to the largest member, so the biggest DFB at each index wins.
+    """
+    by_index: Dict[int, DataflowBuffer] = {}
+    for dfb in lifted.values():
+        cur = by_index.get(dfb._cb_index)
+        if cur is None or _dfb_l1_elems(dfb) > _dfb_l1_elems(cur):
+            by_index[dfb._cb_index] = dfb
     if not by_index:
         return []
     return [by_index.get(i) for i in range(max(by_index) + 1)]
 
 
+def _dfb_lifetimes(
+    body: List[ast.stmt], names: set
+) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """First / last top-level statement index of the unified body that touches
+    each name.
+
+    A name used anywhere inside a top-level statement's subtree (a loop or if
+    body) is attributed to that top-level statement, so a buffer used inside a
+    loop is live for the whole loop (it is reserved and popped every iteration,
+    so across the back-edge it never frees). This mirrors the body-block
+    ancestor projection the compiler DFB pass uses.
+    """
+    first: Dict[str, int] = {}
+    last: Dict[str, int] = {}
+    for i, stmt in enumerate(body):
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Name) and node.id in names:
+                first.setdefault(node.id, i)
+                last[node.id] = i
+    return first, last
+
+
 def _reuse_inlined_dfb_indices(
     dfbs: Dict[str, DataflowBuffer],
     inlined_dfb_tags: Dict[str, int],
+    body: List[ast.stmt],
 ) -> None:
-    """Overlay the scratch DFBs of distinct inline sites onto shared CB indices.
+    """Overlay inlined-scratch DFBs onto shared CB indices by liveness.
 
-    Each inlined callee's body is substituted as one contiguous block, so its
-    scratch DFBs are confined to that inline site. Sibling sites are sequenced
-    by the bridge DFBs that carry data between them (a site's outputs are only
-    pushed once its scratch has quiesced, and the next site waits on those
-    outputs), so identically-configured scratch from *different* sites can share
-    a CB index / L1 allocation.
+    After top-level inlining the unified body is flat, so each inlined callee's
+    scratch DFBs occupy a contiguous span of it. We interval-color the scratch
+    over its source-order live range [first, last]: only buffers whose ranges
+    are disjoint share a CB index / L1 slot. Source order is a valid sequencing
+    of the body because a DFB producer's reserve/store always precedes its
+    consumer's wait, so disjoint ranges are never simultaneously live.
 
-    This is structural, not lifetime-based: scratch within one site stays
-    distinct (it is that atom's working set, live across its own async threads),
-    and caller-declared (bridge) DFBs are left untouched. We never consult the
-    statement order of the unified body, because after the thread split the
-    compute and data-movement statements run concurrently and that order is not
-    a runtime order.
+    A slot holds one size class (same dtype and block_count); members may differ
+    in shape, in which case the slot is sized to the largest member (see
+    _cb_configs_from_lifted). Caller-declared (bridge) DFBs carry data between
+    sites and stay distinct.
     """
     if not inlined_dfb_tags:
         return
 
-    def cfg(name: str) -> tuple:
-        d = dfbs[name]
-        return (tuple(d.shape), d.block_count, d.dtype)
-
+    scratch = [n for n in dfbs if n in inlined_dfb_tags]
     bridges = [n for n in dfbs if n not in inlined_dfb_tags]
-    # site id -> CB config -> scratch names declared by that site.
-    sites: Dict[int, Dict[tuple, List[str]]] = {}
-    for name in dfbs:
-        if name not in inlined_dfb_tags:
-            continue
-        sites.setdefault(inlined_dfb_tags[name], {}).setdefault(cfg(name), []).append(
-            name
-        )
-    if not sites:
+    if not scratch:
         return
 
-    # Per config, the overlaid width is the most any single site needs; lay the
-    # configs out contiguously above the bridge DFBs.
-    cfg_width: Dict[tuple, int] = {}
-    for per_cfg in sites.values():
-        for c, names in per_cfg.items():
-            cfg_width[c] = max(cfg_width.get(c, 0), len(names))
+    first, last = _dfb_lifetimes(body, set(scratch))
+    # A scratch DFB with no body reference is live nowhere, but it still needs a
+    # slot; treat it as live across the whole body so it never shares one.
+    for name in scratch:
+        first.setdefault(name, 0)
+        last.setdefault(name, len(body))
 
+    # Bridges keep dense low indices in their original order.
     base = len(bridges)
-    cfg_base: Dict[tuple, int] = {}
-    offset = 0
-    for c, width in cfg_width.items():
-        cfg_base[c] = base + offset
-        offset += width
-
-    # Bridges keep indices [0, base) in their original order; every site
-    # overlays the same per-config block, so slot k of one site shares an
-    # index with slot k of any sibling site of the same config.
-    for new_index, name in enumerate(sorted(bridges, key=lambda n: dfbs[n]._cb_index)):
+    for new_index, name in enumerate(
+        sorted(bridges, key=lambda n: dfbs[n]._cb_index)
+    ):
         dfbs[name]._cb_index = new_index
-    for per_cfg in sites.values():
-        for c, names in per_cfg.items():
-            for slot, name in enumerate(names):
-                dfbs[name]._cb_index = cfg_base[c] + slot
+
+    # Linear-scan interval coloring, mirroring the compiler DFB pass: walk the
+    # scratch by ascending live-range start and place each on the lowest slot of
+    # its size class whose previous occupant has expired. Expiry is strict (a
+    # shared endpoint counts as overlap) so a producer/consumer handoff at one
+    # statement keeps both buffers distinct.
+    def size_class(name: str) -> tuple:
+        d = dfbs[name]
+        return (d.dtype, d.block_count)
+
+    slots: List[Tuple[tuple, int]] = []  # (size class, last index occupying it)
+    for name in sorted(scratch, key=lambda n: (first[n], last[n])):
+        cls = size_class(name)
+        placed = next(
+            (
+                slot
+                for slot, (slot_cls, slot_last) in enumerate(slots)
+                if slot_cls == cls and slot_last < first[name]
+            ),
+            None,
+        )
+        if placed is None:
+            placed = len(slots)
+            slots.append((cls, last[name]))
+        else:
+            slots[placed] = (cls, last[name])
+        dfbs[name]._cb_index = base + placed
+
+    if os.environ.get("TTLANG_DFB_REUSE_DEBUG"):
+        groups: Dict[int, List[str]] = {}
+        for name in scratch:
+            groups.setdefault(dfbs[name]._cb_index, []).append(name)
+        for idx in sorted(groups):
+            spans = ", ".join(
+                f"{n}[{first[n]},{last[n]}]" for n in groups[idx]
+            )
+            print(f"[dfb-reuse] cb{idx}: {spans}")
 
 
 def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
@@ -441,7 +494,7 @@ def _compile_atom(
     _set_current_grid(grid)
 
     stripped_fn, dfbs, nets = _lift_setup(spec.fn_ast, eval_scope)
-    _reuse_inlined_dfb_indices(dfbs, spec.inlined_dfb_tags)
+    _reuse_inlined_dfb_indices(dfbs, spec.inlined_dfb_tags, stripped_fn.body)
 
     # Assign each PipeNet a distinct operation-local id (and validate), the
     # same graph @ttl.operation builds; it also yields the runner's pipe
