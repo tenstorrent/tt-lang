@@ -1,6 +1,6 @@
-// Verifies DFB accumulation scope formation rejects unsupported source forms.
+// Verifies DFB accumulation scope insertion rejects unsupported source forms.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=dfb}))' --verify-diagnostics --split-input-file
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-accumulation-scopes{kind=dfb}))' --verify-diagnostics --split-input-file
 
 // += inside scf.if inside scf.for is rejected.
 

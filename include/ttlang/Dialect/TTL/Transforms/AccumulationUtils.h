@@ -51,7 +51,7 @@ bool isTensorLoopState(scf::ForOp loop, unsigned resultIndex);
 ///
 /// `allowedReserveUsers` contains wrapper operations that are permitted to use
 /// the output reservation in addition to the final store and dead attach views.
-/// This is required after scope formation, where `ttl.accumulation_scope` owns
+/// This is required after scope insertion, where `ttl.accumulation_scope` owns
 /// the same reservation as an operand.
 ///
 /// Expected non-matches return failure without diagnostics; callers decide

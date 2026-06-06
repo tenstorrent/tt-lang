@@ -44,13 +44,13 @@ def compile_ttl_to_ttkernel(
 
     # Build per-function passes.
     func_passes = [
-        "ttl-form-accumulation-scopes",
+        "ttl-insert-accumulation-scopes",
         f"ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}}",
         "ttl-materialize-loop-state",
         "ttl-insert-intermediate-dfbs",
         "ttl-insert-copy-wait",
         "ttl-auto-sync",
-        "ttl-form-accumulation-scopes{kind=dfb}",
+        "ttl-insert-accumulation-scopes{kind=dfb}",
         "ttl-lower-accumulation-scopes{kind=dfb}",
         "convert-ttl-to-compute",
         set_compute_config_pass,

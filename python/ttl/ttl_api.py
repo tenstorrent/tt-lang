@@ -1509,13 +1509,13 @@ def _compile_kernel(
         # Mirrors createTTLToTTKernelPipeline in TTLPipelines.cpp; keep the two
         # in sync when adding or reordering passes.
         pipeline_passes = [
-            "func.func(ttl-form-accumulation-scopes)",
+            "func.func(ttl-insert-accumulation-scopes)",
             f"func.func(ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}})",
             "func.func(ttl-materialize-loop-state)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-auto-sync)",
-            "func.func(ttl-form-accumulation-scopes{kind=dfb})",
+            "func.func(ttl-insert-accumulation-scopes{kind=dfb})",
             "func.func(ttl-lower-accumulation-scopes{kind=dfb})",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,

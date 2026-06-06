@@ -1,7 +1,7 @@
-// Verifies ttl-form-accumulation-scopes{kind=dfb} wraps user-written
+// Verifies ttl-insert-accumulation-scopes{kind=dfb} wraps user-written
 // accumulating stores in ttl.accumulation_scope and records the initial mode.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=dfb}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-accumulation-scopes{kind=dfb}))' --split-input-file | FileCheck %s
 
 // A loop whose first iteration creates the output value uses overwrite mode.
 

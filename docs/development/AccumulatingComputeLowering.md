@@ -86,7 +86,7 @@ The current design preserves these invariants:
 
 - `ttl.accumulation_scope` is semantic and storage-agnostic. It does not
   encode DST, L1 packer, or explicit DFB state.
-- Conditional rejection belongs in `ttl-form-accumulation-scopes`, not in
+- Conditional rejection belongs in `ttl-insert-accumulation-scopes`, not in
   the `ttl.accumulation_scope` verifier. The verifier remains structural.
 - `ttl.l1_acc_loop` plus `ttl.l1_acc_initial` is static first-update
   lowering metadata, not the full accumulation model.
@@ -125,7 +125,7 @@ The verifier is structural:
   semantics.
 
 The verifier does not prove that stores target the declared outputs or that
-control flow reaches an update. Those are nonlocal formation and strategy
+control flow reaches an update. Those are nonlocal insertion and strategy
 lowering responsibilities.
 
 Initial modes have these meanings:
@@ -180,8 +180,8 @@ contract without forcing reductions to be wrapped in `ttl.accumulation_scope`.
 
 The TTL-to-TTKernel pipeline handles accumulation in this order:
 
-1. `ttl-form-accumulation-scopes{kind=tensor}` runs before
-   `ttl-materialize-loop-state`. It forms semantic scopes around recognized
+1. `ttl-insert-accumulation-scopes{kind=tensor}` runs before
+   `ttl-materialize-loop-state`. It inserts semantic scopes around recognized
    single-output additive tensor recurrences and records `explicit` initial
    mode.
 
@@ -192,13 +192,13 @@ The TTL-to-TTKernel pipeline handles accumulation in this order:
 
 3. `ttl-materialize-loop-state` handles remaining tensor `scf.for`
    iter_args through compiler-allocated DFB state. Additive recurrences
-   recognized by scope formation do not reach this pass.
+   recognized by scope insertion do not reach this pass.
 
 4. DFB canonicalization and synchronization run:
    `ttl-insert-intermediate-dfbs`, `ttl-insert-copy-wait`, and
    `ttl-auto-sync`.
 
-5. `ttl-form-accumulation-scopes{kind=dfb}` forms semantic scopes around
+5. `ttl-insert-accumulation-scopes{kind=dfb}` inserts semantic scopes around
    user-written accumulating stores. It computes `overwrite` versus
    `accumulate_existing` before any TTKernel conversion.
 
@@ -215,7 +215,7 @@ The TTL-to-TTKernel pipeline handles accumulation in this order:
 8. After TTL-to-TTKernel conversion, `ttkernel-insert-l1-accumulation`
    consumes L1 metadata and inserts `pack_reconfig_l1_acc` operations.
 
-Formation and lowering are adjacent for each scope kind. Do not insert
+Insertion and lowering are adjacent for each scope kind. Do not insert
 canonicalization or CSE between them; the scope body is a temporary semantic
 region, not a long-lived optimization boundary.
 
@@ -261,7 +261,7 @@ matching the current TTKernel lowering allowlist.
 
 ## Unsupported Structured Control Flow
 
-Conditional DFB `+=` is rejected in `ttl-form-accumulation-scopes`. The
+Conditional DFB `+=` is rejected in `ttl-insert-accumulation-scopes`. The
 current L1 metadata represents a static first-update policy: iteration 0
 overwrites or accumulates according to `ttl.l1_acc_initial`. It cannot
 represent "the first dynamically executed update overwrites, later executed
@@ -315,7 +315,7 @@ explicit packer state transitions.
 
 A Python `for` loop that reassigns a tensor variable read on the next
 iteration (`acc = acc + x`, `acc = relu(acc)`) compiles to an `scf.for`
-with a ranked-tensor `iter_arg`. The accumulation pipeline first forms
+with a ranked-tensor `iter_arg`. The accumulation pipeline first inserts
 `ttl.accumulation_scope` around recognized additive recurrences. General
 tensor recurrences that remain after strategy lowering are eliminated by
 `ttl-materialize-loop-state` before compute lowering.
@@ -335,7 +335,7 @@ on use-def structure - the single add, its single use, the consumer
 store, and the reserve feeding it - which
 `matchAdditiveTensorAccumulation` matches reliably and the AST cannot.
 The frontend stays a correctness-only component that identifies
-loop-carried variables; MLIR scope formation and strategy lowering
+loop-carried variables; MLIR scope insertion and strategy lowering
 choose DST, L1 packer accumulation, or general DFB state.
 
 **Shared state materialization.** Additive, elementwise, and tuple
@@ -367,7 +367,7 @@ described below.
 
 ### Lowering Strategies
 
-Additive tensor recurrences use `ttl-form-accumulation-scopes` followed
+Additive tensor recurrences use `ttl-insert-accumulation-scopes` followed
 by `ttl-lower-accumulation-scopes`.
 
 **DST strategy:** when the recurrence satisfies the DST legality rules,
@@ -403,7 +403,7 @@ recurrences that cannot be expressed as DST or L1 packer accumulation.
 Preconditions:
 
 - Runs on `func.func` nested in a `ModuleOp`, once per `scf.for`.
-- Additive scope formation matches only when all of the following hold;
+- Additive scope insertion matches only when all of the following hold;
   any tensor iter_arg failing them remains for general DFB state
   materialization:
   - the loop result has exactly one use, a non-accumulate `ttl.store`;
@@ -418,7 +418,7 @@ Postconditions:
 
 - The rewritten `scf.for` carries no tensor iter_args or results;
   non-tensor iter_args keep their relative order.
-- Additive scope lowering consumes every formed `ttl.accumulation_scope`.
+- Additive scope lowering consumes every inserted `ttl.accumulation_scope`.
   `ttl-materialize-loop-state` then removes any remaining tensor iter_arg,
   so no tensor iter_arg reaches compute lowering.
 

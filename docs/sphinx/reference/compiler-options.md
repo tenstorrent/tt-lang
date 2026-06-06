@@ -121,13 +121,13 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 
 The pipeline runs these passes in order:
 
-- `ttl-form-accumulation-scopes` - form semantic accumulation scopes for eligible tensor recurrences
+- `ttl-insert-accumulation-scopes` - insert semantic accumulation scopes for eligible tensor recurrences
 - `ttl-lower-accumulation-scopes` - lower tensor accumulation scopes with `strategy=<accumulation-strategy>`
 - `ttl-materialize-loop-state` - remove ranked-tensor `scf.for` iter_args
 - `ttl-insert-intermediate-dfbs` - allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
 - `ttl-insert-copy-wait` - insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-auto-sync` - run `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
-- `ttl-form-accumulation-scopes{kind=dfb}` - form semantic accumulation scopes for user-written `+=` loops
+- `ttl-insert-accumulation-scopes{kind=dfb}` - insert semantic accumulation scopes for user-written `+=` loops
 - `ttl-lower-accumulation-scopes{kind=dfb}` - lower user-written `+=` scopes to L1 packer metadata
 - `convert-ttl-to-compute` - lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-set-compute-kernel-config` - set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
@@ -153,16 +153,16 @@ The pipeline runs these passes in order:
 Each pass can also be run standalone for testing. Only passes with configurable
 options are listed; the remaining passes have no options.
 
-#### `ttl-form-accumulation-scopes`
+#### `ttl-insert-accumulation-scopes`
 
-Form semantic accumulation scopes before concrete strategy selection.
+Insert semantic accumulation scopes before concrete strategy selection.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"tensor"` | Scope formation kind. Supported values: `tensor`, `dfb`. |
+| `kind` | string | `"tensor"` | Scope insertion kind. Supported values: `tensor`, `dfb`. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-form-accumulation-scopes{kind=tensor})'
+ttlang-opt input.mlir -p 'func.func(ttl-insert-accumulation-scopes{kind=tensor})'
 ```
 
 #### `ttl-lower-accumulation-scopes`

@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //===----------------------------------------------------------------------===//
-// TTL Form Accumulation Scopes
+// TTL Insert Accumulation Scopes
 //===----------------------------------------------------------------------===//
 //
-// Forms semantic accumulation regions before a later strategy-selection pass
+// Inserts semantic accumulation regions before a later strategy-selection pass
 // chooses DST, L1 packer, or explicit dataflow buffer state lowering.
 //
 //===----------------------------------------------------------------------===//
@@ -27,11 +27,11 @@
 
 #include <optional>
 
-#define DEBUG_TYPE "ttl-form-accumulation-scopes"
+#define DEBUG_TYPE "ttl-insert-accumulation-scopes"
 
 namespace mlir::tt::ttl {
 
-#define GEN_PASS_DEF_TTLFORMACCUMULATIONSCOPES
+#define GEN_PASS_DEF_TTLINSERTACCUMULATIONSCOPES
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
@@ -48,7 +48,7 @@ static bool hasCompilerAnnotation(scf::ForOp loop) {
 }
 
 /// Return true when the loop-to-store range contains only operations that the
-/// accumulation scope formation can preserve or remove without changing
+/// accumulation scope insertion can preserve or remove without changing
 /// visible program effects.
 static bool
 isContiguousSingleTensorAccumulator(scf::ForOp loop,
@@ -67,7 +67,7 @@ isContiguousSingleTensorAccumulator(scf::ForOp loop,
     removableOps.insert(attach.getOperation());
   }
 
-  // Formation normalizes the reserve before the loop and removes dead attach
+  // Insertion normalizes the reserve before the loop and removes dead attach
   // views. Other intervening operations would need explicit strategy-lowering
   // support to preserve their relative execution order.
   // TODO(#640): Preserve post-loop pure users by lowering them through a staged
@@ -82,9 +82,9 @@ isContiguousSingleTensorAccumulator(scf::ForOp loop,
   return true;
 }
 
-/// Form a semantic accumulation scope around a matched tensor recurrence.
-static LogicalResult formTensorAccumulationScope(scf::ForOp loop,
-                                                 RewriterBase &rewriter) {
+/// Insert a semantic accumulation scope around a matched tensor recurrence.
+static LogicalResult insertTensorAccumulationScope(scf::ForOp loop,
+                                                   RewriterBase &rewriter) {
   if (loop->getParentOfType<AccumulationScopeOp>()) {
     return failure();
   }
@@ -107,7 +107,7 @@ static LogicalResult formTensorAccumulationScope(scf::ForOp loop,
 
   MLIRContext *context = loop.getContext();
   // TODO(#646): Select the combiner from the matched recurrence instead of
-  // forming only additive tensor accumulation scopes.
+  // inserting only additive tensor accumulation scopes.
   ArrayAttr combiners = rewriter.getArrayAttr(
       {AccumulationCombinerAttr::get(context, AccumulationCombiner::Add)});
   ArrayAttr initialModes =
@@ -208,7 +208,7 @@ getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
 }
 
 /// Collect direct accumulating stores whose nearest enclosing loop is `loop`.
-/// Conditional accumulation is rejected before forming scopes because the L1
+/// Conditional accumulation is rejected before inserting scopes because the L1
 /// packer enable point is tied to loop iteration 0, not to dynamic control flow
 /// inside the loop.
 static FailureOr<SmallVector<StoreOp, 2>>
@@ -246,13 +246,13 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
   return stores;
 }
 
-/// Form a semantic accumulation scope around one user-written DFB accumulation
+/// Insert a semantic accumulation scope around one user-written DFB accumulation
 /// loop. The scope carries the initial-mode decision so later lowering does not
 /// rediscover it from neighboring stores or dataflow buffer operations.
-static LogicalResult formDFBAccumulationScope(scf::ForOp loop,
-                                              DominanceInfo &domInfo,
-                                              bool &hadFailure,
-                                              RewriterBase &rewriter) {
+static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
+                                                DominanceInfo &domInfo,
+                                                bool &hadFailure,
+                                                RewriterBase &rewriter) {
   if (loop->getParentOfType<AccumulationScopeOp>() ||
       hasCompilerAnnotation(loop)) {
     return failure();
@@ -339,16 +339,16 @@ static LogicalResult formDFBAccumulationScope(scf::ForOp loop,
   return success();
 }
 
-struct TTLFormAccumulationScopesPass
-    : public impl::TTLFormAccumulationScopesBase<
-          TTLFormAccumulationScopesPass> {
-  using impl::TTLFormAccumulationScopesBase<
-      TTLFormAccumulationScopesPass>::TTLFormAccumulationScopesBase;
+struct TTLInsertAccumulationScopesPass
+    : public impl::TTLInsertAccumulationScopesBase<
+          TTLInsertAccumulationScopesPass> {
+  using impl::TTLInsertAccumulationScopesBase<
+      TTLInsertAccumulationScopesPass>::TTLInsertAccumulationScopesBase;
 
   void runOnOperation() override {
     if (kind != "tensor" && kind != "dfb") {
       getOperation().emitOpError()
-          << "invalid accumulation scope formation kind `" << kind
+          << "invalid accumulation scope insertion kind `" << kind
           << "`; expected `tensor` or `dfb`";
       signalPassFailure();
       return;
@@ -363,10 +363,10 @@ struct TTLFormAccumulationScopesPass
     bool hadFailure = false;
     for (scf::ForOp loop : loops) {
       if (kind == "tensor") {
-        (void)formTensorAccumulationScope(loop, rewriter);
+        (void)insertTensorAccumulationScope(loop, rewriter);
         continue;
       }
-      (void)formDFBAccumulationScope(loop, domInfo, hadFailure, rewriter);
+      (void)insertDFBAccumulationScope(loop, domInfo, hadFailure, rewriter);
       if (hadFailure) {
         signalPassFailure();
         return;

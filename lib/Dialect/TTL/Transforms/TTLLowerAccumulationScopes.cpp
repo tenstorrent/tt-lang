@@ -88,7 +88,7 @@ verifySingleAddExplicitTensorScope(AccumulationScopeOp scope) {
 
 /// Find the single top-level loop and final store represented by a tensor
 /// accumulation scope. The lowering owns only the normalized form emitted by
-/// scope formation, so additional top-level operations are rejected before any
+/// scope insertion, so additional top-level operations are rejected before any
 /// mutation.
 static FailureOr<scf::ForOp>
 getSingleTensorAccumulationLoop(AccumulationScopeOp scope,
@@ -138,7 +138,7 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
         "tensor accumulation lowering requires a normalized scope body with "
         "one "
         "top-level scf.for followed by the final ttl.store; run "
-        "ttl-form-accumulation-scopes or split other operations outside the "
+        "ttl-insert-accumulation-scopes or split other operations outside the "
         "scope");
     return failure();
   }
@@ -158,7 +158,7 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
       match->initialValue != scope.getExplicitInits().front()) {
     (void)scope.emitOpError(
         "tensor accumulation scope policy must match the loop recurrence; "
-        "rebuild the scope with ttl-form-accumulation-scopes");
+        "rebuild the scope with ttl-insert-accumulation-scopes");
     return failure();
   }
 
@@ -211,7 +211,7 @@ static LogicalResult verifyAddDFBScope(AccumulationScopeOp scope) {
 }
 
 /// Find the single top-level loop represented by a DFB accumulation scope. The
-/// formation pass emits one loop per scope so L1 metadata can be attached to
+/// insertion pass emits one loop per scope so L1 metadata can be attached to
 /// the loop before the semantic wrapper is erased.
 static FailureOr<scf::ForOp>
 getSingleDFBAccumulationLoop(AccumulationScopeOp scope) {

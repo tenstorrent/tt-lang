@@ -1,10 +1,10 @@
-// Verifies ttl-form-accumulation-scopes wraps matched tensor recurrences in a
+// Verifies ttl-insert-accumulation-scopes wraps matched tensor recurrences in a
 // semantic accumulation region without selecting a storage strategy.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=tensor}))' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=tensor}), func.func(ttl-form-accumulation-scopes{kind=tensor}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-accumulation-scopes{kind=tensor}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-accumulation-scopes{kind=tensor}), func.func(ttl-insert-accumulation-scopes{kind=tensor}))' --split-input-file | FileCheck %s
 
-// Tensor recurrence with a final store forms one explicit-init accumulation
+// Tensor recurrence with a final store inserts one explicit-init accumulation
 // scope. The output reserve is moved before the loop so the output slot spans
 // all accumulation iterations.
 // CHECK-LABEL: func.func @tensor_recurrence_scope
@@ -40,8 +40,8 @@ func.func @tensor_recurrence_scope(
 
 // Mixed loop-carried state is not wrapped yet because strategy lowering does
 // not own the required non-accumulation state materialization.
-// CHECK-LABEL: func.func @mixed_tensor_state_not_formed
-func.func @mixed_tensor_state_not_formed(
+// CHECK-LABEL: func.func @mixed_tensor_state_not_inserted
+func.func @mixed_tensor_state_not_inserted(
     %init0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %init1: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -66,9 +66,9 @@ func.func @mixed_tensor_state_not_formed(
 // -----
 
 // Intervening side effects between the loop and final store keep the original
-// structure. Formation only wraps ranges whose operation order is explicit.
-// CHECK-LABEL: func.func @intervening_store_not_formed
-func.func @intervening_store_not_formed(
+// structure. Insertion only wraps ranges whose operation order is explicit.
+// CHECK-LABEL: func.func @intervening_store_not_inserted
+func.func @intervening_store_not_inserted(
     %init: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -95,8 +95,8 @@ func.func @intervening_store_not_formed(
 
 // A tensor recurrence loop with a loop-local store is not wrapped. The scope
 // would not own that store's side effect.
-// CHECK-LABEL: func.func @loop_local_store_not_formed
-func.func @loop_local_store_not_formed(
+// CHECK-LABEL: func.func @loop_local_store_not_inserted
+func.func @loop_local_store_not_inserted(
     %init: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

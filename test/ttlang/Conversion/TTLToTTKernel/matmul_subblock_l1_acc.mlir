@@ -5,7 +5,7 @@
 
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module( \
-// RUN:     func.func(ttl-form-accumulation-scopes{kind=dfb}, \
+// RUN:     func.func(ttl-insert-accumulation-scopes{kind=dfb}, \
 // RUN:       ttl-lower-accumulation-scopes{kind=dfb}, convert-ttl-to-compute, \
 // RUN:       ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst, \
 // RUN:       ttl-subblock-compute-for-dst, \

@@ -126,7 +126,7 @@ def TTLMaterializeLoopState
     preserving non-tensor iter args.
 
     Additive tensor recurrences are handled earlier by
-    `ttl-form-accumulation-scopes` and `ttl-lower-accumulation-scopes`.
+    `ttl-insert-accumulation-scopes` and `ttl-lower-accumulation-scopes`.
     Any tensor recurrence that reaches this pass uses compiler-allocated
     dataflow buffer state:
     ```mlir
@@ -163,11 +163,11 @@ def TTLMaterializeLoopState
   ];
 }
 
-def TTLFormAccumulationScopes
-    : Pass<"ttl-form-accumulation-scopes", "::mlir::func::FuncOp"> {
-  let summary = "Form semantic accumulation scopes";
+def TTLInsertAccumulationScopes
+    : Pass<"ttl-insert-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Insert semantic accumulation scopes";
   let description = [{
-    Forms `ttl.accumulation_scope` regions around accumulation constructs
+    Inserts `ttl.accumulation_scope` regions around accumulation constructs
     before concrete storage strategy selection. The initial tensor mode
     recognizes single-output additive tensor recurrences whose loop result is
     immediately stored to a dataflow buffer reservation. DFB mode recognizes
@@ -180,7 +180,7 @@ def TTLFormAccumulationScopes
 
   let options = [
     Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Scope formation kind: tensor or dfb.">
+           "Scope insertion kind: tensor or dfb.">
   ];
 
   let dependentDialects = [
@@ -194,8 +194,8 @@ def TTLLowerAccumulationScopes
   let summary = "Lower semantic accumulation scopes";
   let description = [{
     Lowers `ttl.accumulation_scope` regions to a concrete storage strategy.
-    Tensor mode supports single-output additive tensor recurrences formed by
-    `ttl-form-accumulation-scopes`. DFB mode lowers user-written accumulating
+    Tensor mode supports single-output additive tensor recurrences inserted by
+    `ttl-insert-accumulation-scopes`. DFB mode lowers user-written accumulating
     stores to L1 packer metadata.
     L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
     metadata for TTKernel packer reconfiguration placement.

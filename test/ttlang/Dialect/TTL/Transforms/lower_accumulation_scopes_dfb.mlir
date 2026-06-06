@@ -2,8 +2,8 @@
 // ttl.store with {accumulate} receive L1 packer accumulation metadata. The
 // strategy option is tensor-only, so DFB lowering also accepts strategy=dst.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=dfb}, ttl-lower-accumulation-scopes{kind=dfb}))' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=dfb}, ttl-lower-accumulation-scopes{kind=dfb strategy=dst}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-accumulation-scopes{kind=dfb}, ttl-lower-accumulation-scopes{kind=dfb}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-accumulation-scopes{kind=dfb}, ttl-lower-accumulation-scopes{kind=dfb strategy=dst}))' --split-input-file | FileCheck %s
 
 // Accumulating store inside a loop should mark the loop for L1 accumulation.
 
