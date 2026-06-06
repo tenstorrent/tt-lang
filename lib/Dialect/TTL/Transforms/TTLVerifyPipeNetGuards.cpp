@@ -168,8 +168,8 @@ struct ModuleState : LaunchNodeDomainState {
                                 PipeEventKind kind,
                                 const LaunchNodeDomain &domain,
                                 SmallVectorImpl<PipeEvent> &events) {
-    PipeRole role = kind == PipeEventKind::Send ? PipeRole::Source
-                                                : PipeRole::Destination;
+    PipeRole role =
+        kind == PipeEventKind::Send ? PipeRole::Source : PipeRole::Destination;
     for (PipeRecordAttr record : records.getPipes()) {
       PipeType pipeType =
           PipeType::get(records.getContext(), record.getSrcX(),
@@ -252,9 +252,10 @@ struct ModuleState : LaunchNodeDomainState {
       if (sawError) {
         return;
       }
-      events.push_back(PipeEvent{
-          op, pipeType, PipeEventKind::ReceiveWait,
-          domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType))});
+      events.push_back(
+          PipeEvent{op, pipeType, PipeEventKind::ReceiveWait,
+                    domain.intersectWith(
+                        getPipeDestinationLaunchNodeDomain(pipeType))});
     } else if (std::optional<PipeNetRecordsAttr> records =
                    getSelectedDestinationRecords(copyOp->getSrc())) {
       int64_t netId = records->getPipeNetId();
@@ -274,8 +275,8 @@ struct ModuleState : LaunchNodeDomainState {
       if (sawError) {
         return;
       }
-      appendSelectedPipeEvents(op, *records, PipeEventKind::ReceiveWait,
-                               domain, events);
+      appendSelectedPipeEvents(op, *records, PipeEventKind::ReceiveWait, domain,
+                               events);
     }
 
     replacePipeEvents(op, std::move(events));
@@ -576,9 +577,17 @@ PipeNodeIdentity getPipeNodeIdentity(Operation *op, LaunchNodeCoord coord,
                                      PipeScheduleNodeKind kind) {
   auto [pipeNetId, srcX, srcY, dstStartX, dstEndX, dstStartY, dstEndY] =
       getPipeIdentity(pipeType);
-  return {op,        pipeNetId, srcX,      srcY,
-          dstStartX, dstEndX,   dstStartY, dstEndY,
-          coord.x,   coord.y,   static_cast<int64_t>(kind)};
+  return {op,
+          pipeNetId,
+          srcX,
+          srcY,
+          dstStartX,
+          dstEndX,
+          dstStartY,
+          dstEndY,
+          coord.x,
+          coord.y,
+          static_cast<int64_t>(kind)};
 }
 
 /// Add or reuse the graph node for one pipe synchronization event.
