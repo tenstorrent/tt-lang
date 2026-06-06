@@ -940,6 +940,25 @@ def _compile_ttnn_kernel(
     return compiled_kernel
 
 
+def _iter_pipe_nets_in_value(value, visited):
+    """Yield PipeNets reachable through Python metadata containers."""
+    value_id = id(value)
+    if value_id in visited:
+        return
+    visited.add(value_id)
+    if isinstance(value, PipeNet):
+        yield value
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from _iter_pipe_nets_in_value(item, visited)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _iter_pipe_nets_in_value(key, visited)
+            yield from _iter_pipe_nets_in_value(item, visited)
+
+
 def _build_operation_pipenets(f: Callable, threads):
     """Discover PipeNets reachable from the operation and its threads, build
     the OperationPipeNets, validate it, and assign each Pipe its
@@ -965,12 +984,14 @@ def _build_operation_pipenets(f: Callable, threads):
                 value = cell.cell_contents
             except ValueError:
                 continue
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
+            for net in _iter_pipe_nets_in_value(value, set()):
+                if id(net) not in seen:
+                    seen[id(net)] = net
         fn_globals = getattr(func, "__globals__", None) or {}
         for value in fn_globals.values():
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
+            for net in _iter_pipe_nets_in_value(value, set()):
+                if id(net) not in seen:
+                    seen[id(net)] = net
 
     visit(f)
     for thread in threads:
