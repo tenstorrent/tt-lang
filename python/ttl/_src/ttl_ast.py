@@ -5,7 +5,7 @@
 import ast
 import inspect
 from dataclasses import dataclass
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set
 
 from ttl.pykernel._src.kernel_ast import TTCompilerBase
 from ttl.pykernel._src.utils import _get_type_str
@@ -129,6 +129,7 @@ class TTLGenericCompiler(TTCompilerBase):
     """Compiler that generates TTL dialect ops from Python AST."""
 
     _syntax = {}
+    _UNRESOLVED_PYTHON_VALUE = object()
 
     def __init__(self, name, kernel_type=None, captures={}, *args, **kwargs):
         super().__init__(name, kernel_type, *args, **kwargs)
@@ -194,6 +195,84 @@ class TTLGenericCompiler(TTCompilerBase):
         if name:
             return name
         return f"net_{pipenet.pipe_net_id}"
+
+    def _resolve_static_python_value(self, node) -> Any:
+        """Resolve metadata-only Python expressions used by PipeNet receivers.
+
+        PipeNet method calls are compile-time metadata operations. Supporting
+        container lookup here keeps tensor subscripting and normal MLIR value
+        generation unchanged while allowing generated PipeNet tables.
+        """
+        if isinstance(node, ast.Name):
+            table = self._var_exists(node.id)
+            if table:
+                return table[node.id]
+            return self.fn_globals.get(node.id, self._UNRESOLVED_PYTHON_VALUE)
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Tuple):
+            values = [self._resolve_static_python_value(elt) for elt in node.elts]
+            if any(value is self._UNRESOLVED_PYTHON_VALUE for value in values):
+                return self._UNRESOLVED_PYTHON_VALUE
+            return tuple(values)
+        if isinstance(node, ast.List):
+            values = [self._resolve_static_python_value(elt) for elt in node.elts]
+            if any(value is self._UNRESOLVED_PYTHON_VALUE for value in values):
+                return self._UNRESOLVED_PYTHON_VALUE
+            return values
+        if isinstance(node, ast.Dict):
+            result = {}
+            for key_node, value_node in zip(node.keys, node.values):
+                if key_node is None:
+                    return self._UNRESOLVED_PYTHON_VALUE
+                key = self._resolve_static_python_value(key_node)
+                value = self._resolve_static_python_value(value_node)
+                if (
+                    key is self._UNRESOLVED_PYTHON_VALUE
+                    or value is self._UNRESOLVED_PYTHON_VALUE
+                ):
+                    return self._UNRESOLVED_PYTHON_VALUE
+                result[key] = value
+            return result
+        if isinstance(node, ast.Subscript):
+            base = self._resolve_static_python_value(node.value)
+            index = self._resolve_static_python_subscript(node.slice)
+            if (
+                base is self._UNRESOLVED_PYTHON_VALUE
+                or index is self._UNRESOLVED_PYTHON_VALUE
+            ):
+                return self._UNRESOLVED_PYTHON_VALUE
+            try:
+                return base[index]
+            except (KeyError, IndexError, TypeError):
+                return self._UNRESOLVED_PYTHON_VALUE
+        return self._UNRESOLVED_PYTHON_VALUE
+
+    def _resolve_static_python_subscript(self, node) -> Any:
+        """Resolve a static subscript index without emitting MLIR."""
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Tuple):
+            values = [self._resolve_static_python_subscript(elt) for elt in node.elts]
+            if any(value is self._UNRESOLVED_PYTHON_VALUE for value in values):
+                return self._UNRESOLVED_PYTHON_VALUE
+            return tuple(values)
+        return self._resolve_static_python_value(node)
+
+    def _resolve_pipe_net_receiver(self, node, method_name: str, required: bool):
+        """Resolve a PipeNet method receiver from compile-time Python metadata."""
+        from ..pipe import PipeNet
+
+        value = self._resolve_static_python_value(node)
+        if isinstance(value, PipeNet):
+            return value
+        if required:
+            self._raise_error(
+                node,
+                f"PipeNet.{method_name}() receiver must be a compile-time "
+                f"PipeNet expression",
+            )
+        return None
 
     def visit_Assign(self, node):
         """Handle tuple unpacking for TTL functions like core(dims=2)."""
@@ -388,21 +467,12 @@ class TTLGenericCompiler(TTCompilerBase):
             return False
         if node.func.attr not in ("if_src", "if_dst"):
             return False
-        if not isinstance(node.func.value, ast.Name):
-            self._raise_error(
-                node,
-                f"PipeNet.{node.func.attr}() requires a plain variable name "
-                f"as receiver (e.g., `net.{node.func.attr}(...)`), "
-                f"not an expression",
+        return (
+            self._resolve_pipe_net_receiver(
+                node.func.value, node.func.attr, required=True
             )
-        var_name = node.func.value.id
-        tbl = self._var_exists(var_name)
-        if not tbl:
-            return False
-        val = tbl[var_name]
-        from ..pipe import PipeNet
-
-        return isinstance(val, PipeNet)
+            is not None
+        )
 
     _PIPENET_PREDICATE_OPS = {
         "is_src": ttl.is_src,
@@ -415,22 +485,18 @@ class TTLGenericCompiler(TTCompilerBase):
             return False
         if node.func.attr not in self._PIPENET_PREDICATE_OPS:
             return False
-        if not isinstance(node.func.value, ast.Name):
-            return False
-        tbl = self._var_exists(node.func.value.id)
-        if not tbl:
-            return False
-        from ..pipe import PipeNet
-
-        return isinstance(tbl[node.func.value.id], PipeNet)
+        return (
+            self._resolve_pipe_net_receiver(
+                node.func.value, node.func.attr, required=True
+            )
+            is not None
+        )
 
     def _handle_pipenet_predicate(self, node):
-        from ..pipe import PipeNet
-
         method = node.func.attr
-        var_name = node.func.value.id
-        pipenet = self._var_exists(var_name)[var_name]
-        assert isinstance(pipenet, PipeNet)
+        pipenet = self._resolve_pipe_net_receiver(
+            node.func.value, method, required=True
+        )
         if node.args or node.keywords:
             self._raise_error(node, f"PipeNet.{method}() takes no arguments")
         op = self._PIPENET_PREDICATE_OPS[method](
@@ -442,12 +508,10 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
-        from ..pipe import PipeNet
-
         method_name = node.func.attr
-        var_name = node.func.value.id
-        tbl = self._var_exists(var_name)
-        pipenet = tbl[var_name]
+        pipenet = self._resolve_pipe_net_receiver(
+            node.func.value, method_name, required=True
+        )
 
         # Get the callback argument
         if len(node.args) != 1:
@@ -1259,8 +1323,6 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _collect_pipenet_roles_in_body(self, body):
         """Return PipeNet role requirements referenced by if_src/if_dst calls."""
-        from ..pipe import PipeNet
-
         roles = []
         seen = set()
         for stmt in body:
@@ -1272,13 +1334,10 @@ class TTLGenericCompiler(TTCompilerBase):
                     continue
                 if func.attr not in ("if_src", "if_dst"):
                     continue
-                if not isinstance(func.value, ast.Name):
-                    continue
-                table = self._var_exists(func.value.id)
-                if not table:
-                    continue
-                pipenet = table[func.value.id]
-                if not isinstance(pipenet, PipeNet):
+                pipenet = self._resolve_pipe_net_receiver(
+                    func.value, func.attr, required=False
+                )
+                if pipenet is None:
                     continue
                 role = 0 if func.attr == "if_src" else 1
                 item = (pipenet.pipe_net_id, role)
