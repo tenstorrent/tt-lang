@@ -17,6 +17,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "PipeGraph.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
@@ -127,6 +128,58 @@ LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType) {
   return result;
 }
 
+static LaunchNodeDomain getPipeRecordRoleLaunchNodeDomain(MLIRContext *context,
+                                                          PipeRecordAttr record,
+                                                          int64_t pipeNetId,
+                                                          PipeRole role) {
+  PipeType pipeType = getPipeTypeFromRecord(context, record, pipeNetId);
+  return role == PipeRole::Source
+             ? getPipeSourceLaunchNodeDomain(pipeType)
+             : getPipeDestinationLaunchNodeDomain(pipeType);
+}
+
+static LaunchNodeDomain
+getPipeNetRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
+                                      PipeRole role) {
+  LaunchNodeDomain result;
+  for (PipeRecordAttr record : records.getPipes()) {
+    result = result.unionWith(getPipeRecordRoleLaunchNodeDomain(
+        records.getContext(), record, records.getPipeNetId(), role));
+  }
+  return result;
+}
+
+static void recordPipeNet(LaunchNodeDomainState &state, PipeType pipeType,
+                          Location loc,
+                          std::optional<StringRef> name = std::nullopt) {
+  int64_t pipeNetId = pipeType.getPipeNetId();
+  state.netSourceDomains[pipeNetId] =
+      state.netSourceDomains[pipeNetId].unionWith(
+          getPipeSourceLaunchNodeDomain(pipeType));
+  state.netDestinationDomains[pipeNetId] =
+      state.netDestinationDomains[pipeNetId].unionWith(
+          getPipeDestinationLaunchNodeDomain(pipeType));
+  state.pipeNetLocs[pipeNetId].push_back(loc);
+  auto &storedName = state.pipeNetNames[pipeNetId];
+  if (storedName.empty() && name && !name->empty()) {
+    storedName = name->str();
+  }
+}
+
+static void recordPipeNetRecords(LaunchNodeDomainState &state,
+                                 PipeNetRecordsAttr records, Location loc) {
+  std::optional<StringRef> name;
+  if (StringAttr attr = records.getPipeNetName()) {
+    name = attr.getValue();
+  }
+  for (PipeRecordAttr record : records.getPipes()) {
+    recordPipeNet(state,
+                  getPipeTypeFromRecord(records.getContext(), record,
+                                        records.getPipeNetId()),
+                  loc, name);
+  }
+}
+
 /// Normalize integer-array attributes before verifier-specific interpretation.
 static bool readI64ArrayAttr(Operation *op, llvm::StringLiteral name,
                              SmallVectorImpl<int64_t> &values) {
@@ -188,19 +241,23 @@ LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
 LogicalResult LaunchNodeDomainState::initialize(ModuleOp module) {
   module.walk([&](CreatePipeOp pipe) {
     PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
-    int64_t pipeNetId = pipeType.getPipeNetId();
-    netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
-        getPipeSourceLaunchNodeDomain(pipeType));
-    netDestinationDomains[pipeNetId] =
-        netDestinationDomains[pipeNetId].unionWith(
-            getPipeDestinationLaunchNodeDomain(pipeType));
-    pipeNetLocs[pipeNetId].push_back(pipe.getLoc());
-    auto &name = pipeNetNames[pipeNetId];
-    if (name.empty()) {
-      if (auto attr = pipe.getPipeNetNameAttr()) {
-        name = attr.getValue().str();
-      }
+    std::optional<StringRef> name;
+    if (auto attr = pipe.getPipeNetNameAttr()) {
+      name = attr.getValue();
     }
+    recordPipeNet(*this, pipeType, pipe.getLoc(), name);
+  });
+  module.walk([&](PipeNetForeachSrcOp op) {
+    recordPipeNetRecords(*this, op.getRecords(), op.getLoc());
+  });
+  module.walk([&](PipeNetForeachDstOp op) {
+    recordPipeNetRecords(*this, op.getRecords(), op.getLoc());
+  });
+  module.walk([&](SelectPipeSrcOp op) {
+    recordPipeNetRecords(*this, op.getRecords(), op.getLoc());
+  });
+  module.walk([&](SelectPipeDstOp op) {
+    recordPipeNetRecords(*this, op.getRecords(), op.getLoc());
   });
 
   if (!module->hasAttr(kLaunchGridAttrName)) {
@@ -665,6 +722,16 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
         auto pipeType = mlir::cast<PipeType>(ifDst.getPipe().getType());
         narrowed = before.getDomain().intersectWith(
             getPipeDestinationLaunchNodeDomain(pipeType));
+      })
+      .Case<PipeNetForeachSrcOp>([&](PipeNetForeachSrcOp foreachSrc) {
+        narrowed = before.getDomain().intersectWith(
+            getPipeNetRecordsRoleLaunchNodeDomain(foreachSrc.getRecords(),
+                                                  PipeRole::Source));
+      })
+      .Case<PipeNetForeachDstOp>([&](PipeNetForeachDstOp foreachDst) {
+        narrowed = before.getDomain().intersectWith(
+            getPipeNetRecordsRoleLaunchNodeDomain(foreachDst.getRecords(),
+                                                  PipeRole::Destination));
       })
       .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
         auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state);

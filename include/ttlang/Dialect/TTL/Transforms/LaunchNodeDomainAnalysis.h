@@ -103,9 +103,10 @@ struct PipeNetScopeLaunchNodeDomains {
 /// Module-wide launch-grid and PipeNet role domains used by the analysis.
 ///
 /// `initialize` records the PipeNet source and destination domains from
-/// `ttl.create_pipe` ops. It also parses `ttl.launch_grid`; malformed or
-/// missing launch-grid attributes leave `hasLaunchGrid` false so each verifier
-/// can emit diagnostics with pass-specific context.
+/// `ttl.create_pipe` ops and selected-PipeNet record attributes. It also
+/// parses `ttl.launch_grid`; malformed or missing launch-grid attributes leave
+/// `hasLaunchGrid` false so each verifier can emit diagnostics with
+/// pass-specific context.
 struct LaunchNodeDomainState {
   LaunchNodeDomain baseDomain;
   llvm::DenseMap<int64_t, LaunchNodeDomain> netSourceDomains;
@@ -189,8 +190,9 @@ struct LaunchNodeDomainAnalysisOptions {
 /// structured control flow.
 ///
 /// Region branch transfers narrow domains for `scf.if`, `affine.if`,
-/// `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. Other operations carry
-/// the incoming domain through unchanged.
+/// `ttl.if_src`, `ttl.if_dst`, selected-PipeNet foreach ops, and
+/// `ttl.pipenet_scope`. Other operations carry the incoming domain through
+/// unchanged.
 class LaunchNodeDomainAnalysis
     : public dataflow::DenseForwardDataFlowAnalysis<LaunchNodeDomainLattice> {
 public:
