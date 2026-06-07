@@ -441,7 +441,7 @@ def TTLScheduleOperations
     one init per consecutive group of same-type ops.
 
     Ops are sorted by (dependency depth, category, TypeID, init affinity,
-    dst_index). Dependency depth considers RAW (SSA def-use), WAW (same DST
+    dst_index). Dependency depth considers SSA RAW, DST RAW, WAW (same DST
     write index), and WAR (write after prior read of same DST index) hazards.
     Ops at the same depth are independent and can be reordered.
 
@@ -449,7 +449,8 @@ def TTLScheduleOperations
     scheduled. Store ops (after the commit/wait boundary) are not reordered.
 
     Category ordering:
-      CopyTile < Bcast < FPUBinary < SFPUUnary < SFPUBinary < CopyDst
+      Bcast < Transpose < CopyTile < FPUBinary < SFPUUnary < SFPUBinary <
+      CopyDst < DstIndex
 
     Example:
     ```mlir

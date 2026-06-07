@@ -420,7 +420,26 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       } else if (matmulRhsTensors.contains(input)) {
         maps.push_back(AffineMapAttr::get(rhsMap));
       } else {
-        maps.push_back(AffineMapAttr::get(parallelMap));
+        // Non-matmul (parallel) input. A size-1 dimension broadcast to a
+        // larger output dimension must map to constant 0 along the [M, N]
+        // parallel dims; a plain parallelMap would force a shape conflict
+        // against the iteration domain.
+        AffineMap map = parallelMap;
+        auto inputType = getTensorType(input);
+        if (inputType && inputType.getRank() == 2) {
+          SmallVector<AffineExpr> exprs = {d0, d1};
+          bool hasBroadcast = false;
+          for (int64_t d = 0; d < 2; ++d) {
+            if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
+              exprs[d] = getAffineConstantExpr(0, ctx);
+              hasBroadcast = true;
+            }
+          }
+          if (hasBroadcast) {
+            map = AffineMap::get(3, 0, exprs, ctx);
+          }
+        }
+        maps.push_back(AffineMapAttr::get(map));
       }
     }
     for (size_t i = 0; i < outCbs.size(); ++i) {

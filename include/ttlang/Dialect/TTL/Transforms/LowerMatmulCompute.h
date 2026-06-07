@@ -24,6 +24,12 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
                                     ArrayRef<AffineMap> indexingMaps,
                                     ArrayRef<StringAttr> iterTypes);
 
+/// Emit a diagnostic and return failure if a block matmul compute's expanded
+/// DST usage exceeds capacity. Run as a pass precondition before the rewrite so
+/// the error is reported once, not on each greedy rewrite retry. Computes
+/// nothing and succeeds for compute ops that are not block matmul candidates.
+LogicalResult verifyMatmulComputeCapacity(ComputeOp op);
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_TRANSFORMS_LOWERMATMULCOMPUTE_H
