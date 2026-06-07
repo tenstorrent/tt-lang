@@ -254,6 +254,7 @@ def _violations_for_func_def(
     * Simple named assignment: ``tx = ttl.copy(src, dst)``
     * Immediate method-chain on the result: ``ttl.copy(src, dst).wait()``
     """
+
     def allow_copy_call_expr(call: ast.Call) -> None:
         if _is_ttl_copy_call(call):
             allowed.add(id(call))

@@ -130,6 +130,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     _syntax = {}
     _UNRESOLVED_PYTHON_VALUE = object()
+    # These method names are reserved for PipeNet receiver dispatch in kernels.
     _PIPENET_CALLBACK_METHODS = ("if_src", "if_dst")
 
     def __init__(self, name, kernel_type=None, captures={}, *args, **kwargs):
@@ -177,11 +178,10 @@ class TTLGenericCompiler(TTCompilerBase):
         self._pipe_net_names: dict[int, str] = {}
 
     def _set_var(self, var_name, value):
-        # Capture PipeNet variable names so the verifier can render
-        # diagnostics in user-facing terms (e.g. `a_pipe_net.is_active()`
-        # instead of `net_0.is_active()`). Body-local PipeNet assignments
-        # are recorded here too — `a_pipe_net = ttl.PipeNet(a_pipes)`
-        # evaluates the RHS at trace time and stores the resulting object.
+        # Capture direct PipeNet variable names so the verifier can render
+        # diagnostics in user-facing terms. Container-held PipeNets keep the
+        # stable `net_<id>` fallback because synthetic paths like `nets[1]`
+        # are not bindings the verifier can resolve.
         from ..pipe import PipeNet
 
         if isinstance(value, PipeNet):
@@ -215,6 +215,33 @@ class TTLGenericCompiler(TTCompilerBase):
             if isinstance(node.op, ast.UAdd) and isinstance(operand, int):
                 return operand
             return self._UNRESOLVED_PYTHON_VALUE
+        if isinstance(node, ast.BinOp):
+            lhs = self._resolve_static_python_value(node.left)
+            rhs = self._resolve_static_python_value(node.right)
+            if (
+                lhs is self._UNRESOLVED_PYTHON_VALUE
+                or rhs is self._UNRESOLVED_PYTHON_VALUE
+                or not isinstance(lhs, int)
+                or not isinstance(rhs, int)
+            ):
+                return self._UNRESOLVED_PYTHON_VALUE
+            match node.op:
+                case ast.Add():
+                    return lhs + rhs
+                case ast.Sub():
+                    return lhs - rhs
+                case ast.Mult():
+                    return lhs * rhs
+                case ast.FloorDiv():
+                    if rhs == 0:
+                        return self._UNRESOLVED_PYTHON_VALUE
+                    return lhs // rhs
+                case ast.Mod():
+                    if rhs == 0:
+                        return self._UNRESOLVED_PYTHON_VALUE
+                    return lhs % rhs
+                case _:
+                    return self._UNRESOLVED_PYTHON_VALUE
         if isinstance(node, ast.Tuple):
             values = [self._resolve_static_python_value(elt) for elt in node.elts]
             if any(value is self._UNRESOLVED_PYTHON_VALUE for value in values):
@@ -302,6 +329,58 @@ class TTLGenericCompiler(TTCompilerBase):
 
         return any(_iter_pipe_nets_in_value(value, set()))
 
+    def _pipe_net_metadata_assignment(self, node):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            return None
+        static_value = self._resolve_static_python_value(node.value)
+        if self._is_pipe_net_metadata_value(static_value):
+            return node.targets[0].id, static_value
+        return None
+
+    def _bind_pipe_net_metadata_assignment(self, node) -> bool:
+        assignment = self._pipe_net_metadata_assignment(node)
+        if assignment is None:
+            return False
+        name, value = assignment
+        self._set_var(name, value)
+        return True
+
+    def _static_metadata_alias_assignment(self, node):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            return None
+        static_value = self._resolve_static_python_value(node.value)
+        if static_value is self._UNRESOLVED_PYTHON_VALUE:
+            return None
+        if not self._node_contains_host_metadata_name(node.value):
+            return None
+        return node.targets[0].id, static_value
+
+    def _bind_static_metadata_alias_assignment(self, node) -> bool:
+        assignment = self._static_metadata_alias_assignment(node)
+        if assignment is None:
+            return False
+        name, value = assignment
+        self._set_var(name, value)
+        return True
+
+    def _selection_loop(self, node):
+        if not isinstance(node, ast.For) or not isinstance(node.target, ast.Name):
+            return None
+        static_range = self._resolve_static_range_iter(node.iter)
+        if static_range is None:
+            return None
+        if not self._for_body_uses_loop_indexed_pipe_net(node.body, node.target.id):
+            return None
+        return node.target.id, static_range
+
     def _resolve_static_range_iter(self, node):
         if not isinstance(node, ast.Call):
             return None
@@ -317,6 +396,7 @@ class TTLGenericCompiler(TTCompilerBase):
         try:
             return range(*values)
         except ValueError as error:
+            # A zero range step is invalid Python, not a dynamic loop fallback.
             self._raise_error(node, str(error))
 
     def _node_contains_name(self, node, name: str) -> bool:
@@ -328,66 +408,100 @@ class TTLGenericCompiler(TTCompilerBase):
         if not names:
             return False
         return any(
-            isinstance(child, ast.Name) and child.id in names for child in ast.walk(node)
+            isinstance(child, ast.Name) and child.id in names
+            for child in ast.walk(node)
         )
+
+    def _node_contains_host_metadata_name(self, node) -> bool:
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Name):
+                continue
+            table = self._var_exists(child.id)
+            if table:
+                value = table[child.id]
+            else:
+                value = self.fn_globals.get(child.id, self._UNRESOLVED_PYTHON_VALUE)
+            if value is self._UNRESOLVED_PYTHON_VALUE:
+                continue
+            if isinstance(value, (int, float, str, tuple, list, dict, set, frozenset)):
+                return True
+            from ..pipe import PipeNet
+
+            if isinstance(value, PipeNet):
+                return True
+        return False
 
     def _pipe_net_method_names(self):
         return self._PIPENET_CALLBACK_METHODS + tuple(self._PIPENET_PREDICATE_OPS)
 
     def _for_body_uses_loop_indexed_pipe_net(self, body, loop_var: str) -> bool:
         aliases = set()
-        for stmt in body:
-            for child in ast.walk(stmt):
-                if isinstance(child, ast.Assign):
-                    if self._node_contains_name(
-                        child.value, loop_var
-                    ) or self._node_contains_any_name(child.value, aliases):
-                        for target in child.targets:
-                            if isinstance(target, ast.Name):
-                                aliases.add(target.id)
-                if not isinstance(child, ast.Call):
-                    continue
-                func = child.func
-                if not isinstance(func, ast.Attribute):
-                    continue
-                if func.attr not in self._pipe_net_method_names():
-                    continue
-                receiver = func.value
-                if self._node_contains_name(receiver, loop_var):
+
+        def visit_node(node) -> bool:
+            if isinstance(node, ast.Call):
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr in self._pipe_net_method_names()
+                ):
+                    receiver = func.value
+                    if self._node_contains_name(receiver, loop_var):
+                        return True
+                    if self._node_contains_any_name(receiver, aliases):
+                        return True
+
+            if isinstance(node, ast.Assign):
+                if visit_node(node.value):
                     return True
-                if self._node_contains_any_name(receiver, aliases):
+                if self._node_contains_name(
+                    node.value, loop_var
+                ) or self._node_contains_any_name(node.value, aliases):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            aliases.add(target.id)
+                for target in node.targets:
+                    if visit_node(target):
+                        return True
+                return False
+
+            if isinstance(node, ast.AnnAssign):
+                if node.value is not None and visit_node(node.value):
                     return True
-        return False
+                if node.value is not None and (
+                    self._node_contains_name(node.value, loop_var)
+                    or self._node_contains_any_name(node.value, aliases)
+                ):
+                    if isinstance(node.target, ast.Name):
+                        aliases.add(node.target.id)
+                return visit_node(node.target)
+
+            return any(visit_node(child) for child in ast.iter_child_nodes(node))
+
+        return any(visit_node(stmt) for stmt in body)
 
     def visit_For(self, node):
-        if isinstance(node.target, ast.Name):
-            static_range = self._resolve_static_range_iter(node.iter)
-            if static_range is not None and self._for_body_uses_loop_indexed_pipe_net(
-                node.body, node.target.id
-            ):
-                # PipeNet receiver selection is host metadata. Unroll only
-                # loops whose index selects a PipeNet so ordinary numeric
-                # loops keep lowering to scf.for.
+        selection_loop = self._selection_loop(node)
+        if selection_loop is not None:
+            loop_var, static_range = selection_loop
+            # PipeNet receiver selection is host metadata. Unroll only
+            # loops whose index selects a PipeNet so ordinary numeric
+            # loops keep lowering to scf.for.
+            self._on_scope_exit()
+            for loop_value in static_range:
+                self.symbol_tables.append({})
+                self._set_var(loop_var, loop_value)
+                for stmt in node.body:
+                    self.visit(stmt)
                 self._on_scope_exit()
-                for loop_value in static_range:
-                    self.symbol_tables.append({})
-                    self._set_var(node.target.id, loop_value)
-                    for stmt in node.body:
-                        self.visit(stmt)
-                    self._on_scope_exit()
-                    self.symbol_tables.pop()
-                return
+                self.symbol_tables.pop()
+            return
         return super().visit_For(node)
 
     def visit_Assign(self, node):
         """Handle tuple unpacking for TTL functions like core(dims=2)."""
-        static_value = self._resolve_static_python_value(node.value)
-        if (
-            len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and self._is_pipe_net_metadata_value(static_value)
-        ):
-            self._set_var(node.targets[0].id, static_value)
+        if self._bind_pipe_net_metadata_assignment(node):
+            return
+        if self._bind_static_metadata_alias_assignment(node):
             return
 
         if not isinstance(node.targets[0], ast.Tuple):
@@ -605,7 +719,7 @@ class TTLGenericCompiler(TTCompilerBase):
             return False
         if node.func.attr not in self._PIPENET_CALLBACK_METHODS:
             return False
-        if isinstance(node.func.value, ast.Name) and node.func.value.id == "ttl":
+        if self._is_ttl_module_receiver(node.func.value):
             return False
         return (
             self._resolve_pipe_net_receiver(
@@ -625,7 +739,7 @@ class TTLGenericCompiler(TTCompilerBase):
             return False
         if node.func.attr not in self._PIPENET_PREDICATE_OPS:
             return False
-        if isinstance(node.func.value, ast.Name) and node.func.value.id == "ttl":
+        if self._is_ttl_module_receiver(node.func.value):
             return False
         return (
             self._resolve_pipe_net_receiver(
@@ -777,6 +891,16 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to check function globals for simple constants."""
         result = super().visit_Name(node)
         if result is not None:
+            if isinstance(result, bool):
+                return arith.ConstantOp(
+                    IntegerType.get_signless(1, self.ctx), result
+                ).result
+            if isinstance(result, int):
+                return arith.ConstantOp(
+                    IntegerType.get_signless(64, self.ctx), result
+                ).result
+            if isinstance(result, float):
+                return arith.ConstantOp(F32Type.get(self.ctx), result).result
             return result
 
         # Check if it's a module-level constant
@@ -795,6 +919,14 @@ class TTLGenericCompiler(TTCompilerBase):
     def _is_ttl_module_access(self, node):
         """Check if node is ttl.XXX access pattern."""
         return isinstance(node.value, ast.Name) and node.value.id == "ttl"
+
+    def _is_ttl_module_receiver(self, node) -> bool:
+        if not isinstance(node, ast.Name):
+            return False
+        if node.id == "ttl":
+            return True
+        value = self.fn_globals.get(node.id)
+        return getattr(value, "__name__", None) == "ttl"
 
     def _is_ttl_math_access(self, node):
         """Check if node is ttl.math.XXX access pattern."""
@@ -1482,26 +1614,19 @@ class TTLGenericCompiler(TTCompilerBase):
 
         def collect_statement(stmt):
             if isinstance(stmt, ast.Assign):
-                static_value = self._resolve_static_python_value(stmt.value)
-                if (
-                    len(stmt.targets) == 1
-                    and isinstance(stmt.targets[0], ast.Name)
-                    and self._is_pipe_net_metadata_value(static_value)
-                ):
-                    self._set_var(stmt.targets[0].id, static_value)
+                self._bind_pipe_net_metadata_assignment(stmt)
+                self._bind_static_metadata_alias_assignment(stmt)
 
-            if isinstance(stmt, ast.For) and isinstance(stmt.target, ast.Name):
-                static_range = self._resolve_static_range_iter(stmt.iter)
-                if static_range is not None and self._for_body_uses_loop_indexed_pipe_net(
-                    stmt.body, stmt.target.id
-                ):
-                    for loop_value in static_range:
-                        self.symbol_tables.append({})
-                        self._set_var(stmt.target.id, loop_value)
-                        for body_stmt in stmt.body:
-                            collect_statement(body_stmt)
-                        self.symbol_tables.pop()
-                    return
+            selection_loop = self._selection_loop(stmt)
+            if selection_loop is not None:
+                loop_var, static_range = selection_loop
+                for loop_value in static_range:
+                    self.symbol_tables.append({})
+                    self._set_var(loop_var, loop_value)
+                    for body_stmt in stmt.body:
+                        collect_statement(body_stmt)
+                    self.symbol_tables.pop()
+                return
 
             for child in ast.walk(stmt):
                 if not isinstance(child, ast.Call):
