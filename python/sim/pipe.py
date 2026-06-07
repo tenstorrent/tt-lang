@@ -370,6 +370,25 @@ def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
     return list(seen.values())
 
 
+def _iter_pipe_nets_in_value(value: Any, visited: Set[int]) -> Iterable["PipeNet"]:
+    """Yield PipeNets reachable through Python metadata containers."""
+    value_id = id(value)
+    if value_id in visited:
+        return
+    visited.add(value_id)
+    if isinstance(value, PipeNet):
+        yield value
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from _iter_pipe_nets_in_value(item, visited)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _iter_pipe_nets_in_value(key, visited)
+            yield from _iter_pipe_nets_in_value(item, visited)
+
+
 def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
     # The Python module is an enclosing scope of an @ttl.operation
     # function, so module-scope PipeNets satisfy the spec's "enclosing
@@ -382,12 +401,10 @@ def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
             value = cell.cell_contents
         except ValueError:
             continue
-        if isinstance(value, PipeNet):
-            yield value
+        yield from _iter_pipe_nets_in_value(value, set())
     fn_globals = getattr(func, "__globals__", None) or {}
     for value in fn_globals.values():
-        if isinstance(value, PipeNet):
-            yield value
+        yield from _iter_pipe_nets_in_value(value, set())
 
 
 class PipeNet(Generic[DstT]):
