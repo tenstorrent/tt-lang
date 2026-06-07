@@ -17,6 +17,8 @@ import inspect
 import warnings
 from typing import Any, Callable, Iterable, List, Optional, Set, Tuple, Union
 
+from ttl._pipenets import iter_instances_in_metadata
+
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
 CoreRange = Tuple[Union[int, slice], Union[int, slice]]
@@ -326,18 +328,4 @@ class PipeNet:
 
 def _iter_pipe_nets_in_value(value: Any, visited: Set[int]) -> Iterable[PipeNet]:
     """Yield PipeNets reachable through Python metadata containers."""
-    value_id = id(value)
-    if value_id in visited:
-        return
-    visited.add(value_id)
-    if isinstance(value, PipeNet):
-        yield value
-        return
-    if isinstance(value, (list, tuple, set, frozenset)):
-        for item in value:
-            yield from _iter_pipe_nets_in_value(item, visited)
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            yield from _iter_pipe_nets_in_value(key, visited)
-            yield from _iter_pipe_nets_in_value(item, visited)
+    yield from iter_instances_in_metadata(value, PipeNet, visited)

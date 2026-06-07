@@ -36,6 +36,8 @@ GLOBAL_PIPE_NET_GROUPS = {
         ttl.PipeNet([ttl.Pipe(src=(3, 0), dst=(2, 0))]),
     )
 }
+CYCLIC_PIPE_NET_GROUP = [GLOBAL_PIPE_NET_GROUPS["tree"][0]]
+CYCLIC_PIPE_NET_GROUP.append(CYCLIC_PIPE_NET_GROUP)
 
 
 @ttl.operation(grid=(6, 1))
@@ -54,23 +56,26 @@ def compile_pipenet_receiver_expression():
     @ttl.compute()
     def compute():
         for pipe_index in range(len(pipe_nets)):
-            if pipe_nets[pipe_index].is_dst():
+            net_index = pipe_index + 0
+            if pipe_nets[net_index].is_dst():
                 with recv_dfb.wait() as _recv_blk:
                     pass
 
     @ttl.datamovement()
     def send_dm():
         for pipe_index in range(len(pipe_nets)):
-            if pipe_nets[pipe_index].is_src():
+            net_index = pipe_index + 0
+            if pipe_nets[net_index].is_src():
                 with send_dfb.reserve() as send_blk:
-                    pipe_nets[pipe_index].if_src(
+                    pipe_nets[net_index].if_src(
                         lambda pipe: ttl.copy(send_blk, pipe).wait()
                     )
 
     @ttl.datamovement()
     def recv_dm():
         for pipe_index in range(len(pipe_nets)):
-            pipe_nets[pipe_index].if_dst(
+            net_index = pipe_index + 0
+            pipe_nets[net_index].if_dst(
                 lambda pipe: ttl.copy(pipe, recv_dfb.reserve()).wait()
             )
 

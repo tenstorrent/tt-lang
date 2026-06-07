@@ -20,9 +20,9 @@ from utils.correctness import assert_pcc
 TILE = 32
 
 
-MODULE_PIPE_NET_GROUPS = {
-    "module": [ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])]
-}
+MODULE_PIPE_NET_GROUPS = {"module": [ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])]}
+CYCLIC_PIPE_NET_GROUP = [MODULE_PIPE_NET_GROUPS["module"][0]]
+CYCLIC_PIPE_NET_GROUP.append(CYCLIC_PIPE_NET_GROUP)
 
 
 def make_indexed_pipenet_unicast():
@@ -54,19 +54,19 @@ def make_indexed_pipenet_unicast():
 
         @ttl.datamovement()
         def dm_read():
-            node_x, _node_y = ttl.node(dims=2)
             indexed_nets = local_pipe_net_groups["indexed"]
             for pipe_index in range(len(indexed_nets)):
-                if indexed_nets[pipe_index].is_src():
+                net_index = pipe_index + 0
+                if indexed_nets[net_index].is_src():
                     with send_cb.reserve() as send_blk:
-                        ttl.copy(inp[0, node_x], send_blk).wait()
+                        ttl.copy(inp[0, net_index], send_blk).wait()
 
                         def send(pipe):
                             ttl.copy(send_blk, pipe).wait()
 
-                        indexed_nets[pipe_index].if_src(send)
+                        indexed_nets[net_index].if_src(send)
 
-                indexed_nets[pipe_index].if_dst(
+                indexed_nets[net_index].if_dst(
                     lambda pipe: ttl.copy(pipe, recv_cb.reserve()).wait()
                 )
 
@@ -98,8 +98,8 @@ def test_nested_indexed_pipenet_receiver_expression(device):
     result = ttnn.to_torch(out_tt)
     expected = torch.cat(
         [
+            torch.abs(inp_torch[:, 0:TILE]),
             torch.abs(inp_torch[:, TILE : 2 * TILE]),
-            torch.abs(inp_torch[:, 3 * TILE : 4 * TILE]),
         ],
         dim=1,
     )

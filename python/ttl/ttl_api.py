@@ -1001,7 +1001,9 @@ def _collect_captures(
         f: Function with closure to inspect
 
     Returns:
-        Dictionary mapping variable names to converted values
+        Dictionary mapping variable names to accepted capture values. Captures
+        may be scalars, tensors, DFBs, Pipes, PipeNets, or Python containers
+        that contain at least one PipeNet.
 
     Raises:
         TypeError: If closure contains unsupported variable types
