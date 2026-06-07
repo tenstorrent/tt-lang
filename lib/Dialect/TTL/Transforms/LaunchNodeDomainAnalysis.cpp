@@ -8,6 +8,7 @@
 
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
+#include "PipeGraph.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
@@ -17,7 +18,6 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "PipeGraph.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"

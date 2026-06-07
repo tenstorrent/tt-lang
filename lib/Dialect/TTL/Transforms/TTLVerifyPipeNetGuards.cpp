@@ -12,6 +12,7 @@
 // set.
 //===----------------------------------------------------------------------===//
 
+#include "PipeGraph.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -19,7 +20,6 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
-#include "PipeGraph.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -98,8 +98,7 @@ std::optional<SelectedPipeRecords> getSelectedPipeRecords(Value pipe) {
     return SelectedPipeRecords{selectedSrc.getRecords(), PipeRole::Source};
   }
   if (auto selectedDst = pipe.getDefiningOp<SelectPipeDstOp>()) {
-    return SelectedPipeRecords{selectedDst.getRecords(),
-                               PipeRole::Destination};
+    return SelectedPipeRecords{selectedDst.getRecords(), PipeRole::Destination};
   }
   auto blockArg = mlir::dyn_cast<BlockArgument>(pipe);
   if (!blockArg || blockArg.getArgNumber() != 0) {
@@ -110,8 +109,7 @@ std::optional<SelectedPipeRecords> getSelectedPipeRecords(Value pipe) {
     return SelectedPipeRecords{foreachSrc.getRecords(), PipeRole::Source};
   }
   if (auto foreachDst = mlir::dyn_cast<PipeNetForeachDstOp>(owner)) {
-    return SelectedPipeRecords{foreachDst.getRecords(),
-                               PipeRole::Destination};
+    return SelectedPipeRecords{foreachDst.getRecords(), PipeRole::Destination};
   }
   return std::nullopt;
 }
@@ -193,11 +191,11 @@ struct ModuleState : LaunchNodeDomainState {
                                 PipeEventKind kind,
                                 const LaunchNodeDomain &domain,
                                 SmallVectorImpl<PipeEvent> &events) {
-    PipeRole role = kind == PipeEventKind::Send ? PipeRole::Source
-                                                : PipeRole::Destination;
+    PipeRole role =
+        kind == PipeEventKind::Send ? PipeRole::Source : PipeRole::Destination;
     for (PipeRecordAttr record : records.getPipes()) {
-      PipeType pipeType = getPipeTypeFromRecord(
-          records.getContext(), record, records.getPipeNetId());
+      PipeType pipeType = getPipeTypeFromRecord(records.getContext(), record,
+                                                records.getPipeNetId());
       events.push_back(PipeEvent{
           op, pipeType, kind,
           domain.intersectWith(getPipeRecordRoleLaunchNodeDomain(
@@ -223,9 +221,10 @@ struct ModuleState : LaunchNodeDomainState {
     }
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
       if (isPipeReceiveCopy(copyOp)) {
-        events.push_back(PipeEvent{
-            op, pipeType, PipeEventKind::ReceivePost,
-            domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType))});
+        events.push_back(
+            PipeEvent{op, pipeType, PipeEventKind::ReceivePost,
+                      domain.intersectWith(
+                          getPipeDestinationLaunchNodeDomain(pipeType))});
       }
       return events;
     }
@@ -408,10 +407,10 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
            "wrap the copy in `"
         << name << ".if_src(...)` or guard with `if " << name
         << ".is_src(): ...`";
-    checkKnownSubset(copyOp, current,
-                     getPipeNetRecordsRoleLaunchNodeDomain(*records,
-                                                           PipeRole::Source),
-                     unanalyzable, msg, {{netId, PipeRole::Source}}, state);
+    checkKnownSubset(
+        copyOp, current,
+        getPipeNetRecordsRoleLaunchNodeDomain(*records, PipeRole::Source),
+        unanalyzable, msg, {{netId, PipeRole::Source}}, state);
     return;
   }
   if (auto srcPipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
@@ -439,11 +438,10 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
            "net; wrap the copy in `"
         << name << ".if_dst(...)` or guard with `if " << name
         << ".is_dst(): ...`";
-    checkKnownSubset(copyOp, current,
-                     getPipeNetRecordsRoleLaunchNodeDomain(
-                         *records, PipeRole::Destination),
-                     unanalyzable, msg, {{netId, PipeRole::Destination}},
-                     state);
+    checkKnownSubset(
+        copyOp, current,
+        getPipeNetRecordsRoleLaunchNodeDomain(*records, PipeRole::Destination),
+        unanalyzable, msg, {{netId, PipeRole::Destination}}, state);
   }
 }
 
@@ -587,9 +585,17 @@ PipeNodeIdentity getPipeNodeIdentity(Operation *op, LaunchNodeCoord coord,
                                      PipeScheduleNodeKind kind) {
   auto [pipeNetId, srcX, srcY, dstStartX, dstEndX, dstStartY, dstEndY] =
       getPipeIdentity(pipeType);
-  return {op,        pipeNetId, srcX,      srcY,
-          dstStartX, dstEndX,   dstStartY, dstEndY,
-          coord.x,   coord.y,   static_cast<int64_t>(kind)};
+  return {op,
+          pipeNetId,
+          srcX,
+          srcY,
+          dstStartX,
+          dstEndX,
+          dstStartY,
+          dstEndY,
+          coord.x,
+          coord.y,
+          static_cast<int64_t>(kind)};
 }
 
 /// Add or reuse the graph node for one pipe synchronization event.

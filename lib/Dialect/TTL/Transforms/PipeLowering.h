@@ -130,8 +130,7 @@ struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
-  llvm::MapVector<Operation *, SmallVector<PipeResourceInfo>>
-      selectedResources;
+  llvm::MapVector<Operation *, SmallVector<PipeResourceInfo>> selectedResources;
 };
 
 /// Resource totals consumed by TTKernel lowering and runtime setup.

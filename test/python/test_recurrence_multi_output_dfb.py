@@ -63,9 +63,9 @@ def running_max_subtract(x, neg_inf, out):
         ttl.copy(neg_inf[0:1, 0:1], seed_dst)
         for c in range(N_CHUNKS):
             x_dst = x_cb.reserve()
-            ttl.copy(x[c:c + 1, 0:WT], x_dst)
+            ttl.copy(x[c : c + 1, 0:WT], x_dst)
             y_blk = out_cb.wait()
-            ttl.copy(y_blk, out[c:c + 1, 0:WT])
+            ttl.copy(y_blk, out[c : c + 1, 0:WT])
 
     @ttl.datamovement()
     def dm_unused():
@@ -84,9 +84,9 @@ def test_running_max_subtract(device, dtype, threshold):
     m = torch.full((TILE, 1), -1e30, dtype=torch.float32)
     y_ref = torch.empty_like(x, dtype=torch.float32)
     for c in range(N_CHUNKS):
-        xc = x[c * TILE:(c + 1) * TILE, :].float()
+        xc = x[c * TILE : (c + 1) * TILE, :].float()
         m = torch.maximum(m, xc.amax(dim=1, keepdim=True))
-        y_ref[c * TILE:(c + 1) * TILE, :] = xc - m
+        y_ref[c * TILE : (c + 1) * TILE, :] = xc - m
 
     x_dram = to_dram(x, device)
     neg_inf_dram = to_dram(torch.full((TILE, TILE), -1e30, dtype=dtype), device)
