@@ -278,6 +278,34 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
   }
 }
 
+static bool replacementDominatesRemainingUses(Operation *replacementOp,
+                                              Operation *sourceOp) {
+  for (Value result : sourceOp->getResults()) {
+    for (OpOperand &use : result.getUses()) {
+      Operation *user = use.getOwner();
+      if (user->getBlock() != replacementOp->getBlock()) {
+        return false;
+      }
+      if (user->isBeforeInBlock(replacementOp)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static void replaceOpIfSafe(PatternRewriter &rewriter, Operation *sourceOp,
+                            ValueRange replacements) {
+  assert(!replacements.empty() &&
+         "replaceOpIfSafe requires replacement values");
+  Operation *replacementOp = replacements.front().getDefiningOp();
+  assert(replacementOp && "replacement must be produced by an operation");
+  if (!replacementDominatesRemainingUses(replacementOp, sourceOp)) {
+    return;
+  }
+  rewriter.replaceOp(sourceOp, replacements);
+}
+
 //===----------------------------------------------------------------------===//
 // Tile op emission for fusion
 //===----------------------------------------------------------------------===//
@@ -747,6 +775,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           if (!accTile) {
             return nullptr;
           }
+          if (!isa<BlockArgument>(accTile)) {
+            return nullptr;
+          }
           // The folded matmul's tile result represents the AddOp's result,
           // so derive the tile type from the add op rather than the final
           // sink type. This keeps mid-chain accumulator dtype distinct from
@@ -852,7 +883,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   YieldOp::create(rewriter, loc);
-  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  replaceOpIfSafe(rewriter, sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -942,7 +973,7 @@ static LogicalResult buildComputeFromInputs(
   Value result = emitTileOp(rewriter, loc, outputTileType, body);
   emitTileStores(rewriter, loc, result, op);
   YieldOp::create(rewriter, loc);
-  rewriter.replaceOp(op, computeOp.getResult(0));
+  replaceOpIfSafe(rewriter, op, computeOp.getResult(0));
   return success();
 }
 
@@ -1136,13 +1167,6 @@ static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op) {
     return success(); // pattern will handle gracefully
   }
 
-  if (!getAttachedCB(op.getInput())) {
-    return op.emitOpError(
-        "broadcast input must come directly from a circular buffer, not from "
-        "an elementwise result; move the broadcast to its own compute block "
-        "or make it the first operation in a fused sequence");
-  }
-
   int64_t rank = inputType.getRank();
   auto broadcastDims = normalizeDimsToSet(op.getDims(), rank);
 
@@ -1202,7 +1226,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
 
     Value inputCb = getAttachedCB(op.getInput());
     if (!inputCb) {
-      return rewriter.notifyMatchFailure(op, "input not CB-attached");
+      return tryFusion(op, rewriter);
     }
     Value outCb;
     for (OpOperand &use : op.getResult().getUses()) {
@@ -1271,7 +1295,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
     }
     emitTileStores(rewriter, loc, bodyResult, op.getOperation());
     YieldOp::create(rewriter, loc);
-    rewriter.replaceOp(op, computeOp.getResult(0));
+    replaceOpIfSafe(rewriter, op, computeOp.getResult(0));
     return success();
   }
 };
@@ -1631,7 +1655,7 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
         rewriter, loc, tileType, op.getValueAttr());
     emitTileStores(rewriter, loc, fillTileOp, op);
     YieldOp::create(rewriter, loc);
-    rewriter.replaceOp(op, computeOp.getResults());
+    replaceOpIfSafe(rewriter, op, computeOp.getResults());
     return success();
   }
 };

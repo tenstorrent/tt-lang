@@ -219,7 +219,8 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
-  // Special case: BlockBroadcastOp can be fused when its input is CB-attached.
+  // A broadcast can either read a DFB root directly or consume a tile value
+  // produced earlier in the same fused compute body.
   if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
     mlir::Value bcastInput = bcastOp.getInput();
     if (getAttachedCB(bcastInput)) {
@@ -227,9 +228,18 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // Bcast recognized but input not CB-attached.
-    result.failureReason = TraceFailureReason::NotCBAttached;
-    result.failedValue = bcastInput;
+
+    auto inputTrace = traceFusionToRoots(bcastInput);
+    if (inputTrace.failureReason != TraceFailureReason::Success) {
+      return inputTrace;
+    }
+    for (mlir::Value root : inputTrace.rootInputs) {
+      result.rootInputs.insert(root);
+    }
+    for (mlir::Operation *op : inputTrace.opsInOrder) {
+      result.opsInOrder.insert(op);
+    }
+    result.opsInOrder.insert(defOp);
     return result;
   }
 
