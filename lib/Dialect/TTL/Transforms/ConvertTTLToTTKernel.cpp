@@ -275,7 +275,8 @@ static Value computeNumTiles(Operation *sourceOp, Value cb,
   return arith::ConstantIntOp::create(rewriter, loc, numTiles, 32);
 }
 
-template <typename SourceOp, typename TargetOp, bool HasResult>
+template <typename SourceOp, typename TargetOp, bool HasResult,
+          bool StripWhenResident = false>
 struct CBOpLowering : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
 
@@ -295,8 +296,13 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
 
-    Value numTiles = computeNumTiles(op, originalCb, rewriter, loc);
-    TargetOp::create(rewriter, loc, *convertedCb, numTiles);
+    // A resident cb_wait is a non-consuming peek: emit no cb_wait_front (the
+    // read pointer never advanced, so the data is already in the slot). The
+    // view cast below still threads the CB to the consuming tile op.
+    if (!(StripWhenResident && op->hasAttr("resident"))) {
+      Value numTiles = computeNumTiles(op, originalCb, rewriter, loc);
+      TargetOp::create(rewriter, loc, *convertedCb, numTiles);
+    }
 
     if constexpr (HasResult) {
       auto viewCast = UnrealizedConversionCastOp::create(
@@ -314,7 +320,8 @@ using CBReserveLowering =
 using CBPushLowering =
     CBOpLowering<CBPushOp, ttk::CBPushBackOp, /*HasResult=*/false>;
 using CBWaitLowering =
-    CBOpLowering<CBWaitOp, ttk::CBWaitFrontOp, /*HasResult=*/true>;
+    CBOpLowering<CBWaitOp, ttk::CBWaitFrontOp, /*HasResult=*/true,
+                 /*StripWhenResident=*/true>;
 using CBPopLowering =
     CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
 

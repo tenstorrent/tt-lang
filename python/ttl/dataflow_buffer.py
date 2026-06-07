@@ -122,6 +122,34 @@ class DataflowBuffer:
         tensor = ttl.cb_reserve(tensor_type, ast_self)
         return ttl.attach_cb(tensor.type, tensor, ast_self)
 
+    def read(ast_self: "DataflowBuffer") -> "TensorBlock":
+        """
+        Read the current contents of the buffer in place (non-consuming peek).
+
+        Like wait(), but emits no cb_wait_front and no cb_pop: the read pointer
+        is not advanced, so the slot's contents are read in place and persist
+        until the next store(). Use for a buffer that one compute thread both
+        writes (via store()) and reads, where no cross-thread handshake is
+        needed; correctness comes from the DST tile_regs ordering.
+
+        Returns:
+            TensorBlock: The buffer contents with DFB association.
+        """
+        tensor_type = _get_cb_tensor_type(ast_self)
+        tensor = ttl.cb_wait(tensor_type, ast_self, resident=True)
+        return ttl.attach_cb(tensor.type, tensor, ast_self)
+
+    def store(ast_self: "DataflowBuffer", rhs: "TensorBlock") -> None:
+        """
+        Store a tensor into the buffer in place (paired with read()).
+
+        Reserves the slot and packs in place, emitting no cb_push: the write
+        pointer is not advanced, so repeated store()s overwrite the same slot.
+        """
+        tensor_type = _get_cb_tensor_type(ast_self)
+        reserve = ttl.cb_reserve(tensor_type, ast_self, resident=True)
+        ttl.store(rhs, reserve)
+
 
 # Backward-compatible alias. Existing user code using `ttl.CircularBuffer`
 # continues to work; new code should prefer `DataflowBuffer`.

@@ -290,6 +290,12 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
                                   OpBuilder &builder,
                                   CreateReleaseFn createRelease) {
   for (Operation *acquire : acquires) {
+    // A resident acquire (cb_reserve/cb_wait emitted by a DFB's store()/read())
+    // is in place: no cb_push/cb_pop, so the read/write pointer never advances
+    // and the slot is packed and read repeatedly.
+    if (acquire->hasAttr("resident")) {
+      continue;
+    }
     AcquireInterval interval = makeAcquireInterval(acquire, acquires);
     // Cheap check first: any release inside the strict next-acquire range?
     ReleaseSearch releaseSearch =

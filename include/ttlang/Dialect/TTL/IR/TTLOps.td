@@ -1304,6 +1304,11 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
     The number of pages defaults to the CB's elements per block, but can be
     overridden via the optional `num_tiles` attribute for per-subblock reservation.
 
+    When `resident` is set the reserve is in place: the producer is the same
+    compute thread that reads via `ttl.cb_wait {resident}`, so `ttl-insert-cb-sync`
+    inserts no `cb_push` and the write pointer is never advanced (the reserved
+    slot is packed and read repeatedly). Emitted by a DFB's `store()`.
+
     Example:
     ```mlir
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -1312,7 +1317,8 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    OptionalAttr<I64Attr>:$num_tiles,
+    UnitAttr:$resident
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1359,6 +1365,12 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
     overridden via the optional `num_tiles` attribute when the wait spans
     multiple coalesced blocks (see `ttl-coalesce-dfb-acquires`).
 
+    When `resident` is set the read is a non-consuming peek: it lowers without
+    a `cb_wait_front` and `ttl-insert-cb-sync` inserts no `cb_pop`, so the read
+    pointer is never advanced. The current contents of the slot are read in
+    place (paired with `ttl.cb_reserve {resident}` writes). Emitted by a DFB's
+    `read()`.
+
     Example:
     ```mlir
     %view = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -1367,7 +1379,8 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    OptionalAttr<I64Attr>:$num_tiles,
+    UnitAttr:$resident
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
