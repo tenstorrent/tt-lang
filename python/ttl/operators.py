@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple, Union
 
 from ttl.dialects import arith
+from ttl.dialects import tensor as tensor_dialect
 from ttl.ir import (
     Context,
     F32Type,
@@ -206,6 +207,10 @@ class TensorBlock:
         )
         return ttl.matmul(result_type, ast_self, rhs)
 
+    def __getitem__(ast_self: TensorBlock, indices) -> TensorBlock:
+        """Return a tile-granular subview of a DFB-attached block."""
+        return _make_block_subview(ast_self, indices)
+
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view (overwrite).
 
@@ -340,6 +345,97 @@ def _make_tensor_slice(tensor, indices, slice_shape):
     return ttl.tensor_slice(result_type, tensor, indices)
 
 
+def _unpack_subscript_entry(entry):
+    if len(entry) == 2:
+        start, is_range = entry
+        return start, None, is_range
+    if len(entry) == 3:
+        start, stop, is_range = entry
+        return start, stop, is_range
+    raise ValueError(f"unsupported subscript entry: {entry}")
+
+
+def _get_static_index(value, *, context: str) -> int:
+    index = get_constant_int_value(value)
+    if index is None:
+        raise ValueError(f"{context} must be a compile-time constant")
+    return index
+
+
+def _validate_slice_bounds(start: int, stop: int, dim_size: int, dim: int):
+    if start < 0:
+        raise ValueError(f"slice start {start} is negative for dimension {dim}")
+    if stop <= start:
+        raise ValueError(
+            f"slice start ({start}) must be less than stop ({stop}) "
+            f"for dimension {dim}"
+        )
+    if stop > dim_size:
+        raise ValueError(
+            f"slice [{start}:{stop}] is out of bounds for dimension {dim} "
+            f"with size {dim_size}"
+        )
+
+
+def _get_static_subview_offsets_and_sizes(indices, tensor_type):
+    if len(indices) != tensor_type.rank:
+        raise ValueError(
+            f"Expected {tensor_type.rank} indices for rank-{tensor_type.rank} "
+            f"block, got {len(indices)}"
+        )
+
+    offsets = []
+    sizes = []
+    for dim, entry in enumerate(indices):
+        start_value, stop_value, is_range = _unpack_subscript_entry(entry)
+        if not is_range:
+            raise ValueError(
+                "DFB block subviews require range syntax in every dimension"
+            )
+        if stop_value is None:
+            raise ValueError("DFB block subview slices require explicit stop indices")
+
+        start = _get_static_index(
+            start_value, context=f"DFB block subview start for dimension {dim}"
+        )
+        stop = _get_static_index(
+            stop_value, context=f"DFB block subview stop for dimension {dim}"
+        )
+        _validate_slice_bounds(start, stop, tensor_type.shape[dim], dim)
+        offsets.append(start)
+        sizes.append(stop - start)
+
+    return offsets, sizes
+
+
+def _make_block_subview(block, indices):
+    """Create a DFB-associated tensor.extract_slice view of a block."""
+    if not _is_block(block):
+        raise ValueError("DFB block subviews require a block from reserve() or wait()")
+
+    view = _get_reserve_from_block(block)
+    cb = _get_cb_from_block(block)
+    view_type = view.type
+    if not isinstance(view_type, RankedTensorType):
+        raise ValueError(f"Expected RankedTensorType block, got {view_type}")
+
+    offsets, sizes = _get_static_subview_offsets_and_sizes(indices, view_type)
+    result_type = RankedTensorType.get(
+        sizes, view_type.element_type, view_type.encoding
+    )
+    subview = tensor_dialect.extract_slice(
+        result_type,
+        view,
+        [],
+        [],
+        [],
+        offsets,
+        sizes,
+        [1] * view_type.rank,
+    )
+    return ttl.attach_cb(result_type, subview, cb)
+
+
 def _is_block(value) -> bool:
     """Check if a value is a block (result of cb.reserve() or cb.wait()).
 
@@ -385,7 +481,8 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
     """Process tensor subscript and create tensor slice.
 
     Args:
-        subscript_tuple: (tensor, indices) where indices are [(value, is_range), ...]
+        subscript_tuple: (tensor, indices) where indices are
+            [(start_value, stop_value, is_range), ...]
         cb_shape: Shape from the CB. Its rank may be less than the tensor rank;
             the leading (tensor_rank - cb_rank) dims are then squeezed via
             scalar indices and the trailing dims map to the CB shape.
@@ -408,11 +505,17 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
 
     cb_is_multi_tile = any(d > 1 for d in cb_shape)
     rank_diff = expected_indices - len(cb_shape)
+    if rank_diff < 0:
+        raise ValueError(
+            f"DFB block rank {len(cb_shape)} cannot exceed tensor rank "
+            f"{tensor_type.rank}"
+        )
     if rank_diff > 0:
-        for d in range(rank_diff):
-            if indices[d][1]:
+        for dim in range(rank_diff):
+            _, _, is_range = _unpack_subscript_entry(indices[dim])
+            if is_range:
                 raise ValueError(
-                    f"slice rank reduction: leading squeezed index {d} must "
+                    f"slice rank reduction: leading squeezed index {dim} must "
                     f"be scalar (e.g. t[batch, 0, kc:..., 0:...]), got range "
                     f"syntax for a tensor dim being squeezed to match a "
                     f"rank-{len(cb_shape)} CB"
@@ -420,7 +523,7 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
         trailing_indices = indices[rank_diff:]
     else:
         trailing_indices = indices
-    uses_ranges = any(is_range for _, is_range in trailing_indices)
+    uses_ranges = any(_unpack_subscript_entry(entry)[2] for entry in trailing_indices)
 
     if cb_is_multi_tile and not uses_ranges:
         raise ValueError(
@@ -428,10 +531,38 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
             f"(e.g., tensor[0:2, 0:2]), but got index syntax"
         )
 
-    # TODO: Validate that range size matches CB shape (requires runtime or
-    # constant folding to compare end - start with cb_shape dimensions).
+    start_indices = []
+    for dim, entry in enumerate(indices):
+        start_value, stop_value, is_range = _unpack_subscript_entry(entry)
+        start_index = get_constant_int_value(start_value)
+        if start_index is not None and start_index < 0:
+            raise ValueError(
+                f"slice start {start_index} is negative for dimension {dim}"
+            )
 
-    start_indices = [value for value, _ in indices]
+        if is_range:
+            if stop_value is None:
+                raise ValueError("Slice must have explicit stop index")
+            start = get_constant_int_value(start_value)
+            stop = get_constant_int_value(stop_value)
+            if start is not None and stop is not None:
+                _validate_slice_bounds(start, stop, tensor_type.shape[dim], dim)
+                range_size = stop - start
+                if dim >= rank_diff and range_size != cb_shape[dim - rank_diff]:
+                    raise ValueError(
+                        f"slice size {range_size} for dimension {dim} must match "
+                        f"DFB block shape {cb_shape[dim - rank_diff]}"
+                    )
+        else:
+            start = get_constant_int_value(start_value)
+            if start is not None and start >= tensor_type.shape[dim]:
+                raise ValueError(
+                    f"index {start} is out of bounds for dimension {dim} "
+                    f"with size {tensor_type.shape[dim]}"
+                )
+
+        start_indices.append(start_value)
+
     return _make_tensor_slice(tensor, start_indices, cb_shape)
 
 
