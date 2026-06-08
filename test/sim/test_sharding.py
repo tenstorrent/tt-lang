@@ -49,7 +49,7 @@ class TestCountLocalRemoteL1Dram:
     # ---- HEIGHT_SHARDED (shard_shape in elements) ----
 
     def test_height_sharded_local_access(self) -> None:
-        """Core 0 reading its own shard: all elements are local."""
+        """Node 0 reading its own shard: all elements are local."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(32, 128))
         mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
         full = ttnn.Tensor(torch.zeros(128, 128), memory_config=mc)
@@ -61,7 +61,7 @@ class TestCountLocalRemoteL1Dram:
         assert dram == 0
 
     def test_height_sharded_remote_access(self) -> None:
-        """Core 0 reading core 1's shard: all elements are remote."""
+        """Node 0 reading node 1's shard: all elements are remote."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(32, 128))
         mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
         full = ttnn.Tensor(torch.zeros(128, 128), memory_config=mc)
@@ -72,8 +72,8 @@ class TestCountLocalRemoteL1Dram:
         assert remote == 32 * 128
         assert dram == 0
 
-    def test_height_sharded_full_tensor_core0(self) -> None:
-        """Core 0 on full tensor: only its row band is local."""
+    def test_height_sharded_full_tensor_node0(self) -> None:
+        """Node 0 on full tensor: only its row band is local."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(32, 64))
         mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(128, 64), memory_config=mc)
@@ -82,16 +82,16 @@ class TestCountLocalRemoteL1Dram:
         assert remote == 96 * 64
         assert dram == 0
 
-    def test_height_sharded_each_core_local(self) -> None:
-        """Each core reading its own height shard reports all-local."""
+    def test_height_sharded_each_node_local(self) -> None:
+        """Each node reading its own height shard reports all-local."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(32, 64))
         mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
         full = ttnn.Tensor(torch.zeros(128, 64), memory_config=mc)
-        for core in range(4):
+        for node in range(4):
             local, remote, dram = count_local_remote_l1_dram_for_getitem(
-                full, (slice(core, core + 1), slice(0, 2)), core
+                full, (slice(node, node + 1), slice(0, 2)), node
             )
-            assert local == 32 * 64, f"core {core}"
+            assert local == 32 * 64, f"node {node}"
             assert remote == 0
             assert dram == 0
 
@@ -143,17 +143,17 @@ class TestCountLocalRemoteL1Dram:
         assert remote == 64 * 64
         assert dram == 0
 
-    def test_block_sharded_all_cores_local(self) -> None:
+    def test_block_sharded_all_nodes_local(self) -> None:
         spec = ShardSpec(shard_grid=(2, 2), shard_shape=(32, 64))
         mc = MemoryConfig(strategy=ShardingStrategy.BLOCK_SHARDED, shard_spec=spec)
         full = ttnn.Tensor(torch.zeros(64, 128), memory_config=mc)
         for r in range(2):
             for c in range(2):
-                core = r * 2 + c
+                node = r * 2 + c
                 local, remote, dram = count_local_remote_l1_dram_for_getitem(
-                    full, (slice(r, r + 1), slice(c * 2, c * 2 + 2)), core
+                    full, (slice(r, r + 1), slice(c * 2, c * 2 + 2)), node
                 )
-                assert local == 32 * 64, f"core ({r},{c})"
+                assert local == 32 * 64, f"node ({r},{c})"
                 assert remote == 0
                 assert dram == 0
 
@@ -193,25 +193,25 @@ class TestNdSharding:
         )
         t_nd = ttnn.Tensor(torch.zeros(128, 256), memory_config=nd_mc)
         t_block = ttnn.Tensor(torch.zeros(128, 256), memory_config=block_mc)
-        for core in range(8):
-            core_row = core // 4
-            core_col = core % 4
-            r0, c0 = core_row * 2, core_col * 2
+        for node in range(8):
+            node_row = node // 4
+            node_col = node % 4
+            r0, c0 = node_row * 2, node_col * 2
             key = (slice(r0, r0 + 2), slice(c0, c0 + 2))
             shard_nd = t_nd[key]
             shard_block = t_block[key]
             assert count_local_remote_l1_dram(
                 shard_nd,
-                core,
+                node,
                 origin_in_parent_elements=shard_origin_from_key(t_nd, key),
             ) == count_local_remote_l1_dram(
                 shard_block,
-                core,
+                node,
                 origin_in_parent_elements=shard_origin_from_key(t_block, key),
-            ), f"core {core} mismatch"
+            ), f"node {node} mismatch"
 
     def test_grid2d_3d_tensor_all_local(self) -> None:
-        """GRID_2D 3D: each core's shard box matches one full element/tile key slice."""
+        """GRID_2D 3D: each node's shard box matches one full element/tile key slice."""
         shard_grid = (2, 2, 2)
         shard_shape = (32, 64, 64)
         spec = NdShardSpec(
@@ -224,15 +224,15 @@ class TestNdSharding:
         tr = shard_shape[1] // TILE_SHAPE[0]
         tc = shard_shape[2] // TILE_SHAPE[1]
         vol = shard_shape[0] * shard_shape[1] * shard_shape[2]
-        for core in range(8):
-            pos = _linear_to_nd_pos(core, shard_grid)
+        for node in range(8):
+            pos = _linear_to_nd_pos(node, shard_grid)
             key = (
                 slice(pos[0] * shard_shape[0], (pos[0] + 1) * shard_shape[0]),
                 slice(pos[1] * tr, (pos[1] + 1) * tr),
                 slice(pos[2] * tc, (pos[2] + 1) * tc),
             )
-            local, remote, dram = count_local_remote_l1_dram_for_getitem(t, key, core)
-            assert local == vol, f"core {core}"
+            local, remote, dram = count_local_remote_l1_dram_for_getitem(t, key, node)
+            assert local == vol, f"node {node}"
             assert remote == 0
             assert dram == 0
 
@@ -311,7 +311,7 @@ class TestNdSharding:
             0,
         )
 
-    def test_round_robin_multi_shard_per_core(self) -> None:
+    def test_round_robin_multi_shard_per_node(self) -> None:
         spec = NdShardSpec(
             shard_shape=(32, 32),
             shard_grid=(1, 2),
@@ -337,11 +337,11 @@ class TestNdSharding:
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(2, 32, 32), memory_config=mc)
         one = 32 * 32
-        for core in range(2):
+        for node in range(2):
             local, remote, dram = count_local_remote_l1_dram_for_getitem(
-                t, (slice(core, core + 1), slice(0, 1), slice(0, 1)), core
+                t, (slice(node, node + 1), slice(0, 1), slice(0, 1)), node
             )
-            assert local == one, f"core {core}"
+            assert local == one, f"node {node}"
             assert remote == 0
             assert dram == 0
 
@@ -367,11 +367,11 @@ class TestNdShardingTechReportExamples:
                 for k in range(2):
                     key = (slice(i, i + 1), slice(j, j + 1), slice(k, k + 1))
                     owner = _linear_shard(i, j, k)
-                    for core in range(8):
+                    for node in range(8):
                         loc, rem, dram = count_local_remote_l1_dram_for_getitem(
-                            t, key, core
+                            t, key, node
                         )
-                        if core == owner:
+                        if node == owner:
                             assert loc == vol and rem == 0 and dram == 0
                         else:
                             assert loc == 0 and rem == vol and dram == 0
@@ -385,11 +385,11 @@ class TestNdShardingTechReportExamples:
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(3, 96, 32), memory_config=mc)
         vol = 3 * 32 * 32
-        for core in range(3):
-            key = (slice(0, 3), slice(core, core + 1), slice(0, 1))
+        for node in range(3):
+            key = (slice(0, 3), slice(node, node + 1), slice(0, 1))
             for c in range(3):
                 loc, rem, dram = count_local_remote_l1_dram_for_getitem(t, key, c)
-                if c == core:
+                if c == node:
                     assert loc == vol and rem == 0 and dram == 0
                 else:
                     assert loc == 0 and rem == vol and dram == 0
@@ -446,10 +446,10 @@ class TestRowMajorShardingParity:
         )
         key_tile = (slice(0, 1), slice(0, 4))
         key_rm = (slice(0, 32), slice(0, 128))
-        for core in range(4):
+        for node in range(4):
             assert count_local_remote_l1_dram_for_getitem(
-                full_tile, key_tile, core
-            ) == count_local_remote_l1_dram_for_getitem(full_rm, key_rm, core)
+                full_tile, key_tile, node
+            ) == count_local_remote_l1_dram_for_getitem(full_rm, key_rm, node)
 
     def test_block_sharded_slice_matches_tile_layout(self) -> None:
         spec = ShardSpec(shard_grid=(2, 2), shard_shape=(64, 64))
@@ -460,10 +460,10 @@ class TestRowMajorShardingParity:
         )
         key_tile = (slice(2, 4), slice(2, 4))
         key_rm = (slice(64, 128), slice(64, 128))
-        for core in range(4):
+        for node in range(4):
             assert count_local_remote_l1_dram_for_getitem(
-                full_tile, key_tile, core
-            ) == count_local_remote_l1_dram_for_getitem(full_rm, key_rm, core)
+                full_tile, key_tile, node
+            ) == count_local_remote_l1_dram_for_getitem(full_rm, key_rm, node)
 
     def test_nd_round_robin_3d_matches_tile_layout(self) -> None:
         spec = NdShardSpec(
@@ -476,12 +476,12 @@ class TestRowMajorShardingParity:
         t_rm = ttnn.Tensor(
             torch.zeros(2, 32, 32), ttnn.ROW_MAJOR_LAYOUT, memory_config=mc
         )
-        for core in range(2):
-            kt = (slice(core, core + 1), slice(0, 1), slice(0, 1))
-            kr = (slice(core, core + 1), slice(0, 32), slice(0, 32))
+        for node in range(2):
+            kt = (slice(node, node + 1), slice(0, 1), slice(0, 1))
+            kr = (slice(node, node + 1), slice(0, 32), slice(0, 32))
             assert count_local_remote_l1_dram_for_getitem(
-                t_tile, kt, core
-            ) == count_local_remote_l1_dram_for_getitem(t_rm, kr, core)
+                t_tile, kt, node
+            ) == count_local_remote_l1_dram_for_getitem(t_rm, kr, node)
 
     def test_shard_origin_from_key_row_major_2d(self) -> None:
         spec = NdShardSpec(

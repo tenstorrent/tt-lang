@@ -1,7 +1,7 @@
 // Summary: Mixed-dtype tile arguments are accepted when the compute body
 // performs an explicit dtype conversion via ttl.tile_typecast. The companion
-// negative test (invalid/dst_mixed_dtypes_invalid.mlir) covers the case
-// where there is no such intentional conversion.
+// negative test (invalid/dst_typecast_stray_mixed_dtypes_invalid.mlir)
+// covers the case where an unrelated mixed-dtype input is used directly.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst),canonicalize,cse)' | FileCheck %s
 
 #idx_map = affine_map<(d0, d1) -> (d0, d1)>

@@ -19,8 +19,8 @@ DRAM output tensor for verification.
 
 Usage::
 
-    ttlang-sim examples/height_shard_gather.py --trace /tmp/gather.jsonl
-    ttlang-sim-stats /tmp/gather.jsonl
+    tt-lang-sim examples/height_shard_gather.py --trace /tmp/gather.jsonl
+    tt-lang-sim-stats /tmp/gather.jsonl
 
 Expected Tensor Access Statistics (locality columns)::
 

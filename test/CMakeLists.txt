@@ -70,10 +70,24 @@ add_lit_testsuite(check-ttlang-python-bindings "Running ttlang Python binding te
 )
 set_target_properties(check-ttlang-python-bindings PROPERTIES FOLDER "Tests")
 
-# Lit tests that never require a TT device.
+# Packaging pytest tests (test/packaging/test_*.py files).
+add_custom_target(check-ttlang-packaging
+  COMMAND ${Python3_EXECUTABLE} -m pytest
+    --rootdir=${CMAKE_CURRENT_SOURCE_DIR}/..
+    -c /dev/null
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging
+    -v --tb=short
+    --junitxml=${CMAKE_CURRENT_BINARY_DIR}/packaging-pytest-report.xml
+  COMMENT "Running ttlang packaging pytest tests"
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  USES_TERMINAL
+)
+set_target_properties(check-ttlang-packaging PROPERTIES FOLDER "Tests")
+
+# Tests that never require a TT device.
 add_custom_target(check-ttlang
-  DEPENDS check-ttlang-mlir check-ttlang-python-bindings
-  COMMENT "Running ttlang lit tests that never require a TT device"
+  DEPENDS check-ttlang-mlir check-ttlang-python-bindings check-ttlang-packaging
+  COMMENT "Running ttlang tests that never require a TT device"
 )
 
 # Pytest tests (test/python/test_*.py files).
@@ -111,6 +125,8 @@ add_custom_target(check-ttlang-all
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-mlir
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-bindings ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-bindings
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-packaging ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-packaging
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-pytest ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-pytest
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-me2e ==="

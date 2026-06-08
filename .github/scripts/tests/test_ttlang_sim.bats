@@ -2,13 +2,13 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Dispatch tests for bin/ttlang-sim. The launcher's effect (what `python -m`
+# Dispatch tests for bin/tt-lang-sim. The launcher's effect (what `python -m`
 # would have been called with) is captured by a mock PYTHON that prints its
 # argv and PYTHONPATH, instead of running real Python.
 
 load test_helper
 
-LAUNCHER="$BIN_DIR/ttlang-sim"
+LAUNCHER="$BIN_DIR/tt-lang-sim"
 
 # Mock-python: prints PYTHONPATH and remaining args (one per line), exits 0.
 make_mock_python() {
@@ -24,13 +24,13 @@ EOF
     chmod +x "$target"
 }
 
-# Build a synthetic root containing bin/ttlang-sim plus optional layout
+# Build a synthetic root containing bin/tt-lang-sim plus optional layout
 # markers. Args after $1 are one or more of: "source", "installed".
 make_layout() {
     local root="$1"
     shift
     mkdir -p "$root/bin"
-    cp "$LAUNCHER" "$root/bin/ttlang-sim"
+    cp "$LAUNCHER" "$root/bin/tt-lang-sim"
     for layout in "$@"; do
         case "$layout" in
             source)     mkdir -p "$root/python/sim"
@@ -51,7 +51,7 @@ setup() {
 @test "source layout: dispatches sim.ttlang_sim with PYTHONPATH=<root>/python" {
     make_layout "$ROOT" source
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim" --help foo
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim" --help foo
     assert_line --index 0 "PYTHONPATH=$ROOT/python"
     assert_line --index 1 "argv=-m"
     assert_line --index 2 "argv=sim.ttlang_sim"
@@ -62,7 +62,7 @@ setup() {
 @test "installed layout: dispatches ttl.sim.ttlang_sim with PYTHONPATH=<root>/python_packages" {
     make_layout "$ROOT" installed
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim" --help
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim" --help
     assert_line --index 0 "PYTHONPATH=$ROOT/python_packages"
     assert_line --index 2 "argv=ttl.sim.ttlang_sim"
 }
@@ -70,13 +70,13 @@ setup() {
 @test "source layout wins when both layouts coexist" {
     make_layout "$ROOT" source installed
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim"
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim"
     assert_line --index 2 "argv=sim.ttlang_sim"
 }
 
 @test "neither layout: exit 1 with both probed paths named in error" {
     make_layout "$ROOT"
-    PYTHON=/bin/false PYTHONPATH="" run -1 "$ROOT/bin/ttlang-sim"
+    PYTHON=/bin/false PYTHONPATH="" run -1 "$ROOT/bin/tt-lang-sim"
     assert_output --partial "python/sim/ttlang_sim.py"
     assert_output --partial "python_packages/ttl/sim/ttlang_sim.py"
 }
@@ -84,7 +84,7 @@ setup() {
 @test "existing PYTHONPATH is preserved as a suffix" {
     make_layout "$ROOT" installed
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="/preexisting/path" run -0 "$ROOT/bin/ttlang-sim"
+    PYTHON="$MOCK_PY" PYTHONPATH="/preexisting/path" run -0 "$ROOT/bin/tt-lang-sim"
     assert_line --index 0 "PYTHONPATH=$ROOT/python_packages:/preexisting/path"
 }
 
@@ -98,7 +98,7 @@ exit 99
 EOF
     chmod +x "$ROOT/path-shim/python"
     make_mock_python "$MOCK_PY"
-    PATH="$ROOT/path-shim:$PATH" PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim"
+    PATH="$ROOT/path-shim:$PATH" PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim"
 }
 
 @test "child python exit code is propagated" {
@@ -108,13 +108,13 @@ EOF
 exit 7
 EOF
     chmod +x "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -7 "$ROOT/bin/ttlang-sim"
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -7 "$ROOT/bin/tt-lang-sim"
 }
 
 @test "arguments with spaces pass through unmangled" {
     make_layout "$ROOT" installed
     make_mock_python "$MOCK_PY"
-    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/ttlang-sim" "two words" "--opt=value with space"
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim" "two words" "--opt=value with space"
     assert_line --index 3 "argv=two words"
     assert_line --index 4 "argv=--opt=value with space"
 }

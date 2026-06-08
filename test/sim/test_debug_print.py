@@ -650,8 +650,8 @@ def test_print_dm_wait_block_naw_state_warns(capsys):
         ttnn.close_device(device)
 
 
-def test_print_compute_thread_blocks_succeeds():
-    """Test that compute thread blocks can be printed in various states."""
+def test_print_compute_kernel_blocks_succeeds():
+    """Test that compute kernel blocks can be printed in various states."""
 
     @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
@@ -660,7 +660,7 @@ def test_print_compute_thread_blocks_succeeds():
 
         @ttl.compute()
         def compute():
-            # Compute thread: wait blocks start in MR state
+            # Compute kernel: wait blocks start in MR state
             with a_dfb.wait() as a_blk:
                 print("Compute wait block: ", a_blk)
 
@@ -687,7 +687,7 @@ def test_print_compute_thread_blocks_succeeds():
         a = make_tensor_with_value(32, 32, 2.0, device)
         out = make_tensor_with_value(32, 32, 0.0, device)
         test_kernel(a, out)
-        # Should succeed - compute thread blocks can be printed
+        # Should succeed - compute kernel blocks can be printed
     finally:
         ttnn.close_device(device)
 

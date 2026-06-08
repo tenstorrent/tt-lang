@@ -27,7 +27,7 @@
 // CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
 // CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB1]].get_write_ptr());
 // Consecutive barriers deduplicated to single barrier.
-// CHECK:   noc_async_read_barrier();
+// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

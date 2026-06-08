@@ -43,8 +43,8 @@ def pytest_collection_modifyitems(
 
 
 from greenlet import greenlet
-from sim.blockstate import ThreadType
-from sim.context import set_current_thread_type, reset_context
+from sim.blockstate import KernelType
+from sim.context import set_current_kernel_type, reset_context
 from sim.greenlet_scheduler import (
     GreenletScheduler,
     KernelId,
@@ -64,11 +64,11 @@ def reset_simulator_context():
     yield
 
 
-def setup_scheduler_and_thread_context(thread_type: ThreadType) -> GreenletScheduler:
-    """Set up scheduler and thread context for unit tests.
+def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletScheduler:
+    """Set up scheduler and kernel context for unit tests.
 
     Args:
-        thread_type: Type of thread to simulate (COMPUTE or DM)
+        kernel_type: Type of kernel to simulate (COMPUTE or DM)
 
     Returns:
         Configured GreenletScheduler instance
@@ -80,24 +80,24 @@ def setup_scheduler_and_thread_context(thread_type: ThreadType) -> GreenletSched
     scheduler = GreenletScheduler()
     set_scheduler(scheduler)
 
-    # Set thread context
-    set_current_thread_type(thread_type)
+    # Set kernel context
+    set_current_kernel_type(kernel_type)
 
     # Set the main greenlet to the current greenlet (for switching back)
     scheduler._main_greenlet = greenlet.getcurrent()
 
-    # Simulate being within core 0 with a valid KernelId so that
-    # get_current_core_id() returns "core0" and shard-locality stats work in tests.
-    # ``kind`` mirrors ``thread_type``; ``func_name`` matches the chosen role
+    # Simulate being within node 0 with a valid KernelId so that
+    # get_current_node_id() returns "node0" and shard-locality stats work in tests.
+    # ``kind`` mirrors ``kernel_type``; ``func_name`` matches the chosen role
     # for readable display in any test diagnostics.
     test_greenlet = greenlet(lambda: None)
-    tid = KernelId(0, thread_type, thread_type.name.lower())
+    tid = KernelId(0, kernel_type, kernel_type.name.lower())
     scheduler._current_kernel_id = tid
     scheduler._active[tid] = (
         test_greenlet,
         None,  # blocking_obj
         "",  # operation
-        thread_type,
+        kernel_type,
         "",  # location
         None,  # raw_loc
     )
@@ -106,23 +106,23 @@ def setup_scheduler_and_thread_context(thread_type: ThreadType) -> GreenletSched
     return scheduler
 
 
-def teardown_scheduler_and_thread_context() -> None:
-    """Clean up scheduler and thread context."""
-    set_current_thread_type(None)
+def teardown_scheduler_and_kernel_context() -> None:
+    """Clean up scheduler and kernel context."""
+    set_current_kernel_type(None)
     set_scheduler(None)
 
 
 @pytest.fixture
-def compute_thread_context():
-    """Set up scheduler context with COMPUTE thread for tests."""
-    setup_scheduler_and_thread_context(ThreadType.COMPUTE)
+def compute_kernel_context():
+    """Set up scheduler context with COMPUTE kernel for tests."""
+    setup_scheduler_and_kernel_context(KernelType.COMPUTE)
     yield
-    teardown_scheduler_and_thread_context()
+    teardown_scheduler_and_kernel_context()
 
 
 @pytest.fixture
-def dm_thread_context():
-    """Set up scheduler context with DM thread for tests."""
-    setup_scheduler_and_thread_context(ThreadType.DM)
+def dm_kernel_context():
+    """Set up scheduler context with DM kernel for tests."""
+    setup_scheduler_and_kernel_context(KernelType.DM)
     yield
-    teardown_scheduler_and_thread_context()
+    teardown_scheduler_and_kernel_context()

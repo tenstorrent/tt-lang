@@ -176,9 +176,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _set_var(self, var_name, value):
         # Capture PipeNet variable names so the verifier can render
-        # diagnostics in user-facing terms (e.g. `mcast_a_net.is_active()`
+        # diagnostics in user-facing terms (e.g. `a_pipe_net.is_active()`
         # instead of `net_0.is_active()`). Body-local PipeNet assignments
-        # are recorded here too — `mcast_a_net = ttl.PipeNet(a_pipes)`
+        # are recorded here too — `a_pipe_net = ttl.PipeNet(a_pipes)`
         # evaluates the RHS at trace time and stores the resulting object.
         from ..pipe import PipeNet
 
@@ -565,14 +565,42 @@ class TTLGenericCompiler(TTCompilerBase):
             and node.value.attr == "math"
         )
 
+    def _is_ttl_block_access(self, node):
+        """Check if node is ttl.block.XXX access pattern."""
+        return (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "ttl"
+            and node.value.attr == "block"
+        )
+
+    # Spec change-log 0.17 (TTLangSpecification.md) moved these names from
+    # ttl.math/ttl to the ttl.block namespace. Each entry restricts the names
+    # to the listed namespace; calls under another namespace raise a clear
+    # error pointing at the correct one.
+    _NAMESPACE_OVERRIDES = {
+        "broadcast": "ttl.block",
+        "fill": "ttl.block",
+    }
+
     def _resolve_ttl_function(self, node, func_args, kwargs):
-        """Resolve and call a ttl.XXX or ttl.math.XXX function."""
+        """Resolve and call a ttl.XXX, ttl.math.XXX, or ttl.block.XXX function."""
         if self._is_ttl_module_access(node):
             namespace = "ttl"
         elif self._is_ttl_math_access(node):
             namespace = "ttl.math"
+        elif self._is_ttl_block_access(node):
+            namespace = "ttl.block"
         else:
             return None
+
+        required_namespace = self._NAMESPACE_OVERRIDES.get(node.attr)
+        if required_namespace is not None and namespace != required_namespace:
+            self._raise_error(
+                node,
+                f"{namespace}.{node.attr} is not available; use "
+                f"{required_namespace}.{node.attr}",
+            )
 
         fn = self._fn_map.get(node.attr)
         if fn is None:
@@ -596,18 +624,42 @@ class TTLGenericCompiler(TTCompilerBase):
         with self._loc_for_node(node):
             try:
                 # Handle ttl.XXX and ttl.math.XXX attribute access
-                if self._is_ttl_module_access(node) or self._is_ttl_math_access(node):
+                if (
+                    self._is_ttl_module_access(node)
+                    or self._is_ttl_math_access(node)
+                    or self._is_ttl_block_access(node)
+                ):
                     return self._resolve_ttl_function(node, func_args, kwargs)
+                # Tensor-typed .shape: return the value's grid shape as a
+                # Python tuple of ints. Lets users write `y_blk.shape` inside
+                # @ttl.compute / @ttl.datamovement to derive shape kwargs for
+                # spec-form ops like ttl.block.broadcast(..., shape=y_blk.shape).
+                # Resolved before the chained-call and module-attribute branches
+                # so it also works on call expressions whose result is a ranked
+                # tensor. Non-tensor receivers fall through to the existing
+                # handlers and surface their normal diagnostic.
+                if not func_args and not kwargs and node.attr == "shape":
+                    value = self.visit(node.value)
+                    if value is not None and hasattr(value, "type"):
+                        tensor_ty = RankedTensorType.maybe_downcast(value.type)
+                        if tensor_ty is not None:
+                            return tuple(tensor_ty.shape)
                 # Handle chained method calls: expr().method()
                 if isinstance(node.value, ast.Call):
                     return self._resolve_chained_method_call(node, func_args, kwargs)
-                # When `torch.float32` (or similar module attribute) appears as
-                # an argument value rather than as a call target, parent
-                # visit_Call dispatches here with empty func_args/kwargs.
-                # In that case, return the underlying Python object so
-                # downstream syntax handlers receive the real dtype rather
-                # than triggering the parent's "expression does not produce
-                # a value" diagnostic.
+                # When a module attribute like `torch.float32` appears as an
+                # *argument value* (e.g., `ttl.math.typecast(x, torch.float32)`),
+                # parent `visit_Call` visits the argument node and dispatches
+                # here with empty func_args/kwargs. In that case we return the
+                # underlying Python object so downstream syntax handlers
+                # receive the real dtype instead of tripping the base
+                # visitor's "expression does not produce a value" diagnostic.
+                #
+                # Restricted to non-callable globals so that no-arg call
+                # targets like `torch.zeros()` still fall through to the base
+                # visitor and get evaluated as actual calls. Treating any
+                # module attribute as a value would silently substitute the
+                # function reference for its result.
                 if (
                     not func_args
                     and not kwargs
@@ -615,7 +667,9 @@ class TTLGenericCompiler(TTCompilerBase):
                     and node.value.id in self.fn_globals
                     and hasattr(self.fn_globals[node.value.id], node.attr)
                 ):
-                    return getattr(self.fn_globals[node.value.id], node.attr)
+                    candidate = getattr(self.fn_globals[node.value.id], node.attr)
+                    if not callable(candidate):
+                        return candidate
                 return super().visit_Attribute(node, func_args, kwargs)
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
@@ -750,7 +804,7 @@ class TTLGenericCompiler(TTCompilerBase):
         `pipe_net_name`, when provided, becomes the `pipeNetName` attr
         on `ttl.create_pipe` and renders in verifier diagnostics
         verbatim. Callers pass the user's Python variable name
-        (e.g. `mcast_a_net`) recovered from `_pipe_net_names`.
+        (e.g. `a_pipe_net`) recovered from `_pipe_net_names`.
 
         `source_file` / `source_line` come from the `PipeNet([...])`
         construction site captured by `PipeNet.__init__`. When set, the
@@ -771,6 +825,8 @@ class TTLGenericCompiler(TTCompilerBase):
         kwargs = {}
         if pipe_net_name:
             kwargs["pipe_net_name"] = pipe_net_name
+        if pipe.is_collective:
+            kwargs["is_collective"] = True
         if source_file and source_line is not None:
             kwargs["loc"] = Location.file(source_file, source_line, 1, self.ctx)
         return ttl.create_pipe(

@@ -28,7 +28,7 @@ NOTE: run-test.sh will copy the file. You do not need to copy the test file each
 ~/.claude/commands/tools/remote-run.sh <command>               # Run an arbitrary command on the remote
 ```
 
-By default, run-test.sh uses the functional simulator (`ttlang-sim`). Use `--hw` for real hardware. **Iterate with the simulator first.** Only move to `--hw` for final validation or if the simulator has a bug that blocks your work.
+By default, run-test.sh uses the functional simulator (`tt-lang-sim`). Use `--hw` for real hardware. **Iterate with the simulator first.** Only move to `--hw` for final validation or if the simulator has a bug that blocks your work.
 
 **Reading remote logs (output is saved, not streamed):**
 ```bash
@@ -769,7 +769,7 @@ When you are re-writing a high level operation or kernel:
 
 Even ops that DO exist may have different semantics (write in place, different numerical behavior). Always test to verify.
 
-IMPORTANT: the test runner will just execute your script as a python file. Don't overthink it. The ttlang-sim and the hw runner will just run the script as python (not pytest!) so just **add a main block**, open device, print/assert tensor values. The sim should have full compatibility with ttnn function for moving tensors, opening device and so on:
+IMPORTANT: the test runner will just execute your script as a python file. Don't overthink it. The tt-lang-sim and the hw runner will just run the script as python (not pytest!) so just **add a main block**, open device, print/assert tensor values. The sim should have full compatibility with ttnn function for moving tensors, opening device and so on:
 
 Below will work on both hw and sim:
 ```
@@ -908,7 +908,7 @@ result = ttnn.slice(output_tensor, [0, 0], [100, 50])
 
 ### Phase 1: Iterate with the Functional Simulator (default)
 
-The functional simulator (`ttlang-sim`) is the primary development tool. It catches DFB mismatches, shape errors, type errors, and functional bugs via dynamic analysis. Use it for all iteration.
+The functional simulator (`tt-lang-sim`) is the primary development tool. It catches DFB mismatches, shape errors, type errors, and functional bugs via dynamic analysis. Use it for all iteration.
 
 ```
 1. Write kernel to file

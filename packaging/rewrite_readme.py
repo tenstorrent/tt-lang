@@ -23,9 +23,9 @@ _HTML_IMG_SRC_RE = re.compile(
 
 _MD_IMAGE_RE = re.compile(r"(!\[[^\]]*\]\()(?!https?://|/|data:)([^)\s]+)")
 
-# Release tags in this repo are strictly vMAJOR.MINOR.PATCH; any other shape
-# (dev/pre/post/local segments, TTLANG_PRETEND_VERSION garbage, etc.) has no
-# corresponding git ref so it must fall back to a branch.
+# Release tags in this repo are strictly vMAJOR.MINOR.PATCH; any other form
+# (dev/pre/post/local segments, malformed TTLANG_VERSION_OVERRIDE values, etc.)
+# has no corresponding git ref so it must fall back to a branch.
 _RELEASE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
@@ -34,7 +34,7 @@ def ref_for_version(version: str) -> str:
 
     Returns `vX.Y.Z` only when `version` is exactly three numeric segments;
     anything else (dev wheels, pre/post-release identifiers, malformed
-    `TTLANG_PRETEND_VERSION` overrides, empty strings) falls back to `main`.
+    `TTLANG_VERSION_OVERRIDE` values, empty strings) falls back to `main`.
     """
     if _RELEASE_VERSION_RE.match(version):
         return f"v{version}"

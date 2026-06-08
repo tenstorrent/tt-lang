@@ -102,6 +102,32 @@ func.func @tile_max(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) 
   func.return %max : !ttcore.tile<32x32, f32>
 }
 
+// Test native TTKernel comparison ops from tt-mlir.
+// CHECK-LABEL: func.func @tile_compare_ops
+// CHECK: ttkernel.tile_regs_acquire
+// CHECK: ttkernel.eq_binary_tile_init
+// CHECK: ttkernel.eq_binary_tile
+// CHECK: ttkernel.ne_binary_tile_init
+// CHECK: ttkernel.ne_binary_tile
+// CHECK: ttkernel.gt_binary_tile_init
+// CHECK: ttkernel.gt_binary_tile
+// CHECK: ttkernel.lt_binary_tile_init
+// CHECK: ttkernel.lt_binary_tile
+// CHECK: ttkernel.tile_regs_release
+func.func @tile_compare_ops(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  %eq = ttl.tile_eq %a, %b into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %ne = ttl.tile_ne %a, %b into dst[%c1] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %gt = ttl.tile_gt %a, %b into dst[%c2] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %lt = ttl.tile_lt %a, %b into dst[%c3] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  ttkernel.tile_regs_release() : () -> ()
+  func.return %lt : !ttcore.tile<32x32, f32>
+}
+
 // CHECK-LABEL: func.func @tile_chain
 // CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.add_binary_tile_init

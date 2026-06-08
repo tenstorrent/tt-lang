@@ -14,7 +14,7 @@ Coverage matrix:
   - Binary post-ops: mul, add, sub (both operand orderings)
   - Chained post-ops: matmul -> binary -> unary, matmul -> unary -> binary
   - Self-binary: matmul result used as both operands
-  - Multi-node grid: fused post-ops with grid="auto"
+  - Multi-node grid: fused post-ops with grid="full"
 """
 
 # UNSUPPORTED: system-darwin
@@ -340,14 +340,14 @@ def matmul_gated_gelu_residual_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Multi-node kernel: fused post-ops with grid="auto"
+# Multi-node kernel: fused post-ops with grid="full"
 # ---------------------------------------------------------------------------
 
 
 def _make_multinode_gated_gelu_residual(m_blk, k_blk, n_blk):
     """residual + gelu(scale * (A @ B) + bias) * gate, multi-node."""
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def kernel(
         a_tensor: ttnn.Tensor,
         b_tensor: ttnn.Tensor,
@@ -480,7 +480,7 @@ def _make_multinode_gated_gelu_residual(m_blk, k_blk, n_blk):
 def _make_multinode_matmul_relu_bias(m_blk, k_blk, n_blk):
     """relu(A @ B) + bias with multi-node grid and K-loop accumulation."""
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def kernel(
         a_tensor: ttnn.Tensor,
         b_tensor: ttnn.Tensor,
@@ -785,7 +785,7 @@ MULTINODE_SHAPES = [
 class TestMultiNode:
     @pytest.mark.parametrize("block_shape", MULTINODE_SHAPES)
     def test_multinode_relu_bias(self, device, block_shape):
-        """relu(A @ B) + bias with grid="auto" and K-loop accumulation."""
+        """relu(A @ B) + bias with grid="full" and K-loop accumulation."""
         m_blk, k_blk, n_blk = block_shape
         total_m = m_blk * 4 * TILE
         total_k = k_blk * 2 * TILE

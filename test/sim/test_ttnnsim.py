@@ -159,7 +159,7 @@ def test_device_compute_with_storage_grid_size():
 
 
 def test_tensor_rand_and_empty_and_to_torch():
-    shape = (4, 8)
+    shape = (32, 64)
     t1 = ttnn.rand(shape, dtype=ttnn.float32)
     assert isinstance(t1, ttnn.Tensor)
     assert t1.shape == shape
@@ -413,13 +413,38 @@ def test_tensor_binary_ops_reject_torch_tensor():
 
 
 # ---- multiply function tests ----
+#
+# Layout convention for the arithmetic / golden-wrapper tests below:
+#
+#   - These tests exist to exercise the ``ttnn`` shim's elementwise math, not
+#     tile layout.  Their inputs are small ad-hoc tensors (e.g. ``(2, 2)`` or
+#     ``(4, 4)``) chosen for readability of the expected values, not for tile
+#     alignment.
+#   - Under ``TILE_LAYOUT`` the shim auto-pads such inputs to ``(32, 32)``
+#     (per ``_pad_to_tile_alignment`` in ``ttnnsim.py``), which would muddy
+#     the exact-shape assertions used here.  We therefore pass
+#     ``layout=ttnn.ROW_MAJOR_LAYOUT`` explicitly so the original shape is
+#     round-trip-preserved.
+#   - Coverage for the tile-layout shim behaviour (auto-pad + arithmetic on
+#     padded inputs) lives in the ``test_tile_layout_shim_*`` tests further
+#     down, alongside the ``_pad_to_tile_alignment`` tests.
 
 
 @requires_ttnn
 def test_multiply_basic():
-    """Test basic element-wise multiplication."""
-    a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.bfloat16))
-    b = ttnn.from_torch(torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.bfloat16))
+    """Test basic element-wise multiplication.
+
+    Uses ROW_MAJOR_LAYOUT so the (2, 2) shape is round-trip-preserved; the
+    purpose here is to exercise the shim's multiply, not tile semantics.
+    """
+    a = ttnn.from_torch(
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.bfloat16),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
+    b = ttnn.from_torch(
+        torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.bfloat16),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
 
     c = ttnn.multiply(a, b)
 
@@ -433,8 +458,12 @@ def test_multiply_basic():
 @requires_ttnn
 def test_multiply_same_shape():
     """Test multiply with same-shaped tensors."""
-    a = ttnn.from_torch(torch.ones(4, 4, dtype=torch.float32) * 3.0)
-    b = ttnn.from_torch(torch.ones(4, 4, dtype=torch.float32) * 7.0)
+    a = ttnn.from_torch(
+        torch.ones(4, 4, dtype=torch.float32) * 3.0, layout=ttnn.ROW_MAJOR_LAYOUT
+    )
+    b = ttnn.from_torch(
+        torch.ones(4, 4, dtype=torch.float32) * 7.0, layout=ttnn.ROW_MAJOR_LAYOUT
+    )
 
     c = ttnn.multiply(a, b)
 
@@ -459,8 +488,12 @@ def test_multiply_tile_sized_tensors():
 @requires_ttnn
 def test_multiply_zeros():
     """Test multiply with zeros."""
-    a = ttnn.from_torch(torch.randn(4, 4, dtype=torch.float32))
-    b = ttnn.from_torch(torch.zeros(4, 4, dtype=torch.float32))
+    a = ttnn.from_torch(
+        torch.randn(4, 4, dtype=torch.float32), layout=ttnn.ROW_MAJOR_LAYOUT
+    )
+    b = ttnn.from_torch(
+        torch.zeros(4, 4, dtype=torch.float32), layout=ttnn.ROW_MAJOR_LAYOUT
+    )
 
     c = ttnn.multiply(a, b)
 
@@ -470,8 +503,12 @@ def test_multiply_zeros():
 @requires_ttnn
 def test_multiply_ones():
     """Test multiply with ones (identity)."""
-    a = ttnn.from_torch(torch.randn(4, 4, dtype=torch.float32))
-    b = ttnn.from_torch(torch.ones(4, 4, dtype=torch.float32))
+    a = ttnn.from_torch(
+        torch.randn(4, 4, dtype=torch.float32), layout=ttnn.ROW_MAJOR_LAYOUT
+    )
+    b = ttnn.from_torch(
+        torch.ones(4, 4, dtype=torch.float32), layout=ttnn.ROW_MAJOR_LAYOUT
+    )
 
     c = ttnn.multiply(a, b)
 
@@ -481,8 +518,14 @@ def test_multiply_ones():
 @requires_ttnn
 def test_multiply_negative_values():
     """Test multiply with negative values."""
-    a = ttnn.from_torch(torch.tensor([[-1.0, 2.0], [-3.0, 4.0]], dtype=torch.float32))
-    b = ttnn.from_torch(torch.tensor([[2.0, -3.0], [4.0, -5.0]], dtype=torch.float32))
+    a = ttnn.from_torch(
+        torch.tensor([[-1.0, 2.0], [-3.0, 4.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
+    b = ttnn.from_torch(
+        torch.tensor([[2.0, -3.0], [4.0, -5.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
 
     c = ttnn.multiply(a, b)
 
@@ -800,6 +843,214 @@ def test_from_torch_various_shapes():
         assert tensor.shape == shape
 
 
+def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
+    """Regression test for issue #601: a TILE_LAYOUT tensor whose last two
+    dims are not multiples of TILE_SHAPE is auto-padded with zeros so every
+    tile is exactly 32x32 as the spec requires.  Per spec, ``(N, 1)`` column
+    vectors live in column 0 of each tile, ``(1, M)`` row vectors in row 0,
+    ``(1, 1)`` scalars at position ``(0, 0)``; broadcast / reduce then
+    overwrite the padding (steps 1 and 2 respectively) when needed.
+    """
+    col = ttnn.from_torch(torch.arange(32, dtype=torch.float32).reshape(32, 1))
+    assert col.shape == (32, 32)
+    assert torch.equal(col.to_torch()[:, 0], torch.arange(32, dtype=torch.float32))
+    assert torch.all(col.to_torch()[:, 1:] == 0)
+
+    row = ttnn.from_torch(torch.arange(32, dtype=torch.float32).reshape(1, 32))
+    assert row.shape == (32, 32)
+    assert torch.equal(row.to_torch()[0, :], torch.arange(32, dtype=torch.float32))
+    assert torch.all(row.to_torch()[1:, :] == 0)
+
+    scalar = ttnn.from_torch(torch.tensor([[3.5]], dtype=torch.float32))
+    assert scalar.shape == (32, 32)
+    assert scalar.to_torch()[0, 0].item() == 3.5
+    assert torch.all(scalar.to_torch()[1:, :] == 0)
+    assert torch.all(scalar.to_torch()[:, 1:] == 0)
+
+    odd = ttnn.from_torch(torch.ones((4, 4), dtype=torch.float32))
+    assert odd.shape == (32, 32)
+    assert torch.all(odd.to_torch()[:4, :4] == 1.0)
+    assert torch.all(odd.to_torch()[4:, :] == 0)
+    assert torch.all(odd.to_torch()[:, 4:] == 0)
+
+    # 1-D tensors still cannot be tile-laid out (no second tile dim to pad).
+    with pytest.raises(ValueError, match="at least 2 dimensions"):
+        ttnn.from_torch(torch.ones((32,)), layout=ttnn.TILE_LAYOUT)
+
+    # rand / empty take a shape directly; they pad transparently too.
+    assert ttnn.rand((32, 1)).shape == (32, 32)
+    assert ttnn.empty((4, 4)).shape == (32, 32)
+
+    # Row-major preserves the original shape exactly.
+    assert ttnn.from_torch(torch.ones((32, 1)), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (
+        32,
+        1,
+    )
+    assert ttnn.from_torch(torch.ones((4, 4)), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (
+        4,
+        4,
+    )
+
+
+# ---- TILE_LAYOUT shim behaviour ----
+#
+# These tests pin down the auto-pad contract on the multi-dimensional and
+# batched inputs that the basic ``test_from_torch_tile_layout_pads_*`` test
+# above does not exercise, and verify that elementwise arithmetic in the shim
+# operates correctly on the padded tiles (i.e. the padding zeros do not
+# corrupt the logical values in the top-left corner).  The shim's auto-pad
+# implementation (``_pad_to_tile_alignment``) uses
+# ``torch.nn.functional.pad`` and is documented to touch only the last two
+# dims; these tests make that contract explicit.
+
+
+def test_pad_to_tile_alignment_3d_last_two_unaligned():
+    """3-D input with non-aligned last two dims pads each slice independently.
+
+    ``(2, 5, 7)`` -> ``(2, 32, 32)``: the original 5x7 data lives in the
+    top-left of each batch slice; the remaining 32x32 - 5x7 cells per slice
+    are zero.
+    """
+    src = torch.arange(2 * 5 * 7, dtype=torch.float32).reshape(2, 5, 7)
+    t = ttnn.from_torch(src)
+    assert t.shape == (2, 32, 32)
+    out = t.to_torch()
+    assert torch.equal(out[:, :5, :7], src)
+    assert torch.all(out[:, 5:, :] == 0)
+    assert torch.all(out[:, :, 7:] == 0)
+
+
+def test_pad_to_tile_alignment_3d_column_vector_per_slice():
+    """3-D ``(B, N, 1)`` pads to ``(B, 32, 32)`` with data in column 0.
+
+    Mirrors the 2-D column-vector convention on each batch slice.
+    """
+    src = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 3, 1)
+    t = ttnn.from_torch(src)
+    assert t.shape == (2, 32, 32)
+    out = t.to_torch()
+    assert torch.equal(out[:, :3, 0:1], src)
+    assert torch.all(out[:, :, 1:] == 0)
+    assert torch.all(out[:, 3:, :] == 0)
+
+
+def test_pad_to_tile_alignment_3d_row_vector_per_slice():
+    """3-D ``(B, 1, M)`` pads to ``(B, 32, 32)`` with data in row 0."""
+    src = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 1, 3)
+    t = ttnn.from_torch(src)
+    assert t.shape == (2, 32, 32)
+    out = t.to_torch()
+    assert torch.equal(out[:, 0:1, :3], src)
+    assert torch.all(out[:, 1:, :] == 0)
+    assert torch.all(out[:, :, 3:] == 0)
+
+
+def test_pad_to_tile_alignment_4d_pads_only_last_two_dims():
+    """4-D ``(B0, B1, H, W)`` pads only the last two dims.
+
+    Pins down the documented contract of ``_pad_to_tile_alignment`` /
+    ``torch.nn.functional.pad`` - leading batch dims are preserved untouched.
+    """
+    src = torch.arange(2 * 3 * 5 * 7, dtype=torch.float32).reshape(2, 3, 5, 7)
+    t = ttnn.from_torch(src)
+    assert t.shape == (2, 3, 32, 32)
+    out = t.to_torch()
+    assert torch.equal(out[:, :, :5, :7], src)
+    assert torch.all(out[:, :, 5:, :] == 0)
+    assert torch.all(out[:, :, :, 7:] == 0)
+
+
+def test_pad_to_tile_alignment_already_aligned_is_identity():
+    """Already tile-aligned tensors round-trip unchanged.
+
+    Covers 2-D and 3-D inputs whose last two dims are already multiples of
+    ``TILE_SHAPE``; ``_pad_to_tile_alignment`` should be a no-op in this
+    case.
+    """
+    src_2d = torch.randn((64, 96), dtype=torch.float32)
+    t_2d = ttnn.from_torch(src_2d)
+    assert t_2d.shape == (64, 96)
+    assert torch.equal(t_2d.to_torch(), src_2d)
+
+    src_3d = torch.randn((2, 32, 32), dtype=torch.float32)
+    t_3d = ttnn.from_torch(src_3d)
+    assert t_3d.shape == (2, 32, 32)
+    assert torch.equal(t_3d.to_torch(), src_3d)
+
+
+@requires_ttnn
+def test_tile_layout_shim_multiply_column_vectors():
+    """Multiplying two ``(32, 1)`` column vectors under ``TILE_LAYOUT``.
+
+    Both inputs auto-pad to ``(32, 32)`` with data in column 0 and zeros
+    elsewhere.  Elementwise multiply preserves that placement: column 0 of
+    the output carries the elementwise products, and columns 1..31 stay
+    zero (zero times anything is zero).
+    """
+    a_src = torch.arange(1, 33, dtype=torch.float32).reshape(32, 1)
+    b_src = torch.arange(33, 65, dtype=torch.float32).reshape(32, 1)
+    a = ttnn.from_torch(a_src)
+    b = ttnn.from_torch(b_src)
+    assert a.shape == b.shape == (32, 32)
+
+    c = ttnn.multiply(a, b)
+    assert c.shape == (32, 32)
+    out = c.to_torch()
+    assert torch.equal(out[:, 0:1], a_src * b_src)
+    assert torch.all(out[:, 1:] == 0)
+
+
+@requires_ttnn
+def test_tile_layout_shim_add_row_vectors():
+    """Adding two ``(1, 32)`` row vectors under ``TILE_LAYOUT``.
+
+    Both inputs auto-pad to ``(32, 32)`` with data in row 0 and zeros
+    elsewhere.  Elementwise add preserves placement: row 0 holds the sum,
+    rows 1..31 stay zero (zero plus zero is zero).
+    """
+    a_src = torch.arange(1, 33, dtype=torch.float32).reshape(1, 32)
+    b_src = torch.arange(101, 133, dtype=torch.float32).reshape(1, 32)
+    a = ttnn.from_torch(a_src)
+    b = ttnn.from_torch(b_src)
+    assert a.shape == b.shape == (32, 32)
+
+    c = ttnn.add(a, b)
+    assert c.shape == (32, 32)
+    out = c.to_torch()
+    assert torch.equal(out[0:1, :], a_src + b_src)
+    assert torch.all(out[1:, :] == 0)
+
+
+@requires_ttnn
+def test_tile_layout_shim_multiply_corner_block():
+    """Elementwise multiply of two ``(4, 4)`` inputs under ``TILE_LAYOUT``.
+
+    Both inputs auto-pad to ``(32, 32)`` with the 4x4 source data in the
+    top-left corner and zeros elsewhere.  Elementwise multiply therefore
+    produces a tile whose top-left 4x4 block is the elementwise product
+    and the rest is zero.
+    """
+    a_src = torch.tensor(
+        [
+            [1.0, 2.0, 3.0, 4.0],
+            [5.0, 6.0, 7.0, 8.0],
+            [9.0, 10.0, 11.0, 12.0],
+            [13.0, 14.0, 15.0, 16.0],
+        ],
+        dtype=torch.float32,
+    )
+    b_src = torch.full((4, 4), 2.0, dtype=torch.float32)
+    a = ttnn.from_torch(a_src)
+    b = ttnn.from_torch(b_src)
+    assert a.shape == b.shape == (32, 32)
+
+    c = ttnn.multiply(a, b)
+    out = c.to_torch()
+    assert torch.equal(out[:4, :4], a_src * b_src)
+    assert torch.all(out[4:, :] == 0)
+    assert torch.all(out[:, 4:] == 0)
+
+
 def test_from_torch_layout_parameter_accepted():
     """Test that layout parameter is accepted (no-op in simulator)."""
     t = torch.randn((64, 64), dtype=torch.bfloat16)
@@ -888,7 +1139,7 @@ def test_from_torch_slice_conversion():
 def test_from_torch_dtype_conversion_preserves_values():
     """Test that dtype conversion preserves values within precision limits."""
     t = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
-    tensor = ttnn.from_torch(t, dtype=ttnn.bfloat16)
+    tensor = ttnn.from_torch(t, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT)
 
     result = ttnn.to_torch(tensor).to(torch.float32)
     assert torch.allclose(result, t, rtol=1e-2)  # bfloat16 has lower precision
@@ -909,8 +1160,14 @@ def test_from_torch_large_tensor():
 @requires_ttnn
 def test_golden_function_wrappers_arithmetic():
     """Test dynamically generated golden function wrappers for arithmetic operations."""
-    a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32))
-    b = ttnn.from_torch(torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.float32))
+    a = ttnn.from_torch(
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
+    b = ttnn.from_torch(
+        torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
 
     # Test add
     c = ttnn.add(a, b)
@@ -934,8 +1191,14 @@ def test_golden_function_wrappers_arithmetic():
 @requires_ttnn
 def test_golden_function_wrappers_comparisons():
     """Test dynamically generated golden function wrappers for comparison operations."""
-    a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32))
-    b = ttnn.from_torch(torch.tensor([[2.0, 2.0], [2.0, 5.0]], dtype=torch.float32))
+    a = ttnn.from_torch(
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
+    b = ttnn.from_torch(
+        torch.tensor([[2.0, 2.0], [2.0, 5.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
 
     # Test eq
     result = ttnn.eq(a, b)
@@ -962,7 +1225,10 @@ def test_golden_function_wrappers_comparisons():
 @requires_ttnn
 def test_golden_function_wrappers_unary():
     """Test dynamically generated golden function wrappers for unary operations."""
-    a = ttnn.from_torch(torch.tensor([[1.0, 4.0], [9.0, 16.0]], dtype=torch.float32))
+    a = ttnn.from_torch(
+        torch.tensor([[1.0, 4.0], [9.0, 16.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
 
     # Test sqrt
     result = ttnn.sqrt(a)
@@ -971,13 +1237,19 @@ def test_golden_function_wrappers_unary():
     assert torch.allclose(result.to_torch(), expected)
 
     # Test abs (test with negative values)
-    b = ttnn.from_torch(torch.tensor([[-1.0, 2.0], [-3.0, 4.0]], dtype=torch.float32))
+    b = ttnn.from_torch(
+        torch.tensor([[-1.0, 2.0], [-3.0, 4.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
     result = ttnn.abs(b)
     expected = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
     assert torch.allclose(result.to_torch(), expected)
 
     # Test exp
-    c = ttnn.from_torch(torch.tensor([[0.0, 1.0]], dtype=torch.float32))
+    c = ttnn.from_torch(
+        torch.tensor([[0.0, 1.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
     result = ttnn.exp(c)
     expected = torch.exp(torch.tensor([[0.0, 1.0]], dtype=torch.float32))
     assert torch.allclose(result.to_torch(), expected)
@@ -991,7 +1263,8 @@ def test_golden_function_wrappers_trigonometric():
     a = ttnn.from_torch(
         torch.tensor(
             [[0.0, math.pi / 2], [math.pi, 3 * math.pi / 2]], dtype=torch.float32
-        )
+        ),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
     )
 
     # Test sin
@@ -1006,7 +1279,10 @@ def test_golden_function_wrappers_trigonometric():
     assert torch.allclose(result.to_torch(), expected, atol=1e-6)
 
     # Test tan
-    b = ttnn.from_torch(torch.tensor([[0.0, math.pi / 4]], dtype=torch.float32))
+    b = ttnn.from_torch(
+        torch.tensor([[0.0, math.pi / 4]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
     result = ttnn.tan(b)
     expected = torch.tan(b.to_torch())
     assert torch.allclose(result.to_torch(), expected, atol=1e-6)
@@ -1016,7 +1292,8 @@ def test_golden_function_wrappers_trigonometric():
 def test_golden_function_wrappers_activation():
     """Test dynamically generated golden function wrappers for activation functions."""
     a = ttnn.from_torch(
-        torch.tensor([[-2.0, -1.0], [0.0, 1.0], [2.0, 3.0]], dtype=torch.float32)
+        torch.tensor([[-2.0, -1.0], [0.0, 1.0], [2.0, 3.0]], dtype=torch.float32),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
     )
 
     # Test relu
@@ -1039,8 +1316,14 @@ def test_golden_function_wrappers_activation():
 @requires_ttnn
 def test_golden_function_wrappers_logical():
     """Test dynamically generated golden function wrappers for logical operations."""
-    a = ttnn.from_torch(torch.tensor([[True, True], [False, False]]))
-    b = ttnn.from_torch(torch.tensor([[True, False], [True, False]]))
+    a = ttnn.from_torch(
+        torch.tensor([[True, True], [False, False]]),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
+    b = ttnn.from_torch(
+        torch.tensor([[True, False], [True, False]]),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
 
     # Test logical_and
     result = ttnn.logical_and(a, b)
@@ -2250,6 +2533,7 @@ class TestAllReduce:
         mesh = self._mesh(4)
         t = ttnn.from_torch(
             torch.zeros(8, 6),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         assert t.mesh_shard_info is not None
@@ -2262,6 +2546,7 @@ class TestAllReduce:
         mesh = self._mesh(3)
         t = ttnn.from_torch(
             torch.zeros(4, 9),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1),
         )
         assert t.mesh_shard_info is not None
@@ -2278,7 +2563,11 @@ class TestAllReduce:
         data[2:4, :] = 2.0
         data[4:6, :] = 3.0
         data[6:8, :] = 4.0
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_reduce(t)
         expected_shard = torch.full((2, 4), 10.0)
         for i in range(4):
@@ -2290,7 +2579,11 @@ class TestAllReduce:
         """With a single-device mesh, all_reduce is an identity."""
         mesh = self._mesh(1)
         data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_reduce(t)
         assert torch.allclose(result.to_torch(), data)
 
@@ -2309,6 +2602,7 @@ class TestAllReduce:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4, dtype=torch.float32),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         result = ttnn.all_reduce(t, dtype=torch.float16)
@@ -2319,6 +2613,7 @@ class TestAllReduce:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
@@ -2330,6 +2625,7 @@ class TestAllReduce:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         ttnn.all_reduce(t, cluster_axis=0, mesh_device=mesh)
@@ -2349,6 +2645,7 @@ class TestAllReduce:
         mesh = self._mesh(3)
         t = ttnn.from_torch(
             torch.zeros(8, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         assert t.mesh_shard_info is not None
@@ -2362,7 +2659,11 @@ class TestAllReduce:
         data = torch.zeros(3, 4, 5)
         data[:, 0:2, :] = 1.0  # first device's shard
         data[:, 2:4, :] = 3.0  # second device's shard
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1),
+        )
         assert t.mesh_shard_info is not None
         assert t.mesh_shard_info.dim == 1
         result = ttnn.all_reduce(t)
@@ -2386,7 +2687,11 @@ class TestAllGather:
         """all_gather along shard_dim concatenates all shards; output is n times the input."""
         mesh = self._mesh(4)
         data = torch.arange(32, dtype=torch.float32).reshape(8, 4)
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_gather(t, dim=0)
         # Each shard is [2, 4]; gathered per device = [8, 4] = data itself.
         # Output = 4 copies stacked along dim 0 = [32, 4].
@@ -2400,7 +2705,11 @@ class TestAllGather:
         mesh = self._mesh(4)
         # 4 devices, each with a [2, 6] shard; sharded along dim 0.
         data = torch.arange(48, dtype=torch.float32).reshape(8, 6)
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_gather(t, dim=1)
         # Each shard is [2, 6]; gathered along dim 1 = [2, 24].
         # Output = 4 copies stacked along dim 0 = [8, 24].
@@ -2419,7 +2728,11 @@ class TestAllGather:
         """With a single-device mesh, all_gather is an identity."""
         mesh = self._mesh(1)
         data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
-        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
         result = ttnn.all_gather(t, dim=0)
         assert torch.allclose(result.to_torch(), data)
 
@@ -2438,6 +2751,7 @@ class TestAllGather:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
@@ -2449,6 +2763,7 @@ class TestAllGather:
         mesh = self._mesh(4)
         t = ttnn.from_torch(
             torch.ones(8, 6),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         result = ttnn.all_gather(t, dim=0)
@@ -2461,6 +2776,7 @@ class TestAllGather:
         mesh = self._mesh(2)
         t = ttnn.from_torch(
             torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
         ttnn.all_gather(t, dim=0, cluster_axis=0, mesh_device=mesh)

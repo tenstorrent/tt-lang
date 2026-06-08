@@ -17,6 +17,7 @@ import glob
 import importlib.util
 import os
 import sys
+from typing import Any, Sequence
 
 # =============================================================================
 # Feature detection
@@ -160,6 +161,38 @@ def to_l1(torch_tensor, device):
         raise RuntimeError("TTNN not available")
     dram_tensor = to_dram(torch_tensor, device)
     return ttnn.to_memory_config(dram_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
+
+
+def make_compare_inputs(shape: Sequence[int], dtype: Any) -> tuple[Any, Any]:
+    """Create compare inputs with equal, less-than, and greater-than lanes.
+
+    Random f32 operands can be near-equal enough for hardware compare precision
+    to disagree with torch. This deterministic pattern keeps values separated
+    by a wide margin while still covering equality and both inequalities.
+    """
+    import torch
+
+    numel = 1
+    for dim in shape:
+        numel *= dim
+    idx = torch.arange(numel, dtype=torch.float32).reshape(tuple(shape))
+    lhs = ((idx % 17) / 64.0).to(dtype)
+    rhs = lhs.clone()
+    selector = (idx.to(torch.int64) % 3).to(torch.int64)
+    rhs = torch.where(selector == 1, (lhs.float() - 0.5).to(dtype), rhs)
+    rhs = torch.where(selector == 2, (lhs.float() + 0.5).to(dtype), rhs)
+    return lhs, rhs
+
+
+def assert_compare_result(result: Any, expected: Any) -> None:
+    """Assert exact numeric 0/1 mask equality, matching the result dtype."""
+    import torch
+
+    expected = expected.to(result.dtype)
+    assert torch.equal(result, expected), (
+        f"Compare mask mismatch: {(result != expected).sum().item()} "
+        f"/ {result.numel()}"
+    )
 
 
 # =============================================================================

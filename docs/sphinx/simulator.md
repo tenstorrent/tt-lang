@@ -17,9 +17,9 @@ tt-lang-setup
 
 See [Getting Started — Install from PyPI](getting-started.md#install-from-pypi)
 for details. `tt-lang-sim` runs on Linux and macOS and does not require
-Tenstorrent hardware. That install adds **`ttlang-sim`** and the trace post-processor
-**`ttlang-sim-stats`** to your `PATH`. There is no separate PyPI package for
-statistics; `ttlang-sim-stats` ships only as a console entry point with the
+Tenstorrent hardware. That install adds **`tt-lang-sim`** and the trace post-processor
+**`tt-lang-sim-stats`** to your `PATH`. There is no separate PyPI package for
+statistics; `tt-lang-sim-stats` ships only as a console entry point with the
 simulator distributions (`tt-lang-sim`, or full `tt-lang`, which includes the same
 simulator).
 
@@ -40,7 +40,7 @@ If you have already built the full TT-Lang compiler (`source build/env/activate`
 ## Running
 
 ```bash
-ttlang-sim examples/eltwise_add.py
+tt-lang-sim examples/eltwise_add.py
 ```
 
 Run the simulator test suite:
@@ -74,11 +74,11 @@ float16 support, so using those types natively would be slow or incorrect).
 
 ### Disabling promotion
 
-Pass `--no-float32-promotion` to `ttlang-sim` to run with the dtypes declared
+Pass `--no-float32-promotion` to `tt-lang-sim` to run with the dtypes declared
 in the source file:
 
 ```bash
-ttlang-sim --no-float32-promotion examples/matmul_1d.py
+tt-lang-sim --no-float32-promotion examples/matmul_1d.py
 ```
 
 ### When to disable promotion
@@ -112,45 +112,45 @@ not fit in hardware L1.
 overflow behavior, or precision characteristics of a specific narrow type,
 disable promotion so the script runs with the declared dtype.
 
-## Simulator statistics (`ttlang-sim-stats`)
+## Simulator statistics (`tt-lang-sim-stats`)
 
-Tensor, pipe, and dataflow-buffer statistics are **not** printed by `ttlang-sim`
-itself. Record a JSON Lines trace with **`ttlang-sim`** using **`--trace`**
+Tensor, pipe, and dataflow-buffer statistics are **not** printed by `tt-lang-sim`
+itself. Record a JSON Lines trace with **`tt-lang-sim`** using **`--trace`**
 (after the script path), then pass that
-file to **`ttlang-sim-stats`** to print the same summary tables (for sharing,
+file to **`tt-lang-sim-stats`** to print the same summary tables (for sharing,
 diffing, or inspecting a run without re-executing the kernel). The
-**`ttlang-sim-stats`** command is installed together with **`tt-lang-sim`** (or
+**`tt-lang-sim-stats`** command is installed together with **`tt-lang-sim`** (or
 with full **`tt-lang`**); it is not distributed or installed on its own.
 
-From a repository checkout, run **`./bin/ttlang-sim-stats`** (repo root). After
+From a repository checkout, run **`./bin/tt-lang-sim-stats`** (repo root). After
 `pip install tt-lang-sim` (or `pip install tt-lang`), or `source build/env/activate`
-from a **CMake** build, **`ttlang-sim-stats`** is on your **`PATH`**. The
+from a **CMake** build, **`tt-lang-sim-stats`** is on your **`PATH`**. The
 underlying entry point is **`python -m sim_stats`**; override the interpreter
 with **`PYTHON`** if needed (for example
-`PYTHON=python3.12 ./bin/ttlang-sim-stats trace.jsonl`).
+`PYTHON=python3.12 ./bin/tt-lang-sim-stats trace.jsonl`).
 
 1. **Record a JSON Lines trace** while simulating (path is optional; the
    default file name is `trace.jsonl`):
 
    ```bash
-   ./bin/ttlang-sim examples/eltwise_add.py --trace /tmp/my_run.jsonl
+   ./bin/tt-lang-sim examples/eltwise_add.py --trace /tmp/my_run.jsonl
    ```
 
 2. **Print statistics from that file**:
 
    ```bash
-   ./bin/ttlang-sim-stats /tmp/my_run.jsonl
+   ./bin/tt-lang-sim-stats /tmp/my_run.jsonl
    ```
 
 Statistics are derived from trace events such as `copy_end`, `pipe_send`,
 `pipe_recv`, `dfb_reserve_end`, and `dfb_wait_end`. If the trace was recorded
 with a restricted event set, some tables may be empty. Regenerate the trace
-with `ttlang-sim SCRIPT.py --trace` and the default categories, or enable the relevant
+with `tt-lang-sim SCRIPT.py --trace` and the default categories, or enable the relevant
 groups via `--trace-events` (see the tracing guide in `docs/TRACING.md` in the
 repository). For full CLI details:
 
 ```bash
-./bin/ttlang-sim-stats --help
+./bin/tt-lang-sim-stats --help
 ```
 ## Debugging
 

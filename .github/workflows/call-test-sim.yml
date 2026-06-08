@@ -42,12 +42,12 @@ jobs:
 
       - name: Run Python API tests under simulator
         run: |
-          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_ops.py -v
-          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_shapes.py -v
+          python test/scripts/tt-lang-sim-pytest test/python/test_elementwise_ops.py -v
+          python test/scripts/tt-lang-sim-pytest test/python/test_elementwise_shapes.py -v
 
-      - name: Test source-tree launchers (bin/ttlang-sim, bin/ttlang-sim-stats)
+      - name: Test source-tree launchers (bin/tt-lang-sim, bin/tt-lang-sim-stats)
         env:
           TTLANG_SIM_ONLY: "1"
         run: |
-          bin/ttlang-sim --help
-          bin/ttlang-sim-stats --help
+          bin/tt-lang-sim --help
+          bin/tt-lang-sim-stats --help

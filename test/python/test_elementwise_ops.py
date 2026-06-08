@@ -22,7 +22,13 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from conftest import temp_kernel_files
-from ttlang_test_utils import assert_allclose, to_l1, to_l1_sharded
+from ttlang_test_utils import (
+    assert_allclose,
+    assert_compare_result,
+    make_compare_inputs,
+    to_l1,
+    to_l1_sharded,
+)
 from ttl.utils.correctness import assert_with_ulp
 
 # =============================================================================
@@ -195,7 +201,14 @@ BINARY_OPS = {
     "div": (make_binary_kernel("div", "/"), torch.div),
     "max": (make_binary_fn_kernel("max", "max"), torch.maximum),
     "min": (make_binary_fn_kernel("min", "min"), torch.minimum),
+    "gt": (make_binary_fn_kernel("gt", "gt"), torch.gt),
+    "lt": (make_binary_fn_kernel("lt", "lt"), torch.lt),
+    "eq": (make_binary_fn_kernel("eq", "eq"), torch.eq),
+    "ne": (make_binary_fn_kernel("ne", "ne"), torch.ne),
 }
+
+COMPARE_OP_NAMES = frozenset({"gt", "lt", "eq", "ne"})
+
 
 UNARY_OPS = {
     "exp": (make_unary_kernel("exp", "exp"), torch.exp),
@@ -250,8 +263,11 @@ def test_binary_op(device, op_name):
     """Test binary elementwise operation with L1 memory."""
     kernel, torch_fn = BINARY_OPS[op_name]
 
-    lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
-    rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
+    if op_name in COMPARE_OP_NAMES:
+        lhs_torch, rhs_torch = make_compare_inputs((32, 32), torch.bfloat16)
+    else:
+        lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
+        rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
     expected = torch_fn(lhs_torch, rhs_torch)
 
@@ -262,7 +278,30 @@ def test_binary_op(device, op_name):
     kernel(lhs, rhs, out)
     result = ttnn.to_torch(out)
 
-    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+    if op_name in COMPARE_OP_NAMES:
+        assert_compare_result(result, expected)
+    else:
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("op_name", ["eq", "ne", "lt", "gt"])
+def test_float32_compare_equal_tile(device, op_name):
+    """Equal f32 inputs produce exact all-one/all-zero compare masks."""
+    kernel, torch_fn = BINARY_OPS[op_name]
+
+    lhs_torch = torch.full((32, 32), 1.5, dtype=torch.float32)
+    rhs_torch = torch.full((32, 32), 1.5, dtype=torch.float32)
+    out_torch = torch.zeros((32, 32), dtype=torch.float32)
+    expected = torch_fn(lhs_torch, rhs_torch)
+
+    lhs = to_l1(lhs_torch, device)
+    rhs = to_l1(rhs_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(lhs, rhs, out)
+    result = ttnn.to_torch(out)
+
+    assert_compare_result(result, expected)
 
 
 # Per-op input tensors for ops where constant 0.5 only exercises one code path.

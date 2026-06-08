@@ -99,13 +99,13 @@ def norm_qkv_kernel(x, w_q, w_k, w_v, scaler, q_out, k_out, v_out):
                 sq.store(xv * xv)
             # Row-wise sum
             with sq_dfb.wait() as sqv, sum_dfb.reserve() as sm:
-                sm.store(ttl.math.reduce_sum(sqv, sc, sm, dims=[0]))
+                sm.store(ttl.math.reduce_sum(sqv, dims=[0], shape=sm.shape))
             # Rsqrt
             with sum_dfb.wait() as smv, sum_dfb.reserve() as rsq:
                 rsq.store(ttl.math.rsqrt(smv))
             # Broadcast
             with sum_dfb.wait() as rsqv, bcast_dfb.reserve() as bc:
-                bc.store(ttl.math.broadcast(rsqv, bc, dims=[1]))
+                bc.store(ttl.block.broadcast(rsqv, dims=[1], shape=bc.shape))
             # Normalize and store to DFB
             with bcast_dfb.wait() as bcv, normed_dfb.reserve() as nm:
                 nm.store(xv * bcv)
@@ -264,7 +264,7 @@ def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
     @ttl.compute()
     def compute():
         with k_dfb.wait() as kv, k_t_dfb.reserve() as kt:
-            kt.store(ttl.transpose(kv, kt))
+            kt.store(ttl.block.transpose(kv))
 
         with q_dfb.wait() as qv, k_t_dfb.wait() as ktv:
             with snodes_dfb.reserve() as sc:
@@ -276,23 +276,23 @@ def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
             mask_dfb.wait() as maskv,
         ):
             with scale_bcast_dfb.reserve() as sb:
-                sb.store(ttl.math.broadcast(scalev, sb, dims=[0, 1]))
+                sb.store(ttl.block.broadcast(scalev, dims=[0, 1], shape=sb.shape))
             with scale_bcast_dfb.wait() as sbv, scaled_masked_dfb.reserve() as sm:
                 sm.store(scv * sbv + maskv)
 
         with scaler_dfb.wait() as scaler_v, scaled_masked_dfb.wait() as smv:
             with max_dfb.reserve() as mx:
-                mx.store(ttl.math.reduce_max(smv, scaler_v, mx, dims=[0]))
+                mx.store(ttl.math.reduce_max(smv, dims=[0], shape=mx.shape))
             with max_dfb.wait() as mxv, max_bcast_dfb.reserve() as mxb:
-                mxb.store(ttl.math.broadcast(mxv, mxb, dims=[1]))
+                mxb.store(ttl.block.broadcast(mxv, dims=[1], shape=mxb.shape))
             with max_bcast_dfb.wait() as mxbv:
                 shifted = smv - mxbv
                 with exp_dfb.reserve() as ex:
                     ex.store(ttl.math.exp(shifted))
                 with exp_dfb.wait() as exv, sum_dfb.reserve() as sm:
-                    sm.store(ttl.math.reduce_sum(exv, scaler_v, sm, dims=[0]))
+                    sm.store(ttl.math.reduce_sum(exv, dims=[0], shape=sm.shape))
                 with sum_dfb.wait() as smv2, sum_bcast_dfb.reserve() as smb:
-                    smb.store(ttl.math.broadcast(smv2, smb, dims=[1]))
+                    smb.store(ttl.block.broadcast(smv2, dims=[1], shape=smb.shape))
                 with sum_bcast_dfb.wait() as smbv, softmax_dfb.reserve() as sfm:
                     sfm.store(ttl.math.exp(shifted) / smbv)
 
@@ -433,11 +433,11 @@ def norm_mlp_residual_kernel(x, x_residual, w_fc, w_proj, scaler, out):
             with sq_dfb.reserve() as sq:
                 sq.store(xv * xv)
             with sq_dfb.wait() as sqv, sum_dfb.reserve() as sm:
-                sm.store(ttl.math.reduce_sum(sqv, sc, sm, dims=[0]))
+                sm.store(ttl.math.reduce_sum(sqv, dims=[0], shape=sm.shape))
             with sum_dfb.wait() as smv, sum_dfb.reserve() as rsq:
                 rsq.store(ttl.math.rsqrt(smv))
             with sum_dfb.wait() as rsqv, bcast_dfb.reserve() as bc:
-                bc.store(ttl.math.broadcast(rsqv, bc, dims=[1]))
+                bc.store(ttl.block.broadcast(rsqv, dims=[1], shape=bc.shape))
             with bcast_dfb.wait() as bcv, normed_dfb.reserve() as nm:
                 nm.store(xv * bcv)
 

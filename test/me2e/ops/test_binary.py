@@ -14,5 +14,6 @@ from . import ELEMENTWISE_OPS, GENERATED_OP_TESTS
 # Import auto-generated binary op test classes into this module.
 # This makes pytest discover them as test classes.
 for name, cls in GENERATED_OP_TESTS.items():
-    if ELEMENTWISE_OPS.get(cls.OP_STR) == 2:  # Binary ops have arity 2
-        globals()[name] = cls
+    if ELEMENTWISE_OPS.get(cls.OP_STR) != 2:  # Binary ops have arity 2
+        continue
+    globals()[name] = cls

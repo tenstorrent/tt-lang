@@ -120,7 +120,7 @@ if(TTLANG_SIM_ONLY)
   message(STATUS "=== Simulator-only mode ===")
   message(STATUS "  Python venv:  ${TTLANG_PYTHON_VENV}")
   message(STATUS "  Activate:     source ${PROJECT_BINARY_DIR}/env/activate")
-  message(STATUS "  Run:          ttlang-sim examples/eltwise_add.py")
+  message(STATUS "  Run:          tt-lang-sim examples/eltwise_add.py")
   message(STATUS "===")
 
   if(TTLANG_ENABLE_DOCS)
@@ -247,9 +247,9 @@ install(DIRECTORY python/sim_stats DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
 
-# Install ttlang-sim script to bin directory
-install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlang-sim" DESTINATION bin)
-install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlang-sim-stats" DESTINATION bin)
+# Install tt-lang-sim script to bin directory
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim" DESTINATION bin)
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim-stats" DESTINATION bin)
 
 # ---------------------------------------------------------------------------
 # Configuration summary
