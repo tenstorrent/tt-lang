@@ -11,17 +11,18 @@
 // Intermediate produced inside scf.for: bind_cb must be at function body
 // entry, the rest of the materialization bundle stays inside the loop.
 
+// The compiler-allocated intermediate is thread-local resident: the
+// materialized reserve/wait carry {resident}, so ttl-insert-cb-sync inserts
+// no cb_push/cb_pop for it (the in-loop user CBs still get theirs).
 // CHECK-LABEL: func.func @intermediate_in_scf_for
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
 // CHECK: scf.for
 // CHECK:   ttl.add
-// CHECK:   ttl.cb_reserve
+// CHECK:   ttl.cb_reserve %{{.+}} {resident}
 // CHECK:   ttl.store
-// CHECK:   ttl.cb_push
-// CHECK:   ttl.cb_wait
+// CHECK:   ttl.cb_wait %{{.+}} {resident}
 // CHECK:   ttl.attach_cb
 // CHECK:   ttl.reduce
-// CHECK:   ttl.cb_pop
 // CHECK: }
 // CHECK: return
 func.func @intermediate_in_scf_for()
@@ -58,13 +59,13 @@ func.func @intermediate_in_scf_for()
 // function body entry, not inside the if region.
 
 // CHECK-LABEL: func.func @intermediate_in_scf_if
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
 // CHECK: scf.if
 // CHECK-NOT: ttl.compiler_allocated
 // CHECK:   ttl.add
-// CHECK:   ttl.cb_reserve
+// CHECK:   ttl.cb_reserve %{{.+}} {resident}
 // CHECK:   ttl.store
-// CHECK:   ttl.cb_wait
+// CHECK:   ttl.cb_wait %{{.+}} {resident}
 // CHECK:   ttl.attach_cb
 // CHECK:   ttl.reduce
 // CHECK: }
@@ -101,7 +102,7 @@ func.func @intermediate_in_scf_if(%cond: i1)
 // Before the fix, this crashed in TTLFinalizeDFBIndices.
 
 // CHECK-LABEL: func.func @intermediate_in_nested_for_if
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
 // CHECK: scf.for
 // CHECK:   scf.if
 // CHECK-NOT: ttl.compiler_allocated

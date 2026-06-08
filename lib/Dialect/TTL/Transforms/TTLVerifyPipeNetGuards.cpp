@@ -975,6 +975,12 @@ public:
           }
         })
         .Case<CBWaitOp>([&](CBWaitOp wait) {
+          // A resident wait reads its slot in place within one compute thread
+          // and lowers without a cb_wait_front, so it has no cross-thread
+          // producer and cannot deadlock; skip the producer-domain check.
+          if (wait.getResident()) {
+            return;
+          }
           if (auto cbIndex = getCBIndex(wait.getCb())) {
             state.waitUses.push_back({wait, before.getDomain(), *cbIndex});
           }

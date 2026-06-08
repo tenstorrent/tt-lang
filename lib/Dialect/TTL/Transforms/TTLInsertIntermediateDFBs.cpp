@@ -46,11 +46,14 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
   Location loc = intermediate.getLoc();
   MLIRContext *ctx = builder.getContext();
 
-  // Intra-thread push/wait requires double-buffering so the packer and
-  // unpacker can operate on different buffer halves simultaneously.
+  // A compiler-allocated intermediate is produced and consumed in this one
+  // compute thread, so it is thread-local resident: a single fixed slot,
+  // packed and read in place with no CB handshake (the reserve/wait below
+  // carry the `resident` attr). The DST tile_regs chain orders the pack
+  // before the read, so no double-buffering is needed -- one block suffices.
   SmallVector<int64_t> shape(tensorType.getShape());
   Type elementType = tensorType.getElementType();
-  int64_t blockCount = 2;
+  int64_t blockCount = 1;
   auto cbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
@@ -93,11 +96,13 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
 
   auto reserve =
       CBReserveOp::create(builder, loc, tensorType, bindCB.getResult());
+  reserve->setAttr("resident", builder.getUnitAttr());
 
   StoreOp::create(builder, loc, intermediate, reserve.getResult(),
                   /*accumulate=*/nullptr);
 
   auto wait = CBWaitOp::create(builder, loc, tensorType, bindCB.getResult());
+  wait->setAttr("resident", builder.getUnitAttr());
 
   auto attachWait = AttachCBOp::create(builder, loc, tensorType,
                                        wait.getResult(), bindCB.getResult());
