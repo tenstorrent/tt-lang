@@ -809,7 +809,7 @@ def _make_argmax_row_input(dtype):
     return t
 
 
-@pytest.mark.xfail(reason="loop carry error")
+@pytest.mark.xfail(reason="conditional assignment not exiting scope ISSUE #380")
 def test_f32_argmax_row(device):
     """f32 row-scan argmax finds the maximum across mixed-sign values."""
     inp_torch = _make_argmax_row_input(torch.float32)
@@ -822,7 +822,7 @@ def test_f32_argmax_row(device):
     assert result[0, 0].item() == pytest.approx(8.0, abs=1e-5)
 
 
-@pytest.mark.xfail(reason="loop carry error")
+@pytest.mark.xfail(reason="conditional assignment not exiting scope ISSUE #380")
 def test_bf16_argmax_row(device):
     """bf16 row-scan argmax finds the maximum across mixed-sign values."""
     inp_torch = _make_argmax_row_input(torch.bfloat16)
