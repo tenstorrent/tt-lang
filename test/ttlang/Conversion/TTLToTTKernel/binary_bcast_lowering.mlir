@@ -8,12 +8,14 @@
 
 // mul + column broadcast (the OPT8 rewrite): C[i,j] = data[i,j] * bcast_col(alpha[i,0]).
 // in0 = data (full tile, index linearized [row, col]); in1 = alpha (broadcast
-// source, index = %row). The init is hoisted above the loops.
+// source, index = %row). The per-op binary_bcast_init sits inside the loop
+// directly before the op, matching every other per-op init; only the common
+// init is hoisted above the loops.
 //
 // CHECK-LABEL: func.func @binary_bcast_mul_col
-// CHECK: ttkernel.binary_bcast_init(%{{.*}}, %{{.*}}, %{{.*}}, <mul>, <col>)
 // CHECK: scf.for %[[ROW:.*]] = %{{.*}} to %{{.*}}
 // CHECK:   scf.for %[[COL:.*]] = %{{.*}} to %{{.*}}
+// CHECK:     ttkernel.binary_bcast_init(%{{.*}}, %{{.*}}, %{{.*}}, <mul>, <col>)
 // CHECK:     ttkernel.binary_bcast(%{{.*}}, %{{.*}}, %{{.*}}, %[[ROW]], %{{.*}}, <mul>, <col>)
 func.func @binary_bcast_mul_col()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
