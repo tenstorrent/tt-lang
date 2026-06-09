@@ -960,6 +960,12 @@ defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
 defm TTL_Min : TTL_BinarySfpuElementwisePair<"min", "binary_min_tile",
                                              [TTL_InPlaceOpTrait]>;
 
+// Elementwise compare: maps to TTKernel's native SFPU comparison ops.
+defm TTL_Eq : TTL_BinarySfpuElementwisePair<"eq", "eq_binary_tile">;
+defm TTL_Ne : TTL_BinarySfpuElementwisePair<"ne", "ne_binary_tile">;
+defm TTL_Gt : TTL_BinarySfpuElementwisePair<"gt", "gt_binary_tile">;
+defm TTL_Lt : TTL_BinarySfpuElementwisePair<"lt", "lt_binary_tile">;
+
 
 //===----------------------------------------------------------------------===//
 // Unary Elementwise Operations (Tensor + Tile Ops)

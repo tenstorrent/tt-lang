@@ -207,6 +207,33 @@ def min(a: Block, b: Block) -> Block:
     return _apply_binary_op(a, b, torch.minimum)
 
 
+def _apply_compare_op(
+    a: Block, b: Block, op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+) -> Block:
+    """Apply a comparison op and return a numeric 0/1 mask block."""
+    return _apply_binary_op(a, b, lambda lhs, rhs: op(lhs, rhs).to(lhs.dtype))
+
+
+def gt(a: Block, b: Block) -> Block:
+    """Element-wise greater-than comparison of two blocks."""
+    return _apply_compare_op(a, b, torch.gt)
+
+
+def lt(a: Block, b: Block) -> Block:
+    """Element-wise less-than comparison of two blocks."""
+    return _apply_compare_op(a, b, torch.lt)
+
+
+def eq(a: Block, b: Block) -> Block:
+    """Element-wise equality comparison of two blocks."""
+    return _apply_compare_op(a, b, torch.eq)
+
+
+def ne(a: Block, b: Block) -> Block:
+    """Element-wise inequality comparison of two blocks."""
+    return _apply_compare_op(a, b, torch.ne)
+
+
 # Unary operations with scalar parameters
 def rsub(a: Block, b: PositiveInt) -> Block:
     """Subtract a from b where b is scalar unsigned integer (b - a).
