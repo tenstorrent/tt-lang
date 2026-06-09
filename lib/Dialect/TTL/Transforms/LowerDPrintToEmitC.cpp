@@ -275,7 +275,10 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
     // stream-style DPRINT_THREAD(...) statement wrappers; the printf-style
     // DEVICE_PRINT_THREAD macros take a format string, not a statement block,
     // so multi-statement prints use the MATH/PACK/UNPACK block macros instead.
-    if (thread) {
+    // cb mode is exempt: ttmlir::dprint(CBPrinter) already self-guards each
+    // thread internally, so an outer block-guard would nest redundantly.
+    bool wrapThread = thread && mode != "cb";
+    if (wrapThread) {
       std::string macro;
       if (*thread == "math") {
         macro = "MATH({";
@@ -309,6 +312,12 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
           "ttmlir::dprint(ttmlir::CBPrinter(get_compile_time_arg_val(" +
               std::to_string(*cbIdx) + ")));",
           rewriter);
+      // ttmlir::print_cb_details_ emits no trailing newline. The host
+      // DEVICE_PRINT server buffers each RISC's output until a newline, so a
+      // CB print with no following newline-terminated print on the same thread
+      // never flushes. Emit a newline on every thread (it is part of the
+      // format string, not a value argument) to flush the per-thread line.
+      emitVerbatim(loc, "DPRINT(\"\\n\");", rewriter);
 
     } else if (mode == "tile") {
       if (op.getArgv().size() != 1) {
@@ -537,7 +546,7 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
     }
 
     // Thread conditioning: close the MATH/PACK/UNPACK block-guard.
-    if (thread) {
+    if (wrapThread) {
       emitVerbatim(loc, "});", rewriter);
     }
 

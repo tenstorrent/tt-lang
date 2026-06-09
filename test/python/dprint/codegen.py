@@ -77,55 +77,50 @@ def dprint_test_kernel(inp, out):
 # CHECK: void kernel_main()
 
 # Scalar prints in compute auto-default to math thread
-# CHECK: DPRINT_MATH(
-# CHECK: DPRINT << "compute start" << ENDL();
-# CHECK: );
-# CHECK: DPRINT_MATH(
-# CHECK: DPRINT << "magic: 42" << ENDL();
-# CHECK: );
+# CHECK: MATH({
+# CHECK: DPRINT("compute start\n");
+# CHECK: });
+# CHECK: MATH({
+# CHECK: DPRINT("magic: 42\n");
+# CHECK: });
 
-# CB print in compute auto-defaults to pack thread
-# CHECK: DPRINT_PACK(
-# CHECK: DPRINT << ttmlir::CBPrinter(get_compile_time_arg_val(
-# CHECK: );
+# CB print uses the self-thread-guarded ttmlir::dprint(CBPrinter) helper
+# CHECK: ttmlir::dprint(ttmlir::CBPrinter(get_compile_time_arg_val(
 
-# Mixed-arg: scalar label + CB object (label on math, CB on pack)
-# CHECK: DPRINT_MATH(
-# CHECK: DPRINT << "cb state:" << ENDL();
-# CHECK: );
-# CHECK: DPRINT_PACK(
-# CHECK: DPRINT << ttmlir::CBPrinter(get_compile_time_arg_val(
-# CHECK: );
+# Mixed-arg: scalar label (math) + CB object (self-guarded helper)
+# CHECK: MATH({
+# CHECK: DPRINT("cb state:\n");
+# CHECK: });
+# CHECK: ttmlir::dprint(ttmlir::CBPrinter(get_compile_time_arg_val(
 
 # Tile print in compute auto-defaults to pack thread
-# CHECK: DPRINT_PACK(
-# CHECK: TileSlice(get_compile_time_arg_val(
-# CHECK: );
+# CHECK: PACK({
+# CHECK: TSLICE(get_compile_time_arg_val(
+# CHECK: });
 
 # Mixed-arg: scalar label + tile object
-# CHECK: DPRINT_MATH(
-# CHECK: DPRINT << "tile:" << ENDL();
-# CHECK: );
-# CHECK: DPRINT_PACK(
-# CHECK: TileSlice(get_compile_time_arg_val(
-# CHECK: );
+# CHECK: MATH({
+# CHECK: DPRINT("tile:\n");
+# CHECK: });
+# CHECK: PACK({
+# CHECK: TSLICE(get_compile_time_arg_val(
+# CHECK: });
 
 # DST dump after exp auto-defaults to math thread
 # (no live slots because the dprint is outside the fused compute
 # body; the store clears all slots before it)
-# CHECK: DPRINT_MATH(
-# CHECK: DPRINT << "=== after exp ===" << ENDL();
-# CHECK: );
+# CHECK: MATH({
+# CHECK: DPRINT("=== after exp ===\n");
 
 # Thread conditioning: explicit pack-only tile print
-# CHECK: DPRINT_PACK(
-# CHECK: TileSlice(get_compile_time_arg_val(
-# CHECK: );
+# CHECK: PACK({
+# CHECK: TSLICE(get_compile_time_arg_val(
+# CHECK: });
 
 # Thread conditioning: explicit math-only scalar print
-# CHECK: DPRINT_MATH(
-# CHECK: DPRINT << "math only" << ENDL();
-# CHECK: );
+# CHECK: MATH({
+# CHECK: DPRINT("math only\n");
+# CHECK: });
 
 # =============================================================================
 # C++ Kernel Checks - Verify dprint with variables in dm_read kernel
@@ -135,15 +130,15 @@ def dprint_test_kernel(inp, out):
 # CHECK: // dm_read
 # CHECK: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
-# CHECK: DPRINT << "dm_read core: " << get_absolute_logical_x() << " " << get_absolute_logical_y() << ENDL();
+# CHECK: DPRINT("dm_read core: {} {}\n", get_absolute_logical_x(), get_absolute_logical_y());
 
 # Mixed-arg: scalar label + tensor accessor pages in datamovement
-# CHECK: DPRINT << "inp:" << ENDL();
+# CHECK: DPRINT("inp:\n");
 # CHECK: TensorAccessorArgs<
 # CHECK: noc_async_read_tile(
 
 # Tensor accessor without num_pages defaults to num_pages=1
-# CHECK: DPRINT << "A:" << ENDL();
+# CHECK: DPRINT("A:\n");
 # CHECK: TensorAccessorArgs<
 # CHECK: noc_async_read_tile(
 
