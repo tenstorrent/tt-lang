@@ -52,14 +52,27 @@ A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the inter
 
 ### Contract
 
-Each DFB has exactly one producer thread and exactly one consumer thread. A *thread* here is a `func.func` carrying the `ttl.kernel_thread` attribute (compute, noc, ethernet); ops in untagged functions are outside the contract.
+Each DFB has at most one producer thread and at most one consumer thread on
+each launched node. A *thread* here is a `func.func` carrying the
+`ttl.kernel_thread` attribute (compute, noc, ethernet); ops in untagged
+functions are outside the contract.
+
+Multiple producer or consumer threads may reference the same DFB index when the
+compiler can prove that their launch-node domains are disjoint. For example, a
+DFB may be consumed by a compute thread on PipeNet destination nodes and by a
+data-movement thread on PipeNet source nodes, provided no launched node belongs
+to both consumer domains.
 
 The rule is inherited from tt-metal: its CB protocol is not multi-writer safe on either side. Each CB has two shared counters in `dataflow_api.h`:
 
 - `pages_received`, incremented by `cb_push_back` (producer side),
 - `pages_acked`, incremented by `cb_pop_front` (consumer side).
 
-`cb_reserve_back` blocks until `pages_received - pages_acked < block_count`. `cb_wait_front` blocks until `pages_received > pages_acked`. The protocol is correct only when exactly one thread writes each counter; the counters are not atomic with respect to multiple writers and carry no per-thread identity.
+`cb_reserve_back` blocks until `pages_received - pages_acked < block_count`.
+`cb_wait_front` blocks until `pages_received > pages_acked`. The protocol is
+correct only when exactly one thread on a physical node writes each counter;
+the counters are not atomic with respect to multiple writers and carry no
+per-thread identity.
 
 ### Violation
 
@@ -89,7 +102,12 @@ A single-iteration test masks this — exactly one push and two over-pops do not
 
 ### Correct form
 
-Allocate one DFB per consumer thread (and symmetrically per producer thread). The producer writes the value into each DFB; each consumer reads its own. The sketch below is illustrative (no `@ttl.operation` wrapper, no tensor shape); for a runnable example see `test/python/test_store_patterns.py::store_then_forward_kernel`:
+When two consumers or producers can execute on the same launched node, allocate
+one DFB per consumer thread (and symmetrically per producer thread). The
+producer writes the value into each DFB; each consumer reads its own. The
+sketch below is illustrative (no `@ttl.operation` wrapper, no tensor shape);
+for a runnable example see
+`test/python/test_store_patterns.py::store_then_forward_kernel`:
 
 ```python
 buf_for_compute = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -109,15 +127,32 @@ def dm_read():
         with buf_for_dm.wait() as b: ...
 ```
 
-Each `pages_received`/`pages_acked` pair is now driven by a single thread.
+Each `pages_received`/`pages_acked` pair is now driven by a single thread on
+each launched node.
+
+When the participating threads have disjoint launch-node domains, the same DFB
+index can be shared without duplicating storage. The verifier accepts this form
+because every physical node still observes a single producer and a single
+consumer for that DFB.
 
 ### Verification
 
-The `ttl-verify-dfb-spsc` module-level pass runs after `ttl-annotate-cb-associations`. It walks every `cb_reserve` and `cb_wait` op, groups them by `cb_index` and enclosing `ttl.kernel_thread`-tagged `func.func`, and rejects any DFB whose producer or consumer set spans more than one thread. The diagnostic identifies the cb_index, the role (producer or consumer), each kernel thread site, and the originating `ttl.bind_cb`.
+The `ttl-verify-dfb-spsc` module-level pass runs after
+`ttl-annotate-cb-associations`. It walks every `cb_reserve` and `cb_wait` op,
+groups them by `cb_index` and enclosing `ttl.kernel_thread`-tagged
+`func.func`, and tracks the launch-node domain for each producer or consumer.
+The pass rejects a DFB when two producer domains overlap or when two consumer
+domains overlap. If multiple threads participate and a coordinate-dependent
+predicate cannot be analyzed statically, the pass rejects the DFB rather than
+assuming disjointness. The diagnostic identifies the cb_index, the role
+(producer or consumer), an overlapping launched node when available, the
+participating operation sites, and the originating `ttl.bind_cb`.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` for the rejected patterns and `verify_dfb_spsc.mlir` for the accepted ones.
 
-The compiler does not currently auto-split multi-consumer DFBs; users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in [tenstorrent/tt-lang#581](https://github.com/tenstorrent/tt-lang/issues/581).
+The compiler does not currently auto-split overlapping multi-consumer DFBs;
+users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
+[tenstorrent/tt-lang#581](https://github.com/tenstorrent/tt-lang/issues/581).
 
 ## Intermediate DFB Insertion
 

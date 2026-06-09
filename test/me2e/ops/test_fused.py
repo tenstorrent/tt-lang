@@ -27,6 +27,7 @@ from ..config import E2EConfig
 from ..builder.dtype_utils import torch_dtype_to_mlir_str
 from ..builder.thread_builder import generate_layout_attrs
 from ..builder.dm_builder import DMThreadBuilder
+from ..utils import get_launch_grid_attr_str
 
 import ttl.dialects.ttl as ttl
 
@@ -191,7 +192,7 @@ func.func @compute_exp_add() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta
 
         return f"""{layout_attrs}
 
-module {{
+module {get_launch_grid_attr_str(config)} {{
 {reader_mlir}
 
 {compute_mlir}
@@ -267,7 +268,7 @@ func.func @compute_relu_mul() attributes {{ttl.base_cta_index = 3 : i32, ttl.crt
 
         return f"""{layout_attrs}
 
-module {{
+module {get_launch_grid_attr_str(config)} {{
 {reader_mlir}
 
 {compute_mlir}
@@ -340,7 +341,7 @@ func.func @compute_sqrt_abs() attributes {{ttl.base_cta_index = 2 : i32, ttl.crt
 
         return f"""{layout_attrs}
 
-module {{
+module {get_launch_grid_attr_str(config)} {{
 {reader_mlir}
 
 {compute_mlir}
