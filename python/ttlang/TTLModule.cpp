@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Bindings/Python/TTLangModule.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -22,6 +23,15 @@ using namespace mlir::tt::ttl;
 
 void populateTTLModule(nb::module_ &m) {
   m.doc() = "TTL (TT-Lang) dialect Python bindings";
+  m.attr("PIPE_SYNC_SEMAPHORE_COUNT_ATTR") =
+      nb::str(kPipeSyncSemaphoreCountAttrName.data(),
+              kPipeSyncSemaphoreCountAttrName.size());
+  m.attr("PIPE_GLOBAL_SEMAPHORE_COUNT_ATTR") =
+      nb::str(kPipeGlobalSemaphoreCountAttrName.data(),
+              kPipeGlobalSemaphoreCountAttrName.size());
+  m.attr("PIPE_SRAM_SCRATCH_BYTES_ATTR") =
+      nb::str(kPipeSramScratchBytesAttrName.data(),
+              kPipeSramScratchBytesAttrName.size());
 
   //===--------------------------------------------------------------------===//
   // SliceAttr
@@ -127,6 +137,30 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("dst_end_x", &PipeType::getDstEndX)
       .def_prop_ro("dst_end_y", &PipeType::getDstEndY)
       .def_prop_ro("pipe_net_id", &PipeType::getPipeNetId)
-      .def("is_unicast", &PipeType::isUnicast)
-      .def("is_multicast", &PipeType::isMulticast);
+      .def("has_single_receiver", &PipeType::hasSingleReceiver)
+      .def("has_multiple_receivers", &PipeType::hasMultipleReceivers)
+      .def(
+          "is_unicast",
+          [](PipeType type) {
+            if (PyErr_WarnEx(PyExc_DeprecationWarning,
+                             "PipeType.is_unicast() is deprecated; use "
+                             "has_single_receiver().",
+                             1) < 0) {
+              throw nb::python_error();
+            }
+            return type.hasSingleReceiver();
+          },
+          "Deprecated. Use has_single_receiver().")
+      .def(
+          "is_multicast",
+          [](PipeType type) {
+            if (PyErr_WarnEx(PyExc_DeprecationWarning,
+                             "PipeType.is_multicast() is deprecated; use "
+                             "has_multiple_receivers().",
+                             1) < 0) {
+              throw nb::python_error();
+            }
+            return type.hasMultipleReceivers();
+          },
+          "Deprecated. Use has_multiple_receivers().");
 }

@@ -96,6 +96,16 @@ class KernelSpec:
     config: Any
 
 
+@dataclass
+class PipeRuntimeResources:
+    """Host allocations and runtime args for compiler-emitted pipe resources."""
+
+    scratch_tensors: List[Any]
+    global_semaphores: List[Any]
+    extra_common_runtime_args: List[int]
+    expected_extra_common_runtime_args: int
+
+
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     """
     Build compile-time args for tensor accessors.
@@ -125,6 +135,8 @@ def build_kernel_descriptors(
     grid_cols: int,
     grid_rows: int,
     num_cbs: int,
+    extra_common_runtime_args: Optional[List[int]] = None,
+    expected_extra_common_runtime_args: Optional[int] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -139,6 +151,10 @@ def build_kernel_descriptors(
         grid_cols: Number of grid columns (x dimension).
         grid_rows: Number of grid rows (y dimension).
         num_cbs: Total number of circular buffers (including intermediate CBs).
+        extra_common_runtime_args: Compiler-managed common runtime args appended
+            after tensor buffer addresses.
+        expected_extra_common_runtime_args: Expected number of compiler-managed
+            pipe runtime args from the compiled resource plan.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -151,6 +167,16 @@ def build_kernel_descriptors(
 
     # CB indices are 0, 1, 2, ... for each CB (including intermediate CBs).
     cb_indices = list(range(num_cbs))
+    extra_args = list(extra_common_runtime_args or [])
+    if (
+        expected_extra_common_runtime_args is not None
+        and len(extra_args) != expected_extra_common_runtime_args
+    ):
+        raise RuntimeError(
+            "pipe resource plan expected "
+            f"{expected_extra_common_runtime_args} extra common runtime args, "
+            f"got {len(extra_args)}"
+        )
 
     for spec in kernel_specs:
         # Build common_runtime_args using tensor_indices.
@@ -158,6 +184,7 @@ def build_kernel_descriptors(
         common_runtime_args = [
             tensors[idx].buffer_address() for idx in spec.tensor_indices
         ]
+        common_runtime_args.extend(extra_args)
 
         # Compute kernels only need CB indices.
         # DM kernels need CB indices + TensorAccessorArgs config.
@@ -176,6 +203,152 @@ def build_kernel_descriptors(
         kernel_descriptors.append(kernel_desc)
 
     return kernel_descriptors
+
+
+def _align_up(value: int, alignment: int) -> int:
+    return ((value + alignment - 1) // alignment) * alignment
+
+
+def _first_device(tensors: List[Any]) -> Any:
+    for tensor in tensors:
+        if tensor is not None and hasattr(tensor, "device"):
+            device = tensor.device()
+            if device is not None:
+                return device
+    raise ValueError("pipe runtime resource allocation requires a device tensor")
+
+
+def build_pipe_sram_scratch_tensors(
+    tensors: List[Any],
+    core_ranges: Any,
+    scratch_bytes: int,
+    device: Optional[Any] = None,
+) -> List[Any]:
+    """Allocate per-core SRAM scratch tensors used by PipeNet metadata."""
+    if scratch_bytes <= 0:
+        return []
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    aligned_bytes = _align_up(scratch_bytes, 32)
+    elements_per_core = max(1, aligned_bytes // 4)
+    grid_size = core_ranges.bounding_box().grid_size()
+    num_cores = grid_size.x * grid_size.y
+    device = device if device is not None else _first_device(tensors)
+    # [Device 2.0] This encodes compiler SRAM as a sharded TTNN tensor because
+    # current generic_op has no typed device-side scratch allocation object.
+    shard_spec = ttnn.ShardSpec(
+        core_ranges,
+        (1, elements_per_core),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    scratch_tensor = ttnn.empty(
+        (num_cores, elements_per_core),
+        dtype=ttnn.float32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=device,
+        memory_config=memory_config,
+    )
+    return [scratch_tensor]
+
+
+def build_pipe_global_semaphores(
+    tensors: List[Any],
+    core_ranges: Any,
+    count: int,
+    device: Optional[Any] = None,
+) -> Tuple[List[Any], List[int]]:
+    """Allocate GlobalSemaphores used by PipeNet ready counters.
+
+    PipeNet coordinates are per-device core coordinates. When tensors live on
+    a TTNN MeshDevice, the same intra-chip PipeNet program is replicated across
+    device shards; this allocates one MeshDevice GlobalSemaphore object whose
+    address is passed to that replicated program. It does not create an
+    inter-chip PipeNet or assign per-mesh-coordinate pipe synchronization state.
+    """
+    if count <= 0:
+        return [], []
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    device = device if device is not None else _first_device(tensors)
+    # [Device 2.0] Keep this allocation behind the pipe resource plan so future
+    # typed semaphore objects replace only this host/runtime binding.
+    semaphores = [
+        ttnn.create_global_semaphore(device, core_ranges, 0) for _ in range(count)
+    ]
+    addresses = [int(ttnn.get_global_semaphore_address(sem)) for sem in semaphores]
+    return semaphores, addresses
+
+
+def build_pipe_runtime_resources(
+    tensors: List[Any],
+    core_ranges: Any,
+    pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
+    device: Optional[Any] = None,
+) -> PipeRuntimeResources:
+    """Allocate pipe resources and build their appended common runtime args."""
+    resource_device = device
+    if resource_device is None and (
+        pipe_sram_scratch_bytes > 0 or num_pipe_global_semaphores > 0
+    ):
+        resource_device = _first_device(tensors)
+
+    scratch_tensors = build_pipe_sram_scratch_tensors(
+        tensors=tensors,
+        core_ranges=core_ranges,
+        scratch_bytes=pipe_sram_scratch_bytes,
+        device=resource_device,
+    )
+    global_semaphores, global_semaphore_addresses = build_pipe_global_semaphores(
+        tensors=tensors,
+        core_ranges=core_ranges,
+        count=num_pipe_global_semaphores,
+        device=resource_device,
+    )
+    # Keep this order in sync with PipeLowering.cpp: optional SRAM scratch base,
+    # then GlobalSemaphore ready-counter addresses.
+    # [Device 2.0] This is the current ABI for pipe resource records; future
+    # typed resource handles should preserve the same compiler-selected order.
+    extra_common_runtime_args = [tensor.buffer_address() for tensor in scratch_tensors]
+    extra_common_runtime_args.extend(global_semaphore_addresses)
+    expected_extra_common_runtime_args = (
+        len(scratch_tensors) + num_pipe_global_semaphores
+    )
+    return PipeRuntimeResources(
+        scratch_tensors=scratch_tensors,
+        global_semaphores=global_semaphores,
+        extra_common_runtime_args=extra_common_runtime_args,
+        expected_extra_common_runtime_args=expected_extra_common_runtime_args,
+    )
+
+
+def build_pipe_sync_semaphore_descriptors(
+    core_ranges: Any,
+    count: int,
+) -> List[Any]:
+    """Build local semaphore descriptors referenced by pipe lowering."""
+    if count <= 0:
+        return []
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    return [
+        ttnn.SemaphoreDescriptor(sem_id, core_ranges=core_ranges, initial_value=0)
+        for sem_id in range(count)
+    ]
 
 
 def build_cb_descriptors(
@@ -283,6 +456,19 @@ def build_cb_descriptors(
     return cb_descriptors
 
 
+def build_generic_op_io_tensors(
+    tensors: List[Any],
+    pipe_sram_scratch_tensors: List[Any],
+) -> List[Any]:
+    """Return io_tensors for ttnn.generic_op, including pipe SRAM scratch."""
+    io_tensors = list(tensors) + list(pipe_sram_scratch_tensors)
+    if not io_tensors:
+        raise ValueError("kernel must have at least one output tensor")
+    if len(io_tensors) < 2:
+        io_tensors = [io_tensors[-1]] + io_tensors
+    return io_tensors
+
+
 def run_kernel_on_device(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -290,6 +476,9 @@ def run_kernel_on_device(
     core_ranges: Any,
     program_hash: int = None,
     num_pipe_sync_semaphores: int = 0,
+    pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
+    pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -309,6 +498,13 @@ def run_kernel_on_device(
         program_hash: Hash for tt-metal program cache (not yet used).
         num_pipe_sync_semaphores: Number of pipe synchronization semaphores
             allocated by the compiler.
+        pipe_sram_scratch_bytes: Per-core SRAM scratch bytes required by
+            PipeNet metadata.
+        num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
+            ready counters allocated by the compiler.
+        pipe_global_semaphore_lifetime: Optional list replaced with the current
+            call's GlobalSemaphore objects. Cached kernels keep this bounded
+            owner list so repeated calls do not retain old semaphore objects.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -325,6 +521,15 @@ def run_kernel_on_device(
     grid_cols = grid_size.x
     grid_rows = grid_size.y
 
+    pipe_runtime_resources = build_pipe_runtime_resources(
+        tensors=tensors,
+        core_ranges=core_ranges,
+        pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+        num_pipe_global_semaphores=num_pipe_global_semaphores,
+    )
+    if pipe_global_semaphore_lifetime is not None:
+        pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
+
     # Build kernel descriptors.
     kernel_descriptors = build_kernel_descriptors(
         kernel_specs=kernel_specs,
@@ -334,6 +539,10 @@ def run_kernel_on_device(
         grid_cols=grid_cols,
         grid_rows=grid_rows,
         num_cbs=len(cb_configs),
+        extra_common_runtime_args=pipe_runtime_resources.extra_common_runtime_args,
+        expected_extra_common_runtime_args=(
+            pipe_runtime_resources.expected_extra_common_runtime_args
+        ),
     )
 
     # Build CB descriptors.
@@ -343,16 +552,10 @@ def run_kernel_on_device(
         core_ranges=core_ranges,
     )
 
-    # Build semaphore descriptors for pipe synchronization. The compiler emits
-    # integer semaphore indices from a flat runtime layout.
-    semaphore_descriptors = []
-    if num_pipe_sync_semaphores > 0:
-        for sem_id in range(num_pipe_sync_semaphores):
-            semaphore_descriptors.append(
-                ttnn.SemaphoreDescriptor(
-                    sem_id, core_ranges=core_ranges, initial_value=0
-                )
-            )
+    semaphore_descriptors = build_pipe_sync_semaphore_descriptors(
+        core_ranges=core_ranges,
+        count=num_pipe_sync_semaphores,
+    )
 
     # Build and execute program.
     # TODO: Enable custom_program_hash once tt-metal exposes it in Python bindings.
@@ -372,11 +575,10 @@ def run_kernel_on_device(
     # thread actually reads.
     # TODO: Remove this workaround if ttnn.generic_op relaxes the >= 2
     # tensor requirement
-    io_tensors = list(tensors)
-    if not io_tensors:
-        raise ValueError("kernel must have at least one output tensor")
-    if len(io_tensors) < 2:
-        io_tensors = [io_tensors[-1]] + io_tensors  # Duplicate output tensor as input
+    io_tensors = build_generic_op_io_tensors(
+        tensors=tensors,
+        pipe_sram_scratch_tensors=pipe_runtime_resources.scratch_tensors,
+    )
 
     return ttnn.generic_op(io_tensors, program)
 
@@ -406,6 +608,9 @@ def emit_runner_source(
     grid_rows: int,
     num_tensors: int,
     kernel_name: str = "kernel",
+    num_pipe_sync_semaphores: int = 0,
+    pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -423,10 +628,22 @@ def emit_runner_source(
     lines.append("")
     lines.append("import ttnn")
     lines.append("")
+    lines.append("from ttl.kernel_runner import (")
+    lines.append("    KernelSpec,")
+    lines.append("    build_generic_op_io_tensors,")
+    lines.append("    build_kernel_descriptors,")
+    lines.append("    build_pipe_runtime_resources,")
+    lines.append("    build_pipe_sync_semaphore_descriptors,")
+    lines.append("    build_tensor_accessor_args,")
+    lines.append(")")
+    lines.append("")
 
     lines.append(f"GRID_COLS = {grid_cols}")
     lines.append(f"GRID_ROWS = {grid_rows}")
     lines.append(f"NUM_TENSORS = {num_tensors}")
+    lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
+    lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
+    lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
     lines.append("")
 
     lines.append("KERNEL_PATHS = [")
@@ -478,11 +695,14 @@ def emit_runner_source(
     lines.append("    )])")
     lines.append("")
 
-    lines.append("    tensor_accessor_args = []")
-    lines.append("    for tensor in tensors:")
-    lines.append(
-        "        tensor_accessor_args.extend(ttnn.TensorAccessorArgs(tensor).get_compile_time_args())"
-    )
+    lines.append("    tensor_accessor_args = build_tensor_accessor_args(tensors)")
+    lines.append("    pipe_resources = build_pipe_runtime_resources(")
+    lines.append("        tensors=tensors,")
+    lines.append("        core_ranges=core_ranges,")
+    lines.append("        pipe_sram_scratch_bytes=PIPE_SRAM_SCRATCH_BYTES,")
+    lines.append("        num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES,")
+    lines.append("        device=device,")
+    lines.append("    )")
     lines.append("")
 
     lines.append("    cb_descriptors = []")
@@ -502,46 +722,64 @@ def emit_runner_source(
     lines.append("        cb_descriptors.append(cb_desc)")
     lines.append("")
 
-    lines.append(f"    cb_indices = list(range({len(cb_configs)}))")
-    lines.append("    kernel_descriptors = []")
+    lines.append("    kernel_specs = []")
     lines.append("    noc_idx = 0")
     lines.append("")
     lines.append(
         "    for kernel_idx, (kernel_path, thread_type) in enumerate(KERNEL_PATHS):"
     )
-    lines.append("        tensor_indices = KERNEL_TENSOR_INDICES[kernel_idx]")
-    lines.append(
-        "        common_runtime_args = [tensors[idx].buffer_address() for idx in tensor_indices]"
-    )
-    lines.append("")
     lines.append("        if thread_type == 'compute':")
-    lines.append("            compile_time_args = cb_indices")
     lines.append("            config = ttnn.ComputeConfigDescriptor()")
     lines.append("        else:")
-    lines.append("            compile_time_args = cb_indices + tensor_accessor_args")
     lines.append("            if noc_idx == 0:")
     lines.append("                config = ttnn.ReaderConfigDescriptor()")
     lines.append("            else:")
     lines.append("                config = ttnn.WriterConfigDescriptor()")
     lines.append("            noc_idx += 1")
     lines.append("")
-    lines.append("        kernel_desc = ttnn.KernelDescriptor(")
-    lines.append("            kernel_source=kernel_path,")
-    lines.append("            core_ranges=core_ranges,")
-    lines.append("            compile_time_args=compile_time_args,")
-    lines.append("            common_runtime_args=common_runtime_args,")
-    lines.append("            config=config,")
+    lines.append("        kernel_specs.append(")
+    lines.append("            KernelSpec(")
+    lines.append("                path=kernel_path,")
+    lines.append("                thread_type=thread_type,")
+    lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
+    lines.append("                config=config,")
+    lines.append("            )")
     lines.append("        )")
-    lines.append("        kernel_descriptors.append(kernel_desc)")
+    lines.append("    kernel_descriptors = build_kernel_descriptors(")
+    lines.append("        kernel_specs=kernel_specs,")
+    lines.append("        tensors=tensors,")
+    lines.append("        tensor_accessor_args=tensor_accessor_args,")
+    lines.append("        core_ranges=core_ranges,")
+    lines.append("        grid_cols=GRID_COLS,")
+    lines.append("        grid_rows=GRID_ROWS,")
+    lines.append("        num_cbs=len(CB_CONFIGS),")
+    lines.append(
+        "        extra_common_runtime_args=pipe_resources.extra_common_runtime_args,"
+    )
+    lines.append("        expected_extra_common_runtime_args=(")
+    lines.append("            pipe_resources.expected_extra_common_runtime_args")
+    lines.append("        ),")
+    lines.append("    )")
+    lines.append("")
+
+    lines.append("    semaphore_descriptors = build_pipe_sync_semaphore_descriptors(")
+    lines.append("        core_ranges=core_ranges,")
+    lines.append("        count=NUM_PIPE_SYNC_SEMAPHORES,")
+    lines.append("    )")
     lines.append("")
 
     lines.append("    program = ttnn.ProgramDescriptor(")
     lines.append("        kernels=kernel_descriptors,")
     lines.append("        cbs=cb_descriptors,")
-    lines.append("        semaphores=[],")
+    lines.append("        semaphores=semaphore_descriptors,")
     lines.append("    )")
     lines.append("")
-    lines.append("    return ttnn.generic_op(list(tensors), program)")
+    lines.append("    io_tensors = build_generic_op_io_tensors(")
+    lines.append("        tensors=tensors,")
+    lines.append("        pipe_sram_scratch_tensors=pipe_resources.scratch_tensors,")
+    lines.append("    )")
+    lines.append("    result = ttnn.generic_op(io_tensors, program)")
+    lines.append("    return result")
     lines.append("")
 
     lines.append("")
@@ -560,6 +798,9 @@ def emit_runner_file(
     num_tensors: int,
     output_path: str,
     kernel_name: str = "kernel",
+    num_pipe_sync_semaphores: int = 0,
+    pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -575,6 +816,9 @@ def emit_runner_file(
         grid_rows=grid_rows,
         num_tensors=num_tensors,
         kernel_name=kernel_name,
+        num_pipe_sync_semaphores=num_pipe_sync_semaphores,
+        pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+        num_pipe_global_semaphores=num_pipe_global_semaphores,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -587,9 +831,15 @@ def emit_runner_file(
 
 __all__ = [
     "KernelSpec",
+    "PipeRuntimeResources",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
     "build_cb_descriptors",
+    "build_pipe_sram_scratch_tensors",
+    "build_pipe_global_semaphores",
+    "build_pipe_runtime_resources",
+    "build_pipe_sync_semaphore_descriptors",
+    "build_generic_op_io_tensors",
     "run_kernel_on_device",
     "emit_runner_source",
     "emit_runner_file",

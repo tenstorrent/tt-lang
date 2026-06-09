@@ -141,15 +141,19 @@ mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
   auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
   int64_t tensorRank = tensorTy.getRank();
+  int64_t resultRank = resultTy.getRank();
 
   if (static_cast<int64_t>(getIndices().size()) != tensorRank) {
     return emitOpError() << "index count (" << getIndices().size()
                          << ") must match tensor rank (" << tensorRank << ")";
   }
 
-  if (resultTy.getRank() != tensorRank) {
-    return emitOpError() << "result rank (" << resultTy.getRank()
-                         << ") must match tensor rank (" << tensorRank << ")";
+  // Rank-reducing slices are allowed (see the op description for the squeeze
+  // semantics); only an oversized result rank is invalid here.
+  if (resultRank > tensorRank) {
+    return emitOpError() << "result rank (" << resultRank
+                         << ") cannot exceed tensor rank (" << tensorRank
+                         << ")";
   }
 
   if (resultTy.getElementType() != tensorTy.getElementType()) {
@@ -1476,6 +1480,14 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
   if (dstStartX > dstEndX || dstStartY > dstEndY) {
     return emitOpError()
            << "destination start must not exceed destination end on any axis";
+  }
+
+  bool hasMultipleReceivers = dstStartX != dstEndX || dstStartY != dstEndY;
+  if (auto isCollectiveAttr = getIsCollectiveAttr();
+      isCollectiveAttr && !isCollectiveAttr.getValue() &&
+      hasMultipleReceivers) {
+    return emitOpError()
+           << "isCollective=false is invalid for a multi-receiver pipe";
   }
 
   return success();

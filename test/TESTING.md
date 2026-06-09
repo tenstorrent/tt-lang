@@ -20,9 +20,10 @@ The project has several test suites, each with a dedicated CMake target:
 | `check-ttlang-mlir` | `test/ttlang/` | llvm-lit | MLIR dialect and pass tests (no device) |
 | `check-ttlang-python-lit` | `test/python/` (non-`test_*`) | llvm-lit (`-j1`) | Python DSL lit tests |
 | `check-ttlang-python-bindings` | `test/bindings/python/` | llvm-lit | Python binding tests (no device) |
+| `check-ttlang-packaging` | `test/packaging/` | pytest | Packaging and wheel metadata tests (no device) |
 | `check-ttlang-pytest` | `test/python/test_*.py` | pytest | Parametric Python tests |
 | `check-ttlang-me2e` | `test/me2e/` | pytest | Middle end-to-end tests |
-| `check-ttlang` | | | Combines `check-ttlang-mlir` + `check-ttlang-python-bindings` (no device) |
+| `check-ttlang` | | | Combines `check-ttlang-mlir` + `check-ttlang-python-bindings` + `check-ttlang-packaging` (no device) |
 | `check-ttlang-all` | | | All suites, run sequentially |
 
 Files named `test_*.py` under `test/python/` are excluded from lit collection

@@ -321,40 +321,44 @@ func.func @all_fpu_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 5: Block arg used by both FPU and SFPU ops
+// Test 5: Source tensor consumed by both FPU and SFPU through split CBs
 // =============================================================================
-// Purpose: Same block arg (A) is used by an FPU binary (tile_add) and an
-// SFPU unary (tile_exp). The FPU binary reads A from CB (no copy needed), but
-// the SFPU exp still needs copy_tile for A. dstPerIteration=2, unroll_factor=4.
+// Purpose: The same source tensor A feeds an FPU binary (tile_add) and an
+// SFPU unary (tile_exp). Because SetComputeKernelConfig rejects an f32 CB
+// from being consumed by both strategies, A is attached to two CBs: CB0 for
+// the FPU consumer (a_fpu) and CB2 for the SFPU consumer (a_sfpu). The FPU
+// binary reads a_fpu from CB (no copy needed); the SFPU exp still needs a
+// copy_tile from a_sfpu.
 
 // CHECK-LABEL: func.func @block_arg_fpu_and_sfpu
 // CHECK-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // CHECK:           ttl.compute
 // CHECK-SAME:      ttl.unroll_factor = 4
-// CHECK-NEXT:      ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>,
+// CHECK-NEXT:      ^bb0(%[[A_FPU:[^:]*]]: !ttcore.tile<32x32, f32>, %[[A_SFPU:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>,
 // CHECK:           %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
-// FPU binary: reads A and B from CB
-// CHECK:           %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// copy_tile A for SFPU exp
-// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
+// FPU binary: reads a_fpu and B from CB
+// CHECK:           %[[ADD:.*]] = ttl.tile_add %[[A_FPU]], %[[B]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// copy_tile a_sfpu for SFPU exp
+// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A_SFPU]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[ATILE]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 //
-// SFPU path: add also needs copy_tile for both operands
+// SFPU path: add also needs copy_tile for both operands. Both block args for A
+// are SFPU-only consumers, so no conflict diagnostic fires.
 // SFPU-LABEL: func.func @block_arg_fpu_and_sfpu
 // SFPU-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // SFPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // SFPU:           ttl.compute
 // SFPU-SAME:      ttl.unroll_factor = 4
-// copy A and B for SFPU add
+// copy a_fpu and B for SFPU add
 // SFPU:           %{{.*}}, %[[ATILE1:.*]] = ttl.copy_tile %{{.*}}[%{{.*}}, %{{.*}}] into dst[%[[C0]]]
 // SFPU:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %{{.*}}[%{{.*}}, %{{.*}}] into dst[%[[C1]]]
 // SFPU:      %[[ADD:.*]] = ttl.tile_add %[[ATILE1]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// copy A again for exp
+// copy a_sfpu for exp
 // SFPU:           %{{.*}}, %[[ATILE2:.*]] = ttl.copy_tile %{{.*}}[%{{.*}}, %{{.*}}] into dst[%[[C1]]]
 // SFPU:      %[[EXP:.*]] = ttl.tile_exp %[[ATILE2]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // SFPU:            ttl.tile_store
@@ -367,28 +371,32 @@ func.func @block_arg_fpu_and_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %c0 = arith.constant 0 : index
   %init0 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
   %init1 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // CB0 feeds the FPU consumer; CB2 mirrors %a for the SFPU consumer.
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb_a_sfpu = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
   %cb2 = ttl.bind_cb {cb_index = 16, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
   %cb3 = ttl.bind_cb {cb_index = 17, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
-  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_cb_fpu = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_cb_sfpu = ttl.attach_cb %a, %cb_a_sfpu : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init0_cb = ttl.attach_cb %init0, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init1_cb = ttl.attach_cb %init1, %cb3 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %out_view_1 = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result:2 = ttl.compute
-      ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
+      ins(%a_cb_fpu, %a_cb_sfpu, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init0_cb, %init1_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [#map, #map, #map, #map], iterator_types = ["parallel", "parallel"]} {
-  ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>,
+      {indexing_maps = [#map, #map, #map, #map, #map], iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_fpu_tile: !ttcore.tile<32x32, f32>, %a_sfpu_tile: !ttcore.tile<32x32, f32>,
+       %b_tile: !ttcore.tile<32x32, f32>,
        %out0: !ttcore.tile<32x32, f32>, %out1: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    // FPU binary: both block args
-    %add = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    // SFPU unary: block arg A still needs copy_tile for DST
-    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    // FPU binary: both operands are block args attached to non-conflicting CBs
+    %add = ttl.tile_add %a_fpu_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    // SFPU unary: %a_sfpu_tile (from CB2) still needs copy_tile for DST
+    %exp = ttl.tile_exp %a_sfpu_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     ttl.tile_store %add, %out_view_0[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %exp, %out_view_1[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
@@ -407,6 +415,9 @@ func.func @block_arg_fpu_and_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // by SFPU binary ops. Without the interval extension fix, both FPU ops would
 // get the same DST index, causing the second to accumulate on the first's
 // residual. Pattern: abs(a) + (a+b) + (a*b).
+// Because SetComputeKernelConfig rejects an f32 CB consumed by both FPU and
+// SFPU strategies, the source tensor A is attached to two CBs: CB0 for the
+// FPU consumers (a_fpu) and CB2 for the SFPU consumer (a_sfpu).
 // dstPerIteration=3: DST[0] for abs/SFPU chain, DST[1] for FPU add,
 // DST[2] for FPU mul. unroll_factor=2.
 
@@ -416,38 +427,43 @@ func.func @block_arg_fpu_and_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-DAG:       %[[C2:.*]] = arith.constant 2 : index
 // CHECK:           ttl.compute
 // CHECK-SAME:      ttl.unroll_factor = 2
-// CHECK-NEXT:      ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:      ^bb0(%[[A_FPU:[^:]*]]: !ttcore.tile<32x32, f32>, %[[A_SFPU:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
-// copy_tile A for abs (SFPU unary)
-// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+// copy_tile a_sfpu for abs (SFPU unary)
+// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A_SFPU]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[ABS:.*]] = ttl.tile_abs %[[ATILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// FPU add: reads from CB, gets DST[1]
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// FPU add: reads a_fpu and B from CB, gets DST[1]
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A_FPU]], %[[B]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // SFPU binary: abs + add -> DST[0]
 // CHECK:      %[[SUM1:.*]] = ttl.tile_add %[[ABS]], %[[ADD]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// FPU mul: reads from CB, gets DST[2] (NOT DST[1] - no reuse!)
-// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[A]], %[[B]] into dst[%[[C2]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// FPU mul: reads a_fpu and B from CB, gets DST[2] (NOT DST[1] - no reuse!)
+// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[A_FPU]], %[[B]] into dst[%[[C2]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // SFPU binary: sum1 + mul -> DST[0]
 // CHECK:      %[[SUM2:.*]] = ttl.tile_add %[[SUM1]], %[[MUL]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[SUM2]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 //
-// SFPU path: all binary ops use copy_tile. Pattern:
-// copy A->0, abs->0, copy A->1, copy B->2, add(1,2)->1, add(0,1)->0,
-// copy A->1, mul(1,2)->1, add(0,1)->0
+// SFPU path: all binary ops use copy_tile. The two block args for A are both
+// SFPU-only consumers in this configuration, so no conflict diagnostic fires.
+// Splitting A across two block args (a_fpu/a_sfpu) means the copy of a_fpu
+// stays live across the add and the subsequent mul, so the SFPU mul does not
+// need a second copy_tile for A.
+// Pattern:
+//   copy a_sfpu->0, abs->0, copy a_fpu->1, copy B->2, add(1,2)->3,
+//   add(0,3)->0 (sum1), mul(1,2)->1, add(0,1)->0 (sum2)
 // SFPU-LABEL: func.func @fpu_binary_no_dst_reuse
 // SFPU-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // SFPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
+// SFPU-DAG:       %[[C3:.*]] = arith.constant 3 : index
 // SFPU:           ttl.compute
 // SFPU-SAME:      ttl.unroll_factor = 2
 // SFPU:           ttl.copy_tile {{.*}}
 // SFPU:           ttl.tile_abs {{.*}} into dst[%[[C0]]]
 // SFPU:           ttl.copy_tile {{.*}}
 // SFPU:           ttl.copy_tile {{.*}}
-// SFPU:           ttl.tile_add {{.*}} into dst[%[[C1]]]
+// SFPU:           ttl.tile_add {{.*}} into dst[%[[C3]]]
 // SFPU:           ttl.tile_add {{.*}} into dst[%[[C0]]]
-// SFPU:           ttl.copy_tile {{.*}}
 // SFPU:           ttl.tile_mul {{.*}} into dst[%[[C1]]]
 // SFPU:           %[[SUM2S:.*]] = ttl.tile_add {{.*}} into dst[%[[C0]]]
 // SFPU:            ttl.tile_store
@@ -457,29 +473,33 @@ func.func @fpu_binary_no_dst_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                     %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // CB0 feeds the FPU consumers; CB2 mirrors %a for the SFPU consumer.
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb_a_sfpu = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
   %cb2 = ttl.bind_cb {cb_index = 16, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
-  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_cb_fpu = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_cb_sfpu = ttl.attach_cb %a, %cb_a_sfpu : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
-      ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
+      ins(%a_cb_fpu, %a_cb_sfpu, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} {
-  ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+      {indexing_maps = [#map, #map, #map, #map], iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_fpu_tile: !ttcore.tile<32x32, f32>, %a_sfpu_tile: !ttcore.tile<32x32, f32>,
+       %b_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    // SFPU unary: abs(a) -> needs copy_tile
+    // SFPU unary: abs(a_sfpu) -> needs copy_tile
     %c0 = arith.constant 0 : index
-    %abs = ttl.tile_abs %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    // FPU binary: a + b (both block args, reads from CB)
-    %add = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %abs = ttl.tile_abs %a_sfpu_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    // FPU binary: a_fpu + b (both block args, reads from CB)
+    %add = ttl.tile_add %a_fpu_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     // SFPU binary: abs(a) + (a+b) - consumes add result
     %sum1 = ttl.tile_add %abs, %add into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    // FPU binary: a * b (both block args) - must NOT reuse add's DST register
-    %mul = ttl.tile_mul %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    // FPU binary: a_fpu * b (both block args) - must NOT reuse add's DST register
+    %mul = ttl.tile_mul %a_fpu_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     // SFPU binary: result + (a*b)
     %sum2 = ttl.tile_add %sum1, %mul into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     ttl.tile_store %sum2, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>

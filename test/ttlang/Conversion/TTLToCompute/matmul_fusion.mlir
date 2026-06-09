@@ -303,6 +303,86 @@ func.func @matmul_sub_no_fold() attributes {ttl.base_cta_index = 4 : i32, ttl.cr
 
 // -----
 
+// typecast(matmul): the standalone matmul keeps its own dtype (bf16) on the
+// tile result, and the trailing tile_typecast performs the bf16 -> f32
+// conversion. Regression for using the final fused sink dtype on the matmul
+// tile result, which would have produced an f32 tile_matmul_block (incorrect)
+// instead of bf16 followed by an explicit typecast.
+
+// CHECK-LABEL: func.func @matmul_then_typecast
+// CHECK:         ttl.compute
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
+// CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile<32x32, bf16>, %[[BT:.*]]: !ttcore.tile<32x32, bf16>, %{{.*}}: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:      ttl.iter_index 0
+// CHECK-NEXT:      ttl.iter_index 1
+// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]]{{.*}}into dst[%c-1] {ttl.dst_placeholder} :
+// CHECK-SAME:   -> !ttcore.tile<32x32, bf16>
+// CHECK:      %[[TC:.*]] = ttl.tile_typecast %[[MM]]{{.*}}: !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, f32>
+// CHECK:      ttl.tile_store %[[TC]],{{.*}}from dst[%c-1]
+// CHECK-NEXT:      ttl.yield
+func.func @matmul_then_typecast() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %w0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %w1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %mm = ttl.matmul %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %tc = ttl.typecast %mm : (tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.store %tc, %reserve : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
+// typecast(matmul + a): the matmul+add fold collapses to a 3-operand
+// tile_matmul_block whose tile result keeps the AddOp's dtype (bf16); the
+// trailing tile_typecast performs the bf16 -> f32 conversion. Regression for
+// emitting the folded matmul with the final sink dtype, which would skip the
+// hardware-required intermediate dtype and break tile_typecast type matching.
+
+// CHECK-LABEL: func.func @matmul_add_then_typecast
+// CHECK:         ttl.compute
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
+// CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile<32x32, bf16>, %[[BT:.*]]: !ttcore.tile<32x32, bf16>, %[[CT:.*]]: !ttcore.tile<32x32, bf16>, %{{.*}}: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:      ttl.iter_index 0
+// CHECK-NEXT:      ttl.iter_index 1
+// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]], %[[CT]]{{.*}}into dst[%c-1] {ttl.dst_placeholder} :
+// CHECK-SAME:   -> !ttcore.tile<32x32, bf16>
+// CHECK-NOT:       ttl.tile_add
+// CHECK:      %[[TC:.*]] = ttl.tile_typecast %[[MM]]{{.*}}: !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, f32>
+// CHECK:      ttl.tile_store %[[TC]],{{.*}}from dst[%c-1]
+// CHECK-NEXT:      ttl.yield
+func.func @matmul_add_then_typecast() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb3 = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %w0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %w1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %w2 = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %c = ttl.attach_cb %w2, %cb2 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb3 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %mm = ttl.matmul %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum = ttl.add %mm, %c : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %tc = ttl.typecast %sum : (tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.store %tc, %reserve : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_push %cb3 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
 // Regression test: non-square fused matmul+add. A=[2,4], B=[4,3], acc=[2,3].
 // With incorrect 2D identity maps, B would be sliced along M during
 // subblocking, producing wrong tile indices. The 3D maps ensure B gets

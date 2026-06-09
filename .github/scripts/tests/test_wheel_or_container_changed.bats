@@ -119,7 +119,7 @@ setup() {
 }
 
 @test "diff only in third-party uplift path -> false (covered by detect-uplift, not this script)" {
-    echo "v0.70.0" > "$REPO/third-party/tt-metal-version"
+    printf '%s\n' "$TEST_TT_METAL_RC1_TAG" > "$REPO/third-party/tt-metal-version"
     commit_all "$REPO" "uplift only"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_changed "$BASE" "$head")" "false"

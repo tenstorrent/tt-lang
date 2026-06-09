@@ -89,6 +89,13 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     [0,0], [0,1], [1,0], and [1,1]. For an ND tensor, indices cover all
     dimensions of the tile grid.
 
+    The result rank may be less than the tensor rank (a rank-reducing slice):
+    the leading (tensor_rank - result_rank) dims are squeezed by scalar
+    subscripts and the trailing dims map to the CB shape. Each squeezed scalar
+    index feeds the full-rank tile-coordinate linearization, so a nonzero slot
+    in a leading dim addresses the right sub-block. A range subscript in a
+    squeezed position is rejected, since a range does not reduce rank.
+
     The result tensor has a reduced shape matching the CB dimensions but
     retains the original tensor's layout encoding. The lowering traces back
     to the original tensor via the defining op.
@@ -481,18 +488,21 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let summary = "Create a pipe for core-to-core communication";
   let description = [{
-    Creates a pipe that defines a communication channel from a source core to
-    one or more destination cores.
+    Creates a pipe that defines a transfer relation from a source core to
+    one or more receiver cores.
 
-    For unicast (single destination), only specify `dst(x, y)`.
-    For multicast (rectangular grid), specify `dst(x1, y1) to (x2, y2)`.
+    A point-to-point pipe has one receiver. A collective pipe has a receiver
+    set. The receiver-set syntax records the collective transfer contract; it
+    does not determine which TTKernel NOC operation is emitted later.
+    `isCollective = true` records a collective transfer contract when the
+    receiver set contains a single point.
 
     Example:
     ```mlir
-    // Unicast: (0,0) -> (1,0)
+    // Point-to-point: (0,0) -> (1,0)
     %p = ttl.create_pipe src(0, 0) dst(1, 0) : !ttl.pipe
 
-    // Multicast: (0,0) -> rectangular region (1,0)-(1,3)
+    // Collective: (0,0) -> receiver set (1,0)-(1,3)
     %p = ttl.create_pipe src(0, 0) dst(1, 0) to (1, 3) : !ttl.pipe
     ```
   }];
@@ -506,9 +516,10 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$pipeNetId,
     // Optional user-facing name for the owning PipeNet, used only to
     // render diagnostics in source-level terms (e.g.
-    // `mcast_a_net.is_active()` instead of `net_<id>.is_active()`).
+    // `a_pipe_net.is_active()` instead of `net_<id>.is_active()`).
     // No effect on op semantics.
-    OptionalAttr<StrAttr>:$pipeNetName
+    OptionalAttr<StrAttr>:$pipeNetName,
+    OptionalAttr<BoolAttr>:$isCollective
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
@@ -517,7 +528,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let hasVerifier = 1;
 
   let builders = [
-    // Builder for unicast pipe (single destination, pipeNetId = 0)
+    // Builder for a single-receiver pipe with pipeNetId = 0.
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstX, "int64_t":$dstY), [{
       build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);
@@ -538,7 +549,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
             $_builder.getI64IntegerAttr(dstEndX),
             $_builder.getI64IntegerAttr(dstEndY),
             $_builder.getI64IntegerAttr(pipeNetId),
-            /*pipeNetName=*/StringAttr());
+            /*pipeNetName=*/StringAttr(),
+            /*isCollective=*/BoolAttr());
     }]>
   ];
 }
@@ -955,6 +967,12 @@ defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
 defm TTL_Min : TTL_BinarySfpuElementwisePair<"min", "binary_min_tile",
                                              [TTL_InPlaceOpTrait]>;
 
+// Elementwise compare: maps to TTKernel's native SFPU comparison ops.
+defm TTL_Eq : TTL_BinarySfpuElementwisePair<"eq", "eq_binary_tile">;
+defm TTL_Ne : TTL_BinarySfpuElementwisePair<"ne", "ne_binary_tile">;
+defm TTL_Gt : TTL_BinarySfpuElementwisePair<"gt", "gt_binary_tile">;
+defm TTL_Lt : TTL_BinarySfpuElementwisePair<"lt", "lt_binary_tile">;
+
 
 //===----------------------------------------------------------------------===//
 // Unary Elementwise Operations (Tensor + Tile Ops)
@@ -1008,11 +1026,11 @@ defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 //===----------------------------------------------------------------------===//
 //
 // `ttl.typecast` is a unary elementwise op that converts the data type of
-// every element. It does not fit the standard unary elementwise multiclass
-// because input and result element types differ; the multiclass requires
-// AllTypesMatch on input and result. The destination dtype is encoded in the
-// result type and is threaded to ttkernel.typecast_tile and its init op
-// during lowering by reading it from the result tile element type.
+// every element. The tile-level form `ttl.tile_typecast` carries the
+// destination dtype implicitly via its result tile element type. Because
+// input and result element types differ, typecast does not use the standard
+// unary elementwise multiclass (which constrains all operand and result
+// element types to match).
 
 def TTL_TypecastOp : TTL_Op<"typecast",
     [Pure, TTL_UnaryElementwiseOpTrait]> {

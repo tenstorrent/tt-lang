@@ -30,12 +30,13 @@ PipeNet(s), and a suggested guard.
 
 `ttl.PipeNet` describes a logical communication pattern between nodes. A
 pipe carries data from a source coordinate (`src`) to either a single
-destination (unicast) or a contiguous coordinate range (multicast). When
-the launch grid is larger than the union of all pipe sources and
-destinations, the extra nodes have no role in the communication. If the
-user fails to guard pipe-coupled work from those nodes, the kernel reads
-out-of-bounds tensor regions and corrupts the multicast handshake; this
-failure mode is the one the verifier guards against (see issue #541).
+destination (point-to-point) or a contiguous coordinate range
+(collective). When the launch grid is larger than the union of all pipe
+sources and destinations, the extra nodes have no role in the
+communication. If the user fails to guard pipe-coupled work from those
+nodes, the kernel reads out-of-bounds tensor regions and corrupts the
+pipe synchronization protocol; this failure mode is the one the
+verifier guards against (see issue #541).
 
 The compiler verifies user-written guards: each pipe-coupled operation
 must be reachable only from the nodes permitted by its role
@@ -51,14 +52,15 @@ Pipe transfers have the following operational semantics:
 
 - A pipe has no hidden in-transit DFB. The destination storage is the DFB
   block the user reserves in the receiver callback.
-- `ttl.copy(pipe, dst_blk)` posts a receive. It publishes `dst_blk`'s
-  current write pointer to the sender and returns a transfer handle.
+- `ttl.copy(pipe, dst_blk)` posts a receive. It makes `dst_blk`'s
+  current write pointer the destination storage for the matching send
+  and returns a transfer handle.
 - Waiting on the receive transfer handle waits for the sender's
   completion signal for that posted receive.
 - `ttl.copy(src_blk, pipe)` posts a send. The send waits until every
-  destination in the pipe has posted a destination address, writes
-  `src_blk` directly to those addresses, then signals completion to the
-  receivers.
+  destination in the pipe has posted a receive, writes `src_blk`
+  directly to the receiver-owned DFB storage, then signals completion
+  to the receivers.
 - Waiting on the send transfer handle waits until the send has
   completed and the source block can be released.
 - The compiler uses the user's DFB reserve and wait structure for pipe
@@ -108,7 +110,7 @@ stateDiagram-v2
 
     [*] --> NoSendPosted
     NoSendPosted --> WaitingForDestinationAddresses: ttl.copy(src_blk, pipe)
-    WaitingForDestinationAddresses --> PayloadWriteInProgress: all destinations have posted receive addresses
+    WaitingForDestinationAddresses --> PayloadWriteInProgress: all destinations have posted destination addresses
     PayloadWriteInProgress --> SendComplete: payload write finishes and receivers are signaled
     SendComplete --> SourceBlockMayBeReleased: send_tx.wait() returns
     WaitingForDestinationAddresses --> WaitingForDestinationAddresses: send_tx.wait() blocks
@@ -124,12 +126,12 @@ if any required receive post has not run.
 
 When a single data-movement kernel executes both a send and a receive
 for the same PipeNet, program order in that kernel must satisfy the
-pipe synchronization order. In loopback multicast, the source core is
-also one of the destinations; in relay kernels, a core receives from
+pipe synchronization order. In a loopback collective, the source core
+is also one of the destinations; in relay kernels, a core receives from
 one pipe and sends to another.
 
 For example, the loopback schedule below is invalid because the same thread
-tries to send before it posts its own receive address:
+tries to send before it posts its own destination address:
 
 ```python
 @ttl.datamovement()
@@ -227,31 +229,38 @@ sender's data lands in its own slot of the receiver's dataflow buffer.
 
 ### Data layout: slot per sender
 
-`PipeGraph::assignGatherSlotIndices` walks the pipes in a stable order
-(sorted by `(srcX, srcY, dstStartX, dstStartY, pipeNetId)`) and assigns
-each pipe the lowest slot index not yet taken at any of its receivers.
-For a receiver that lies in the destination range of `N` pipes within
-one PipeNet, those pipes get slot indices `0..N-1`. Two pipes whose
+`PipeGraph::assignGatherSlotIndices` walks pipes in deterministic sorted
+order by `(srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY,
+pipeNetId)` and assigns each pipe the lowest slot index not yet taken at
+any of its receivers. User IR order does not affect slot assignment. For
+a receiver that lies in the destination range of `N` pipes within one
+PipeNet, those pipes get slot indices `0..N-1`. Two pipes whose
 destination ranges intersect on even one node get distinct slots; pipes
 whose ranges are disjoint may reuse slot 0.
 
-The receiver publishes the concrete DFB write pointer for each receive
-post. The slot assignment is therefore a compile-time capacity proof,
-not a sender-side address computation: overlapping arrivals are safe
-because the user reserves one DFB block per receive callback and the
-lowering writes to the address published by that specific post.
+Each receive post identifies one concrete DFB write pointer. The
+receiver writes that address to a sender-visible SRAM address-table
+entry before incrementing the sender-ready counter. Uniform collective
+uses one table entry per pipe because every destination must publish an
+equivalent DFB address until issue #617 adds explicit per-destination
+addresses.
 
-This is the same mechanism unicast gather uses (N unicast pipes to one
-destination get slot indices `0..N-1`); the only difference is that
-multicast overlap also handshakes through `noc_semaphore_inc_multicast`
-(see `PipeOptimizations.md`, section 2) rather than per-destination
+Overlapping arrivals are safe because the user reserves one DFB block
+per receive callback and slot assignment proves the receiver DFB has
+enough blocks.
+
+This is the same mechanism point-to-point gather uses (N
+point-to-point pipes to one destination get slot indices `0..N-1`);
+the only difference is that collective overlap uses the hardware
+multicast completion signal (`noc_semaphore_inc_multicast`; see
+`PipeOptimizations.md`, section 2) rather than per-destination
 `noc_semaphore_inc`. The `block_count` requirement is identical and
 checked by the same code: `PipeGraph::verifyGatherBlockCounts` errors
 at compile time if any receiver DFB's `block_count` is less than
 `max(gatherSlotIdx) + 1` for its pipes, with diagnostic prefix
-`"multicast overlap"` (vs `"gather"` for unicast). There is no
-synchronous serialization between senders: they run concurrently and
-land in distinct slots.
+`"collective overlap"` (vs `"gather"` for point-to-point). There is
+no synchronous serialization between senders: they run concurrently
+and land in distinct slots.
 
 ### Arrival counter
 
@@ -270,31 +279,30 @@ blocking until the remote counter catches up. Consequences:
 
 The full sender / receiver NoC protocol - `noc_semaphore_inc_multicast`,
 `noc_async_atomic_barrier`, `experimental::semaphore_wait_min`, and the
-multicast-loopback case - is documented in `PipeOptimizations.md`,
+hardware multicast loopback case - is documented in `PipeOptimizations.md`,
 section 2.
 
 ### Sender concurrency
 
 Slot-per-sender preserves every parallelism property of a non-overlapping
-multicast. The proof tracks four points in the lowered IR:
+collective. The proof tracks four points in the lowered IR:
 
 1. Slot assignment is static. `assignGatherSlotIndices`
    (`PipeGraph.cpp`) runs at compile time, assigns each pipe a slot
    index `0..N-1`, and verifies the receiver DFB has enough blocks for
-   all concurrently live arrivals. The lowered address still comes from
-   the receiver's posted write pointer. Future batched slot reuse could
-   allow fewer receiver DFB blocks by scheduling overlapping senders in
-   capacity-bounded groups.
+   all concurrently live arrivals. Sends use the receiver-published
+   DFB write pointer recorded in the source core's SRAM address table.
+   Future batched slot reuse could allow fewer receiver DFB blocks by
+   scheduling overlapping senders in capacity-bounded groups.
 2. No inter-sender wait. Each sender waits only for its own receivers to
    publish destination addresses, performs its own NOC write, then
    increments the receiver completion semaphore. No sender reads a
    semaphore signaled by another sender.
 3. Receiver completion semaphores are per-PipeNet. Sender-ready
-   semaphores and mailbox words are per pipe on the source core, so two
-   distinct pipes from one source can be posted and sent independently.
-   Receive-post staging words are per NOC data-movement thread, so
-   concurrent receiver posts from the two DM kernels do not overwrite
-   each other's mailbox payload before the remote write completes.
+   semaphores and address-table entries are per pipe on the source
+   core, so two distinct pipes from one source can be posted and sent
+   independently. Receive posts publish DFB addresses with inline
+   32-bit NOC writes, so address publication writes the value directly.
 4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
    for a count of total arrivals, not for specific senders. Senders
    bump the counter in any order; the receiver only cares about the
@@ -303,7 +311,7 @@ multicast. The proof tracks four points in the lowered IR:
 The only places execution can stall are:
 
 - A sender waiting for its own receivers' ready signal (the same
-  ready/valid handshake as unicast).
+  ready/valid handshake as point-to-point).
 - A receiver waiting for the cumulative arrival count to reach its
   expected value.
 - Hardware NoC bandwidth contention (physical, not compiler-inserted).
@@ -316,13 +324,13 @@ accumulation. The cost comparison:
 | Pattern | Data writes | Signal ops |
 |---|---|---|
 | N senders * M receivers, slot-per-sender mcast | N mcast | N inc_mcast |
-| N senders * M receivers, naive unicast emulation | N*M unicast | N*M inc |
+| N senders * M receivers, point-to-point emulation | N*M unicast | N*M inc |
 
 A hypothetical "merged" multicast that combines payloads from N
 different sender cores into one NoC operation is not a hardware
 primitive, so slot-per-sender is the optimal layering: each sender
 still pays one multicast NoC op for its data plus one for its signal,
-exactly like a non-overlapping multicast. The only resource the slot
+exactly like a non-overlapping collective. The only resource the slot
 mechanism trades for overlap is receiver DFB capacity
 (`N * page_size * cb_num_tiles` of receiver SRAM instead of one block),
 which the compile-time `verifyGatherBlockCounts` makes the user
@@ -370,10 +378,10 @@ both consume. It holds:
 
 - A list of `PipeNetUse` entries, each with an operation-local id
   (`0..N-1`, reset per invocation) and a tuple of `PipeUse` records
-  (source `NodeCoord`, destination `NodeCoord` for unicast or
-  `NodeRange` for multicast).
-- `validate()`: empty PipeNet, mixed unicast/multicast within one
-  PipeNet, mixed coordinate ranks across pipes, multicast `slice.step`
+  (source `NodeCoord`, destination `NodeCoord` for point-to-point or
+  `NodeRange` for collective).
+- `validate()`: empty PipeNet, mixed point-to-point/collective within one
+  PipeNet, mixed coordinate ranks across pipes, collective `slice.step`
   other than 1 (rejected at `ttl.Pipe` construction).
 
 The compiler and the simulator both discover PipeNets by walking the
@@ -386,7 +394,7 @@ the enclosing-scope capture rule.
 
 Operation-local ids keep `ttl.create_pipe` ids stable across
 invocations, anchor receiver completion semaphore indices, and keep
-the sender-ready/mailbox layout deterministic. The `OperationPipeNets`
+the sender-ready/address-table layout deterministic. The `OperationPipeNets`
 instance is built and validated before MLIR emission on the compiler
 side and before `Program(...)` runs on the simulator side.
 `PipeNet.__init__` also builds a one-PipeNet `OperationPipeNets` and
@@ -466,7 +474,7 @@ the role required by the op:
 | Op | Required role |
 | --- | --- |
 | `ttl.copy(buffer, pipe)` | `pipe.src` (single coord) |
-| `ttl.copy(pipe, buffer)` | `pipe.dst` (mcast range) |
+| `ttl.copy(pipe, buffer)` | `pipe.dst` (receiver set) |
 | `ttl.if_src %pipe` body | `pipe.src` (op carries the predicate intrinsically) |
 | `ttl.if_dst %pipe` body | `pipe.dst` (op carries the predicate intrinsically) |
 | `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
@@ -657,8 +665,9 @@ def dm_read():
 ## Simulator parity
 
 Compiler and simulator share `OperationPipeNets.validate()` for
-construction invariants: non-empty PipeNets, no mixed unicast/multicast
-PipeNet, and consistent coordinate rank. The validator runs at
+construction invariants: non-empty PipeNets, no mixed
+point-to-point/collective PipeNet, and consistent coordinate rank. The
+validator runs at
 `PipeNet(...)` construction and again at operation build time. Beyond
 that the two diverge:
 
@@ -681,9 +690,9 @@ and `"full"` as the device compute grid. Neither side skips nodes
 outside PipeNet roles; user guards (`net.is_active()` or coordinate
 predicates) decide which nodes execute pipe-coupled work.
 
-## Example: 2D mcast matmul
+## Example: 2D collective matmul
 
-A small mcast matmul with work shape M_BLOCKS=4, N_BLOCKS=3 launched
+A small collective matmul with work shape M_BLOCKS=4, N_BLOCKS=3 launched
 under `grid="full"` on a Wormhole device (8x7 grid). The launch
 covers the entire device; the user wraps each pipe-coupled thread
 body in `if net.is_active():` so the verifier accepts it and so
@@ -731,51 +740,51 @@ runtime-observable.
 | #  | Behavior under test                                       | Device | Sim | Lit |
 |----|-----------------------------------------------------------|:------:|:---:|:---:|
 |  1 | Empty PipeNet rejected at construction                    |  X  |  X  |     |
-|  2 | Within-PipeNet mcast dst overlap allowed (full)           |  X  |  X  |     |
-|  3 | Within-PipeNet mcast dst overlap allowed (partial)        |  X  |  X  |     |
-|  4 | Unicast gather to same dst allowed                        |  X  |  X  |     |
-|  5 | Nonoverlapping mcast pipes in one PipeNet allowed         |  X  |  X  |     |
+|  2 | Within-PipeNet collective dst overlap allowed (full)      |  X  |  X  |     |
+|  3 | Within-PipeNet collective dst overlap allowed (partial)   |  X  |  X  |     |
+|  4 | Point-to-point gather to same dst allowed                 |  X  |  X  |     |
+|  5 | Nonoverlapping collective pipes in one PipeNet allowed    |  X  |  X  |     |
 |  6 | Pipe rejects open-bounded slices                          |  X  |  X  |     |
 |  7 | Pipe rejects empty / inverted slices                      |  X  |  X  |     |
-|  8 | Mixed unicast + multicast in one PipeNet rejected         |  X  |  X  |     |
-|  9 | All-unicast PipeNet allowed                               |  X  |  X  |     |
-| 10 | All-multicast PipeNet allowed                             |  X  |  X  |     |
+|  8 | Mixed point-to-point + collective in one PipeNet rejected |  X  |  X  |     |
+|  9 | All point-to-point PipeNet allowed                        |  X  |  X  |     |
+| 10 | All collective PipeNet allowed                            |  X  |  X  |     |
 | 11 | Pipe.src strict 2-tuple rejection                         |  X  | (2) |     |
-| 11a| Pipe.dst slice rejects non-1 step (strided mcast unsupported) | X | X |     |
-| 11b| Overlapping mcast end-to-end: two senders share dst range (issue #505 base) | X | X |     |
-| 11c| Overlapping mcast end-to-end: multi-tile blocks, partial overlap | X | X |     |
-| 12 | Scatter on subgrid (work < launch, single mcast)          |  X  |  X  |     |
+| 11a| Pipe.dst slice rejects non-1 step (strided collective unsupported) | X | X |     |
+| 11b| Overlapping collective end-to-end: two senders share dst range (issue #505 base) | X | X |     |
+| 11c| Overlapping collective end-to-end: multi-tile blocks, partial overlap | X | X |     |
+| 12 | Scatter on subgrid (work < launch, single collective pipe) |  X  |  X  |     |
 | 12a| Scatter under grid="full" (spec scatter example)          |  X  |  X  |     |
 | 13 | Per-row scatter (multi-pipe disjoint dst, 2D active set)  |  X  |  X  |     |
 | 14 | Cross-PipeNet destination overlap permitted               |  X  |  X  |     |
-| 15 | Loopback mcast (src in dst range)                         |  X  |  X  |     |
+| 15 | Loopback collective (src in dst range)                    |  X  |  X  |     |
 | 16 | Nested `if_src` / `if_dst` across two PipeNets (relay)    |  X  |  X  |     |
 | 17 | Captured (closure) PipeNet works                          |  X  |  X  |     |
 | 18 | Module-scope PipeNet works                                |  X  |  X  |     |
 | 19 | Mixed scope: module-scope + body-local PipeNets in one op |  X  |  X  |     |
 | 20 | 1D scatter                                                |  X  |  X  |     |
-| 20a| All-to-all 1D via overlapping mcast (scatter-gather)      |  X  |  X  |     |
-| 20b| All-to-all 2D per-column overlapping mcast (scatter-gather, spec) | X | X |     |
+| 20a| All-to-all 1D via overlapping collective pipes (scatter-gather) |  X  |  X  |     |
+| 20b| All-to-all 2D per-column overlapping collective pipes (scatter-gather, spec) | X | X |     |
 | 21 | 1D gather                                                 |  X  |  X  |     |
 | 22 | 1D gather, multiple tiles per source                      |  X  |  X  |     |
-| 23 | Ring forward (1D unicast +1)                              |  X  |  X  |     |
+| 23 | Ring forward (1D point-to-point +1)                       |  X  |  X  |     |
 | 24 | 2D broadcast                                              |  X  |  X  |     |
 | 25 | Pipe chain / conv multi-stage                             |  X  |  X  |     |
-| 25a| True unicast loop with receiver reserve in user code      |  X  |  X  |     |
-| 25b| Unicast self-loop (`src == dst`) with receive-post before send | X | X | |
-| 25c| Row/column unicast forwarding chains, multi-tile loop     |  X  |  X  |     |
-| 26 | 1D mcast matmul auto-grid baseline                        |  X  |  X  |     |
+| 25a| True point-to-point loop with receiver reserve in user code |  X  |  X  |     |
+| 25b| Point-to-point self-loop (`src == dst`) with receive-post before send | X | X | |
+| 25c| Row/column point-to-point forwarding chains, multi-tile loop |  X  |  X  |     |
+| 26 | 1D collective matmul auto-grid baseline                   |  X  |  X  |     |
 | 27 | Issue #541 regression: 4x3 work extent under grid="full"  |  X  |  X  |     |
 | 28 | Issue #541 regression: 2x2 work extent under grid="full"  |  X  |  X  |     |
-| 29 | 2D mcast matmul (work < launch via `_even_split`)         |  X  | (1) |     |
+| 29 | 2D collective matmul (work < launch via `_even_split`)    |  X  | (1) |     |
 | 30 | Balanced 2D matmul (A on dm_read, B on dm_write)          |  X  | (1) |     |
 | 31 | Balanced 2D matmul + fused relu                           |  X  |  X  |     |
-| 32 | OperationPipeNets: src coord + dst range (mcast unit)     |     |  X  |     |
+| 32 | OperationPipeNets: src coord + dst range (collective unit) |     |  X  |     |
 | 33 | OperationPipeNets: union across PipeNets                  |     |  X  |     |
-| 34 | OperationPipeNets: unicast pipe single dst                |     |  X  |     |
+| 34 | OperationPipeNets: point-to-point pipe single dst         |     |  X  |     |
 | 35 | OperationPipeNets: None when empty                        |     |  X  |     |
 | 36 | OperationPipeNets: validate empty PipeNet                 |     |  X  |     |
-| 37 | OperationPipeNets: allow overlapping mcast                |     |  X  |     |
+| 37 | OperationPipeNets: allow overlapping collective dst ranges |     |  X  |     |
 | 38 | OperationPipeNets: operation-local id allocation          |     |  X  |     |
 | 39 | sim pipe deadlock detection                               |     |  X  |     |
 | 40 | Verifier accepts `if net.is_src/is_dst/is_active()` guards |    |     |  X  |
@@ -791,7 +800,7 @@ runtime-observable.
 | 50 | Verifier rejects unanalyzable predicates with location note |   |     |  X  |
 | 50a| Verifier rejects missing `ttl.launch_grid` module attribute |   |     |  X  |
 | 50b| Pipeline lit confirms `pipenet_scope` is gone post-verifier |   |     |  X  |
-| 51 | OperationPipeNets.work_extent: empty / unicast / mcast    |     |  X  |     |
+| 51 | OperationPipeNets.work_extent: empty / point-to-point / collective |     |  X  |     |
 | 52 | OperationPipeNets.work_extent: union, mixed-rank padding  |     |  X  |     |
 | 53 | grid="auto" and grid="full" both launch the device grid   |  X  |  X  |     |
 | 54 | Verifier accepts every `arith.cmpi` predicate kind, `andi`/`ori`/`xori` boolean composition, `subi`/`muli`/`index_cast` in `evalIndex` |  |  |  X  |
@@ -799,13 +808,16 @@ runtime-observable.
 | 56 | Verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
 | 57 | Verifier rejects malformed `pipenet_scope`: missing attrs, length mismatch, role out of {0, 1} |  |  |  X  |
 | 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
-| 59 | Lowering: overlapping mcast senders get distinct slot offsets in IR |  |  |  X  |
+| 59 | Lowering: overlapping collective senders get distinct slot offsets in IR |  |  |  X  |
 | 60 | Lowering: slot assignment is order-independent under user pipe reordering |  |  |  X  |
 | 61 | Lowering: two receives at one core share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
-| 62 | Lowering: loopback mcast (sender in dst range) uses `noc_async_write_multicast_loopback_src` + local recvSem inc |  |  |  X  |
-| 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"multicast overlap"` (and `"gather"` for unicast) |  |  |  X  |
-| 64 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
-| 65 | Schedule verifier rejects same-thread send before receive address publication | X | | X |
+| 62 | Lowering: loopback collective uses `noc_async_write_multicast_loopback_src` + local recvSem inc |  |  |  X  |
+| 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"collective overlap"` (and `"gather"` for point-to-point) |  |  |  X  |
+| 64 | Lowering: aggregate collective receive posts publish address-table entries and increment one sender-ready count |  |  |  X  |
+| 65 | Lowering: non-loopback collective uses receiver-authored SRAM address tables | X | | X |
+| 66 | Semaphore counting: collective address storage does not allocate semaphore ids | | X | |
+| 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
+| 68 | Schedule verifier rejects same-thread send before destination address publication | X | | X |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -821,43 +833,118 @@ strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `matmul_1d_mcast` example uses them. The test asserts the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
-## Lowering: receiver-published destination addresses
+## Lowering: receiver-owned destination storage
 
 `PipeLowering.cpp::lowerPipeRecvPost` lowers `ttl.copy(pipe, dst_blk)`
 as the receive post. It reads the receiver DFB write pointer for the
-user-reserved block, publishes that address to the sender-visible
-mailbox, and increments the sender ready semaphore. This operation does
-not create or reserve any DFB block; it uses the block already reserved
-by the user. The current implementation uses semaphore L1 words as the
-mailbox storage and uses one local staging word per NOC data-movement
-thread before `remote_sram_write_u32`. Planned SRAM scratch lowering can
-replace those semaphore-backed mailbox words with explicit scratch
-allocation when that feature exists.
+user-reserved block and records receiver readiness for the matching
+send. This operation does not create or reserve any DFB block; it uses
+the block already reserved by the user.
 
 `PipeLowering.cpp::lowerCBToPipe` lowers `ttl.copy(src_blk, pipe)` as
-the send. The sender waits until all destinations have published their
-addresses, reads the mailbox address, performs the NOC write directly
-to that receiver-owned DFB block, and signals receiver completion. A
-multicast send waits for every destination in the multicast range to
-post before issuing the write.
+the send. The sender waits until all destinations have posted receives,
+performs the NOC write directly to receiver-owned DFB storage, and
+signals receiver completion. A collective send waits for every
+destination in the receiver set to post before issuing the write.
 
-Multicast lowering has one sender-visible posted-address mailbox per
-pipe. Until issue #617 adds per-destination multicast receive
-addresses, all receivers for one multicast pipe must publish equivalent
-DFB addresses; the lowering rejects non-uniform or untraceable receive
-addresses.
+Lowering models three resources separately:
+
+- address storage carries receiver-authored DFB addresses;
+- ready counting records how many receivers have posted a transfer;
+- completion wait records when receiver-owned DFB storage contains the
+  payload.
+
+TTKernel conversion records the compiler-owned pipe resource plan with
+module attrs:
+
+- `ttl.pipe_sync_semaphore_count` for local pipe semaphores;
+- `ttl.pipe_global_semaphore_count` for GlobalSemaphore-backed ready
+  counters;
+- `ttl.pipe_sram_scratch_bytes` for receiver-authored address-table
+  storage.
+
+The host runtime allocates pipe resources from these attrs and passes
+the resulting addresses as common runtime arguments. [Device 2.0] This
+keeps pipe resource ownership in the compiler plan; future typed device
+APIs should change only the runtime binding mechanism, not the IR-level
+resource model.
+
+### Receiver-authored address table
+
+Point-to-point and collective transfers use a receiver-authored SRAM
+address table. The receive post publishes the concrete receiver DFB
+address to one source-core table entry and increments the sender-ready
+semaphore. The send waits for readiness, reads the table entry, and
+writes the payload to that receiver-owned DFB block.
+
+Receive posts publish the address with an inline 32-bit NOC write.
+Table entries are per pipe on the source core. Address storage is
+ordinary SRAM, so it does not consume semaphore ids.
+
+### Ready-counter allocation
+
+Sender-ready counters are logical counted synchronization resources.
+Lowering uses local hardware semaphores when the resource plan fits the
+local semaphore-id budget. When source-local pipe count would exceed
+that budget, the compiler assigns GlobalSemaphore-backed ready counters
+and records the required count in `ttl.pipe_global_semaphore_count`.
+
+Receiver completion remains a per-PipeNet local counter in the current
+lowering. Address-table storage, ready counting, and completion wait
+are allocated independently so address publication does not consume
+local semaphore ids.
+
+### Aggregate collective ready counting
+
+Uniform collective transfer uses the same receiver-authored address table but
+aggregates readiness. Each receiver post writes an equivalent address
+to the source-core table entry and increments one sender-ready counter.
+The sender waits until the counter reaches the destination count, reads
+one DFB address from the table, issues one multicast payload write, and
+signals receiver completion with the existing per-PipeNet completion
+counter.
+
+Until issue #617 adds per-receiver destination addresses, all
+receivers for one collective pipe must publish equivalent DFB addresses.
+`PipeGraph` validates the receiver DFB index, DFB type, and static tile
+offset for every collective receive post; non-uniform or untraceable
+destination addresses are rejected before TTKernel lowering.
 
 `PipeLowering.cpp::lowerPipeRecvWait` lowers a wait on the receive
 handle to a per-PipeNet cumulative wait. The receiver keeps a local
-runtime counter and waits for `recvSem >= counter`, so repeated unicast
-and multicast receives in loops advance across iterations without
+runtime counter and waits for `recvSem >= counter`, so repeated
+point-to-point and collective receives in loops advance across iterations without
 reusing stale completion state.
 
 This protocol fixes the multi-iteration write-pointer issue by making
-the receiver's published write pointer authoritative. It also makes
-same-thread loopback schedules explicit: the receive post must run
-before the dependent send, and the receive wait must run after a send
-has been posted that can complete it.
+the receiver-owned DFB address authoritative. It also makes same-thread
+loopback schedules explicit: the receive post must run before the
+dependent send, and the receive wait must run after a send has been
+posted that can complete it.
+
+### Device API transition notes
+
+PipeNet IR and verifier rules describe receiver-owned payload storage,
+receiver-authored address publication, counted readiness, and completion
+waits. They do not depend on the current TTNN or TTKernel API spelling.
+The current lowering has four API-specific binding points:
+
+- [Device 2.0] Address-table storage is allocated today as host-created
+  SRAM scratch and passed to kernels by address. A typed device-local
+  scratch allocation API should replace that binding without changing
+  the address-table resource in the compiler plan.
+- [Device 2.0] Receive posts publish address-table entries with an
+  inline 32-bit NoC write. A typed remote SRAM write or address-table
+  API should replace the primitive call while preserving
+  receiver-authored publication.
+- [Device 2.0] Sender-ready counters use local semaphores or
+  TTNN-created GlobalSemaphores whose addresses are passed as common
+  runtime arguments. A typed semaphore object API should bind those
+  counters directly from the same compiler resource plan.
+- [Device 2.0] Receiver completion currently uses a per-PipeNet local
+  semaphore counter. A typed completion object can replace the local
+  semaphore binding, but completion remains separate from address
+  storage and sender-ready counting.
 
 ## Limitations
 
@@ -876,6 +963,11 @@ has been posted that can complete it.
   DFB pushes, or other SPMD-over-the-full-device work. Only ops
   coupled to a PipeNet (pipe-typed copies, pipe-coupled DFB waits,
   `if_src` / `if_dst` bodies) require role containment.
+* Aggregate collective ready counting removes semaphore growth with
+  destination count, but it does not remove receiver DFB capacity
+  requirements for overlapping arrivals. A full-device all-to-all on
+  a grid with more than the maximum supported DFB block count still
+  requires receive-slot batching or another explicit reuse mechanism.
 * Domain representation is `std::set<Coord>` over the launch grid.
   Sufficient for current 2D grids (<= ~200 nodes); revisit when grids
   grow to 3D or thousands of nodes.
@@ -980,8 +1072,9 @@ has been posted that can complete it.
 
   Out of scope for parametric PipeNets: per-iteration dynamic routing
   decided inside a kernel function. The TTKernel multicast handshake
-  allocates receiver completion semaphores per PipeNet and sender-ready
-  / mailbox words per pipe at kernel compile time. Reconfiguring an
+  allocates receiver-completion semaphores per PipeNet and
+  sender-ready counters plus address-table entries per pipe at kernel
+  compile time. Reconfiguring an
   mcast group mid-kernel is not a tt-metal-supported operation; data-
-  dependent routing would be expressed as point-to-point unicast with
+  dependent routing would be expressed as a point-to-point transfer with
   runtime destination, not as a PipeNet.

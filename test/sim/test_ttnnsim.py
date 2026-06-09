@@ -2804,3 +2804,280 @@ class TestSynchronizeDevice:
     def test_returns_none(self) -> None:
         """Return value is None."""
         assert ttnn.synchronize_device() is None
+
+
+# ---------------------------------------------------------------------------
+# 2D mesh support
+# ---------------------------------------------------------------------------
+
+
+def _make_2d_mesh(rows: int, cols: int) -> Any:
+    return ttnn.open_mesh_device(ttnn.MeshShape(rows, cols))
+
+
+def _shard_2d(
+    data: torch.Tensor, rows: int, cols: int, dims: tuple[int | None, int | None]
+) -> ttnn.Tensor:
+    mesh = _make_2d_mesh(rows, cols)
+    return ttnn.from_torch(
+        data,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(rows, cols), dims=dims),
+    )
+
+
+class TestShardTensor2dMesh:
+    """ShardTensor2dMesh sets correct MeshShardInfo on the resulting Tensor."""
+
+    def test_mesh_shape_stored(self) -> None:
+        """mesh_shard_info.mesh_shape matches the requested mesh grid."""
+        t = _shard_2d(torch.ones(4, 8), rows=2, cols=4, dims=(0, 1))
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.mesh_shape == (2, 4)
+
+    def test_dims_stored(self) -> None:
+        """mesh_shard_info.dims matches the requested partition dims."""
+        t = _shard_2d(torch.ones(4, 8), rows=2, cols=4, dims=(0, 1))
+        assert t.mesh_shard_info.dims == (0, 1)
+
+    def test_num_devices_is_product(self) -> None:
+        """num_devices equals rows * cols."""
+        t = _shard_2d(torch.ones(4, 8), rows=2, cols=4, dims=(0, 1))
+        assert t.mesh_shard_info.num_devices == 8
+
+    def test_dim_property_raises_for_2d(self) -> None:
+        """dim property raises ValueError when both axes shard the tensor."""
+        t = _shard_2d(torch.ones(4, 8), rows=2, cols=4, dims=(0, 1))
+        with pytest.raises(ValueError, match="ambiguous"):
+            _ = t.mesh_shard_info.dim
+
+    def test_dim_property_valid_for_one_active_axis(self) -> None:
+        """dim property returns the single active dim when only one axis shards."""
+        t = _shard_2d(torch.ones(4, 8), rows=1, cols=4, dims=(None, 1))
+        assert t.mesh_shard_info.dim == 1
+
+    def test_negative_dims_normalized(self) -> None:
+        """Negative dim values are normalized to positive indices."""
+        data = torch.ones(4, 8)
+        t = _shard_2d(data, rows=2, cols=4, dims=(-2, -1))
+        # For a 2D tensor: -2 % 2 = 0, -1 % 2 = 1
+        assert t.mesh_shard_info.dims == (0, 1)
+
+    def test_none_sentinel_preserved(self) -> None:
+        """A None sentinel in dims marks that mesh axis as inactive."""
+        t = _shard_2d(torch.ones(4, 8), rows=1, cols=4, dims=(None, 0))
+        assert t.mesh_shard_info.dims[0] is None
+        assert t.mesh_shard_info.dims[1] == 0
+
+    def test_underlying_data_unchanged(self) -> None:
+        """from_torch does not modify the tensor data when using ShardTensor2dMesh."""
+        data = torch.arange(16, dtype=torch.float32).reshape(4, 4)
+        t = _shard_2d(data, rows=2, cols=2, dims=(0, 1))
+        assert torch.equal(t.to_torch(), data)
+
+
+class TestAllReduce2DMesh:
+    """all_reduce on 2D-mesh tensors with cluster_axis support.
+
+    The simulator represents a 2D mesh by storing the full tensor: device
+    (r, c) owns the slice at dims[0][r] x dims[1][c].  For a 2x2 mesh
+    with dims=(0,1) and a [4,4] tensor, device (r,c) holds t[r*2:(r+1)*2,
+    c*2:(c+1)*2].
+
+    Test data layout (values equal device-local sum contribution):
+
+        t = [[1, 1, 2, 2],
+             [1, 1, 2, 2],
+             [3, 3, 4, 4],
+             [3, 3, 4, 4]]
+
+    * device (0,0): block of 1s  * device (0,1): block of 2s
+    * device (1,0): block of 3s  * device (1,1): block of 4s
+    """
+
+    def _tensor(self) -> ttnn.Tensor:
+        data = torch.tensor(
+            [[1, 1, 2, 2], [1, 1, 2, 2], [3, 3, 4, 4], [3, 3, 4, 4]],
+            dtype=torch.float32,
+        )
+        return _shard_2d(data, rows=2, cols=2, dims=(0, 1))
+
+    def test_cluster_axis_0_reduces_rows(self) -> None:
+        """cluster_axis=0 sums across the row mesh axis (dim 0, 2 devices).
+
+        Each col block sees: 1+3=4 and 2+4=6, written back to both row slots.
+        """
+        t = self._tensor()
+        result = ttnn.all_reduce(t, cluster_axis=0)
+        expected = torch.tensor(
+            [[4, 4, 6, 6], [4, 4, 6, 6], [4, 4, 6, 6], [4, 4, 6, 6]],
+            dtype=torch.float32,
+        )
+        assert torch.allclose(result.to_torch(), expected)
+
+    def test_cluster_axis_1_reduces_cols(self) -> None:
+        """cluster_axis=1 sums across the col mesh axis (dim 1, 2 devices).
+
+        Each row block sees: 1+2=3 and 3+4=7, written back to both col slots.
+        """
+        t = self._tensor()
+        result = ttnn.all_reduce(t, cluster_axis=1)
+        expected = torch.tensor(
+            [[3, 3, 3, 3], [3, 3, 3, 3], [7, 7, 7, 7], [7, 7, 7, 7]],
+            dtype=torch.float32,
+        )
+        assert torch.allclose(result.to_torch(), expected)
+
+    def test_cluster_axis_none_reduces_all(self) -> None:
+        """cluster_axis=None reduces across both axes: sum of all four blocks (1+2+3+4=10)."""
+        t = self._tensor()
+        result = ttnn.all_reduce(t, cluster_axis=None)
+        expected = torch.full((4, 4), 10.0)
+        assert torch.allclose(result.to_torch(), expected)
+
+    def test_cluster_axis_none_equivalent_to_sequential(self) -> None:
+        """cluster_axis=None produces the same result as two sequential axis reduces."""
+        t = self._tensor()
+        result_none = ttnn.all_reduce(t, cluster_axis=None)
+        result_seq = ttnn.all_reduce(ttnn.all_reduce(t, cluster_axis=0), cluster_axis=1)
+        assert torch.allclose(result_none.to_torch(), result_seq.to_torch())
+
+    def test_partial_reduce_leaves_other_axis_unchanged(self) -> None:
+        """Reducing along cluster_axis=0 does not merge values across cols."""
+        t = self._tensor()
+        result = ttnn.all_reduce(t, cluster_axis=0)
+        r = result.to_torch()
+        # After row reduce, col blocks should still be different (4 vs 6).
+        assert not torch.allclose(r[:, 0:2], r[:, 2:4])
+
+    def test_mesh_shard_info_preserved(self) -> None:
+        """all_reduce preserves mesh_shard_info on the output tensor."""
+        t = self._tensor()
+        result = ttnn.all_reduce(t, cluster_axis=0)
+        assert result.mesh_shard_info is not None
+        assert result.mesh_shard_info.mesh_shape == (2, 2)
+        assert result.mesh_shard_info.dims == (0, 1)
+
+    def test_output_shape_unchanged(self) -> None:
+        """all_reduce does not change the tensor shape."""
+        t = self._tensor()
+        for axis in (0, 1, None):
+            result = ttnn.all_reduce(t, cluster_axis=axis)
+            assert result.to_torch().shape == torch.Size([4, 4])
+
+    def test_dtype_override(self) -> None:
+        """dtype argument converts the output dtype."""
+        t = self._tensor()
+        result = ttnn.all_reduce(t, cluster_axis=0, dtype=torch.float64)
+        assert result.to_torch().dtype == torch.float64
+
+    def test_larger_mesh_3d_tensor(self) -> None:
+        """2x4 mesh sharding a 3D tensor along dims (0, 2)."""
+        # shape [2, 3, 4]: rows shard dim 0 (2 devices), cols shard dim 2 (4 devices)
+        data = torch.ones(2, 3, 4, dtype=torch.float32)
+        t = _shard_2d(data, rows=2, cols=4, dims=(0, 2))
+        # cluster_axis=0: sum 2 row devices along dim 0 → each slot doubles
+        result = ttnn.all_reduce(t, cluster_axis=0)
+        expected = torch.full((2, 3, 4), 2.0)
+        assert torch.allclose(result.to_torch(), expected)
+
+    def test_requires_shard_metadata(self) -> None:
+        """all_reduce raises ValueError when the tensor has no mesh metadata."""
+        t = ttnn.Tensor(torch.ones(4, 4))
+        with pytest.raises(ValueError, match="Mesh device is required"):
+            ttnn.all_reduce(t)
+
+
+class TestAllGather2DMesh:
+    """all_gather on 2D-mesh tensors with cluster_axis support.
+
+    Same 2x2 mesh setup as TestAllReduce2DMesh.
+    """
+
+    def _tensor(self) -> ttnn.Tensor:
+        data = torch.tensor(
+            [[1, 1, 2, 2], [1, 1, 2, 2], [3, 3, 4, 4], [3, 3, 4, 4]],
+            dtype=torch.float32,
+        )
+        return _shard_2d(data, rows=2, cols=2, dims=(0, 1))
+
+    def test_cluster_axis_0_gathers_along_dim_0(self) -> None:
+        """cluster_axis=0 gathers row shards; output dim 0 grows by rows factor.
+
+        Each device's shard along dim 0 (shard_size=2) is gathered; all
+        devices receive all 4 rows.  The result is stacked into both row
+        slots along dim 0, giving shape [8, 4].
+        """
+        t = self._tensor()
+        result = ttnn.all_gather(t, dim=0, cluster_axis=0)
+        r = result.to_torch()
+        assert r.shape == torch.Size([8, 4])
+        # First half and second half should be identical (both devices see all rows).
+        assert torch.equal(r[0:4, :], r[4:8, :])
+
+    def test_cluster_axis_1_gathers_along_dim_1(self) -> None:
+        """cluster_axis=1 gathers col shards; output dim 1 grows by cols factor.
+
+        The result is stacked into both col slots along dim 1, giving shape [4, 8].
+        """
+        t = self._tensor()
+        result = ttnn.all_gather(t, dim=1, cluster_axis=1)
+        r = result.to_torch()
+        assert r.shape == torch.Size([4, 8])
+        # First half and second half of each row should be identical.
+        assert torch.equal(r[:, 0:4], r[:, 4:8])
+
+    def test_gather_dim_can_differ_from_shard_dim(self) -> None:
+        """Sharding is along dim 0 but gathering is concatenated along dim 1."""
+        # 1x4 mesh sharding dim 0 only (row axis inactive); gather result along dim 1.
+        mesh = _make_2d_mesh(1, 4)
+        data = torch.arange(16, dtype=torch.float32).reshape(4, 4)
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(1, 4), dims=(None, 0)),
+        )
+        result = ttnn.all_gather(t, dim=1, cluster_axis=1)
+        r = result.to_torch()
+        # Gather along dim 1: each col device contributes its row-shard.
+        # shard_size = 4 // 4 = 1 row per device.
+        # gathered = cat([row0, row1, row2, row3], dim=1) → shape [1, 16]
+        # stacked × 4 along shard_dim=0 → shape [4, 16]
+        assert r.shape == torch.Size([4, 16])
+
+    def test_cluster_axis_none_gathers_both_axes(self) -> None:
+        """cluster_axis=None gathers across both mesh axes sequentially."""
+        t = self._tensor()
+        result = ttnn.all_gather(t, dim=0, cluster_axis=None)
+        r = result.to_torch()
+        # After gathering both axes (each doubles dim 0), shape is [4*2*2, 4] = [16, 4].
+        # (Gather axis 0 with n=2: dim 0 × 2 = [8,4]; gather axis 1 with n=2:
+        # shard_dim=1, gather_dim=0 grows again: [16, 4])
+        assert r.shape[0] == 16
+
+    def test_mesh_shard_info_preserved(self) -> None:
+        """all_gather preserves the mesh_shard_info on the output tensor."""
+        t = self._tensor()
+        result = ttnn.all_gather(t, dim=0, cluster_axis=0)
+        assert result.mesh_shard_info is not None
+        assert result.mesh_shard_info.mesh_shape == (2, 2)
+        assert result.mesh_shard_info.dims == (0, 1)
+
+    def test_gathered_content_correct_axis0(self) -> None:
+        """Gathered result along cluster_axis=0 contains all device rows in order."""
+        t = self._tensor()
+        result = ttnn.all_gather(t, dim=0, cluster_axis=0)
+        r = result.to_torch()
+        # First copy (rows 0:4): original rows [[1,1,2,2],[1,1,2,2],[3,3,4,4],[3,3,4,4]]
+        expected_block = torch.tensor(
+            [[1, 1, 2, 2], [1, 1, 2, 2], [3, 3, 4, 4], [3, 3, 4, 4]],
+            dtype=torch.float32,
+        )
+        assert torch.equal(r[0:4, :], expected_block)
+        assert torch.equal(r[4:8, :], expected_block)
+
+    def test_requires_shard_metadata(self) -> None:
+        """all_gather raises ValueError when the tensor has no mesh metadata."""
+        t = ttnn.Tensor(torch.ones(4, 4))
+        with pytest.raises(ValueError, match="Mesh device is required"):
+            ttnn.all_gather(t, dim=0)

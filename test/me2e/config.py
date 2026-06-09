@@ -106,6 +106,28 @@ def get_maximum_ulp_threshold(dtype: torch.dtype) -> int:
         raise ValueError(f"Unsupported dtype for ULP comparison: {dtype}")
 
 
+def validate_exact_mask_against_golden(
+    golden: torch.Tensor,
+    result: torch.Tensor,
+) -> None:
+    """Assert result matches golden with torch.equal (bit-identical 0/1 float masks).
+
+    For compare ops: same dtype and shape as the device tensor;
+    no ULP/PCC.
+    """
+    assert list(golden.shape) == list(
+        result.shape
+    ), f"Shape mismatch: golden {golden.shape} vs result {result.shape}"
+    assert (
+        golden.dtype == result.dtype
+    ), f"Dtype mismatch: golden {golden.dtype} vs result {result.dtype}"
+    assert torch.equal(golden, result), (
+        "Compare op output must match golden exactly (binary identical 0/1 mask).\n"
+        f"mismatch count: {(golden != result).sum().item()} / {golden.numel()}\n"
+        f"golden:\n{golden}\nactual:\n{result}"
+    )
+
+
 def validate_against_golden(
     golden: torch.Tensor,
     result: torch.Tensor,

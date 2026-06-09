@@ -90,3 +90,9 @@ func.func @pipe_recv_wait_typed_handle_operand() {
 // Test: dst start must not exceed dst end on y.
 // expected-error @+1 {{'ttl.create_pipe' op destination start must not exceed destination end on any axis}}
 %p = ttl.create_pipe src(0, 0) dst(0, 5) to(0, 2) net 0 : !ttl.pipe<src(0, 0) dst(0, 5) to(0, 2) net 0>
+
+// -----
+
+// Test: explicit point-to-point metadata cannot contradict a multi-receiver pipe.
+// expected-error @+1 {{'ttl.create_pipe' op isCollective=false is invalid for a multi-receiver pipe}}
+%p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 {isCollective = false} : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>

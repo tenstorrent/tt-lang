@@ -11,7 +11,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SetVector.h"
 
 namespace mlir::tt::ttl {
 
@@ -24,18 +24,18 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
                                         int64_t blockCount, Location loc) {
   PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
   auto existing = receiverDFBs.find(key);
-  bool isMulticast = dstStartX != dstEndX || dstStartY != dstEndY;
+  bool hasMultipleReceivers = dstStartX != dstEndX || dstStartY != dstEndY;
   if (existing != receiverDFBs.end()) {
-    if (isMulticast &&
+    if (hasMultipleReceivers &&
         (existing->second.dfbIndex != dfbIndex ||
          existing->second.dfbType != dfbType ||
          existing->second.staticTileOffset != staticTileOffset)) {
       auto diag = emitError(loc)
-                  << "multicast pipe receive posts publish non-uniform "
-                     "destination addresses; per-destination multicast "
-                     "receive addresses are tracked by issue #617";
+                  << "collective pipe receive posts publish different "
+                     "destination addresses; per-receiver destination "
+                     "addresses are tracked by issue #617";
       diag.attachNote(existing->second.loc)
-          << "previous multicast receive post for this pipe was here";
+          << "previous collective receive post for this pipe was here";
       return failure();
     }
 
@@ -80,30 +80,30 @@ void PipeGraph::assignGatherSlotIndices() {
       return lhs == rhs;
     }
   };
-  llvm::DenseMap<ReceiverKey, llvm::SmallSet<int64_t, 4>, ReceiverKeyInfo>
-      usedAtReceiver;
+  using ReceiverSlotMap =
+      llvm::MapVector<ReceiverKey, llvm::SmallSetVector<int64_t, 4>,
+                      llvm::DenseMap<ReceiverKey, unsigned, ReceiverKeyInfo>>;
+  ReceiverSlotMap usedAtReceiver;
 
-  // Order by the complete PipeKey so the greedy coloring is independent of
-  // DenseMap iteration order.
-  SmallVector<PipeKey> orderedPipes;
-  orderedPipes.reserve(receiverDFBs.size());
-  for (auto &[key, info] : receiverDFBs) {
-    orderedPipes.push_back(key);
+  SmallVector<PipeKey> sortedKeys;
+  sortedKeys.reserve(receiverDFBs.size());
+  for (const auto &entry : receiverDFBs) {
+    sortedKeys.push_back(entry.first);
   }
-  llvm::sort(orderedPipes, [](const PipeKey &lhs, const PipeKey &rhs) {
-    return std::tie(lhs.srcX, lhs.srcY, lhs.dstStartX, lhs.dstStartY,
-                    lhs.dstEndX, lhs.dstEndY, lhs.pipeNetId) <
-           std::tie(rhs.srcX, rhs.srcY, rhs.dstStartX, rhs.dstStartY,
-                    rhs.dstEndX, rhs.dstEndY, rhs.pipeNetId);
+  llvm::sort(sortedKeys, [](const PipeKey &lhs, const PipeKey &rhs) {
+    return std::make_tuple(lhs.srcX, lhs.srcY, lhs.dstStartX, lhs.dstStartY,
+                           lhs.dstEndX, lhs.dstEndY, lhs.pipeNetId) <
+           std::make_tuple(rhs.srcX, rhs.srcY, rhs.dstStartX, rhs.dstStartY,
+                           rhs.dstEndX, rhs.dstEndY, rhs.pipeNetId);
   });
 
-  for (const PipeKey &pk : orderedPipes) {
+  for (const PipeKey &pk : sortedKeys) {
     auto it = receiverDFBs.find(pk);
     const int64_t dfbIndex = it->second.dfbIndex;
 
     // Slots taken by earlier pipes at any of this pipe's receivers
     // (destination range is inclusive on both ends).
-    llvm::SmallSet<int64_t, 4> taken;
+    llvm::SmallSetVector<int64_t, 4> taken;
     for (int64_t dstY = pk.dstStartY; dstY <= pk.dstEndY; ++dstY) {
       for (int64_t dstX = pk.dstStartX; dstX <= pk.dstEndX; ++dstX) {
         auto receiverIt =
@@ -137,9 +137,10 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
   for (auto &[pk, info] : receiverDFBs) {
     int64_t requiredBlocks = info.gatherSlotIdx + 1;
     if (info.blockCount < requiredBlocks) {
-      bool isUnicast = pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
+      bool hasSingleReceiver =
+          pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
       return emitError(info.loc)
-             << (isUnicast ? "gather" : "multicast overlap")
+             << (hasSingleReceiver ? "gather" : "collective overlap")
              << " pipe receiver DFB has block_count=" << info.blockCount
              << " but slot " << info.gatherSlotIdx
              << " is assigned to this pipe; "
@@ -149,10 +150,47 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
   return success();
 }
 
-static LogicalResult emitNonUniformMulticastReceiveAddress(Operation *op) {
+const ReceiverDFBInfo *PipeGraph::lookupReceiverDFB(const PipeKey &key) const {
+  auto it = receiverDFBs.find(key);
+  if (it == receiverDFBs.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+static PipeKey getPipeKey(PipeType pipeType) {
+  return {pipeType.getSrcX(),      pipeType.getSrcY(),
+          pipeType.getDstStartX(), pipeType.getDstStartY(),
+          pipeType.getDstEndX(),   pipeType.getDstEndY(),
+          pipeType.getPipeNetId()};
+}
+
+static llvm::MapVector<PipeKey, PipeTransferContract>
+collectPipeTransferContracts(ModuleOp mod) {
+  llvm::MapVector<PipeKey, PipeTransferContract> contracts;
+  mod.walk([&](CreatePipeOp op) {
+    auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
+    PipeTransferContract contract = getPipeTransferContract(op);
+    PipeKey key = getPipeKey(pipeType);
+    auto existing = contracts.find(key);
+    if (existing == contracts.end()) {
+      contracts.insert({key, contract});
+      return;
+    }
+    // Duplicate create_pipe ops for the same PipeKey can arise from cloned
+    // regions. Collective is the stronger contract and must be preserved.
+    if (isCollectiveTransfer(contract)) {
+      existing->second = PipeTransferContract::Collective;
+    }
+  });
+  return contracts;
+}
+
+static LogicalResult
+emitUntraceableCollectiveDestinationAddress(Operation *op) {
   return op->emitError()
-         << "multicast pipe receive posts publish non-uniform destination "
-            "addresses; per-destination multicast receive addresses are "
+         << "collective pipe destination address could not be "
+            "determined statically; per-receiver destination addresses are "
             "tracked by issue #617";
 }
 
@@ -178,8 +216,8 @@ static LogicalResult addStaticCoordinates(ArrayRef<OpFoldResult> mixedOffsets,
 }
 
 /// Return the static tile offset within the receiver DFB for a receive
-/// destination. Multicast lowering has one sender-visible mailbox address per
-/// pipe, so each destination must publish the same static DFB address until
+/// destination. Collective lowering has one sender-visible address-table entry
+/// per pipe, so each destination must publish the same static DFB address until
 /// issue #617 adds explicit per-destination addresses.
 static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
   Value view = traceUnrealizedCasts(dst);
@@ -252,7 +290,9 @@ static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
 }
 
 static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
-                                     PipeType pipeType, Value dst) {
+                                     PipeType pipeType,
+                                     PipeTransferContract transferContract,
+                                     Value dst) {
   Value dstDFB = getAttachedCB(dst);
   if (!dstDFB) {
     return op->emitError("pipe receive destination is not attached to a DFB");
@@ -268,10 +308,10 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
   }
 
   int64_t staticTileOffset = 0;
-  if (pipeType.isMulticast()) {
+  if (isCollectiveTransfer(transferContract)) {
     FailureOr<int64_t> offset = getStaticDestinationTileOffset(dst);
     if (failed(offset)) {
-      return emitNonUniformMulticastReceiveAddress(op);
+      return emitUntraceableCollectiveDestinationAddress(op);
     }
     staticTileOffset = *offset;
   }
@@ -285,20 +325,26 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
+  llvm::MapVector<PipeKey, PipeTransferContract> transferContracts =
+      collectPipeTransferContracts(mod);
 
-  LogicalResult walkResult = success();
-  mod.walk([&](Operation *op) {
-    if (failed(walkResult)) {
-      return;
+  WalkResult walkResult = mod.walk([&](PipeRecvPostOp postOp) {
+    auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
+    PipeKey key = getPipeKey(pipeType);
+    auto contractIt = transferContracts.find(key);
+    if (contractIt == transferContracts.end()) {
+      postOp.emitError("pipe receive must use a ttl.create_pipe result");
+      return WalkResult::interrupt();
     }
-    if (auto postOp = mlir::dyn_cast<PipeRecvPostOp>(op)) {
-      auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
-      walkResult = addPipeReceiver(graph, op, pipeType, postOp.getDst());
-      return;
+    PipeTransferContract contract = contractIt->second;
+    if (failed(addPipeReceiver(graph, postOp, pipeType, contract,
+                               postOp.getDst()))) {
+      return WalkResult::interrupt();
     }
+    return WalkResult::advance();
   });
 
-  if (failed(walkResult)) {
+  if (walkResult.wasInterrupted()) {
     return failure();
   }
 

@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "packaging"))
 
 from rewrite_readme import (  # noqa: E402
@@ -48,7 +48,7 @@ def test_ref_for_version_release(version, expected):
         "1.2.3a1",
         "1.2.3b2",
         "1.2.3.post1",
-        # Malformed TTLANG_PRETEND_VERSION overrides
+        # Malformed TTLANG_VERSION_OVERRIDE overrides
         "1.2.3-rc1",
         "foo",
         "",

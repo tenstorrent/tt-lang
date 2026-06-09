@@ -15,10 +15,12 @@ functional simulator (no compiler or hardware support) and does not depend on
 `ttnn`.
 
 First, create an isolated Python environment (venv, conda, etc.) with Python
-3.11 or later (Python 3.12 recommended):
+3.11 or later (Python 3.12 recommended). The wheel targets a specific CPython
+ABI, so the venv's Python must match — invoke `python3.12` (or `python3.11`)
+explicitly rather than the system default `python3`:
 
 ```bash
-python3 -m venv --prompt ttlang ttlang-venv
+python3.12 -m venv --prompt ttlang ttlang-venv
 source ttlang-venv/bin/activate
 ```
 
@@ -44,8 +46,79 @@ tt-lang-setup                     # copy bundled tutorials to ./tutorials/
 - Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to
   `./tutorials/`.
 
-For finer control, `tt-lang-setup-host` runs only the sfpi step and
+For finer control, `tt-lang-setup-sfpi` runs only the sfpi step and
 `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
+
+### Internal S3 wheels
+
+More frequently updated development versions of `tt-lang` are available from
+Tenstorrent's S3 PyPI index.
+
+Set `TTLANG_VERSION` to a published version from the workflow summary or the
+S3 package index. A version selector is required because public PyPI also hosts
+`tt-lang`, and pip resolves candidates across all configured indexes. Available
+versions are listed at https://pypi.eng.aws.tenstorrent.com/.
+
+The default internal `tt-lang` wheel bundles the `ttnn` artifacts from the
+toolchain used to build the wheel, so `pip install` does not pull `ttnn` from
+PyPI. As with the public wheel, `tt-lang-setup` then installs the matching sfpi
+runtime and copies the tutorials:
+
+```bash
+TTLANG_VERSION=<published-internal-version>
+pip install \
+  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  "tt-lang==$TTLANG_VERSION"
+tt-lang-setup    # downloads sfpi into the bundled ttnn tree + copies tutorials
+```
+
+Use `tt-lang-light` only when the environment already has a newer local
+tt-metal source or install layout that should provide `ttnn`. The package is a
+metapackage: `tt-lang-light==X` depends on the matching no-ttnn core wheel
+`tt-lang==X+light`. Install either `tt-lang` or `tt-lang-light` in an
+environment, not both.
+
+```bash
+TTLANG_VERSION=<published-internal-version>
+pip install \
+  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  "tt-lang-light==$TTLANG_VERSION"
+tt-lang-setup    # copies tutorials only; sfpi is provided by the external tt-metal
+```
+
+The `tt-lang-setup` command above copies the tutorials into `./tutorials`.
+Configure a native tt-metal source/build layout before running those local
+hardware examples. The `--check` option imports `ttnn` from the selected tree,
+so use it only with trusted tt-metal builds:
+
+```bash
+external_tt_metal_env="$(
+  tt-lang-setup-external-tt-metal \
+    --tt-metal-dir /path/to/tt-metal \
+    --build-dir /path/to/tt-metal/build \
+    --check
+)" && eval "$external_tt_metal_env"
+```
+
+Configure an install-layout tt-metal prefix similarly:
+
+```bash
+external_tt_metal_env="$(
+  tt-lang-setup-external-tt-metal \
+    --tt-metal-dir /path/to/tt-metal-install \
+    --check
+)" && eval "$external_tt_metal_env"
+python tutorials/elementwise/step_4_multinode_grid_full.py
+python tutorials/matmul/step_3_multinode.py
+```
+
+Validate that Python resolves both packages from the intended environment:
+
+```bash
+python -c 'import ttnn, ttl; print(ttnn.__file__, ttl.__version__)'
+```
 
 Run a tutorial example:
 

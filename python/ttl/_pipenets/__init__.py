@@ -22,6 +22,8 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Set, Tuple, Union
 
+from ttl.constants import MAX_HARDWARE_SEMAPHORE_IDS
+
 
 @dataclass(frozen=True)
 class NodeCoord:
@@ -110,23 +112,39 @@ class OperationPipeNets:
             _validate_no_mixed_kinds(net.pipes)
         _validate_consistent_coord_rank(self.pipe_nets)
 
-    def num_pipe_sync_semaphores(self, num_noc_threads: int = 1) -> int:
+    def num_pipe_sync_semaphores(self) -> int:
         """Return the total semaphore count required by pipe lowering."""
         if not self.pipe_nets:
             return 0
 
-        first_source_local_sem_id = len(self.pipe_nets) + max(1, num_noc_threads)
-        next_sem_id_by_source = {}
-        num_semaphores = first_source_local_sem_id
+        num_pipe_nets = len(self.pipe_nets)
+        max_pipes_per_source = self._max_pipes_per_source()
+        if _uses_global_ready_counters(num_pipe_nets, max_pipes_per_source):
+            return num_pipe_nets
+        return num_pipe_nets + max_pipes_per_source
+
+    def num_pipe_global_semaphores(self) -> int:
+        """Return the GlobalSemaphore count required by pipe lowering."""
+        if not self.pipe_nets:
+            return 0
+        num_pipe_nets = len(self.pipe_nets)
+        max_pipes_per_source = self._max_pipes_per_source()
+        if not _uses_global_ready_counters(num_pipe_nets, max_pipes_per_source):
+            return 0
+        return sum(len(net.pipes) for net in self.pipe_nets)
+
+    def _max_pipes_per_source(self) -> int:
+        pipe_count_by_source = {}
         for net in self.pipe_nets:
             for pipe in net.pipes:
-                next_sem_id = next_sem_id_by_source.setdefault(
-                    pipe.src.coords, first_source_local_sem_id
+                pipe_count_by_source[pipe.src.coords] = (
+                    pipe_count_by_source.get(pipe.src.coords, 0) + 1
                 )
-                next_sem_id += 2
-                next_sem_id_by_source[pipe.src.coords] = next_sem_id
-                num_semaphores = max(num_semaphores, next_sem_id)
-        return num_semaphores
+        return max(pipe_count_by_source.values(), default=0)
+
+
+def _uses_global_ready_counters(num_pipe_nets: int, max_pipes_per_source: int) -> bool:
+    return num_pipe_nets + max_pipes_per_source > MAX_HARDWARE_SEMAPHORE_IDS
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
@@ -148,7 +166,7 @@ def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
 
 
 def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
-    """Yield each node coordinate covered by a unicast or multicast destination."""
+    """Yield each node coordinate covered by a pipe destination."""
     if isinstance(dst, NodeCoord):
         yield dst.coords
         return
@@ -178,12 +196,12 @@ def _validate_consistent_coord_rank(pipe_nets: List[PipeNetUse]) -> None:
 def _validate_no_mixed_kinds(pipes: Tuple[PipeUse, ...]) -> None:
     # Spec: `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]])`. The shared
     # type variable means every pipe in a PipeNet has the same destination
-    # type — all unicast or all multicast.
-    has_unicast = any(isinstance(p.dst, NodeCoord) for p in pipes)
-    has_multicast = any(isinstance(p.dst, NodeRange) for p in pipes)
-    if has_unicast and has_multicast:
+    # type, which also fixes the current transfer contract.
+    has_point_to_point = any(isinstance(p.dst, NodeCoord) for p in pipes)
+    has_collective = any(isinstance(p.dst, NodeRange) for p in pipes)
+    if has_point_to_point and has_collective:
         raise ValueError(
-            "PipeNet may not mix unicast and multicast pipes "
+            "PipeNet may not mix point-to-point and collective pipes "
             "(spec: PipeNet[DstT] requires all pipes to share DstT); "
             "use separate PipeNets."
         )
