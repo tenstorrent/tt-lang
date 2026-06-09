@@ -125,7 +125,7 @@ struct LaunchNodeDomainState {
   LaunchNodeDomain getRoleDomain(int64_t netId, PipeRole role) const;
 
   /// Populate launch-grid and PipeNet role domains from the module.
-  LogicalResult initialize(ModuleOp module);
+  void initialize(ModuleOp module);
 };
 
 /// Return the operation with the earlier source location.

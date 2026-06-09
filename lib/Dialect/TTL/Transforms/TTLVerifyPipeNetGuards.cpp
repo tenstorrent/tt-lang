@@ -847,8 +847,8 @@ struct TTLVerifyPipeNetGuardsPass
     ModuleOp module = getOperation();
 
     ModuleState state;
-    if (failed(state.initialize(module)) ||
-        (state.hasPipes() && !state.hasLaunchGrid)) {
+    state.initialize(module);
+    if (state.hasPipes() && !state.hasLaunchGrid) {
       module.emitError()
           << "ttl-verify-pipenet-guards requires a `ttl.launch_grid` "
              "module attribute (an i64 array of length 2 with positive "

@@ -184,10 +184,7 @@ struct TTLVerifyDFBSPSCPass
     ModuleOp module = getOperation();
 
     ModuleState state;
-    if (failed(state.initialize(module))) {
-      signalPassFailure();
-      return;
-    }
+    state.initialize(module);
 
     bool hasAcquire = false;
     llvm::DenseMap<int64_t, Operation *> bindSites;

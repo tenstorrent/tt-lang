@@ -185,7 +185,7 @@ LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
   return src.unionWith(dst);
 }
 
-LogicalResult LaunchNodeDomainState::initialize(ModuleOp module) {
+void LaunchNodeDomainState::initialize(ModuleOp module) {
   module.walk([&](CreatePipeOp pipe) {
     PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
     int64_t pipeNetId = pipeType.getPipeNetId();
@@ -205,7 +205,7 @@ LogicalResult LaunchNodeDomainState::initialize(ModuleOp module) {
 
   if (!module->hasAttr(kLaunchGridAttrName)) {
     hasLaunchGrid = false;
-    return success();
+    return;
   }
 
   SmallVector<int64_t> launchGrid;
@@ -213,11 +213,10 @@ LogicalResult LaunchNodeDomainState::initialize(ModuleOp module) {
                         launchGrid) ||
       launchGrid.size() != 2 || launchGrid[0] <= 0 || launchGrid[1] <= 0) {
     hasLaunchGrid = false;
-    return success();
+    return;
   }
   hasLaunchGrid = true;
   baseDomain = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]);
-  return success();
 }
 
 /// Evaluate index expressions that are affine over `ttl.core_x`,
