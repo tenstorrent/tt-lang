@@ -96,8 +96,8 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.if_dst
 # CHECK-INITIAL-NOT: ttl.create_pipe
 
-# CHECK-CPP-COUNT-1: noc_async_write(
-# CHECK-CPP: noc_async_write_multicast
+# CHECK-CPP: {{noc\.async_write\(}}
+# CHECK-CPP: {{noc[0-9]*\.async_write_multicast}}
 # CHECK-CPP-COUNT-2: noc_inline_dw_write
 
 # CHECK-LOOPS-COUNT-4: for (
