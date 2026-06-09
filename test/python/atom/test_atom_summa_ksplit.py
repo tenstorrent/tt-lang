@@ -63,7 +63,9 @@ def atom_summa_ksplit(a, w, out):
     partial_for_send_cb = ttl.make_dataflow_buffer_like(
         out, shape=(BLOCK_M, BLOCK_N), block_count=2
     )
-    recv_cb = ttl.make_dataflow_buffer_like(out, shape=(BLOCK_M, BLOCK_N), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(
+        out, shape=(BLOCK_M, BLOCK_N), block_count=2
+    )
     # Dedicated output CB: the reduce keeps consuming partial_for_sum_cb on
     # the compute thread, then stores the final tile here for the write thread
     # to drain. CBs are single-consumer, so the accumulator and the tensor
