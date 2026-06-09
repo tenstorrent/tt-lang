@@ -146,10 +146,10 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
                        Block::iterator(sectionBody.getTerminator()));
 
   Value dstZero = arith::ConstantIndexOp::create(secBuilder, loc, 0);
-  Value mmResult =
-      TileMatmulBlockOp::create(secBuilder, loc, tileType, lhsTensor, rhsTensor,
-                                accTensor, dstZero)
-          .getResult();
+  auto newMmOp = TileMatmulBlockOp::create(secBuilder, loc, tileType, lhsTensor,
+                                           rhsTensor, accTensor, dstZero);
+  newMmOp.setTransposeRhsAttr(mmOp.getTransposeRhsAttr());
+  Value mmResult = newMmOp.getResult();
 
   // Clone body ops expanded M*N times. For each output tile (m, n),
   // clone all non-matmul/non-store ops with extracted tile operands from

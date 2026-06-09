@@ -23,7 +23,7 @@ Math operations:
 from .ttl_api import pykernel_gen as operation, compute, datamovement, Program
 from .atom import atom, DFB
 from .dataflow_buffer import make_dataflow_buffer_like, make_dfb
-from .operators import copy, node, grid_size
+from .operators import copy, node, grid_size, matmul
 
 # Math operations namespace
 from . import ttl_math as math
@@ -40,5 +40,6 @@ __all__ = [
     "copy",
     "node",
     "grid_size",
+    "matmul",
     "math",
 ]

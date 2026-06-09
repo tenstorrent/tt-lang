@@ -259,3 +259,46 @@ func.func @matmul_k3(
   ttl.store %mm, %reserve : tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x!ttcore.tile<32x32, bf16>>
   func.return %mm : tensor<2x1x!ttcore.tile<32x32, bf16>>
 }
+
+// -----
+
+// =============================================================================
+// Test 6: Transposed RHS. [2,3] @ [2,3]^T -> [2,2]. rhs is stored as [N, K]
+// so N (ct) comes from rhs[0]=2 (not rhs[1]=3), the transpose operand is 1,
+// and the per-K in1 stride is 1 (K is the innermost CB dim), so in1_idx=k.
+// =============================================================================
+
+// CHECK-LABEL: func.func @matmul_transpose_rhs
+// CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
+// CHECK-DAG: %[[C2_I32:.*]] = arith.constant 2 : i32
+// CHECK-DAG: %[[C3_I32:.*]] = arith.constant 3 : i32
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[C3:.*]] = arith.constant 3 : index
+// CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
+// CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
+// CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>
+// mm_block_init: transpose=1, ct=2, rt=2, kt=3.
+// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
+// CHECK:      ttkernel.tile_regs_acquire
+// CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
+// K loop: stride 1 so in1_idx=k (CSE merges with in0_idx=k); transpose operand=1.
+// CHECK-NEXT: scf.for %[[K:.*]] = %[[C0]] to %[[C3]] step
+// CHECK:        ttkernel.matmul_block(%[[CB0]], %[[CB1]], %[[K]], %[[K]], %[[C0]],
+// CHECK-SAME:     %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
+// CHECK:      }
+// CHECK-NEXT: ttkernel.tile_regs_commit
+func.func @matmul_transpose_rhs(
+    %arg0: tensor<2x3x!ttcore.tile<32x32, bf16>>,
+    %arg1: tensor<2x3x!ttcore.tile<32x32, bf16>>) -> tensor<2x2x!ttcore.tile<32x32, bf16>> {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.attach_cb %arg0, %cb0 : (tensor<2x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %arg1, %cb1 : (tensor<2x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %mm = ttl.matmul %a, %b {transpose_rhs} : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<2x3x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %mm, %reserve : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+  func.return %mm : tensor<2x2x!ttcore.tile<32x32, bf16>>
+}
