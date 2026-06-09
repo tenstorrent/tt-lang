@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
+from ttlang_test_utils import make_compare_inputs
+
 from .builder.kernels import (
     KernelSpec,
     ThreadType,
@@ -23,7 +25,7 @@ from .builder.kernels import (
 )
 from .builder.pipeline import compile_ttl_to_ttkernel
 from .builder.ttl_builder import build_e2e_module
-from .config import validate_against_golden
+from .config import validate_against_golden, validate_exact_mask_against_golden
 from .config_specs import TestConfig
 from .op_specs import ComputeOpSpec
 
@@ -100,16 +102,27 @@ def run_compute_test(
     input_range = op.input_range or (-1.0, 1.0)
     lo, hi = input_range
 
-    torch_inputs = []
-    for _ in range(op.arity):
-        t = torch.rand(e2e_config.tensor_shape, dtype=e2e_config.dtype) * (hi - lo) + lo
-        torch_inputs.append(t)
+    if op.exact_bool_output:
+        assert op.arity == 2, "compare ops are binary"
+        torch_inputs = list(
+            make_compare_inputs(e2e_config.tensor_shape, e2e_config.dtype)
+        )
+    else:
+        torch_inputs = []
+        for _ in range(op.arity):
+            t = (
+                torch.rand(e2e_config.tensor_shape, dtype=e2e_config.dtype) * (hi - lo)
+                + lo
+            )
+            torch_inputs.append(t)
 
     # Compute golden using torch reference.
     if op.arity == 1:
         golden = op.golden(torch_inputs[0])
     else:
         golden = op.golden(torch_inputs[0], torch_inputs[1])
+    if golden.dtype == torch.bool:
+        golden = golden.to(e2e_config.dtype)
 
     # 2. Get or generate compute kernel.
     compute_cpp = get_compute_kernel(op, config, device)
@@ -173,13 +186,16 @@ def run_compute_test(
         use_allclose = None
         if op.allclose_overrides and golden.dtype in op.allclose_overrides:
             use_allclose = op.allclose_overrides[golden.dtype]
-        validate_against_golden(
-            golden,
-            result,
-            ulp_threshold=ulp_threshold,
-            pcc_threshold=pcc_threshold,
-            use_allclose=use_allclose,
-        )
+        if op.exact_bool_output:
+            validate_exact_mask_against_golden(golden, result)
+        else:
+            validate_against_golden(
+                golden,
+                result,
+                ulp_threshold=ulp_threshold,
+                pcc_threshold=pcc_threshold,
+                use_allclose=use_allclose,
+            )
 
     finally:
         # Cleanup temporary kernel directory.

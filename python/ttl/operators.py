@@ -174,6 +174,22 @@ class TensorBlock:
         """Element-wise division using ttl.div."""
         return ttl.div(ast_self.type, ast_self, rhs)
 
+    def __gt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Element-wise greater-than using ttl.gt."""
+        return ttl.gt(ast_self.type, ast_self, rhs)
+
+    def __lt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Element-wise less-than using ttl.lt."""
+        return ttl.lt(ast_self.type, ast_self, rhs)
+
+    def __eq__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
+        """Element-wise equality using ttl.eq."""
+        return ttl.eq(ast_self.type, ast_self, rhs)
+
+    def __ne__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
+        """Element-wise inequality using ttl.ne."""
+        return ttl.ne(ast_self.type, ast_self, rhs)
+
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Matrix multiplication using ttl.matmul.
 
