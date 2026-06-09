@@ -10,7 +10,7 @@ GRANULARITY = 2
 BATCH_GRANULARITY = 2  # Number of batch elements per block
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     """Element-wise addition TT-Lang operation for 3D tensors (batch, rows, cols).
 

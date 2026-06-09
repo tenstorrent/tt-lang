@@ -10,7 +10,7 @@
 #   pip install dist/*.whl
 #   python .github/scripts/smoke-test-wheel.py
 #
-# Also checks that `sim_stats` and the `ttlang-sim` / `ttlang-sim-stats` console
+# Also checks that `sim_stats` and the `tt-lang-sim` / `tt-lang-sim-stats` console
 # scripts were installed with the wheel (bundled entry points, not separate packages).
 
 import subprocess
@@ -43,7 +43,7 @@ def main() -> int:
 
     print(f"{package} {version}: imports OK")
 
-    # sim_stats package + ttlang-sim-stats entry point (pip console_scripts)
+    # sim_stats package + tt-lang-sim-stats entry point (pip console_scripts)
     import sim_stats  # noqa: F401
     from sim_stats.__main__ import main as _sim_stats_main  # noqa: F401
 
@@ -65,7 +65,7 @@ def main() -> int:
             return 1
         return 0
 
-    for script in ("ttlang-sim", "ttlang-sim-stats"):
+    for script in ("tt-lang-sim", "tt-lang-sim-stats"):
         script_path = scripts_dir / f"{script}{exe_suffix}"
         if not script_path.is_file():
             print(
@@ -82,7 +82,7 @@ def main() -> int:
     ):
         return 1
 
-    print(f"{package} {version}: sim_stats + ttlang-sim-stats OK")
+    print(f"{package} {version}: sim_stats + tt-lang-sim-stats OK")
     return 0
 
 

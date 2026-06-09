@@ -44,10 +44,10 @@ def softmax_kernel(inp, out):
     def compute():
         with inp_dfb.wait() as x_blk:
             mx = ttl.math.reduce_max(x_blk, dims=[0, 1])
-            shifted = ttl.sub(x_blk, ttl.math.broadcast(mx, x_blk, dims=[0, 1]))
+            shifted = ttl.sub(x_blk, ttl.block.broadcast(mx, dims=[0, 1], shape=(1, 1)))
             ex = ttl.exp(shifted)
             sm = ttl.math.reduce_sum(ex, dims=[0, 1])
-            inv_sum = ttl.recip(ttl.math.broadcast(sm, ex, dims=[0, 1]))
+            inv_sum = ttl.recip(ttl.block.broadcast(sm, dims=[0, 1], shape=(1, 1)))
             with out_dfb.reserve() as out_blk:
                 out_blk.store(ttl.mul(ex, inv_sum))
 

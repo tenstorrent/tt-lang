@@ -189,7 +189,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 3>(), 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: noc_async_read_tile({{.*}}[[CB0]].get_write_ptr()
-# CHECK-CPP: noc_async_read_barrier();
+# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
 # CHECK-CPP: [[CB0]].push_back(
 
 # Second input: reserve DFB, read tile, push DFB
@@ -200,7 +200,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 3>(), 1>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: noc_async_read_tile({{.*}}[[CB1]].get_write_ptr()
-# CHECK-CPP: noc_async_read_barrier();
+# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
 # CHECK-CPP: [[CB1]].push_back(
 
 # =============================================================================
@@ -216,7 +216,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<2, 3>(), 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: noc_async_write_tile({{.*}}[[CB2]].get_read_ptr()
-# CHECK-CPP: noc_async_write_barrier();
+# CHECK-CPP: noc.async_write_barrier<Noc::BarrierMode::FULL>();
 # CHECK-CPP: [[CB2]].pop_front(
 
 

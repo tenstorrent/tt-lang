@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "packaging"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tt-lang-light"
+description = "Internal TT-Lang metapackage for an external-tt-metal tt-lang wheel"
+requires-python = ">=3.12"
+keywords = ["tt-lang", "tenstorrent", "ttnn", "metapackage"]
+license = "Apache-2.0"
+authors = [{name = "Tenstorrent AI ULC"}]
+maintainers = [{name = "Tenstorrent AI ULC"}]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+]
+
+dynamic = ["version", "dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/tenstorrent/tt-lang"
+Repository = "https://github.com/tenstorrent/tt-lang"
+Issues = "https://github.com/tenstorrent/tt-lang/issues"

@@ -94,7 +94,7 @@ module {
 // Wait without a corresponding copy is invalid.
 module {
   func.func @wait_without_copy_invalid(%xf: !ttl.transfer_handle<read>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{expects operand to be the result of ttl.copy}}
+    // expected-error @below {{expects operand to be derived from ttl.copy}}
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
@@ -111,7 +111,7 @@ module {
     %handles0 = tensor.empty(%c1) : tensor<?x!ttl.transfer_handle<read>>
     %handles = tensor.insert %xf into %handles0[%c0] : tensor<?x!ttl.transfer_handle<read>>
     %loaded = tensor.extract %handles[%c0] : tensor<?x!ttl.transfer_handle<read>>
-    // expected-error @below {{expects operand to be the result of ttl.copy}}
+    // expected-error @below {{expects operand to be derived from ttl.copy}}
     ttl.wait %loaded : !ttl.transfer_handle<read>
     func.return
   }

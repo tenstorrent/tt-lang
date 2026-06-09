@@ -43,8 +43,9 @@ EOF
 }
 
 @test "rejects missing TT_METAL_TAG" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
-TTNN_PYPI="0.69.0"
+    cat > "$REPO/third-party/tt-metal-version" <<EOF
+TTNN_PYPI="$TEST_TTNN_PYPI_VERSION"
+TTNN_PYPI_TT_METAL_TAG="$TEST_TT_METAL_TAG"
 EOF
     commit_all "$REPO" "missing tag"
     run run_check_no_network
@@ -53,8 +54,9 @@ EOF
 }
 
 @test "rejects missing TTNN_PYPI" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
-TT_METAL_TAG="v0.69.0"
+    cat > "$REPO/third-party/tt-metal-version" <<EOF
+TTNN_PYPI_TT_METAL_TAG="$TEST_TT_METAL_TAG"
+TT_METAL_TAG="$TEST_TT_METAL_TAG"
 EOF
     commit_all "$REPO" "missing pypi"
     run run_check_no_network
@@ -62,22 +64,46 @@ EOF
     assert_output --partial "TTNN_PYPI not set"
 }
 
-@test "rejects malformed TT_METAL_TAG (no leading v)" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
-TTNN_PYPI="0.69.0"
-TT_METAL_TAG="0.69.0"
+@test "rejects missing TTNN_PYPI_TT_METAL_TAG" {
+    cat > "$REPO/third-party/tt-metal-version" <<EOF
+TTNN_PYPI="$TEST_TTNN_PYPI_VERSION"
+TT_METAL_TAG="$TEST_TT_METAL_TAG"
 EOF
+    commit_all "$REPO" "missing pypi tag"
+    run run_check_no_network
+    assert_failure
+    assert_output --partial "TTNN_PYPI_TT_METAL_TAG not set"
+}
+
+@test "rejects malformed TT_METAL_TAG (no leading v)" {
+    bad_tag="${TEST_TT_METAL_TAG#v}"
+    write_tt_metal_version_file "$REPO/third-party/tt-metal-version" \
+        "$TEST_TTNN_PYPI_VERSION" \
+        "$TEST_TT_METAL_TAG" \
+        "$bad_tag"
     commit_all "$REPO" "bad tag"
     run run_check_no_network
     assert_failure
     assert_output --partial "does not look like vX.Y.Z"
 }
 
-@test "accepts valid two-variable format" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
-TTNN_PYPI="0.70.1"
-TT_METAL_TAG="v0.70.1-rc1"
-EOF
+@test "rejects malformed TTNN_PYPI_TT_METAL_TAG (no leading v)" {
+    bad_tag="${TEST_TT_METAL_TAG#v}"
+    write_tt_metal_version_file "$REPO/third-party/tt-metal-version" \
+        "$TEST_TTNN_PYPI_VERSION" \
+        "$bad_tag" \
+        "$TEST_TT_METAL_TAG"
+    commit_all "$REPO" "bad pypi tag"
+    run run_check_no_network
+    assert_failure
+    assert_output --partial "TTNN_PYPI_TT_METAL_TAG '$bad_tag' does not look like vX.Y.Z"
+}
+
+@test "accepts valid version-file format" {
+    write_tt_metal_version_file "$REPO/third-party/tt-metal-version" \
+        "$TEST_TTNN_PYPI_VERSION" \
+        "$TEST_TT_METAL_RC1_TAG" \
+        "$TEST_TT_METAL_RC1_TAG"
     commit_all "$REPO" "valid"
     run run_check_no_network
     # ls-remote stub returns empty -> "tt-metal has no release tag" surfaces
@@ -87,13 +113,14 @@ EOF
 }
 
 @test "ignores '#' comment lines and blank lines" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
+    cat > "$REPO/third-party/tt-metal-version" <<EOF
 # leading comment about the file
 # describing fields
 
-TTNN_PYPI="0.70.1"
+TTNN_PYPI="$TEST_TTNN_PYPI_VERSION"
+TTNN_PYPI_TT_METAL_TAG="$TEST_TT_METAL_RC1_TAG"
 # inter-variable comment
-TT_METAL_TAG="v0.70.1-rc1"
+TT_METAL_TAG="$TEST_TT_METAL_RC1_TAG"
 
 # trailing comment
 EOF
@@ -104,10 +131,10 @@ EOF
 }
 
 @test "accepts rc-suffixed tag (vX.Y.Z-rcN)" {
-    cat > "$REPO/third-party/tt-metal-version" <<'EOF'
-TTNN_PYPI="0.70.1"
-TT_METAL_TAG="v0.70.1-rc2"
-EOF
+    write_tt_metal_version_file "$REPO/third-party/tt-metal-version" \
+        "$TEST_TTNN_PYPI_VERSION" \
+        "$TEST_TT_METAL_RC2_TAG" \
+        "$TEST_TT_METAL_RC2_TAG"
     commit_all "$REPO" "rc tag"
     run run_check_no_network
     # Regex ^vX.Y.Z accepts the prefix; -rcN passes through to ls-remote.

@@ -21,6 +21,9 @@ namespace mlir::tt::ttl {
 inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
 inline constexpr int32_t kMaxCircularBuffers = 32;
+/// TT kernel hardware semaphore id capacity. Mirrored by
+/// python/ttl/constants.py for simulator-side resource checks.
+inline constexpr int64_t kMaxHardwareSemaphoreIds = 16;
 
 /// Tag for tile-level operations to enable identity checks without type
 /// inspection.
@@ -117,6 +120,14 @@ constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 /// Module attribute carrying compiler-allocated DFB metadata.
 constexpr llvm::StringLiteral
     kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
+
+/// Module attributes carrying compiler-owned pipe resource allocation.
+constexpr llvm::StringLiteral
+    kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");
+constexpr llvm::StringLiteral
+    kPipeGlobalSemaphoreCountAttrName("ttl.pipe_global_semaphore_count");
+constexpr llvm::StringLiteral
+    kPipeSramScratchBytesAttrName("ttl.pipe_sram_scratch_bytes");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.

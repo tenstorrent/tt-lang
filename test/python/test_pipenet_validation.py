@@ -20,8 +20,8 @@ def test_empty_pipenet_rejected():
         ttl.PipeNet([])
 
 
-def test_within_pipenet_overlapping_mcast_dst_allowed():
-    """Two multicast pipes whose destination rectangles intersect inside a
+def test_within_pipenet_overlapping_collective_dst_allowed():
+    """Two collective pipes whose destination rectangles intersect inside a
     single PipeNet are allowed.
 
     The two pipes both target column 1 rows 0..3, so the node at (1, 1)
@@ -36,8 +36,8 @@ def test_within_pipenet_overlapping_mcast_dst_allowed():
     )
 
 
-def test_within_pipenet_partially_overlapping_mcast_dst_allowed():
-    """Multicast destinations that overlap on even one node are allowed."""
+def test_within_pipenet_partially_overlapping_collective_dst_allowed():
+    """Collective destinations that overlap on even one node are allowed."""
     ttl.PipeNet(
         [
             ttl.Pipe(src=(0, 0), dst=(slice(0, 3), 0)),  # nodes 0..2 row 0
@@ -46,11 +46,10 @@ def test_within_pipenet_partially_overlapping_mcast_dst_allowed():
     )
 
 
-def test_unicast_gather_to_same_dst_allowed():
-    """Multiple unicast pipes whose dst is the same single node are
-    allowed: a unicast gather uses cumulative semaphore waits at the
-    receiver, not the multicast handshake. The within-PipeNet rule
-    rejects only multicast overlap.
+def test_point_to_point_gather_to_same_dst_allowed():
+    """Multiple point-to-point pipes whose dst is the same single node are
+    allowed. A point-to-point gather uses cumulative semaphore waits at the
+    receiver and does not use the collective transfer contract.
     """
     # Should not raise.
     ttl.PipeNet(
@@ -62,8 +61,8 @@ def test_unicast_gather_to_same_dst_allowed():
     )
 
 
-def test_nonoverlapping_mcast_pipes_in_pipenet_allowed():
-    """Multicast pipes targeting disjoint rectangles in the same PipeNet
+def test_nonoverlapping_collective_pipes_in_pipenet_allowed():
+    """Collective pipes targeting disjoint rectangles in the same PipeNet
     are allowed (e.g., per-row broadcasts)."""
     # Should not raise.
     ttl.PipeNet([ttl.Pipe(src=(0, r), dst=(slice(1, 4), r)) for r in range(3)])
@@ -85,7 +84,7 @@ def test_pipe_dst_slice_start_must_be_less_than_stop():
 
 
 def test_pipe_dst_slice_step_must_be_one():
-    """Strided multicast is not supported; non-1 step is silently lost by
+    """Strided collective destinations are not supported; non-1 step is lost by
     the inclusive-range lowering, so reject at construction."""
     with pytest.raises(ValueError, match="step must be 1 or None"):
         ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 2), 0))
@@ -95,10 +94,10 @@ def test_pipe_dst_slice_step_must_be_one():
     ttl.Pipe(src=(0, 0), dst=(slice(0, 4, 1), 0))
 
 
-def test_mixed_unicast_multicast_in_one_pipenet_rejected():
+def test_mixed_point_to_point_collective_in_one_pipenet_rejected():
     # Spec types `PipeNet[DstT](pipes: List[Pipe[DstT]])` so every pipe
     # shares one destination type; runtime validator pins the same rule.
-    with pytest.raises(ValueError, match="may not mix unicast and multicast"):
+    with pytest.raises(ValueError, match="may not mix point-to-point and collective"):
         ttl.PipeNet(
             [
                 ttl.Pipe(src=(3, 0), dst=(0, 0)),
@@ -107,7 +106,7 @@ def test_mixed_unicast_multicast_in_one_pipenet_rejected():
         )
 
 
-def test_all_unicast_pipenet_allowed():
+def test_all_point_to_point_pipenet_allowed():
     ttl.PipeNet(
         [
             ttl.Pipe(src=(0, 0), dst=(1, 0)),
@@ -116,7 +115,7 @@ def test_all_unicast_pipenet_allowed():
     )
 
 
-def test_all_multicast_pipenet_allowed():
+def test_all_collective_pipenet_allowed():
     ttl.PipeNet(
         [
             ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0)),

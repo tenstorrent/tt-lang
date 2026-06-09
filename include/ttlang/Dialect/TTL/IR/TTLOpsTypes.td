@@ -76,18 +76,18 @@ def TTL_ReduceTypeAttr : EnumAttr<TTL_Dialect, TTL_ReduceType, "reduce_type">;
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Pipe for core-to-core data transfer";
   let description = [{
-    A pipe represents a communication channel from a source core to one or more
-    destination cores. Used with `ttl.copy` for inter-core data movement.
+    A pipe represents a transfer relation from a source core to one or more
+    receiver cores. Used with `ttl.copy` for inter-core data movement.
 
-    For unicast (single destination), dstStart == dstEnd.
-    For multicast (rectangular grid), dstStart and dstEnd define the corners.
+    For point-to-point transfers, dstStart == dstEnd. For collective
+    transfers, dstStart and dstEnd define the receiver-set corners.
 
     Example:
     ```mlir
-    // Unicast pipe from (0,0) to (1,0)
+    // Point-to-point pipe from (0,0) to (1,0)
     %p = ttl.create_pipe src(0, 0) dst(1, 0) : !ttl.pipe
 
-    // Multicast pipe from (0,0) to rectangular region (1,0)-(1,3)
+    // Collective pipe from (0,0) to receiver set (1,0)-(1,3)
     %p = ttl.create_pipe src(0, 0) dst(1, 0) to (1, 3) : !ttl.pipe
     ```
   }];
@@ -103,13 +103,19 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let assemblyFormat = "`<` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` `net` $pipeNetId `>`";
 
   let extraClassDeclaration = [{
-    /// Returns true if this is a unicast pipe (single destination).
-    bool isUnicast() const {
+    /// Returns true if this pipe has one receiver in its destination extent.
+    bool hasSingleReceiver() const {
       return getDstStartX() == getDstEndX() && getDstStartY() == getDstEndY();
     }
 
-    /// Returns true if this is a multicast pipe (multiple destinations).
-    bool isMulticast() const { return !isUnicast(); }
+    /// Returns true if this pipe has more than one receiver.
+    bool hasMultipleReceivers() const { return !hasSingleReceiver(); }
+
+    LLVM_DEPRECATED("Use hasSingleReceiver instead", "hasSingleReceiver")
+    bool isUnicast() const { return hasSingleReceiver(); }
+
+    LLVM_DEPRECATED("Use hasMultipleReceivers instead", "hasMultipleReceivers")
+    bool isMulticast() const { return hasMultipleReceivers(); }
 
     /// Returns the number of destination cores.
     int64_t getNumDests() const {

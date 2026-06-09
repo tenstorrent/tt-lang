@@ -20,9 +20,10 @@ The project has several test suites, each with a dedicated CMake target:
 | `check-ttlang-mlir` | `test/ttlang/` | llvm-lit | MLIR dialect and pass tests (no device) |
 | `check-ttlang-python-lit` | `test/python/` (non-`test_*`) | llvm-lit (`-j1`) | Python DSL lit tests |
 | `check-ttlang-python-bindings` | `test/bindings/python/` | llvm-lit | Python binding tests (no device) |
+| `check-ttlang-packaging` | `test/packaging/` | pytest | Packaging and wheel metadata tests (no device) |
 | `check-ttlang-pytest` | `test/python/test_*.py` | pytest | Parametric Python tests |
 | `check-ttlang-me2e` | `test/me2e/` | pytest | Middle end-to-end tests |
-| `check-ttlang` | | | Combines `check-ttlang-mlir` + `check-ttlang-python-bindings` (no device) |
+| `check-ttlang` | | | Combines `check-ttlang-mlir` + `check-ttlang-python-bindings` + `check-ttlang-packaging` (no device) |
 | `check-ttlang-all` | | | All suites, run sequentially |
 
 Files named `test_*.py` under `test/python/` are excluded from lit collection
@@ -270,7 +271,7 @@ TT_METAL_SIMULATOR=1 pytest -v test/me2e/
 `.github/scripts/tests/` is a bats suite covering the CI helper scripts
 (`get-version-tag.sh`, `detect-uplift.sh`, `require-release-tag.sh`,
 `verify-wheel-version.sh`, `probe-docker-image.sh`) and the two launcher
-scripts (`bin/ttlang-sim`, `bin/ttlang-sim-stats`). CI runs it via
+scripts (`bin/tt-lang-sim`, `bin/tt-lang-sim-stats`). CI runs it via
 `bats-core/bats-action@2.0.0` on `ubuntu-latest`; for local runs (host or
 inside the ird container) install bats and the helper libraries once:
 

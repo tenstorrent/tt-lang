@@ -16,7 +16,7 @@ from utils.correctness import assert_with_ulp
 
 
 @ttl.operation(
-    grid="auto",
+    grid="full",
 )
 def eltwise_add(
     a_in: ttnn.Tensor,

@@ -17,7 +17,7 @@ def lazy_import_diagnostics() -> Any:
     """Lazy import of ttl.diagnostics module to avoid circular dependency.
 
     Uses file-based import rather than ``from ttl import diagnostics`` because
-    ttlang-sim shadows the ``ttl`` module with a simulator shim.
+    tt-lang-sim shadows the ``ttl`` module with a simulator shim.
 
     Returns:
         The ttl.diagnostics module
@@ -90,36 +90,36 @@ def find_user_code_location() -> Tuple[str, int]:
     )
 
 
-def format_core_ranges(core_numbers: list[int]) -> str:
-    """Format a list of core numbers as ranges.
+def format_node_ranges(node_numbers: list[int]) -> str:
+    """Format a list of node numbers as ranges.
 
     Args:
-        core_numbers: Sorted list of core numbers (e.g., [0, 1, 2, 3, 8, 9, 10, 11])
+        node_numbers: Sorted list of node numbers (e.g., [0, 1, 2, 3, 8, 9, 10, 11])
 
     Returns:
         Formatted string with ranges (e.g., "0-3, 8-11")
     """
-    if not core_numbers:
+    if not node_numbers:
         return ""
 
     # Sort to ensure consecutive numbers are adjacent
-    sorted_cores = sorted(core_numbers)
+    sorted_nodes = sorted(node_numbers)
     ranges: list[str] = []
-    start = sorted_cores[0]
-    end = sorted_cores[0]
+    start = sorted_nodes[0]
+    end = sorted_nodes[0]
 
-    for i in range(1, len(sorted_cores)):
-        if sorted_cores[i] == end + 1:
+    for i in range(1, len(sorted_nodes)):
+        if sorted_nodes[i] == end + 1:
             # Consecutive, extend the range
-            end = sorted_cores[i]
+            end = sorted_nodes[i]
         else:
             # Gap found, save the current range and start a new one
             if start == end:
                 ranges.append(str(start))
             else:
                 ranges.append(f"{start}-{end}")
-            start = sorted_cores[i]
-            end = sorted_cores[i]
+            start = sorted_nodes[i]
+            end = sorted_nodes[i]
 
     # Add the final range
     if start == end:
@@ -130,43 +130,43 @@ def format_core_ranges(core_numbers: list[int]) -> str:
     return ", ".join(ranges)
 
 
-def extract_core_id_from_thread_name(thread_name: Optional[str]) -> str:
-    """Extract core ID from a scheduled kernel name.
+def extract_node_id_from_kernel_name(kernel_name: Optional[str]) -> str:
+    """Extract node ID from a scheduled kernel name.
 
-    Names follow the pattern ``coreN-<func_name>`` where N is the core number
+    Names follow the pattern ``nodeN-<func_name>`` where N is the node number
     and ``<func_name>`` is the kernel function's ``__name__``
     (see :func:`sim.greenlet_scheduler.kernel_display_name`).
 
     Args:
-        thread_name: Scheduled kernel display name like ``core0-mm_reader`` or
-            ``core15-mm_compute``.
+        kernel_name: Scheduled kernel display name like ``node0-mm_reader`` or
+            ``node15-mm_compute``.
 
     Returns:
-        Core ID like "core0", or "unknown" if extraction fails
+        Node ID like "node0", or "unknown" if extraction fails
 
     Examples:
-        >>> extract_core_id_from_thread_name("core0-mm_reader")
-        'core0'
-        >>> extract_core_id_from_thread_name("core15-mm_compute")
-        'core15'
-        >>> extract_core_id_from_thread_name(None)
+        >>> extract_node_id_from_kernel_name("node0-mm_reader")
+        'node0'
+        >>> extract_node_id_from_kernel_name("node15-mm_compute")
+        'node15'
+        >>> extract_node_id_from_kernel_name(None)
         'unknown'
     """
-    if not thread_name:
+    if not kernel_name:
         return "unknown"
 
-    # Extract core ID from scheduled kernel name (e.g., "core0-dm" -> "core0")
-    if "-" in thread_name:
-        return thread_name.split("-")[0]  # Take the part before first dash
+    # Extract node ID from scheduled kernel name (e.g., "node0-dm" -> "node0")
+    if "-" in kernel_name:
+        return kernel_name.split("-")[0]  # Take the part before first dash
 
-    return thread_name
+    return kernel_name
 
 
 def print_diagnostic_warning(
     message: str,
     source_file: str,
     source_line: int,
-    cores_label: str,
+    nodes_label: str,
     flush: bool = True,
 ) -> None:
     """Print a warning with diagnostic formatting.
@@ -175,7 +175,7 @@ def print_diagnostic_warning(
         message: Warning message to display
         source_file: Path to source file where warning occurred
         source_line: Line number in source file
-        cores_label: Label identifying affected cores (e.g., "core0" or "cores: 0-3")
+        nodes_label: Label identifying affected nodes (e.g., "node0" or "nodes: 0-3")
         flush: Whether to flush output immediately (default: True)
     """
     import builtins
@@ -192,7 +192,7 @@ def print_diagnostic_warning(
     warning_msg = diag.format_error(
         line=source_line,
         col=1,
-        message=f"{message} ({cores_label})",
+        message=f"{message} ({nodes_label})",
         label="warning",
     )
     builtins.print(warning_msg, flush=flush)
@@ -233,51 +233,51 @@ def print_diagnostic_error(
 def warn_once_per_location(
     warnings_dict: dict[tuple[str, int], set[str]],
     message: str,
-    core_id: str,
+    node_id: str,
 ) -> None:
-    """Issue a warning once per source location, tracking which cores hit it.
+    """Issue a warning once per source location, tracking which nodes hit it.
 
     This is a common pattern for simulator warnings: we want to warn about an issue
-    once per source location, but show which cores encountered it.
+    once per source location, but show which nodes encountered it.
 
     Args:
-        warnings_dict: Dictionary tracking {(filename, line): set(core_ids)}
+        warnings_dict: Dictionary tracking {(filename, line): set(node_ids)}
         message: Warning message to display
-        core_id: ID of the current core (from get_current_core_id())
+        node_id: ID of the current node (from get_current_node_id())
     """
     # Find user code location
     source_file, source_line = find_user_code_location()
 
-    # Track this core hitting this location
+    # Track this node hitting this location
     location_key = (source_file, source_line)
     first_occurrence = location_key not in warnings_dict
     if first_occurrence:
         warnings_dict[location_key] = set()
 
-    warnings_dict[location_key].add(core_id)
+    warnings_dict[location_key].add(node_id)
 
     # Only print on first occurrence for this location
     if first_occurrence:
-        cores = warnings_dict[location_key]
+        nodes = warnings_dict[location_key]
 
-        # Format the core label
-        if len(cores) == 1 and core_id != "unknown":
-            cores_label = core_id
+        # Format the node label
+        if len(nodes) == 1 and node_id != "unknown":
+            nodes_label = node_id
         else:
-            # Extract numeric core IDs and format as ranges
-            unique_cores = sorted(cores, key=lambda x: (len(x), x))
+            # Extract numeric node IDs and format as ranges
+            unique_nodes = sorted(nodes, key=lambda x: (len(x), x))
             try:
-                core_numbers = [
-                    int(core[4:])
-                    for core in unique_cores
-                    if core.startswith("core") and core[4:].isdigit()
+                node_numbers = [
+                    int(n[4:])
+                    for n in unique_nodes
+                    if n.startswith("node") and n[4:].isdigit()
                 ]
-                if core_numbers:
-                    cores_label = f"cores: {format_core_ranges(core_numbers)}"
+                if node_numbers:
+                    nodes_label = f"nodes: {format_node_ranges(node_numbers)}"
                 else:
-                    cores_label = f"cores: {', '.join(unique_cores)}"
+                    nodes_label = f"nodes: {', '.join(unique_nodes)}"
             except (ValueError, IndexError):
-                cores_label = f"cores: {', '.join(unique_cores)}"
+                nodes_label = f"nodes: {', '.join(unique_nodes)}"
 
         # Print warning with diagnostic formatting
-        print_diagnostic_warning(message, source_file, source_line, cores_label)
+        print_diagnostic_warning(message, source_file, source_line, nodes_label)
