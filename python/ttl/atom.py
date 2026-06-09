@@ -215,9 +215,7 @@ def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
         return None
     if not isinstance(stmt.targets[0], ast.Name):
         return None
-    if _call_name(stmt.value) in _SETUP_FACTORY_NAMES or _is_pipe_list_expr(
-        stmt.value
-    ):
+    if _call_name(stmt.value) in _SETUP_FACTORY_NAMES or _is_pipe_list_expr(stmt.value):
         return stmt.targets[0].id
     return None
 
