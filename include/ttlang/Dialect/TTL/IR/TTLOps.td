@@ -89,6 +89,13 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     [0,0], [0,1], [1,0], and [1,1]. For an ND tensor, indices cover all
     dimensions of the tile grid.
 
+    The result rank may be less than the tensor rank (a rank-reducing slice):
+    the leading (tensor_rank - result_rank) dims are squeezed by scalar
+    subscripts and the trailing dims map to the CB shape. Each squeezed scalar
+    index feeds the full-rank tile-coordinate linearization, so a nonzero slot
+    in a leading dim addresses the right sub-block. A range subscript in a
+    squeezed position is rejected, since a range does not reduce rank.
+
     The result tensor has a reduced shape matching the CB dimensions but
     retains the original tensor's layout encoding. The lowering traces back
     to the original tensor via the defining op.
