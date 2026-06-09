@@ -3,7 +3,7 @@
 // Producer in one thread, consumer in another: classic SPSC, accepted.
 // CHECK-LABEL: func.func @producer
 // CHECK-LABEL: func.func @consumer
-module {
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -28,7 +28,7 @@ module {
 // Producer and consumer in the same thread: still SPSC (one producer thread,
 // one consumer thread); the verifier counts threads, not ops.
 // CHECK-LABEL: func.func @produce_and_consume
-module {
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @produce_and_consume() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb = ttl.bind_cb {cb_index = 2, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -47,7 +47,7 @@ module {
 // Multiple `cb_wait` calls inside one thread are fine: only the thread set
 // matters, not the call count.
 // CHECK-LABEL: func.func @consumer_multi_wait
-module {
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.bind_cb {cb_index = 1, block_count = 4}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
@@ -77,7 +77,7 @@ module {
 // in the runtime push/pop protocol.
 // CHECK-LABEL: func.func @kernel_consumer
 // CHECK-LABEL: func.func @untagged_helper
-module {
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @kernel_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb = ttl.bind_cb {cb_index = 4, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -102,7 +102,7 @@ module {
 // Multiple `cb_reserve` calls inside one producer thread are fine: the verifier
 // counts threads per role, not ops.
 // CHECK-LABEL: func.func @producer_multi_reserve
-module {
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @producer_multi_reserve() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.bind_cb {cb_index = 6, block_count = 4}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
@@ -131,7 +131,7 @@ module {
 // verifier disambiguates by `cb_index` and accepts both.
 // CHECK-LABEL: func.func @two_cb_producer
 // CHECK-LABEL: func.func @two_cb_consumer
-module {
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @two_cb_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb_a = ttl.bind_cb {cb_index = 10, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -157,6 +157,89 @@ module {
     %b = ttl.cb_wait %cb_b
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// Two consumer threads may wait on the same DFB when their launch-node domains
+// are disjoint.
+// CHECK-LABEL: func.func @consumer_x0
+// CHECK-LABEL: func.func @consumer_x1
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @producer_all_nodes() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 20, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @consumer_x0() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 20, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %is_x0 = arith.cmpi eq, %core_x, %zero : index
+    scf.if %is_x0 {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  func.func @consumer_x1() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 20, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %one = arith.constant 1 : index
+    %is_x1 = arith.cmpi eq, %core_x, %one : index
+    scf.if %is_x1 {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// PipeNet role domains may make two consumer threads disjoint.
+// CHECK-LABEL: func.func @consumer_dst
+// CHECK-LABEL: func.func @consumer_src
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @consumer_dst() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 21, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0> {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  func.func @consumer_src() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 21, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0> {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
     func.return
   }
 }
