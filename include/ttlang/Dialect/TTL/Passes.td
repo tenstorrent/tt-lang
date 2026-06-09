@@ -540,30 +540,30 @@ def TTLVerifyPipeNetGuards
 
 def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
-  let summary = "Reject DFBs whose producer or consumer set spans more than one kernel thread";
+  let summary = "Reject DFBs with overlapping producer or consumer launch domains";
   let description = [{
     Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by `cb_index`
     (resolved via `getCBIndex`) and enclosing `ttl.kernel_thread`-tagged
-    `func.func`, and emits an error for any DFB whose producer thread set or
-    consumer thread set has size greater than one. The diagnostic attaches a
-    note for each additional thread site and one note at the originating
-    `ttl.bind_cb`.
+    `func.func`, and tracks the launch-node domain for each producer or
+    consumer participant. A DFB is valid when, for each launched node, at most
+    one producer thread reserves it and at most one consumer thread waits on it.
+    Disjoint domains across different kernel-thread functions are accepted.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
-    structural single-producer single-consumer property is required for
+    per-launched-node single-producer single-consumer property is required for
     correctness; see `docs/development/DFBManagement.md` for the runtime
-    contract.
+    contract. The pass emits an error for overlapping producer or consumer
+    domains, and for unknown domains when multiple threads participate and SPSC
+    cannot be proven statically.
 
     Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
-    `bind_cb` carries a concrete `cb_index`. The pass asserts on
+    `bind_cb` carries a concrete `cb_index`, and modules with DFB acquire ops
+    must carry a valid `ttl.launch_grid` attribute. The pass asserts on
     unresolvable indices.
   }];
 
-  let dependentDialects = [
-    "::mlir::func::FuncDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
+  let dependentDialects = [];
 }
 
 def TTLErasePipeNetScopes

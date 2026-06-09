@@ -733,12 +733,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
     });
   }
 
-  if (cbShape.size() != tensorRank) {
-    return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-      diag << "CB shape rank (" << cbShape.size()
-           << ") does not match tensor rank (" << tensorRank << ")";
-    });
-  }
+  // cbRank <= tensorRank is guaranteed upstream: CopyOp enforces DFB rank ==
+  // slice result rank, and TensorSliceOp enforces result rank <= tensor rank.
+  assert(cbShape.size() <= tensorRank && "CB rank exceeds tensor rank");
 
   Value bankBase =
       getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
@@ -754,6 +751,13 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
           ? ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted).getResult()
           : ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted).getResult();
 
+  // Rank-reducing slice: the leading (tensorRank - cbRank) tensor dims are
+  // squeezed via scalar indices (validated at slice creation). CB iteration
+  // vars map to the trailing dims; squeezed dims contribute startIndices[d]
+  // directly with no IV adder.
+  unsigned cbRank = cbShape.size();
+  unsigned rankDiff = tensorRank - cbRank;
+
   auto indexTy = rewriter.getIndexType();
   auto cbPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbPtr);
   auto pageSizeIdx = arith::ConstantIndexOp::create(
@@ -765,11 +769,17 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   emitTileLoop(
       rewriter, loc, cbBounds,
       [&](OpBuilder &loopBuilder, Location bodyLoc, ValueRange cbIVs) {
-        // Tensor coordinates: start index + CB loop IV for each dimension.
+        // Tensor coordinates: for squeezed leading dims, use the scalar
+        // startIndex directly. For range dims, add the CB loop IV.
         SmallVector<Value> tensorCoords;
-        for (unsigned dimension = 0; dimension < tensorRank; ++dimension) {
-          Value coord = arith::AddIOp::create(
-              loopBuilder, bodyLoc, startIndices[dimension], cbIVs[dimension]);
+        for (unsigned d = 0; d < tensorRank; ++d) {
+          Value coord;
+          if (d < rankDiff) {
+            coord = startIndices[d];
+          } else {
+            coord = arith::AddIOp::create(loopBuilder, bodyLoc, startIndices[d],
+                                          cbIVs[d - rankDiff]);
+          }
           tensorCoords.push_back(coord);
         }
 
