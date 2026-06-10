@@ -83,3 +83,9 @@ to circle back to.
 - Composition direction (user): every op grows an inlinable DFB-boundary
   core; wrappers carry tests/benches; layer atoms are PipeNets + cores
   only. Monolithic atoms are scaffolding to retire.
+- Core-first refactor landed: rmsnorm_core (caller feeds x chunks TWICE:
+  sum-sq pass then scale pass), gemv_band_core, rope_core, kv_patch_core;
+  flash cores already existed. Stage-A attn atom = DFB decls + PipeNets +
+  core calls, PCC unchanged.
+- Double-produce gotcha: a core that reserves its out DFB means the
+  caller must NOT reserve it too; branch-local reserves only.
