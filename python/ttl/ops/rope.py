@@ -69,7 +69,8 @@ def make_rope_core(Dt):
 
     @ttl.atom()
     def rope_core(h_in: ttl.DFB, c_in: ttl.DFB, s_in: ttl.DFB,
-                  r_in: ttl.DFB, rh: ttl.DFB, y_out: ttl.DFB):
+                  r_in: ttl.DFB, y_out: ttl.DFB):
+        rh = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         hb = h_in.wait()
         rw = rh.reserve(); rw.store(hb @ r_in.wait())
         yw = y_out.reserve()

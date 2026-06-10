@@ -22,19 +22,24 @@ import ttl
 from ttl.ops.mcast import mcast, mcast_rows
 
 
-def make_flash_window_core(N_CHUNKS, scale=1.0):
+def make_flash_window_core(PNHt, Sk_chunk_t, vDHt, N_CHUNKS, scale=1.0):
     """Pure-compute flash window: q against N_CHUNKS staged K/V/mask blocks.
 
-    All DFBs are params so the core inlines anywhere (including under
-    runtime ``if``); the caller stages the K/V/mask chunks and owns the
-    temp buffers. Leaves unnormalized (o, m, l)."""
+    Boundary DFBs are params (the caller stages K/V/mask chunks); softmax
+    state is local scratch, hoisted and overlaid by the inliner. Leaves
+    unnormalized (o, m, l)."""
 
     @ttl.atom()
     def flash_window_core(q_in: ttl.DFB, k_cb: ttl.DFB, v_cb: ttl.DFB,
                           mask_cb: ttl.DFB, o_out: ttl.DFB, m_out: ttl.DFB,
-                          l_out: ttl.DFB, sv_cb: ttl.DFB, ex_cb: ttl.DFB,
-                          red_cb: ttl.DFB, mn_cb: ttl.DFB, alpha_cb: ttl.DFB,
-                          pv_cb: ttl.DFB):
+                          l_out: ttl.DFB):
+        sv_cb = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
+        ex_cb = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
+        red_cb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=1)
+        mn_cb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
+        alpha_cb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
+        pv_cb = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=1)
+
         m0 = m_out.reserve(); m0.store(ttl.block.fill(-1e30, shape=m0.shape))
         l0 = l_out.reserve(); l0.store(ttl.block.fill(0.0,   shape=l0.shape))
         o0 = o_out.reserve(); o0.store(ttl.block.fill(0.0,   shape=o0.shape))
@@ -94,7 +99,7 @@ def make_flash_window_core(N_CHUNKS, scale=1.0):
 
 def make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0, col_stride=None):
     St_per_core = Sk_chunk_t * N_CHUNKS if col_stride is None else col_stride
-    window_core = make_flash_window_core(N_CHUNKS, scale)
+    window_core = make_flash_window_core(PNHt, Sk_chunk_t, vDHt, N_CHUNKS, scale)
 
     @ttl.atom()
     def flash_decode_core(q_in: ttl.DFB, k, v, masks, o_out: ttl.DFB, m_out: ttl.DFB, l_out: ttl.DFB):
@@ -103,13 +108,6 @@ def make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0, 
         k_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, DHt), block_count=2)
         v_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, vDHt), block_count=2)
         mask_cb = ttl.make_dataflow_buffer_like(masks, shape=(PNHt, Sk_chunk_t), block_count=2)
-
-        sv_cb    = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
-        ex_cb    = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
-        red_cb   = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=1)
-        mn_cb    = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
-        alpha_cb = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
-        pv_cb    = ttl.make_dfb("bf16", shape=(PNHt, vDHt),       block_count=1)
 
         k_base = col_c * St_per_core
         for c in range(N_CHUNKS):
@@ -121,8 +119,7 @@ def make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0, 
             m_dst = mask_cb.reserve()
             ttl.copy(masks[c * PNHt:(c + 1) * PNHt, 0:Sk_chunk_t], m_dst)
 
-        window_core(q_in, k_cb, v_cb, mask_cb, o_out, m_out, l_out,
-                    sv_cb, ex_cb, red_cb, mn_cb, alpha_cb, pv_cb)
+        window_core(q_in, k_cb, v_cb, mask_cb, o_out, m_out, l_out)
 
     return flash_decode_core
 

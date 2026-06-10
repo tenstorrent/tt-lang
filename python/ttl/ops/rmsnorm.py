@@ -108,8 +108,12 @@ def make_rmsnorm_core(Dt, WCt, D, eps):
     inv_d = 1.0 / D
 
     @ttl.atom()
-    def rmsnorm_core(x_in: ttl.DFB, g_in: ttl.DFB, y_out: ttl.DFB,
-                     sq: ttl.DFB, red: ttl.DFB, acc: ttl.DFB, inv: ttl.DFB):
+    def rmsnorm_core(x_in: ttl.DFB, g_in: ttl.DFB, y_out: ttl.DFB):
+        sq = ttl.make_dfb("bf16", shape=(1, WCt), block_count=2)
+        red = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+        acc = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+        inv = ttl.make_dfb("bf16", shape=(1, 1), block_count=1)
+
         a0 = acc.reserve(); a0.store(ttl.block.fill(0.0, shape=(1, 1)))
         for c in range(n_wc):
             xb = x_in.wait()
