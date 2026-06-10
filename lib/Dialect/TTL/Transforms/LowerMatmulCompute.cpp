@@ -194,11 +194,10 @@ static bool canReuseAssignedOperandDst(Operation *op, int64_t assignedDst) {
 static FailureOr<DenseMap<int64_t, int64_t>>
 buildScratchIndexMap(ArrayRef<Operation *> ops,
                      MatmulAccumulatorInfo accumulatorInfo) {
-  // TODO: When fused broadcast add/sub/mul tile ops are added, classify them
-  // here as dataflow-buffer-input ops when they lower to
-  // add/sub/mul_tiles_bcast. Their source operands should not create DST
-  // scratch slots; only the result slot is live unless a later op keeps it as
-  // an accumulator.
+  // TODO: When fused broadcast add/sub/mul tile ops are added, count only the
+  // DST result they produce. Their dataflow buffer source operands should not
+  // allocate scratch slots unless the fused op lowers through separate
+  // copy_tile inputs.
   DenseSet<int64_t> scratchIndices;
   for (Operation *bodyOp : ops) {
     if (!getTileOpDstIndex(bodyOp)) {

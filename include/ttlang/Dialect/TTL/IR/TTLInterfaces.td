@@ -88,7 +88,7 @@ def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
       }]
     >,
     InterfaceMethod<
-      /*desc=*/"Return the DST slots denoted by one operation result.",
+      /*desc=*/"Return the DST footprint represented by `result` when it is a DST-resident tile result of this operation.",
       /*retTy=*/"::mlir::FailureOr<::mlir::tt::ttl::DstFootprint>",
       /*methodName=*/"getResultDstFootprint",
       /*args=*/(ins "::mlir::Value":$result),

@@ -1,5 +1,5 @@
-// Tests invalid ttl.compute inputs rejected by ttl-lower-to-loops before
-// pattern rewriting mutates the IR.
+// Tests invalid ttl.compute inputs rejected by ttl-lower-to-loops before the
+// pass rewrites the compute body.
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-to-loops))' --verify-diagnostics --split-input-file
 

@@ -25,9 +25,9 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
                                     ArrayRef<AffineMap> indexingMaps,
                                     ArrayRef<StringAttr> iterTypes);
 
-/// Return the number of DST slots required for one output tile of a
-/// block-matmul compute. This includes the output slot and any scratch slots
-/// required by the current lowering sequence.
+/// Return the number of DST slots required for each logical output tile of a
+/// block-matmul compute. This includes the output slot and scratch slots used
+/// by non-matmul tile ops in the same compute body.
 FailureOr<int64_t> getMatmulComputeDstSlotsPerOutputTile(ComputeOp op);
 
 /// Emit a diagnostic and return failure if a block matmul compute's expanded

@@ -173,24 +173,28 @@ def test_scaled_acc_matmul(dtype_name, Mt, Nt, device):
     assert_allclose(result.float(), golden, **ALLCLOSE_TOL[dtype_name])
 
 
-# Flash multi-V: bf16 includes the wide Nt=16 regression; fp32 (capacity 4)
-# remains restricted to Nt=1 because the current lowering uses 3 DST slots per
-# output tile.
+# Flash-based recurrence cases. bf16 includes 16 V/output tiles to cover the
+# wide-V regression; fp32 remains restricted to one V/output tile because each
+# output tile uses three DST slots and fp32 capacity is four.
 FLASH_CASES = [
     ("bf16", 1),
     ("bf16", 2),
     ("bf16", 16),
     ("fp32", 1),
 ]
-FLASH_IDS = [f"{d}_v{n}" for d, n in FLASH_CASES]
+FLASH_IDS = [f"{dtype_name}_v{num_v_tiles}" for dtype_name, num_v_tiles in FLASH_CASES]
 
 
-def make_flash_scaled_acc_inputs(dtype, Nt):
-    """Use bounded deterministic inputs with a non-negligible scaled term."""
+def make_flash_scaled_acc_inputs(dtype, num_v_tiles):
+    """Use bounded inputs that expose a dropped scaled-accumulator term."""
     alpha_torch = binary_fraction_grid(TILE, 1, 1.0, 1.0 / 64.0, torch.float32)
-    old_torch = binary_fraction_grid(TILE, Nt * TILE, 0.0, 1.0 / 4.0, torch.float32)
+    old_torch = binary_fraction_grid(
+        TILE, num_v_tiles * TILE, 0.0, 1.0 / 4.0, torch.float32
+    )
     scores_torch = torch.eye(TILE, dtype=torch.float32)
-    v_torch = binary_fraction_grid(TILE, Nt * TILE, 0.0, 1.0 / 128.0, torch.float32)
+    v_torch = binary_fraction_grid(
+        TILE, num_v_tiles * TILE, 0.0, 1.0 / 128.0, torch.float32
+    )
 
     return (
         alpha_torch.to(dtype),
@@ -200,22 +204,22 @@ def make_flash_scaled_acc_inputs(dtype, Nt):
     )
 
 
-@pytest.mark.parametrize("dtype_name,Nt", FLASH_CASES, ids=FLASH_IDS)
+@pytest.mark.parametrize("dtype_name,num_v_tiles", FLASH_CASES, ids=FLASH_IDS)
 @pytest.mark.requires_device
-def test_flash_broadcast_scaled_acc(dtype_name, Nt, device):
-    """out = broadcast(alpha) * o_old + (scores @ v) with Nt V tiles."""
+def test_flash_broadcast_scaled_acc(dtype_name, num_v_tiles, device):
+    """out = broadcast(alpha) * o_old + (scores @ v)."""
     dtype = DTYPES[dtype_name]
-    N = Nt * TILE
+    output_cols = num_v_tiles * TILE
 
     alpha_torch, old_torch, scores_torch, v_torch = make_flash_scaled_acc_inputs(
-        dtype, Nt
+        dtype, num_v_tiles
     )
 
     alpha = to_dram(alpha_torch, device)
     o_old = to_dram(old_torch, device)
     scores = to_dram(scores_torch, device)
     v = to_dram(v_torch, device)
-    out = to_dram(torch.zeros(TILE, N, dtype=dtype), device)
+    out = to_dram(torch.zeros(TILE, output_cols, dtype=dtype), device)
 
     flash_scaled_acc_kernel(alpha, o_old, scores, v, out)
 
