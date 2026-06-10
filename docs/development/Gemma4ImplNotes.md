@@ -108,3 +108,13 @@ to circle back to.
   one DFB across DM0/DM1 (fkv k/v copies, line refs in /tmp/diag.log). Fix:
   pin all DM copies of a cb_index to one DM thread; that re-legalizes fkv
   and the node-disjoint shares, putting the atom under 32 directly.
+- SPSC ordering: ttl-verify-dfb-spsc REQUIRES finalized cb indices (assert in
+  record); it runs post-merge by design. The cb7/12/23 multi-producer errors
+  at <=32 indicate fine single-thread merges crossing producer funcs - check
+  class keys vs trisc/ncrisc/brisc bodies (atom_split deepcopies bodies, so
+  matching reserve ops exist in all three threads; finalize sees 3 funcs!).
+  Likely fix: classes use bind func sets and reserves coalesce per thread;
+  pop dead-code copies of reserves per body cause cross-thread keys. Look at
+  finalize recordRole: reserves dropped on other threads after split? Verify
+  inlined sq reserve survives in DM bodies; if so, prune dead reserves
+  before finalize.
