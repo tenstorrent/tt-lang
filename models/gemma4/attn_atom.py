@@ -146,7 +146,6 @@ def make_attn_atom(Ht, Dt, St, eps):
         fkv_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=2)
 
         nx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
-        ng_cb = ttl.make_dataflow_buffer_like(gamma, shape=(1, K_CH), block_count=2)
         xn_stage = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
 
         xb_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
@@ -178,7 +177,7 @@ def make_attn_atom(Ht, Dt, St, eps):
         ostage_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         orecv_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=4)
         wo_cb = ttl.make_dataflow_buffer_like(wo, shape=(Dt, O_BAND), block_count=2)
-        op_cb = ng_cb
+        op_cb = nx_cb
 
         band0 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 0))])
         band1 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 1))])
@@ -197,8 +196,8 @@ def make_attn_atom(Ht, Dt, St, eps):
                 xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
             for c in range(4):
                 xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
-                gd = ng_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
-            norm_core(nx_cb, ng_cb, xn_stage)
+                gd = nx_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
+            norm_core(nx_cb, nx_cb, xn_stage)
         for ch in range(2):
             mcast_block(band0, xn_stage, xb_cb)
         for ch in range(2):
