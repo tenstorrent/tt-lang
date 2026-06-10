@@ -364,7 +364,14 @@ def TTLSubblockComputeForDST
     Option<"strictF32Acc", "strict-f32-acc", "bool", "false",
            "Error if a user-written accumulation loop (+=) with non-f32 "
            "output requires subblocking. Subblocking reduces accumulation "
-           "precision because bf16 L1 intermediates are narrower than f32 DST.">
+           "precision because bf16 L1 intermediates are narrower than f32 DST.">,
+    ListOption<"forceSubblock", "force-subblock", "int64_t",
+          "Force subblock shape over the parallel iteration dims "
+          "(e.g. force-subblock=2,4). The heuristic is skipped when "
+          "set. Length must match the number of parallel dims; each "
+          "entry must divide its dim size and the product must fit "
+          "in the parallel DST budget. Empty falls back to the "
+          "heuristic.">
   ];
 
   let dependentDialects = [

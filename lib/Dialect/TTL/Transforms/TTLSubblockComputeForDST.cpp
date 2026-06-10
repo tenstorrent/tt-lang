@@ -249,8 +249,37 @@ private:
     int64_t parallelBudget = unrollFactor / reductionProduct;
 
     // Compute subblock sizes for parallel dimensions only.
-    SmallVector<int64_t> parallelSubblockSizes =
-        computeMultiDimSubblockSizes(parallelDimSizes, parallelBudget);
+    // When --force-subblock is set, skip the heuristic and use it directly.
+    SmallVector<int64_t> parallelSubblockSizes;
+    if (!forceSubblock.empty()) {
+      if (forceSubblock.size() != parallelDimSizes.size()) {
+        return computeOp.emitOpError()
+               << "force-subblock has " << forceSubblock.size()
+               << " entries but compute has " << parallelDimSizes.size()
+               << " parallel dim(s)";
+      }
+      int64_t forcedProduct = 1;
+      for (size_t d = 0; d < forceSubblock.size(); ++d) {
+        int64_t s = forceSubblock[d];
+        if (s <= 0 || parallelDimSizes[d] % s != 0) {
+          return computeOp.emitOpError()
+                 << "force-subblock[" << d << "]=" << s
+                 << " does not evenly divide parallel dim size "
+                 << parallelDimSizes[d];
+        }
+        forcedProduct *= s;
+      }
+      if (forcedProduct > parallelBudget) {
+        return computeOp.emitOpError()
+               << "force-subblock product " << forcedProduct
+               << " exceeds parallel DST budget " << parallelBudget;
+      }
+      parallelSubblockSizes.assign(forceSubblock.begin(), forceSubblock.end());
+      LLVM_DEBUG(llvm::dbgs() << "Subblock forced by --force-subblock\n");
+    } else {
+      parallelSubblockSizes =
+          computeMultiDimSubblockSizes(parallelDimSizes, parallelBudget);
+    }
 
     // Reduction dims keep their full size. For matmul, K accumulates
     // in-place in DST via matmul_block(kt=K_block). L1 accumulation

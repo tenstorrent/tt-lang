@@ -36,6 +36,11 @@ struct TTLToTTKernelPipelineOptions
                      "When disabled (default), user-placed reserve/push "
                      "is preserved."),
       llvm::cl::init(false)};
+  ListOption<int64_t> forceSubblock{
+      *this, "force-subblock",
+      llvm::cl::desc("Force subblock shape over the parallel iteration dims "
+                     "(e.g. force-subblock=2,4). Skips the heuristic when "
+                     "set; empty falls back to the heuristic.")};
   Option<bool> combinePackTiles{
       *this, "combine-pack-tiles",
       llvm::cl::desc("Combine consecutive pack_tile ops into pack_tile_block."),

@@ -38,6 +38,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.subblockSync;
     subblockOpts.strictF32Acc = options.strictF32Acc;
+    subblockOpts.forceSubblock = llvm::to_vector(options.forceSubblock);
     pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
   }
   {

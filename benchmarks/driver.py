@@ -20,17 +20,27 @@ skips cycles with a note.
 
 import argparse
 import os
+from functools import partial
 from pathlib import Path
 
 from benchmarks.common import run_spec, save_stacked_ratio_plot, write_csv
 from benchmarks.cycles.flash_shard import sweep as flash_cycles
+from benchmarks.cycles.subblock import sweep as subblock_cycles
 from benchmarks.e2e import flash_mla, matmul, rmsnorm, topk
 
 # Each entry is a BenchSpec; order is the run order.
 E2E = [matmul.SPEC, rmsnorm.SPEC, topk.SPEC, flash_mla.SPEC]
 
-# Cycles A/Bs: (name, sweep_fn(filter)->rows, panel_fn(rows)->panel, fields).
-CYCLES = [("cycles", flash_cycles.sweep, flash_cycles.panel, flash_cycles.FIELDS)]
+# Cycles benchmarks: (name, sweep_fn(filter)->rows, panel_fn(rows)->panel, fields).
+# flash_shard is a ttl-vs-metal A/B; the subblock kinds are self-ratio sweeps
+# (cycles vs the fastest subblock) -- all produce ratio rows the stacked plot can
+# render. One entry per registered subblock kind.
+CYCLES = [("cycles", flash_cycles.sweep, flash_cycles.panel, flash_cycles.FIELDS)] + [
+    (f"subblock_{kind}",
+     partial(subblock_cycles.sweep, kind),
+     partial(subblock_cycles.panel, kind), subblock_cycles.FIELDS)
+    for kind in subblock_cycles.KINDS
+]
 
 
 def _profiler_on():

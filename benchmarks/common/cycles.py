@@ -28,9 +28,19 @@ _KERNEL_SUFFIX = "-KERNEL"
 
 
 def profile_log_path() -> Path:
+    # TT_METAL_PROFILER_DIR (honored by tt-metal's SetDeviceProfilerDir) relocates
+    # the device CSV to <dir>/.logs/. Set it to a writable path to run off a
+    # read-only TT_METAL_HOME (e.g. the packaged toolchain). Falls back to the
+    # default TT_METAL_HOME/generated/profiler/.logs/ when unset.
+    profiler_dir = os.environ.get("TT_METAL_PROFILER_DIR", "")
+    if profiler_dir:
+        return Path(profiler_dir) / ".logs/profile_log_device.csv"
     home = os.environ.get("TT_METAL_HOME", "")
     if not home:
-        raise ValueError("TT_METAL_HOME not set; cannot locate profile_log_device.csv")
+        raise ValueError(
+            "neither TT_METAL_PROFILER_DIR nor TT_METAL_HOME set; "
+            "cannot locate profile_log_device.csv"
+        )
     return Path(home) / "generated/profiler/.logs/profile_log_device.csv"
 
 

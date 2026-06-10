@@ -1639,8 +1639,14 @@ def _lower_program_to_kernel(
         if compiler_options.maximize_dst:
             subblock_sync = "true" if compiler_options.subblock_sync else "false"
             strict_f32 = "true" if compiler_options.strict_f32_acc else "false"
+            subblock_opts = (
+                f"subblock-sync={subblock_sync} "
+                f"strict-f32-acc={strict_f32} "
+            )
+            if compiler_options.force_subblock:
+                subblock_opts += f" force-subblock={compiler_options.force_subblock}"
             pipeline_passes.append(
-                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync} strict-f32-acc={strict_f32}}})"
+                f"func.func(ttl-subblock-compute-for-dst{{{subblock_opts}}})"
             )
         dst_acc_str = "true" if compiler_options.maximize_dst else "false"
         block_mm_str = "true" if compiler_options.use_block_matmul else "false"

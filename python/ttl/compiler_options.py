@@ -84,6 +84,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Error if accumulation (+=) output block exceeds f32 DST capacity (default: disabled).",
     )
     p.add_argument(
+        "--ttl-force-subblock",
+        default=None,
+        dest="force_subblock",
+        type=str,
+        help="Force subblock shape over the parallel iteration dims as "
+        "comma-separated ints (e.g. --ttl-force-subblock=2,4). Skips the "
+        "heuristic when set; empty falls back to the heuristic. Parsed "
+        "and validated by MLIR.",
+    )
+    p.add_argument(
         "--ttl-compiler-dfbs",
         default=None,
         dest="compiler_dfbs",
@@ -144,6 +154,7 @@ class CompilerOptions:
     reduce_full_fp32: bool = True
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
+    force_subblock: str = ""
     compiler_dfbs: bool = True
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
