@@ -41,6 +41,25 @@ def mcast(net: ttl.PipeNet, src, stage: ttl.DFB, dst: ttl.DFB):
     net.if_dst(_recv)
 
 
+@ttl.atom()
+def mcast_block(net: ttl.PipeNet, stage: ttl.DFB, dst: ttl.DFB):
+    """Broadcast one staged block over `net`. The source consumes the next
+    block from `stage` (produced by earlier compute); every destination
+    receives into `dst`."""
+
+    def _send(pipe):
+        sr = stage.wait()
+        ttl.copy(sr, pipe)
+
+    net.if_src(_send)
+
+    def _recv(pipe):
+        d = dst.reserve()
+        ttl.copy(pipe, d)
+
+    net.if_dst(_recv)
+
+
 def mcast_rows(rows: int, cols: int) -> List[Pipe]:
     """Row-broadcast pipes: in each of `rows` process rows, the source core in
     column 0 fans out to all `cols` columns. One pipe per row.

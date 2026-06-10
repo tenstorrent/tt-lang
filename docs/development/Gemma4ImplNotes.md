@@ -58,3 +58,21 @@ to circle back to.
 - indexed_gemv 8-expert gate_up stream (32E resident, K=2816, N=1408):
   0.28 ms e2e = 226 GB/s including dispatch; the dominant MoE DRAM term is
   already near the 260-300 GB/s/card budget before any device-side tuning.
+
+## Fused-atom findings (attn stage A)
+
+- mcast self-delivery on the source core corrupts the received block
+  (heads on the loopback core were noise, all others exact). Workaround:
+  the norm/mcast source core does no compute (9-col grid, col 0 src
+  only). File a reproducer later; fix would also let the source core
+  consume a CB block directly without pipe loopback.
+- Added mcast_block (DFB-source mcast); copying via a DRAM scratch row
+  between same-thread write and read races: writes are not flushed
+  before the next copy reads.
+- L1 budget: ~1.46 MB cap is the binding constraint; chunk K bands at
+  22t for streamed weights and stream the norm in 11t chunks. RoPE
+  rotate-half as h@R (R = permutation tensor) costs 128 KB CB.
+- Early `return` is unsupported in atom bodies; guard whole-core roles
+  with `if`.
+- Future: gather QKV per-head fanout via fp8 weights stream cuts W CB
+  in half; mlp pad lives at 576 (Nt=18) for band divisibility.
