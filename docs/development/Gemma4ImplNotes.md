@@ -39,4 +39,7 @@ to circle back to.
 
 ## Perf deltas
 
-(none yet — record op-level GB/s and per-op µs vs targets here)
+- gemv e2e wall-clock is dispatch-bound: ~0.23 ms floor across all shapes
+  (PCC 1.0). At 16 MB streamed that floor reads 127 GB/s; the weight stream
+  itself is much faster. Use a cycles/ Tracy variant before drawing GB/s
+  conclusions, and expect the fused multi-layer atom to amortize dispatch.
