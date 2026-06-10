@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "models"))
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
+from ttl.ops.gemv import make_gemv
 from ttl.ops.kv_append import make_kv_append
 from gemma4.attn_atom import TILE, make_attn_heads_atom, make_flash_atom
 from gemma4.layer import from_dev, row, to_dev
@@ -94,7 +95,8 @@ def _run(device):
             row(qknorm, D, device), to_dev(R.to(torch.bfloat16), device)]
     caches = [to_dev(c.to(torch.bfloat16), device) for c in (k_cache[0], k_cache[1], v_cache[0], v_cache[1])]
     heads_dev = to_dev(torch.zeros(8 * TILE, D, dtype=torch.bfloat16), device)
-    o_heads = to_dev(torch.zeros(4 * TILE, D, dtype=torch.bfloat16), device)
+    o_row = to_dev(torch.zeros(TILE, 4 * D, dtype=torch.bfloat16), device)
+    o_proj = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), device)
     pos_dev = to_dev(pos_t, device)
 
     heads_atom = make_attn_heads_atom(H // TILE, D // TILE, eps)
@@ -103,9 +105,9 @@ def _run(device):
         append = make_kv_append(S // TILE, D // TILE, k_row=4 + i)
         append(cache, heads_dev, pos_dev, cache)
     flash_atom = make_flash_atom(D // TILE, S // TILE)
-    flash_atom(heads_dev, *caches, to_dev(masks, device), o_heads)
+    flash_atom(heads_dev, *caches, to_dev(masks, device), o_row)
+    make_gemv(TILE, 4 * D, H, (8, 2), 11)(o_row, to_dev(wo.to(torch.bfloat16), device), o_proj)
 
-    got_heads = from_dev(o_heads).reshape(4, TILE, D)[:, 0, :].reshape(-1)
-    got = got_heads.float() @ wo.float()
+    got = from_dev(o_proj)[0].float()
     pcc = torch.corrcoef(torch.stack([got, want]))[0, 1].item()
     assert pcc > 0.98, f"o pcc {pcc}"

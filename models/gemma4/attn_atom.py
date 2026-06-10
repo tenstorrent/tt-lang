@@ -277,6 +277,6 @@ def make_flash_atom(Dt, St):
             ttl.mul(ofin, ttl.block.broadcast(ttl.recip(lfin), dims=[1], shape=(1, Dt))),
             ttl.mul(ttl.block.broadcast(mfin, dims=[1], shape=(1, Dt)),
                     ttl.block.fill(0.0, shape=(1, Dt)))))
-        ttl.copy(ostage_cb.wait(), o_heads[col_c:col_c + 1, 0:Dt])
+        ttl.copy(ostage_cb.wait(), o_heads[0:1, col_c * Dt:(col_c + 1) * Dt])
 
     return flash_atom

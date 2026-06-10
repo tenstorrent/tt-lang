@@ -214,3 +214,9 @@ to circle back to.
   heads atom (PCC 1.0) -> kv_append x4 (k_row tile param) -> flash atom
   (4,1) split fk/fv -> host O matmul; PCC > 0.98 in 5.5s. Dispatch count
   is the accepted bring-up cut; refusing only untested compositions.
+- O projection on device: flash atom writes one wide (1, 4Dt) row, gemv
+  (8,2) bn=11 projects 1024 -> 2816 as the next dispatch. Attention now
+  has ZERO host compute: heads + 4x kv_append + flash + gemv, PCC > 0.98.
+  Fused retry with kd, md, vd staging fix moved the fused atom from device
+  deadlock to the open host-launch stall (workers never start), so the
+  bc1 cycle was the fused device bug; host stall is separate, shelved.
