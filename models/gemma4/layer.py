@@ -146,3 +146,93 @@ class SlidingLayer:
         o_part = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), dev)
         self.o_proj(a, self.w_o, o_part)
         return o_part
+
+
+MLP_PAD = 576  # 2112 / 4 col-shard padded to tile alignment (Nt=18 keeps bands divisible)
+
+
+class FFN:
+    """Per-card dense MLP + routed experts at TP=4 (partial outputs)."""
+
+    def __init__(self, cfg: Gemma4Config, w, device, card):
+        self.cfg, self.device, self.card = cfg, device, card
+        H, P, E = cfg.hidden, MLP_PAD, cfg.experts // 4
+        self.E = E
+
+        def pad_cols(t):
+            return torch.nn.functional.pad(t, (0, P - t.shape[1]))
+
+        def pad_rows(t):
+            return torch.nn.functional.pad(t, (0, 0, 0, P - t.shape[0]))
+
+        s = card * (cfg.mlp_inter // 4)
+        e = s + cfg.mlp_inter // 4
+        self.w_gate = to_dev(pad_cols(w["mlp.gate_proj"][s:e].T), device)  # [H, P]
+        self.w_up = to_dev(pad_cols(w["mlp.up_proj"][s:e].T), device)
+        self.w_down = to_dev(pad_rows(w["mlp.down_proj"][:, s:e].T), device)  # [P, H]
+
+        es = card * E
+        gu = w["experts.gate_up_proj"][es:es + E]                # [E, 2I, H]
+        self.w_gu = to_dev(gu.transpose(1, 2).reshape(E * H, 2 * cfg.moe_inter), device)
+        dn = w["experts.down_proj"][es:es + E]                   # [E, H, I]
+        self.w_dn = to_dev(dn.transpose(1, 2).reshape(E * cfg.moe_inter, H), device)
+
+        self.router_w = w["router.proj"]                          # full [128, H]
+        self.router_scale = w["router.scale"]
+        self.per_expert = w["router.per_expert_scale"]
+
+        self.gate = make_gemv(TILE, H, P, (9, 2), 2)
+        self.down = make_gemv(TILE, P, H, (11, 2), 4)
+        self.swiglu = make_swiglu(1, 1, P // TILE, P // TILE)
+        self.gu_e = make_indexed_gemv(E, H, 2 * cfg.moe_inter, 1, (11, 2), 4)
+        self.dn_e = make_indexed_gemv(E, cfg.moe_inter, H, 1, (11, 2), 4)
+        self.swiglu_e = make_swiglu(1, 1, cfg.moe_inter // TILE, cfg.moe_inter // TILE)
+
+    def route(self, x):
+        """Host router: norm-noscale * scale * H^-0.5, softmax, top-8."""
+        cfg = self.cfg
+        xn = x / torch.sqrt(x.pow(2).mean() + cfg.eps)
+        xn = xn * self.router_scale * cfg.hidden ** -0.5
+        probs = torch.softmax(self.router_w.float() @ xn.float(), dim=-1)
+        wts, idx = torch.topk(probs, cfg.top_k)
+        wts = wts / wts.sum()
+        return idx, wts * self.per_expert[idx]
+
+    def dense(self, h_d):
+        cfg, dev = self.cfg, self.device
+        H, P = cfg.hidden, MLP_PAD
+        g = to_dev(torch.zeros(TILE, P, dtype=torch.bfloat16), dev)
+        u = to_dev(torch.zeros(TILE, P, dtype=torch.bfloat16), dev)
+        self.gate(h_d, self.w_gate, g)
+        self.gate(h_d, self.w_up, u)
+        act = to_dev(torch.zeros(TILE, P, dtype=torch.bfloat16), dev)
+        self.swiglu(g, u, act)
+        out = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), dev)
+        self.down(act, self.w_down, out)
+        return out
+
+    def experts(self, h_d, idx, wts):
+        """Local experts only; ids outside this card's band are skipped
+        (their contribution arrives via the all-reduce)."""
+        cfg, dev = self.cfg, self.device
+        H, I, E = cfg.hidden, cfg.moe_inter, self.E
+        lo = self.card * E
+        acc = torch.zeros(H)
+        for ii, wt in zip(idx.tolist(), wts.tolist()):
+            if not lo <= ii < lo + E:
+                continue
+            e = ii - lo
+            idx_t = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+            idx_t[0, 0] = e
+            idx_d = to_dev(idx_t, dev)
+            gu = to_dev(torch.zeros(TILE, 2 * I, dtype=torch.bfloat16), dev)
+            self.gu_e(h_d, idx_d, self.w_gu, gu)
+            gu_h = from_dev(gu)[0]
+            g = row(gu_h[:I], I, dev)
+            u = row(gu_h[I:], I, dev)
+            act = to_dev(torch.zeros(TILE, I, dtype=torch.bfloat16), dev)
+            self.swiglu_e(g, u, act)
+            dn = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), dev)
+            self.dn_e(act, idx_d, self.w_dn, dn)
+            acc += from_dev(dn)[0] * wt
+        return acc
