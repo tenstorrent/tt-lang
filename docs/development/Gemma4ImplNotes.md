@@ -242,3 +242,13 @@ to circle back to.
   sliding + global -> lm_head, two consecutive decode steps PCC > 0.97.
   Atom factories memoized; per-expert gate scale read from device tensor
   (no recompile per token). Host: routing + argmax.
+- MILESTONE: zero-host decode step. Device router (norm const-fold, proj
+  gemv, softmax_row, topk, moe_weights renorm with per-expert raw gather),
+  device greedy argmax (restack 256-chunks, per-chunk top1, collapse, top1,
+  token_select LUT gather + tile add into (row, intra) token format), pos
+  counter (pos_step LUT) and per-step rope/mask staging (pos_slice from
+  stacked f32 tables, row 0 valid suffices at B=1). 3-layer two-step
+  greedy on hw matches torch token-for-token; no host/ttnn between atoms.
+- Wide vocab note: argmax LUT caps n_chunks at 256 -> per-card V <= 64k
+  (exactly the vocab/4 shard). Full vocab on one card needs a third stage;
+  not needed for TP=4.
