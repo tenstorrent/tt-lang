@@ -16,6 +16,7 @@ from ttl.ir import (
     FloatAttr,
     IndexType,
     IntegerAttr,
+    IntegerType,
     RankedTensorType,
     Type,
 )
@@ -1002,6 +1003,26 @@ def raw_element_read(block, *coords):
     return ttl.raw_element_read(scalar_type, block, index_vals)
 
 
+@syntax("read_index")
+def read_index(block, *coords):
+    """Read a scalar element and cast it to an MLIR index value.
+
+    Same coordinate rules as raw_element_read. The value is truncated
+    toward zero, so it must hold an exactly-representable non-negative
+    integer (e.g. router expert ids or cache positions). The result can be
+    used directly in slice arithmetic for indexed DRAM streaming.
+
+    Only supported in data movement (noc) threads.
+    """
+    val = raw_element_read(block, *coords)
+    ctx = block.type.context
+    f32 = F32Type.get(ctx)
+    if val.type != f32:
+        val = arith.ExtFOp(f32, val)
+    i32 = arith.FPToSIOp(IntegerType.get_signless(32, ctx), val)
+    return arith.IndexCastOp(IndexType.get(ctx), i32)
+
+
 @syntax("raw_element_write")
 def raw_element_write(block, *args):
     """Write a scalar value to a block at flat coordinates.
@@ -1060,5 +1081,6 @@ __all__ = [
     "typecast",
     "raw_element_read",
     "raw_element_write",
+    "read_index",
     *_generated_all,
 ]
