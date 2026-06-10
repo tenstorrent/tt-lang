@@ -91,16 +91,6 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
     )
     p.add_argument(
-        "--ttl-relax-dfb-spsc",
-        default=None,
-        dest="relax_dfb_spsc",
-        action=argparse.BooleanOptionalAction,
-        help="Skip the single-producer/single-consumer DFB verifier, allowing a "
-        "DFB to be produced/consumed across threads when guards make the accesses "
-        "mutually exclusive (default: disabled). Unsafe in general -- the kernel "
-        "author is responsible for the cross-thread correctness the verifier checks.",
-    )
-    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -155,7 +145,6 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
-    relax_dfb_spsc: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

@@ -499,7 +499,7 @@ A DFB whose producer and consumer are the same thread is single-threaded (compil
 
 Lifetimes are computed per thread: from the first reserve/wait (bind position when no acquire exists) to the last use, following wait -> readers -> attach_cb -> consumers and pops. Nested uses project onto their top-level ancestor, so a buffer used in a loop is live across the back-edge for the whole loop. Intervals are closed; sharing an endpoint counts as overlap.
 
-The reuse condition is checked against actual blocking acquires; control-flow guards (e.g. mutually exclusive per-core roles) do not refine it. `ttl-verify-dfb-spsc` runs afterwards and rejects shared indices with multiple producer or consumer threads on overlapping launch nodes; `--ttl-relax-dfb-spsc` removes that backstop and leaves SPSC discipline to the kernel author.
+The reuse condition is checked against actual blocking acquires; control-flow guards (e.g. mutually exclusive per-core roles) do not refine it. `ttl-verify-dfb-spsc` always runs afterwards and rejects shared indices with multiple producer or consumer threads on overlapping launch nodes; role-guarded accesses pass when launch-node domain analysis proves them disjoint.
 
 ### Pipe-attached DFBs never reuse
 

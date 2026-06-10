@@ -48,9 +48,12 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
         # chunk_sum (disjoint lifetimes). The exp(sv - max) result is left as
         # plain SSA: it feeds reduce_sum and the ex @ v matmul, both DFB-input
         # ops, so the compiler materializes it into one shared intermediate DFB.
+        # sv/ex/mn/alpha re-store: wait() then reserve() hold two blocks at
+        # once, so block_count=1 would deadlock the reserve. red_cb pops
+        # before each reserve, so one block suffices.
         sv_cb        = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
         ex_cb        = ttl.make_dfb("bf16", shape=(PNHt, Sk_chunk_t), block_count=2)
-        red_cb       = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
+        red_cb       = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=1)
         mn_cb        = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
         alpha_cb     = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
         pv_cb        = ttl.make_dfb("bf16", shape=(PNHt, vDHt),       block_count=1)
@@ -299,11 +302,9 @@ def make_flash_tree_reduce_core(PNHt, vDHt, B=1):
         s2_l = ttl.PipeNet([ttl.Pipe(src=(4, b), dst=(0, b)) for b in range(B)])
         s2_o = ttl.PipeNet([ttl.Pipe(src=(4, b), dst=(0, b)) for b in range(B)])
 
-        # With the SPSC verifier relaxed (--ttl-relax-dfb-spsc), each stage's
-        # working buffer can feed either the next compute-recv or the
-        # datamovement-send -- the role guards make those mutually exclusive per
-        # core -- so we keep one (m,l,o) buffer per stage instead of the
-        # recv-side/send-side split that the verifier would otherwise require.
+        # Each stage's working buffer feeds either the next compute-recv or the
+        # datamovement-send; the per-core role guards make those mutually
+        # exclusive, which the SPSC verifier proves via launch-node domains.
         m_s0 = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
         l_s0 = ttl.make_dfb("bf16", shape=(PNHt, 1),    block_count=2)
         o_s0 = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
@@ -367,7 +368,7 @@ def make_flash_tree_reduce(PNHt, vDHt, B=1):
     core, drain the merged ``(o, l)`` to DRAM on column 0."""
     core = make_flash_tree_reduce_core(PNHt, vDHt, B)
 
-    @ttl.atom(grid=(8, B), options="--ttl-relax-dfb-spsc")
+    @ttl.atom(grid=(8, B))
     def flash_tree_reduce(in_o, in_m, in_l, out_o, out_l):
         col_c, row_c = ttl.node(dims=2)
         base = (row_c * 8 + col_c) * PNHt
@@ -424,15 +425,15 @@ def make_flash_mla(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
         to = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
         tl = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
         # nout gets its own DFB: the datamovement drain below waits it on
-        # NCRISC, and aliasing it onto the unnormalized partial lets NCRISC read
-        # the wrong tile under the relaxed SPSC guard.
+        # NCRISC, and aliasing it onto the unnormalized partial would let
+        # NCRISC read the wrong tile.
         nout = ttl.make_dataflow_buffer_like(norm_out, shape=(PNHt, vDHt), block_count=1)
         reduce(o_in, m_in, l_in, to, tl)
         normalize(to, tl, nout)
         if col_c == 0:
             ttl.copy(nout.wait(), norm_out[row_c * PNHt:row_c * PNHt + PNHt, 0:vDHt])
 
-    @ttl.atom(grid=(n_cols, B), options="--ttl-relax-dfb-spsc")
+    @ttl.atom(grid=(n_cols, B))
     def flash_mla(q, k, v, norm_out):
         # shard -> tree bridges (this core's own partial)
         so = ttl.make_dataflow_buffer_like(q, shape=(PNHt, vDHt), block_count=2)
