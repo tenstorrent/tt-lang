@@ -951,9 +951,6 @@ def _build_operation_pipenets(f: Callable, threads):
     captured PipeNet referenced from multiple threads contributes one
     entry.
     """
-    from ._pipenets import OperationPipeNets
-    from .pipe import _pipe_to_pipe_use
-
     seen: Dict[int, PipeNet] = {}
 
     def visit(func):
