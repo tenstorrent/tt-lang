@@ -50,6 +50,9 @@ def make_moe_weights(K, Et):
     ``vals``/``idx`` use the topk layout (result t at element column t*32);
     ``pe`` is one ``[1, Et]`` row. Output keeps the strided layout consumed
     by make_row_scale's ``s_col``.
+
+    TP sharding needs no mask here: stage ``pe`` zeroed outside the card's
+    expert range and off-card weights vanish; renorm uses the global sum.
     """
     Kt = K  # one tile column per result
 
@@ -89,3 +92,36 @@ def make_moe_weights(K, Et):
         ttl.copy(out_cb.wait(), out[0:1, 0:Kt])
 
     return moe_weights
+
+
+def make_idx_gather(K, Et):
+    """Translate topk ids through a per-card LUT: ``out[t] = lut[idx[t]]``.
+
+    TP expert sharding stages ``lut[e] = clamp(e - base, 0, local - 1)`` per
+    card so indexed GEMVs read in-range rows; off-card weights are already
+    zeroed by the pe staging in moe_weights. Layout matches topk (result t
+    at element column t*32).
+    """
+    Kt = K
+
+    @ttl.atom(grid=(1, 1))
+    def idx_gather(idx, lut, out):
+        i_cb = ttl.make_dataflow_buffer_like(idx, shape=(1, Kt), block_count=2)
+        l_cb = ttl.make_dataflow_buffer_like(lut, shape=(1, Et), block_count=1)
+        o_cb = ttl.make_dataflow_buffer_like(out, shape=(1, Kt), block_count=1)
+
+        idd = i_cb.reserve()
+        ttl.copy(idx[0:1, 0:Kt], idd)
+        ld = l_cb.reserve()
+        ttl.copy(lut[0:1, 0:Et], ld)
+
+        ib = i_cb.wait()
+        lb = l_cb.wait()
+        od = o_cb.reserve()
+        ttl.copy(idx[0:1, 0:Kt], od)
+        for t in range(K):
+            e = ttl.read_index(ib, 0, t * TILE)
+            ttl.raw_element_write(od, 0, t * TILE, ttl.raw_element_read(lb, 0, e))
+        ttl.copy(o_cb.wait(), out[0:1, 0:Kt])
+
+    return idx_gather

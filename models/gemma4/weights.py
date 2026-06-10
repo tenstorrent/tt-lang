@@ -67,8 +67,10 @@ def layer_weights(ckpt, cfg, layer, card):
     wo = ckpt.get(f"{L}.self_attn.o_proj.weight")
     qs = card * qh
     if is_global:
+        # Q shards 4/card; each card stages only the KV head its Q group reads.
+        kv = qs // (cfg.q_heads // cfg.global_kv_heads)
         w["w_q"] = wq[qs * D:(qs + qh) * D].T.contiguous()
-        w["w_k"] = wk.T.contiguous()
+        w["w_k"] = wk[kv * D:(kv + 1) * D].T.contiguous()
         w["w_o"] = wo[:, qs * D:(qs + qh) * D].T.contiguous()
     else:
         w["v_norm"] = torch.ones(D)
@@ -95,9 +97,6 @@ def layer_weights(ckpt, cfg, layer, card):
     dn = ckpt.get(f"{L}.experts.down_proj")[es:es + E]          # [E, H, I]
     w["w_gu"] = gu.transpose(1, 2).contiguous()                 # [E, H, 2I]
     w["w_dn"] = dn.transpose(1, 2).contiguous()                 # [E, I, H]
-    # Single-card bring-up: local router over this card's E experts.
-    w["router_w"] = w["router_w"][es:es + E]
-    w["per_expert"] = w["per_expert"][es:es + E]
     return w
 
 

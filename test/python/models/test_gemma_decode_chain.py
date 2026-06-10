@@ -163,8 +163,8 @@ def _run(device):
 
     ref_layers = [TorchLayer(w, cfg, k) for w, k in zip(ws, kinds)]
     st = StepState(device, cfg, CTX)
-    layers = [SlidingChain(w, device, cfg, st) if k == "sliding"
-              else GlobalChain(w, device, cfg, st, CTX)
+    layers = [SlidingChain([w], device, cfg, st) if k == "sliding"
+              else GlobalChain([w], device, cfg, st, CTX)
               for w, k in zip(ws, kinds)]
     chain = DecodeChain(layers, st, embed, g_final, lm.T.contiguous(), device, cfg)
 

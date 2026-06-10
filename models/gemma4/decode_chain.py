@@ -22,7 +22,7 @@ from ttl.ops.flash_decode import make_flash_decode_kev
 from ttl.ops.gemv import make_gemv
 from ttl.ops.indexed_gemv import make_indexed_gemv
 from ttl.ops.kv_append import make_kv_append
-from ttl.ops.moe_router import make_moe_weights, make_softmax_row
+from ttl.ops.moe_router import make_idx_gather, make_moe_weights, make_softmax_row
 from ttl.ops.pos_slice import make_pos_slice, make_pos_step
 from ttl.ops.rmsnorm import make_rmsnorm
 from ttl.ops.rope import make_rope
@@ -30,9 +30,14 @@ from ttl.ops.swiglu import make_swiglu
 from ttl.ops.topk import make_topk
 
 from .attn_atom import TILE, make_attn_heads_atom, make_flash_atom
-from .host import MLP_PAD, from_dev, row, to_dev
+from .host import MLP_PAD, from_dev, is_mesh, row, shard_cards, to_dev
 
 _ATOMS = {}
+
+
+def all_reduce(device, t):
+    """Sanctioned CCL cut between atoms; identity off-mesh."""
+    return ttnn.all_reduce(t) if is_mesh(device) else t
 
 
 def atom(maker, *args, **kwargs):
@@ -79,50 +84,69 @@ def mask_table(smax, S):
 
 
 class FFNChain:
-    """Dense MLP + routed experts; routing fully on device."""
+    """Dense MLP + routed experts; routing fully on device.
 
-    def __init__(self, w, device, cfg):
+    TP: dense inter and experts are card-local; the router is replicated and
+    runs the global top-k, with off-card experts killed by zeroed pe staging
+    and ids translated to card-local rows. One AR covers both partials.
+    """
+
+    def __init__(self, ws, device, cfg):
         self.device, self.cfg = device, cfg
+        tp, w = len(ws), ws[0]
         H, P, I, E = cfg.hidden, MLP_PAD, cfg.moe_inter, cfg.experts // 4
-        self.E, self.I = E, I
+        self.E, self.I, self.Etot = E, I, E * tp
         self.Ht, self.It = H // TILE, I // TILE
         for k in ("g_preffw", "g_postffw1", "g_preffw2", "g_postffw2", "g_postffw"):
             setattr(self, k, row(w[k], H, device))
-        self.w_gate = to_dev(w["w_gate"].to(torch.bfloat16), device)
-        self.w_up = to_dev(w["w_up"].to(torch.bfloat16), device)
-        self.w_down = to_dev(w["w_down"].to(torch.bfloat16), device)
-        self.w_gu = to_dev(w["w_gu"].reshape(E * H, 2 * I).to(torch.bfloat16), device)
-        self.w_dn = to_dev(w["w_dn"].reshape(E * I, H).to(torch.bfloat16), device)
+        shard = lambda key, rs=None: shard_cards(
+            [c[key] if rs is None else c[key].reshape(*rs) for c in ws], device)
+        self.w_gate, self.w_up = shard("w_gate"), shard("w_up")
+        self.w_down = shard("w_down")
+        self.w_gu = shard("w_gu", (E * H, 2 * I))
+        self.w_dn = shard("w_dn", (E * I, H))
         self.layer_scalar = w["layer_scalar"]
 
         rscale = torch.as_tensor(w["router_scale"]).expand(H) * cfg.hidden ** -0.5
         self.g_router = row(rscale, H, device)
         self.w_router = to_dev(w["router_w"].T.contiguous().to(torch.bfloat16), device)
-        self.ramp = to_dev(torch.arange(E, dtype=torch.bfloat16)
+        self.ramp = to_dev(torch.arange(self.Etot, dtype=torch.bfloat16)
                            .unsqueeze(0).repeat(TILE, 1), device)
-        self.pe = row(w["per_expert"], E, device)
+        pes, luts = [], []
+        for c in range(tp):
+            pe = torch.zeros(TILE, self.Etot)
+            pe[0, c * E:(c + 1) * E] = w["per_expert"][c * E:(c + 1) * E]
+            pes.append(pe)
+            lut = (torch.arange(self.Etot) - c * E).clamp(0, E - 1).float()
+            luts.append(lut.unsqueeze(0).expand(TILE, self.Etot))
+        self.pe, self.lut = shard_cards(pes, device), shard_cards(luts, device)
 
         K = cfg.top_k
         self.hn = buf(device, H)
-        self.hr, self.rl, self.probs = buf(device, H), buf(device, E), buf(device, E)
+        self.hr, self.rl, self.probs = buf(device, H), buf(device, self.Etot), buf(device, self.Etot)
         self.vals, self.idx, self.wts = (buf(device, K * TILE) for _ in range(3))
+        self.idx_l = buf(device, K * TILE)
         self.g, self.u, self.act = buf(device, P), buf(device, P), buf(device, P)
         self.dense, self.h1, self.hn2, self.h2 = (buf(device, H) for _ in range(4))
         self.gu = buf(device, 2 * I, K * TILE)
         self.eact = buf(device, I, K * TILE)
         self.dn = buf(device, H, K * TILE)
+        self.pack = buf(device, H, 2 * TILE)
         self.comb, self.combn, self.out = (buf(device, H) for _ in range(3))
 
     def step(self, h_d):
         cfg, K, E = self.cfg, self.cfg.top_k, self.E
-        H, P, Ht, It, Et = cfg.hidden, MLP_PAD, self.Ht, self.It, self.E // TILE
+        H, P, Ht, It = cfg.hidden, MLP_PAD, self.Ht, self.It
+        Et = self.Etot // TILE
         norm = atom(make_rmsnorm, 1, 1, Ht, 11, H, cfg.eps)
+        cp = atom(make_copy, 1, 1, Ht, 11)
 
         norm(h_d, self.g_router, self.hr)
-        atom(make_gemv, TILE, H, E, (1, 2), 1)(self.hr, self.w_router, self.rl)
+        atom(make_gemv, TILE, H, self.Etot, (1, 2), 1)(self.hr, self.w_router, self.rl)
         atom(make_softmax_row, Et)(self.rl, self.probs)
-        atom(make_topk, 1, 1, Et, K, E)(self.probs, self.ramp, self.vals, self.idx)
+        atom(make_topk, 1, 1, Et, K, self.Etot)(self.probs, self.ramp, self.vals, self.idx)
         atom(make_moe_weights, K, Et)(self.vals, self.idx, self.pe, self.wts)
+        atom(make_idx_gather, K, Et)(self.idx, self.lut, self.idx_l)
 
         norm(h_d, self.g_preffw, self.hn)
         gate = atom(make_gemv, TILE, H, P, (9, 2), 2)
@@ -130,11 +154,10 @@ class FFNChain:
         gate(self.hn, self.w_up, self.u)
         atom(make_swiglu, 1, 1, P // TILE, P // TILE)(self.g, self.u, self.act)
         atom(make_gemv, TILE, P, H, (11, 2), 4)(self.act, self.w_down, self.dense)
-        norm(self.dense, self.g_postffw1, self.h1)
 
         norm(h_d, self.g_preffw2, self.hn2)
         atom(make_indexed_gemv, E, H, 2 * self.I, K, (11, 2), 4, idx_stride=TILE)(
-            self.hn2, self.idx, self.w_gu, self.gu)
+            self.hn2, self.idx_l, self.w_gu, self.gu)
         for t in range(K):
             atom(make_swiglu, 1, 1, It, It,
                  a_off=(t, 0), b_off=(t, It), out_off=(t, 0))(self.gu, self.gu, self.eact)
@@ -143,9 +166,18 @@ class FFNChain:
         for t in range(K):
             atom(make_indexed_gemv, E, self.I, H, 1, (11, 2), 4,
                  x_row=t, idx_col=t * TILE, out_row=t)(
-                self.eact, self.idx, self.w_dn, self.dn)
+                self.eact, self.idx_l, self.w_dn, self.dn)
         for t in range(1, K):
             atom(make_add, 1, 1, Ht, 11, b_off=(t, 0))(self.dn, self.dn, self.dn)
+
+        cp(self.dense, self.pack)
+        atom(make_copy, 1, 1, Ht, 11, out_off=(1, 0))(self.dn, self.pack)
+        pack = all_reduce(self.device, self.pack)
+        cp(pack, self.dense)
+        atom(make_copy, 1, 1, Ht, 11, a_off=(1, 0))(pack, self.dn)
+        if pack is not self.pack:
+            ttnn.deallocate(pack)
+        norm(self.dense, self.g_postffw1, self.h1)
         norm(self.dn, self.g_postffw2, self.h2)
 
         atom(make_add, 1, 1, Ht, 11)(self.h1, self.h2, self.comb)
@@ -155,10 +187,11 @@ class FFNChain:
 
 
 class SlidingChain:
-    """Per-card sliding layer; cos/sin/mask staging owned by DecodeChain."""
+    """Sliding layer; 4 Q + 2 KV heads per card, O row-shard + AR."""
 
-    def __init__(self, w, device, cfg, st):
+    def __init__(self, ws, device, cfg, st):
         self.device, self.cfg, self.st = device, cfg, st
+        w = ws[0]
         H, D, S = cfg.hidden, cfg.head_dim, cfg.sliding_window
         self.D, self.S = D, S
         self.Ht, self.Dt = H // TILE, D // TILE
@@ -168,8 +201,8 @@ class SlidingChain:
         for i, k in enumerate(("q_norm", "k_norm", "v_norm")):
             qkv_n[i * TILE] = w[k].to(torch.bfloat16)
         self.qknorm = to_dev(qkv_n, device)
-        self.w_qkv = to_dev(w["w_qkv"].to(torch.bfloat16), device)
-        self.w_o = to_dev(w["w_o"].to(torch.bfloat16), device)
+        self.w_qkv = shard_cards([c["w_qkv"] for c in ws], device)
+        self.w_o = shard_cards([c["w_o"] for c in ws], device)
         self.g_postattn = row(w["g_postattn"], H, device)
         half = D // 2
         R = torch.zeros(D, D)
@@ -180,7 +213,7 @@ class SlidingChain:
         self.heads = buf(device, D, 8 * TILE)
         self.o_row = buf(device, 4 * D)
         self.attn, self.attn_n, self.h = (buf(device, H) for _ in range(3))
-        self.ffn = FFNChain(w, device, cfg)
+        self.ffn = FFNChain(ws, device, cfg)
 
     def step(self, x_d):
         cfg, st = self.cfg, self.st
@@ -195,29 +228,37 @@ class SlidingChain:
         atom(make_flash_atom, Dt, S // TILE)(
             self.heads, *self.caches, st.mask_sl, self.o_row)
         atom(make_gemv, TILE, 4 * D, H, (8, 2), 11)(self.o_row, self.w_o, self.attn)
+        attn = all_reduce(self.device, self.attn)
 
         norm = atom(make_rmsnorm, 1, 1, Ht, 11, H, cfg.eps)
-        norm(self.attn, self.g_postattn, self.attn_n)
+        norm(attn, self.g_postattn, self.attn_n)
+        if attn is not self.attn:
+            ttnn.deallocate(attn)
         atom(make_add, 1, 1, Ht, 11)(x_d, self.attn_n, self.h)
         return self.ffn.step(self.h)
 
 
 class GlobalChain:
-    """Single-card global layer (full ctx local; TP combine comes later)."""
+    """Global layer: Q heads shard 4/card; each card stages only the one
+    KV head its Q group reads (w_k sliced per card), so the SPMD step is
+    uniform. O partials AR. Seq-shard + flash combine is the planned
+    optimization."""
 
-    def __init__(self, w, device, cfg, st, ctx):
+    def __init__(self, ws, device, cfg, st, ctx):
         self.device, self.cfg, self.st = device, cfg, st
+        w = ws[0]
         H, D = cfg.hidden, cfg.global_head_dim
         self.D, self.S = D, ctx
-        self.qh, self.kvh = 4, cfg.global_kv_heads
+        self.qh = 4
+        self.kvh = cfg.global_kv_heads if len(ws) == 1 else 1
         self.Ht, self.Dt = H // TILE, D // TILE
         self.rot = int(D * cfg.global_rot_frac)
         self.g_in = row(w["g_in"], H, device)
         self.q_norm = row(w["q_norm"], D, device)
         self.k_norm = row(w["k_norm"], D, device)
-        self.w_q = to_dev(w["w_q"].to(torch.bfloat16), device)
-        self.w_k = to_dev(w["w_k"].to(torch.bfloat16), device)
-        self.w_o = to_dev(w["w_o"].to(torch.bfloat16), device)
+        self.w_q = shard_cards([c["w_q"] for c in ws], device)
+        self.w_k = shard_cards([c["w_k"] for c in ws], device)
+        self.w_o = shard_cards([c["w_o"] for c in ws], device)
         self.g_postattn = row(w["g_postattn"], H, device)
         self.caches = [buf(device, D, ctx) for _ in range(self.kvh)]
         self.xn, self.q, self.k = buf(device, H), buf(device, self.qh * D), buf(device, self.kvh * D)
@@ -226,7 +267,7 @@ class GlobalChain:
         self.m, self.l = buf(device, TILE), buf(device, TILE)
         self.a_row, self.attn = buf(device, self.qh * D), buf(device, H)
         self.attn_n, self.h = buf(device, H), buf(device, H)
-        self.ffn = FFNChain(w, device, cfg)
+        self.ffn = FFNChain(ws, device, cfg)
 
     def head_rot(self, src, hidx, nw):
         cfg, st, Dt = self.cfg, self.st, self.Dt
@@ -250,13 +291,16 @@ class GlobalChain:
         for h in range(self.qh):
             qr = self.head_rot(self.q, h, self.q_norm)
             atom(make_flash_decode_kev, 1, 1, 1, Dt, 8, S // chunk)(
-                qr, self.caches[h // 2], st.mask_gl, self.o, self.m, self.l)
+                qr, self.caches[h // (self.qh // self.kvh)], st.mask_gl, self.o, self.m, self.l)
             atom(make_row_scale, Dt, 8, recip=True)(self.o, self.l, self.of)
             atom(make_copy, 1, 1, Dt, Dt, out_off=(0, h * Dt))(self.of, self.a_row)
 
         atom(make_gemv, TILE, self.qh * D, H, (11, 2), 4)(self.a_row, self.w_o, self.attn)
+        attn = all_reduce(self.device, self.attn)
         norm = atom(make_rmsnorm, 1, 1, Ht, 11, H, cfg.eps)
-        norm(self.attn, self.g_postattn, self.attn_n)
+        norm(attn, self.g_postattn, self.attn_n)
+        if attn is not self.attn:
+            ttnn.deallocate(attn)
         atom(make_add, 1, 1, Ht, 11)(x_d, self.attn_n, self.h)
         return self.ffn.step(self.h)
 
