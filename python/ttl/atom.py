@@ -90,7 +90,6 @@ class _AtomSpec:
     fn_ast: ast.FunctionDef  # post-inline
     params: List[_ParamInfo]
     dfb_param_names: List[str]
-    inlined_dfb_tags: Dict[str, int]  # inlined scratch DFB name -> inline site id
 
 
 def _function_scope(fn: Callable) -> Dict[str, Any]:
@@ -165,9 +164,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other @ttl.atom functions, then keep
     # the post-inline AST + source.
-    inlined_dfb_tags = inline_atom_calls(
-        fn_def, _function_scope(fn), caller_name=name
-    )
+    inline_atom_calls(fn_def, _function_scope(fn), caller_name=name)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -180,7 +177,6 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         fn_ast=fn_def,
         params=params,
         dfb_param_names=[p.name for p in params if p.kind == "dfb"],
-        inlined_dfb_tags=inlined_dfb_tags,
     )
 
 
@@ -300,8 +296,8 @@ def _dfb_l1_elems(dfb: DataflowBuffer) -> int:
 def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
     """DataflowBuffer list indexed by CB index, matching _collect_cb_configs.
 
-    When reuse overlays several DFBs of different shapes on one index, the slot
-    must be sized to the largest member, so the biggest DFB at each index wins.
+    Indices are declaration-dense here; the finalize pass overlays scratch
+    DFBs onto shared indices in MLIR and the runtime applies its index map.
     """
     by_index: Dict[int, DataflowBuffer] = {}
     for dfb in lifted.values():
@@ -311,107 +307,6 @@ def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
     if not by_index:
         return []
     return [by_index.get(i) for i in range(max(by_index) + 1)]
-
-
-def _dfb_lifetimes(
-    body: List[ast.stmt], names: set
-) -> Tuple[Dict[str, int], Dict[str, int]]:
-    """First / last top-level statement index of the unified body that touches
-    each name.
-
-    A name used anywhere inside a top-level statement's subtree (a loop or if
-    body) is attributed to that top-level statement, so a buffer used inside a
-    loop is live for the whole loop (it is reserved and popped every iteration,
-    so across the back-edge it never frees). This mirrors the body-block
-    ancestor projection the compiler DFB pass uses.
-    """
-    first: Dict[str, int] = {}
-    last: Dict[str, int] = {}
-    for i, stmt in enumerate(body):
-        for node in ast.walk(stmt):
-            if isinstance(node, ast.Name) and node.id in names:
-                first.setdefault(node.id, i)
-                last[node.id] = i
-    return first, last
-
-
-def _reuse_inlined_dfb_indices(
-    dfbs: Dict[str, DataflowBuffer],
-    inlined_dfb_tags: Dict[str, int],
-    body: List[ast.stmt],
-) -> None:
-    """Overlay inlined-scratch DFBs onto shared CB indices by liveness.
-
-    After top-level inlining the unified body is flat, so each inlined callee's
-    scratch DFBs occupy a contiguous span of it. We interval-color the scratch
-    over its source-order live range [first, last]: only buffers whose ranges
-    are disjoint share a CB index / L1 slot. Source order is a valid sequencing
-    of the body because a DFB producer's reserve/store always precedes its
-    consumer's wait, so disjoint ranges are never simultaneously live.
-
-    A slot holds one size class (same dtype and block_count); members may differ
-    in shape, in which case the slot is sized to the largest member (see
-    _cb_configs_from_lifted). Caller-declared (bridge) DFBs carry data between
-    sites and stay distinct.
-    """
-    if not inlined_dfb_tags:
-        return
-
-    scratch = [n for n in dfbs if n in inlined_dfb_tags]
-    bridges = [n for n in dfbs if n not in inlined_dfb_tags]
-    if not scratch:
-        return
-
-    first, last = _dfb_lifetimes(body, set(scratch))
-    # A scratch DFB with no body reference is live nowhere, but it still needs a
-    # slot; treat it as live across the whole body so it never shares one.
-    for name in scratch:
-        first.setdefault(name, 0)
-        last.setdefault(name, len(body))
-
-    # Bridges keep dense low indices in their original order.
-    base = len(bridges)
-    for new_index, name in enumerate(
-        sorted(bridges, key=lambda n: dfbs[n]._cb_index)
-    ):
-        dfbs[name]._cb_index = new_index
-
-    # Linear-scan interval coloring, mirroring the compiler DFB pass: walk the
-    # scratch by ascending live-range start and place each on the lowest slot of
-    # its size class whose previous occupant has expired. Expiry is strict (a
-    # shared endpoint counts as overlap) so a producer/consumer handoff at one
-    # statement keeps both buffers distinct.
-    def size_class(name: str) -> tuple:
-        d = dfbs[name]
-        return (d.dtype, d.block_count)
-
-    slots: List[Tuple[tuple, int]] = []  # (size class, last index occupying it)
-    for name in sorted(scratch, key=lambda n: (first[n], last[n])):
-        cls = size_class(name)
-        placed = next(
-            (
-                slot
-                for slot, (slot_cls, slot_last) in enumerate(slots)
-                if slot_cls == cls and slot_last < first[name]
-            ),
-            None,
-        )
-        if placed is None:
-            placed = len(slots)
-            slots.append((cls, last[name]))
-        else:
-            slots[placed] = (cls, last[name])
-        dfbs[name]._cb_index = base + placed
-
-    if os.environ.get("TTLANG_DFB_REUSE_DEBUG"):
-        groups: Dict[int, List[str]] = {}
-        for name in scratch:
-            groups.setdefault(dfbs[name]._cb_index, []).append(name)
-        for idx in sorted(groups):
-            spans = ", ".join(
-                f"{n}[{first[n]},{last[n]}]" for n in groups[idx]
-            )
-            print(f"[dfb-reuse] cb{idx}: {spans}")
 
 
 def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
@@ -492,7 +387,6 @@ def _compile_atom(
     _set_current_grid(grid)
 
     stripped_fn, dfbs, nets = _lift_setup(spec.fn_ast, eval_scope)
-    _reuse_inlined_dfb_indices(dfbs, spec.inlined_dfb_tags, stripped_fn.body)
 
     # Assign each PipeNet a distinct operation-local id (and validate), the
     # same graph @ttl.operation builds; it also yields the runner's pipe

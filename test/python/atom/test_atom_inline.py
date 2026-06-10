@@ -168,34 +168,12 @@ def _dfbs(n):
     return [DataflowBuffer(None, (1, 1), 2, dtype="bf16") for _ in range(n)]
 
 
-def test_reuse_overlays_sibling_sites():
-    """Scratch from two different inline sites overlays onto one CB index;
-    bridge DFBs keep distinct indices below the overlay."""
-    from ttl.atom import _reuse_inlined_dfb_indices
-
-    a0, a1, s0, s1 = _dfbs(4)
-    dfbs = {"a0": a0, "a1": a1, "s0": s0, "s1": s1}
-    # s0 from site 0, s1 from site 1 (distinct sibling sites).
-    _reuse_inlined_dfb_indices(dfbs, {"s0": 0, "s1": 1})
-
-    assert s0._cb_index == s1._cb_index
-    assert {a0._cb_index, a1._cb_index} == {0, 1}
-    assert len({a0._cb_index, a1._cb_index, s0._cb_index}) == 3
-
-
-def test_reuse_keeps_same_site_distinct():
-    """Two scratch DFBs from the SAME inline site stay distinct, even though
-    their textual lifetimes are disjoint. This is the case a statement-span
-    analysis would wrongly merge: across the compute/data-movement split the
-    two buffers can be live concurrently (e.g. one DM-produced, one
-    compute-produced), so sharing a CB index would interleave their streams."""
-    from ttl.atom import _reuse_inlined_dfb_indices
-
-    s0, s1 = _dfbs(2)
-    dfbs = {"s0": s0, "s1": s1}
-    _reuse_inlined_dfb_indices(dfbs, {"s0": 0, "s1": 0})
-
-    assert s0._cb_index != s1._cb_index
+def test_dfb_indices_declaration_dense():
+    """Python assigns declaration-dense CB indices and never overlays them;
+    index reuse happens in MLIR (ttl-finalize-dfb-indices) where thread
+    identity and lifetimes are known."""
+    buffers = _dfbs(4)
+    assert [b._cb_index for b in buffers] == [0, 1, 2, 3]
 
 
 def test_callee_with_make_dfb_decl_rejected():

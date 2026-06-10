@@ -1146,6 +1146,39 @@ def _extract_pipe_global_semaphore_count(module) -> int:
     return int(attr)
 
 
+def _dfb_l1_tiles(cb):
+    """Total tiles a DFB occupies in L1 (per-block tiles x block_count)."""
+    tiles = cb.block_count
+    for dim in cb.shape:
+        tiles *= dim
+    return tiles
+
+
+def _apply_dfb_index_map(cb_configs, module):
+    """Apply ttl.dfb_index_map (user DFB index reuse) to the CB config list.
+
+    The finalize pass may overlay several user DFBs onto one physical index;
+    the slot is sized to the largest member, since every reserve/wait carries
+    its own block size.
+    """
+    attr = module.operation.attributes.get("ttl.dfb_index_map", None)
+    if attr is None:
+        return cb_configs
+    moved = {int(e["old_index"]): int(e["new_index"]) for e in attr}
+
+    by_index = {}
+    for old, cb in enumerate(cb_configs):
+        if cb is None:
+            continue
+        new = moved.get(old, old)
+        cur = by_index.get(new)
+        if cur is None or _dfb_l1_tiles(cb) > _dfb_l1_tiles(cur):
+            by_index[new] = cb
+    if not by_index:
+        return []
+    return [by_index.get(i) for i in range(max(by_index) + 1)]
+
+
 def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
     """Merge compiler-allocated DFBs into the CB config list.
 
@@ -1763,7 +1796,8 @@ def _lower_program_to_kernel(
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
 
-        # Merge compiler-allocated DFBs into the CB config list.
+        # Apply user DFB index reuse, then merge compiler-allocated DFBs.
+        cb_configs = _apply_dfb_index_map(cb_configs, module)
         compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)

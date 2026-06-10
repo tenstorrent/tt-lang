@@ -11,9 +11,20 @@ import torch
 
 
 def pcc(result, ref) -> float:
-    """Pearson correlation between a result tensor and its reference."""
+    """Pearson correlation between a result tensor and its reference.
+
+    Raises instead of returning nan so a kernel that never wrote its output
+    (constant tensor) or produced nan/inf is reported as such, not as a
+    silent nan ratio.
+    """
     a = result.flatten().float()
     b = ref.flatten().float()
+    if not torch.isfinite(a).all():
+        raise ValueError("pcc: result contains nan/inf")
+    if a.max() == a.min():
+        raise ValueError(
+            f"pcc: result is constant ({a.min().item()}); output likely never written"
+        )
     return torch.corrcoef(torch.stack([a, b]))[0, 1].item()
 
 
