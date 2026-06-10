@@ -220,3 +220,16 @@ to circle back to.
   Fused retry with kd, md, vd staging fix moved the fused atom from device
   deadlock to the open host-launch stall (workers never start), so the
   bc1 cycle was the fused device bug; host stall is separate, shelved.
+- FFN dense chain on hw: post-attn norm, residual add, pre-FFW norm,
+  gate/up gemv, swiglu, down gemv, post-FFW norm, residual; PCC > 0.98.
+  swiglu's streaming skeleton factored into ops/elementwise.py make_binary
+  (fn is a block expression); make_add covers residuals.
+- Experts chain on hw: indexed gemv computes all top-8 in one dispatch;
+  swiglu reads g/u halves of the gate_up row in place via make_binary tile
+  offsets, gate weight folded as a fill constant; down indexed gemv takes
+  x_per_t (per-expert activation row, mcast inside the topk loop); rows
+  accumulated with offset adds. PCC > 0.98.
+- MILESTONE: full sliding layer dispatch chain on hw, PCC > 0.98. Attn +
+  dense MLP + 8 routed experts, 7 norms, both residuals, layer_scalar
+  (folded into the final residual add as mul-by-fill). Host does only the
+  router; activations never leave device. ~30 dispatches, well under 60s.
