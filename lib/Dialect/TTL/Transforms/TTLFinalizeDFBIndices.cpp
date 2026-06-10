@@ -247,15 +247,14 @@ struct TTLFinalizeDFBIndicesPass
     // block: capacity is a >= constraint, the slot is sized to the member
     // needing the most pages, and per-op tile counts come from each bind_cb's
     // own type.
-    // User and compiler DFBs never mix in one slot: the runtime sizes them
-    // from disjoint sources (CB configs vs ttl.compiler_allocated_dfbs).
-    using ClassKey = std::tuple<Type, Operation *, Operation *, int64_t>;
+    // User and compiler DFBs share slots freely; the runtime keeps the
+    // larger config when both describe one index.
+    using ClassKey = std::tuple<Type, Operation *, Operation *>;
     llvm::MapVector<ClassKey, SmallVector<LogicalDFB *>> classes;
     for (auto &[idx, dfb] : dfbs) {
       if (dfb.eligible) {
         classes[{dfb.elemType, dfb.producer.getOperation(),
-                 dfb.consumer.getOperation(),
-                 static_cast<int64_t>(dfb.compilerAllocated)}]
+                 dfb.consumer.getOperation()}]
             .push_back(&dfb);
       } else {
         dfb.finalIndex = dfb.origIndex;

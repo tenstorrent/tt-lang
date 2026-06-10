@@ -1194,11 +1194,12 @@ def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
 
     merged = list(cb_configs) + [None] * (total - len(cb_configs))
     for dfb in compiler_allocated_dfbs:
-        if merged[dfb.dfb_index] is not None:
-            raise ValueError(
-                f"Compiler-allocated DFB index {dfb.dfb_index} collides with "
-                f"an existing DFB."
-            )
+        existing = merged[dfb.dfb_index]
+        if existing is not None:
+            # Index reuse may overlay a compiler DFB on a user slot; keep the
+            # larger config (same element type within a reuse class).
+            if _dfb_l1_tiles(existing) >= dfb.num_tiles * dfb.block_count:
+                continue
         merged[dfb.dfb_index] = dfb
     return merged
 
