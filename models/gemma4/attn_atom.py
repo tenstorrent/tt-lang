@@ -79,6 +79,7 @@ def make_attn_heads_atom(Ht, Dt, eps):
             kr = row_c * K_BAND
             nd = (col_c - 1) * Dt
 
+
             band_core(xb_cb, w_cb, part_cb)
             for ch in range(2):
                 wd = w_cb.reserve()
@@ -123,7 +124,7 @@ def make_attn_atom(Ht, Dt, St, eps):
     K_CH = K_BAND // 2
     n_chunks = 4
     chunk_t = St // n_chunks
-    O_BAND = Ht // 8
+    O_BAND = Ht // 4
     if chunk_t != Dt:
         raise ValueError(f"DFB sharing needs chunk_t == Dt: {chunk_t} != {Dt}")
 
@@ -143,10 +144,7 @@ def make_attn_atom(Ht, Dt, St, eps):
         # DM-streamed scratch shares slots manually across role-disjoint
         # phases (cross-thread lifetimes stay coarse in finalize); compute
         # scratch gets fine-grained compiler reuse. Pipe buffers dedicated.
-        ds0 = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=2)
-        ds1 = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
         fkv_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=2)
-        dsr = fkv_cb
 
         nx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
         ng_cb = ttl.make_dataflow_buffer_like(gamma, shape=(1, K_CH), block_count=2)
@@ -160,23 +158,24 @@ def make_attn_atom(Ht, Dt, St, eps):
         head_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
 
         hx_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
-        hg_cb = ds0
+        hg_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=2)
         hn_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
-        c_cb = ds1
-        s_cb = ds0
-        r_cb = dsr
+        c_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
+        s_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
+        r_cb = ttl.make_dataflow_buffer_like(rot, shape=(Dt, Dt), block_count=1)
         out_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
 
         pos_cb = ttl.make_dataflow_buffer_like(pos_t, shape=(1, 1), block_count=1)
-        band_cb = ds1
-        tok_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+        fmask_cb = ttl.make_dataflow_buffer_like(masks, shape=(1, chunk_t), block_count=2)
+        band_cb = ttl.make_dataflow_buffer_like(kc0, shape=(1, Dt), block_count=1)
+        tok_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1)
+        tok2_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1)
         tok_stage = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
 
         q_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         fo_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
         fm_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
         fl_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
-        fmask_cb = ds0
         ostage_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         orecv_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=4)
         wo_cb = ttl.make_dataflow_buffer_like(wo, shape=(Dt, O_BAND), block_count=2)
@@ -185,12 +184,13 @@ def make_attn_atom(Ht, Dt, St, eps):
         band0 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 0))])
         band1 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 1))])
         qkv_red = ttl.PipeNet([ttl.Pipe(src=(c, 1), dst=(c, 0)) for c in range(1, 9)])
-        ready = ttl.PipeNet(
+        ready_k = ttl.PipeNet(
             [ttl.Pipe(src=(5, 0), dst=(slice(1, 3), 0)),
-             ttl.Pipe(src=(6, 0), dst=(slice(3, 5), 0)),
-             ttl.Pipe(src=(7, 0), dst=(slice(1, 3), 0)),
+             ttl.Pipe(src=(6, 0), dst=(slice(3, 5), 0))])
+        ready_v = ttl.PipeNet(
+            [ttl.Pipe(src=(7, 0), dst=(slice(1, 3), 0)),
              ttl.Pipe(src=(8, 0), dst=(slice(3, 5), 0))])
-        obc = ttl.PipeNet([ttl.Pipe(src=(c, 0), dst=(slice(1, 9), 0))
+        obc = ttl.PipeNet([ttl.Pipe(src=(c, 0), dst=(slice(1, 5), 0))
                            for c in range(1, 5)])
 
         if col_c == 0 and row_c == 0:
@@ -208,6 +208,7 @@ def make_attn_atom(Ht, Dt, St, eps):
         if col_c >= 1:
             kr = row_c * K_BAND
             nd = (col_c - 1) * Dt
+
 
             band_core(xb_cb, w_cb, part_cb)
             for ch in range(2):
@@ -257,12 +258,17 @@ def make_attn_atom(Ht, Dt, St, eps):
                     else:
                         ttl.copy(bb, vc1[rr:rr + 1, 0:Dt])
                     ts = tok_stage.reserve(); ts.store(ttl.block.fill(1.0, shape=(1, 1)))
-                    pipe_send(ready, tok_stage)
+                    if col_c < 7:
+                        pipe_send(ready_k, tok_stage)
+                    else:
+                        pipe_send(ready_v, tok_stage)
                 else:
-                    pipe_recv(ready, tok_cb)
-                    pipe_recv(ready, tok_cb)
+                    for _ in range(4):
+                        pipe_recv(obc, orecv_cb)
+                    pipe_recv(ready_k, tok_cb)
+                    pipe_recv(ready_v, tok2_cb)
                     t1 = tok_cb.wait()
-                    t2 = tok_cb.wait()
+                    t2 = tok2_cb.wait()
                     qw = q_cb.reserve()
                     qw.store(ttl.mul(out_cb.wait(),
                                      ttl.block.broadcast(ttl.mul(t1, t2), dims=[1], shape=(1, Dt))))
@@ -286,9 +292,11 @@ def make_attn_atom(Ht, Dt, St, eps):
                         ttl.mul(ofin, ttl.block.broadcast(ttl.recip(lfin), dims=[1], shape=(1, Dt))),
                         ttl.mul(ttl.block.broadcast(mfin, dims=[1], shape=(1, Dt)),
                                 ttl.block.fill(0.0, shape=(1, Dt)))))
-                mcast_block(obc, ostage_cb, orecv_cb)
+                def _osend(pipe):
+                    ttl.copy(ostage_cb.wait(), pipe)
+                obc.if_src(_osend)
 
-            if row_c == 0:
+            if row_c == 0 and col_c < 5:
                 ob_off = (col_c - 1) * O_BAND
                 for qh in range(4):
                     wod = wo_cb.reserve()
