@@ -176,23 +176,27 @@ def test_dfb_indices_declaration_dense():
     assert [b._cb_index for b in buffers] == [0, 1, 2, 3]
 
 
-def test_callee_with_make_dfb_decl_rejected():
-    """A callee that declares its own DFB via make_dfb cannot be inlined."""
+def test_callee_with_make_dfb_decl_inlines():
+    """A callee may declare its own scratch DFB via make_dfb at its top
+    level; the declaration hoists to the caller body on inlining."""
 
     @ttl.atom()
     def _declares_make_dfb(inp: ttl.DFB, out: ttl.DFB):
         scratch = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
         x = inp.wait()
+        s = scratch.reserve()
+        s.store(x)
+        y = scratch.wait()
         r = out.reserve()
-        r.store(x)
+        r.store(y)
 
-    with pytest.raises(ValueError, match="make_dfb"):
+    @ttl.atom(grid=(1, 1))
+    def _outer(in_t, out_t):
+        a_cb = ttl.make_dataflow_buffer_like(in_t, shape=(1, 1), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out_t, shape=(1, 1), block_count=2)
+        _declares_make_dfb(a_cb, out_cb)
 
-        @ttl.atom(grid=(1, 1))
-        def _outer_bad(in_t, out_t):
-            a_cb = ttl.make_dataflow_buffer_like(in_t, shape=(1, 1), block_count=2)
-            out_cb = ttl.make_dataflow_buffer_like(out_t, shape=(1, 1), block_count=2)
-            _declares_make_dfb(a_cb, out_cb)
+    assert "scratch___declares_make_dfb_inl" in _outer._spec.source
 
 
 def test_atom_outer_exp(device):
