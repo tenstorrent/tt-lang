@@ -126,3 +126,10 @@ to circle back to.
 - Cap decision: attn floor is 33 (11 pins + 22 slots, rest cross-thread).
   Per guidance, CB-count-bound cuts are sanctioned: split O projection into
   its own atom (drain o/m/l, drop wo/op/orecv/ostage) until #679 reset op.
+- MILESTONE: full pre-AR attn atom (O cut to separate GEMV) passes ALL
+  compiler stages at worker_l1_size=1_362_000 (32 indices, budget, program
+  size, verifiers; no relax flag). Runtime hangs in the flash phase: 60s
+  timeout, kill + reset recovers. Debug next via ttlang hang debug flow:
+  signposts per phase on q cores; suspect fl/fmask bc1 recurrence or the
+  q tok gate. Known-good single-buffer hang patterns in
+  ~/Downloads/ttl_blaze_examples.md (private; do not cite here).
