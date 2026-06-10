@@ -152,3 +152,23 @@ to circle back to.
   (atom_inline). Full-atom hang debug queued: leave process alive, run
   third-party/tt-metal/tools/triage triage.py --run=dump_callstacks
   --run=dump_fast_dispatch --llm-output; kill+reset ONLY after.
+- Stage A trace error root cause: hg_cb decl was simply missing in stage A
+  (lost during gamma-fold edits). With decl restored, stage A ran but PCC
+  fell to ~0.003: interleaving x+gamma into one nx stream feeds two copy
+  call sites on a single DFB whose copies the splitter may place on
+  different DM threads. Reverted gamma fold (dedicated g_cb); stage A back
+  to PCC 1.0; hx_cb dropped (head staged through head_cb bc3) keeps 32.
+- Full atom now LAUNCHES (was pre-dispatch); kernels run on cols 1-8 row 0
+  while norm + row1 finish. Triage signature: all trisc1 at one wait PC.
+  Bisects (each ~3 min, reset between): ready sends moved BEFORE the kv
+  patch chain => completes; ANY DM copy before pipe_send on kv cores
+  (even a 1-tile pos read) => hangs. Patch loop, copy-back target,
+  read_index, q recv pre-grant all irrelevant. Suspect pipe scheduler:
+  per-net send batches block on credits/waits that never arrive when an
+  intervening DM stream op delays the send leg. /tmp/repro_copy_before_send
+  (2-core) and /tmp/repro_ready_mcast (5-core, dual mcast nets + double
+  recv + read_index) both PASS, so trigger needs stage A's band/qkv nets.
+- tools/cb_counts.py: per-CB wait/pop/reserve/push counts per thread from
+  emitted C++ (literal loops folded). cb5 = pipe ready sends (per-dst
+  unicast + sem inc + wait_min on acks before push); unbalanced rows are
+  role-branch artifacts; branch-aware version is the next tool step.
