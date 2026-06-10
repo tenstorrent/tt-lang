@@ -47,6 +47,37 @@ static Value resolveIntBits(Value floatVal, unsigned bitWidth,
   return Value();
 }
 
+/// Lower arith.fptosi on a raw-element float to integer bit twiddling.
+/// Only non-negative integer-valued floats are supported (index reads); the
+/// value is reconstructed from the exponent and mantissa with shifts.
+static Value lowerFPToSIBits(Value bits, unsigned mantBits, OpBuilder &b,
+                             Location loc) {
+  Type i32 = b.getI32Type();
+  if (bits.getType() != i32) {
+    bits = arith::ExtUIOp::create(b, loc, i32, bits);
+  }
+  auto cst = [&](int32_t v) {
+    return arith::ConstantIntOp::create(b, loc, v, 32).getResult();
+  };
+  Value exp = arith::AndIOp::create(
+      b, loc, arith::ShRUIOp::create(b, loc, bits, cst(mantBits)), cst(0xFF));
+  Value ePrime = arith::SubIOp::create(b, loc, exp, cst(127));
+  Value mant = arith::OrIOp::create(
+      b, loc, arith::AndIOp::create(b, loc, bits, cst((1 << mantBits) - 1)),
+      cst(1 << mantBits));
+  Value shl = arith::SubIOp::create(b, loc, ePrime, cst(mantBits));
+  Value shr = arith::SubIOp::create(b, loc, cst(mantBits), ePrime);
+  Value shrC = arith::MinSIOp::create(b, loc, shr, cst(31));
+  Value left = arith::ShLIOp::create(b, loc, mant, shl);
+  Value right = arith::ShRUIOp::create(b, loc, mant, shrC);
+  Value ge = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, ePrime,
+                                   cst(mantBits));
+  Value val = arith::SelectOp::create(b, loc, ge, left, right);
+  Value isZero =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, bits, cst(0));
+  return arith::SelectOp::create(b, loc, isZero, cst(0), val);
+}
+
 struct TTLLowerScalarCmpFPass
     : impl::TTLLowerScalarCmpFBase<TTLLowerScalarCmpFPass> {
   using TTLLowerScalarCmpFBase::TTLLowerScalarCmpFBase;
@@ -54,6 +85,45 @@ struct TTLLowerScalarCmpFPass
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     bool hadError = false;
+
+    mod.walk([&](arith::ExtFOp extOp) {
+      // bf16 -> f32 widening between two raw-element bit casts: the bf16 bit
+      // pattern shifts left 16 to become the f32 bit pattern.
+      if (!extOp.getType().isF32() || !extOp.getIn().getType().isBF16()) {
+        return;
+      }
+      OpBuilder builder(extOp);
+      Location loc = extOp.getLoc();
+      Value bits = resolveIntBits(extOp.getIn(), 16, builder, loc);
+      if (!bits) {
+        return;
+      }
+      Value wide = arith::ExtUIOp::create(builder, loc, builder.getI32Type(), bits);
+      Value sh = arith::ConstantIntOp::create(builder, loc, 16, 32);
+      Value f32bits = arith::ShLIOp::create(builder, loc, wide, sh);
+      auto cast = UnrealizedConversionCastOp::create(
+          builder, loc, builder.getF32Type(), f32bits);
+      extOp.replaceAllUsesWith(cast.getResult(0));
+      extOp.erase();
+    });
+
+    mod.walk([&](arith::FPToSIOp op) {
+      Type floatTy = op.getIn().getType();
+      unsigned bitWidth = floatTy.isF32() ? 32 : floatTy.isBF16() ? 16 : 0;
+      if (!bitWidth || !op.getType().isInteger(32)) {
+        return;
+      }
+      OpBuilder builder(op);
+      Location loc = op.getLoc();
+      Value bits = resolveIntBits(op.getIn(), bitWidth, builder, loc);
+      if (!bits) {
+        return;
+      }
+      unsigned mantBits = bitWidth == 32 ? 23 : 7;
+      Value val = lowerFPToSIBits(bits, mantBits, builder, loc);
+      op.replaceAllUsesWith(val);
+      op.erase();
+    });
 
     mod.walk([&](arith::CmpFOp cmpOp) {
       Type floatTy = cmpOp.getLhs().getType();
