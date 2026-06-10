@@ -274,3 +274,21 @@ to circle back to.
 - row_scale s_col is a tile column (slicing is tile-granular): with the
   moe layout (weight t at element column 32t), s_col=t picks tile t and
   the broadcast reads its element 0.
+- TP=4 sharding (TP smoke + 3-layer chain greedy parity): sliding QKV/O
+  shard by head, dense inter/4 (pad 576), experts 32/card behind a
+  replicated router (zeroed off-card pe, idx LUT to local rows), 2 ARs
+  per layer (attn O; one packed AR carries dense+experts rows). Global:
+  Q heads 4/card with only the matching KV head staged per card, so the
+  SPMD step is uniform; seq-shard + flash combine is the optimization.
+- ttnn CCLs (all_reduce/all_gather) on this build take no output param;
+  the result is deallocated immediately after copy-out so the loop stays
+  address-stable.
+- Token assembly is exact only in f32 (rows reach V/32 = 8192): argmax
+  tail tensors stage f32; compiler grows bf16<->f32 raw-write conversion
+  (ext = bits shl 16, trunc = shr 16, with remapped operands).
+- The tracer compiles every branch in an atom body; a dead bf16 fill
+  poisons f32 atoms. Per-kind elementwise atoms keep traced bodies
+  type-valid. fill defaults bf16; closure dtype args don't resolve.
+- lm_head vocab/4: local argmax winner + base offset packed [val|token]
+  one tile pair/card, all_gather rows, top1 over a strided row collapse,
+  pick token by winner card id elem-copied into the gathered tile.
