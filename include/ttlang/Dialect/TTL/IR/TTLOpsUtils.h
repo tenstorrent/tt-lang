@@ -382,6 +382,7 @@ enum class TileOpCategory : uint8_t {
   SFPUUnary = 4,  // DST -> DST in-place (MATH-only init)
   SFPUBinary = 5, // DST -> DST binary (MATH-only init)
   CopyDst = 6,    // DST -> DST copy
+  DstIndex = 7,   // Zero-cost SSA name for one existing DST slot
   Unknown = 255
 };
 
@@ -643,6 +644,21 @@ inline std::optional<Value> getTileOpDstIndex(Operation *op) {
   }
   return std::nullopt;
 }
+
+/// Return the DST footprint denoted by a tile SSA value.
+FailureOr<DstFootprint> getDstFootprint(Value value);
+
+/// Return the single constant DST index denoted by a tile SSA value.
+FailureOr<int64_t> getSingleConstantDstIndex(Value value);
+
+/// Expand a footprint with constant base into concrete DST indices.
+FailureOr<SmallVector<int64_t>> getConstantDstIndices(DstFootprint footprint);
+
+/// Return concrete DST read indices for an interface-bearing operation.
+FailureOr<SmallVector<int64_t>> getConstantDstReadIndices(Operation *op);
+
+/// Return concrete DST write indices for an interface-bearing operation.
+FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op);
 
 /// Set the dst_index Value on a tile op with TTLDstResultOpTrait.
 inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {

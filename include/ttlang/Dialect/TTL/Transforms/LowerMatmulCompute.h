@@ -8,6 +8,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Support/LogicalResult.h"
 
 namespace mlir::tt::ttl {
 
@@ -23,6 +24,16 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
                                     ComputeOp op,
                                     ArrayRef<AffineMap> indexingMaps,
                                     ArrayRef<StringAttr> iterTypes);
+
+/// Return the number of DST slots required for each logical output tile of a
+/// block-matmul compute. This includes the output slot and scratch slots used
+/// by non-matmul tile ops in the same compute body.
+FailureOr<int64_t> getMatmulComputeDstSlotsPerOutputTile(ComputeOp op);
+
+/// Emit a diagnostic and return failure if a block matmul compute's expanded
+/// DST usage exceeds capacity. Run as a pass precondition before the rewrite so
+/// the error is reported once, not on each greedy rewrite retry.
+LogicalResult verifyMatmulComputeCapacity(ComputeOp op);
 
 } // namespace mlir::tt::ttl
 

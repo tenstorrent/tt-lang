@@ -428,6 +428,17 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
   }
 };
 
+struct DstIndexCleanup : OpConversionPattern<DstIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(DstIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getSource());
+    return success();
+  }
+};
+
 } // namespace
 
 // PipeGraph implementation lives in PipeGraph.cpp.
@@ -1101,7 +1112,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                          ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
-  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
+  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp>();
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
   // tile ops lowering phase.
@@ -1222,7 +1233,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
   computeTarget.addLegalDialect<affine::AffineDialect, arith::ArithDialect>();
   // Keep compute ops legal (tile-only lowering here).
-  computeTarget.addLegalOp<ComputeOp, YieldOp>();
+  computeTarget.addLegalOp<ComputeOp, YieldOp, DstIndexOp>();
 
   // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
   computeTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
@@ -1268,10 +1279,11 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
   cleanupTarget.addIllegalOp<AttachCBOp>();
   // ComputeOp/YieldOp should be gone after loop lowering, but mark illegal
   // just in case.
-  cleanupTarget.addIllegalOp<ComputeOp, YieldOp>();
+  cleanupTarget.addIllegalOp<ComputeOp, YieldOp, DstIndexOp>();
 
   RewritePatternSet structuralPatterns(&ctx);
-  structuralPatterns.add<AttachCBLowering>(typeConverter, &ctx);
+  structuralPatterns.add<AttachCBLowering, DstIndexCleanup>(typeConverter,
+                                                            &ctx);
   if (failed(applyPartialConversion(mod, cleanupTarget,
                                     std::move(structuralPatterns)))) {
     return failure();

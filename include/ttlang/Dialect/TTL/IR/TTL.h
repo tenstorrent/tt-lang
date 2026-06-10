@@ -10,6 +10,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
 
@@ -70,6 +72,19 @@ enum class PipeRole : int64_t {
   Destination = 1,
   Active = 2,
 };
+
+/// A contiguous set of DST slots starting at `baseIndex`.
+struct DstFootprint {
+  mlir::Value baseIndex;
+  int64_t tileCount = 1;
+};
+
+llvm::SmallVector<DstFootprint, 2>
+getDefaultDstReadFootprints(mlir::Operation *op);
+llvm::SmallVector<DstFootprint, 2>
+getDefaultDstWriteFootprints(mlir::Operation *op);
+mlir::FailureOr<DstFootprint> getDefaultResultDstFootprint(mlir::Operation *op,
+                                                           mlir::Value result);
 
 /// Func-level: enable FPU lowering for eligible tile add/sub/mul.
 /// Set by TTLSetComputeKernelConfig, read via getKernelBoolAttr.
