@@ -104,3 +104,7 @@ to circle back to.
   deterministic until local-HEAD files were resent; reset/cache innocent).
 - ready net wait-for cycle: q recv(ready) -> obc mcast vs kv send(ready) -> orecv wait; decompose next
 - Cycle fix next: scheduler hint = post receive before dependent send. Hoist orecv dst publication ahead of the ready recv on q cores (mcast_block currently pubs after the role if), or carry the kv-ready token in qkv_red instead of a separate net.
+- Root cause of SPSC errors under the cap: the DM scheduler splits copies on
+  one DFB across DM0/DM1 (fkv k/v copies, line refs in /tmp/diag.log). Fix:
+  pin all DM copies of a cb_index to one DM thread; that re-legalizes fkv
+  and the node-disjoint shares, putting the atom under 32 directly.
