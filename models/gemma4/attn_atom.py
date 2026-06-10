@@ -52,7 +52,6 @@ def make_attn_heads_atom(Ht, Dt, eps):
         head_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=2)
 
         hx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=2)
-        hg_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=2)
         hn_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         c_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=1)
         s_cb = ttl.make_dataflow_buffer_like(sin, shape=(1, Dt), block_count=1)
@@ -86,6 +85,7 @@ def make_attn_heads_atom(Ht, Dt, eps):
                 ttl.copy(wqkv[kr + ch * K_CH:kr + (ch + 1) * K_CH, nd:nd + Dt], wd)
 
             if row_c == 0:
+                gq = hg_cb.reserve(); ttl.copy(qknorm[0:1, 0:Dt], gq)
                 pipe_recv(qkv_red, recv_cb)
                 hd = head_cb.reserve()
                 hd.store(ttl.add(part_cb.wait(), recv_cb.wait()))
@@ -93,7 +93,6 @@ def make_attn_heads_atom(Ht, Dt, eps):
                 hx0 = hx_cb.reserve(); hx0.store(h)
                 hre = head_cb.reserve(); hre.store(h)
                 hx1 = hx_cb.reserve(); hx1.store(head_cb.wait())
-                gq = hg_cb.reserve(); ttl.copy(qknorm[0:1, 0:Dt], gq)
                 head_norm_core(hx_cb, hg_cb, hn_cb)
                 if col_c < 7:
                     cd = c_cb.reserve(); ttl.copy(cos[0:1, 0:Dt], cd)
@@ -158,9 +157,9 @@ def make_attn_atom(Ht, Dt, St, eps):
         head_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
 
         hx_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
-        hg_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=2)
         hn_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         c_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
+        hg_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=2)
         s_cb = c_cb
         r_cb = ttl.make_dataflow_buffer_like(rot, shape=(Dt, Dt), block_count=1)
         out_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
@@ -216,6 +215,7 @@ def make_attn_atom(Ht, Dt, St, eps):
                 ttl.copy(wqkv[kr + ch * K_CH:kr + (ch + 1) * K_CH, nd:nd + Dt], wd)
 
             if row_c == 0:
+                gq = hg_cb.reserve(); ttl.copy(qknorm[0:1, 0:Dt], gq)
                 pipe_recv(qkv_red, recv_cb)
                 hd = head_cb.reserve()
                 hd.store(ttl.add(part_cb.wait(), recv_cb.wait()))
@@ -223,7 +223,6 @@ def make_attn_atom(Ht, Dt, St, eps):
                 hx0 = hx_cb.reserve(); hx0.store(h)
                 hre = head_cb.reserve(); hre.store(h)
                 hx1 = hx_cb.reserve(); hx1.store(head_cb.wait())
-                gq = hg_cb.reserve(); ttl.copy(qknorm[0:1, 0:Dt], gq)
                 head_norm_core(hx_cb, hg_cb, hn_cb)
                 if col_c < 7:
                     cd = c_cb.reserve(); ttl.copy(cos[0:1, 0:Dt], cd)
