@@ -84,9 +84,10 @@ def make_copy(Rt, PNt, Dt, WCt, a_off=(0, 0), out_off=(0, 0)):
     return copy
 
 
-def make_row_scale(Dt, WCt, fn=None):
-    """``out[0, :] = fn(a)[0, :] * s[0, 0]`` with the scalar column-broadcast;
-    flash finalize is ``fn=ttl.recip`` applied to the scalar (o * 1/l)."""
+def make_row_scale(Dt, WCt, fn=None, a_row=0, s_col=0, out_row=0):
+    """``out[out_row, :] = fn(s)[0, 0] * a[a_row, :]`` with the scalar
+    column-broadcast; flash finalize is ``fn=ttl.recip`` (o * 1/l), MoE gate
+    weighting reads expert t's scalar from tile column ``s_col``."""
     if Dt % WCt:
         raise ValueError(f"Dt ({Dt}) must be divisible by WCt ({WCt})")
     n_wc = Dt // WCt
@@ -99,7 +100,7 @@ def make_row_scale(Dt, WCt, fn=None):
         out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, WCt), block_count=2)
 
         sd = s_cb.reserve()
-        ttl.copy(s[0:1, 0:1], sd)
+        ttl.copy(s[0:1, s_col:s_col + 1], sd)
         scw = sc_cb.reserve()
         sb = s_cb.wait()
         scw.store(fn(sb) if fn else sb)
@@ -107,10 +108,10 @@ def make_row_scale(Dt, WCt, fn=None):
         for c in range(n_wc):
             wc = c * WCt
             ad = a_cb.reserve()
-            ttl.copy(a[0:1, wc:wc + WCt], ad)
+            ttl.copy(a[a_row:a_row + 1, wc:wc + WCt], ad)
             ab = a_cb.wait()
             ow = out_cb.reserve()
             ow.store(ttl.mul(ab, ttl.block.broadcast(sc, dims=[1], shape=ab.shape)))
-            ttl.copy(out_cb.wait(), out[0:1, wc:wc + WCt])
+            ttl.copy(out_cb.wait(), out[out_row:out_row + 1, wc:wc + WCt])
 
     return row_scale
