@@ -4,10 +4,11 @@
 
 """Per-card decode step as a dispatch chain (bring-up driver).
 
-One atom per op, activations device-resident; the host does routing and the
-final argmax. Atom factories are memoized so 30 layers share compiled
-kernels. Fusing back into per-cut atoms is the optimization phase; this
-driver is the correctness substrate (test: per-layer goldens, greedy match).
+One atom per op, activations and routing device-resident: no host or ttnn
+logic between atoms (CCLs and DRAM round trips are the only sanctioned
+cuts). Atom factories are memoized so 30 layers share compiled kernels.
+Fusing back into per-cut atoms is the optimization phase; this driver is
+the correctness substrate (test: per-layer goldens, greedy match).
 """
 
 import torch
@@ -18,13 +19,15 @@ from ttl.ops.gemv import make_gemv
 from ttl.ops.indexed_gemv import make_indexed_gemv
 from ttl.ops.flash_decode import make_flash_decode_kev
 from ttl.ops.kv_append import make_kv_append
+from ttl.ops.moe_router import make_moe_weights, make_softmax_row
 from ttl.ops.rmsnorm import make_rmsnorm
 from ttl.ops.rope import make_rope
 from ttl.ops.swiglu import make_swiglu
+from ttl.ops.topk import make_topk
 from ttl.ops.embed_gather import make_embed_gather
 
 from .attn_atom import TILE, make_attn_heads_atom, make_flash_atom
-from .layer import MLP_PAD, from_dev, row, to_dev
+from .host import MLP_PAD, from_dev, row, to_dev
 
 _ATOMS = {}
 
@@ -72,15 +75,24 @@ class FFNChain:
         self.w_down = to_dev(w["w_down"].to(torch.bfloat16), device)
         self.w_gu = to_dev(w["w_gu"].reshape(E * H, 2 * I).to(torch.bfloat16), device)
         self.w_dn = to_dev(w["w_dn"].reshape(E * I, H).to(torch.bfloat16), device)
-        self.router_w = w["router_w"]
-        self.router_scale = w["router_scale"]
-        self.per_expert = w["per_expert"]
         self.layer_scalar = w["layer_scalar"]
+
+        # Step-invariant router tables: scale-less norm weight with
+        # router_scale * H^-0.5 folded in; ids ramp for topk; per-expert row.
+        rscale = w["router_scale"] * cfg.hidden ** -0.5
+        self.g_router = row(torch.full((H,), rscale), H, device)
+        self.w_router = to_dev(w["router_w"].T.contiguous().to(torch.bfloat16), device)
+        self.ramp = to_dev(torch.arange(E, dtype=torch.bfloat16)
+                           .unsqueeze(0).repeat(TILE, 1), device)
+        self.pe = row(w["per_expert"], E, device)
 
         def buf(n, rows=TILE):
             return to_dev(torch.zeros(rows, n, dtype=torch.bfloat16), device)
 
+        K = cfg.top_k
         self.hn = buf(cfg.hidden)
+        self.hr, self.rl, self.probs = buf(H), buf(E), buf(E)
+        self.vals, self.idx, self.wts = buf(K * TILE), buf(K * TILE), buf(K * TILE)
         self.g, self.u, self.act = buf(P), buf(P), buf(P)
         self.dense, self.h1, self.hn2, self.h2 = buf(H), buf(H), buf(H), buf(H)
         self.gu = buf(2 * I, 8 * TILE)
@@ -88,25 +100,18 @@ class FFNChain:
         self.dn = buf(H, 8 * TILE)
         self.comb, self.combn, self.out = buf(H), buf(H), buf(H)
 
-    def route(self, x):
-        cfg = self.cfg
-        xn = x / torch.sqrt(x.pow(2).mean() + cfg.eps)
-        xn = xn * self.router_scale * cfg.hidden ** -0.5
-        probs = torch.softmax(self.router_w.float() @ xn.float(), dim=-1)
-        wts, idx = torch.topk(probs, cfg.top_k)
-        return idx, (wts / wts.sum()) * self.per_expert[idx]
-
     def step(self, h_d):
-        cfg, dev, K = self.cfg, self.device, self.cfg.top_k
+        cfg, dev, K, E = self.cfg, self.device, self.cfg.top_k, self.E
         H, P, Ht, It = cfg.hidden, MLP_PAD, self.Ht, self.It
+        Et = E // TILE
         norm = atom(make_rmsnorm, 1, 1, Ht, 11, H, cfg.eps)
 
-        idx, wts = self.route(from_dev(h_d)[0])
-        idx_t = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
-        idx_t[0, :K] = idx.float()
-        wts_t = torch.zeros(TILE, K * TILE, dtype=torch.bfloat16)
-        wts_t[0, 0::TILE] = wts.to(torch.bfloat16)
-        idx_d, wts_d = to_dev(idx_t, dev), to_dev(wts_t, dev)
+        norm(h_d, self.g_router, self.hr)
+        atom(make_gemv, TILE, H, E, (1, 2), 1)(self.hr, self.w_router, self.rl)
+        atom(make_softmax_row, Et)(self.rl, self.probs)
+        atom(make_topk, 1, 1, Et, K, E)(self.probs, self.ramp, self.vals, self.idx)
+        atom(make_moe_weights, K, Et)(self.vals, self.idx, self.pe, self.wts)
+        idx_d, wts_d = self.idx, self.wts
 
         norm(h_d, self.g_preffw, self.hn)
         gate = atom(make_gemv, TILE, H, P, (9, 2), 2)
@@ -117,15 +122,15 @@ class FFNChain:
         norm(self.dense, self.g_postffw1, self.h1)
 
         norm(h_d, self.g_preffw2, self.hn2)
-        atom(make_indexed_gemv, self.E, H, 2 * self.I, K, (11, 2), 4)(
+        atom(make_indexed_gemv, self.E, H, 2 * self.I, K, (11, 2), 4, idx_stride=TILE)(
             self.hn2, idx_d, self.w_gu, self.gu)
         for t in range(K):
             atom(make_swiglu, 1, 1, It, It,
                  a_off=(t, 0), b_off=(t, It), out_off=(t, 0))(self.gu, self.gu, self.eact)
             atom(make_row_scale, self.I, It, a_row=t, s_col=t, out_row=t)(
                 self.eact, wts_d, self.eact)
-        atom(make_indexed_gemv, self.E, self.I, H, K, (11, 2), 4, x_per_t=True)(
-            self.eact, idx_d, self.w_dn, self.dn)
+        atom(make_indexed_gemv, self.E, self.I, H, K, (11, 2), 4,
+             x_per_t=True, idx_stride=TILE)(self.eact, idx_d, self.w_dn, self.dn)
         for t in range(1, K):
             atom(make_add, 1, 1, Ht, 11, b_off=(t, 0))(self.dn, self.dn, self.dn)
         norm(self.dn, self.g_postffw2, self.h2)

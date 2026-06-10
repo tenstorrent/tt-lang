@@ -33,12 +33,15 @@ def make_indexed_gemv(
     bn: int,
     *,
     x_per_t: bool = False,
+    idx_stride: int = 1,
     fp32_dest_acc_en: bool = True,
 ):
     """x[1t,K] @ W[idx[t]] for each of ``topk`` indices -> out[t, N].
 
     With ``x_per_t`` each index gets its own activation row ``x[t]``
     (the down projection: per-expert activations, shared output).
+    ``idx_stride`` is the element stride between ids in ``idx`` row 0
+    (32 for the topk op's tile-column layout).
     """
     Np, Kp = grid_cfg
 
@@ -55,12 +58,13 @@ def make_indexed_gemv(
     K_BAND = Kt // Kp
     N_BAND = Nt // Np
     NB = N_BAND // bn
+    idx_tiles = (topk * idx_stride + TILE - 1) // TILE
 
     @ttl.atom(grid=(Np, Kp), fp32_dest_acc_en=fp32_dest_acc_en)
     def indexed_gemv(x, idx, w, out):
         x_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_BAND), block_count=1)
         x_stage = ttl.make_dataflow_buffer_like(x, shape=(1, K_BAND), block_count=1)
-        idx_cb = ttl.make_dataflow_buffer_like(idx, shape=(1, 1), block_count=1)
+        idx_cb = ttl.make_dataflow_buffer_like(idx, shape=(1, idx_tiles), block_count=1)
         w_cb = ttl.make_dataflow_buffer_like(w, shape=(K_BAND, bn), block_count=2)
         partial_for_sum_cb = ttl.make_dataflow_buffer_like(out, shape=(1, bn), block_count=2)
         partial_for_send_cb = ttl.make_dataflow_buffer_like(out, shape=(1, bn), block_count=2)
@@ -84,14 +88,14 @@ def make_indexed_gemv(
             x_blk = x_cb.wait()
 
         idxd = idx_cb.reserve()
-        ttl.copy(idx[0, 0], idxd)
+        ttl.copy(idx[0:1, 0:idx_tiles], idxd)
         idx_blk = idx_cb.wait()
 
         for t in range(topk):
             if x_per_t:
                 mcast(x_net, x[t:t + 1, kr:kr + K_BAND], x_stage, x_cb)
                 x_blk = x_cb.wait()
-            e = ttl.read_index(idx_blk, 0, t)
+            e = ttl.read_index(idx_blk, 0, t * idx_stride)
             for lnb in range(NB):
                 nc = col_c * N_BAND + lnb * bn
 

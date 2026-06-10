@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "models"))
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from gemma4.config import TILE, Gemma4Config
-from gemma4.layer import SlidingLayer, from_dev, row, to_dev
+from gemma4.layer_test_scaffolding import SlidingLayer, from_dev, row, to_dev
 
 
 def rope_ref(x, pos, theta, dim):

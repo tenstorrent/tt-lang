@@ -21,7 +21,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttl.ops.gemv import make_gemv
 from ttl.ops.kv_append import make_kv_append
 from gemma4.attn_atom import TILE, make_attn_heads_atom, make_flash_atom
-from gemma4.layer import from_dev, row, to_dev
+from gemma4.layer_test_scaffolding import from_dev, row, to_dev
 
 
 def rms(x, w, eps):

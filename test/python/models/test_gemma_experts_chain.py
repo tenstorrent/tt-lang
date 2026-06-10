@@ -26,7 +26,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import ttl
 from ttl.ops.elementwise import make_add, make_binary
 from ttl.ops.indexed_gemv import make_indexed_gemv
-from gemma4.layer import from_dev, row, to_dev
+from gemma4.layer_test_scaffolding import from_dev, row, to_dev
 
 TILE = 32
 

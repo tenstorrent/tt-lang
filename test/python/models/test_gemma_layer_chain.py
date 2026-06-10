@@ -31,7 +31,7 @@ from ttl.ops.kv_append import make_kv_append
 from ttl.ops.rmsnorm import make_rmsnorm
 from ttl.ops.swiglu import make_swiglu
 from gemma4.attn_atom import TILE, make_attn_heads_atom, make_flash_atom
-from gemma4.layer import MLP_PAD, from_dev, row, to_dev
+from gemma4.layer_test_scaffolding import MLP_PAD, from_dev, row, to_dev
 
 
 def rms(x, w, eps):

@@ -21,23 +21,7 @@ from ttl.ops.swiglu import make_swiglu
 from ttl.ops.indexed_gemv import make_indexed_gemv
 
 from .config import TILE, Gemma4Config
-
-
-def to_dev(t, device, dtype=ttnn.bfloat16, mem=None):
-    return ttnn.from_torch(
-        t.contiguous(), dtype=dtype, layout=ttnn.TILE_LAYOUT, device=device,
-        memory_config=mem or ttnn.DRAM_MEMORY_CONFIG)
-
-
-def from_dev(t):
-    return ttnn.to_torch(t).float()
-
-
-def row(t, D, device):
-    """Host [D] -> [TILE, D] tile row tensor on device."""
-    z = torch.zeros(TILE, D, dtype=torch.bfloat16)
-    z[0] = t.to(torch.bfloat16)
-    return to_dev(z, device)
+from .host import MLP_PAD, from_dev, row, to_dev
 
 
 class SlidingLayer:
@@ -147,9 +131,6 @@ class SlidingLayer:
         o_part = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), dev)
         self.o_proj(a, self.w_o, o_part)
         return o_part
-
-
-MLP_PAD = 576  # 2112 / 4 col-shard padded to tile alignment (Nt=18 keeps bands divisible)
 
 
 class FFN:

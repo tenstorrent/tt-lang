@@ -31,7 +31,7 @@ from ttl.ops.gemv import make_gemv
 from ttl.ops.kv_append import make_kv_append
 from ttl.ops.rmsnorm import make_rmsnorm
 from ttl.ops.rope import make_rope
-from gemma4.layer import from_dev, row, to_dev
+from gemma4.layer_test_scaffolding import from_dev, row, to_dev
 
 TILE = 32
 

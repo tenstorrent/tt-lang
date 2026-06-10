@@ -26,7 +26,7 @@ from ttl.ops.elementwise import make_add
 from ttl.ops.gemv import make_gemv
 from ttl.ops.rmsnorm import make_rmsnorm
 from ttl.ops.swiglu import make_swiglu
-from gemma4.layer import MLP_PAD, from_dev, row, to_dev
+from gemma4.layer_test_scaffolding import MLP_PAD, from_dev, row, to_dev
 
 TILE = 32
 
