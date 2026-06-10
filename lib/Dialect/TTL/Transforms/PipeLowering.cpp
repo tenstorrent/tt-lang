@@ -98,14 +98,6 @@ namespace llvm {
 template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeSourceKey> {
   using Key = mlir::tt::ttl::PipeSourceKey;
-  static Key getEmptyKey() {
-    int64_t sentinel = DenseMapInfo<int64_t>::getEmptyKey();
-    return {sentinel, sentinel};
-  }
-  static Key getTombstoneKey() {
-    int64_t sentinel = DenseMapInfo<int64_t>::getTombstoneKey();
-    return {sentinel, sentinel};
-  }
   static unsigned getHashValue(const Key &sourceKey) {
     return hash_combine(sourceKey.srcX, sourceKey.srcY);
   }
