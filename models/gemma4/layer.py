@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-card Gemma 4 decode layer, v1: each matmul/norm/flash is a ttl atom,
-glued by host adds and slicing. TP=4 partial outputs (pre all-reduce).
-The fused per-layer atom replaces this glue with DFB residency; until
-then this defines the sharding and the per-layer compute graph.
+"""Per-card Gemma 4 decode layer, host-glued GOLDEN ONLY.
+
+This file pins the TP=4 sharding and per-phase numerics against HF; it is
+test scaffolding, not the model. The model is the fused atoms in
+attn_atom.py / ffn_atom.py: one atom per CCL cut, activations in DFBs.
 """
 
 import torch
@@ -236,3 +237,110 @@ class FFN:
             self.dn_e(act, idx_d, self.w_dn, dn)
             acc += from_dev(dn)[0] * wt
         return acc
+
+
+class GlobalLayer:
+    """Per-card global attention: 4 Q heads dim 512, V = K, 2 KV heads
+    replicated across cards; the K cache is sequence-sharded /4 in 32-row
+    granules (card = (pos // 32) % 4); flash (o, m, l) partials combine
+    across cards with the standard rescale."""
+
+    def __init__(self, cfg: Gemma4Config, w, device, card, ctx):
+        self.cfg, self.device, self.card = cfg, device, card
+        H, D = cfg.hidden, cfg.global_head_dim
+        qh, kvh = 4, cfg.global_kv_heads
+        self.qh, self.kvh, self.D = qh, kvh, D
+        Dt = D // TILE
+        self.S = ctx // 4
+        S = self.S
+
+        qs = card * qh
+        self.w_q = to_dev(w["q_proj"][qs * D:(qs + qh) * D].T, device)
+        self.w_k = to_dev(w["k_proj"].T, device)
+        self.w_o = to_dev(w["o_proj"][:, qs * D:(qs + qh) * D].T, device)
+
+        self.norm_in = row(1 + w["input_layernorm"], H, device)
+        self.q_norm = row(1 + w["q_norm"], D, device)
+        self.k_norm = row(1 + w["k_norm"], D, device)
+
+        self.k_cache = [to_dev(torch.zeros(S, D, dtype=torch.bfloat16), device)
+                        for _ in range(kvh)]
+
+        self.q_proj = make_gemv(TILE, H, qh * D, (8, 2), 4)
+        self.k_proj = make_gemv(TILE, H, kvh * D, (8, 2), 4)
+        self.o_proj = make_gemv(TILE, qh * D, H, (11, 2), 4)
+        self.norm = make_rmsnorm(1, 1, H // TILE, 11, H, cfg.eps)
+        self.hnorm = make_rmsnorm(1, 1, Dt, Dt, D, cfg.eps)
+        rot = int(D * cfg.global_rot_frac)
+        self.rope = make_rope(Dt, rot // TILE)
+        self.append = make_kv_append(S // TILE, Dt)
+        self.flash = make_flash_decode_kev(1, 1, 1, Dt, 8, S // (8 * TILE))
+
+    def attn(self, x_d, pos, cos, sin):
+        """Returns (o[h], m[h], l[h]) per local q head; combine across cards."""
+        cfg, dev = self.cfg, self.device
+        H, D, S = cfg.hidden, self.D, self.S
+
+        xn = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), dev)
+        self.norm(x_d, self.norm_in, xn)
+
+        q = to_dev(torch.zeros(TILE, self.qh * D, dtype=torch.bfloat16), dev)
+        self.q_proj(xn, self.w_q, q)
+        k = to_dev(torch.zeros(TILE, self.kvh * D, dtype=torch.bfloat16), dev)
+        self.k_proj(xn, self.w_k, k)
+        q_h, k_h = from_dev(q)[:1], from_dev(k)[:1]
+
+        granule, lane = pos // TILE, pos % TILE
+        if granule % 4 == self.card:
+            local = (granule // 4) * TILE + lane
+            pos_t = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+            pos_t[0, 0], pos_t[0, 1] = local // TILE, local % TILE
+            for kv in range(self.kvh):
+                kk = row(k_h[0, kv * D:(kv + 1) * D], D, dev)
+                kn = to_dev(torch.zeros(TILE, D, dtype=torch.bfloat16), dev)
+                self.hnorm(kk, self.k_norm, kn)
+                kr = to_dev(torch.zeros(TILE, D, dtype=torch.bfloat16), dev)
+                self.rope(kn, cos, sin, kr)
+                self.append(self.k_cache[kv], kr, to_dev(pos_t, dev), self.k_cache[kv])
+
+        n_granules = pos // TILE + 1
+        mine = (n_granules + 3 - self.card) // 4
+        mrow = torch.full((S,), float("-inf"))
+        if mine:
+            mrow[:mine * TILE] = 0.0
+            last = (n_granules - 1 - self.card) % 4 == 0
+            if last and pos % TILE != TILE - 1:
+                mrow[(mine - 1) * TILE + pos % TILE + 1:mine * TILE] = float("-inf")
+        n_chunks = S // (8 * TILE)
+        masks = mrow.reshape(n_chunks, 1, 8 * TILE).expand(n_chunks, TILE, 8 * TILE)
+        masks_d = to_dev(masks.reshape(n_chunks * TILE, 8 * TILE).to(torch.bfloat16), dev)
+
+        partials = []
+        for h in range(self.qh):
+            qq = row(q_h[0, h * D:(h + 1) * D], D, dev)
+            qn = to_dev(torch.zeros(TILE, D, dtype=torch.bfloat16), dev)
+            self.hnorm(qq, self.q_norm, qn)
+            qr = to_dev(torch.zeros(TILE, D, dtype=torch.bfloat16), dev)
+            self.rope(qn, cos, sin, qr)
+            kv = h // (self.qh // self.kvh)
+            o = to_dev(torch.zeros(TILE, D, dtype=torch.bfloat16), dev)
+            m = to_dev(torch.zeros(TILE, TILE, dtype=torch.bfloat16), dev)
+            l = to_dev(torch.zeros(TILE, TILE, dtype=torch.bfloat16), dev)
+            self.flash(qr, self.k_cache[kv], masks_d, o, m, l)
+            partials.append((from_dev(o)[0], from_dev(m)[0, 0], from_dev(l)[0, 0]))
+        return partials
+
+    def o_partial(self, a_heads):
+        dev, H = self.device, self.cfg.hidden
+        a = row(torch.cat(a_heads), self.qh * self.D, dev)
+        o_part = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), dev)
+        self.o_proj(a, self.w_o, o_part)
+        return o_part
+
+
+def combine_flash(parts):
+    """Merge per-card (o, m, l) flash partials (standard rescale)."""
+    m = max(p[1] for p in parts)
+    o = sum(torch.exp(torch.tensor(p[1] - m)) * p[0] for p in parts)
+    l = sum(torch.exp(torch.tensor(p[1] - m)) * p[2] for p in parts)
+    return o / l
