@@ -32,9 +32,14 @@ def make_indexed_gemv(
     grid_cfg: Tuple[int, int],
     bn: int,
     *,
+    x_per_t: bool = False,
     fp32_dest_acc_en: bool = True,
 ):
-    """x[1t,K] @ W[idx[t]] for each of ``topk`` indices -> out[t, N]."""
+    """x[1t,K] @ W[idx[t]] for each of ``topk`` indices -> out[t, N].
+
+    With ``x_per_t`` each index gets its own activation row ``x[t]``
+    (the down projection: per-expert activations, shared output).
+    """
     Np, Kp = grid_cfg
 
     if Kp != 2:
@@ -74,14 +79,18 @@ def make_indexed_gemv(
         col_c, row_c = ttl.node(dims=2)
         kr = row_c * K_BAND
 
-        mcast(x_net, x[0:1, kr:kr + K_BAND], x_stage, x_cb)
-        x_blk = x_cb.wait()
+        if not x_per_t:
+            mcast(x_net, x[0:1, kr:kr + K_BAND], x_stage, x_cb)
+            x_blk = x_cb.wait()
 
         idxd = idx_cb.reserve()
         ttl.copy(idx[0, 0], idxd)
         idx_blk = idx_cb.wait()
 
         for t in range(topk):
+            if x_per_t:
+                mcast(x_net, x[t:t + 1, kr:kr + K_BAND], x_stage, x_cb)
+                x_blk = x_cb.wait()
             e = ttl.read_index(idx_blk, 0, t)
             for lnb in range(NB):
                 nc = col_c * N_BAND + lnb * bn
