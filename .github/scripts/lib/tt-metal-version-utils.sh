@@ -34,8 +34,22 @@ load_tt_metal_version() {
     : "${TTNN_PYPI_TT_METAL_TAG:?$version_file: TTNN_PYPI_TT_METAL_TAG not set}"
 }
 
-# True when the public ttnn wheel was built from the same tt-metal tag this
-# release builds against. Requires load_tt_metal_version to have run.
+tt_metal_release_component() {
+    local tag="$1"
+    if [[ "$tag" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)($|[-+]) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+# True when the public ttnn wheel and this release use the same tt-metal
+# release component. This treats a release candidate tag such as vX.Y.Z-rcN as
+# compatible with the final vX.Y.Z tag. Requires load_tt_metal_version to have
+# run.
 ttnn_pypi_aligned() {
-    [[ "$TTNN_PYPI_TT_METAL_TAG" == "$TT_METAL_TAG" ]]
+    local pypi_release_component tt_release_component
+    pypi_release_component="$(tt_metal_release_component "$TTNN_PYPI_TT_METAL_TAG")" || return 1
+    tt_release_component="$(tt_metal_release_component "$TT_METAL_TAG")" || return 1
+    [[ "$pypi_release_component" == "$tt_release_component" ]]
 }
