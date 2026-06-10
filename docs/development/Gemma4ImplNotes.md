@@ -89,3 +89,16 @@ to circle back to.
   core calls, PCC unchanged.
 - Double-produce gotcha: a core that reserves its out DFB means the
   caller must NOT reserve it too; branch-local reserves only.
+- Cores callable under runtime `if` must take every DFB as a param; flash
+  is now make_flash_window_core (caller stages K/V/mask chunks; chunk
+  copies may sit under conditionals).
+- DFB index cap: stage-B attn atom needs 50 indices vs 32; finalize reuse
+  merges nothing because role-guarded bodies collapse to one top-level
+  interval. Finer path-based coloring is UNSOUND: three RISCs drift across
+  inlined-atom phases with shared CB counters/pointers (issue 679; reset op
+  is the durable fix). Direction: declare scratch in the lowest-level core,
+  prefer compiler-inserted temps, manually share same-shape DFBs across
+  role-disjoint phases; cut the atom only if forced.
+- Remote pitfall: never git-checkout compiler files on the remote; its HEAD
+  is stale vs synced working files (cost: stage A head-0 pcc -0.07
+  deterministic until local-HEAD files were resent; reset/cache innocent).
