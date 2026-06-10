@@ -192,3 +192,9 @@ to circle back to.
   norm/QKV sharding; cross-chunk flash combine pipes (live merge instead
   of one-core windows); a CB reset op (#679) before any cross-thread
   slot sharing tightens the index budget further.
+- Launch-hang fault isolation (diag_args.py, padded stage A): 13 io tensors
+  PASS; +kv pos copy any position PASS; +read_index+band fill+copy-back
+  PASS; +patch core loop PASS. Patch atom STILL hangs with kv chain
+  hoisted to body top level (same structure as the passing diag). Deltas
+  left: kv chain reads all four caches + q_heads readback after write.
+  Card sanity (kv_append, stage A) passes between runs.
