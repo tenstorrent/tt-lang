@@ -63,6 +63,25 @@ def test_callee_with_dfb_decl_rejected():
             _declares_dfb(a_cb, out_cb)
 
 
+def test_callee_with_make_dfb_decl_rejected():
+    """A callee that declares its own DFB via make_dfb cannot be inlined."""
+
+    @ttl.atom()
+    def _declares_make_dfb(inp: ttl.DFB, out: ttl.DFB):
+        scratch = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+        x = inp.wait()
+        r = out.reserve()
+        r.store(x)
+
+    with pytest.raises(ValueError, match="make_dfb"):
+
+        @ttl.atom(grid=(1, 1))
+        def _outer_bad(in_t, out_t):
+            a_cb = ttl.make_dataflow_buffer_like(in_t, shape=(1, 1), block_count=2)
+            out_cb = ttl.make_dataflow_buffer_like(out_t, shape=(1, 1), block_count=2)
+            _declares_make_dfb(a_cb, out_cb)
+
+
 def test_atom_outer_exp(device):
     tile = ttnn.TILE_SIZE
     inp_t = (torch.randn(tile, tile, dtype=torch.bfloat16) * 0.5).clamp(-1.0, 1.0)

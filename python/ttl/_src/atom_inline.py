@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from ttl.atom import Atom
 
 
-_FORBIDDEN_CALLEE_NAMES = {"make_dataflow_buffer_like", "PipeNet"}
+_FORBIDDEN_CALLEE_NAMES = {"make_dataflow_buffer_like", "make_dfb", "PipeNet"}
 
 _inline_counter = itertools.count()
 
