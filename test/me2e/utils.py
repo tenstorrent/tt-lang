@@ -14,6 +14,8 @@ from typing import Optional
 import numpy as np
 import torch
 
+from .config import E2EConfig
+
 # =============================================================================
 # Custom Exceptions for Failure Classification
 # =============================================================================
@@ -35,6 +37,23 @@ class TTLGoldenException(Exception):
     """Raised when golden comparison fails."""
 
     pass
+
+
+def set_launch_grid_attr(module, ctx, config: E2EConfig) -> None:
+    """Attach frontend-equivalent launch-grid metadata to synthetic ME2E modules."""
+    from ttl.ir import ArrayAttr, IntegerAttr, IntegerType
+
+    i64_type = IntegerType.get_signless(64, ctx)
+    module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
+        [IntegerAttr.get(i64_type, dim) for dim in config.grid_shape],
+        ctx,
+    )
+
+
+def get_launch_grid_attr_str(config: E2EConfig) -> str:
+    """Return module-attribute syntax for text-based synthetic ME2E modules."""
+    rows, cols = config.grid_shape
+    return f"attributes {{ttl.launch_grid = [{rows} : i64, {cols} : i64]}}"
 
 
 # =============================================================================
