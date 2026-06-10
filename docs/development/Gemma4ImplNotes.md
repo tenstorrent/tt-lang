@@ -26,7 +26,19 @@ to circle back to.
   needs upstream comment on the elementRW PR). Symptom: same-thread
   reserve→copy→wait→read silently reads zeros; cross-thread looks fine.
 
+## Conventions
+
+- Gemma's (1+w) RMSNorm uses the stock rmsnorm op; the host loader stores
+  1+w. Scale-less norms (router, v_norm) pass an all-ones weight; replace
+  with a no-weight variant only if it shows up in profiles.
+
 ## Gotchas
+
+- Python-bool `if` statements and ternaries do NOT trace inside atom
+  bodies (fails as "Binary operands not found" pointing at a bogus
+  docstring line). Variants must be separate function bodies; closure
+  scalars (ints/floats) are the only compile-time parametrization.
+  Reproducer: a pristine flash core with `if False:` around v_blk.
 
 - Conditional `ttl.copy` under data-dependent `if`/`else` shared one CB
   block before the ptr fix; retest now (was: both branches read garbage,
@@ -43,3 +55,6 @@ to circle back to.
   (PCC 1.0). At 16 MB streamed that floor reads 127 GB/s; the weight stream
   itself is much faster. Use a cycles/ Tracy variant before drawing GB/s
   conclusions, and expect the fused multi-layer atom to amortize dispatch.
+- indexed_gemv 8-expert gate_up stream (32E resident, K=2816, N=1408):
+  0.28 ms e2e = 226 GB/s including dispatch; the dominant MoE DRAM term is
+  already near the 260-300 GB/s/card budget before any device-side tuning.
