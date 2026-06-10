@@ -43,11 +43,7 @@ def run_flash(device, D, S, valid, k_eq_v, q_heads):
     att = (q_t[:q_heads].float() @ k_t.float().T) * scale + mask_rows
     expected = (torch.softmax(att, dim=-1) @ v_t.float()).to(torch.bfloat16)
 
-    def to_bfp8(t):
-        return ttnn.from_torch(t, dtype=ttnn.bfloat8_b, layout=ttnn.TILE_LAYOUT,
-                               device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-
-    q_d, k_d, v_d = to_dram(q_t, device), to_bfp8(k_t), to_bfp8(v_t)
+    q_d, k_d, v_d = to_dram(q_t, device), to_dram(k_t, device), to_dram(v_t, device)
     m_d = to_dram(masks_t, device)
     o_d = to_dram(torch.zeros(TILE, D, dtype=torch.bfloat16), device)
     mm_d = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)

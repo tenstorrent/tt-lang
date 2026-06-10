@@ -12,13 +12,11 @@ its own body):
   mask row (0 / -inf from the host covers ring validity and partial fill).
   Sliding-window layers.
 - ``make_flash_decode_kev_core``: V is the K stream (k_eq_v); global
-  layers, halves the cache stream.
+  layers, halves the cache stream. KV caches are bf16 (element-granular kv_append); a bfp8 cache plus tile-aligned append is a perf follow-up.
 
 Both leave unnormalized ``(o, m, l)`` in the output DFBs like the parent
 op, so the same tree-reduce / normalize cores fuse downstream.
 """
-
-import torch
 
 import ttl
 from ttl.ops.mcast import mcast, mcast_rows
@@ -58,7 +56,7 @@ def make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
 
         q_blk = q_in.wait()
         for _ in range(N_CHUNKS):
-            k_blk = ttl.math.typecast(k_cb.wait(), torch.bfloat16)
+            k_blk = k_cb.wait()
             mask_blk = mask_cb.wait()
             sv_w = sv_cb.reserve()
             sv_w.store(ttl.add(ttl.mul(q_blk @ ttl.transpose(k_blk),
@@ -96,7 +94,7 @@ def make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
             alpha_re = alpha_cb.reserve(); alpha_re.store(alpha)
 
             ex2 = ex_cb.wait()
-            v_blk = ttl.math.typecast(v_cb.wait(), torch.bfloat16)
+            v_blk = v_cb.wait()
             pv_w = pv_cb.reserve(); pv_w.store(ex2 @ v_blk)
 
             alpha2 = alpha_cb.wait()
@@ -140,7 +138,7 @@ def make_flash_decode_kev_core(B, PNHt, DHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
 
         q_blk = q_in.wait()
         for _ in range(N_CHUNKS):
-            k_blk = ttl.math.typecast(k_cb.wait(), torch.bfloat16)
+            k_blk = k_cb.wait()
             mask_blk = mask_cb.wait()
             sv_w = sv_cb.reserve()
             sv_w.store(ttl.add(ttl.mul(q_blk @ ttl.transpose(k_blk),
