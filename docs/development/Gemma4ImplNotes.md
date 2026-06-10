@@ -144,3 +144,11 @@ to circle back to.
   TRACE error (hg reserve "expression does not produce a value") - hg copy
   hoist leak into stage A; fix that first, then test stage A at reduced L1
   to split worker_l1 vs atom-content as hang cause.
+- OPEN: stage A trace fails 'cannot call .reserve() on hg_cb: expression
+  does not produce a value' at attn_atom.py:88 since rmsnorm/rope local
+  scratch (inliner hoist). Cap math says 32 ok; suspect tracer name
+  resolution for hg after hoisted insertion (alias or _lift_setup order).
+  Repro: pytest test_gemma_attn_atom. Hoist insertion now after last setup
+  (atom_inline). Full-atom hang debug queued: leave process alive, run
+  third-party/tt-metal/tools/triage triage.py --run=dump_callstacks
+  --run=dump_fast_dispatch --llm-output; kill+reset ONLY after.
