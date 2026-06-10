@@ -501,6 +501,10 @@ Lifetimes are computed per thread: from the first reserve/wait (bind position wh
 
 The reuse condition is checked against actual blocking acquires; control-flow guards (e.g. mutually exclusive per-core roles) do not refine it. `ttl-verify-dfb-spsc` runs afterwards and rejects shared indices with multiple producer or consumer threads on overlapping launch nodes; `--ttl-relax-dfb-spsc` removes that backstop and leaves SPSC discipline to the kernel author.
 
+### Pipe-attached DFBs never reuse
+
+For a pipe destination, `block_count` is not queue depth: each sender writes its own block, addressed by sender ordinal, so `block_count` must equal the sender count. Pipe lowering lays sender slots out per `cb_index`; two destinations on one index would concatenate their slot ranges and change the addressing. Pipe transfers also move data over NOC with semaphore protocol, outside the CB counters that make program-order lifetimes sound, and a sender's stage buffer is read asynchronously after its wait. Any DFB whose user chain reaches a pipe op or a `ttl.copy` with a pipe operand therefore keeps its dedicated index and block count.
+
 ### Runtime integration
 
 After rewriting indices, the pass recomputes `getNextAvailableDFBIndex` (max index + 1), checks `kMaxCircularBuffers` (32), and updates `ttl.base_cta_index` on every function. Two module attributes carry the result to the Python runtime: `ttl.compiler_allocated_dfbs` (one entry per physical index, sized to the largest member) and `ttl.dfb_index_map` (old -> new entries for moved user DFBs, applied to the CB config list before descriptors are built).
