@@ -76,3 +76,10 @@ to circle back to.
   with `if`.
 - Future: gather QKV per-head fanout via fp8 weights stream cuts W CB
   in half; mlp pad lives at 576 (Nt=18) for band divisibility.
+- Stage B pipework: one mcast_block call serves a whole multi-pipe net (one
+  block per src pipe lands on every dst); per-head O accumulation is gated
+  with index conditionals (`if row_c == qh % 2`); unused recv blocks must
+  be consumed (zero-weight matmul) — same rule as unused waits.
+- Composition direction (user): every op grows an inlinable DFB-boundary
+  core; wrappers carry tests/benches; layer atoms are PipeNets + cores
+  only. Monolithic atoms are scaffolding to retire.
