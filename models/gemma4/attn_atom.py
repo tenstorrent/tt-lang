@@ -124,8 +124,6 @@ def make_attn_atom(Ht, Dt, St, eps):
     n_chunks = 4
     chunk_t = St // n_chunks
     O_BAND = Ht // 4
-    if chunk_t != Dt:
-        raise ValueError(f"DFB sharing needs chunk_t == Dt: {chunk_t} != {Dt}")
 
     norm_core = make_rmsnorm_core(Ht, K_CH, Ht * TILE, eps)
     band_core = make_gemv_band_core(K_CH, 2, Dt)
