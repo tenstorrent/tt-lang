@@ -103,3 +103,4 @@ to circle back to.
   is stale vs synced working files (cost: stage A head-0 pcc -0.07
   deterministic until local-HEAD files were resent; reset/cache innocent).
 - ready net wait-for cycle: q recv(ready) -> obc mcast vs kv send(ready) -> orecv wait; decompose next
+- Cycle fix next: scheduler hint = post receive before dependent send. Hoist orecv dst publication ahead of the ready recv on q cores (mcast_block currently pubs after the role if), or carry the kv-ready token in qkv_red instead of a separate net.
