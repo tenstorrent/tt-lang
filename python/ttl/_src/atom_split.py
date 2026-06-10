@@ -129,6 +129,69 @@ _BLOCK_METHODS: Dict[str, str] = {
 _DFB_PRODUCING_METHODS: Set[str] = {"wait", "reserve"}
 
 
+# ----- shared call -> thread classification ---------------------------------
+
+
+def _materialize_thread(op: Optional[str], dm_thread: str) -> Optional[str]:
+    """Resolve a registry value to a concrete thread tag.
+
+    ``"dm"`` becomes the scope's DM thread (ncrisc by default, brisc inside an
+    if_src callback). Anything that is not a concrete thread (``"control"`` and
+    compile-time producers) returns None, since it does not pin a thread.
+    """
+    if op == "dm":
+        return dm_thread
+    if op in THREADS:
+        return op
+    return None
+
+
+def _classify_ttl_call(func: ast.expr, dm_thread: str) -> Optional[str]:
+    """Thread a registry-driven call pins to, or None when the call is not a
+    registry anchor (control op, bare-name call, block / DFB method, or a
+    chained call).
+
+    Handles ``ttl.<op>(...)``, ``ttl.<ns>.<name>(...)`` and
+    ``<recv>.if_src/if_dst(...)``, raising on an unknown ``ttl.<...>`` form so a
+    new op must be registered rather than silently mis-split. This is the
+    single source of the call->thread decision; both anchor tagging and
+    block-use collection route through it.
+    """
+    # ttl.<name>(...) or <recv>.if_src/if_dst(...)
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        recv = func.value.id
+        name = func.attr
+        if recv == "ttl":
+            op = _TTL_OPS.get(name)
+            if op is None:
+                raise _split_error(
+                    func,
+                    f"unknown ttl.{name}(...) call; register it in "
+                    f"atom_split._TTL_OPS with its thread "
+                    f"('trisc', 'dm', or 'control')",
+                )
+            return _materialize_thread(op, dm_thread)
+        if name in _PIPENET_METHODS:
+            return _PIPENET_METHODS[name]
+        return None
+
+    # ttl.<ns>.<name>(...)
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
+        outer = func.value
+        if isinstance(outer.value, ast.Name) and outer.value.id == "ttl":
+            ns = outer.attr
+            ns_thread = _TTL_NAMESPACES.get(ns)
+            if ns_thread is None:
+                raise _split_error(
+                    func,
+                    f"unknown ttl.{ns}.{func.attr}(...) call; register "
+                    f"namespace 'ttl.{ns}' in atom_split._TTL_NAMESPACES",
+                )
+            return _materialize_thread(ns_thread, dm_thread)
+
+    return None
+
+
 # ----- public API -----------------------------------------------------------
 
 
@@ -395,77 +458,30 @@ class _AnchorTagger:
         return None
 
     def _classify_call(self, call: ast.Call) -> Optional[str]:
-        """Return the thread of a Call ("trisc"/"ncrisc"/"brisc"/"control"),
-        or None if it isn't an anchor at all (e.g. ``range(...)``,
-        ``int(...)``, ``.wait()`` on a call result).
+        """Return the thread of a Call ("trisc"/"ncrisc"/"brisc"), or None if
+        it isn't an anchor at all (e.g. ``range(...)``, ``int(...)``,
+        ``.wait()`` on a call result). Raises on a ``ttl.<unknown>(...)`` form.
 
-        Raises if the call is a ``ttl.<unknown>(...)`` form.
+        Delegates the registry decision (ttl ops, namespaces, pipe dispatch)
+        to ``_classify_ttl_call``; resolves ``<block>.store/pop/push`` here,
+        since deferred block methods need this scope's inferred block threads.
         """
-        func = call.func
+        thread = _classify_ttl_call(call.func, self._dm_thread)
+        if thread is not None:
+            return thread
 
-        # ttl.<name>(...) or <recv>.<method>(...)
+        # <block>.<method>(...) where <block> is a producer in this scope.
+        func = call.func
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            recv = func.value.id
-            name = func.attr
-            if recv == "ttl":
-                op = _TTL_OPS.get(name)
-                if op is None:
-                    raise _split_error(
-                        call,
-                        f"unknown ttl.{name}(...) call; register it in "
-                        f"atom_split._TTL_OPS with its thread "
-                        f"('trisc', 'dm', or 'control')",
-                    )
-                return self._materialize_thread(op)
-            # <pipenet>.if_src/if_dst(...): method name alone is the discriminator.
-            if name in _PIPENET_METHODS:
-                return _PIPENET_METHODS[name]
-            # <block>.<method>(...)
-            if recv in self._producers:
-                method = _BLOCK_METHODS.get(name)
+            if func.value.id in self._producers:
+                method = _BLOCK_METHODS.get(func.attr)
                 if method == "trisc":
                     return "trisc"
                 if method == "deferred":
-                    bt = self.block_threads.get(recv)
+                    bt = self.block_threads.get(func.value.id)
                     if bt and len(bt) == 1:
                         return next(iter(bt))
-                    return None
-                return None
-            # <dfb>.wait()/.reserve() as an inner call: its producer-stmt
-            # handles the tagging at the enclosing Assign/With.
-            return None
-
-        # ttl.<ns>.<name>(...)
-        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
-            outer = func.value
-            if isinstance(outer.value, ast.Name) and outer.value.id == "ttl":
-                ns = outer.attr
-                ns_thread = _TTL_NAMESPACES.get(ns)
-                if ns_thread is None:
-                    raise _split_error(
-                        call,
-                        f"unknown ttl.{ns}.{func.attr}(...) call; register "
-                        f"namespace 'ttl.{ns}' in atom_split._TTL_NAMESPACES",
-                    )
-                return self._materialize_thread(ns_thread)
-            return None
-
-        # Bare Name call (range/int/len/...), chained call (.wait() on a Call),
-        # or other shapes: not an anchor.
         return None
-
-    def _materialize_thread(self, op: str) -> Optional[str]:
-        """Resolve a registry value to a concrete thread tag.
-
-        ``"dm"`` becomes the scope's current DM thread (ncrisc by default,
-        brisc inside an if_src callback). ``"control"`` returns None since
-        compile-time ops don't pin a thread.
-        """
-        if op == "dm":
-            return self._dm_thread
-        if op == "control":
-            return None
-        return op
 
     # --- post-check: forbid duplicate DM-side reserves ---
 
@@ -719,42 +735,19 @@ def _collect_block_users(
             if root in visible:
                 users[root].add(thread)
 
-    def classify(func, recv, name, visible, dm):
-        if recv == "ttl":
-            op = _TTL_OPS.get(name)
-            if op == "dm":
-                return dm
-            if op in THREADS:
-                return op
-            return None
-        if name in _PIPENET_METHODS:
-            return _PIPENET_METHODS[name]
-        if recv in visible and name == "store":
-            users[recv].add("trisc")
-            return "trisc"
-        return None
-
     def visit(node, visible, dm):
         if isinstance(node, ast.Call):
             func = node.func
-            thread: Optional[str] = None
+            thread = _classify_ttl_call(func, dm)
             sub_dm = dm
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                 recv = func.value.id
                 method = func.attr
-                thread = classify(func, recv, method, visible, dm)
+                if thread is None and recv in visible and method == "store":
+                    users[recv].add("trisc")
+                    thread = "trisc"
                 if method in _PIPENET_METHODS:
                     sub_dm = _PIPENET_METHODS[method]
-            elif isinstance(func, ast.Attribute) and isinstance(
-                func.value, ast.Attribute
-            ):
-                outer = func.value
-                if isinstance(outer.value, ast.Name) and outer.value.id == "ttl":
-                    ns_thread = _TTL_NAMESPACES.get(outer.attr)
-                    if ns_thread == "dm":
-                        thread = dm
-                    elif ns_thread in THREADS:
-                        thread = ns_thread
             if thread is not None:
                 record_call_args(node, thread, visible)
             for arg in node.args:

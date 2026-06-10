@@ -66,6 +66,14 @@ class DataflowBuffer:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
         if block_count < 1 or block_count > 32:
             raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
+        # A buffer's dtype has one source: a backing tensor or an explicit
+        # dtype. Supplying both is only valid when they resolve to the same type.
+        if dtype is not None and getattr(tensor, "dtype", None) is not None:
+            if _resolve_dfb_dtype(dtype) != _resolve_dfb_dtype(tensor.dtype):
+                raise ValueError(
+                    f"DataflowBuffer dtype {dtype!r} conflicts with backing "
+                    f"tensor dtype {tensor.dtype!r}; pass only one"
+                )
 
         self.tensor = tensor
         self.shape = shape
