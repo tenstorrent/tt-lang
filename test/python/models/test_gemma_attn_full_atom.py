@@ -6,7 +6,7 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""Fused pre-AR sliding attention atom vs torch reference."""
+"""Pre-AR sliding attention (patch atom + flash atom) vs torch reference."""
 
 import sys
 from pathlib import Path
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "models"))
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from gemma4.attn_atom import TILE, make_attn_atom
+from gemma4.attn_atom import TILE, make_attn_patch_atom, make_flash_atom
 from gemma4.layer import from_dev, row, to_dev
 
 
@@ -27,7 +27,7 @@ def rms(x, w, eps):
 
 
 def test_attn_full_atom():
-    device = ttnn.open_device(device_id=0, worker_l1_size=1_362_000)
+    device = ttnn.open_device(device_id=0)
     try:
         _run(device)
     finally:
@@ -92,10 +92,13 @@ def _run(device):
             to_dev(sin.expand(TILE, D).contiguous().to(torch.bfloat16), device),
             row(qknorm, D, device), to_dev(R.to(torch.bfloat16), device)]
     caches = [to_dev(c.to(torch.bfloat16), device) for c in (k_cache[0], k_cache[1], v_cache[0], v_cache[1])]
+    q_heads = to_dev(torch.zeros(4 * TILE, D, dtype=torch.bfloat16), device)
     o_heads = to_dev(torch.zeros(4 * TILE, D, dtype=torch.bfloat16), device)
 
-    atom = make_attn_atom(H // TILE, D // TILE, S // TILE, eps)
-    atom(*args, *caches, to_dev(pos_t, device), to_dev(masks, device), o_heads)
+    patch_atom = make_attn_patch_atom(H // TILE, D // TILE, S // TILE, eps)
+    patch_atom(*args, *caches, to_dev(pos_t, device), q_heads)
+    flash_atom = make_flash_atom(D // TILE, S // TILE)
+    flash_atom(q_heads, *caches, to_dev(masks, device), o_heads)
 
     got_heads = from_dev(o_heads).reshape(4, TILE, D)[:, 0, :].reshape(-1)
     got = got_heads.float() @ wo.float()

@@ -172,3 +172,23 @@ to circle back to.
   emitted C++ (literal loops folded). cb5 = pipe ready sends (per-dst
   unicast + sem inc + wait_min on acks before push); unbalanced rows are
   role-branch artifacts; branch-aware version is the next tool step.
+- Two-atom cut (sanctioned, dispatch count is a tunable): attn split into
+  make_attn_patch_atom (stage A + KV ring patch, (9,2)) and make_flash_atom
+  ((4,1)); dispatch order replaces the kv->q ready handshake whose pipes
+  deadlock today. OPEN: even with no handshake the patch atom hangs in
+  HOST land - workers idle, no kernels, host blocks in q_heads to_torch
+  readback; variants flip between hang / abort / segfault at close.
+  Sanity-checked card with kv_append + stage A (pass) - device fine.
+  Smells like generic_op launch-side memory corruption; repro is
+  /tmp/diag_split.py + bisect logs /tmp/ds*.log on card1.
+- Core utilization (planned, post-bringup per plan P5/P2 audits): today's
+  attn step uses 18 cores patch + 4 cores flash of 130. Path up: 32k flash
+  seq-splits across 8 cores per head (64 cores), flash combine over pipes;
+  RoPE/QK-norm on both grid rows; norm sharded over 4 cols (#671 block
+  subviews remove the xn DRAM stage); kv patch overlaps q rows on grid
+  row 1; full layer atom adds MLP + experts on remaining cores.
+- Cache read primitives needed: ttl.read_index (landed) covers runtime
+  positions; missing for utilization: block subview slices (#671) for
+  norm/QKV sharding; cross-chunk flash combine pipes (live merge instead
+  of one-core windows); a CB reset op (#679) before any cross-thread
+  slot sharing tightens the index budget further.

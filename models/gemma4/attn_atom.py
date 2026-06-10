@@ -109,37 +109,28 @@ def make_attn_heads_atom(Ht, Dt, eps):
     return attn_heads
 
 
-def make_attn_atom(Ht, Dt, St, eps):
-    """Full pre-AR sliding attention as core composition on a (9, 2) grid.
+def make_attn_patch_atom(Ht, Dt, St, eps):
+    """Stage A (norm, QKV, QK-norm/RoPE) + KV cache patch on a (9, 2) grid.
 
-    Stage A roles (norm col 0, QKV+head cols 1-8) plus: kv cores (5-8)
-    patch the ring cache via kv_patch_core and signal q cores; q cores
-    (1-4) run flash_decode_core over the cache, normalize, and mcast the
-    o heads to o_heads rows; the O projection runs as a separate GEMV atom
-    (CB-count cut until cross-thread index reuse lands).
+    Cols 1-4 write rotated q heads to ``q_heads`` rows; cols 5-8 patch the
+    ring caches at the runtime position. Flash runs as the next dispatch:
+    the kv->q ready handshake inside one atom deadlocks today (any DM copy
+    before a pipe_send hangs; see Gemma4ImplNotes), so dispatch order is
+    the synchronization.
     """
     K_BAND = Ht // 2
     K_CH = K_BAND // 2
-    n_chunks = 4
-    chunk_t = St // n_chunks
-    O_BAND = Ht // 4
 
     norm_core = make_rmsnorm_core(Ht, K_CH, Ht * TILE, eps)
     band_core = make_gemv_band_core(K_CH, 2, Dt)
     head_norm_core = make_rmsnorm_core(Dt, Dt, Dt * TILE, eps)
     rope_core = make_rope_core(Dt)
     patch_core = make_kv_patch_core(Dt)
-    flash_core = make_flash_window_core(1, chunk_t, Dt, n_chunks)
 
     @ttl.atom(grid=(9, 2), fp32_dest_acc_en=True)
-    def attn_atom(x, gamma, wqkv, cos, sin, qknorm, rot, kc0, kc1, vc0, vc1,
-                  pos_t, masks, o_heads):
+    def attn_patch(x, gamma, wqkv, cos, sin, qknorm, rot, kc0, kc1, vc0, vc1,
+                   pos_t, q_heads):
         col_c, row_c = ttl.node(dims=2)
-
-        # DM-streamed scratch shares slots manually across role-disjoint
-        # phases (cross-thread lifetimes stay coarse in finalize); compute
-        # scratch gets fine-grained compiler reuse. Pipe buffers dedicated.
-        fkv_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=1)
 
         nx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
         g_cb = ttl.make_dataflow_buffer_like(gamma, shape=(1, K_CH), block_count=2)
@@ -160,27 +151,11 @@ def make_attn_atom(Ht, Dt, St, eps):
         out_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
 
         pos_cb = ttl.make_dataflow_buffer_like(pos_t, shape=(1, 1), block_count=1)
-        fmask_cb = ttl.make_dataflow_buffer_like(masks, shape=(1, chunk_t), block_count=1)
         band_cb = ttl.make_dataflow_buffer_like(kc0, shape=(1, Dt), block_count=1)
-        tok_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1)
-        tok2_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1)
-        tok_stage = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
-
-        q_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
-        fo_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
-        fm_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
-        fl_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
-        ostage_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
 
         band0 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 0))])
         band1 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 1))])
         qkv_red = ttl.PipeNet([ttl.Pipe(src=(c, 1), dst=(c, 0)) for c in range(1, 9)])
-        ready_k = ttl.PipeNet(
-            [ttl.Pipe(src=(5, 0), dst=(slice(1, 3), 0)),
-             ttl.Pipe(src=(6, 0), dst=(slice(3, 5), 0))])
-        ready_v = ttl.PipeNet(
-            [ttl.Pipe(src=(7, 0), dst=(slice(1, 3), 0)),
-             ttl.Pipe(src=(8, 0), dst=(slice(3, 5), 0))])
 
         if col_c == 0 and row_c == 0:
             for c in range(4):
@@ -246,39 +221,56 @@ def make_attn_atom(Ht, Dt, St, eps):
                         ttl.copy(bb, vc0[rr:rr + 1, 0:Dt])
                     else:
                         ttl.copy(bb, vc1[rr:rr + 1, 0:Dt])
-                    ts = tok_stage.reserve(); ts.store(ttl.block.fill(1.0, shape=(1, 1)))
-                    if col_c < 7:
-                        pipe_send(ready_k, tok_stage)
-                    else:
-                        pipe_send(ready_v, tok_stage)
                 else:
-                    pipe_recv(ready_k, tok_cb)
-                    pipe_recv(ready_v, tok2_cb)
-                    t1 = tok_cb.wait()
-                    t2 = tok2_cb.wait()
-                    qw = q_cb.reserve()
-                    qw.store(ttl.mul(out_cb.wait(),
-                                     ttl.block.broadcast(ttl.mul(t1, t2), dims=[1], shape=(1, Dt))))
-                    for c in range(n_chunks):
-                        kd = fkv_cb.reserve()
-                        vd = fkv_cb.reserve()
-                        if col_c < 3:
-                            ttl.copy(kc0[c * chunk_t:(c + 1) * chunk_t, 0:Dt], kd)
-                            ttl.copy(vc0[c * chunk_t:(c + 1) * chunk_t, 0:Dt], vd)
-                        else:
-                            ttl.copy(kc1[c * chunk_t:(c + 1) * chunk_t, 0:Dt], kd)
-                            ttl.copy(vc1[c * chunk_t:(c + 1) * chunk_t, 0:Dt], vd)
-                        md = fmask_cb.reserve()
-                        ttl.copy(masks[c:c + 1, 0:chunk_t], md)
-                    flash_core(q_cb, fkv_cb, fkv_cb, fmask_cb, fo_cb, fm_cb, fl_cb)
-                    ofin = fo_cb.wait()
-                    mfin = fm_cb.wait()
-                    lfin = fl_cb.wait()
-                    os_w = ostage_cb.reserve()
-                    os_w.store(ttl.add(
-                        ttl.mul(ofin, ttl.block.broadcast(ttl.recip(lfin), dims=[1], shape=(1, Dt))),
-                        ttl.mul(ttl.block.broadcast(mfin, dims=[1], shape=(1, Dt)),
-                                ttl.block.fill(0.0, shape=(1, Dt)))))
-                    ttl.copy(ostage_cb.wait(), o_heads[col_c - 1:col_c, 0:Dt])
+                    ttl.copy(out_cb.wait(), q_heads[col_c - 1:col_c, 0:Dt])
 
-    return attn_atom
+    return attn_patch
+
+
+def make_flash_atom(Dt, St):
+    """Flash decode over patched caches on a (4, 1) grid; one head per col.
+
+    Reads the rotated q row from ``q_heads`` (written by the patch atom in
+    the prior dispatch) and the full ring cache, writes normalized o rows.
+    """
+    n_chunks = 4
+    chunk_t = St // n_chunks
+    flash_core = make_flash_window_core(1, chunk_t, Dt, n_chunks)
+
+    @ttl.atom(grid=(4, 1), fp32_dest_acc_en=True)
+    def flash_atom(q_heads, kc0, kc1, vc0, vc1, masks, o_heads):
+        col_c, row_c = ttl.node(dims=2)
+
+        q_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
+        fkv_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=1)
+        fmask_cb = ttl.make_dataflow_buffer_like(masks, shape=(1, chunk_t), block_count=1)
+        fo_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
+        fm_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+        fl_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+        ostage_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
+
+        qw = q_cb.reserve()
+        ttl.copy(q_heads[col_c:col_c + 1, 0:Dt], qw)
+        for c in range(n_chunks):
+            kd = fkv_cb.reserve()
+            vd = fkv_cb.reserve()
+            if col_c < 2:
+                ttl.copy(kc0[c * chunk_t:(c + 1) * chunk_t, 0:Dt], kd)
+                ttl.copy(vc0[c * chunk_t:(c + 1) * chunk_t, 0:Dt], vd)
+            else:
+                ttl.copy(kc1[c * chunk_t:(c + 1) * chunk_t, 0:Dt], kd)
+                ttl.copy(vc1[c * chunk_t:(c + 1) * chunk_t, 0:Dt], vd)
+            md = fmask_cb.reserve()
+            ttl.copy(masks[c:c + 1, 0:chunk_t], md)
+        flash_core(q_cb, fkv_cb, fkv_cb, fmask_cb, fo_cb, fm_cb, fl_cb)
+        ofin = fo_cb.wait()
+        mfin = fm_cb.wait()
+        lfin = fl_cb.wait()
+        os_w = ostage_cb.reserve()
+        os_w.store(ttl.add(
+            ttl.mul(ofin, ttl.block.broadcast(ttl.recip(lfin), dims=[1], shape=(1, Dt))),
+            ttl.mul(ttl.block.broadcast(mfin, dims=[1], shape=(1, Dt)),
+                    ttl.block.fill(0.0, shape=(1, Dt)))))
+        ttl.copy(ostage_cb.wait(), o_heads[col_c:col_c + 1, 0:Dt])
+
+    return flash_atom
