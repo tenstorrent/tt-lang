@@ -163,7 +163,10 @@ class SlidingChain:
         self.D, self.S = D, S
         self.Ht, self.Dt = H // TILE, D // TILE
         self.g_in = row(w["g_in"], H, device)
-        self.qknorm = row(w["qknorm"], D, device)
+        qkv_n = torch.zeros(TILE, D, dtype=torch.bfloat16)
+        for i, k in enumerate(("q_norm", "k_norm", "v_norm")):
+            qkv_n[i] = w[k].to(torch.bfloat16)
+        self.qknorm = to_dev(qkv_n, device)
         self.w_qkv = to_dev(w["w_qkv"].to(torch.bfloat16), device)
         self.w_o = to_dev(w["w_o"].to(torch.bfloat16), device)
         self.g_postattn = row(w["g_postattn"], H, device)
@@ -209,7 +212,8 @@ class GlobalChain:
         self.Ht, self.Dt = H // TILE, D // TILE
         self.rot = int(D * cfg.global_rot_frac)
         self.g_in = row(w["g_in"], H, device)
-        self.qknorm = row(w["qknorm"], D, device)
+        self.q_norm = row(w["q_norm"], D, device)
+        self.k_norm = row(w["k_norm"], D, device)
         self.w_q = to_dev(w["w_q"].to(torch.bfloat16), device)
         self.w_k = to_dev(w["w_k"].to(torch.bfloat16), device)
         self.w_o = to_dev(w["w_o"].to(torch.bfloat16), device)
@@ -223,10 +227,10 @@ class GlobalChain:
         self.attn_n, self.h = buf(device, H), buf(device, H)
         self.ffn = FFNChain(w, device, cfg)
 
-    def head_rot(self, src, hidx):
+    def head_rot(self, src, hidx, nw):
         cfg, st, Dt = self.cfg, self.st, self.Dt
         atom(make_copy, 1, 1, Dt, Dt, a_off=(0, hidx * Dt))(src, self.hd)
-        atom(make_rmsnorm, 1, 1, Dt, Dt, self.D, cfg.eps)(self.hd, self.qknorm, self.hh)
+        atom(make_rmsnorm, 1, 1, Dt, Dt, self.D, cfg.eps)(self.hd, nw, self.hh)
         atom(make_rope, Dt, self.rot // TILE)(self.hh, st.cos_gl, st.sin_gl, self.hr)
         return self.hr
 
@@ -240,10 +244,10 @@ class GlobalChain:
         atom(make_gemv, TILE, H, self.kvh * D, (8, 2), 4)(self.xn, self.w_k, self.k)
 
         for kv in range(self.kvh):
-            kr = self.head_rot(self.k, kv)
+            kr = self.head_rot(self.k, kv, self.k_norm)
             atom(make_kv_append, S // TILE, Dt)(self.caches[kv], kr, st.pos_abs, self.caches[kv])
         for h in range(self.qh):
-            qr = self.head_rot(self.q, h)
+            qr = self.head_rot(self.q, h, self.q_norm)
             atom(make_flash_decode_kev, 1, 1, 1, Dt, 8, S // chunk)(
                 qr, self.caches[h // 2], st.mask_gl, self.o, self.m, self.l)
             atom(make_row_scale, Dt, 8, fn=ttl.recip)(self.o, self.l, self.of)

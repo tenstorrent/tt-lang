@@ -85,7 +85,10 @@ def make_attn_heads_atom(Ht, Dt, eps):
                 ttl.copy(wqkv[kr + ch * K_CH:kr + (ch + 1) * K_CH, nd:nd + Dt], wd)
 
             if row_c == 0:
-                gq = hg_cb.reserve(); ttl.copy(qknorm[0:1, 0:Dt], gq)
+                # qknorm rows: 0 = q_norm, 1 = k_norm, 2 = v_norm (cols 1-4
+                # are q heads, 5-6 k, 7-8 v).
+                nr = 0 if col_c < 5 else (1 if col_c < 7 else 2)
+                gq = hg_cb.reserve(); ttl.copy(qknorm[nr:nr + 1, 0:Dt], gq)
                 pipe_recv(qkv_red, recv_cb)
                 hd = head_cb.reserve()
                 hd.store(ttl.add(part_cb.wait(), recv_cb.wait()))

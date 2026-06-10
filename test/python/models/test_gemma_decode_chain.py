@@ -69,12 +69,15 @@ def rand_w(cfg, kind):
     w["w_down"][:inter] = torch.randn(inter, H) * 0.02
     if kind == "sliding":
         D = cfg.head_dim
-        w["qknorm"] = 1 + torch.randn(D) * 0.1
+        w["q_norm"] = 1 + torch.randn(D) * 0.1
+        w["k_norm"] = 1 + torch.randn(D) * 0.1
+        w["v_norm"] = torch.ones(D)
         w["w_qkv"] = torch.randn(H, 8 * D) * 0.02
         w["w_o"] = torch.randn(4 * D, H) * 0.02
     else:
         D = cfg.global_head_dim
-        w["qknorm"] = 1 + torch.randn(D) * 0.1
+        w["q_norm"] = 1 + torch.randn(D) * 0.1
+        w["k_norm"] = 1 + torch.randn(D) * 0.1
         w["w_q"] = torch.randn(H, 4 * D) * 0.02
         w["w_k"] = torch.randn(H, cfg.global_kv_heads * D) * 0.02
         w["w_o"] = torch.randn(4 * D, H) * 0.02
@@ -99,16 +102,16 @@ class TorchLayer:
         xn = rms(x, w["g_in"], eps)
         if self.kind == "sliding":
             heads = [xn @ w["w_qkv"][:, i * D:(i + 1) * D] for i in range(8)]
-            q = [rope_full(rms(h, w["qknorm"], eps), pos, rot, theta) for h in heads[:4]]
-            k = [rope_full(rms(h, w["qknorm"], eps), pos, rot, theta) for h in heads[4:6]]
-            v = [rms(h, w["qknorm"], eps) for h in heads[6:8]]
+            q = [rope_full(rms(h, w["q_norm"], eps), pos, rot, theta) for h in heads[:4]]
+            k = [rope_full(rms(h, w["k_norm"], eps), pos, rot, theta) for h in heads[4:6]]
+            v = [rms(h, w["v_norm"], eps) for h in heads[6:8]]
             ring = pos % self.S
             for i in range(2):
                 self.kc[i][ring], self.vc[i][ring] = k[i], v[i]
         else:
-            q = [rope_full(rms(xn @ w["w_q"][:, h * D:(h + 1) * D], w["qknorm"], eps),
+            q = [rope_full(rms(xn @ w["w_q"][:, h * D:(h + 1) * D], w["q_norm"], eps),
                            pos, rot, theta) for h in range(4)]
-            k = [rope_full(rms(xn @ w["w_k"][:, h * D:(h + 1) * D], w["qknorm"], eps),
+            k = [rope_full(rms(xn @ w["w_k"][:, h * D:(h + 1) * D], w["k_norm"], eps),
                            pos, rot, theta) for h in range(2)]
             for i in range(2):
                 self.kc[i][pos] = k[i]
