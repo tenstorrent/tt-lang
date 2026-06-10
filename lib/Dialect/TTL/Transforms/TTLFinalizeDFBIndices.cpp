@@ -184,8 +184,48 @@ struct TTLFinalizeDFBIndicesPass
       // entry, so the start is refined to the first acquire below.
       extendInterval(dfb, bindOp, func, *order);
 
+      // Pipe destinations are slot-addressed (block_count == sender count)
+      // and pipe sends read asynchronously, so pipe-attached DFBs keep
+      // dedicated indices.
+      // A DFB participates in a pipe through a ttl.copy whose other operand
+      // is a pipe, or through pipe_recv guards.
+      auto isPipeOp = [](Operation *op) {
+        if (op->getName().getStringRef().contains("pipe")) {
+          return true;
+        }
+        return llvm::any_of(op->getOperands(), [](Value operand) {
+          return mlir::isa<PipeType>(operand.getType());
+        });
+      };
+      // Pipe sends/receives reach a block through view chains (extract_slice,
+      // attach_cb, casts); walk a few hops of users.
+      auto markPipeUsers = [&](Value view) {
+        SmallVector<Value> worklist{view};
+        for (int depth = 0; depth < 3 && !worklist.empty(); ++depth) {
+          SmallVector<Value> next;
+          for (Value v : worklist) {
+            for (Operation *user : v.getUsers()) {
+              if (isPipeOp(user)) {
+                dfb.eligible = false;
+                return;
+              }
+              for (Value result : user->getResults()) {
+                next.push_back(result);
+              }
+            }
+          }
+          worklist = std::move(next);
+        }
+      };
+
       for (Operation *user : bindOp.getResult().getUsers()) {
         extendInterval(dfb, user, func, *order);
+        if (isPipeOp(user)) {
+          dfb.eligible = false;
+        }
+        if (auto reserveOp = dyn_cast<CBReserveOp>(user)) {
+          markPipeUsers(reserveOp.getResult());
+        }
         if (isa<CBReserveOp, CBWaitOp>(user)) {
           int64_t pos = order->index(user, func);
           auto [it, inserted] =
@@ -203,9 +243,11 @@ struct TTLFinalizeDFBIndicesPass
         // A consumed block stays live until its last reader: follow
         // wait -> readers -> attach_cb -> consumers one level deep.
         if (auto waitOp = dyn_cast<CBWaitOp>(user)) {
+          markPipeUsers(waitOp.getResult());
           for (Operation *reader : waitOp.getResult().getUsers()) {
             extendInterval(dfb, reader, func, *order);
             if (auto attachOp = dyn_cast<AttachCBOp>(reader)) {
+              markPipeUsers(attachOp.getResult());
               for (Operation *consumer : attachOp.getResult().getUsers()) {
                 extendInterval(dfb, consumer, func, *order);
               }

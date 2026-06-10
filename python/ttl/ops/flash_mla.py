@@ -53,7 +53,7 @@ def make_flash_shard_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
         red_cb       = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
         mn_cb        = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
         alpha_cb     = ttl.make_dfb("bf16", shape=(PNHt, 1),          block_count=2)
-        pv_cb        = ttl.make_dfb("bf16", shape=(PNHt, vDHt),       block_count=2)
+        pv_cb        = ttl.make_dfb("bf16", shape=(PNHt, vDHt),       block_count=1)
 
         # The running m / l / o accumulators live in the output DFBs directly:
         # each chunk waits the prior value and reserves the next, and the final
@@ -133,8 +133,8 @@ def make_flash_shard(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0
         col_c, row_c = ttl.node(dims=2)
 
         q_net = ttl.PipeNet(mcast_rows(B, n_cols))
-        q_stage = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
-        q_recv = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
+        q_stage = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=1)
+        q_recv = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=1)
         o_b = ttl.make_dataflow_buffer_like(out_o, shape=(PNHt, vDHt), block_count=2)
         m_b = ttl.make_dataflow_buffer_like(out_m, shape=(PNHt, 1), block_count=2)
         l_b = ttl.make_dataflow_buffer_like(out_l, shape=(PNHt, 1), block_count=2)
@@ -413,8 +413,8 @@ def make_flash_mla(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
     @ttl.atom()
     def q_shard(q, k, v, o_out: ttl.DFB, m_out: ttl.DFB, l_out: ttl.DFB):
         q_net = ttl.PipeNet(mcast_rows(B, n_cols))
-        q_stage = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
-        q_recv = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=2)
+        q_stage = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=1)
+        q_recv = ttl.make_dataflow_buffer_like(q, shape=(PNHt, DHt), block_count=1)
         mcast(q_net, q[0:PNHt, 0:DHt], q_stage, q_recv)
         shard(q_recv, k, v, o_out, m_out, l_out)
 
@@ -426,7 +426,7 @@ def make_flash_mla(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
         # nout gets its own DFB: the datamovement drain below waits it on
         # NCRISC, and aliasing it onto the unnormalized partial lets NCRISC read
         # the wrong tile under the relaxed SPSC guard.
-        nout = ttl.make_dataflow_buffer_like(norm_out, shape=(PNHt, vDHt), block_count=2)
+        nout = ttl.make_dataflow_buffer_like(norm_out, shape=(PNHt, vDHt), block_count=1)
         reduce(o_in, m_in, l_in, to, tl)
         normalize(to, tl, nout)
         if col_c == 0:
