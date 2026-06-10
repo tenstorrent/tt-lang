@@ -233,3 +233,12 @@ to circle back to.
   dense MLP + 8 routed experts, 7 norms, both residuals, layer_scalar
   (folded into the final residual add as mul-by-fill). Host does only the
   router; activations never leave device. ~30 dispatches, well under 60s.
+- Global attention chain on hw: gemv q/k, head extract via make_copy, full
+  qk norm + partial rope (rot 128 theta 1e6), kv_append into seq-shard
+  cache, flash kev, make_row_scale finalize, o gemv. PCC > 0.98.
+- Embed->final norm->lm_head chain on hw; greedy argmax matches torch
+  (softcap is monotone, host argmax stays until a wide argmax op exists).
+- MILESTONE: DecodeChain (models/gemma4/decode_chain.py) runs embed -> 2x
+  sliding + global -> lm_head, two consecutive decode steps PCC > 0.97.
+  Atom factories memoized; per-expert gate scale read from device tensor
+  (no recompile per token). Host: routing + argmax.
