@@ -102,3 +102,4 @@ to circle back to.
 - Remote pitfall: never git-checkout compiler files on the remote; its HEAD
   is stale vs synced working files (cost: stage A head-0 pcc -0.07
   deterministic until local-HEAD files were resent; reset/cache innocent).
+- ready net wait-for cycle: q recv(ready) -> obc mcast vs kv send(ready) -> orecv wait; decompose next
