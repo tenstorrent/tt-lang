@@ -1093,6 +1093,9 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 /// get_write_ptr).
 static bool isBlockFromCBWait(Value block) {
   block = traceUnrealizedCasts(block);
+  while (auto attach = block.getDefiningOp<AttachCBOp>()) {
+    block = traceUnrealizedCasts(attach.getTensor());
+  }
   if (auto viewLike = llvm::dyn_cast_if_present<ViewLikeOpInterface>(
           block.getDefiningOp())) {
     return llvm::isa<CBWaitOp>(viewLike.getOperation());
