@@ -138,3 +138,9 @@ to circle back to.
   deadlock. Suspect 9x2 grid done-signal counting or read-back. Next: drain
   q rows from o_heads on host, compare against grid signaling; check
   generated runner waits per-core done count.
+- Hang isolation: standalone (no pytest) also hangs; watcher shows ALL cores
+  idle, no kernels launched (k_ids 0) => host stalls pre-dispatch with
+  workers never started. Stage A under worker_l1_size=1_362_000 hits a
+  TRACE error (hg reserve "expression does not produce a value") - hg copy
+  hoist leak into stage A; fix that first, then test stage A at reduced L1
+  to split worker_l1 vs atom-content as hang cause.
