@@ -10,10 +10,9 @@ gate/up and down projections; the fused decode atom inlines the body so
 g and u arrive in DFBs instead of DRAM.
 """
 
-import ttl
 from ttl.ops.elementwise import make_binary
 
 
-def make_swiglu(Rt, PNt, Dt, WCt):
+def make_swiglu(Rt, PNt, Dt, WCt, **kwargs):
     """gelu(g) * u over ``Rt`` row-tiles by ``Dt`` width-tiles."""
-    return make_binary(lambda g, u: ttl.mul(ttl.gelu(g), u), Rt, PNt, Dt, WCt)
+    return make_binary("swiglu", Rt, PNt, Dt, WCt, **kwargs)
