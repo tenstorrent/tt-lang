@@ -198,3 +198,10 @@ to circle back to.
   hoisted to body top level (same structure as the passing diag). Deltas
   left: kv chain reads all four caches + q_heads readback after write.
   Card sanity (kv_append, stage A) passes between runs.
+- tools/cb_blocks.py: per-top-level-branch CB credit counts (loops folded).
+  Patch atom imbalances: cb0 trisc waits 4 vs ncrisc pushes 3; cb4 (head
+  staging) waits 6 vs reserves 5. The head_cb bc3 staging (hd, h=wait,
+  h2.store(h), h3.store(h), core waits x2) emits 1 extra wait without a
+  push; cb0 producer short one push. Validates the unbalanced-CB theory
+  for the launch hang. Fix: restage head feed (e.g. hd + h2 only with
+  norm core consuming hd, h2; or producer pushes 4).
