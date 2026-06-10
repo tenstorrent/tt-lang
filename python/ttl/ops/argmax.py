@@ -7,7 +7,8 @@
 Three stages over 256-wide chunks: (1) the logits row is restacked one
 chunk per tile row, and per-row top-1 (topk machinery, bf16-exact local
 ids 0..255) leaves a value/id column; (2) a column collapse copies the
-``n_chunks`` winners into a row; (3) top-1 over the chunk-winner row plus
+``n_chunks`` winners into a row (one dispatch for values, one for ids);
+(3) top-1 over the chunk-winner row plus
 a gather of the chunk-local id yields ``token = chunk * 256 + local``,
 written split (tile row, intra row) so embed gather / kv_append consume
 it directly. Quotient/remainder of the local id come from step-invariant
@@ -35,74 +36,68 @@ def make_restack(n_chunks):
     return restack
 
 
-def make_collapse(n_chunks):
-    """vals[c, 0], ids[c, 0] (element columns 0/32) -> rows 0/1 of out."""
+def make_collapse(n_chunks, out_row=0):
+    """col[c, 0] (element column 0) -> out[out_row, c].
+
+    Single source so each DFB keeps one consumer thread; the caller
+    dispatches it once for values and once for ids (the latter into the
+    token-select stage row).
+    """
     nt = (n_chunks + TILE - 1) // TILE
 
     @ttl.atom(grid=(1, 1))
-    def collapse(vals, ids, out):
-        v_cb = ttl.make_dataflow_buffer_like(vals, shape=(nt, 1), block_count=1)
-        i_cb = ttl.make_dataflow_buffer_like(ids, shape=(nt, 1), block_count=1)
+    def collapse(col, out):
+        c_cb = ttl.make_dataflow_buffer_like(col, shape=(1, 1), block_count=2)
         o_cb = ttl.make_dataflow_buffer_like(out, shape=(1, nt), block_count=1)
 
-        vd = v_cb.reserve()
-        ttl.copy(vals[0:nt, 0:1], vd)
-        idd = i_cb.reserve()
-        ttl.copy(ids[0:nt, 0:1], idd)
-        vb, ib = v_cb.wait(), i_cb.wait()
         od = o_cb.reserve()
-        # topk wrote chunk c's winner at tile row c -> element row c*32.
+        # topk wrote chunk c's winner at tile row c, element (0, 0).
         for c in range(n_chunks):
-            ttl.raw_element_write(od, 0, c, ttl.raw_element_read(vb, c * TILE, 0))
-            ttl.raw_element_write(od, 1, c, ttl.raw_element_read(ib, c * TILE, 0))
-        ttl.copy(o_cb.wait(), out[0:1, 0:nt])
+            cd = c_cb.reserve()
+            ttl.copy(col[c:c + 1, 0:1], cd)
+            cb = c_cb.wait()
+            ttl.raw_element_write(od, 0, c, ttl.raw_element_read(cb, 0, 0))
+        ttl.copy(o_cb.wait(), out[out_row:out_row + 1, 0:nt])
 
     return collapse
 
 
 def make_token_select(n_chunks):
-    """rows (vals, local ids) + winner chunk id -> token (row, intra) tile.
+    """local-id row + winner chunk id -> token (row, intra) tile.
 
-    ``win`` holds the winning chunk id at element (0, 0) (topk output).
-    LUT rows (step-invariant, host-staged once): 0 = local // 32,
-    1 = local % 32 over 256, 2 = chunk * 8 over n_chunks. token =
-    win*256 + local, emitted as (token // 32, token % 32) = (win*8 +
-    local//32, local%32): the two pieces land in separate zeroed tiles
-    via raw gathers and a tile add combines them (no scalar arithmetic
-    on the DM thread).
+    ``stage`` packs everything the gather reads, so one DFB wait serves
+    all of it (one consumer thread, like collapse). Tile rows: 0 = LUT
+    (element rows 0 = local // 32, 1 = local % 32 over 256, 2 = chunk *
+    8 over n_chunks), 1 = chunk-local id row, 2 = winner chunk id at
+    (0, 0). token = win*256 + local, emitted as (token // 32, token %
+    32) = (win*8 + local//32, local%32): the two pieces land in
+    separate zeroed tensors via DM-only raw gathers; the caller
+    combines them with a tile add.
     """
     nt = (n_chunks + TILE - 1) // TILE
+    if nt > Wt:
+        raise ValueError(f"n_chunks {n_chunks} exceeds stage row width {CHUNK}")
 
     @ttl.atom(grid=(1, 1))
-    def token_select(cw, win, lut, zero, out):
-        c_cb = ttl.make_dataflow_buffer_like(cw, shape=(1, nt), block_count=1)
-        w_cb = ttl.make_dataflow_buffer_like(win, shape=(1, 1), block_count=1)
-        l_cb = ttl.make_dataflow_buffer_like(lut, shape=(1, Wt), block_count=1)
-        a_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
-        b_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
-        o_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    def token_select(stage, zero, out_a, out_b):
+        s_cb = ttl.make_dataflow_buffer_like(stage, shape=(3, Wt), block_count=1)
+        a_cb = ttl.make_dataflow_buffer_like(out_a, shape=(1, 1), block_count=1)
+        b_cb = ttl.make_dataflow_buffer_like(out_b, shape=(1, 1), block_count=1)
 
-        cd = c_cb.reserve()
-        ttl.copy(cw[0:1, 0:nt], cd)
-        wd = w_cb.reserve()
-        ttl.copy(win[0:1, 0:1], wd)
-        ld = l_cb.reserve()
-        ttl.copy(lut[0:1, 0:Wt], ld)
-
-        cb, wb, lb = c_cb.wait(), w_cb.wait(), l_cb.wait()
-        j = ttl.read_index(wb, 0, 0)
-        local = ttl.read_index(cb, 1, j)
+        sd = s_cb.reserve()
+        ttl.copy(stage[0:3, 0:Wt], sd)
+        sb = s_cb.wait()
+        j = ttl.read_index(sb, 2 * TILE, 0)
+        local = ttl.read_index(sb, TILE, j)
 
         ad = a_cb.reserve()
         ttl.copy(zero[0:1, 0:1], ad)
-        ttl.raw_element_write(ad, 0, 0, ttl.raw_element_read(lb, 2, j))
+        ttl.raw_element_write(ad, 0, 0, ttl.raw_element_read(sb, 2, j))
+        ttl.copy(a_cb.wait(), out_a[0:1, 0:1])
         bd = b_cb.reserve()
         ttl.copy(zero[0:1, 0:1], bd)
-        ttl.raw_element_write(bd, 0, 0, ttl.raw_element_read(lb, 0, local))
-        ttl.raw_element_write(bd, 0, 1, ttl.raw_element_read(lb, 1, local))
-
-        ow = o_cb.reserve()
-        ow.store(ttl.add(a_cb.wait(), b_cb.wait()))
-        ttl.copy(o_cb.wait(), out[0:1, 0:1])
+        ttl.raw_element_write(bd, 0, 0, ttl.raw_element_read(sb, 0, local))
+        ttl.raw_element_write(bd, 0, 1, ttl.raw_element_read(sb, 1, local))
+        ttl.copy(b_cb.wait(), out_b[0:1, 0:1])
 
     return token_select

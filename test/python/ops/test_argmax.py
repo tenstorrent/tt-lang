@@ -14,6 +14,7 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttl.ops.argmax import CHUNK, make_collapse, make_restack, make_token_select
+from ttl.ops.elementwise import make_add, make_copy
 from ttl.ops.topk import make_topk
 
 TILE, V = 32, 2048
@@ -45,18 +46,23 @@ def test_argmax_chain(device):
         tok = to_dev(z(TILE, TILE, dtype=torch.bfloat16), device)
         ramp256 = to_dev(torch.arange(CHUNK, dtype=torch.bfloat16).unsqueeze(0).repeat(TILE, 1), device)
         rampn = to_dev(torch.arange(nt * TILE, dtype=torch.bfloat16).unsqueeze(0).repeat(TILE, 1), device)
-        lut = z(TILE, CHUNK)
-        lut[0] = torch.arange(CHUNK) // TILE
-        lut[1] = torch.arange(CHUNK) % TILE
-        lut[2, :n_chunks] = torch.arange(n_chunks) * (CHUNK // TILE)
-        lut_d = to_dev(lut.to(torch.bfloat16), device)
+        stage_init = z(3 * TILE, CHUNK)
+        stage_init[0] = torch.arange(CHUNK) // TILE
+        stage_init[1] = torch.arange(CHUNK) % TILE
+        stage_init[2, :n_chunks] = torch.arange(n_chunks) * (CHUNK // TILE)
+        stage = to_dev(stage_init.to(torch.bfloat16), device)
         zero = to_dev(z(TILE, TILE, dtype=torch.bfloat16), device)
 
+        tok_a = to_dev(z(TILE, TILE, dtype=torch.bfloat16), device)
+        tok_b = to_dev(z(TILE, TILE, dtype=torch.bfloat16), device)
         make_restack(n_chunks)(to_dev(logits, device), tall)
         make_topk(n_chunks, 1, CHUNK // TILE, 1, CHUNK)(tall, ramp256, vals, ids)
-        make_collapse(n_chunks)(vals, ids, cw)
+        make_collapse(n_chunks)(vals, cw)
+        make_collapse(n_chunks, out_row=1)(ids, stage)
         make_topk(1, 1, nt, 1, nt * TILE)(cw, rampn, wv, wi)
-        make_token_select(n_chunks)(cw, wi, lut_d, zero, tok)
+        make_copy(1, 1, 1, 1, out_off=(2, 0))(wi, stage)
+        make_token_select(n_chunks)(stage, zero, tok_a, tok_b)
+        make_add(1, 1, 1, 1)(tok_a, tok_b, tok)
 
         t = ttnn.to_torch(tok).float()
         assert int(t[0, 0]) * TILE + int(t[0, 1]) == want
