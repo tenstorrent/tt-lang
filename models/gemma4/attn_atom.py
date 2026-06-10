@@ -41,6 +41,7 @@ def make_attn_heads_atom(Ht, Dt, eps):
         col_c, row_c = ttl.node(dims=2)
 
         nx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
+        g_cb = ttl.make_dataflow_buffer_like(gamma, shape=(1, K_CH), block_count=2)
         xn_stage = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
 
         xb_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
@@ -48,9 +49,9 @@ def make_attn_heads_atom(Ht, Dt, eps):
         part_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         send_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         recv_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
-        head_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=2)
+        head_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=3)
 
-        hx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=2)
+        hg_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=1)
         hn_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         c_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=1)
         s_cb = ttl.make_dataflow_buffer_like(sin, shape=(1, Dt), block_count=1)
@@ -66,8 +67,8 @@ def make_attn_heads_atom(Ht, Dt, eps):
                 xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
             for c in range(4):
                 xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
-                gd = nx_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
-            norm_core(nx_cb, nx_cb, xn_stage)
+                gd = g_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
+            norm_core(nx_cb, g_cb, xn_stage)
         for ch in range(2):
             mcast_block(band0, xn_stage, xb_cb)
         for ch in range(2):
@@ -89,10 +90,9 @@ def make_attn_heads_atom(Ht, Dt, eps):
                 hd = head_cb.reserve()
                 hd.store(ttl.add(part_cb.wait(), recv_cb.wait()))
                 h = head_cb.wait()
-                hx0 = hx_cb.reserve(); hx0.store(h)
-                hre = head_cb.reserve(); hre.store(h)
-                hx1 = hx_cb.reserve(); hx1.store(head_cb.wait())
-                head_norm_core(hx_cb, hg_cb, hn_cb)
+                h2 = head_cb.reserve(); h2.store(h)
+                h3 = head_cb.reserve(); h3.store(h)
+                head_norm_core(head_cb, hg_cb, hn_cb)
                 if col_c < 7:
                     cd = c_cb.reserve(); ttl.copy(cos[0:1, 0:Dt], cd)
                     sd2 = s_cb.reserve(); ttl.copy(sin[0:1, 0:Dt], sd2)
@@ -142,6 +142,7 @@ def make_attn_atom(Ht, Dt, St, eps):
         fkv_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=1)
 
         nx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
+        g_cb = ttl.make_dataflow_buffer_like(gamma, shape=(1, K_CH), block_count=2)
         xn_stage = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
 
         xb_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
@@ -149,9 +150,8 @@ def make_attn_atom(Ht, Dt, St, eps):
         part_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         send_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         recv_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
-        head_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
+        head_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=3)
 
-        hx_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
         hn_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         c_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
         hg_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=1)
@@ -187,8 +187,8 @@ def make_attn_atom(Ht, Dt, St, eps):
                 xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
             for c in range(4):
                 xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
-                gd = nx_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
-            norm_core(nx_cb, nx_cb, xn_stage)
+                gd = g_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
+            norm_core(nx_cb, g_cb, xn_stage)
         for ch in range(2):
             mcast_block(band0, xn_stage, xb_cb)
         for ch in range(2):
@@ -210,10 +210,9 @@ def make_attn_atom(Ht, Dt, St, eps):
                 hd = head_cb.reserve()
                 hd.store(ttl.add(part_cb.wait(), recv_cb.wait()))
                 h = head_cb.wait()
-                hx0 = hx_cb.reserve(); hx0.store(h)
-                hre = head_cb.reserve(); hre.store(h)
-                hx1 = hx_cb.reserve(); hx1.store(head_cb.wait())
-                head_norm_core(hx_cb, hg_cb, hn_cb)
+                h2 = head_cb.reserve(); h2.store(h)
+                h3 = head_cb.reserve(); h3.store(h)
+                head_norm_core(head_cb, hg_cb, hn_cb)
                 if col_c < 7:
                     cd = c_cb.reserve(); ttl.copy(cos[0:1, 0:Dt], cd)
                     sd2 = s_cb.reserve(); ttl.copy(sin[0:1, 0:Dt], sd2)
@@ -227,6 +226,7 @@ def make_attn_atom(Ht, Dt, St, eps):
                     pd = pos_cb.reserve(); ttl.copy(pos_t[0, 0], pd)
                     pb = pos_cb.wait()
                     rr = ttl.read_index(pb, 0, 0)
+                    intra = ttl.read_index(pb, 0, 1)
                     bd = band_cb.reserve()
                     if col_c == 5:
                         ttl.copy(kc0[rr:rr + 1, 0:Dt], bd)
@@ -237,7 +237,7 @@ def make_attn_atom(Ht, Dt, St, eps):
                     else:
                         ttl.copy(vc1[rr:rr + 1, 0:Dt], bd)
                     bb = band_cb.wait()
-                    patch_core(out_cb, band_cb, pos_cb)
+                    patch_core(out_cb, bb, intra)
                     if col_c == 5:
                         ttl.copy(bb, kc0[rr:rr + 1, 0:Dt])
                     elif col_c == 6:

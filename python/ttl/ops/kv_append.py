@@ -18,6 +18,7 @@ TILE = 32
 
 def make_kv_append(St, Dt):
     """Patch ``cache[(pos//32) tile row]`` row ``pos%32`` with ``k[0, :]``."""
+    patch_core = make_kv_patch_core(Dt)
 
     @ttl.atom(grid=(1, 1))
     def kv_append(cache, k, pos, out):
@@ -33,14 +34,11 @@ def make_kv_append(St, Dt):
 
         kd = k_cb.reserve()
         ttl.copy(k[0:1, 0:Dt], kd)
-        k_blk = k_cb.wait()
 
         bd = band_cb.reserve()
         ttl.copy(cache[r:r + 1, 0:Dt], bd)
         band = band_cb.wait()
-        for c in range(Dt * TILE):
-            v = ttl.raw_element_read(k_blk, 0, c)
-            ttl.raw_element_write(band, intra, c, v)
+        patch_core(k_cb, band, intra)
         ttl.copy(band, out[r:r + 1, 0:Dt])
 
     return kv_append
@@ -48,15 +46,14 @@ def make_kv_append(St, Dt):
 
 def make_kv_patch_core(Dt):
     """Inlinable cache-row patch: write all elements of ``k_in`` row 0 into
-    ``band`` at row ``intra``. The caller copies the cache band in and back
-    out around it (read_index supplies the offsets)."""
+    block ``bb`` at row ``intra``. ``bb``/``intra`` are the caller's waited
+    band block and row index: the caller owns the single wait on the band
+    so the patch shares its DM thread (a second wait inside the core can
+    land on the other DM thread and deadlock against the copy-back)."""
 
     @ttl.atom()
-    def kv_patch_core(k_in: ttl.DFB, band: ttl.DFB, pos_blk: ttl.DFB):
+    def kv_patch_core(k_in, bb, intra):
         kb = k_in.wait()
-        bb = band.wait()
-        pb = pos_blk.wait()
-        intra = ttl.read_index(pb, 0, 1)
         for c in range(Dt * TILE):
             v = ttl.raw_element_read(kb, 0, c)
             ttl.raw_element_write(bb, intra, c, v)
