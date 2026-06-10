@@ -133,3 +133,8 @@ to circle back to.
   signposts per phase on q cores; suspect fl/fmask bc1 recurrence or the
   q tok gate. Known-good single-buffer hang patterns in
   ~/Downloads/ttl_blaze_examples.md (private; do not cite here).
+- Hang diagnosis (TT_METAL_WATCHER): worker cores all idle/done (smsg DDDD),
+  only dispatch cores wait (UAPW/NWBD) - host-side completion hang, not a CB
+  deadlock. Suspect 9x2 grid done-signal counting or read-back. Next: drain
+  q rows from o_heads on host, compare against grid signaling; check
+  generated runner waits per-core done count.
