@@ -118,3 +118,8 @@ to circle back to.
   finalize recordRole: reserves dropped on other threads after split? Verify
   inlined sq reserve survives in DM bodies; if so, prune dead reserves
   before finalize.
+- TTL_DFB_TRACE=1 dumps slot/pinned layout. Attn floor today: 12 pinned
+  (pipes + multi-thread out/band/pos) + 19 slots + ~2 compiler temps = 33.
+  Cut path: out is pinned (consumers compute + DM); copy band back via a
+  compute store frees one index; further squeeze: merge cb46/cb29 sized
+  alike across class boundary needs reset op (#679).
