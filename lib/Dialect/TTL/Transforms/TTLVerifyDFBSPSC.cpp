@@ -274,6 +274,12 @@ struct TTLVerifyDFBSPSCPass
     }
 
     if (sawError) {
+      // TTL_RELAX_DFB_SPSC=1 downgrades SPSC violations to warnings while
+      // valid-but-rejected patterns (node-disjoint roles, per-buffer DM
+      // thread splits) are collected to refine the verifier.
+      if (std::getenv("TTL_RELAX_DFB_SPSC")) {
+        return;
+      }
       signalPassFailure();
     }
   }

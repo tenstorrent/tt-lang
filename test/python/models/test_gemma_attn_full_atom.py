@@ -26,7 +26,15 @@ def rms(x, w, eps):
     return x / torch.sqrt(x.pow(2).mean() + eps) * w
 
 
-def test_attn_full_atom(device):
+def test_attn_full_atom():
+    device = ttnn.open_device(device_id=0, worker_l1_size=1_362_000)
+    try:
+        _run(device)
+    finally:
+        ttnn.close_device(device)
+
+
+def _run(device):
     torch.manual_seed(0)
     H, D, S, eps, theta = 2816, 256, 1024, 1e-6, 10000.0
     pos = 100
@@ -84,12 +92,12 @@ def test_attn_full_atom(device):
             to_dev(sin.expand(TILE, D).contiguous().to(torch.bfloat16), device),
             row(qknorm, D, device), to_dev(R.to(torch.bfloat16), device)]
     caches = [to_dev(c.to(torch.bfloat16), device) for c in (k_cache[0], k_cache[1], v_cache[0], v_cache[1])]
-    o_part = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), device)
+    o_heads = to_dev(torch.zeros(4 * TILE, D, dtype=torch.bfloat16), device)
 
     atom = make_attn_atom(H // TILE, D // TILE, S // TILE, eps)
-    atom(*args, *caches, to_dev(pos_t, device), to_dev(masks, device),
-         to_dev(wo.to(torch.bfloat16), device), o_part)
+    atom(*args, *caches, to_dev(pos_t, device), to_dev(masks, device), o_heads)
 
-    got = from_dev(o_part)[0]
+    got_heads = from_dev(o_heads).reshape(4, TILE, D)[:, 0, :].reshape(-1)
+    got = got_heads.float() @ wo.float()
     pcc = torch.corrcoef(torch.stack([got, want]))[0, 1].item()
-    assert pcc > 0.98, f"o_part pcc {pcc}"
+    assert pcc > 0.98, f"o pcc {pcc}"
