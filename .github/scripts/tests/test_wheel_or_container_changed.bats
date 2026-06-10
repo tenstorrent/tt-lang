@@ -34,7 +34,7 @@ setup() {
     (
         cd "$REPO"
         mkdir -p .github/containers .github/scripts bin examples packaging python
-        echo "FROM ubuntu:22.04" > .github/containers/Dockerfile
+        echo "FROM ubuntu:24.04" > .github/containers/Dockerfile
         echo "# run-tutorials" > .github/scripts/run-tutorials.sh
         echo "# smoke-test" > .github/scripts/smoke-test-wheel.py
         echo "#!/bin/sh" > bin/tt-lang-sim

@@ -86,14 +86,14 @@ Two images are available:
 
 | Image                                                                                           | Purpose                                                            | Preinstalled tt-lang<br />(including tt-lang-sim) | Can clone/build tt-lang? |
 | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | :----------------------------------------------: | :----------------------: |
-| ![dist](https://img.shields.io/badge/dist-tt--lang--dist--ubuntu--22--04-brightgreen)<br />"dist" | Run tt-lang programs using<br />tt-lang-sim or Tenstorrent hardware |                       Yes                       |            No            |
-| ![ird](https://img.shields.io/badge/ird-tt--lang--ird--ubuntu--22--04-blueviolet)<br />"ird"      | Develop and build tt-lang from source                              |                        No                        |           Yes           |
+| ![dist](https://img.shields.io/badge/dist-tt--lang--dist--ubuntu--24--04-brightgreen)<br />"dist" | Run tt-lang programs using<br />tt-lang-sim or Tenstorrent hardware |                       Yes                       |            No            |
+| ![ird](https://img.shields.io/badge/ird-tt--lang--ird--ubuntu--24--04-blueviolet)<br />"ird"      | Develop and build tt-lang from source                              |                        No                        |           Yes           |
 
 Both images can be used with `ird reserve` (see [container build docs](.github/containers/README.md) for details).
 
 ### 2.3 ![dist](https://img.shields.io/badge/dist-brightgreen) Pre-built tt-lang (for users)
 
-Image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-dist-ubuntu-22-04))
+Image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-dist-ubuntu-24-04))
 
 The **dist** image contains a single, fully built tt-lang installation in `/opt/ttlang-toolchain`. Use it to compile and run any tt-lang program without building any of the prerequisites.
 
@@ -107,7 +107,7 @@ docker run -d --name $USER-dist \
   -v /dev/hugepages:/dev/hugepages \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:latest \
   sleep infinity
 ```
 
@@ -127,7 +127,7 @@ To learn more, take a [tour](docs/sphinx/tour/index.md), explore the [programmin
 
 ### 2.4 ![ird](https://img.shields.io/badge/ird-blueviolet) Development image (for building tt-lang)
 
-Image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-ird-ubuntu-22-04))
+Image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-ird-ubuntu-24-04))
 
 The **ird** image has the pre-built toolchain (LLVM, tt-metal, Python venv) but does not include tt-lang itself. Clone the repository and build against the toolchain. You can maintain multiple clones or branches side by side, each with its own build directory.
 
@@ -141,7 +141,7 @@ docker run -d --name $USER-ird \
   -v $HOME:$HOME \
   -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
   -v $HOME/.ssh/known_hosts:/root/.ssh/known_hosts:ro \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:latest \
   sleep infinity
 ```
 

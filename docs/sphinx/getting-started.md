@@ -162,7 +162,7 @@ docker run -d --name $USER-dist \
   -v /dev/hugepages:/dev/hugepages \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:latest \
   sleep infinity
 
 docker exec -it $USER-dist /bin/bash
@@ -186,7 +186,7 @@ docker run -d --name $USER-ird \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
   -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:latest \
   sleep infinity
 
 docker exec -it $USER-ird /bin/bash

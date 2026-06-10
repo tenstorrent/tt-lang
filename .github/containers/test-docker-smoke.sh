@@ -30,7 +30,7 @@ if [ -z "$DOCKER_TAG" ]; then
     echo "ERROR: Could not determine Docker tag from git tags and no tag argument provided."
     exit 1
 fi
-DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+DIST_IMAGE="tt-lang-dist-ubuntu-24-04:$DOCKER_TAG"
 
 echo "=== tt-lang Docker Smoke Test ==="
 echo "Image: $DIST_IMAGE"

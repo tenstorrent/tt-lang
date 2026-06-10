@@ -11,6 +11,14 @@ permissions:
   contents: read
 
 jobs:
+  # Choose the runner based on whether the toolchain cache already exists.
+  # On a cache hit, configure-deps only restores the cache, so the cheap
+  # standard runner is enough. On a cache miss it must build LLVM + tt-metal
+  # from scratch, which needs the large runner's disk and cores. A job's
+  # runs-on is fixed when the job is scheduled, so a separate lookup job has
+  # to decide the label before configure-deps starts. Both labels are
+  # Ubuntu 24.04 (glibc 2.39), matching the ubuntu:24.04 Docker base image
+  # that consumes the cached toolchain.
   select-runner:
     name: "Select runner"
     runs-on: ubuntu-latest
@@ -43,7 +51,7 @@ jobs:
         id: decide
         run: |
           if [ "${{ steps.cache-lookup.outputs.cache-hit }}" = "true" ]; then
-            echo "runner=ubuntu-22.04" >> "$GITHUB_OUTPUT"
+            echo "runner=ubuntu-24.04" >> "$GITHUB_OUTPUT"
             echo "Toolchain cache hit -> standard runner (restore only)"
           else
             echo "runner=mlir-large-runner-lang" >> "$GITHUB_OUTPUT"

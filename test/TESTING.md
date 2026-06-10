@@ -276,7 +276,7 @@ scripts (`bin/tt-lang-sim`, `bin/tt-lang-sim-stats`). CI runs it via
 inside the ird container) install bats and the helper libraries once:
 
 ```bash
-# Ubuntu 22.04 apt's bats is 1.2.1, too old for this suite. Install 1.11.0 from upstream:
+# Ubuntu apt's bats package can be too old for this suite. Install 1.11.0 from upstream:
 curl -fsSL https://github.com/bats-core/bats-core/archive/refs/tags/v1.11.0.tar.gz | tar -xz -C /tmp
 sudo /tmp/bats-core-1.11.0/install.sh /usr/local
 sudo git clone --depth 1 https://github.com/bats-core/bats-support /usr/local/lib/bats-support

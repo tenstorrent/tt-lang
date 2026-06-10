@@ -27,7 +27,7 @@ Steps to reproduce the behavior:
 ```
 
 ## Environment
-- **OS:** [e.g., Ubuntu 22.04, macOS 14.0]
+- **OS:** [e.g., Ubuntu 24.04, macOS 14.0]
 - **Python version:** [e.g., 3.11.5]
 - **tt-lang version/commit:** [e.g., commit SHA or release version]
 - **tt-mlir version/commit:** [e.g., commit SHA]

@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${TAG}"
+IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${TAG}"
 CONTAINER="ttlang-ird-test-$$"
 
 echo "=== IRD Container Test ==="

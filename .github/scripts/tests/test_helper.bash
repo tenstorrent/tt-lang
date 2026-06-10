@@ -84,7 +84,7 @@ mkrepo() {
         echo "llvm-content-v1" > third-party/llvm-project/sentinel
         echo "tt-metal-content-v1" > third-party/tt-metal/sentinel
         cat > .github/containers/Dockerfile.base <<'EOF'
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 RUN echo "base v1"
 EOF
         echo "greenlet>=3.0.0" > requirements-runtime.txt
