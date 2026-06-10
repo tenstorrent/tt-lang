@@ -161,7 +161,7 @@ def make_attn_atom(Ht, Dt, St, eps):
         hg_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=2)
         hn_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         c_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
-        s_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
+        s_cb = c_cb
         r_cb = ttl.make_dataflow_buffer_like(rot, shape=(Dt, Dt), block_count=1)
         out_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
 
@@ -179,7 +179,7 @@ def make_attn_atom(Ht, Dt, St, eps):
         ostage_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         orecv_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=4)
         wo_cb = ttl.make_dataflow_buffer_like(wo, shape=(Dt, O_BAND), block_count=2)
-        op_cb = ttl.make_dataflow_buffer_like(x, shape=(1, O_BAND), block_count=1)
+        op_cb = ng_cb
 
         band0 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 0))])
         band1 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 1))])
