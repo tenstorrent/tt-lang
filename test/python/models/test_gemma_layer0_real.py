@@ -24,7 +24,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 pytest.importorskip("safetensors", exc_type=ImportError)
 
 from gemma4.config import Gemma4Config
-from gemma4.decode_chain import SlidingChain, StepState, buf
+from gemma4.decode_chain import GlobalChain, SlidingChain, StepState
 from gemma4.host import to_dev
 
 SNAP = glob.glob("/root/.cache/huggingface/hub/models--google--gemma-4-26B-A4B-it/snapshots/*")
@@ -36,23 +36,25 @@ def rms(x, w, eps):
 
 
 @pytest.mark.skipif(not SNAP, reason="checkpoint not present")
-def test_layer0_real(device):
+@pytest.mark.parametrize("lidx,kind", [(0, "sliding"), (5, "global")])
+def test_layer_real(device, lidx, kind):
     from gemma4.weights import Checkpoint, embed_weights, layer_weights
     from test_gemma_decode_chain import TorchLayer
 
     torch.manual_seed(0)
     cfg = Gemma4Config()
     ck = Checkpoint(SNAP[0])
-    w = layer_weights(ck, cfg, 0, card=0)
+    w = layer_weights(ck, cfg, lidx, card=0)
     embed, _ = embed_weights(ck)
     H = cfg.hidden
 
     tok, pos = 2, 0  # <bos>
     x = embed[tok].float() * H ** 0.5
-    want = TorchLayer(w, cfg, "sliding").step(x, pos)
+    want = TorchLayer(w, cfg, kind).step(x, pos)
 
     st = StepState(device, cfg, CTX)
-    layer = SlidingChain(w, device, cfg, st)
+    layer = (SlidingChain(w, device, cfg, st) if kind == "sliding"
+             else GlobalChain(w, device, cfg, st, CTX))
     st.prime(device, pos)
     st.step()
     x_t = torch.zeros(TILE, H, dtype=torch.bfloat16)
@@ -61,4 +63,4 @@ def test_layer0_real(device):
 
     got = ttnn.to_torch(out).float()[0]
     pcc = torch.corrcoef(torch.stack([got, want]))[0, 1].item()
-    assert pcc > 0.97, f"layer0 pcc {pcc}"
+    assert pcc > 0.99, f"layer {lidx} pcc {pcc}"

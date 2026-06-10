@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "models"))
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl
-from ttl.ops.elementwise import make_add, make_binary
+from ttl.ops.elementwise import make_add, make_binary, make_row_scale
 from ttl.ops.gemv import make_gemv
 from ttl.ops.indexed_gemv import make_indexed_gemv
 from ttl.ops.kv_append import make_kv_append
@@ -42,11 +42,9 @@ def gelu_tanh(x):
     return torch.nn.functional.gelu(x, approximate="tanh")
 
 
-def make_swiglu_scaled(It, wt, t):
-    return make_binary(
-        lambda g, u: ttl.mul(ttl.mul(ttl.gelu(g), u),
-                             ttl.block.fill(wt, shape=g.shape)),
-        1, 1, It, It, a_off=(t, 0), b_off=(t, It), out_off=(t, 0))
+def make_swiglu_t(It, t):
+    return make_binary("swiglu", 1, 1, It, It,
+                       a_off=(t, 0), b_off=(t, It), out_off=(t, 0))
 
 
 def test_layer_chain():
@@ -139,11 +137,14 @@ def _run(device):
     def buf(n, rows=TILE):
         return to_dev(torch.zeros(rows, n, dtype=torch.bfloat16), device)
 
+    qkv_n = torch.zeros(3 * TILE, D, dtype=torch.bfloat16)
+    for i in range(3):
+        qkv_n[i * TILE] = qknorm.to(torch.bfloat16)
     attn_args = [row(x, H, device), row(g_in, H, device),
                  to_dev(wqkv.to(torch.bfloat16), device),
                  to_dev(cos.expand(TILE, D).contiguous().to(torch.bfloat16), device),
                  to_dev(sin.expand(TILE, D).contiguous().to(torch.bfloat16), device),
-                 row(qknorm, D, device), to_dev(R.to(torch.bfloat16), device)]
+                 to_dev(qkv_n, device), to_dev(R.to(torch.bfloat16), device)]
     caches = [to_dev(c.to(torch.bfloat16), device)
               for c in (k_cache[0], k_cache[1], v_cache[0], v_cache[1])]
     heads_dev, o_row, attn_d = buf(D, 8 * TILE), buf(4 * D), buf(H)
@@ -179,19 +180,24 @@ def _run(device):
     norm(h_d, row(g_preffw2, H, device), hn2_d)
     make_indexed_gemv(E, H, 2 * I, K, (11, 2), 4)(
         hn2_d, to_dev(idx_t, device), to_dev(w_gu.reshape(E * H, 2 * I).to(torch.bfloat16), device), gu_d)
+    # row_scale s_col selects tile columns: weight t lives at element (0, 32*t).
+    wts_t = torch.zeros(TILE, K * TILE, dtype=torch.bfloat16)
+    wts_t[0, 0::TILE] = wts
+    wts_d = to_dev(wts_t, device)
     for t in range(K):
-        make_swiglu_scaled(It, wts[t].item(), t)(gu_d, gu_d, eact_d)
-    make_indexed_gemv(E, I, H, K, (11, 2), 4, x_per_t=True)(
-        eact_d, to_dev(idx_t, device), to_dev(w_dn.reshape(E * I, H).to(torch.bfloat16), device), dn_d)
+        make_swiglu_t(It, t)(gu_d, gu_d, eact_d)
+        make_row_scale(It, It, a_row=t, s_col=t, out_row=t)(eact_d, wts_d, eact_d)
+    w_dn_dev = to_dev(w_dn.reshape(E * I, H).to(torch.bfloat16), device)
+    for t in range(K):
+        make_indexed_gemv(E, I, H, 1, (11, 2), 4, x_row=t, out_row=t, idx_col=t)(
+            eact_d, to_dev(idx_t, device), w_dn_dev, dn_d)
     for t in range(1, K):
         make_add(1, 1, Ht, 11, b_off=(t, 0))(dn_d, dn_d, dn_d)
     norm(dn_d, row(g_postffw2, H, device), h2_d)
 
     add(h1_d, h2_d, comb_d)
     norm(comb_d, row(g_postffw, H, device), combn_d)
-    make_binary(lambda a, b: ttl.mul(ttl.add(a, b),
-                                     ttl.block.fill(layer_scalar, shape=a.shape)),
-                1, 1, Ht, 11)(h_d, combn_d, out_d)
+    make_binary("scaled_add", 1, 1, Ht, 11, scalar=layer_scalar)(h_d, combn_d, out_d)
 
     got = from_dev(out_d)[0]
     pcc = torch.corrcoef(torch.stack([got, want]))[0, 1].item()

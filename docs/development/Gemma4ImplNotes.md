@@ -252,3 +252,25 @@ to circle back to.
 - Wide vocab note: argmax LUT caps n_chunks at 256 -> per-card V <= 64k
   (exactly the vocab/4 shard). Full vocab on one card needs a third stage;
   not needed for TP=4.
+- Weight load fast path (follow-up): deepseek saves host-side from_torch +
+  ttnn.dump_tensor (.tensorbin embeds dtype/layout/mesh shard), loads via
+  ttnn.load_tensor(device=mesh) = one disk-to-device transfer. Manifest
+  json + format_version, env-var cache dir.
+- row_scale stale-scalar bug (global PCC 0.924 -> 0.99996): a scalar CB
+  waited outside the width loop is popped after the first chunk, so later
+  chunks multiply by stale L1 (showed up as exact negation of the second
+  half of D=512 flash finalize). Fix: stage the scalar per chunk. Only
+  multi-chunk row_scale (global heads) was exposed; same class as the
+  new ttl-verify-dfb-spsc check.
+- DFB-SPSC verifier (remote tree) strict-rejects argmax collapse and
+  token_select (splitter replicates cb_wait across all threads).
+  Reworked: collapse streams one winner tile per chunk (also fixes OOB:
+  old code staged 1 tile, raw reads ran up to 8 tiles past it);
+  token_select is DM-only over a packed (lut, ids, win) stage tensor,
+  token = a + b combine as separate make_add. TTL_RELAX_DFB_SPSC=1
+  aborts downstream; not usable.
+- swiglu_scaled (gate-weight folded as fill const) dropped: garbage on
+  hw (PCC ~0.18); gate weighting runs as a row_scale dispatch.
+- row_scale s_col is a tile column (slicing is tile-granular): with the
+  moe layout (weight t at element column 32t), s_col=t picks tile t and
+  the broadcast reads its element 0.

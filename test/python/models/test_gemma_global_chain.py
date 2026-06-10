@@ -112,8 +112,8 @@ def _run(device):
     caches = [to_dev(c.to(torch.bfloat16), device) for c in k_cache]
 
     make_rmsnorm(1, 1, Ht, 11, H, eps)(row(x, H, device), row(g_in, H, device), xn_d)
-    make_gemv(TILE, H, qh * D, (8, 2), 4)(xn_d, to_dev(wq.to(torch.bfloat16), device), q_d)
-    make_gemv(TILE, H, kvh * D, (8, 2), 4)(xn_d, to_dev(wk.to(torch.bfloat16), device), k_d)
+    make_gemv(TILE, H, qh * D, (8, 2), 2)(xn_d, to_dev(wq.to(torch.bfloat16), device), q_d)
+    make_gemv(TILE, H, kvh * D, (8, 2), 2)(xn_d, to_dev(wk.to(torch.bfloat16), device), k_d)
 
     hnorm = make_rmsnorm(1, 1, Dt, Dt, D, eps)
     rope = make_rope(Dt, rot_t)
@@ -131,7 +131,7 @@ def _run(device):
         make_kv_append(S // TILE, Dt)(caches[kv], kr, to_dev(pos_t, device), caches[kv])
 
     flash = make_flash_decode_kev(1, 1, 1, Dt, 8, n_chunks)
-    fin = make_row_scale(Dt, 8, ttl.recip)
+    fin = make_row_scale(Dt, 8, recip=True)
     for h in range(qh):
         qr = head_rot(q_d, h)
         o, m, l = buf(D), buf(TILE), buf(TILE)
@@ -140,7 +140,7 @@ def _run(device):
         fin(o, l, of)
         make_copy(1, 1, Dt, Dt, out_off=(0, h * Dt))(of, a_row)
 
-    make_gemv(TILE, qh * D, H, (8, 2), 11)(a_row, to_dev(wo.to(torch.bfloat16), device), o_part)
+    make_gemv(TILE, qh * D, H, (11, 2), 4)(a_row, to_dev(wo.to(torch.bfloat16), device), o_part)
 
     got = from_dev(o_part)[0]
     pcc = torch.corrcoef(torch.stack([got, want]))[0, 1].item()

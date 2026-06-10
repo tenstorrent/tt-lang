@@ -9,8 +9,8 @@
 """Per-card routed experts as a dispatch chain vs torch reference.
 
 Router (top-8 ids + renormed gate weights) is host scaffolding; the chain is
-gate_up indexed GEMV -> per-expert swiglu (gate weight folded into the
-activation) -> down indexed GEMV (per-expert x rows) -> accumulate rows.
+gate_up indexed GEMV -> per-expert swiglu + gate-weight row_scale -> down
+indexed GEMV (per-expert x rows) -> accumulate rows.
 """
 
 import sys
@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "models"))
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl
-from ttl.ops.elementwise import make_add, make_binary
+from ttl.ops.elementwise import make_add, make_binary, make_row_scale
 from ttl.ops.indexed_gemv import make_indexed_gemv
 from gemma4.layer_test_scaffolding import from_dev, row, to_dev
 
@@ -35,11 +35,9 @@ def gelu_tanh(x):
     return torch.nn.functional.gelu(x, approximate="tanh")
 
 
-def make_swiglu_scaled(It, wt, t):
-    return make_binary(
-        lambda g, u: ttl.mul(ttl.mul(ttl.gelu(g), u),
-                             ttl.block.fill(wt, shape=g.shape)),
-        1, 1, It, It, a_off=(t, 0), b_off=(t, It), out_off=(t, 0))
+def make_swiglu_t(It, t):
+    return make_binary("swiglu", 1, 1, It, It,
+                       a_off=(t, 0), b_off=(t, It), out_off=(t, 0))
 
 
 def test_experts_chain():
@@ -77,10 +75,18 @@ def _run(device):
     act_d = to_dev(torch.zeros(K * TILE, I, dtype=torch.bfloat16), device)
     dn_d = to_dev(torch.zeros(K * TILE, H, dtype=torch.bfloat16), device)
 
+    # row_scale s_col selects tile columns: weight t lives at element (0, 32*t).
+    wts_t = torch.zeros(TILE, K * TILE, dtype=torch.bfloat16)
+    wts_t[0, 0::TILE] = wts
+    wts_d = to_dev(wts_t, device)
+
     make_indexed_gemv(E, H, 2 * I, K, (11, 2), 4)(x_d, idx_d, w_gu_d, gu_d)
     for t in range(K):
-        make_swiglu_scaled(It, wts[t].item(), t)(gu_d, gu_d, act_d)
-    make_indexed_gemv(E, I, H, K, (11, 2), 4, x_per_t=True)(act_d, idx_d, w_dn_d, dn_d)
+        make_swiglu_t(It, t)(gu_d, gu_d, act_d)
+        make_row_scale(I // TILE, I // TILE, a_row=t, s_col=t, out_row=t)(act_d, wts_d, act_d)
+    for t in range(K):
+        make_indexed_gemv(E, I, H, 1, (11, 2), 4, x_row=t, out_row=t, idx_col=t)(
+            act_d, idx_d, w_dn_d, dn_d)
     for t in range(1, K):
         make_add(1, 1, H // TILE, 11, b_off=(t, 0))(dn_d, dn_d, dn_d)
 

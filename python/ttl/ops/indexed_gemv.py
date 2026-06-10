@@ -32,16 +32,17 @@ def make_indexed_gemv(
     grid_cfg: Tuple[int, int],
     bn: int,
     *,
-    x_per_t: bool = False,
     idx_stride: int = 1,
-    fp32_dest_acc_en: bool = True,
+    x_row: int = 0,
+    idx_col: int = 0,
+    out_row: int = 0,
 ):
-    """x[1t,K] @ W[idx[t]] for each of ``topk`` indices -> out[t, N].
+    """x[x_row,K] @ W[idx[t]] for each of ``topk`` indices -> out[out_row+t, N].
 
-    With ``x_per_t`` each index gets its own activation row ``x[t]``
-    (the down projection: per-expert activations, shared output).
-    ``idx_stride`` is the element stride between ids in ``idx`` row 0
-    (32 for the topk op's tile-column layout).
+    ``idx_stride`` is the element stride between ids in ``idx`` row 0 (32
+    for the topk op's tile-column layout); ``idx_col`` offsets the first id.
+    Per-expert activations (the down projection) dispatch this with
+    ``topk=1`` per expert and matching x_row/idx_col/out_row offsets.
     """
     Np, Kp = grid_cfg
 
@@ -58,9 +59,9 @@ def make_indexed_gemv(
     K_BAND = Kt // Kp
     N_BAND = Nt // Np
     NB = N_BAND // bn
-    idx_tiles = (topk * idx_stride + TILE - 1) // TILE
+    idx_tiles = (idx_col + topk * idx_stride + TILE - 1) // TILE
 
-    @ttl.atom(grid=(Np, Kp), fp32_dest_acc_en=fp32_dest_acc_en)
+    @ttl.atom(grid=(Np, Kp), fp32_dest_acc_en=True)
     def indexed_gemv(x, idx, w, out):
         x_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_BAND), block_count=1)
         x_stage = ttl.make_dataflow_buffer_like(x, shape=(1, K_BAND), block_count=1)
@@ -83,32 +84,24 @@ def make_indexed_gemv(
         col_c, row_c = ttl.node(dims=2)
         kr = row_c * K_BAND
 
-        if not x_per_t:
-            mcast(x_net, x[0:1, kr:kr + K_BAND], x_stage, x_cb)
-            x_blk = x_cb.wait()
-
         idxd = idx_cb.reserve()
         ttl.copy(idx[0:1, 0:idx_tiles], idxd)
         idx_blk = idx_cb.wait()
 
+        mcast(x_net, x[x_row:x_row + 1, kr:kr + K_BAND], x_stage, x_cb)
+        x_blk = x_cb.wait()
         for t in range(topk):
-            if x_per_t:
-                mcast(x_net, x[t:t + 1, kr:kr + K_BAND], x_stage, x_cb)
-                x_blk = x_cb.wait()
-            e = ttl.read_index(idx_blk, 0, t * idx_stride)
+            e = ttl.read_index(idx_blk, 0, idx_col + t * idx_stride)
             for lnb in range(NB):
                 nc = col_c * N_BAND + lnb * bn
-
                 p = partial_for_sum_cb.reserve()
                 w_blk = w_cb.wait()
                 p += x_blk @ w_blk
-
                 w_dst = w_cb.reserve()
                 ttl.copy(w[e * Kt + kr:e * Kt + kr + K_BAND, nc:nc + bn], w_dst)
-
                 if row_c == 0:
                     reduce_recv(reduce_net, partial_for_sum_cb, recv_cb, out_cb)
-                    ttl.copy(out_cb.wait(), out[t:t + 1, nc:nc + bn])
+                    ttl.copy(out_cb.wait(), out[out_row + t:out_row + t + 1, nc:nc + bn])
                 else:
                     reduce_send(reduce_net, partial_for_sum_cb, partial_for_send_cb)
 
