@@ -16,8 +16,9 @@ import ttl
 TILE = 32
 
 
-def make_kv_append(St, Dt):
-    """Patch ``cache[(pos//32) tile row]`` row ``pos%32`` with ``k[0, :]``."""
+def make_kv_append(St, Dt, k_row=0):
+    """Patch ``cache[(pos//32) tile row]`` row ``pos%32`` with row tile
+    ``k_row`` of ``k``."""
     patch_core = make_kv_patch_core(Dt)
 
     @ttl.atom(grid=(1, 1))
@@ -33,7 +34,7 @@ def make_kv_append(St, Dt):
         intra = ttl.read_index(pos_blk, 0, 1)
 
         kd = k_cb.reserve()
-        ttl.copy(k[0:1, 0:Dt], kd)
+        ttl.copy(k[k_row:k_row + 1, 0:Dt], kd)
 
         bd = band_cb.reserve()
         ttl.copy(cache[r:r + 1, 0:Dt], bd)

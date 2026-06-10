@@ -205,3 +205,12 @@ to circle back to.
   push; cb0 producer short one push. Validates the unbalanced-CB theory
   for the launch hang. Fix: restage head feed (e.g. hd + h2 only with
   norm core consuming hd, h2; or producer pushes 4).
+- ROOT CAUSE of flash hang: merged K/V fkv buffer (cap squeeze). Window
+  core wait order per chunk is k, mask, v; merged stream queues v before
+  mask, vd reserve waits k pop, mask never lands, core waits mask = credit
+  cycle deadlock. Split fk/fv fixes it; merged variant needs kd, md, vd
+  order. NOT a compiler bug. Patch atom host-stall remains open (separate).
+- MILESTONE: full pre-AR sliding attention E2E ON HW via dispatch chain
+  heads atom (PCC 1.0) -> kv_append x4 (k_row tile param) -> flash atom
+  (4,1) split fk/fv -> host O matmul; PCC > 0.98 in 5.5s. Dispatch count
+  is the accepted bring-up cut; refusing only untested compositions.

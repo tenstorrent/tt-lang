@@ -141,7 +141,8 @@ def make_attn_patch_atom(Ht, Dt, St, eps):
         part_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         send_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         recv_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
-        head_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=3)
+        head_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
+        hx_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
 
         hn_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         c_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
@@ -152,6 +153,7 @@ def make_attn_patch_atom(Ht, Dt, St, eps):
 
         pos_cb = ttl.make_dataflow_buffer_like(pos_t, shape=(1, 1), block_count=1)
         band_cb = ttl.make_dataflow_buffer_like(kc0, shape=(1, Dt), block_count=1)
+        kq_cb = ttl.make_dataflow_buffer_like(kc0, shape=(1, Dt), block_count=1)
 
         band0 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 0))])
         band1 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 1))])
@@ -185,9 +187,10 @@ def make_attn_patch_atom(Ht, Dt, St, eps):
                 hd = head_cb.reserve()
                 hd.store(ttl.add(part_cb.wait(), recv_cb.wait()))
                 h = head_cb.wait()
-                h2 = head_cb.reserve(); h2.store(h)
-                h3 = head_cb.reserve(); h3.store(h)
-                head_norm_core(head_cb, hg_cb, hn_cb)
+                hx0 = hx_cb.reserve(); hx0.store(h)
+                hre = head_cb.reserve(); hre.store(h)
+                hx1 = hx_cb.reserve(); hx1.store(head_cb.wait())
+                head_norm_core(hx_cb, hg_cb, hn_cb)
                 if col_c < 7:
                     cd = c_cb.reserve(); ttl.copy(cos[0:1, 0:Dt], cd)
                     sd2 = s_cb.reserve(); ttl.copy(sin[0:1, 0:Dt], sd2)
@@ -197,32 +200,34 @@ def make_attn_patch_atom(Ht, Dt, St, eps):
                     ob = out_cb.reserve()
                     ob.store(hn_cb.wait())
 
-                if col_c >= 5:
-                    pd = pos_cb.reserve(); ttl.copy(pos_t[0, 0], pd)
-                    pb = pos_cb.wait()
-                    rr = ttl.read_index(pb, 0, 0)
-                    intra = ttl.read_index(pb, 0, 1)
-                    bd = band_cb.reserve()
-                    if col_c == 5:
-                        ttl.copy(kc0[rr:rr + 1, 0:Dt], bd)
-                    elif col_c == 6:
-                        ttl.copy(kc1[rr:rr + 1, 0:Dt], bd)
-                    elif col_c == 7:
-                        ttl.copy(vc0[rr:rr + 1, 0:Dt], bd)
-                    else:
-                        ttl.copy(vc1[rr:rr + 1, 0:Dt], bd)
-                    bb = band_cb.wait()
-                    patch_core(out_cb, bb, intra)
-                    if col_c == 5:
-                        ttl.copy(bb, kc0[rr:rr + 1, 0:Dt])
-                    elif col_c == 6:
-                        ttl.copy(bb, kc1[rr:rr + 1, 0:Dt])
-                    elif col_c == 7:
-                        ttl.copy(bb, vc0[rr:rr + 1, 0:Dt])
-                    else:
-                        ttl.copy(bb, vc1[rr:rr + 1, 0:Dt])
-                else:
-                    ttl.copy(out_cb.wait(), q_heads[col_c - 1:col_c, 0:Dt])
+                ttl.copy(out_cb.wait(), q_heads[col_c - 1:col_c, 0:Dt])
+
+        if col_c >= 5 and row_c == 0:
+            pd = pos_cb.reserve(); ttl.copy(pos_t[0, 0], pd)
+            pb = pos_cb.wait()
+            rr = ttl.read_index(pb, 0, 0)
+            intra = ttl.read_index(pb, 0, 1)
+            kd = kq_cb.reserve()
+            ttl.copy(q_heads[col_c - 1:col_c, 0:Dt], kd)
+            bd = band_cb.reserve()
+            if col_c == 5:
+                ttl.copy(kc0[rr:rr + 1, 0:Dt], bd)
+            elif col_c == 6:
+                ttl.copy(kc1[rr:rr + 1, 0:Dt], bd)
+            elif col_c == 7:
+                ttl.copy(vc0[rr:rr + 1, 0:Dt], bd)
+            else:
+                ttl.copy(vc1[rr:rr + 1, 0:Dt], bd)
+            bb = band_cb.wait()
+            patch_core(kq_cb, bb, intra)
+            if col_c == 5:
+                ttl.copy(bb, kc0[rr:rr + 1, 0:Dt])
+            elif col_c == 6:
+                ttl.copy(bb, kc1[rr:rr + 1, 0:Dt])
+            elif col_c == 7:
+                ttl.copy(bb, vc0[rr:rr + 1, 0:Dt])
+            else:
+                ttl.copy(bb, vc1[rr:rr + 1, 0:Dt])
 
     return attn_patch
 
@@ -242,7 +247,8 @@ def make_flash_atom(Dt, St):
         col_c, row_c = ttl.node(dims=2)
 
         q_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
-        fkv_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=1)
+        fk_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=1)
+        fv_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=1)
         fmask_cb = ttl.make_dataflow_buffer_like(masks, shape=(1, chunk_t), block_count=1)
         fo_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
         fm_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
@@ -252,8 +258,8 @@ def make_flash_atom(Dt, St):
         qw = q_cb.reserve()
         ttl.copy(q_heads[col_c:col_c + 1, 0:Dt], qw)
         for c in range(n_chunks):
-            kd = fkv_cb.reserve()
-            vd = fkv_cb.reserve()
+            kd = fk_cb.reserve()
+            vd = fv_cb.reserve()
             if col_c < 2:
                 ttl.copy(kc0[c * chunk_t:(c + 1) * chunk_t, 0:Dt], kd)
                 ttl.copy(vc0[c * chunk_t:(c + 1) * chunk_t, 0:Dt], vd)
@@ -262,7 +268,7 @@ def make_flash_atom(Dt, St):
                 ttl.copy(vc1[c * chunk_t:(c + 1) * chunk_t, 0:Dt], vd)
             md = fmask_cb.reserve()
             ttl.copy(masks[c:c + 1, 0:chunk_t], md)
-        flash_core(q_cb, fkv_cb, fkv_cb, fmask_cb, fo_cb, fm_cb, fl_cb)
+        flash_core(q_cb, fk_cb, fv_cb, fmask_cb, fo_cb, fm_cb, fl_cb)
         ofin = fo_cb.wait()
         mfin = fm_cb.wait()
         lfin = fl_cb.wait()
