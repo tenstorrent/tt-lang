@@ -372,6 +372,10 @@ struct TTLFinalizeDFBIndicesPass
             .push_back(&dfb);
       } else {
         dfb.finalIndex = dfb.origIndex;
+        if (std::getenv("TTL_DFB_TRACE")) {
+          llvm::errs() << "pinned: cb" << dfb.origIndex << " blk"
+                       << dfb.blockCount << "x" << dfb.elemsPerBlock << "\n";
+        }
       }
     }
 
@@ -406,6 +410,15 @@ struct TTLFinalizeDFBIndicesPass
     }
 
     for (auto &slot : slots) {
+      if (std::getenv("TTL_DFB_TRACE")) {
+        llvm::errs() << "slot:";
+        for (LogicalDFB *dfb : slot) {
+          llvm::errs() << " cb" << dfb->origIndex
+                       << "(blk" << dfb->blockCount << "x" << dfb->elemsPerBlock
+                       << (dfb->producer == dfb->consumer ? ",1t" : ",xt") << ")";
+        }
+        llvm::errs() << "\n";
+      }
       int64_t slotIndex = slot.front()->origIndex;
       for (LogicalDFB *dfb : slot) {
         slotIndex = std::min(slotIndex, dfb->origIndex);
