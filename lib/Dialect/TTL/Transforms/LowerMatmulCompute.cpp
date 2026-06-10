@@ -194,6 +194,11 @@ static bool canReuseAssignedOperandDst(Operation *op, int64_t assignedDst) {
 static FailureOr<DenseMap<int64_t, int64_t>>
 buildScratchIndexMap(ArrayRef<Operation *> ops,
                      MatmulAccumulatorInfo accumulatorInfo) {
+  // TODO: When fused broadcast add/sub/mul tile ops are added, classify them
+  // here as dataflow-buffer-input ops when they lower to
+  // add/sub/mul_tiles_bcast. Their source operands should not create DST
+  // scratch slots; only the result slot is live unless a later op keeps it as
+  // an accumulator.
   DenseSet<int64_t> scratchIndices;
   for (Operation *bodyOp : ops) {
     if (!getTileOpDstIndex(bodyOp)) {
@@ -371,22 +376,31 @@ static LogicalResult validateDSTCapacity(ComputeOp computeOp,
   int64_t totalDstSlots = outM * outN * dstSlotsPerTile;
   int64_t dstCapacity = static_cast<int64_t>(*capacityOrErr);
   if (totalDstSlots > dstCapacity) {
-    computeOp.emitError() << "output " << outM << "x" << outN << " with "
-                          << dstSlotsPerTile
-                          << " DST slots per tile = " << totalDstSlots
-                          << " total slots exceeds DST capacity of "
-                          << dstCapacity
-                          << "; enable maximize_dst to auto-subblock";
+    computeOp.emitOpError()
+        << "output " << outM << "x" << outN << " with " << dstSlotsPerTile
+        << " DST slots per tile = " << totalDstSlots
+        << " total slots exceeds DST capacity of " << dstCapacity
+        << "; enable maximize_dst to auto-subblock";
     return failure();
   }
   return success();
 }
 
+FailureOr<int64_t> getMatmulComputeDstSlotsPerOutputTile(ComputeOp op) {
+  FailureOr<MatmulComputeAnalysis> analysis = analyzeMatmulCompute(op);
+  if (failed(analysis)) {
+    return failure();
+  }
+  return analysis->dstPerIteration;
+}
+
 LogicalResult verifyMatmulComputeCapacity(ComputeOp op) {
   FailureOr<MatmulComputeAnalysis> analysis = analyzeMatmulCompute(op);
   if (failed(analysis)) {
-    // Not a well-formed candidate; the rewrite reports the structural mismatch.
-    return success();
+    return op.emitOpError()
+           << "invalid block matmul compute; expected one "
+              "ttl.tile_matmul_block with compute-input matmul operands, "
+              "constant DST indices, and a valid accumulator";
   }
   return validateDSTCapacity(op, analysis->dstPerIteration);
 }
