@@ -50,9 +50,11 @@ def test_attn_heads_atom(device):
     heads_ref = []
     for hcol in range(8):
         h = xn @ wqkv[:, hcol * D:(hcol + 1) * D]
+        hn = rms(h, qknorm, eps)
         if hcol < 6:
-            hn = rms(h, qknorm, eps)
             h = hn * cos + (hn @ R) * sin
+        else:
+            h = hn
         heads_ref.append(h)
 
     cos32 = cos.expand(TILE, D).contiguous()

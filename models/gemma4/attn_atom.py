@@ -15,31 +15,37 @@ KV cache. Column owns one head: cols 0-3 q, 4-5 k, 6-7 v.
 """
 
 import ttl
+from ttl.ops.gemv import make_gemv_band_core
+from ttl.ops.kv_append import make_kv_patch_core
 from ttl.ops.mcast import mcast_block
 from ttl.ops.pipe_util import pipe_send, pipe_recv
+from ttl.ops.rmsnorm import make_rmsnorm_core
+from ttl.ops.rope import make_rope_core
 
 TILE = 32
 
 
 def make_attn_heads_atom(Ht, Dt, eps):
+    """Stage A: norm -> QKV -> QK-norm/RoPE as ttl.ops core composition."""
     K_BAND = Ht // 2
     K_CH = K_BAND // 2
-    WC = Ht // 8
-    N_WC = 8
-    inv_h = 1.0 / (Ht * TILE)
-    inv_d = 1.0 / (Dt * TILE)
+
+    norm_core = make_rmsnorm_core(Ht, K_CH, Ht * TILE, eps)
+    band_core = make_gemv_band_core(K_CH, 2, Dt)
+    head_norm_core = make_rmsnorm_core(Dt, Dt, Dt * TILE, eps)
+    rope_core = make_rope_core(Dt)
 
     @ttl.atom(grid=(9, 2), fp32_dest_acc_en=True)
     def attn_heads(x, gamma, wqkv, cos, sin, qknorm, rot, heads):
         col_c, row_c = ttl.node(dims=2)
 
-        x_cb = ttl.make_dataflow_buffer_like(x, shape=(1, WC), block_count=2)
-        sq_cb = ttl.make_dataflow_buffer_like(x, shape=(1, WC), block_count=2)
-        xband_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
-        g_cb = ttl.make_dataflow_buffer_like(gamma, shape=(1, K_CH), block_count=2)
-        red_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
-        acc_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
-        inv_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=1)
+        nx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
+        ng_cb = ttl.make_dataflow_buffer_like(gamma, shape=(1, K_CH), block_count=2)
+        nsq_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
+        nred_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        nacc_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        ninv_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=1)
+        xn_stage = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
 
         xb_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
         w_cb = ttl.make_dataflow_buffer_like(wqkv, shape=(K_CH, Dt), block_count=2)
@@ -48,9 +54,12 @@ def make_attn_heads_atom(Ht, Dt, eps):
         recv_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         head_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=2)
 
-        qk_g_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=1)
+        hx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=2)
+        hg_cb = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=2)
         hsq_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
-        hred_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=1)
+        hred_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        hacc_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        hinv_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=1)
         hn_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         c_cb = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=1)
         s_cb = ttl.make_dataflow_buffer_like(sin, shape=(1, Dt), block_count=1)
@@ -58,35 +67,17 @@ def make_attn_heads_atom(Ht, Dt, eps):
         rh_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         out_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
 
-        xn_stage = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
         band0 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 0))])
         band1 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 9), 1))])
         qkv_red = ttl.PipeNet([ttl.Pipe(src=(c, 1), dst=(c, 0)) for c in range(1, 9)])
 
         if col_c == 0 and row_c == 0:
-            a0 = acc_cb.reserve(); a0.store(ttl.block.fill(0.0, shape=(1, 1)))
-            for c in range(N_WC):
-                wc = c * WC
-                xd = x_cb.reserve(); ttl.copy(x[0:1, wc:wc + WC], xd)
-                xb = x_cb.wait()
-                sq = sq_cb.reserve(); sq.store(ttl.mul(xb, xb))
-                r = red_cb.reserve(); r.store(ttl.math.reduce_sum(sq_cb.wait(), dims=[1]))
-                a_old = acc_cb.wait()
-                a_new = acc_cb.reserve()
-                a_new.store(ttl.add(a_old, red_cb.wait()))
-            ivw = inv_cb.reserve()
-            ivw.store(ttl.recip(ttl.sqrt(ttl.add(
-                ttl.mul(acc_cb.wait(), ttl.block.fill(inv_h, shape=(1, 1))),
-                ttl.block.fill(eps, shape=(1, 1))))))
-            inv = inv_cb.wait()
-            for ch in range(4):
-                kb = ch * K_CH
-                xd = xband_cb.reserve(); ttl.copy(x[0:1, kb:kb + K_CH], xd)
-                gd = g_cb.reserve(); ttl.copy(gamma[0:1, kb:kb + K_CH], gd)
-                xb = xband_cb.wait()
-                xnw = xn_stage.reserve()
-                xnw.store(ttl.mul(ttl.mul(xb, ttl.block.broadcast(inv, dims=[1], shape=xb.shape)),
-                                  g_cb.wait()))
+            for c in range(4):
+                xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
+            for c in range(4):
+                xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
+                gd = ng_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
+            norm_core(nx_cb, ng_cb, xn_stage, nsq_cb, nred_cb, nacc_cb, ninv_cb)
         for ch in range(2):
             mcast_block(band0, xn_stage, xb_cb)
         for ch in range(2):
@@ -96,11 +87,8 @@ def make_attn_heads_atom(Ht, Dt, eps):
             kr = row_c * K_BAND
             nd = (col_c - 1) * Dt
 
-            p = part_cb.reserve()
+            band_core(xb_cb, w_cb, part_cb)
             for ch in range(2):
-                xn = xb_cb.wait()
-                wb = w_cb.wait()
-                p += xn @ wb
                 wd = w_cb.reserve()
                 ttl.copy(wqkv[kr + ch * K_CH:kr + (ch + 1) * K_CH, nd:nd + Dt], wd)
 
@@ -109,28 +97,19 @@ def make_attn_heads_atom(Ht, Dt, eps):
                 hd = head_cb.reserve()
                 hd.store(ttl.add(part_cb.wait(), recv_cb.wait()))
                 h = head_cb.wait()
+                hx0 = hx_cb.reserve(); hx0.store(h)
+                hre = head_cb.reserve(); hre.store(h)
+                hx1 = hx_cb.reserve(); hx1.store(head_cb.wait())
+                gq = hg_cb.reserve(); ttl.copy(qknorm[0:1, 0:Dt], gq)
+                head_norm_core(hx_cb, hg_cb, hn_cb, hsq_cb, hred_cb, hacc_cb, hinv_cb)
                 if col_c < 7:
-                    gq = qk_g_cb.reserve(); ttl.copy(qknorm[0:1, 0:Dt], gq)
-                    hsq = hsq_cb.reserve(); hsq.store(ttl.mul(h, h))
-                    hr = hred_cb.reserve()
-                    hr.store(ttl.math.reduce_sum(hsq_cb.wait(), dims=[1]))
-                    hinv = ttl.recip(ttl.sqrt(ttl.add(
-                        ttl.mul(hred_cb.wait(), ttl.block.fill(inv_d, shape=(1, 1))),
-                        ttl.block.fill(eps, shape=(1, 1)))))
-                    hn = hn_cb.reserve()
-                    hn.store(ttl.mul(ttl.mul(h, ttl.block.broadcast(hinv, dims=[1], shape=h.shape)),
-                                     qk_g_cb.wait()))
                     cd = c_cb.reserve(); ttl.copy(cos[0:1, 0:Dt], cd)
                     sd2 = s_cb.reserve(); ttl.copy(sin[0:1, 0:Dt], sd2)
                     rd = r_cb.reserve(); ttl.copy(rot[0:Dt, 0:Dt], rd)
-                    hb = hn_cb.wait()
-                    rh = rh_cb.reserve(); rh.store(hb @ r_cb.wait())
-                    ow = out_cb.reserve()
-                    ow.store(ttl.add(ttl.mul(hb, c_cb.wait()),
-                                     ttl.mul(rh_cb.wait(), s_cb.wait())))
+                    rope_core(hn_cb, c_cb, s_cb, r_cb, rh_cb, out_cb)
                 else:
-                    ow = out_cb.reserve()
-                    ow.store(h)
+                    ob = out_cb.reserve()
+                    ob.store(hn_cb.wait())
                 ttl.copy(out_cb.wait(), heads[col_c - 1:col_c, 0:Dt])
             else:
                 sd = send_cb.reserve(); sd.store(part_cb.wait())

@@ -44,3 +44,21 @@ def make_kv_append(St, Dt):
         ttl.copy(band, out[r:r + 1, 0:Dt])
 
     return kv_append
+
+
+def make_kv_patch_core(Dt):
+    """Inlinable cache-row patch: write all elements of ``k_in`` row 0 into
+    ``band`` at row ``intra``. The caller copies the cache band in and back
+    out around it (read_index supplies the offsets)."""
+
+    @ttl.atom()
+    def kv_patch_core(k_in: ttl.DFB, band: ttl.DFB, pos_blk: ttl.DFB):
+        kb = k_in.wait()
+        bb = band.wait()
+        pb = pos_blk.wait()
+        intra = ttl.read_index(pb, 0, 1)
+        for c in range(Dt * TILE):
+            v = ttl.raw_element_read(kb, 0, c)
+            ttl.raw_element_write(bb, intra, c, v)
+
+    return kv_patch_core

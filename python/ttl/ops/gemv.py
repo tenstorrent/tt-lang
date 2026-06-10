@@ -104,3 +104,19 @@ def make_gemv(
                 reduce_send(reduce_net, partial_for_sum_cb, partial_for_send_cb)
 
     return gemv
+
+
+def make_gemv_band_core(K_CH, n_ch, bn):
+    """Inlinable GEMV band: accumulate ``x_in`` chunks against streamed
+    ``w_in`` blocks into one ``[1, bn]`` partial in ``p_out``. The caller
+    wires x chunks (pipes or DRAM) and streams W."""
+
+    @ttl.atom()
+    def gemv_band_core(x_in: ttl.DFB, w_in: ttl.DFB, p_out: ttl.DFB):
+        p = p_out.reserve()
+        for ch in range(n_ch):
+            xb = x_in.wait()
+            wb = w_in.wait()
+            p += xb @ wb
+
+    return gemv_band_core

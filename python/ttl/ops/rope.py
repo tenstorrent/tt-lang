@@ -60,3 +60,19 @@ def make_rope(Ht, rot_t):
             ttl.copy(r_cb.wait(), out[0:1, rot_t:Ht])
 
     return rope
+
+
+def make_rope_core(Dt):
+    """Inlinable rotate-half RoPE: ``y = h*cos + (h@R)*sin`` with ``R`` the
+    rotation permutation streamed in ``r_in`` ([Dt, Dt]). cos/sin arrive as
+    row-broadcast tiles. Partial rotary folds into R/cos/sin contents."""
+
+    @ttl.atom()
+    def rope_core(h_in: ttl.DFB, c_in: ttl.DFB, s_in: ttl.DFB,
+                  r_in: ttl.DFB, rh: ttl.DFB, y_out: ttl.DFB):
+        hb = h_in.wait()
+        rw = rh.reserve(); rw.store(hb @ r_in.wait())
+        yw = y_out.reserve()
+        yw.store(ttl.add(ttl.mul(hb, c_in.wait()), ttl.mul(rh.wait(), s_in.wait())))
+
+    return rope_core

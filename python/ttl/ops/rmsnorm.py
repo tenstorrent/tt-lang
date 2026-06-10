@@ -96,3 +96,37 @@ def make_rmsnorm(Rt, PNt, Dt, WCt, D, eps):
                     ttl.copy(out_cb.wait(), out[base:base + PNt, wc:wc + WCt])
 
     return rmsnorm
+
+
+def make_rmsnorm_core(Dt, WCt, D, eps):
+    """Inlinable RMSNorm over one row of ``Dt`` tiles, streamed ``WCt`` at
+    a time. Consumes ``WCt`` chunks of ``x_in`` twice (sumsq, then scale);
+    producer side decides where they come from (DRAM or compute). Weight
+    chunks arrive in ``g_in``; normalized chunks land in ``y_out``.
+    """
+    n_wc = Dt // WCt
+    inv_d = 1.0 / D
+
+    @ttl.atom()
+    def rmsnorm_core(x_in: ttl.DFB, g_in: ttl.DFB, y_out: ttl.DFB,
+                     sq: ttl.DFB, red: ttl.DFB, acc: ttl.DFB, inv: ttl.DFB):
+        a0 = acc.reserve(); a0.store(ttl.block.fill(0.0, shape=(1, 1)))
+        for c in range(n_wc):
+            xb = x_in.wait()
+            sqw = sq.reserve(); sqw.store(ttl.mul(xb, xb))
+            rw = red.reserve(); rw.store(ttl.math.reduce_sum(sq.wait(), dims=[1]))
+            a_old = acc.wait()
+            a_new = acc.reserve()
+            a_new.store(ttl.add(a_old, red.wait()))
+        ivw = inv.reserve()
+        ivw.store(ttl.recip(ttl.sqrt(ttl.add(
+            ttl.mul(acc.wait(), ttl.block.fill(inv_d, shape=(1, 1))),
+            ttl.block.fill(eps, shape=(1, 1))))))
+        iv = inv.wait()
+        for c in range(n_wc):
+            xb = x_in.wait()
+            yw = y_out.reserve()
+            yw.store(ttl.mul(ttl.mul(xb, ttl.block.broadcast(iv, dims=[1], shape=xb.shape)),
+                             g_in.wait()))
+
+    return rmsnorm_core

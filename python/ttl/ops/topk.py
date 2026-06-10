@@ -17,6 +17,9 @@ Indices are carried in bf16, which is exact for ramps up to 256 (so N must
 be <= 256). Each round writes its value/index straight to output tile-column
 ``r`` (a runtime slice), so the outputs are K tiles wide and no sub-tile
 element writes are needed; the host reads column ``r*32`` of result ``r``.
+
+TODO: ttl supports lt, gt, eq, etc. so maybe reduce isn't the best way to do
+this, but the perf tests will flesh that out.
 """
 
 import ttl
