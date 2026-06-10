@@ -41,7 +41,6 @@ def make_attn_heads_atom(Ht, Dt, eps):
         col_c, row_c = ttl.node(dims=2)
 
         nx_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
-        ng_cb = ttl.make_dataflow_buffer_like(gamma, shape=(1, K_CH), block_count=2)
         xn_stage = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
 
         xb_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
@@ -67,8 +66,8 @@ def make_attn_heads_atom(Ht, Dt, eps):
                 xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
             for c in range(4):
                 xd = nx_cb.reserve(); ttl.copy(x[0:1, c * K_CH:(c + 1) * K_CH], xd)
-                gd = ng_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
-            norm_core(nx_cb, ng_cb, xn_stage)
+                gd = nx_cb.reserve(); ttl.copy(gamma[0:1, c * K_CH:(c + 1) * K_CH], gd)
+            norm_core(nx_cb, nx_cb, xn_stage)
         for ch in range(2):
             mcast_block(band0, xn_stage, xb_cb)
         for ch in range(2):

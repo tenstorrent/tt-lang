@@ -65,11 +65,11 @@ def inline_atom_calls(
     if hoisted:
         from ttl.atom import _setup_assign_target
 
-        first_body = next(
-            (i for i, s in enumerate(fn_def.body) if _setup_assign_target(s) is None),
-            len(fn_def.body),
+        last_setup = max(
+            (i for i, s in enumerate(fn_def.body) if _setup_assign_target(s) is not None),
+            default=-1,
         )
-        fn_def.body[first_body:first_body] = hoisted
+        fn_def.body[last_setup + 1:last_setup + 1] = hoisted
     return inlined_dfb_tags
 
 
