@@ -97,8 +97,8 @@ class FFNChain:
         self.w_dn = to_dev(w["w_dn"].reshape(E * I, H).to(torch.bfloat16), device)
         self.layer_scalar = w["layer_scalar"]
 
-        rscale = w["router_scale"] * cfg.hidden ** -0.5
-        self.g_router = row(torch.full((H,), rscale), H, device)
+        rscale = torch.as_tensor(w["router_scale"]).expand(H) * cfg.hidden ** -0.5
+        self.g_router = row(rscale, H, device)
         self.w_router = to_dev(w["router_w"].T.contiguous().to(torch.bfloat16), device)
         self.ramp = to_dev(torch.arange(E, dtype=torch.bfloat16)
                            .unsqueeze(0).repeat(TILE, 1), device)
