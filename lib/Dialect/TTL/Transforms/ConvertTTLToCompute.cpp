@@ -66,6 +66,22 @@ buildBcastInputMap(MLIRContext *ctx, int64_t rank,
   return AffineMap::get(rank, 0, exprs, ctx);
 }
 
+/// Build an indexing map that follows `baseExprs` except where an input
+/// dimension is broadcast from size 1 to the output dimension.
+static AffineMap buildBroadcastAwareInputMap(MLIRContext *ctx,
+                                             RankedTensorType inputType,
+                                             RankedTensorType outputType,
+                                             int64_t numDims,
+                                             ArrayRef<AffineExpr> baseExprs) {
+  SmallVector<AffineExpr> exprs(baseExprs.begin(), baseExprs.end());
+  for (int64_t dim = 0; dim < inputType.getRank(); ++dim) {
+    if (inputType.getDimSize(dim) == 1 && outputType.getDimSize(dim) != 1) {
+      exprs[dim] = getAffineConstantExpr(0, ctx);
+    }
+  }
+  return AffineMap::get(numDims, 0, exprs, ctx);
+}
+
 static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                              Value exemplar) {
   SmallVector<Value> dynDims;
@@ -420,7 +436,16 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       } else if (matmulRhsTensors.contains(input)) {
         maps.push_back(AffineMapAttr::get(rhsMap));
       } else {
-        maps.push_back(AffineMapAttr::get(parallelMap));
+        // Non-matmul (parallel) input. A size-1 dimension broadcast to a
+        // larger output dimension must map to constant 0 along the [M, N]
+        // parallel dims; a plain parallelMap would force a shape conflict
+        // against the iteration domain.
+        AffineMap map = parallelMap;
+        auto inputType = getTensorType(input);
+        if (inputType && inputType.getRank() == 2) {
+          map = buildBroadcastAwareInputMap(ctx, inputType, type, 3, {d0, d1});
+        }
+        maps.push_back(AffineMapAttr::get(map));
       }
     }
     for (size_t i = 0; i < outCbs.size(); ++i) {
@@ -438,21 +463,12 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       auto inputType = getTensorType(trace.rootInputs[i]);
       if (inputType && inputType.getRank() == type.getRank()) {
         SmallVector<AffineExpr> exprs;
-        bool hasBroadcast = false;
-        for (int64_t d = 0; d < type.getRank(); ++d) {
-          if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
-            exprs.push_back(getAffineConstantExpr(0, ctx));
-            hasBroadcast = true;
-          } else {
-            exprs.push_back(getAffineDimExpr(d, ctx));
-          }
+        exprs.reserve(type.getRank());
+        for (int64_t dim = 0; dim < type.getRank(); ++dim) {
+          exprs.push_back(getAffineDimExpr(dim, ctx));
         }
-        if (hasBroadcast) {
-          maps.push_back(AffineMapAttr::get(
-              AffineMap::get(type.getRank(), 0, exprs, ctx)));
-        } else {
-          maps.push_back(AffineMapAttr::get(identityMap));
-        }
+        maps.push_back(AffineMapAttr::get(buildBroadcastAwareInputMap(
+            ctx, inputType, type, type.getRank(), exprs)));
       } else {
         maps.push_back(AffineMapAttr::get(identityMap));
       }

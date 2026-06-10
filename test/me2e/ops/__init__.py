@@ -19,6 +19,8 @@ import pytest
 import torch
 from torch import Tensor
 
+from ttlang_test_utils import make_compare_inputs
+
 from ..base import ME2ETestBase
 from ..config import E2EConfig
 
@@ -60,6 +62,10 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "signbit": lambda x: torch.signbit(x).float(),
     "frac": torch.frac,
     "trunc": torch.trunc,
+    "gt": torch.gt,
+    "lt": torch.lt,
+    "eq": torch.eq,
+    "ne": torch.ne,
 }
 
 # Domain constraints for ops that require specific input ranges.
@@ -229,16 +235,21 @@ class OpTestBase(ME2ETestBase):
 
         # Generate random inputs.
         lo, hi = input_range
-        torch_inputs: List[Tensor] = []
-        for _ in range(self.ARITY):
-            t = torch.rand(config.tensor_shape, dtype=config.dtype) * (hi - lo) + lo
-            torch_inputs.append(t)
+        if getattr(self, "EXACT_BOOL_OUTPUT", False):
+            torch_inputs = list(make_compare_inputs(config.tensor_shape, config.dtype))
+        else:
+            torch_inputs: List[Tensor] = []
+            for _ in range(self.ARITY):
+                t = torch.rand(config.tensor_shape, dtype=config.dtype) * (hi - lo) + lo
+                torch_inputs.append(t)
 
         # Compute golden using torch.
         if self.ARITY == 1:
             golden = torch_op(torch_inputs[0])
         else:
             golden = torch_op(torch_inputs[0], torch_inputs[1])
+        if golden.dtype == torch.bool:
+            golden = golden.to(config.dtype)
 
         # Build full ME2E module with reader, compute, and writer threads.
         mlir_str = build_e2e_module_mlir(self.OP_STR, self.ARITY, config)
@@ -315,6 +326,8 @@ def generate_op_test_classes() -> Dict[str, Type[OpTestBase]]:
                 overrides = OP_ALLCLOSE_OVERRIDES[op_name]
                 if dtype in overrides:
                     attrs["ALLCLOSE"] = overrides[dtype]
+            if op_name in ("eq", "ne", "gt", "lt"):
+                attrs["EXACT_BOOL_OUTPUT"] = True
 
             # Create class dynamically with dtype suffix.
             class_name = f"Test{op_name.capitalize()}{dtype_suffix}"

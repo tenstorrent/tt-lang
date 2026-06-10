@@ -428,6 +428,17 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
   }
 };
 
+struct DstIndexCleanup : OpConversionPattern<DstIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(DstIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getSource());
+    return success();
+  }
+};
+
 } // namespace
 
 // PipeGraph implementation lives in PipeGraph.cpp.
@@ -861,12 +872,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
     });
   }
 
-  if (cbShape.size() != tensorRank) {
-    return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-      diag << "CB shape rank (" << cbShape.size()
-           << ") does not match tensor rank (" << tensorRank << ")";
-    });
-  }
+  // cbRank <= tensorRank is guaranteed upstream: CopyOp enforces DFB rank ==
+  // slice result rank, and TensorSliceOp enforces result rank <= tensor rank.
+  assert(cbShape.size() <= tensorRank && "CB rank exceeds tensor rank");
 
   Value bankBase =
       getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
@@ -882,6 +890,13 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
           ? ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted).getResult()
           : ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted).getResult();
 
+  // Rank-reducing slice: the leading (tensorRank - cbRank) tensor dims are
+  // squeezed via scalar indices (validated at slice creation). CB iteration
+  // vars map to the trailing dims; squeezed dims contribute startIndices[d]
+  // directly with no IV adder.
+  unsigned cbRank = cbShape.size();
+  unsigned rankDiff = tensorRank - cbRank;
+
   auto indexTy = rewriter.getIndexType();
   auto cbPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbPtr);
   auto pageSizeIdx = arith::ConstantIndexOp::create(
@@ -893,11 +908,17 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   emitTileLoop(
       rewriter, loc, cbBounds,
       [&](OpBuilder &loopBuilder, Location bodyLoc, ValueRange cbIVs) {
-        // Tensor coordinates: start index + CB loop IV for each dimension.
+        // Tensor coordinates: for squeezed leading dims, use the scalar
+        // startIndex directly. For range dims, add the CB loop IV.
         SmallVector<Value> tensorCoords;
-        for (unsigned dimension = 0; dimension < tensorRank; ++dimension) {
-          Value coord = arith::AddIOp::create(
-              loopBuilder, bodyLoc, startIndices[dimension], cbIVs[dimension]);
+        for (unsigned d = 0; d < tensorRank; ++d) {
+          Value coord;
+          if (d < rankDiff) {
+            coord = startIndices[d];
+          } else {
+            coord = arith::AddIOp::create(loopBuilder, bodyLoc, startIndices[d],
+                                          cbIVs[d - rankDiff]);
+          }
           tensorCoords.push_back(coord);
         }
 
@@ -1234,7 +1255,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                          ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
-  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
+  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp>();
   target.addLegalOp<PipeTransferCreateOp>();
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
@@ -1377,7 +1398,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
   computeTarget.addLegalDialect<affine::AffineDialect, arith::ArithDialect>();
   // Keep compute ops legal (tile-only lowering here).
-  computeTarget.addLegalOp<ComputeOp, YieldOp>();
+  computeTarget.addLegalOp<ComputeOp, YieldOp, DstIndexOp>();
 
   // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
   computeTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
@@ -1423,10 +1444,11 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
   cleanupTarget.addIllegalOp<AttachCBOp>();
   // ComputeOp/YieldOp should be gone after loop lowering, but mark illegal
   // just in case.
-  cleanupTarget.addIllegalOp<ComputeOp, YieldOp>();
+  cleanupTarget.addIllegalOp<ComputeOp, YieldOp, DstIndexOp>();
 
   RewritePatternSet structuralPatterns(&ctx);
-  structuralPatterns.add<AttachCBLowering>(typeConverter, &ctx);
+  structuralPatterns.add<AttachCBLowering, DstIndexCleanup>(typeConverter,
+                                                            &ctx);
   if (failed(applyPartialConversion(mod, cleanupTarget,
                                     std::move(structuralPatterns)))) {
     return failure();

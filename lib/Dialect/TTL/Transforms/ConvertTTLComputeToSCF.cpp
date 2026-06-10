@@ -640,6 +640,22 @@ struct TTLLowerToLoopsPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
+    // Precondition: reject block matmul computes whose expanded DST usage
+    // exceeds capacity. Checked here, not in the rewrite, so the diagnostic is
+    // emitted once instead of on every greedy rewrite retry.
+    if (useBlockMatmul) {
+      WalkResult capacityResult = func.walk([](ComputeOp computeOp) {
+        if (computeOp.containsOp<TileMatmulBlockOp>() &&
+            failed(verifyMatmulComputeCapacity(computeOp))) {
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (capacityResult.wasInterrupted()) {
+        return signalPassFailure();
+      }
+    }
+
     // Step 1: Lower compute ops to scf.for tile loops.
     // The pattern collects outermost tile loops from subblocked computes
     // into loopsToUnroll for step 2.
