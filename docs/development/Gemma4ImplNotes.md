@@ -123,3 +123,6 @@ to circle back to.
   Cut path: out is pinned (consumers compute + DM); copy band back via a
   compute store frees one index; further squeeze: merge cb46/cb29 sized
   alike across class boundary needs reset op (#679).
+- Cap decision: attn floor is 33 (11 pins + 22 slots, rest cross-thread).
+  Per guidance, CB-count-bound cuts are sanctioned: split O projection into
+  its own atom (drain o/m/l, drop wo/op/orecv/ostage) until #679 reset op.
