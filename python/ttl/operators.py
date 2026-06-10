@@ -1006,6 +1006,8 @@ def raw_element_write(block, *args):
     if hasattr(val, "type") and val.type != block_scalar_type:
         if val.type == F32Type.get(ctx) and block_scalar_type == BF16Type.get(ctx):
             val = arith.TruncFOp(block_scalar_type, val)
+        elif val.type == BF16Type.get(ctx) and block_scalar_type == F32Type.get(ctx):
+            val = arith.ExtFOp(block_scalar_type, val)
 
     ttl.raw_element_write(block, index_vals, val)
 

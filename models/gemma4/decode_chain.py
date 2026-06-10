@@ -15,7 +15,8 @@ import torch
 import ttnn
 
 import ttl  # noqa: F401  (kept first for runtime init)
-from ttl.ops.argmax import CHUNK, make_collapse, make_restack, make_token_select
+from ttl.ops.argmax import (CHUNK, make_collapse, make_elem_copy,
+                            make_pick_token, make_restack, make_token_select)
 from ttl.ops.elementwise import make_add, make_binary, make_copy, make_row_scale
 from ttl.ops.embed_gather import make_embed_gather
 from ttl.ops.flash_decode import make_flash_decode_kev
@@ -49,6 +50,11 @@ def atom(maker, *args, **kwargs):
 
 def make_scaled_add(Ht, scalar):
     return make_binary("scaled_add", 1, 1, Ht, 11, scalar=scalar)
+
+
+def make_add_f32(*args, **kwargs):
+    """Distinct memo key: atoms trace per dtype and tok tiles are f32."""
+    return make_add(*args, **kwargs)
 
 
 def buf(device, n, rows=TILE):
@@ -362,16 +368,18 @@ class DecodeChain:
     def __init__(self, layers, st, embed, g_final, lm_head, device, cfg):
         self.layers, self.st, self.device, self.cfg = layers, st, device, cfg
         H = cfg.hidden
-        self.Ht, self.V = H // TILE, lm_head.shape[1]
+        self.tp = device.get_num_devices() if is_mesh(device) else 1
+        self.Ht, self.V = H // TILE, lm_head.shape[1] // self.tp
         self.n_chunks = self.V // CHUNK
         nt = (self.n_chunks + TILE - 1) // TILE
         self.nt = nt
         self.table = to_dev(embed.to(torch.bfloat16), device)
         self.g_final = row(g_final, H, device)
-        self.lm = to_dev(lm_head.to(torch.bfloat16), device)
+        self.lm = shard_cards(
+            [lm_head[:, c * self.V:(c + 1) * self.V] for c in range(self.tp)], device)
         self.x, self.xn = buf(device, H), buf(device, H)
         self.logits = buf(device, self.V)
-        self.tok = buf(device, TILE)
+        self.tok = to_dev(torch.zeros(TILE, TILE), device, ttnn.float32)
 
         self.tall = buf(device, CHUNK, self.n_chunks * TILE)
         self.vals = buf(device, TILE, self.n_chunks * TILE)
@@ -384,16 +392,32 @@ class DecodeChain:
                               .unsqueeze(0).repeat(TILE, 1), device)
         self.rampn = to_dev(torch.arange(nt * TILE, dtype=torch.bfloat16)
                             .unsqueeze(0).repeat(TILE, 1), device)
+        f32 = ttnn.float32
+        # Token rows reach V/32 = 8192: token assembly stays exact in f32.
         stage = torch.zeros(3 * TILE, CHUNK)
         stage[0] = torch.arange(CHUNK) // TILE
         stage[1] = torch.arange(CHUNK) % TILE
         stage[2, :self.n_chunks] = torch.arange(self.n_chunks) * (CHUNK // TILE)
-        self.stage = to_dev(stage.to(torch.bfloat16), device)
-        self.zero = buf(device, TILE)
-        self.tok_a, self.tok_b = buf(device, TILE), buf(device, TILE)
+        self.stage = to_dev(stage, device, f32)
+        self.zero = to_dev(torch.zeros(TILE, TILE), device, f32)
+        self.tok_a = to_dev(torch.zeros(TILE, TILE), device, f32)
+        self.tok_b = to_dev(torch.zeros(TILE, TILE), device, f32)
+        if self.tp > 1:
+            base = torch.zeros(self.tp * TILE, TILE)
+            for c in range(self.tp):
+                base[c * TILE, 0] = c * (self.V // TILE)
+            self.base = to_dev(base, device, f32, shard=True)
+            self.tok_l = to_dev(torch.zeros(TILE, TILE), device, f32)
+            self.cand = to_dev(torch.zeros(TILE, TILE), device, f32)
+            self.pck = to_dev(torch.zeros(TILE, 3 * TILE), device, f32)
+            # Card winner merge stays bf16: indices < tp are exact.
+            self.gw = to_dev(torch.full((TILE, TILE), -1e30).to(torch.bfloat16), device)
+            self.gv, self.gc = buf(device, TILE), buf(device, TILE)
+            self.ramp_tp = to_dev(torch.arange(TILE, dtype=torch.bfloat16)
+                                  .unsqueeze(0).repeat(TILE, 1), device)
 
     def prime(self, tok, pos):
-        self.tok = to_dev(split_tile(tok).to(torch.bfloat16), self.device)
+        self.tok = to_dev(split_tile(tok), self.device, ttnn.float32)
         self.st.prime(self.device, pos)
 
     def step(self):
@@ -404,7 +428,8 @@ class DecodeChain:
         for layer in self.layers:
             x = layer.step(x)
         atom(make_rmsnorm, 1, 1, self.Ht, 11, H, cfg.eps)(x, self.g_final, self.xn)
-        atom(make_gemv, TILE, H, self.V, (8, 2), 4)(self.xn, self.lm, self.logits)
+        bn = 4 if (self.V // TILE) % 32 == 0 else 1
+        atom(make_gemv, TILE, H, self.V, (8, 2), bn)(self.xn, self.lm, self.logits)
 
         n = self.n_chunks
         atom(make_restack, n)(self.logits, self.tall)
@@ -412,9 +437,22 @@ class DecodeChain:
         atom(make_collapse, n)(self.vals, self.cw)
         atom(make_collapse, n, out_row=1)(self.ids, self.stage)
         atom(make_topk, 1, 1, self.nt, 1, self.nt * TILE)(self.cw, self.rampn, self.wv, self.wi)
-        atom(make_copy, 1, 1, 1, 1, out_off=(2, 0))(self.wi, self.stage)
+        atom(make_elem_copy, out_row=2 * TILE)(self.wi, self.stage)
         atom(make_token_select, n)(self.stage, self.zero, self.tok_a, self.tok_b)
-        atom(make_add, 1, 1, 1, 1)(self.tok_a, self.tok_b, self.tok)
+        if self.tp == 1:
+            # Kept for single-card testing.
+            atom(make_add_f32, 1, 1, 1, 1)(self.tok_a, self.tok_b, self.tok)
+        else:
+            atom(make_add_f32, 1, 1, 1, 1)(self.tok_a, self.tok_b, self.tok_l)
+            atom(make_add_f32, 1, 1, 1, 1)(self.tok_l, self.base, self.cand)
+            atom(make_elem_copy)(self.wv, self.pck)
+            atom(make_elem_copy, out_col=TILE, width=2)(self.cand, self.pck)
+            g = ttnn.all_gather(self.pck, dim=0)
+            atom(make_collapse, self.tp)(g, self.gw)
+            atom(make_topk, 1, 1, 1, 1, TILE)(self.gw, self.ramp_tp, self.gv, self.gc)
+            atom(make_elem_copy, out_col=2 * TILE)(self.gc, g)
+            atom(make_pick_token, self.tp)(g, self.zero, self.tok)
+            ttnn.deallocate(g)
         st.advance()
 
     def read_token(self):

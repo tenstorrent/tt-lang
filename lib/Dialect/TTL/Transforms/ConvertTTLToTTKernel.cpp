@@ -1264,7 +1264,10 @@ static Value materializeIntBits(Value floatVal, Type intTy,
                                 ConversionPatternRewriter &rewriter,
                                 Location loc) {
   if (auto truncOp = floatVal.getDefiningOp<arith::TruncFOp>()) {
-    Value src = truncOp.getOperand();
+    Value src = rewriter.getRemappedValue(truncOp.getOperand());
+    if (!src) {
+      src = truncOp.getOperand();
+    }
     unsigned srcWidth = src.getType().getIntOrFloatBitWidth();
     unsigned dstWidth = floatVal.getType().getIntOrFloatBitWidth();
     auto srcIntTy = IntegerType::get(rewriter.getContext(), srcWidth);
@@ -1276,6 +1279,24 @@ static Value materializeIntBits(Value floatVal, Type intTy,
                                                srcWidth - dstWidth, srcWidth);
     Value shifted = arith::ShRUIOp::create(rewriter, loc, srcBits, shift);
     return arith::TruncIOp::create(rewriter, loc, intTy, shifted);
+  }
+  if (auto extOp = floatVal.getDefiningOp<arith::ExtFOp>()) {
+    // bf16 is the upper 16 bits of f32: widen bits, shift into place.
+    Value src = rewriter.getRemappedValue(extOp.getIn());
+    if (!src) {
+      src = extOp.getIn();
+    }
+    unsigned srcWidth = src.getType().getIntOrFloatBitWidth();
+    unsigned dstWidth = floatVal.getType().getIntOrFloatBitWidth();
+    auto srcIntTy = IntegerType::get(rewriter.getContext(), srcWidth);
+    Value srcBits = materializeIntBits(src, srcIntTy, rewriter, loc);
+    if (!srcBits) {
+      return Value();
+    }
+    Value wide = arith::ExtUIOp::create(rewriter, loc, intTy, srcBits);
+    Value shift = arith::ConstantIntOp::create(rewriter, loc,
+                                               dstWidth - srcWidth, dstWidth);
+    return arith::ShLIOp::create(rewriter, loc, wide, shift);
   }
   if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>()) {
     if (cast.getInputs().size() == 1 &&

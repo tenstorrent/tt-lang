@@ -101,3 +101,55 @@ def make_token_select(n_chunks):
         ttl.copy(b_cb.wait(), out_b[0:1, 0:1])
 
     return token_select
+
+
+def make_elem_copy(out_row=0, out_col=0, width=1):
+    """Copy row-0 elements by value (dtype-converting; tile copies are raw).
+
+    Single source, single consumer thread; tile-granular RMW of the target.
+    """
+
+    @ttl.atom(grid=(1, 1))
+    def elem_copy(x, out):
+        x_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=1)
+        o_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+        xd = x_cb.reserve()
+        ttl.copy(x[0:1, 0:1], xd)
+        xb = x_cb.wait()
+        ot = out_row // TILE
+        oc = out_col // TILE
+        od = o_cb.reserve()
+        ttl.copy(out[ot:ot + 1, oc:oc + 1], od)
+        for j in range(width):
+            ttl.raw_element_write(od, out_row % TILE, out_col % TILE + j,
+                                  ttl.raw_element_read(xb, 0, j))
+        ttl.copy(o_cb.wait(), out[ot:ot + 1, oc:oc + 1])
+
+    return elem_copy
+
+
+def make_pick_token(n):
+    """Vocab-sharded winner merge after all_gather.
+
+    ``g`` holds one [value | token | scratch] tile triple per card as tile
+    rows (gather dim 0) with the winner card id written at (0, 64); one
+    source so a single consumer thread reads everything.
+    """
+
+    @ttl.atom(grid=(1, 1))
+    def pick_token(g, zero, out):
+        g_cb = ttl.make_dataflow_buffer_like(g, shape=(n, 3), block_count=1)
+        o_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+        gd = g_cb.reserve()
+        ttl.copy(g[0:n, 0:3], gd)
+        gb = g_cb.wait()
+        c = ttl.read_index(gb, 0, 2 * TILE)
+        od = o_cb.reserve()
+        ttl.copy(zero[0:1, 0:1], od)
+        ttl.raw_element_write(od, 0, 0, ttl.raw_element_read(gb, c * TILE, TILE))
+        ttl.raw_element_write(od, 0, 1, ttl.raw_element_read(gb, c * TILE, TILE + 1))
+        ttl.copy(o_cb.wait(), out[0:1, 0:1])
+
+    return pick_token

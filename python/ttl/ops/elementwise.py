@@ -17,12 +17,12 @@ def make_binary(kind, Rt, PNt, Dt, WCt, a_off=(0, 0), b_off=(0, 0), out_off=(0, 
                 scalar=1.0):
     """``out = <kind>(a, b)`` over ``Rt`` row-tiles by ``Dt`` width-tiles.
 
-    ``kind``: add | swiglu (gelu(a)*b) | scaled_add ((a+b)*scalar). A
-    trace-time switch: the tracer can't call closures inside atom bodies.
+    ``kind``: add | swiglu (gelu(a)*b) | scaled_add ((a+b)*scalar).
     ``a_off``/``b_off``/``out_off`` are (row, col) tile offsets into the
     operands, so inputs can be slices of a wider tensor (e.g. the g/u
     halves of a fused gate_up projection row). Scale-by-gate-weight runs
-    as a separate row_scale dispatch.
+    as a separate row_scale dispatch. add/swiglu are dtype-agnostic;
+    scaled_add's fill constant is bf16.
     """
     if kind not in ("add", "swiglu", "scaled_add"):
         raise ValueError(f"unknown binary kind {kind}")
@@ -33,12 +33,11 @@ def make_binary(kind, Rt, PNt, Dt, WCt, a_off=(0, 0), b_off=(0, 0), out_off=(0, 
     n_blocks = Rt // PNt
     n_wc = Dt // WCt
     (ar, ac), (br, bc), (orr, oc) = a_off, b_off, out_off
-    KIND_ADD = kind == "add"
-    KIND_SWIGLU = kind == "swiglu"
-    KIND_SCALED_ADD = kind == "scaled_add"
-
+    # The tracer compiles every branch in an atom body and closure dtypes
+    # don't resolve, so each kind gets its own body: an f32 add must not
+    # trace a bf16 fill it never runs.
     @ttl.atom(grid="full")
-    def binary(a, b, out):
+    def add_binary(a, b, out):
         col_c, row_c = ttl.node(dims=2)
         gx, gy = ttl.grid_size(dims=2)
         cores = gx * gy
@@ -62,16 +61,68 @@ def make_binary(kind, Rt, PNt, Dt, WCt, a_off=(0, 0), b_off=(0, 0), out_off=(0, 
                     ab = a_cb.wait()
                     bb = b_cb.wait()
                     ow = out_cb.reserve()
-                    if KIND_ADD:
-                        ow.store(ttl.add(ab, bb))
-                    if KIND_SWIGLU:
-                        ow.store(ttl.mul(ttl.gelu(ab), bb))
-                    if KIND_SCALED_ADD:
-                        ow.store(ttl.mul(ttl.add(ab, bb),
-                                         ttl.block.fill(scalar, shape=(PNt, WCt))))
+                    ow.store(ttl.add(ab, bb))
                     ttl.copy(out_cb.wait(), out[orr + base:orr + base + PNt, oc + wc:oc + wc + WCt])
 
-    return binary
+    @ttl.atom(grid="full")
+    def swiglu_binary(a, b, out):
+        col_c, row_c = ttl.node(dims=2)
+        gx, gy = ttl.grid_size(dims=2)
+        cores = gx * gy
+        bpc = (n_blocks + cores - 1) // cores
+        cid = col_c * gy + row_c
+
+        a_cb = ttl.make_dataflow_buffer_like(a, shape=(PNt, WCt), block_count=2)
+        b_cb = ttl.make_dataflow_buffer_like(b, shape=(PNt, WCt), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(PNt, WCt), block_count=2)
+
+        for blk in range(bpc):
+            blk_i = cid * bpc + blk
+            if blk_i < n_blocks:
+                base = blk_i * PNt
+                for c in range(n_wc):
+                    wc = c * WCt
+                    ad = a_cb.reserve()
+                    ttl.copy(a[ar + base:ar + base + PNt, ac + wc:ac + wc + WCt], ad)
+                    bd = b_cb.reserve()
+                    ttl.copy(b[br + base:br + base + PNt, bc + wc:bc + wc + WCt], bd)
+                    ab = a_cb.wait()
+                    bb = b_cb.wait()
+                    ow = out_cb.reserve()
+                    ow.store(ttl.mul(ttl.gelu(ab), bb))
+                    ttl.copy(out_cb.wait(), out[orr + base:orr + base + PNt, oc + wc:oc + wc + WCt])
+
+    @ttl.atom(grid="full")
+    def scaled_add_binary(a, b, out):
+        col_c, row_c = ttl.node(dims=2)
+        gx, gy = ttl.grid_size(dims=2)
+        cores = gx * gy
+        bpc = (n_blocks + cores - 1) // cores
+        cid = col_c * gy + row_c
+
+        a_cb = ttl.make_dataflow_buffer_like(a, shape=(PNt, WCt), block_count=2)
+        b_cb = ttl.make_dataflow_buffer_like(b, shape=(PNt, WCt), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(PNt, WCt), block_count=2)
+
+        for blk in range(bpc):
+            blk_i = cid * bpc + blk
+            if blk_i < n_blocks:
+                base = blk_i * PNt
+                for c in range(n_wc):
+                    wc = c * WCt
+                    ad = a_cb.reserve()
+                    ttl.copy(a[ar + base:ar + base + PNt, ac + wc:ac + wc + WCt], ad)
+                    bd = b_cb.reserve()
+                    ttl.copy(b[br + base:br + base + PNt, bc + wc:bc + wc + WCt], bd)
+                    ab = a_cb.wait()
+                    bb = b_cb.wait()
+                    ow = out_cb.reserve()
+                    ow.store(ttl.mul(ttl.add(ab, bb),
+                                     ttl.block.fill(scalar, shape=(PNt, WCt))))
+                    ttl.copy(out_cb.wait(), out[orr + base:orr + base + PNt, oc + wc:oc + wc + WCt])
+
+    return {"add": add_binary, "swiglu": swiglu_binary,
+            "scaled_add": scaled_add_binary}[kind]
 
 
 def make_add(Rt, PNt, Dt, WCt, **offsets):
