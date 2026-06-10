@@ -4,27 +4,30 @@
 
 """Per-card decode step as a dispatch chain (bring-up driver).
 
-One atom per op, activations and routing device-resident: no host or ttnn
-logic between atoms (CCLs and DRAM round trips are the only sanctioned
-cuts). Atom factories are memoized so 30 layers share compiled kernels.
-Fusing back into per-cut atoms is the optimization phase; this driver is
-the correctness substrate (test: per-layer goldens, greedy match).
+One atom per op, activations and all step state device-resident: no host or
+ttnn logic between atoms (CCLs and DRAM round trips via ttl.copy are the
+only sanctioned cuts). Host stages step-invariant tables and the prompt
+token before generation; the step loop only enqueues dispatches. Atom
+factories are memoized so 30 layers share kernels.
 """
 
 import torch
+import ttnn
 
 import ttl  # noqa: F401  (kept first for runtime init)
+from ttl.ops.argmax import CHUNK, make_collapse, make_restack, make_token_select
 from ttl.ops.elementwise import make_add, make_binary, make_copy, make_row_scale
+from ttl.ops.embed_gather import make_embed_gather
+from ttl.ops.flash_decode import make_flash_decode_kev
 from ttl.ops.gemv import make_gemv
 from ttl.ops.indexed_gemv import make_indexed_gemv
-from ttl.ops.flash_decode import make_flash_decode_kev
 from ttl.ops.kv_append import make_kv_append
 from ttl.ops.moe_router import make_moe_weights, make_softmax_row
+from ttl.ops.pos_slice import make_pos_slice, make_pos_step
 from ttl.ops.rmsnorm import make_rmsnorm
 from ttl.ops.rope import make_rope
 from ttl.ops.swiglu import make_swiglu
 from ttl.ops.topk import make_topk
-from ttl.ops.embed_gather import make_embed_gather
 
 from .attn_atom import TILE, make_attn_heads_atom, make_flash_atom
 from .host import MLP_PAD, from_dev, row, to_dev
@@ -39,29 +42,46 @@ def atom(maker, *args, **kwargs):
     return _ATOMS[key]
 
 
-def pos_tile(p):
-    t = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
-    t[0, 0], t[0, 1] = p // TILE, p % TILE
+def make_scaled_add(Ht, scalar):
+    return make_binary(
+        lambda a, b: ttl.mul(ttl.add(a, b), ttl.block.fill(scalar, shape=a.shape)),
+        1, 1, Ht, 11)
+
+
+def buf(device, n, rows=TILE):
+    return to_dev(torch.zeros(rows, n, dtype=torch.bfloat16), device)
+
+
+def split_tile(p, ring=None):
+    t = torch.zeros(TILE, TILE)
+    r = p if ring is None else p % ring
+    t[0, :3] = torch.tensor([r // TILE, r % TILE, p]).float()
     return t
 
 
-def causal_masks(S, valid, chunk):
-    m = torch.full((S,), float("-inf"))
-    m[:valid] = 0.0
-    n = S // chunk
-    return m.reshape(n, 1, chunk).expand(n, TILE, chunk).reshape(n * TILE, chunk).to(torch.bfloat16)
+def pos_lut(smax, ring=None):
+    lut = torch.zeros(smax, TILE)
+    for p in range(smax - 1):
+        lut[p, :3] = split_tile(p + 1, ring)[0, :3]
+    return lut
 
 
-def rope_tables(pos, rot, theta):
+def rope_table(smax, rot, theta):
     inv = 1.0 / (theta ** (torch.arange(0, rot, 2).float() / rot))
-    f = pos * inv
-    cos = torch.cat([f.cos(), f.cos()]).expand(TILE, rot).contiguous()
-    sin = torch.cat([f.sin(), f.sin()]).expand(TILE, rot).contiguous()
-    return cos.to(torch.bfloat16), sin.to(torch.bfloat16)
+    f = torch.arange(smax).float().unsqueeze(1) * inv
+    return torch.cat([f.cos(), f.cos()], 1), torch.cat([f.sin(), f.sin()], 1)
+
+
+def mask_table(smax, S):
+    j = torch.arange(S)
+    p = torch.arange(smax).unsqueeze(1)
+    m = torch.where(j <= p, 0.0, -1e30)
+    m[S:] = 0.0  # ring cache fully valid once wrapped
+    return m
 
 
 class FFNChain:
-    """Dense MLP + routed experts; shared by both layer kinds."""
+    """Dense MLP + routed experts; routing fully on device."""
 
     def __init__(self, w, device, cfg):
         self.device, self.cfg = device, cfg
@@ -77,8 +97,6 @@ class FFNChain:
         self.w_dn = to_dev(w["w_dn"].reshape(E * I, H).to(torch.bfloat16), device)
         self.layer_scalar = w["layer_scalar"]
 
-        # Step-invariant router tables: scale-less norm weight with
-        # router_scale * H^-0.5 folded in; ids ramp for topk; per-expert row.
         rscale = w["router_scale"] * cfg.hidden ** -0.5
         self.g_router = row(torch.full((H,), rscale), H, device)
         self.w_router = to_dev(w["router_w"].T.contiguous().to(torch.bfloat16), device)
@@ -86,24 +104,20 @@ class FFNChain:
                            .unsqueeze(0).repeat(TILE, 1), device)
         self.pe = row(w["per_expert"], E, device)
 
-        def buf(n, rows=TILE):
-            return to_dev(torch.zeros(rows, n, dtype=torch.bfloat16), device)
-
         K = cfg.top_k
-        self.hn = buf(cfg.hidden)
-        self.hr, self.rl, self.probs = buf(H), buf(E), buf(E)
-        self.vals, self.idx, self.wts = buf(K * TILE), buf(K * TILE), buf(K * TILE)
-        self.g, self.u, self.act = buf(P), buf(P), buf(P)
-        self.dense, self.h1, self.hn2, self.h2 = buf(H), buf(H), buf(H), buf(H)
-        self.gu = buf(2 * I, 8 * TILE)
-        self.eact = buf(I, 8 * TILE)
-        self.dn = buf(H, 8 * TILE)
-        self.comb, self.combn, self.out = buf(H), buf(H), buf(H)
+        self.hn = buf(device, H)
+        self.hr, self.rl, self.probs = buf(device, H), buf(device, E), buf(device, E)
+        self.vals, self.idx, self.wts = (buf(device, K * TILE) for _ in range(3))
+        self.g, self.u, self.act = buf(device, P), buf(device, P), buf(device, P)
+        self.dense, self.h1, self.hn2, self.h2 = (buf(device, H) for _ in range(4))
+        self.gu = buf(device, 2 * I, K * TILE)
+        self.eact = buf(device, I, K * TILE)
+        self.dn = buf(device, H, K * TILE)
+        self.comb, self.combn, self.out = (buf(device, H) for _ in range(3))
 
     def step(self, h_d):
-        cfg, dev, K, E = self.cfg, self.device, self.cfg.top_k, self.E
-        H, P, Ht, It = cfg.hidden, MLP_PAD, self.Ht, self.It
-        Et = E // TILE
+        cfg, K, E = self.cfg, self.cfg.top_k, self.E
+        H, P, Ht, It, Et = cfg.hidden, MLP_PAD, self.Ht, self.It, self.E // TILE
         norm = atom(make_rmsnorm, 1, 1, Ht, 11, H, cfg.eps)
 
         norm(h_d, self.g_router, self.hr)
@@ -111,7 +125,6 @@ class FFNChain:
         atom(make_softmax_row, Et)(self.rl, self.probs)
         atom(make_topk, 1, 1, Et, K, E)(self.probs, self.ramp, self.vals, self.idx)
         atom(make_moe_weights, K, Et)(self.vals, self.idx, self.pe, self.wts)
-        idx_d, wts_d = self.idx, self.wts
 
         norm(h_d, self.g_preffw, self.hn)
         gate = atom(make_gemv, TILE, H, P, (9, 2), 2)
@@ -122,37 +135,30 @@ class FFNChain:
         norm(self.dense, self.g_postffw1, self.h1)
 
         norm(h_d, self.g_preffw2, self.hn2)
-        atom(make_indexed_gemv, self.E, H, 2 * self.I, K, (11, 2), 4, idx_stride=TILE)(
-            self.hn2, idx_d, self.w_gu, self.gu)
+        atom(make_indexed_gemv, E, H, 2 * self.I, K, (11, 2), 4, idx_stride=TILE)(
+            self.hn2, self.idx, self.w_gu, self.gu)
         for t in range(K):
             atom(make_swiglu, 1, 1, It, It,
                  a_off=(t, 0), b_off=(t, It), out_off=(t, 0))(self.gu, self.gu, self.eact)
             atom(make_row_scale, self.I, It, a_row=t, s_col=t, out_row=t)(
-                self.eact, wts_d, self.eact)
-        atom(make_indexed_gemv, self.E, self.I, H, K, (11, 2), 4,
-             x_per_t=True, idx_stride=TILE)(self.eact, idx_d, self.w_dn, self.dn)
+                self.eact, self.wts, self.eact)
+        atom(make_indexed_gemv, E, self.I, H, K, (11, 2), 4,
+             x_per_t=True, idx_stride=TILE)(self.eact, self.idx, self.w_dn, self.dn)
         for t in range(1, K):
             atom(make_add, 1, 1, Ht, 11, b_off=(t, 0))(self.dn, self.dn, self.dn)
         norm(self.dn, self.g_postffw2, self.h2)
 
         atom(make_add, 1, 1, Ht, 11)(self.h1, self.h2, self.comb)
         norm(self.comb, self.g_postffw, self.combn)
-        scaled_add = atom(make_scaled_add, Ht, self.layer_scalar)
-        scaled_add(h_d, self.combn, self.out)
+        atom(make_scaled_add, Ht, self.layer_scalar)(h_d, self.combn, self.out)
         return self.out
 
 
-def make_scaled_add(Ht, scalar):
-    return make_binary(
-        lambda a, b: ttl.mul(ttl.add(a, b), ttl.block.fill(scalar, shape=a.shape)),
-        1, 1, Ht, 11)
-
-
 class SlidingChain:
-    """Per-card sliding layer: fused heads atom + kv appends + flash + o proj."""
+    """Per-card sliding layer; cos/sin/mask staging owned by DecodeChain."""
 
-    def __init__(self, w, device, cfg):
-        self.device, self.cfg = device, cfg
+    def __init__(self, w, device, cfg, st):
+        self.device, self.cfg, self.st = device, cfg, st
         H, D, S = cfg.hidden, cfg.head_dim, cfg.sliding_window
         self.D, self.S = D, S
         self.Ht, self.Dt = H // TILE, D // TILE
@@ -166,30 +172,24 @@ class SlidingChain:
         for j in range(half):
             R[half + j, j], R[j, half + j] = -1.0, 1.0
         self.R = to_dev(R.to(torch.bfloat16), device)
-        self.caches = [to_dev(torch.zeros(S, D, dtype=torch.bfloat16), device)
-                       for _ in range(4)]
-        self.heads = to_dev(torch.zeros(8 * TILE, D, dtype=torch.bfloat16), device)
-        self.o_row = to_dev(torch.zeros(TILE, 4 * D, dtype=torch.bfloat16), device)
-        self.attn = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), device)
-        self.attn_n = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), device)
-        self.h = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), device)
+        self.caches = [buf(device, D, S) for _ in range(4)]
+        self.heads = buf(device, D, 8 * TILE)
+        self.o_row = buf(device, 4 * D)
+        self.attn, self.attn_n, self.h = (buf(device, H) for _ in range(3))
         self.ffn = FFNChain(w, device, cfg)
 
-    def step(self, x_d, pos):
-        cfg, dev = self.cfg, self.device
+    def step(self, x_d):
+        cfg, st = self.cfg, self.st
         H, D, S, Dt, Ht = cfg.hidden, self.D, self.S, self.Dt, self.Ht
-        ring = pos % S
-        cos, sin = rope_tables(pos, D, cfg.rope_theta)
-        masks = causal_masks(S, min(pos + 1, S), S // 4)
 
         atom(make_attn_heads_atom, Ht, Dt, cfg.eps)(
-            x_d, self.g_in, self.w_qkv, to_dev(cos, dev), to_dev(sin, dev),
+            x_d, self.g_in, self.w_qkv, st.cos_sl, st.sin_sl,
             self.qknorm, self.R, self.heads)
-        pos_d = to_dev(pos_tile(ring), dev)
         for i, cache in enumerate(self.caches):
-            atom(make_kv_append, S // TILE, Dt, k_row=4 + i)(cache, self.heads, pos_d, cache)
+            atom(make_kv_append, S // TILE, Dt, k_row=4 + i)(
+                cache, self.heads, st.pos_ring, cache)
         atom(make_flash_atom, Dt, S // TILE)(
-            self.heads, *self.caches, to_dev(masks, dev), self.o_row)
+            self.heads, *self.caches, st.mask_sl, self.o_row)
         atom(make_gemv, TILE, 4 * D, H, (8, 2), 11)(self.o_row, self.w_o, self.attn)
 
         norm = atom(make_rmsnorm, 1, 1, Ht, 11, H, cfg.eps)
@@ -199,10 +199,10 @@ class SlidingChain:
 
 
 class GlobalChain:
-    """Single-card global layer: full ctx local (TP combine comes later)."""
+    """Single-card global layer (full ctx local; TP combine comes later)."""
 
-    def __init__(self, w, device, cfg, ctx):
-        self.device, self.cfg = device, cfg
+    def __init__(self, w, device, cfg, st, ctx):
+        self.device, self.cfg, self.st = device, cfg, st
         H, D = cfg.hidden, cfg.global_head_dim
         self.D, self.S = D, ctx
         self.qh, self.kvh = 4, cfg.global_kv_heads
@@ -214,46 +214,38 @@ class GlobalChain:
         self.w_k = to_dev(w["w_k"].to(torch.bfloat16), device)
         self.w_o = to_dev(w["w_o"].to(torch.bfloat16), device)
         self.g_postattn = row(w["g_postattn"], H, device)
-        self.caches = [to_dev(torch.zeros(self.S, D, dtype=torch.bfloat16), device)
-                       for _ in range(self.kvh)]
-
-        def buf(n, rows=TILE):
-            return to_dev(torch.zeros(rows, n, dtype=torch.bfloat16), device)
-
-        self.xn, self.q, self.k = buf(H), buf(self.qh * D), buf(self.kvh * D)
-        self.hd, self.hh, self.hr = buf(D), buf(D), buf(D)
-        self.o, self.m, self.l, self.of = buf(D), buf(TILE), buf(TILE), buf(D)
-        self.a_row, self.attn = buf(self.qh * D), buf(H)
-        self.attn_n, self.h = buf(H), buf(H)
+        self.caches = [buf(device, D, ctx) for _ in range(self.kvh)]
+        self.xn, self.q, self.k = buf(device, H), buf(device, self.qh * D), buf(device, self.kvh * D)
+        self.hd, self.hh, self.hr = (buf(device, D) for _ in range(3))
+        self.o, self.of = buf(device, D), buf(device, D)
+        self.m, self.l = buf(device, TILE), buf(device, TILE)
+        self.a_row, self.attn = buf(device, self.qh * D), buf(device, H)
+        self.attn_n, self.h = buf(device, H), buf(device, H)
         self.ffn = FFNChain(w, device, cfg)
 
-    def head_rot(self, src, hidx, cos_d, sin_d):
-        cfg, Dt = self.cfg, self.Dt
+    def head_rot(self, src, hidx):
+        cfg, st, Dt = self.cfg, self.st, self.Dt
         atom(make_copy, 1, 1, Dt, Dt, a_off=(0, hidx * Dt))(src, self.hd)
         atom(make_rmsnorm, 1, 1, Dt, Dt, self.D, cfg.eps)(self.hd, self.qknorm, self.hh)
-        atom(make_rope, Dt, self.rot // TILE)(self.hh, cos_d, sin_d, self.hr)
+        atom(make_rope, Dt, self.rot // TILE)(self.hh, st.cos_gl, st.sin_gl, self.hr)
         return self.hr
 
-    def step(self, x_d, pos):
-        cfg, dev = self.cfg, self.device
+    def step(self, x_d):
+        cfg, st = self.cfg, self.st
         H, D, S, Dt, Ht = cfg.hidden, self.D, self.S, self.Dt, self.Ht
         chunk = 8 * TILE
-        cos, sin = rope_tables(pos, self.rot, cfg.global_rope_theta)
-        cos_d, sin_d = to_dev(cos, dev), to_dev(sin, dev)
-        masks_d = to_dev(causal_masks(S, pos + 1, chunk), dev)
-        pos_d = to_dev(pos_tile(pos), dev)
 
         atom(make_rmsnorm, 1, 1, Ht, 11, H, cfg.eps)(x_d, self.g_in, self.xn)
         atom(make_gemv, TILE, H, self.qh * D, (8, 2), 4)(self.xn, self.w_q, self.q)
         atom(make_gemv, TILE, H, self.kvh * D, (8, 2), 4)(self.xn, self.w_k, self.k)
 
         for kv in range(self.kvh):
-            kr = self.head_rot(self.k, kv, cos_d, sin_d)
-            atom(make_kv_append, S // TILE, Dt)(self.caches[kv], kr, pos_d, self.caches[kv])
+            kr = self.head_rot(self.k, kv)
+            atom(make_kv_append, S // TILE, Dt)(self.caches[kv], kr, st.pos_abs, self.caches[kv])
         for h in range(self.qh):
-            qr = self.head_rot(self.q, h, cos_d, sin_d)
+            qr = self.head_rot(self.q, h)
             atom(make_flash_decode_kev, 1, 1, 1, Dt, 8, S // chunk)(
-                qr, self.caches[h // 2], masks_d, self.o, self.m, self.l)
+                qr, self.caches[h // 2], st.mask_gl, self.o, self.m, self.l)
             atom(make_row_scale, Dt, 8, fn=ttl.recip)(self.o, self.l, self.of)
             atom(make_copy, 1, 1, Dt, Dt, out_off=(0, h * Dt))(self.of, self.a_row)
 
@@ -264,27 +256,114 @@ class GlobalChain:
         return self.ffn.step(self.h)
 
 
-class DecodeChain:
-    """Embed -> layers -> final norm -> lm_head logits (host argmax)."""
+class StepState:
+    """Device-resident step state: pos tiles, LUTs, rope/mask staging."""
 
-    def __init__(self, layers, embed, g_final, lm_head, device, cfg):
-        self.layers, self.device, self.cfg = layers, device, cfg
+    def __init__(self, device, cfg, ctx):
+        D, rot = cfg.head_dim, int(cfg.global_head_dim * cfg.global_rot_frac)
+        S, smax = cfg.sliding_window, ctx
+        self.S, self.ctx = S, ctx
+        self.n_sl, self.n_gl = S // CHUNK, ctx // CHUNK
+        f32 = ttnn.float32
+
+        self.pos_abs = to_dev(torch.zeros(TILE, TILE), device, f32)
+        self.pos_ring = to_dev(torch.zeros(TILE, TILE), device, f32)
+        self.lut_abs = to_dev(pos_lut(smax), device, f32)
+        self.lut_ring = to_dev(pos_lut(smax, S), device, f32)
+
+        c, s = rope_table(smax, D, cfg.rope_theta)
+        self.cos_sl_t, self.sin_sl_t = to_dev(c, device, f32), to_dev(s, device, f32)
+        c, s = rope_table(smax, rot, cfg.global_rope_theta)
+        self.cos_gl_t, self.sin_gl_t = to_dev(c, device, f32), to_dev(s, device, f32)
+        self.mask_sl_t = to_dev(mask_table(smax, S).to(torch.bfloat16), device)
+        self.mask_gl_t = to_dev(mask_table(ctx, ctx).to(torch.bfloat16), device)
+
+        self.cos_sl, self.sin_sl = buf(device, D), buf(device, D)
+        self.cos_gl, self.sin_gl = buf(device, rot), buf(device, rot)
+        self.mask_sl = buf(device, CHUNK, self.n_sl * TILE)
+        self.mask_gl = buf(device, CHUNK, self.n_gl * TILE)
+        self.D, self.rot = D, rot
+
+    def prime(self, device, pos):
+        self.pos_abs = to_dev(split_tile(pos), device, ttnn.float32)
+        self.pos_ring = to_dev(split_tile(pos, self.S), device, ttnn.float32)
+
+    def step(self):
+        Dt, rt = self.D // TILE, self.rot // TILE
+        atom(make_pos_slice, Dt)(self.cos_sl_t, self.pos_abs, self.cos_sl)
+        atom(make_pos_slice, Dt)(self.sin_sl_t, self.pos_abs, self.sin_sl)
+        atom(make_pos_slice, rt)(self.cos_gl_t, self.pos_abs, self.cos_gl)
+        atom(make_pos_slice, rt)(self.sin_gl_t, self.pos_abs, self.sin_gl)
+        ct = CHUNK // TILE
+        for c in range(self.n_sl):
+            atom(make_pos_slice, ct, col_off=c * ct, out_row=c)(
+                self.mask_sl_t, self.pos_abs, self.mask_sl)
+        for c in range(self.n_gl):
+            atom(make_pos_slice, ct, col_off=c * ct, out_row=c)(
+                self.mask_gl_t, self.pos_abs, self.mask_gl)
+
+    def advance(self):
+        atom(make_pos_step)(self.lut_abs, self.pos_abs, self.pos_abs)
+        atom(make_pos_step)(self.lut_ring, self.pos_ring, self.pos_ring)
+
+
+class DecodeChain:
+    """Embed -> layers -> final norm -> lm_head -> argmax -> next token."""
+
+    def __init__(self, layers, st, embed, g_final, lm_head, device, cfg):
+        self.layers, self.st, self.device, self.cfg = layers, st, device, cfg
         H = cfg.hidden
-        self.Ht = H // TILE
-        self.V = lm_head.shape[1]
+        self.Ht, self.V = H // TILE, lm_head.shape[1]
+        self.n_chunks = self.V // CHUNK
+        nt = (self.n_chunks + TILE - 1) // TILE
+        self.nt = nt
         self.table = to_dev(embed.to(torch.bfloat16), device)
         self.g_final = row(g_final, H, device)
         self.lm = to_dev(lm_head.to(torch.bfloat16), device)
-        self.x = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), device)
-        self.xn = to_dev(torch.zeros(TILE, H, dtype=torch.bfloat16), device)
-        self.logits = to_dev(torch.zeros(TILE, self.V, dtype=torch.bfloat16), device)
+        self.x, self.xn = buf(device, H), buf(device, H)
+        self.logits = buf(device, self.V)
+        self.tok = buf(device, TILE)
 
-    def step(self, tok, pos):
-        cfg, dev, H = self.cfg, self.device, self.cfg.hidden
-        atom(make_embed_gather, self.Ht, H ** 0.5)(self.table, to_dev(pos_tile(tok), dev), self.x)
+        self.tall = buf(device, CHUNK, self.n_chunks * TILE)
+        self.vals = buf(device, TILE, self.n_chunks * TILE)
+        self.ids = buf(device, TILE, self.n_chunks * TILE)
+        cw = torch.zeros(TILE, nt * TILE)
+        cw[0] = -1e30
+        self.cw = to_dev(cw.to(torch.bfloat16), device)
+        self.wv, self.wi = buf(device, TILE), buf(device, TILE)
+        self.ramp256 = to_dev(torch.arange(CHUNK, dtype=torch.bfloat16)
+                              .unsqueeze(0).repeat(TILE, 1), device)
+        self.rampn = to_dev(torch.arange(nt * TILE, dtype=torch.bfloat16)
+                            .unsqueeze(0).repeat(TILE, 1), device)
+        lut = torch.zeros(TILE, CHUNK)
+        lut[0] = torch.arange(CHUNK) // TILE
+        lut[1] = torch.arange(CHUNK) % TILE
+        lut[2, :self.n_chunks] = torch.arange(self.n_chunks) * (CHUNK // TILE)
+        self.lut = to_dev(lut.to(torch.bfloat16), device)
+        self.zero = buf(device, TILE)
+
+    def prime(self, tok, pos):
+        self.tok = to_dev(split_tile(tok).to(torch.bfloat16), self.device)
+        self.st.prime(self.device, pos)
+
+    def step(self):
+        cfg, H, st = self.cfg, self.cfg.hidden, self.st
+        st.step()
+        atom(make_embed_gather, self.Ht, H ** 0.5)(self.table, self.tok, self.x)
         x = self.x
         for layer in self.layers:
-            x = layer.step(x, pos)
+            x = layer.step(x)
         atom(make_rmsnorm, 1, 1, self.Ht, 11, H, cfg.eps)(x, self.g_final, self.xn)
         atom(make_gemv, TILE, H, self.V, (8, 2), 4)(self.xn, self.lm, self.logits)
-        return from_dev(self.logits)[0]
+
+        n = self.n_chunks
+        atom(make_restack, n)(self.logits, self.tall)
+        atom(make_topk, n, 1, CHUNK // TILE, 1, CHUNK)(self.tall, self.ramp256, self.vals, self.ids)
+        atom(make_collapse, n)(self.vals, self.ids, self.cw)
+        atom(make_topk, 1, 1, self.nt, 1, self.nt * TILE)(self.cw, self.rampn, self.wv, self.wi)
+        atom(make_token_select, n)(self.cw, self.wi, self.lut, self.zero, self.tok)
+        st.advance()
+
+    def read_token(self):
+        t = from_dev(self.tok)
+        return int(t[0, 0]) * TILE + int(t[0, 1])

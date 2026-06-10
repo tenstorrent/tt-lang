@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "models"))
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from gemma4.config import Gemma4Config
-from gemma4.decode_chain import DecodeChain, GlobalChain, SlidingChain, MLP_PAD
+from gemma4.decode_chain import (DecodeChain, GlobalChain, SlidingChain,
+                                 StepState, MLP_PAD)
 
 TILE = 32
 CTX = 1024
@@ -158,17 +159,22 @@ def _run(device):
     lm = embed.to(torch.bfloat16).float()[:V]
 
     ref_layers = [TorchLayer(w, cfg, k) for w, k in zip(ws, kinds)]
-    layers = [SlidingChain(w, device, cfg) if k == "sliding"
-              else GlobalChain(w, device, cfg, CTX)
+    st = StepState(device, cfg, CTX)
+    layers = [SlidingChain(w, device, cfg, st) if k == "sliding"
+              else GlobalChain(w, device, cfg, st, CTX)
               for w, k in zip(ws, kinds)]
-    chain = DecodeChain(layers, embed, g_final, lm.T.contiguous(), device, cfg)
+    chain = DecodeChain(layers, st, embed, g_final, lm.T.contiguous(), device, cfg)
 
-    for tok, pos in ((1234, 100), (777, 101)):
+    # Greedy reference; device feeds its own token back, no host in the loop.
+    tok = 1234
+    chain.prime(tok, 100)
+    for pos in (100, 101):
         x = embed.to(torch.bfloat16).float()[tok] * H ** 0.5
         for rl in ref_layers:
             x = rl.step(x, pos)
         want = rms(x, g_final, cfg.eps) @ lm.T
+        tok = want.argmax().item()
 
-        got = chain.step(tok, pos)
-        pcc = torch.corrcoef(torch.stack([got, want]))[0, 1].item()
-        assert pcc > 0.97, f"pos {pos} logits pcc {pcc}"
+        chain.step()
+        got = chain.read_token()
+        assert got == tok, f"pos {pos}: got {got} want {tok}"
