@@ -140,15 +140,9 @@ def make_attn_atom(Ht, Dt, St, eps):
                   pos_t, masks, wo, o_part):
         col_c, row_c = ttl.node(dims=2)
 
-        # Phases per core are strictly sequential (norm -> QKV -> head norm
-        # -> rope -> kv/flash -> O), so same-shape scratch from dead phases
-        # is shared manually: cs* compute->compute, ds* DM->compute. Pipe
-        # buffers always keep dedicated slots.
-        cs0 = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
-        cs1 = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
-        cs2 = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
-        cs3 = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
-        cs4 = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
+        # DM-streamed scratch shares slots manually across role-disjoint
+        # phases (cross-thread lifetimes stay coarse in finalize); compute
+        # scratch gets fine-grained compiler reuse. Pipe buffers dedicated.
         ds0 = ttl.make_dataflow_buffer_like(qknorm, shape=(1, Dt), block_count=2)
         ds1 = ttl.make_dataflow_buffer_like(cos, shape=(1, Dt), block_count=2)
         fkv_cb = ttl.make_dataflow_buffer_like(kc0, shape=(chunk_t, Dt), block_count=2)
@@ -160,26 +154,26 @@ def make_attn_atom(Ht, Dt, St, eps):
 
         xb_cb = ttl.make_dataflow_buffer_like(x, shape=(1, K_CH), block_count=2)
         w_cb = ttl.make_dataflow_buffer_like(wqkv, shape=(K_CH, Dt), block_count=2)
-        part_cb = cs0
+        part_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         send_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
         recv_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Dt), block_count=1)
-        head_cb = cs1
+        head_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
 
-        hx_cb = cs2
+        hx_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
         hg_cb = ds0
-        hn_cb = cs4
+        hn_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
         c_cb = ds1
         s_cb = ds0
         r_cb = dsr
-        out_cb = cs3
+        out_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
 
         pos_cb = ttl.make_dataflow_buffer_like(pos_t, shape=(1, 1), block_count=1)
         band_cb = ds1
         tok_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
         tok_stage = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
 
-        q_cb = cs2
-        fo_cb = cs4
+        q_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=1)
+        fo_cb = ttl.make_dfb("bf16", shape=(1, Dt), block_count=2)
         fm_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
         fl_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
         fmask_cb = ds0

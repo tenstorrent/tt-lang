@@ -38,6 +38,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
@@ -51,11 +52,22 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+/// Fine-grained program position: lexicographic (op index, region index)
+/// path from the function body to the op, clamped at the outermost loop
+/// ancestor so loop-resident buffers stay live across the back-edge.
+using ThreadPos = SmallVector<int64_t, 4>;
+
+bool lexLess(const ThreadPos &a, const ThreadPos &b) {
+  return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
+}
+
 /// Closed [start, end] lifetime of a logical DFB within one kernel thread,
-/// in that thread's top-level program order.
+/// in coarse top-level order plus a fine path used for single-thread scratch.
 struct ThreadInterval {
   int64_t start;
   int64_t end;
+  ThreadPos fineStart;
+  ThreadPos fineEnd;
 };
 
 /// One logical DFB: a cb_index with one bind_cb per kernel thread.
@@ -65,7 +77,7 @@ struct LogicalDFB {
   func::FuncOp producer;
   func::FuncOp consumer;
   llvm::SmallDenseMap<Operation *, ThreadInterval, 4> intervals;
-  llvm::SmallDenseMap<Operation *, int64_t, 4> firstAcquire;
+  llvm::SmallDenseMap<Operation *, std::pair<int64_t, ThreadPos>, 4> firstAcquire;
   Type elemType;
   int64_t blockCount = 0;
   int64_t elemsPerBlock = 0;
@@ -101,17 +113,64 @@ struct ThreadOrder {
     assert(ancestor && "operation must be reachable from function body");
     return topLevel[ancestor];
   }
+
+  DenseMap<Block *, DenseMap<Operation *, int64_t>> blockOrder;
+
+  int64_t indexInBlock(Operation *op) {
+    auto &order = blockOrder[op->getBlock()];
+    if (order.empty()) {
+      int64_t i = 0;
+      for (Operation &o : *op->getBlock()) {
+        order[&o] = i++;
+      }
+    }
+    return order[op];
+  }
+
+  /// Lex path clamped at the outermost loop ancestor. Sound for comparing
+  /// lifetimes only when one thread both produces and consumes: a single
+  /// RISC executes serially, so disjoint lex ranges are temporally disjoint.
+  ThreadPos path(Operation *op, func::FuncOp func) {
+    Block &body = func.getBody().front();
+    SmallVector<Operation *, 4> chain;
+    Operation *cur = op;
+    while (cur && cur->getBlock() != &body) {
+      chain.push_back(cur);
+      cur = cur->getParentOp();
+    }
+    assert(cur && "operation must be reachable from function body");
+    chain.push_back(cur);
+    ThreadPos pos;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+      pos.push_back(indexInBlock(*it));
+      if (isa<LoopLikeOpInterface>(*it)) {
+        break;
+      }
+      auto next = std::next(it);
+      if (next != chain.rend()) {
+        pos.push_back((*next)->getParentRegion()->getRegionNumber());
+      }
+    }
+    return pos;
+  }
 };
 
 /// Extend the per-thread interval of `dfb` to cover `op`.
 void extendInterval(LogicalDFB &dfb, Operation *op, func::FuncOp func,
                     ThreadOrder &order) {
   int64_t pos = order.index(op, func);
-  auto [it, inserted] =
-      dfb.intervals.try_emplace(func.getOperation(), ThreadInterval{pos, pos});
+  ThreadPos fine = order.path(op, func);
+  auto [it, inserted] = dfb.intervals.try_emplace(
+      func.getOperation(), ThreadInterval{pos, pos, fine, fine});
   if (!inserted) {
     it->second.start = std::min(it->second.start, pos);
     it->second.end = std::max(it->second.end, pos);
+    if (lexLess(fine, it->second.fineStart)) {
+      it->second.fineStart = fine;
+    }
+    if (lexLess(it->second.fineEnd, fine)) {
+      it->second.fineEnd = fine;
+    }
   }
 }
 
@@ -126,7 +185,11 @@ void recordRole(func::FuncOp &role, func::FuncOp func, bool &eligible) {
   }
 }
 
-bool disjoint(const ThreadInterval &a, const ThreadInterval &b) {
+bool disjoint(const ThreadInterval &a, const ThreadInterval &b,
+              bool singleThread) {
+  if (singleThread) {
+    return lexLess(a.fineEnd, b.fineStart) || lexLess(b.fineEnd, a.fineStart);
+  }
   return a.end < b.start || b.end < a.start;
 }
 
@@ -134,9 +197,13 @@ bool disjoint(const ThreadInterval &a, const ThreadInterval &b) {
 /// in the producer thread or in the consumer thread. Intervals are closed:
 /// sharing an endpoint means both are live at that op.
 bool conflicts(const LogicalDFB &a, const LogicalDFB &b) {
+  // One RISC produces and consumes both: serial execution makes fine lex
+  // lifetimes temporally exact. Cross-thread buffers keep coarse intervals
+  // (threads drift across phases).
+  bool singleThread = a.producer == a.consumer && b.producer == b.consumer;
   for (auto &[func, interval] : a.intervals) {
     auto it = b.intervals.find(func);
-    if (it != b.intervals.end() && !disjoint(interval, it->second)) {
+    if (it != b.intervals.end() && !disjoint(interval, it->second, singleThread)) {
       return true;
     }
   }
@@ -228,10 +295,14 @@ struct TTLFinalizeDFBIndicesPass
         }
         if (isa<CBReserveOp, CBWaitOp>(user)) {
           int64_t pos = order->index(user, func);
-          auto [it, inserted] =
-              dfb.firstAcquire.try_emplace(func.getOperation(), pos);
+          ThreadPos fine = order->path(user, func);
+          auto [it, inserted] = dfb.firstAcquire.try_emplace(
+              func.getOperation(), std::make_pair(pos, fine));
           if (!inserted) {
-            it->second = std::min(it->second, pos);
+            it->second.first = std::min(it->second.first, pos);
+            if (lexLess(fine, it->second.second)) {
+              it->second.second = fine;
+            }
           }
         }
         if (isa<CBReserveOp, CBPushOp>(user)) {
@@ -279,7 +350,8 @@ struct TTLFinalizeDFBIndicesPass
       for (auto &[func, interval] : dfb.intervals) {
         auto it = dfb.firstAcquire.find(func);
         if (it != dfb.firstAcquire.end()) {
-          interval.start = it->second;
+          interval.start = it->second.first;
+          interval.fineStart = it->second.second;
         }
       }
     }
