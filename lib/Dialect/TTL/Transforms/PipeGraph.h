@@ -87,8 +87,14 @@ inline PipeTransferContract getPipeTransferContract(CreatePipeOp op) {
              : PipeTransferContract::PointToPoint;
 }
 
+inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
+  return op.getKind().getValue() == PipeTransferKind::Collective
+             ? PipeTransferContract::Collective
+             : PipeTransferContract::PointToPoint;
+}
+
 /// Graph tracking pipe connections and receiver DFB assignments.
-/// Built after pipe receive copies have been expanded to receive-post ops.
+/// Built after pipe receive copies have been expanded to pipe transfer ops.
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.

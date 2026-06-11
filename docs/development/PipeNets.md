@@ -833,21 +833,23 @@ strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `matmul_1d_mcast` example uses them. The test asserts the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
-## Lowering: receiver-owned destination storage
+## Lowering to TTKernel: receiver-owned destination storage
 
-`PipeLowering.cpp::lowerPipeRecvPost` lowers `ttl.copy(pipe, dst_blk)`
-as the receive post. It reads the receiver DFB write pointer for the
-user-reserved block and records receiver readiness for the matching
-send. This operation does not create or reserve any DFB block; it uses
-the block already reserved by the user.
+`ttl.copy(pipe, dst_blk)` expands to `ttl.pipe_transfer.post`, and
+`PipeLowering.cpp::lowerPipeTransferPost` lowers that op as the receive
+post. It reads the receiver DFB write pointer for the user-reserved
+block and records receiver readiness for the matching send. This
+operation does not create or reserve any DFB block; it uses the block
+already reserved by the user.
 
-`PipeLowering.cpp::lowerCBToPipe` lowers `ttl.copy(src_blk, pipe)` as
-the send. The sender waits until all destinations have posted receives,
-performs the NOC write directly to receiver-owned DFB storage, and
-signals receiver completion. A collective send waits for every
-destination in the receiver set to post before issuing the write.
+`ttl.copy(src_blk, pipe)` expands to `ttl.pipe_transfer.send`, and
+`PipeLowering.cpp::lowerPipeTransferSend` lowers that op as the send.
+The sender waits until all destinations have posted receives, performs
+the NOC write directly to receiver-owned DFB storage, and signals
+receiver completion. A collective send waits for every destination in
+the receiver set to post before issuing the write.
 
-Lowering models three resources separately:
+Lowering to TTKernel models three resources separately:
 
 - address storage carries receiver-authored DFB addresses;
 - ready counting records how many receivers have posted a transfer;
@@ -910,11 +912,12 @@ receivers for one collective pipe must publish equivalent DFB addresses.
 offset for every collective receive post; non-uniform or untraceable
 destination addresses are rejected before TTKernel lowering.
 
-`PipeLowering.cpp::lowerPipeRecvWait` lowers a wait on the receive
-handle to a per-PipeNet cumulative wait. The receiver keeps a local
-runtime counter and waits for `recvSem >= counter`, so repeated
-point-to-point and collective receives in loops advance across iterations without
-reusing stale completion state.
+`ttl.wait` on a receive handle expands to `ttl.pipe_transfer.wait`, and
+`PipeLowering.cpp::lowerPipeTransferWait` lowers that op to a
+per-PipeNet cumulative wait. The receiver keeps a local runtime counter
+and waits for `recvSem >= counter`, so repeated point-to-point and
+collective receives in loops advance across iterations without reusing
+stale completion state.
 
 This protocol fixes the multi-iteration write-pointer issue by making
 the receiver-owned DFB address authoritative. It also makes same-thread

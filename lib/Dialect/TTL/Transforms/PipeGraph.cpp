@@ -160,8 +160,8 @@ static PipeKey getPipeKey(PipeType pipeType) {
 static llvm::MapVector<PipeKey, PipeTransferContract>
 collectPipeTransferContracts(ModuleOp mod) {
   llvm::MapVector<PipeKey, PipeTransferContract> contracts;
-  mod.walk([&](CreatePipeOp op) {
-    auto pipeType = mlir::cast<PipeType>(op.getResult().getType());
+  mod.walk([&](PipeTransferCreateOp op) {
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
     PipeTransferContract contract = getPipeTransferContract(op);
     PipeKey key = getPipeKey(pipeType);
     auto existing = contracts.find(key);
@@ -169,8 +169,8 @@ collectPipeTransferContracts(ModuleOp mod) {
       contracts.insert({key, contract});
       return;
     }
-    // Duplicate create_pipe ops for the same PipeKey can arise from cloned
-    // regions. Collective is the stronger contract and must be preserved.
+    // Duplicate transfers for the same PipeKey can arise from cloned regions.
+    // Collective is the stronger contract and must be preserved.
     if (isCollectiveTransfer(contract)) {
       existing->second = PipeTransferContract::Collective;
     }
@@ -320,12 +320,20 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   llvm::MapVector<PipeKey, PipeTransferContract> transferContracts =
       collectPipeTransferContracts(mod);
 
-  WalkResult walkResult = mod.walk([&](PipeRecvPostOp postOp) {
-    auto pipeType = mlir::cast<PipeType>(postOp.getPipe().getType());
+  WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
+    auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
+    if (!createOp) {
+      postOp.emitError(
+          "pipe transfer post must reference a transfer derived from "
+          "ttl.pipe_transfer.create");
+      return WalkResult::interrupt();
+    }
+    auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
     PipeKey key = getPipeKey(pipeType);
     auto contractIt = transferContracts.find(key);
     if (contractIt == transferContracts.end()) {
-      postOp.emitError("pipe receive must use a ttl.create_pipe result");
+      postOp.emitError(
+          "pipe transfer post must reference a known pipe transfer");
       return WalkResult::interrupt();
     }
     PipeTransferContract contract = contractIt->second;

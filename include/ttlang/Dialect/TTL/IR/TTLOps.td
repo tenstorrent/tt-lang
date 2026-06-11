@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPS_TD
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
+include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
 include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
@@ -611,39 +612,71 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
   }];
 }
 
-def TTL_PipeRecvPostOp : TTL_Op<"pipe_recv_post",
-    [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Post a pipe receive destination";
+def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
+  let summary = "Create an internal pipe transfer";
   let description = [{
-    Publishes the destination dataflow buffer slot address for a pipe receive
-    and returns a transfer handle. The operation does not wait for the payload.
-    A matching `ttl.pipe_recv_wait` completes the receive before the destination
-    slot is consumed.
+    Creates the internal transfer object for one logical pipe. The transfer
+    records the receiver-posted contract before synchronization resources are
+    assigned. A point-to-point transfer has one receiver; a collective transfer
+    has a receiver set participating in one transfer contract.
   }];
   let arguments = (ins
     TTL_Pipe:$pipe,
-    AnyType:$dst
+    TTL_PipeTransferKindAttr:$kind,
+    I64Attr:$expectedReceivers
   );
-  let results = (outs TTL_TransferHandle:$xf);
-  let assemblyFormat = "$pipe `,` $dst attr-dict `:` functional-type(operands, results)";
+  let results = (outs TTL_PipeTransfer:$transfer);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";
   let hasVerifier = 1;
 }
 
-def TTL_PipeRecvWaitOp : TTL_Op<"pipe_recv_wait",
+def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Wait for a posted pipe receive";
+  let summary = "Publish a pipe receive destination";
   let description = [{
-    Blocks until the sender has completed the pipe transfer associated with a
-    posted receive. The destination dataflow buffer slot is safe to consume
-    after this operation completes. The `dst` operand identifies the posted
-    destination slot whose receive is being completed.
+    Publishes the receiver-owned destination DFB slot address for a pipe
+    transfer. The operation contributes to the transfer's receiver-ready count
+    and returns the token that represents receiver-side completion.
   }];
   let arguments = (ins
-    TTL_TransferHandle:$xf,
-    TTL_Pipe:$pipe,
+    TTL_PipeTransfer:$transfer,
     AnyType:$dst
   );
-  let assemblyFormat = "$xf `,` $pipe `,` $dst attr-dict `:` type($xf) `,` type($pipe) `,` type($dst)";
+  let results = (outs TTL_PipeToken:$token);
+  let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Send a pipe transfer payload";
+  let description = [{
+    Waits until the receiver-publication condition is satisfied, then writes the
+    source DFB payload to the receiver-owned destination storage and signals
+    receiver completion. The returned write handle preserves the existing
+    `ttl.wait` ordering contract for send-side code.
+  }];
+  let arguments = (ins
+    TTL_PipeTransfer:$transfer,
+    TTL_CircularBuffer:$src
+  );
+  let results = (outs TTL_TransferHandle:$xf);
+  let assemblyFormat = "$transfer `,` $src attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Wait for pipe receive completion";
+  let description = [{
+    Blocks until the posted receive represented by the pipe token has completed.
+    The receiver-owned destination DFB slot is safe to consume after this
+    operation completes.
+  }];
+  let arguments = (ins
+    TTL_PipeToken:$token
+  );
+  let assemblyFormat = "$token attr-dict `:` type($token)";
   let hasVerifier = 1;
 }
 
