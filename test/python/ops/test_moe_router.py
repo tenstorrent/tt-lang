@@ -18,7 +18,7 @@ from ttl.ops.moe_router import make_moe_weights, make_softmax_row
 from ttl.ops.rmsnorm import make_rmsnorm
 from ttl.ops.topk import make_topk
 
-TILE, H, E, K = 32, 2816, 32, 8
+TILE, H, E, K = 32, 2816, 128, 8
 
 
 def to_dev(t, device):
@@ -57,9 +57,9 @@ def test_router_chain(device):
     make_gemv(TILE, H, E, (1, 2), 1)(hr, to_dev(rw.T.contiguous().to(torch.bfloat16), device), rl)
     make_softmax_row(E // TILE)(rl, pr)
     make_topk(1, 1, E // TILE, K, E)(pr, ramp, vals, idxs)
-    make_moe_weights(K, E // TILE)(vals, idxs, rowt(pe, E, device), w)
+    make_moe_weights(K, E // TILE)(vals, idxs, rowt(pe, E, device), buf(K * TILE), w)
 
     got_i = ttnn.to_torch(idxs).float()[0, 0::TILE][:K]
     got_w = ttnn.to_torch(w).float()[0, 0::TILE][:K]
     assert got_i.long().tolist() == idx.tolist()
-    assert (got_w - want).abs().max() < 0.03
+    assert (got_w - want).abs().max() < 0.01
