@@ -1259,7 +1259,99 @@ strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
 `matmul_1d_mcast` example uses them. The test asserts the hardware-side
 rejection contract; it `pytest.skip`s on the simulator runner.
 
-## Device API transition notes
+## Lowering to TTKernel: receiver-owned destination storage
+
+`ttl.copy(pipe, dst_blk)` expands to `ttl.pipe_transfer.post`, and
+`PipeLowering.cpp::lowerPipeTransferPost` lowers that op as the receive
+post. It reads the receiver DFB write pointer for the user-reserved
+block and records receiver readiness for the matching send. This
+operation does not create or reserve any DFB block; it uses the block
+already reserved by the user.
+
+`ttl.copy(src_blk, pipe)` expands to `ttl.pipe_transfer.send`, and
+`PipeLowering.cpp::lowerPipeTransferSend` lowers that op as the send.
+The sender waits until all destinations have posted receives, performs
+the NOC write directly to receiver-owned DFB storage, and signals
+receiver completion. A collective send waits for every destination in
+the receiver set to post before issuing the write.
+
+Lowering to TTKernel models three resources separately:
+
+- address storage carries receiver-authored DFB addresses;
+- ready counting records how many receivers have posted a transfer;
+- completion wait records when receiver-owned DFB storage contains the
+  payload.
+
+TTKernel conversion records the compiler-owned pipe resource plan with
+module attrs:
+
+- `ttl.pipe_sync_semaphore_count` for local pipe semaphores;
+- `ttl.pipe_global_semaphore_count` for GlobalSemaphore-backed ready
+  counters;
+- `ttl.pipe_sram_scratch_bytes` for receiver-authored address-table
+  storage.
+
+The host runtime allocates pipe resources from these attrs and passes
+the resulting addresses as common runtime arguments. [Device 2.0] This
+keeps pipe resource ownership in the compiler plan; future typed device
+APIs should change only the runtime binding mechanism, not the IR-level
+resource model.
+
+### Receiver-authored address table
+
+Point-to-point and collective transfers use a receiver-authored SRAM
+address table. The receive post publishes the concrete receiver DFB
+address to one source-core table entry and increments the sender-ready
+semaphore. The send waits for readiness, reads the table entry, and
+writes the payload to that receiver-owned DFB block.
+
+Receive posts publish the address with an inline 32-bit NOC write.
+Table entries are per pipe on the source core. Address storage is
+ordinary SRAM, so it does not consume semaphore ids.
+
+### Ready-counter allocation
+
+Sender-ready counters are logical counted synchronization resources.
+Lowering uses local hardware semaphores when the resource plan fits the
+local semaphore-id budget. When source-local pipe count would exceed
+that budget, the compiler assigns GlobalSemaphore-backed ready counters
+and records the required count in `ttl.pipe_global_semaphore_count`.
+
+Receiver completion remains a per-PipeNet local counter in the current
+lowering. Address-table storage, ready counting, and completion wait
+are allocated independently so address publication does not consume
+local semaphore ids.
+
+### Aggregate collective ready counting
+
+Uniform collective transfer uses the same receiver-authored address table but
+aggregates readiness. Each receiver post writes an equivalent address
+to the source-core table entry and increments one sender-ready counter.
+The sender waits until the counter reaches the destination count, reads
+one DFB address from the table, issues one multicast payload write, and
+signals receiver completion with the existing per-PipeNet completion
+counter.
+
+Until issue #617 adds per-receiver destination addresses, all
+receivers for one collective pipe must publish equivalent DFB addresses.
+`PipeGraph` validates the receiver DFB index, DFB type, and static tile
+offset for every collective receive post; non-uniform or untraceable
+destination addresses are rejected before TTKernel lowering.
+
+`ttl.wait` on a receive handle expands to `ttl.pipe_transfer.wait`, and
+`PipeLowering.cpp::lowerPipeTransferWait` lowers that op to a
+per-PipeNet cumulative wait. The receiver keeps a local runtime counter
+and waits for `recvSem >= counter`, so repeated point-to-point and
+collective receives in loops advance across iterations without reusing
+stale completion state.
+
+This protocol fixes the multi-iteration write-pointer issue by making
+the receiver-owned DFB address authoritative. It also makes same-thread
+loopback schedules explicit: the receive post must run before the
+dependent send, and the receive wait must run after a send has been
+posted that can complete it.
+
+### Device API transition notes
 
 PipeNet IR and verifier rules describe receiver-owned payload storage,
 receiver-authored address publication, counted readiness, and completion

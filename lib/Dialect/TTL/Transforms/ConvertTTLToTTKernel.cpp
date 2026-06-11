@@ -1061,12 +1061,11 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
         pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
-  matchAndRewrite(PipeTransferPostOp op, OpAdaptor adaptor,
+  matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // The receive destination is inspected for its TTL DFB provenance
     // (`ttl.cb_reserve`, `ttl.attach_cb`, and slice offset), so this lowering
     // must use the original SSA value rather than the converted adaptor value.
-    (void)adaptor;
     return lowerPipeTransferPost(op, op.getDst(), pipeResourcePlan, rewriter);
   }
 
@@ -1112,9 +1111,8 @@ struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
         pipeNetCounters(pipeNetCounters), pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
-  matchAndRewrite(PipeTransferWaitOp op, OpAdaptor adaptor,
+  matchAndRewrite(PipeTransferWaitOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    (void)adaptor;
     return lowerPipeTransferWait(op, pipeNetCounters, pipeResourcePlan,
                                  rewriter);
   }
