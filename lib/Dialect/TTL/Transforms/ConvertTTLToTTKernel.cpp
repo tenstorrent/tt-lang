@@ -1099,18 +1099,6 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 // Raw Element Access Lowering
 //===----------------------------------------------------------------------===//
 
-/// Determine whether the original (pre-conversion) block came from a
-/// CBWaitOp (reader, use get_read_ptr) or CBReserveOp (writer, use
-/// get_write_ptr).
-static bool isBlockFromCBWait(Value block) {
-  block = traceUnrealizedCasts(block);
-  if (auto viewLike = llvm::dyn_cast_if_present<ViewLikeOpInterface>(
-          block.getDefiningOp())) {
-    return llvm::isa<CBWaitOp>(viewLike.getOperation());
-  }
-  return false;
-}
-
 /// Return the scalar type and matching integer type for a raw element access.
 /// f32 -> (i32, 32), bf16 -> (i16, 16).
 static std::pair<Type, unsigned> getIntTypeForFloat(MLIRContext *ctx,
@@ -1228,7 +1216,8 @@ static std::pair<Value, Value>
 emitL1PtrAndOffset(Value cb, Value originalBlock, RankedTensorType blockType,
                    ValueRange coords, unsigned elemWidth,
                    ConversionPatternRewriter &rewriter, Location loc) {
-  bool fromWait = isBlockFromCBWait(originalBlock);
+  bool fromWait =
+      llvm::isa_and_nonnull<CBWaitOp>(findCBAcquireOp(originalBlock));
   Value baseAddr =
       fromWait ? ttk::GetReadPtrOp::create(rewriter, loc, cb).getResult()
                : ttk::GetWritePtrOp::create(rewriter, loc, cb).getResult();

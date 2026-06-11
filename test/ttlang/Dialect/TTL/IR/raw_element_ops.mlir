@@ -1,5 +1,5 @@
 // Verifier acceptance tests for ttl.raw_element_read and ttl.raw_element_write.
-// Each block operand must trace to a circular buffer (cb_wait or cb_reserve).
+// Reads require a cb_wait block (consumer); writes require a cb_reserve block (producer).
 // RUN: ttlang-opt %s --split-input-file | FileCheck %s
 
 // -----
