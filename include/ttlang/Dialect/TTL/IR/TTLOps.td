@@ -765,7 +765,8 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
 // Base class for tile operations
 // Note: These ops are NOT Pure because they write to DST registers.
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait])>;
+    : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait,
+                                             TTL_DstAccessOpInterface])>;
 
 def TTL_TileType : Type<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
@@ -818,7 +819,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
                             [MemoryEffects<[MemRead, MemWrite]>,
                              TTL_CBInputTileOpTrait,
                              TTL_DataMovementOpTrait,
-                             TTL_DstResultOpTrait]> {
+                             TTL_DstResultOpTrait,
+                             TTL_DstAccessOpInterface]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -862,7 +864,8 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
                             AllTypesMatch<["src_tile", "result"]>,
                             MemoryEffects<[MemRead, MemWrite]>,
                             TTL_DSTInputsTrait,
-                            TTL_DataMovementOpTrait]> {
+                            TTL_DataMovementOpTrait,
+                            TTL_DstAccessOpInterface]> {
   let summary = "Copy a tile from one DST register to another";
   let description = [{
     Performs DST -> DST copy for multi-consumer value preservation. Used when
@@ -887,6 +890,21 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
   let arguments = (ins TTL_TileType:$src_tile, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
   let assemblyFormat = "$src_tile `into` `dst` `[` $dst_index `]` attr-dict `:` type($src_tile) `->` type($result)";
+}
+
+def TTL_DstIndexOp : TTL_Op<"dst_index",
+    [Pure, TTL_DstAccessOpInterface, AllTypesMatch<["source", "result"]>]> {
+  let summary = "Index a tile value resident in a specific DST slot";
+  let description = [{
+    `ttl.dst_index` names an existing DST-resident tile at `dst_index` while
+    preserving SSA dependence on `source`. It has no hardware side effect and
+    does not change the tile value.
+  }];
+  let arguments = (ins TTL_TileType:$source, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat =
+      "$source `[` $dst_index `]` attr-dict `:` "
+      "type($source) `->` type($result)";
 }
 
 // Common base for tile binary ops. Carries traits that hold unconditionally
@@ -1515,7 +1533,9 @@ def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
   let hasVerifier = 1;
 }
 
-def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait]> {
+def TTL_TileStoreOp : TTL_Op<"tile_store",
+    [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
+     TTL_DstAccessOpInterface]> {
   let summary = "Store a tile into a circular buffer view";
   let description = [{
     `ttl.tile_store` packs a single tile from the DST register into a circular

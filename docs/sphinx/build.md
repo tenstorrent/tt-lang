@@ -255,9 +255,9 @@ TT_METAL_TAG="<tt-metal-tag>"
 
 `TTNN_PYPI_TT_METAL_TAG` records the tt-metal tag used to build the public
 `ttnn` wheel. `TT_METAL_TAG` records the tt-metal tag used to build TT-Lang.
-Public PyPI publishing requires these tags to match; internal S3 bundled
-wheels can use a newer `TT_METAL_TAG` before a matching public `ttnn` wheel is
-available.
+Public PyPI publishing requires these tags to have the same `vX.Y.Z` component;
+internal S3 bundled wheels can use a newer `TT_METAL_TAG` before a compatible
+public `ttnn` wheel is available.
 
 Background: `third-party/tt-metal-version` is the single source of truth for
 the `ttnn` dependency version, the public `ttnn` provenance tag, and the
@@ -520,7 +520,7 @@ Job-by-job:
    `GITHUB_REF` looks like `refs/tags/v[0-9]...`, then runs
    `require-pypi-ttnn-alignment.sh`, which fails when the public `ttnn` wheel
    recorded in `third-party/tt-metal-version` was built from a different
-   tt-metal tag than TT-Lang. Skipped under `dry_run: true`. Exposes
+   tt-metal `vX.Y.Z` component than TT-Lang. Skipped under `dry_run: true`. Exposes
    `tag_version` (tag with leading `v` stripped) for the wheel-version check.
 2. **`build-docker`** — calls `call-build-docker.yml` on tag push (where no
    `docker_tag` input is supplied). Skipped on `workflow_dispatch`, which
@@ -574,7 +574,8 @@ Automatic S3 publishing should use this policy:
 
 - Stable release tags (`vX.Y.Z`) publish clean-version bundled and light wheels
   to S3 only when public PyPI publishing is blocked because
-  `TTNN_PYPI_TT_METAL_TAG != TT_METAL_TAG`.
+  `TTNN_PYPI_TT_METAL_TAG` and `TT_METAL_TAG` have different `vX.Y.Z`
+  components.
 - Stable release tags publish only light wheels to S3 when public PyPI
   publishing is aligned. In that case public PyPI owns `tt-lang==X.Y.Z`, and S3
   owns `tt-lang==X.Y.Z+light` plus `tt-lang-light==X.Y.Z`.

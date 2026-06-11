@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:${TAG}"
+IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:${TAG}"
 CONTAINER="ttlang-dist-test-$$"
 
 echo "=== Dist Container Test ==="

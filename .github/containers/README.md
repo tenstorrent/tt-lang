@@ -4,19 +4,19 @@ This directory contains Dockerfiles for building tt-lang container images.
 
 ## Images
 
-### `tt-lang-base-ubuntu-22-04`
-Standalone base image built from `ubuntu:22.04` with Python 3.12, Clang 18,
+### `tt-lang-base-ubuntu-24-04`
+Standalone base image built from `ubuntu:24.04` with Python 3.12, Clang 18,
 system libraries, and tt-lang Python dependencies (pydantic, torch, numpy,
 pytest). Small and fast to build; serves as the filesystem base for `dist`
 and `ird`.
 
-### `tt-lang-dist-ubuntu-22-04`
+### `tt-lang-dist-ubuntu-24-04`
 Distribution image for end users with pre-built tt-lang, ready to `import ttl`.
 
 **Contents:** LLVM + tt-metal toolchain + installed tt-lang + examples + SSH +
 text editors
 
-### `tt-lang-ird-ubuntu-22-04`
+### `tt-lang-ird-ubuntu-24-04`
 Interactive Research & Development image. Contains the toolchain but *not*
 tt-lang -- developers clone and build tt-lang themselves.
 
@@ -96,21 +96,21 @@ missing the toolchain.
 
 After building, use the image with `docker-test.sh`:
 ```bash
-DOCKER_IMAGE=tt-lang-ird-ubuntu-22-04:<version-tag> scripts/docker-test.sh mlir
+DOCKER_IMAGE=tt-lang-ird-ubuntu-24-04:<version-tag> scripts/docker-test.sh mlir
 ```
 
 Or run interactively:
 ```bash
-sudo docker run -it --rm --device=/dev/tenstorrent/0:/dev/tenstorrent/0 -v /dev/hugepages:/dev/hugepages -v /dev/hugepages-1G:/dev/hugepages-1G tt-lang-ird-ubuntu-22-04:<version-tag> bash
+sudo docker run -it --rm --device=/dev/tenstorrent/0:/dev/tenstorrent/0 -v /dev/hugepages:/dev/hugepages -v /dev/hugepages-1G:/dev/hugepages-1G tt-lang-ird-ubuntu-24-04:<version-tag> bash
 ```
 
 ## Image Architecture
 
 ```
-ubuntu:22.04
+ubuntu:24.04
      |
      v
-tt-lang-base-ubuntu-22-04
+tt-lang-base-ubuntu-24-04
   (Python 3.12, clang, system libs, Python deps)
      |
      +---------------------+
@@ -134,7 +134,7 @@ configure-deps                build-image-base
         |                            |
         +----------------------------+
                      |
-               build-images (ubuntu-22.04)
+               build-images (large runner, ubuntu 24.04)
                  1. Restore toolchain cache
                  2. Configure + build tt-lang
                  3. docker build --target dist (with --build-context)
@@ -177,7 +177,7 @@ docker run -it \
 
 ## Files
 
-- `Dockerfile.base` -- base image from ubuntu:22.04 with Python and system deps
+- `Dockerfile.base` -- base image from ubuntu:24.04 with Python and system deps
 - `Dockerfile` -- multi-stage build (`ird` and `dist` targets, with separate build stages)
 - `scripts/build-and-install.sh` -- cmake configure/build/install with mode flags (`--toolchain-only`, `--force-rebuild`, `--test-toolchain`, etc. Used by CI and local toolchain builds. See '--help' for usage.)
 - `entrypoint.sh` -- activates tt-lang environment on container start

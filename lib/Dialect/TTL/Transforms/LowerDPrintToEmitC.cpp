@@ -94,38 +94,47 @@ static FailureOr<std::string> resolveScalarExpr(Value val, Operation *op) {
                        "arith constants and core coordinates are supported");
 }
 
-/// Build the DPRINT streaming statement for scalar mode.
-/// Format string uses {} as placeholder for each argv operand.
+/// Append a character to a DEVICE_PRINT format-string literal, escaping
+/// quotes/backslashes and doubling literal braces so they are not parsed as
+/// placeholders.
+static void appendFmtChar(std::string &fmt, char c) {
+  if (c == '"' || c == '\\') {
+    fmt += '\\';
+    fmt += c;
+  } else if (c == '{') {
+    fmt += "{{";
+  } else if (c == '}') {
+    fmt += "}}";
+  } else {
+    fmt += c;
+  }
+}
+
+/// Build the printf-style DPRINT statement for scalar mode. The op format
+/// string uses {} placeholders, matching the fmt-style DEVICE_PRINT syntax, so
+/// each {} is forwarded verbatim and its argv operand becomes a call argument.
 static FailureOr<std::string> buildScalarDPrintStmt(DPrintOp op) {
-  std::string stmt = "DPRINT << ";
-  StringRef fmt = op.getFmt();
+  std::string fmt;
+  std::string args;
+  StringRef rawFmt = op.getFmt();
   auto argv = op.getArgv();
   unsigned argIdx = 0;
 
   size_t pos = 0;
-  while (pos < fmt.size()) {
-    size_t placeholderPos = fmt.find("{}", pos);
+  while (pos < rawFmt.size()) {
+    size_t placeholderPos = rawFmt.find("{}", pos);
 
-    // Emit the string literal before the placeholder (or remaining string).
-    StringRef strPart = fmt.slice(
-        pos, placeholderPos == StringRef::npos ? fmt.size() : placeholderPos);
-    if (!strPart.empty()) {
-      stmt += "\"";
-      // Escape quotes and backslashes in the string literal.
-      for (char c : strPart) {
-        if (c == '"' || c == '\\') {
-          stmt += '\\';
-        }
-        stmt += c;
-      }
-      stmt += "\" << ";
+    StringRef strPart =
+        rawFmt.slice(pos, placeholderPos == StringRef::npos ? rawFmt.size()
+                                                            : placeholderPos);
+    for (char c : strPart) {
+      appendFmtChar(fmt, c);
     }
 
     if (placeholderPos == StringRef::npos) {
       break;
     }
 
-    // Emit the variable expression for this placeholder.
     if (argIdx >= argv.size()) {
       return op.emitError("format string has more {} placeholders than argv "
                           "operands");
@@ -134,23 +143,34 @@ static FailureOr<std::string> buildScalarDPrintStmt(DPrintOp op) {
     if (failed(expr)) {
       return failure();
     }
-    stmt += *expr + " << ";
+    fmt += "{}";
+    args += ", " + *expr;
     argIdx++;
     pos = placeholderPos + 2; // skip "{}"
   }
 
-  stmt += "ENDL()";
-  return stmt;
+  return "DPRINT(\"" + fmt + "\\n\"" + args + ")";
 }
 
-/// Resolve tensor element type info for page printing.
-/// Returns {dprint_formatter, c_ptr_type, elements_per_page, page_size_bytes}.
+/// Resolve tensor element type info for page printing. `cPtrType` is the L1
+/// pointer element type used to read each value; bf16 is read as raw bits and
+/// wrapped in `bf16_t` for DEVICE_PRINT, while f32 is read directly as `float`.
 struct TensorPrintInfo {
-  std::string formatter; // e.g. "BF16" or "F32"
-  std::string cPtrType;  // e.g. "uint16_t" or "uint32_t"
+  std::string cPtrType; // "uint16_t" or "float"
+  bool wrapBf16;        // true: print bf16_t(x); false: print x directly
   int64_t eltsPerPage;
   int64_t pageSizeBytes;
 };
+
+/// Wrap a value-read expression in the DEVICE_PRINT argument form for the
+/// element type (bf16_t for bf16, the raw float otherwise).
+static std::string makeTensorPrintArg(const TensorPrintInfo &info,
+                                      StringRef valueExpr) {
+  if (info.wrapBf16) {
+    return ("bf16_t(" + valueExpr + ")").str();
+  }
+  return valueExpr.str();
+}
 
 static FailureOr<TensorPrintInfo> getTensorPrintInfo(Type elementType,
                                                      Operation *op) {
@@ -164,11 +184,12 @@ static FailureOr<TensorPrintInfo> getTensorPrintInfo(Type elementType,
   Type dataType = tileType.getElementType();
 
   if (dataType.isBF16()) {
-    return TensorPrintInfo{"BF16", "uint16_t", tileH * tileW,
+    return TensorPrintInfo{"uint16_t", /*wrapBf16=*/true, tileH * tileW,
                            tileH * tileW * 2};
   }
   if (dataType.isF32()) {
-    return TensorPrintInfo{"F32", "uint32_t", tileH * tileW, tileH * tileW * 4};
+    return TensorPrintInfo{"float", /*wrapBf16=*/false, tileH * tileW,
+                           tileH * tileW * 4};
   }
   return op->emitError("unsupported data type for tensor print: only bf16 "
                        "and f32 are supported");
@@ -250,15 +271,21 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
     StringRef mode = op.getMode();
     auto thread = op.getThread();
 
-    // Thread conditioning: open DPRINT_THREAD( wrapper.
-    if (thread) {
+    // Thread conditioning: open a compute block-guard. tt-metal removed the
+    // stream-style DPRINT_THREAD(...) statement wrappers; the printf-style
+    // DEVICE_PRINT_THREAD macros take a format string, not a statement block,
+    // so multi-statement prints use the MATH/PACK/UNPACK block macros instead.
+    // cb mode is exempt: ttmlir::dprint(CBPrinter) already self-guards each
+    // thread internally, so an outer block-guard would nest redundantly.
+    bool wrapThread = thread && mode != "cb";
+    if (wrapThread) {
       std::string macro;
       if (*thread == "math") {
-        macro = "DPRINT_MATH(";
+        macro = "MATH({";
       } else if (*thread == "pack") {
-        macro = "DPRINT_PACK(";
+        macro = "PACK({";
       } else if (*thread == "unpack") {
-        macro = "DPRINT_UNPACK(";
+        macro = "UNPACK({";
       } else {
         return op.emitError("unsupported thread type: ") << *thread;
       }
@@ -280,10 +307,17 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       if (failed(cbIdx)) {
         return failure();
       }
-      emitVerbatim(loc,
-                   "DPRINT << ttmlir::CBPrinter(get_compile_time_arg_val(" +
-                       std::to_string(*cbIdx) + ")) << ENDL();",
-                   rewriter);
+      emitVerbatim(
+          loc,
+          "ttmlir::dprint(ttmlir::CBPrinter(get_compile_time_arg_val(" +
+              std::to_string(*cbIdx) + ")));",
+          rewriter);
+      // ttmlir::print_cb_details_ emits no trailing newline. The host
+      // DEVICE_PRINT server buffers each RISC's output until a newline, so a
+      // CB print with no following newline-terminated print on the same thread
+      // never flushes. Emit a newline on every thread (it is part of the
+      // format string, not a value argument) to flush the per-thread line.
+      emitVerbatim(loc, "DPRINT(\"\\n\");", rewriter);
 
     } else if (mode == "tile") {
       if (op.getArgv().size() != 1) {
@@ -305,15 +339,15 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       std::string cbArg =
           "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")";
       emitVerbatim(loc, "{", rewriter);
-      emitVerbatim(loc, "DPRINT << \"======\" << ENDL();", rewriter);
+      emitVerbatim(loc, "DPRINT(\"======\\n\");", rewriter);
       emitVerbatim(loc, "for (uint16_t r = 0; r < 32; ++r) {", rewriter);
       emitVerbatim(loc,
-                   "DPRINT << (uint)r << \" : \" << TileSlice(" + cbArg +
+                   "DPRINT(\"{} : {}\\n\", (uint)r, TSLICE(" + cbArg +
                        ", 0, SliceRange{.h0=(uint8_t)r, .h1=(uint8_t)(r+1), "
-                       ".hs=1, .w0=0, .w1=32, .ws=1}, true, false) << ENDL();",
+                       ".hs=1, .w0=0, .w1=32, .ws=1}, true, false));",
                    rewriter);
       emitVerbatim(loc, "}", rewriter);
-      emitVerbatim(loc, "DPRINT << \"++++++\" << ENDL();", rewriter);
+      emitVerbatim(loc, "DPRINT(\"++++++\\n\");", rewriter);
       emitVerbatim(loc, "}", rewriter);
 
     } else if (mode == "tensor") {
@@ -352,15 +386,16 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
                      "for (uint32_t page = 0; page < " +
                          std::to_string(numPages) + "; ++page) {",
                      rewriter);
-        emitVerbatim(loc, "DPRINT << page << \": \";", rewriter);
+        emitVerbatim(loc, "DPRINT(\"{}: \", page);", rewriter);
         emitVerbatim(loc,
                      "for (uint32_t j = 0; j < " +
                          std::to_string(info->eltsPerPage) + "; ++j, ++ptr) {",
                      rewriter);
-        emitVerbatim(loc, "DPRINT << " + info->formatter + "(*ptr) << \" \";",
-                     rewriter);
+        emitVerbatim(
+            loc, "DPRINT(\"{} \", " + makeTensorPrintArg(*info, "*ptr") + ");",
+            rewriter);
         emitVerbatim(loc, "}", rewriter);
-        emitVerbatim(loc, "DPRINT << ENDL();", rewriter);
+        emitVerbatim(loc, "DPRINT(\"\\n\");", rewriter);
         emitVerbatim(loc, "}", rewriter);
         emitVerbatim(loc, "}", rewriter);
       } else {
@@ -434,15 +469,17 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
                          "* ptr = reinterpret_cast<volatile tt_l1_ptr " +
                          info->cPtrType + "*>(dprint_scratch);",
                      rewriter);
-        emitVerbatim(loc, "DPRINT << page << \": \";", rewriter);
+        emitVerbatim(loc, "DPRINT(\"{}: \", page);", rewriter);
         emitVerbatim(loc,
                      "for (uint32_t j = 0; j < " +
                          std::to_string(info->eltsPerPage) + "; ++j) {",
                      rewriter);
-        emitVerbatim(loc, "DPRINT << " + info->formatter + "(ptr[j]) << \" \";",
+        emitVerbatim(loc,
+                     "DPRINT(\"{} \", " + makeTensorPrintArg(*info, "ptr[j]") +
+                         ");",
                      rewriter);
         emitVerbatim(loc, "}", rewriter);
-        emitVerbatim(loc, "DPRINT << ENDL();", rewriter);
+        emitVerbatim(loc, "DPRINT(\"\\n\");", rewriter);
         emitVerbatim(loc, "}", rewriter);
         emitVerbatim(loc, "}", rewriter);
       }
@@ -463,15 +500,20 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
 
       emitVerbatim(loc, "{", rewriter);
       if (!label.empty()) {
-        emitVerbatim(loc,
-                     "DPRINT << \"=== " + label.str() + " ===\" << ENDL();",
-                     rewriter);
+        std::string escLabel;
+        for (char c : label) {
+          appendFmtChar(escLabel, c);
+        }
+        emitVerbatim(loc, "DPRINT(\"=== " + escLabel + " ===\\n\");", rewriter);
       }
       for (auto &info : liveSlots) {
         std::string slotStr = std::to_string(info.slot);
+        std::string escOpName;
+        for (char c : info.opName) {
+          appendFmtChar(escOpName, c);
+        }
         emitVerbatim(loc,
-                     "DPRINT << \"DST[" + slotStr + "] (" + info.opName +
-                         ")\" << ENDL();",
+                     "DPRINT(\"DST[" + slotStr + "] (" + escOpName + ")\\n\");",
                      rewriter);
         // Inline dest register read. dbg_read_dest_acc_row is available
         // from compute_kernel_api.h (no extra include needed). Reads
@@ -487,12 +529,12 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
                      "    dbg_read_dest_acc_row(" + slotStr +
                          " * 64 + f * 16, rd_data);",
                      rewriter);
-        emitVerbatim(loc, "    DPRINT << \"  f\" << f << \": \";", rewriter);
+        emitVerbatim(loc, "    DPRINT(\"  f{}: \", f);", rewriter);
         emitVerbatim(loc,
-                     "    for (int i = 0; i < 8; ++i) { DPRINT << HEX() << "
-                     "rd_data[i] << \" \"; }",
+                     "    for (int i = 0; i < 8; ++i) { DPRINT(\"{:x} \", "
+                     "rd_data[i]); }",
                      rewriter);
-        emitVerbatim(loc, "    DPRINT << ENDL();", rewriter);
+        emitVerbatim(loc, "    DPRINT(\"\\n\");", rewriter);
         emitVerbatim(loc, "  }", rewriter);
         emitVerbatim(loc, "})", rewriter);
         emitVerbatim(loc, "dbg_unhalt();", rewriter);
@@ -503,9 +545,9 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       return op.emitError("unsupported dprint mode: ") << mode;
     }
 
-    // Thread conditioning: close wrapper.
-    if (thread) {
-      emitVerbatim(loc, ");", rewriter);
+    // Thread conditioning: close the MATH/PACK/UNPACK block-guard.
+    if (wrapThread) {
+      emitVerbatim(loc, "});", rewriter);
     }
 
     rewriter.eraseOp(op);

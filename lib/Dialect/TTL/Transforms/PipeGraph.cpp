@@ -65,14 +65,6 @@ void PipeGraph::assignGatherSlotIndices() {
     }
   };
   struct ReceiverKeyInfo {
-    static ReceiverKey getEmptyKey() {
-      int64_t sentinel = llvm::DenseMapInfo<int64_t>::getEmptyKey();
-      return {sentinel, sentinel, sentinel};
-    }
-    static ReceiverKey getTombstoneKey() {
-      int64_t sentinel = llvm::DenseMapInfo<int64_t>::getTombstoneKey();
-      return {sentinel, sentinel, sentinel};
-    }
     static unsigned getHashValue(const ReceiverKey &key) {
       return llvm::hash_combine(key.recvX, key.recvY, key.dfbIndex);
     }
