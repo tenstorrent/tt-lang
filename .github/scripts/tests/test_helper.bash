@@ -25,6 +25,7 @@ TEST_TTNN_PYPI_VERSION="99.88.77"
 TEST_TT_METAL_TAG="v99.88.77"
 TEST_TT_METAL_RC1_TAG="v99.88.77-rc1"
 TEST_TT_METAL_RC2_TAG="v99.88.77-rc2"
+TEST_TT_METAL_NEXT_TAG="v99.88.78"
 
 whl()       { printf 'tt_lang-%s-%s.whl' "$1" "$WHEEL_PYTAG"; }
 whl_sim()   { printf 'tt_lang_sim-%s-py3-none-any.whl' "$1"; }

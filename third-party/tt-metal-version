@@ -8,7 +8,8 @@
 #                  install_requires (ttnn == $TTNN_PYPI).
 #   TTNN_PYPI_TT_METAL_TAG
 #                - tt-metal git tag the ttnn PyPI release was built from.
-#                  publish-pypi.yml requires this to match TT_METAL_TAG.
+#                  publish-pypi.yml requires this to have the same vX.Y.Z
+#                  component as TT_METAL_TAG.
 #   TT_METAL_TAG - tt-metal git tag tt-lang builds against.
 #                  check-tt-metal-version.sh uses it to verify the
 #                  third-party/tt-metal submodule HEAD;
@@ -41,6 +42,7 @@
 
 TTNN_PYPI="0.72.0"
 TTNN_PYPI_TT_METAL_TAG="v0.72.0-rc4"
-# DANGER: public PyPI publish is blocked until TT_METAL_TAG matches
-# TTNN_PYPI_TT_METAL_TAG. See docs/sphinx/build.md#publishing-to-s3-pypi.
+# DANGER: public PyPI publish is blocked until TT_METAL_TAG and
+# TTNN_PYPI_TT_METAL_TAG share the same vX.Y.Z component. See
+# docs/sphinx/build.md#publishing-to-s3-pypi.
 TT_METAL_TAG="v0.72.0"
