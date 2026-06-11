@@ -34,6 +34,8 @@ def main():
     snap = glob.glob(SNAP)[0]
     tokenizer = AutoTokenizer.from_pretrained(snap)
     ids = tokenizer(args.prompt)["input_ids"]
+    if ids[0] != tokenizer.bos_token_id:
+        ids = [tokenizer.bos_token_id] + ids
     print(f"prompt ids {ids}", flush=True)
 
     cfg = Gemma4Config()

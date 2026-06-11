@@ -292,3 +292,16 @@ to circle back to.
 - lm_head vocab/4: local argmax winner + base offset packed [val|token]
   one tile pair/card, all_gather rows, top1 over a strided row collapse,
   pick token by winner card id elem-copied into the gathered tile.
+- row_scale poison (layers 3+ collapse, heads atom zeros ~24 dispatches
+  later): 8 per-loop row_scale dispatches corrupt the next program even
+  though their own outputs check out. make_moe_scale replaces it: one
+  single-block program per row, scalar staged in the same block. The
+  recip variant covers the flash 1/l finalize.
+- Global V path: V = unscaled rms of raw k_proj (no rope, no k_norm),
+  cached separately from K. flash_decode v_bufs=1 single-buffers V to
+  fit L1; k_eq_v cache aliasing was wrong.
+- Gemma4 RMSNorm weights are raw multipliers, not Gemma2 (1 + w): per
+  layer-0 norm means are far from 0 (input_layernorm ~4.5, final ~29).
+  Staging 1 + w drops L0 vs HF golden to 0.84, ~0 by L17 (gibberish);
+  raw weights pass 0.9997+ across 6 layers. Per-layer device parity
+  cannot catch this class: chain and ref shared the convention.
