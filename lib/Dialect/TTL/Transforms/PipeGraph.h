@@ -10,11 +10,11 @@
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/MapVector.h"
-#include "llvm/ADT/SmallVector.h"
+
+#include <limits>
 
 namespace mlir::tt::ttl {
 
@@ -38,6 +38,14 @@ struct PipeKey {
   }
 };
 
+inline constexpr int64_t getDenseMapEmptyI64Key() {
+  return std::numeric_limits<int64_t>::min();
+}
+
+inline constexpr int64_t getDenseMapTombstoneI64Key() {
+  return std::numeric_limits<int64_t>::min() + 1;
+}
+
 } // namespace mlir::tt::ttl
 
 namespace llvm {
@@ -45,11 +53,11 @@ template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
   using Key = mlir::tt::ttl::PipeKey;
   static Key getEmptyKey() {
-    int64_t s = DenseMapInfo<int64_t>::getEmptyKey();
+    int64_t s = mlir::tt::ttl::getDenseMapEmptyI64Key();
     return {s, s, s, s, s, s, s};
   }
   static Key getTombstoneKey() {
-    int64_t s = DenseMapInfo<int64_t>::getTombstoneKey();
+    int64_t s = mlir::tt::ttl::getDenseMapTombstoneI64Key();
     return {s, s, s, s, s, s, s};
   }
   static unsigned getHashValue(const Key &k) {

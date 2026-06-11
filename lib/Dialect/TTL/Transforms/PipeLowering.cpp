@@ -99,11 +99,11 @@ template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeSourceKey> {
   using Key = mlir::tt::ttl::PipeSourceKey;
   static Key getEmptyKey() {
-    int64_t sentinel = DenseMapInfo<int64_t>::getEmptyKey();
+    int64_t sentinel = mlir::tt::ttl::getDenseMapEmptyI64Key();
     return {sentinel, sentinel};
   }
   static Key getTombstoneKey() {
-    int64_t sentinel = DenseMapInfo<int64_t>::getTombstoneKey();
+    int64_t sentinel = mlir::tt::ttl::getDenseMapTombstoneI64Key();
     return {sentinel, sentinel};
   }
   static unsigned getHashValue(const Key &sourceKey) {
