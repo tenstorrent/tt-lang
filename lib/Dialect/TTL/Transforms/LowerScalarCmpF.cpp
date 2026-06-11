@@ -108,19 +108,9 @@ struct TTLLowerScalarCmpFPass
         }
         break;
       }
-      case arith::CmpFPredicate::OEQ: {
-        result = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
-                                       lhsInt, rhsInt);
-        break;
-      }
-      case arith::CmpFPredicate::ONE: {
-        result = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
-                                       lhsInt, rhsInt);
-        break;
-      }
       default:
         cmpOp.emitOpError("unsupported cmpf predicate for soft-float "
-                          "lowering; only ogt, olt, oeq, and one are "
+                          "lowering; only ogt and olt are "
                           "currently supported");
         hadError = true;
         return;

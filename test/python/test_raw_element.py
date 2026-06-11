@@ -5,7 +5,7 @@
 """
 End-to-end tests for raw_element_read/write on f32 and bf16 tensors.
 
-Covers six access patterns at both precisions:
+Covers four access patterns at both precisions:
 
   1. Element copy  -- read one position, write to another.
   2. Constant write -- write a literal float to an element position.
@@ -13,13 +13,8 @@ Covers six access patterns at both precisions:
   3. Pairwise sort (ogt)  -- compare two elements via float32_greater /
      bfloat16_greater and conditionally swap them. Extended with
      negative/mixed-sign test vectors.
-  4. Conditional equality write (oeq) -- copy a row element-by-element
-     and overwrite positions that match a reference value (KV-cache
-     update pattern).
-  5. Min-pair (olt) -- exercises the operand-swap path in
+  4. Min-pair (olt) -- exercises the operand-swap path in
      LowerScalarCmpF via less-than comparison.
-  6. Filter not-equal (one) -- replace zero-valued elements with a
-     sentinel, exercising the arith.cmpf one predicate.
 
 Each pattern has separate kernel definitions for f32 and bf16 because
 the L1 pointer width (32-bit vs 16-bit) and comparison helpers differ.
@@ -325,130 +320,7 @@ def test_bf16_sort_pair_no_swap(device):
 
 
 # =============================================================================
-# Pattern 4: Conditional equality write  (raw_element_kv_cache pattern)
-# =============================================================================
-
-
-@ttl.operation(grid=(1, 1))
-def f32_kv_cache_kernel(inp, out):
-    """Copy row 0 from input to output, overwriting positions that match row 1 col 0.
-
-    Row 0 is the cache row, row 1 col 0 is the reference value. When a
-    cache element equals the reference, overwrite it with the reference
-    (identity, but exercises the arith.cmpi eq comparison path).
-    """
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-    @ttl.compute()
-    def compute():
-        pass
-
-    @ttl.datamovement()
-    def dm_read():
-        with inp_dfb.reserve() as blk:
-            tx = ttl.copy(inp[0, 0], blk)
-            tx.wait()
-
-    @ttl.datamovement()
-    def dm_write():
-        with inp_dfb.wait() as rblk:
-            with out_dfb.reserve() as wblk:
-                new_val = ttl.raw_element_read(rblk, 1, 0)
-
-                for c in range(32):
-                    cache_val = ttl.raw_element_read(rblk, 0, c)
-                    ttl.raw_element_write(wblk, 0, c, cache_val)
-                    if cache_val == new_val:
-                        ttl.raw_element_write(wblk, 0, c, new_val)
-
-                tx = ttl.copy(wblk, out[0, 0])
-                tx.wait()
-
-
-@ttl.operation(grid=(1, 1))
-def bf16_kv_cache_kernel(inp, out):
-    """Copy row 0 from input to output, overwriting positions that match row 1 col 0.
-
-    Same as the f32 variant but for bf16 tensors.
-    """
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-    @ttl.compute()
-    def compute():
-        pass
-
-    @ttl.datamovement()
-    def dm_read():
-        with inp_dfb.reserve() as blk:
-            tx = ttl.copy(inp[0, 0], blk)
-            tx.wait()
-
-    @ttl.datamovement()
-    def dm_write():
-        with inp_dfb.wait() as rblk:
-            with out_dfb.reserve() as wblk:
-                new_val = ttl.raw_element_read(rblk, 1, 0)
-
-                for c in range(32):
-                    cache_val = ttl.raw_element_read(rblk, 0, c)
-                    ttl.raw_element_write(wblk, 0, c, cache_val)
-                    if cache_val == new_val:
-                        ttl.raw_element_write(wblk, 0, c, new_val)
-
-                tx = ttl.copy(wblk, out[0, 0])
-                tx.wait()
-
-
-def _make_kv_cache_input(dtype):
-    """Build input tile: row 0 has [7, 3, 7, 5, ...0], row 1 col 0 has 7.
-
-    The kernel should copy row 0 to output and overwrite positions
-    where the value equals 7.0 (the reference from row 1 col 0). Since
-    the overwrite is with the same value, output row 0 equals input row 0.
-    """
-    t = torch.zeros(32, 32, dtype=dtype)
-    t[0, 0] = 7.0
-    t[0, 1] = 3.0
-    t[0, 2] = 7.0
-    t[0, 3] = 5.0
-    t[1, 0] = 7.0
-    return t
-
-
-def test_f32_kv_cache(device):
-    """f32 conditional equality write copies row 0 faithfully."""
-    inp_torch = _make_kv_cache_input(torch.float32)
-    inp = to_l1(inp_torch, device)
-    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
-
-    f32_kv_cache_kernel(inp, out)
-    result = ttnn.to_torch(out).float()
-
-    assert result[0, 0].item() == pytest.approx(7.0, abs=1e-5)
-    assert result[0, 1].item() == pytest.approx(3.0, abs=1e-5)
-    assert result[0, 2].item() == pytest.approx(7.0, abs=1e-5)
-    assert result[0, 3].item() == pytest.approx(5.0, abs=1e-5)
-
-
-def test_bf16_kv_cache(device):
-    """bf16 conditional equality write copies row 0 faithfully."""
-    inp_torch = _make_kv_cache_input(torch.bfloat16)
-    inp = to_l1(inp_torch, device)
-    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
-
-    bf16_kv_cache_kernel(inp, out)
-    result = ttnn.to_torch(out)
-
-    assert result[0, 0].item() == pytest.approx(7.0, abs=1e-2)
-    assert result[0, 1].item() == pytest.approx(3.0, abs=1e-2)
-    assert result[0, 2].item() == pytest.approx(7.0, abs=1e-2)
-    assert result[0, 3].item() == pytest.approx(5.0, abs=1e-2)
-
-
-# =============================================================================
-# Pattern 5: Min-pair via olt  (exercises operand-swap path in LowerScalarCmpF)
+# Pattern 4: Min-pair via olt  (exercises operand-swap path in LowerScalarCmpF)
 # =============================================================================
 
 
@@ -546,140 +418,6 @@ def test_bf16_min_pair(device):
 
     assert result[0, 0].item() == pytest.approx(2.0, abs=1e-2)
     assert result[0, 1].item() == pytest.approx(5.0, abs=1e-2)
-
-
-# =============================================================================
-# Pattern 6: Filter not-equal  (exercises arith.cmpi ne / one predicate)
-# =============================================================================
-
-
-@ttl.operation(grid=(1, 1))
-def f32_filter_ne_kernel(inp, out):
-    """Replace zero-valued elements in row 0 with a sentinel (-1.0).
-
-    Copies row 0 from input to output. Positions equal to zero are
-    overwritten with -1.0. Exercises the arith.cmpf one (not-equal)
-    comparison path.
-    """
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-    @ttl.compute()
-    def compute():
-        pass
-
-    @ttl.datamovement()
-    def dm_read():
-        with inp_dfb.reserve() as blk:
-            tx = ttl.copy(inp[0, 0], blk)
-            tx.wait()
-
-    @ttl.datamovement()
-    def dm_write():
-        with inp_dfb.wait() as rblk:
-            with out_dfb.reserve() as wblk:
-                zero = 0.0
-                sentinel = -1.0
-                for c in range(8):
-                    val = ttl.raw_element_read(rblk, 0, c)
-                    if val != zero:
-                        ttl.raw_element_write(wblk, 0, c, val)
-                    else:
-                        ttl.raw_element_write(wblk, 0, c, sentinel)
-
-                tx = ttl.copy(wblk, out[0, 0])
-                tx.wait()
-
-
-@ttl.operation(grid=(1, 1))
-def bf16_filter_ne_kernel(inp, out):
-    """Replace zero-valued bf16 elements in row 0 with a sentinel.
-
-    Reads the reference zero value from row 1 col 0 and the sentinel
-    from row 1 col 1 to avoid f32/bf16 type mismatch with constants.
-    """
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-    @ttl.compute()
-    def compute():
-        pass
-
-    @ttl.datamovement()
-    def dm_read():
-        with inp_dfb.reserve() as blk:
-            tx = ttl.copy(inp[0, 0], blk)
-            tx.wait()
-
-    @ttl.datamovement()
-    def dm_write():
-        with inp_dfb.wait() as rblk:
-            with out_dfb.reserve() as wblk:
-                zero_ref = ttl.raw_element_read(rblk, 1, 0)
-                sentinel_ref = ttl.raw_element_read(rblk, 1, 1)
-                for c in range(8):
-                    val = ttl.raw_element_read(rblk, 0, c)
-                    if val != zero_ref:
-                        ttl.raw_element_write(wblk, 0, c, val)
-                    else:
-                        ttl.raw_element_write(wblk, 0, c, sentinel_ref)
-
-                tx = ttl.copy(wblk, out[0, 0])
-                tx.wait()
-
-
-def _make_filter_ne_input(dtype):
-    """Build input: row 0 = [3, 0, 7, 0, 1, 0, 5, 2] + zeros.
-
-    For bf16 variant: row 1 col 0 = 0.0 (reference zero),
-    row 1 col 1 = -1.0 (sentinel value).
-    """
-    t = torch.zeros(32, 32, dtype=dtype)
-    t[0, 0] = 3.0
-    t[0, 2] = 7.0
-    t[0, 4] = 1.0
-    t[0, 6] = 5.0
-    t[0, 7] = 2.0
-    t[1, 1] = -1.0
-    return t
-
-
-def test_f32_filter_ne(device):
-    """f32 not-equal replaces zero positions with sentinel."""
-    inp_torch = _make_filter_ne_input(torch.float32)
-    inp = to_l1(inp_torch, device)
-    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
-
-    f32_filter_ne_kernel(inp, out)
-    result = ttnn.to_torch(out).float()
-
-    assert result[0, 0].item() == pytest.approx(3.0, abs=1e-5)
-    assert result[0, 1].item() == pytest.approx(-1.0, abs=1e-5)
-    assert result[0, 2].item() == pytest.approx(7.0, abs=1e-5)
-    assert result[0, 3].item() == pytest.approx(-1.0, abs=1e-5)
-    assert result[0, 4].item() == pytest.approx(1.0, abs=1e-5)
-    assert result[0, 5].item() == pytest.approx(-1.0, abs=1e-5)
-    assert result[0, 6].item() == pytest.approx(5.0, abs=1e-5)
-    assert result[0, 7].item() == pytest.approx(2.0, abs=1e-5)
-
-
-def test_bf16_filter_ne(device):
-    """bf16 not-equal replaces zero positions with sentinel."""
-    inp_torch = _make_filter_ne_input(torch.bfloat16)
-    inp = to_l1(inp_torch, device)
-    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
-
-    bf16_filter_ne_kernel(inp, out)
-    result = ttnn.to_torch(out)
-
-    assert result[0, 0].item() == pytest.approx(3.0, abs=1e-2)
-    assert result[0, 1].item() == pytest.approx(-1.0, abs=1e-2)
-    assert result[0, 2].item() == pytest.approx(7.0, abs=1e-2)
-    assert result[0, 3].item() == pytest.approx(-1.0, abs=1e-2)
-    assert result[0, 4].item() == pytest.approx(1.0, abs=1e-2)
-    assert result[0, 5].item() == pytest.approx(-1.0, abs=1e-2)
-    assert result[0, 6].item() == pytest.approx(5.0, abs=1e-2)
-    assert result[0, 7].item() == pytest.approx(2.0, abs=1e-2)
 
 
 # =============================================================================

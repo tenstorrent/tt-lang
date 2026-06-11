@@ -51,38 +51,6 @@ module {
 
 // -----
 
-// f32 oeq -> arith.cmpi eq on signless integer bit patterns
-// CHECK-LABEL: func.func @cmpf_oeq_f32
-// CHECK-NOT: arith.cmpf
-// CHECK: arith.cmpi eq,
-// CHECK-SAME: : i32
-module {
-  func.func @cmpf_oeq_f32(%a_int: i32, %b_int: i32) -> i1 {
-    %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
-    %b = builtin.unrealized_conversion_cast %b_int : i32 to f32
-    %cmp = arith.cmpf oeq, %a, %b : f32
-    return %cmp : i1
-  }
-}
-
-// -----
-
-// f32 one -> arith.cmpi ne on signless integer bit patterns
-// CHECK-LABEL: func.func @cmpf_one_f32
-// CHECK-NOT: arith.cmpf
-// CHECK: arith.cmpi ne,
-// CHECK-SAME: : i32
-module {
-  func.func @cmpf_one_f32(%a_int: i32, %b_int: i32) -> i1 {
-    %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
-    %b = builtin.unrealized_conversion_cast %b_int : i32 to f32
-    %cmp = arith.cmpf one, %a, %b : f32
-    return %cmp : i1
-  }
-}
-
-// -----
-
 // Constant float operand: 1.0f (0x3F800000) materialized as integer constant.
 // CHECK-LABEL: func.func @cmpf_ogt_f32_constant
 // CHECK-DAG: %[[BITS:.*]] = arith.constant 1065353216 : i32
@@ -112,34 +80,3 @@ module {
   }
 }
 
-// -----
-
-// bf16 one -> arith.cmpi ne on i16
-// CHECK-LABEL: func.func @cmpf_one_bf16
-// CHECK-NOT: arith.cmpf
-// CHECK: arith.cmpi ne,
-// CHECK-SAME: : i16
-module {
-  func.func @cmpf_one_bf16(%a_int: i16, %b_int: i16) -> i1 {
-    %a = builtin.unrealized_conversion_cast %a_int : i16 to bf16
-    %b = builtin.unrealized_conversion_cast %b_int : i16 to bf16
-    %cmp = arith.cmpf one, %a, %b : bf16
-    return %cmp : i1
-  }
-}
-
-// -----
-
-// bf16 oeq -> arith.cmpi eq on i16
-// CHECK-LABEL: func.func @cmpf_oeq_bf16
-// CHECK-NOT: arith.cmpf
-// CHECK: arith.cmpi eq,
-// CHECK-SAME: : i16
-module {
-  func.func @cmpf_oeq_bf16(%a_int: i16, %b_int: i16) -> i1 {
-    %a = builtin.unrealized_conversion_cast %a_int : i16 to bf16
-    %b = builtin.unrealized_conversion_cast %b_int : i16 to bf16
-    %cmp = arith.cmpf oeq, %a, %b : bf16
-    return %cmp : i1
-  }
-}
