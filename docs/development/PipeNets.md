@@ -386,6 +386,18 @@ sender-ready counter and address-table entry have been consumed by the
 send. This invariant allows the send to reset the sender-ready counter
 after consumption.
 
+Queue-depth validation enforces that invariant before resource
+allocation. For events in one block, lowering sorts receive posts and
+sends by operation order and rejects any sequence whose live post count
+exceeds one. For receive posts in different blocks, lowering rejects
+the schedule unless those posts are proven mutually exclusive. The
+current proof recognizes posts in different regions of the same
+`scf.if`; one then-region post and one else-region post are valid
+because only one can execute. A receive post before an `scf.if` and a
+second receive post inside that `scf.if` are rejected because both can
+execute before a send consumes the first address-table entry and
+sender-ready count.
+
 ### Receiver-authored address table
 
 Point-to-point and collective transfers use the address table in Table
@@ -1350,6 +1362,14 @@ the receiver-owned DFB address authoritative. It also makes same-thread
 loopback schedules explicit: the receive post must run before the
 dependent send, and the receive wait must run after a send has been
 posted that can complete it.
+
+The current TTKernel lowering has queue depth 1 for each logical pipe
+transfer. A second receive post for that transfer is rejected unless the
+compiler can prove that it is mutually exclusive with the first post,
+such as posts in different regions of the same `scf.if`. Receive-ahead
+posts that can both execute before a send are rejected because the
+second post would overwrite the single sender-visible address-table
+entry and reuse the same sender-ready counter.
 
 ### Device API transition notes
 

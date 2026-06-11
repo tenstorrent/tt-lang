@@ -12,8 +12,6 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
-#include <cassert>
-#include <memory>
 
 namespace mlir::tt::ttl {
 
@@ -38,6 +36,11 @@ enum class ReadyCounterAddressStorage {
   GlobalSemaphoreRuntimeArg,
 };
 
+enum class PipeReadyCounterStorage {
+  LocalSemaphore,
+  GlobalSemaphore,
+};
+
 /// Sender-ready counters can live either in local semaphore space or in
 /// GlobalSemaphore-backed SRAM. The storage kind disambiguates the index value.
 struct ReadyCounterAddressInfo {
@@ -55,28 +58,30 @@ public:
   virtual void observeGlobalSemaphore(int64_t index) {}
 };
 
-/// Sender-ready counter allocation. Concrete storage classes translate their
-/// index into the lowering address form and report the index in its resource
-/// namespace for count and limit checks.
+/// Sender-ready counter allocation. This translates the stored index into the
+/// lowering address form and reports it in its resource namespace for count and
+/// limit checks.
 class PipeReadyCounterInfo {
 public:
-  virtual ~PipeReadyCounterInfo() = default;
-
   /// Allocate a sender-ready counter from TTKernel local semaphore ids.
-  static std::shared_ptr<const PipeReadyCounterInfo>
-  localSemaphore(int64_t senderReadyCounterSemIdx);
+  static PipeReadyCounterInfo localSemaphore(int64_t senderReadyCounterSemIdx);
 
   /// Allocate a sender-ready counter from host-created GlobalSemaphore storage.
-  static std::shared_ptr<const PipeReadyCounterInfo>
-  globalSemaphore(int64_t globalSemaphoreIndex);
+  static PipeReadyCounterInfo globalSemaphore(int64_t globalSemaphoreIndex);
 
   /// Resolve this allocation to the address consumed by TTKernel lowering.
-  virtual ReadyCounterAddressInfo
-  getAddressInfo(Operation *op,
-                 const PipeResourcePlan &pipeResourcePlan) const = 0;
+  ReadyCounterAddressInfo
+  getAddressInfo(Operation *op, const PipeResourcePlan &pipeResourcePlan) const;
 
   /// Report this allocation to a pass-specific observer.
-  virtual void observe(PipeReadyCounterObserver &observer) const = 0;
+  void observe(PipeReadyCounterObserver &observer) const;
+
+private:
+  PipeReadyCounterInfo(PipeReadyCounterStorage storage, int64_t index)
+      : storage(storage), index(index) {}
+
+  PipeReadyCounterStorage storage;
+  int64_t index;
 };
 
 struct PipeCompletionWaitInfo {
@@ -97,15 +102,9 @@ struct PipeAddressStorageInfo {
 /// counters independently.
 struct PipeResourceInfo {
   PipeKey pipe;
-  PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
-  std::shared_ptr<const PipeReadyCounterInfo> readyCounter;
+  PipeTransferContract transferContract;
+  PipeReadyCounterInfo readyCounter;
   PipeAddressStorageInfo addressStorage;
-
-  /// Resource planning assigns the ready counter before lowering consumes it.
-  const PipeReadyCounterInfo &getReadyCounter() const {
-    assert(readyCounter && "pipe resource is missing its ready counter");
-    return *readyCounter;
-  }
 };
 
 /// Per-function map: pipeNetId -> kernel-local i32 counter for cumulative
