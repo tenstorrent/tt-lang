@@ -5,19 +5,22 @@
 """
 End-to-end tests for raw_element_read/write on f32 and bf16 tensors.
 
-Covers four access patterns at both precisions:
+Covers seven access patterns:
 
-  1. Element copy  -- read one position, write to another.
+  1. Element copy -- read one position, write to another
+     (datamovement-only, compute is a no-op).
   2. Constant write -- write a literal float to an element position.
-     For bf16 blocks the f32 literal is implicitly truncated.
-  3. Pairwise sort (ogt)  -- compare two elements via float32_greater /
-     bfloat16_greater and conditionally swap them. Extended with
-     negative/mixed-sign test vectors.
+     For bf16 the f32 literal is implicitly truncated.
+  3. Pairwise sort (ogt) -- compare two elements via greater-than and
+     conditionally swap. Extended with negative/mixed-sign vectors (3b).
   4. Min-pair (olt) -- exercises the operand-swap path in
      LowerScalarCmpF via less-than comparison.
-
-Each pattern has separate kernel definitions for f32 and bf16 because
-the L1 pointer width (32-bit vs 16-bit) and comparison helpers differ.
+  5. Compute-then-read -- compute negates a tile and stores to a CB;
+     the writer thread element_reads from the computed result.
+  6. Write-then-compute -- the reader copies a tile and element_writes
+     a modified value; compute negates the modified tile.
+  7. Row-scan argmax -- scan 32 elements and write the maximum.
+     Currently xfail (ISSUE #380). Includes a ttnn.max comparison.
 """
 
 # REQUIRES: ttnn
@@ -421,7 +424,7 @@ def test_bf16_min_pair(device):
 
 
 # =============================================================================
-# Pattern 3 extended: Negative/mixed-sign/zero test vectors for sort-pair (4c)
+# Pattern 3b: Negative/mixed-sign/zero test vectors for sort-pair
 # =============================================================================
 
 
@@ -467,6 +470,182 @@ def test_bf16_sort_pair_signed(device, a_val, b_val, expect_first, expect_second
 
     assert result[0, 0].item() == pytest.approx(expect_first, abs=1e-1)
     assert result[0, 1].item() == pytest.approx(expect_second, abs=1e-1)
+
+
+# =============================================================================
+# Pattern 5: Compute-then-read (compute does math, writer element_reads result)
+# =============================================================================
+
+
+@ttl.operation(grid=(1, 1))
+def f32_compute_then_read_kernel(inp, out):
+    """Negate a tile in compute, then element_read from the computed result."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    computed_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_dfb.wait() as x, computed_dfb.reserve() as o:
+            o.store(ttl.math.neg(x))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with computed_dfb.wait() as cblk:
+            val = ttl.raw_element_read(cblk, 0, 5)
+            with out_dfb.reserve() as wblk:
+                ttl.raw_element_write(wblk, 0, 0, val)
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+
+
+@ttl.operation(grid=(1, 1))
+def bf16_compute_then_read_kernel(inp, out):
+    """Negate a bf16 tile in compute, then element_read the result."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    computed_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_dfb.wait() as x, computed_dfb.reserve() as o:
+            o.store(ttl.math.neg(x))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with computed_dfb.wait() as cblk:
+            val = ttl.raw_element_read(cblk, 0, 5)
+            with out_dfb.reserve() as wblk:
+                ttl.raw_element_write(wblk, 0, 0, val)
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+
+
+def test_f32_compute_then_read(device):
+    """f32 element_read from a CB written by compute (neg)."""
+    inp_torch = torch.randn(32, 32, dtype=torch.float32)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
+
+    f32_compute_then_read_kernel(inp, out)
+    result = ttnn.to_torch(out).float()
+
+    expected = -inp_torch[0, 5].item()
+    assert result[0, 0].item() == pytest.approx(expected, abs=1e-5)
+
+
+def test_bf16_compute_then_read(device):
+    """bf16 element_read from a CB written by compute (neg)."""
+    inp_torch = torch.randn(32, 32, dtype=torch.bfloat16)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    bf16_compute_then_read_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    expected = -inp_torch[0, 5].item()
+    assert result[0, 0].item() == pytest.approx(expected, abs=1e-2)
+
+
+# =============================================================================
+# Pattern 6: Write-then-compute (reader element_writes, compute does math)
+# =============================================================================
+
+
+@ttl.operation(grid=(1, 1))
+def f32_write_then_compute_kernel(inp, out):
+    """Reader copies a tile and overwrites [0,0] with 42.0; compute negates."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_dfb.wait() as x, out_dfb.reserve() as o:
+            o.store(ttl.math.neg(x))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+            ttl.raw_element_write(blk, 0, 0, 42.0)
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0, 0])
+            tx.wait()
+
+
+@ttl.operation(grid=(1, 1))
+def bf16_write_then_compute_kernel(inp, out):
+    """Reader copies a bf16 tile and overwrites [0,0] with 42.0; compute negates."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_dfb.wait() as x, out_dfb.reserve() as o:
+            o.store(ttl.math.neg(x))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+            ttl.raw_element_write(blk, 0, 0, 42.0)
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0, 0])
+            tx.wait()
+
+
+def test_f32_write_then_compute(device):
+    """f32 element_write in reader followed by compute neg."""
+    inp_torch = torch.randn(32, 32, dtype=torch.float32)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
+
+    f32_write_then_compute_kernel(inp, out)
+    result = ttnn.to_torch(out).float()
+
+    modified = inp_torch.clone()
+    modified[0, 0] = 42.0
+    expected = -modified
+
+    assert result[0, 0].item() == pytest.approx(-42.0, abs=1e-5)
+    assert result[0, 5].item() == pytest.approx(expected[0, 5].item(), abs=1e-5)
+
+
+def test_bf16_write_then_compute(device):
+    """bf16 element_write in reader followed by compute neg."""
+    inp_torch = torch.randn(32, 32, dtype=torch.bfloat16)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    bf16_write_then_compute_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    modified = inp_torch.clone()
+    modified[0, 0] = 42.0
+    expected = -modified
+
+    assert result[0, 0].item() == pytest.approx(-42.0, abs=1e-1)
+    assert result[0, 5].item() == pytest.approx(expected[0, 5].item(), abs=1e-1)
 
 
 # =============================================================================
@@ -571,3 +750,47 @@ def test_bf16_argmax_row(device):
     result = ttnn.to_torch(out)
 
     assert result[0, 0].item() == pytest.approx(8.0, abs=1e-1)
+
+
+# =============================================================================
+# Pattern 7b: ttnn.max comparison for row-scan argmax
+# =============================================================================
+
+
+@pytest.mark.xfail(reason="conditional assignment not exiting scope ISSUE #380")
+def test_f32_argmax_vs_ttnn_max(device):
+    """f32 row-scan max matches ttnn.max on the same input.
+
+    The kernel scans row 0 for the maximum value.  Since all non-row-0
+    elements are zero and the row-0 maximum (8.0) is positive, the
+    global ttnn.max must agree.
+    """
+    inp_torch = _make_argmax_row_input(torch.float32)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.float32), device)
+
+    f32_argmax_row_kernel(inp, out)
+    kernel_result = ttnn.to_torch(out).float()
+
+    ttnn_max = ttnn.to_torch(ttnn.max(inp)).float()
+    torch_max = inp_torch.max().item()
+
+    assert kernel_result[0, 0].item() == pytest.approx(torch_max, abs=1e-5)
+    assert ttnn_max.item() == pytest.approx(torch_max, abs=1e-5)
+
+
+@pytest.mark.xfail(reason="conditional assignment not exiting scope ISSUE #380")
+def test_bf16_argmax_vs_ttnn_max(device):
+    """bf16 row-scan max matches ttnn.max on the same input."""
+    inp_torch = _make_argmax_row_input(torch.bfloat16)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    bf16_argmax_row_kernel(inp, out)
+    kernel_result = ttnn.to_torch(out)
+
+    ttnn_max = ttnn.to_torch(ttnn.max(inp))
+    torch_max = inp_torch.float().max().item()
+
+    assert kernel_result[0, 0].item() == pytest.approx(torch_max, abs=1e-1)
+    assert ttnn_max.float().item() == pytest.approx(torch_max, abs=1e-1)
