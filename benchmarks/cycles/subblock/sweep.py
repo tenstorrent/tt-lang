@@ -47,12 +47,16 @@ def _error_summary(e):
     return lines[0] if lines else type(e).__name__
 
 
+def _label(subblock):
+    return "auto" if subblock is None else "x".join(str(s) for s in subblock)
+
+
 def run(kind, subblock, dst_full_sync_en=DST_FULL_SYNC_EN):
-    """Run one forced subblock for a Kind on one core; return cycles/us/per_risc."""
+    """Run one subblock (or None = heuristic) for a Kind on one core."""
     device = ttnn.open_device(device_id=0)
     try:
         tensors = kind.make_tensors(device)
-        op = kind.make_op(subblock[0], subblock[1], dst_full_sync_en)
+        op = kind.make_op(subblock, dst_full_sync_en)
         clear_profile_log()
         op(*tensors)
         ttnn.synchronize_device(device)
@@ -67,7 +71,7 @@ def run_case(kind, subblock, dst_full_sync_en):
     """Compile + run one subblock. A subblock the compiler rejects (e.g. over the
     DST budget) raises during compilation; we catch it and return an 'invalid'
     row (cycles=None) instead of pre-filtering valid subblocks ourselves."""
-    label = f"{subblock[0]}x{subblock[1]}"
+    label = _label(subblock)
     try:
         d = run(kind, subblock, dst_full_sync_en)
     except Exception as e:
@@ -97,7 +101,7 @@ def sweep(kind_name="add", filter=None, dst_full_sync_en=DST_FULL_SYNC_EN):
     kind = KINDS[kind_name]
     valid, invalid = [], []
     for subblock in kind.subblocks():
-        label = f"{subblock[0]}x{subblock[1]}"
+        label = _label(subblock)
         if filter and filter not in label:
             continue
         row = run_case(kind, subblock, dst_full_sync_en)
@@ -143,6 +147,14 @@ _TITLES = {
     "mc_three": "single-core mc_three subblock: device cycles (sigmoid(a), exp(a), a+b -> 3 outs)",
     "mc_square": "single-core mc_square subblock: device cycles (out = x * x)",
     "mc_branch": "single-core mc_branch subblock: device cycles (exp(abs(a)), abs(a)+b -> 2 outs)",
+    "fill_add": "single-core fill_add subblock: device cycles (fixed block, out = inp + fill(1.0))",
+    "fill": "single-core fill subblock: device cycles (fixed block, out = fill(-3.0))",
+    "gdn": "single-core gdn subblock: device cycles (DxD block, gated delta rule step)",
+    "matmul_bias": "single-core matmul_bias subblock: device cycles (fixed block, out = a @ b + c)",
+    "matmul_relu": "single-core matmul_relu subblock: device cycles (fixed block, out = relu(a @ b))",
+    "reduce_sum": "single-core reduce_sum subblock: device cycles (8x8 -> 8x1, dims=[1], 1-D force)",
+    "reduce_max": "single-core reduce_max subblock: device cycles (8x8 -> 8x1, dims=[1], 1-D force)",
+    "transpose": "single-core transpose subblock: device cycles (fixed block, out = inp^T)",
 }
 
 

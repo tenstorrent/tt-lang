@@ -50,8 +50,9 @@ def emit(kind_name, out_dir, dst_full_sync_en=DST_FULL_SYNC_EN):
     try:
         tensors = kind.make_tensors(device)
         wrote_dm = False
-        for sR, sC in kind.subblocks():
-            op = kind.make_op(sR, sC, dst_full_sync_en)
+        for subblock in kind.subblocks():
+            label = "auto" if subblock is None else "x".join(str(s) for s in subblock)
+            op = kind.make_op(subblock, dst_full_sync_en)
             # Capture the compile's stdout (suppresses the big kernel-source dump
             # and gives the exact generated-kernel paths for this config).
             buf = io.StringIO()
@@ -60,17 +61,17 @@ def emit(kind_name, out_dir, dst_full_sync_en=DST_FULL_SYNC_EN):
                     op(*tensors)  # COMPILE_ONLY: generates + writes kernels, no run
             except Exception as e:
                 from .sweep import _error_summary
-                print(f"{kind.name} subblock {sR}x{sC}: invalid "
+                print(f"{kind.name} subblock {label}: invalid "
                       f"(compiler rejected: {_error_summary(e)})", flush=True)
                 continue
             paths = _kernel_paths(buf.getvalue())
 
             if "compute" in paths:
-                dst = out / f"compute_{sR}x{sC}.cpp"
+                dst = out / f"compute_{label}.cpp"
                 shutil.copy(paths["compute"], dst)
-                print(f"{kind.name} subblock {sR}x{sC} -> {dst}", flush=True)
+                print(f"{kind.name} subblock {label} -> {dst}", flush=True)
             else:
-                print(f"{kind.name} subblock {sR}x{sC}: no compute kernel path found", flush=True)
+                print(f"{kind.name} subblock {label}: no compute kernel path found", flush=True)
 
             # reader/writer are identical across subblocks; copy them once.
             if not wrote_dm:

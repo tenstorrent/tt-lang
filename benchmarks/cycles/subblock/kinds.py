@@ -43,7 +43,21 @@ from .single_block_adversarial import make_single_block_adversarial_no_dram
 from .single_block_axby import make_single_block_axby_no_dram
 from .single_block_bcast_add import make_single_block_bcast_add_no_dram
 from .single_block_comprehensive import make_single_block_comprehensive_no_dram
+from .single_block_fill_add import (
+    make_single_block_fill_add_no_dram,
+    make_single_block_fill_no_dram,
+)
+from .single_block_gdn import make_single_block_gdn_no_dram
 from .single_block_matmul import make_single_block_matmul_no_dram
+from .single_block_matmul_fused import (
+    make_single_block_matmul_bias_no_dram,
+    make_single_block_matmul_relu_no_dram,
+)
+from .single_block_transpose import make_single_block_transpose_no_dram
+from .single_block_reduce import (
+    make_single_block_reduce_max_no_dram,
+    make_single_block_reduce_sum_no_dram,
+)
 from .single_block_multi_consumer import (
     make_single_block_mc_branch_no_dram,
     make_single_block_mc_silu_no_dram,
@@ -76,14 +90,21 @@ class Kind:
     name: str
     out_rows: int        # output-block rows in tiles (sR divides this)
     out_cols: int        # output-block cols in tiles (sC divides this)
-    make_op: Callable    # (sR, sC, dst_full_sync_en) -> compiled ttl op
-    make_tensors: Callable   # (device) -> (a, b, y)
+    make_op: Callable    # (subblock | None, dst_full_sync_en) -> compiled ttl op
+    make_tensors: Callable   # (device) -> tensors
     block_label: str     # e.g. "8x8" or "8x8 k=4"
+    swept: bool = True   # False: heuristic-only (mixed-rank kernels can't force)
+    rank: int = 2        # parallel rank: 1 for single-dim reduces (force=sR only)
 
-    def subblocks(self) -> List[Tuple[int, int]]:
-        """Every subblock candidate: each divisor pair of the block dims. No
-        DST-budget filter -- the compiler rejects over-budget ones at compile
-        time and the sweep reports those as invalid."""
+    def subblocks(self) -> List:
+        """Every subblock candidate: each divisor pair of the block dims (or
+        single divisors for rank-1 kinds); the compiler rejects over-budget
+        ones at compile time. Unswept kinds run once with the heuristic
+        (None = no --ttl-force-subblock)."""
+        if not self.swept:
+            return [None]
+        if self.rank == 1:
+            return [(sR,) for sR in _divisors(self.out_rows)]
         return [
             (sR, sC)
             for sR in _divisors(self.out_rows)
@@ -91,18 +112,18 @@ class Kind:
         ]
 
 
-def simple_kind(name, maker, n_tensors, env_prefix):
+def simple_kind(name, maker, n_tensors, env_prefix, default_tiles=8):
     """Kind for an elementwise-style kernel: n same-size ROWxCOL blocks, maker
     taking row/col_tiles_per_block. ROW/COL come from {env_prefix}_ROW/COL_TILES
-    (default 8)."""
-    row = int(os.environ.get(f"{env_prefix}_ROW_TILES", "8"))
-    col = int(os.environ.get(f"{env_prefix}_COL_TILES", "8"))
+    (default ``default_tiles``)."""
+    row = int(os.environ.get(f"{env_prefix}_ROW_TILES", str(default_tiles)))
+    col = int(os.environ.get(f"{env_prefix}_COL_TILES", str(default_tiles)))
 
-    def make_op(sR, sC, fs):
+    def make_op(subblock, fs):
         return maker(
             row_tiles_per_block=row, col_tiles_per_block=col,
             grid=(1, 1), dst_full_sync_en=fs,
-            compiler_options=f"--ttl-force-subblock={sR},{sC}",
+            compiler_options=_force_opt(subblock),
         )
 
     def make_tensors(device):
@@ -111,17 +132,26 @@ def simple_kind(name, maker, n_tensors, env_prefix):
     return Kind(name, row, col, make_op, make_tensors, f"{row}x{col}")
 
 
+def _force_opt(subblock):
+    """--ttl-force-subblock option string, or None for the heuristic. The
+    entry count must match the compute's parallel rank: pairs for elementwise/
+    matmul, 1-tuples for single-dim reduces."""
+    if subblock is None:
+        return None
+    return "--ttl-force-subblock=" + ",".join(str(s) for s in subblock)
+
+
 # ---- matmul: y[M x N] = a[M x K] @ b[K x N], K reduced in DST ----
 _MM_M = int(os.environ.get("MM_M_TILES", "8"))
 _MM_N = int(os.environ.get("MM_N_TILES", "8"))
 _MM_K = int(os.environ.get("MM_K_TILES", "8"))
 
 
-def _mm_make_op(sM, sN, fs):
+def _mm_make_op(subblock, fs):
     return make_single_block_matmul_no_dram(
         m_tiles=_MM_M, n_tiles=_MM_N, k_tiles=_MM_K,
         grid=(1, 1), dst_full_sync_en=fs,
-        compiler_options=f"--ttl-force-subblock={sM},{sN}",
+        compiler_options=_force_opt(subblock),
     )
 
 
@@ -133,16 +163,36 @@ def _mm_tensors(device):
     )
 
 
+def _mm_fused_kind(name, maker, with_bias):
+    """matmul + post-op kind on the matmul geometry (MM_M/N/K env vars)."""
+    def make_op(subblock, fs):
+        return maker(
+            m_tiles=_MM_M, n_tiles=_MM_N, k_tiles=_MM_K,
+            grid=(1, 1), dst_full_sync_en=fs,
+            compiler_options=_force_opt(subblock),
+        )
+
+    def make_tensors(device):
+        ts = [_dram(device, _MM_M, _MM_K), _dram(device, _MM_K, _MM_N)]
+        if with_bias:
+            ts.append(_dram(device, _MM_M, _MM_N))  # c
+        ts.append(_dram(device, _MM_M, _MM_N))      # out
+        return tuple(ts)
+
+    return Kind(name, _MM_M, _MM_N, make_op, make_tensors,
+                f"{_MM_M}x{_MM_N} k={_MM_K}")
+
+
 # ---- bcast_add: out = bcast_col(b) + a; b is a (ROW x 1) tile-column ----
 _BCA_ROW = int(os.environ.get("BCA_ROW_TILES", "8"))
 _BCA_COL = int(os.environ.get("BCA_COL_TILES", "8"))
 
 
-def _bca_make_op(sR, sC, fs):
+def _bca_make_op(subblock, fs):
     return make_single_block_bcast_add_no_dram(
         row_tiles_per_block=_BCA_ROW, col_tiles_per_block=_BCA_COL,
         grid=(1, 1), dst_full_sync_en=fs,
-        compiler_options=f"--ttl-force-subblock={sR},{sC}",
+        compiler_options=_force_opt(subblock),
     )
 
 
@@ -172,4 +222,27 @@ KINDS = {
     "mc_three": simple_kind("mc_three", make_single_block_mc_three_no_dram, 5, "MC"),
     "mc_square": simple_kind("mc_square", make_single_block_mc_square_no_dram, 2, "MC"),
     "mc_branch": simple_kind("mc_branch", make_single_block_mc_branch_no_dram, 4, "MC"),
+    "fill_add": simple_kind("fill_add", make_single_block_fill_add_no_dram, 2, "FILL"),
+    "fill": simple_kind("fill", make_single_block_fill_no_dram, 1, "FILL"),
+    "gdn": simple_kind("gdn", make_single_block_gdn_no_dram, 8, "GDN", default_tiles=4),
+    "matmul_bias": _mm_fused_kind("matmul_bias", make_single_block_matmul_bias_no_dram, True),
+    "matmul_relu": _mm_fused_kind("matmul_relu", make_single_block_matmul_relu_no_dram, False),
+    # Row-reduce (dims=[1]): one parallel dim left, so the force is 1-D (rank=1).
+    "reduce_sum": Kind(
+        "reduce_sum", 8, 8,
+        lambda subblock, fs: make_single_block_reduce_sum_no_dram(
+            row_tiles_per_block=8, col_tiles_per_block=8,
+            grid=(1, 1), dst_full_sync_en=fs, compiler_options=_force_opt(subblock)),
+        lambda device: (_dram(device, 8, 8), _dram(device, 8, 1)),
+        "8x8 -> 8x1", rank=1,
+    ),
+    "reduce_max": Kind(
+        "reduce_max", 8, 8,
+        lambda subblock, fs: make_single_block_reduce_max_no_dram(
+            row_tiles_per_block=8, col_tiles_per_block=8,
+            grid=(1, 1), dst_full_sync_en=fs, compiler_options=_force_opt(subblock)),
+        lambda device: (_dram(device, 8, 8), _dram(device, 8, 1)),
+        "8x8 -> 8x1", rank=1,
+    ),
+    "transpose": simple_kind("transpose", make_single_block_transpose_no_dram, 2, "TRANS"),
 }
