@@ -1156,10 +1156,6 @@ static bool areInMutuallyExclusiveIfRegions(Operation *lhsOp,
 static LogicalResult
 validateMaxLivePosts(const PipeTransferAllocationUnit &unit,
                      int64_t maxLivePosts) {
-  if (unit.rendezvousEvents.size() <= static_cast<size_t>(maxLivePosts)) {
-    return success();
-  }
-
   llvm::MapVector<Block *, SmallVector<PipeTransferRendezvousEvent>>
       eventsByBlock;
   SmallVector<Operation *> postOps;
@@ -1170,16 +1166,18 @@ validateMaxLivePosts(const PipeTransferAllocationUnit &unit,
     eventsByBlock[event.op->getBlock()].push_back(event);
   }
 
-  if (postOps.size() > static_cast<size_t>(maxLivePosts)) {
-    for (size_t lhsIndex = 0; lhsIndex < postOps.size(); ++lhsIndex) {
-      for (size_t rhsIndex = lhsIndex + 1; rhsIndex < postOps.size();
-           ++rhsIndex) {
-        Operation *lhsOp = postOps[lhsIndex];
-        Operation *rhsOp = postOps[rhsIndex];
-        if (lhsOp->getBlock() != rhsOp->getBlock() &&
-            !areInMutuallyExclusiveIfRegions(lhsOp, rhsOp)) {
-          return emitUnsupportedQueueDepth(rhsOp, unit);
-        }
+  if (postOps.size() <= static_cast<size_t>(maxLivePosts)) {
+    return success();
+  }
+
+  for (size_t lhsIndex = 0; lhsIndex < postOps.size(); ++lhsIndex) {
+    for (size_t rhsIndex = lhsIndex + 1; rhsIndex < postOps.size();
+         ++rhsIndex) {
+      Operation *lhsOp = postOps[lhsIndex];
+      Operation *rhsOp = postOps[rhsIndex];
+      if (lhsOp->getBlock() != rhsOp->getBlock() &&
+          !areInMutuallyExclusiveIfRegions(lhsOp, rhsOp)) {
+        return emitUnsupportedQueueDepth(rhsOp, unit);
       }
     }
   }
