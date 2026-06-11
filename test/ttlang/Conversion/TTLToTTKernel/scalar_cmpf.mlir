@@ -79,4 +79,3 @@ module {
     return %cmp : i1
   }
 }
-
