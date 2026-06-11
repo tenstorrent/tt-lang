@@ -288,10 +288,12 @@ struct TTLTileTypecastToTTKernel : OpConversionPattern<TileTypecastOp> {
 
 static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
                                        ConversionPatternRewriter &rewriter) {
-  if (auto *defOp = operand.getDefiningOp()) {
-    if (auto dstVal = getTileOpDstIndex(defOp)) {
-      return *dstVal;
+  FailureOr<DstFootprint> footprint = getDstFootprint(operand);
+  if (succeeded(footprint)) {
+    if (footprint->tileCount == 1) {
+      return footprint->baseIndex;
     }
+    return failure();
   }
   auto idx = getDstIndexFromValue(operand);
   if (idx) {

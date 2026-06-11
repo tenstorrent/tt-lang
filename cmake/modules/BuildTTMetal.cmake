@@ -276,13 +276,21 @@ else()
   endif()
 
   # --- Build ---
+  # Build the ttnn runtime targets, not the default `all`. tt-metal adds
+  # googletest unconditionally (its CPMAddPackage is not guarded by
+  # TT_METAL_BUILD_TESTS), so `all` compiles gtest/gmock even though tt-lang
+  # never builds or runs tt-metal's unit tests. The `ttnn` target transitively
+  # links every runtime library tt-lang consumes (ttnncpp, tt_metal, tt-umd,
+  # tt_stl, tracy, the ttnn_op_* libraries) and produces _ttnn.so/_ttnncpp.so;
+  # gtest is not in its dependency graph. Firmware is built separately via the
+  # precompile-fw target below.
   message(STATUS "Building tt-metal (this may take a while)...")
   execute_process(
     COMMAND ${CMAKE_COMMAND} -E env
       "TT_METAL_RUNTIME_ROOT=${TT_METAL_SOURCE_DIR}"
       "TT_METAL_HOME=${TT_METAL_SOURCE_DIR}"
       "TT_METAL_CACHE=${TTMETAL_BUILD_DIR}/tt-metal-cache"
-      ${CMAKE_COMMAND} --build "${TTMETAL_BUILD_DIR}"
+      ${CMAKE_COMMAND} --build "${TTMETAL_BUILD_DIR}" --target ttnn ttnncpp
     RESULT_VARIABLE _TTMETAL_BUILD_RESULT
   )
 

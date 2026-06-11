@@ -102,7 +102,7 @@ output_value() {
 @test "stable tag push publishes bundled and light when public PyPI is blocked" {
     version_file=$(make_tt_metal_version_file \
         "$TEST_TT_METAL_RC1_TAG" \
-        "$TEST_TT_METAL_RC2_TAG")
+        "$TEST_TT_METAL_NEXT_TAG")
 
     DISPATCH_VERSION_OVERRIDE="" \
     DISPATCH_WHEEL_VARIANT="" \
@@ -121,7 +121,7 @@ output_value() {
 @test "stable tag push publishes only light when public PyPI is aligned" {
     version_file=$(make_tt_metal_version_file \
         "$TEST_TT_METAL_RC2_TAG" \
-        "$TEST_TT_METAL_RC2_TAG")
+        "$TEST_TT_METAL_TAG")
 
     DISPATCH_VERSION_OVERRIDE="" \
     DISPATCH_WHEEL_VARIANT="" \
@@ -139,7 +139,7 @@ output_value() {
 @test "stable manual bundled publish is rejected when public PyPI is aligned" {
     version_file=$(make_tt_metal_version_file \
         "$TEST_TT_METAL_RC2_TAG" \
-        "$TEST_TT_METAL_RC2_TAG")
+        "$TEST_TT_METAL_TAG")
 
     DISPATCH_VERSION_OVERRIDE="1.2.3" \
     DISPATCH_WHEEL_VARIANT=bundled \

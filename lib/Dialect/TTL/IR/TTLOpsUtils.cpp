@@ -5,14 +5,176 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir::tt::ttl {
+
+//===----------------------------------------------------------------------===//
+// DST access interface defaults
+//===----------------------------------------------------------------------===//
+
+static bool isTileValue(Value value) {
+  return isa<ttcore::TileType>(value.getType());
+}
+
+/// A block matmul reports one output slot before block expansion and an `M*N`
+/// range after `LowerMatmulCompute` has replaced tile operands with tensors.
+static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
+  auto lhsType = dyn_cast<RankedTensorType>(op.getLhs().getType());
+  auto rhsType = dyn_cast<RankedTensorType>(op.getRhs().getType());
+  if (!lhsType || !rhsType || lhsType.getRank() < 2 || rhsType.getRank() < 2 ||
+      !lhsType.hasStaticShape() || !rhsType.hasStaticShape()) {
+    return 1;
+  }
+  return lhsType.getDimSize(0) * rhsType.getDimSize(1);
+}
+
+/// Interface defaults assert for missing DST operands because callers use this
+/// after DST assignment, where unresolved tile residency is invalid IR.
+static void appendDstOperandFootprint(SmallVectorImpl<DstFootprint> &footprints,
+                                      Value operand) {
+  if (!isTileValue(operand)) {
+    return;
+  }
+  FailureOr<DstFootprint> footprint = getDstFootprint(operand);
+  assert(succeeded(footprint) && "DST operand has no DST footprint");
+  footprints.push_back(*footprint);
+}
+
+/// Ordinary DST-input tile ops read tile operands from their producer slots.
+/// FPU-eligible strategy-dependent binary ops read from DFBs instead.
+SmallVector<DstFootprint, 2> getDefaultDstReadFootprints(Operation *op) {
+  SmallVector<DstFootprint, 2> footprints;
+  if (isa<CopyTileOp, DstIndexOp>(op)) {
+    return footprints;
+  }
+  if (auto store = dyn_cast<TileStoreOp>(op)) {
+    appendDstOperandFootprint(footprints, store.getTile());
+    return footprints;
+  }
+  if (op->hasTrait<TTLDSTInputsTrait>() ||
+      (op->hasTrait<TTLStrategyDependentBinaryOpTrait>() &&
+       !isFPUEligibleBinaryOp(op))) {
+    for (Value operand : op->getOperands()) {
+      appendDstOperandFootprint(footprints, operand);
+    }
+  }
+  return footprints;
+}
+
+/// Most tile ops write one explicit `dst_index`; block matmul is the current
+/// multi-slot writer and stores only read DST for packing.
+SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
+  if (isa<TileStoreOp, DstIndexOp>(op)) {
+    return {};
+  }
+  if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
+    return {{matmul.getDstIndex(), getMatmulBlockOutputTileCount(matmul)}};
+  }
+  if (auto dstIndex = getTileOpDstIndex(op)) {
+    return {{*dstIndex, 1}};
+  }
+  return {};
+}
+
+/// Result residency is separate from writes so index-like ops can name a DST
+/// slot without emitting a write.
+FailureOr<DstFootprint> getDefaultResultDstFootprint(Operation *op,
+                                                     Value result) {
+  if (!llvm::is_contained(op->getResults(), result) || !isTileValue(result)) {
+    return failure();
+  }
+  if (auto index = dyn_cast<DstIndexOp>(op)) {
+    return DstFootprint{index.getDstIndex(), 1};
+  }
+  if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
+    return DstFootprint{matmul.getDstIndex(),
+                        getMatmulBlockOutputTileCount(matmul)};
+  }
+  if (auto dstIndex = getTileOpDstIndex(op)) {
+    return DstFootprint{*dstIndex, 1};
+  }
+  return failure();
+}
+
+/// Resolve a tile SSA value through its defining op's DST access interface.
+FailureOr<DstFootprint> getDstFootprint(Value value) {
+  Operation *definingOp = value.getDefiningOp();
+  if (!definingOp) {
+    return failure();
+  }
+  auto dstAccess = dyn_cast<DstAccessOpInterface>(definingOp);
+  if (!dstAccess) {
+    return failure();
+  }
+  return dstAccess.getResultDstFootprint(value);
+}
+
+/// Consumers that lower to TTKernel source operands require exactly one
+/// concrete DST slot.
+FailureOr<int64_t> getSingleConstantDstIndex(Value value) {
+  FailureOr<DstFootprint> footprint = getDstFootprint(value);
+  if (failed(footprint) || footprint->tileCount != 1) {
+    return failure();
+  }
+  std::optional<int64_t> index = foldIndexToConstant(footprint->baseIndex);
+  if (!index) {
+    return failure();
+  }
+  return *index;
+}
+
+/// Scheduler hazards operate on concrete slots after DST assignment.
+FailureOr<SmallVector<int64_t>> getConstantDstIndices(DstFootprint footprint) {
+  std::optional<int64_t> base = foldIndexToConstant(footprint.baseIndex);
+  if (!base || footprint.tileCount < 0) {
+    return failure();
+  }
+  SmallVector<int64_t> indices;
+  indices.reserve(footprint.tileCount);
+  for (int64_t offset = 0; offset < footprint.tileCount; ++offset) {
+    indices.push_back(*base + offset);
+  }
+  return indices;
+}
+
+static FailureOr<SmallVector<int64_t>>
+getConstantDstIndices(ArrayRef<DstFootprint> footprints) {
+  SmallVector<int64_t> indices;
+  for (DstFootprint footprint : footprints) {
+    FailureOr<SmallVector<int64_t>> expanded = getConstantDstIndices(footprint);
+    if (failed(expanded)) {
+      return failure();
+    }
+    llvm::append_range(indices, *expanded);
+  }
+  return indices;
+}
+
+FailureOr<SmallVector<int64_t>> getConstantDstReadIndices(Operation *op) {
+  auto dstAccess = dyn_cast<DstAccessOpInterface>(op);
+  if (!dstAccess) {
+    return SmallVector<int64_t>{};
+  }
+  return getConstantDstIndices(dstAccess.getDstReadFootprints());
+}
+
+FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op) {
+  auto dstAccess = dyn_cast<DstAccessOpInterface>(op);
+  if (!dstAccess) {
+    return SmallVector<int64_t>{};
+  }
+  return getConstantDstIndices(dstAccess.getDstWriteFootprints());
+}
 
 //===----------------------------------------------------------------------===//
 // Tile operation classification
 //===----------------------------------------------------------------------===//
 
 TileOpCategory classifyTileOp(Operation *op) {
+  if (isa<DstIndexOp>(op)) {
+    return TileOpCategory::DstIndex;
+  }
   if (isa<CopyTileOp>(op)) {
     return TileOpCategory::CopyTile;
   }
