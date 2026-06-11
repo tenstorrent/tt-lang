@@ -110,7 +110,12 @@ def main():
                 got = from_dev(out_d, card=c)[0]
                 pccs.append(round(torch.corrcoef(
                     torch.stack([got, want]))[0, 1].item(), 5))
-            print(f"layer {L} ({kind}) pcc {pccs}", flush=True)
+            g0 = from_dev(out_d, card=0)[0].double()
+            w0 = want.double()
+            rel_l2 = ((g0 - w0).norm() / w0.norm()).item()
+            magratio = (g0.norm() / w0.norm()).item()
+            print(f"layer {L} ({kind}) pcc {pccs} "
+                  f"relL2={rel_l2:.5f} magratio={magratio:.5f}", flush=True)
             x = want
             x_t[0] = x.to(torch.bfloat16)
             x_d = to_dev(x_t, mesh)

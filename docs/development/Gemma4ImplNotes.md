@@ -131,8 +131,7 @@ to circle back to.
   size, verifiers; no relax flag). Runtime hangs in the flash phase: 60s
   timeout, kill + reset recovers. Debug next via ttlang hang debug flow:
   signposts per phase on q cores; suspect fl/fmask bc1 recurrence or the
-  q tok gate. Known-good single-buffer hang patterns in
-  ~/Downloads/ttl_blaze_examples.md (private; do not cite here).
+  q tok gate. 
 - Hang diagnosis (TT_METAL_WATCHER): worker cores all idle/done (smsg DDDD),
   only dispatch cores wait (UAPW/NWBD) - host-side completion hang, not a CB
   deadlock. Suspect 9x2 grid done-signal counting or read-back. Next: drain
@@ -305,3 +304,34 @@ to circle back to.
   Staging 1 + w drops L0 vs HF golden to 0.84, ~0 by L17 (gibberish);
   raw weights pass 0.9997+ across 6 layers. Per-layer device parity
   cannot catch this class: chain and ref shared the convention.
+- SFPU gelu accuracy (a gemma4 gibberish root cause, with recip elision):
+  ttl.gelu lowered to gelu_tile() = the APPROXIMATE SFPU path (the
+  fast_and_approx template defaults to true, a 6-entry LUT with ~0.02
+  absolute error near x=0). MoE expert gate activations cluster near 0
+  (|g| median 0.19), so 0.02 abs becomes ~0.13 relL2 on the swiglu out;
+  the dominant expert (gate weight 0.43) carries it into the layer out.
+  Random-input / PCC op tests miss it: N(0,1) inputs are large enough to
+  hide the absolute error, and PCC ~0.99 hides a 0.16 relL2. Triage
+  chain (golden-leveraged, floor-subtracted): ref-fed per-layer -> L28
+  bisection (experts dn 0.117 vs ~0.02 attn/dense) -> gate-up matmul
+  clean (0.0156) but swiglu out 0.16 -> device-gu fed into every gelu
+  variant all ~0.16 from a 0.0017 bf16 floor -> input-range sweep showed
+  the error is the near-zero LUT (clean on N(0,1), 0.16 on small gates).
+  Fix: TTKernelToEmitC getTemplateArgs emits gelu_tile<false> /
+  gelu_tile_init<false> (the accurate CDF path = gelu_pytorch_tanh,
+  matching TTNN's default "gelu"). Op rel 0.16 -> 0.0026; L28 experts dn
+  0.117 -> 0.032, layer out 0.079 -> 0.022; full decode tokens for
+  "The capital of France is" go from gibberish to 5/6 exact vs golden.
+  Composing gelu from ttl.tanh in the DSL is not viable: a CB value is
+  popped after its first consumer, so the multi-read tanh expression
+  yields garbage (rel 2.5); the accurate intrinsic is the right fix.
+- pos-5 argmax flip (open): after the gelu fix only pos 5 (deepest, full
+  6-token context) misses. Golden cleanly prefers 31567 over 13391
+  (logit gap 0.61), so it is a real device error, not a near-tie. Two
+  coupled symptoms: post-final-norm xn relL2 grows to 0.26 by pos 5
+  (vs 0.032 at pos 0 -> hidden state drifts with context depth), and the
+  device logits sit at ~66.5 (~8x golden ~7.8) bf16-quantized to 0.5
+  steps, collapsing the 0.61 gap to a tie that softcap-30 then saturates.
+  Next: bisect which layer the pos-5 hidden drift enters (globals L5/11/
+  17/23/29 + last layer feed xn directly) and check whether the lm_head
+  applies a spurious scale (device xn5 @ embed^T vs device logits).

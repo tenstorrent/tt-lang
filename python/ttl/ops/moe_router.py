@@ -121,12 +121,18 @@ def make_moe_scale(Dt, t, recip=False):
         ttl.copy(x[t:t + 1, 0:Dt], xd)
         sd = s_cb.reserve()
         ttl.copy(s[0:1, t:t + 1], sd)
-        sb = s_cb.wait()
-        if recip:
-            sb = ttl.recip(sb)
         xb = x_cb.wait()
         ow = out_cb.reserve()
-        ow.store(ttl.mul(xb, ttl.block.broadcast(sb, dims=[1], shape=xb.shape)))
+        # recip must stay inlined in the store: a standalone ``recip`` whose
+        # only consumer is a broadcast is elided (the value reaches mul
+        # un-reciprocated). Two branches because a ternary call arg fails to
+        # trace.
+        if recip:
+            ow.store(ttl.mul(xb, ttl.block.broadcast(
+                ttl.recip(s_cb.wait()), dims=[1], shape=xb.shape)))
+        else:
+            ow.store(ttl.mul(xb, ttl.block.broadcast(
+                s_cb.wait(), dims=[1], shape=xb.shape)))
         ttl.copy(out_cb.wait(), out[t:t + 1, 0:Dt])
 
     return moe_scale
