@@ -4,6 +4,8 @@
 
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
+#include "ttlang/Dialect/Utils/ConversionUtils.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -17,35 +19,6 @@ namespace mlir::tt::ttl {
 namespace {
 
 namespace ttk = mlir::tt::ttkernel;
-
-/// Resolve a float-typed SSA value to its underlying signless integer bit
-/// pattern. Two sources are handled:
-///   1. unrealized_conversion_cast(iN -> fN) from RawElementReadLowering.
-///   2. arith.constant <float> -- materializes the bit pattern as an integer.
-/// Returns a null Value on failure.
-static Value resolveIntBits(Value floatVal, unsigned bitWidth,
-                            OpBuilder &builder, Location loc) {
-  if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (cast.getInputs().size() == 1) {
-      Value src = cast.getInputs()[0];
-      if (auto intTy = dyn_cast<IntegerType>(src.getType())) {
-        if (intTy.getWidth() == bitWidth && intTy.isSignless()) {
-          return src;
-        }
-      }
-    }
-  }
-
-  if (auto constOp = floatVal.getDefiningOp<arith::ConstantOp>()) {
-    if (auto floatAttr = dyn_cast<FloatAttr>(constOp.getValue())) {
-      APInt bits = floatAttr.getValue().bitcastToAPInt();
-      return arith::ConstantIntOp::create(builder, loc, bits.getZExtValue(),
-                                          bits.getBitWidth());
-    }
-  }
-
-  return Value();
-}
 
 struct TTLLowerScalarCmpFPass
     : impl::TTLLowerScalarCmpFBase<TTLLowerScalarCmpFPass> {
@@ -72,11 +45,14 @@ struct TTLLowerScalarCmpFPass
 
       OpBuilder builder(cmpOp);
       Location loc = cmpOp.getLoc();
+      auto intTy = IntegerType::get(builder.getContext(), bitWidth);
 
-      Value lhsInt = resolveIntBits(cmpOp.getLhs(), bitWidth, builder, loc);
-      Value rhsInt = resolveIntBits(cmpOp.getRhs(), bitWidth, builder, loc);
+      auto lhsInt =
+          utils::materializeIntBits(cmpOp.getLhs(), intTy, builder, loc);
+      auto rhsInt =
+          utils::materializeIntBits(cmpOp.getRhs(), intTy, builder, loc);
 
-      if (!lhsInt || !rhsInt) {
+      if (failed(lhsInt) || failed(rhsInt)) {
         cmpOp.emitOpError(
             "could not resolve float operand to integer bit pattern; "
             "operands must come from raw_element_read or float constants");
@@ -91,20 +67,20 @@ struct TTLLowerScalarCmpFPass
       case arith::CmpFPredicate::OGT: {
         if (bitWidth == 32) {
           result = ttk::Float32GreaterOp::create(
-              builder, loc, builder.getI1Type(), lhsInt, rhsInt);
+              builder, loc, builder.getI1Type(), *lhsInt, *rhsInt);
         } else {
           result = ttk::Bfloat16GreaterOp::create(
-              builder, loc, builder.getI1Type(), lhsInt, rhsInt);
+              builder, loc, builder.getI1Type(), *lhsInt, *rhsInt);
         }
         break;
       }
       case arith::CmpFPredicate::OLT: {
         if (bitWidth == 32) {
           result = ttk::Float32GreaterOp::create(
-              builder, loc, builder.getI1Type(), rhsInt, lhsInt);
+              builder, loc, builder.getI1Type(), *rhsInt, *lhsInt);
         } else {
           result = ttk::Bfloat16GreaterOp::create(
-              builder, loc, builder.getI1Type(), rhsInt, lhsInt);
+              builder, loc, builder.getI1Type(), *rhsInt, *lhsInt);
         }
         break;
       }

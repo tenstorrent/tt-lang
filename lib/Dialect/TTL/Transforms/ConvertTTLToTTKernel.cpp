@@ -1260,47 +1260,6 @@ resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
   return utils::convertTTLCBToTTKernel(origCB, rewriter, loc, typeConverter);
 }
 
-/// Materialize an i32/i16 integer value from a float-typed SSA value.
-/// Handles three cases (checked in order):
-///  1. arith.truncf (e.g. f32 -> bf16) -- recursively materialize the wider
-///     source bits, then extract the upper target-width bits via shift+trunc.
-///     bf16 is the upper 16 bits of the f32 IEEE-754 encoding.
-///  2. unrealized_conversion_cast(iN -> fN) from a prior RawElementReadLowering
-///     -- unwrap to get the integer directly.
-///  3. arith.constant float -- create the integer bit pattern.
-static Value materializeIntBits(Value floatVal, Type intTy,
-                                ConversionPatternRewriter &rewriter,
-                                Location loc) {
-  if (auto truncOp = floatVal.getDefiningOp<arith::TruncFOp>()) {
-    Value src = truncOp.getOperand();
-    unsigned srcWidth = src.getType().getIntOrFloatBitWidth();
-    unsigned dstWidth = floatVal.getType().getIntOrFloatBitWidth();
-    auto srcIntTy = IntegerType::get(rewriter.getContext(), srcWidth);
-    Value srcBits = materializeIntBits(src, srcIntTy, rewriter, loc);
-    if (!srcBits) {
-      return Value();
-    }
-    Value shift = arith::ConstantIntOp::create(rewriter, loc,
-                                               srcWidth - dstWidth, srcWidth);
-    Value shifted = arith::ShRUIOp::create(rewriter, loc, srcBits, shift);
-    return arith::TruncIOp::create(rewriter, loc, intTy, shifted);
-  }
-  if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (cast.getInputs().size() == 1 &&
-        cast.getInputs()[0].getType() == intTy) {
-      return cast.getInputs()[0];
-    }
-  }
-  if (auto constOp = floatVal.getDefiningOp<arith::ConstantOp>()) {
-    if (auto floatAttr = mlir::dyn_cast<FloatAttr>(constOp.getValue())) {
-      APInt bits = floatAttr.getValue().bitcastToAPInt();
-      return arith::ConstantIntOp::create(rewriter, loc, bits.getZExtValue(),
-                                          bits.getBitWidth());
-    }
-  }
-  return Value();
-}
-
 struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1351,8 +1310,9 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
       return rewriter.notifyMatchFailure(op, "block does not trace to a CB");
     }
 
-    Value intVal = materializeIntBits(adaptor.getValue(), intTy, rewriter, loc);
-    if (!intVal) {
+    auto intVal =
+        utils::materializeIntBits(adaptor.getValue(), intTy, rewriter, loc);
+    if (failed(intVal)) {
       return rewriter.notifyMatchFailure(
           op, "could not materialize integer bits from float value");
     }
@@ -1361,7 +1321,7 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
         emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
                            elemWidth, rewriter, loc);
 
-    ttk::StoreToL1Op::create(rewriter, loc, intVal, l1Ptr, offset);
+    ttk::StoreToL1Op::create(rewriter, loc, *intVal, l1Ptr, offset);
     rewriter.eraseOp(op);
     return success();
   }
