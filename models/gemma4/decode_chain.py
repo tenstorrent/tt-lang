@@ -446,30 +446,31 @@ class DecodeChain:
         bn = 4 if (self.V // TILE) % 32 == 0 else 1
         atom(make_gemv, TILE, H, self.V, (8, 2), bn)(self.xn, self.lm, self.logits)
 
-        n = self.n_chunks
-        atom(make_binary, "add", 1, 1, self.V // TILE, 8)(
-            self.logits, self.lbias, self.logits)
-        atom(make_restack, n)(self.logits, self.tall)
-        atom(make_topk, n, 1, CHUNK // TILE, 1, CHUNK)(self.tall, self.ramp256, self.vals, self.ids)
-        atom(make_collapse, n)(self.vals, self.cw)
-        atom(make_collapse, n, out_row=1)(self.ids, self.stage)
-        atom(make_topk, 1, 1, self.nt, 1, self.nt * TILE)(self.cw, self.rampn, self.wv, self.wi)
-        atom(make_elem_copy, out_row=2 * TILE)(self.wi, self.stage)
-        atom(make_token_select, n)(self.stage, self.zero, self.tok_a, self.tok_b)
-        if self.tp == 1:
-            # Kept for single-card testing.
-            atom(make_add_f32, 1, 1, 1, 1)(self.tok_a, self.tok_b, self.tok)
-        else:
-            atom(make_add_f32, 1, 1, 1, 1)(self.tok_a, self.tok_b, self.tok_l)
-            atom(make_add_f32, 1, 1, 1, 1)(self.tok_l, self.base, self.cand)
-            atom(make_elem_copy)(self.wv, self.pck)
-            atom(make_elem_copy, out_col=TILE, width=2)(self.cand, self.pck)
-            g = ttnn.all_gather(self.pck, dim=0)
-            atom(make_collapse, self.tp)(g, self.gw)
-            atom(make_topk, 1, 1, 1, 1, TILE)(self.gw, self.ramp_tp, self.gv, self.gc)
-            atom(make_elem_copy, out_col=2 * TILE)(self.gc, g)
-            atom(make_pick_token, self.tp)(g, self.zero, self.tok)
-            ttnn.deallocate(g)
+        # Next-token argmax via ttnn (once per token).
+        # TODO(ttl-argmax): restore the device-resident ttl argmax
+        # (make_restack/make_topk/make_collapse/make_token_select/
+        # make_pick_token in ops/argmax.py, with the self.tall/vals/ids/cw/
+        # stage/pck/gw buffers) once it is precision-clean. That path keeps the
+        # token on device with no CCL, but it adds a +64 logit bias and compares
+        # bf16 logits, so at magnitude 64 (bf16 ULP 0.5) it ties close logits and
+        # mispicks the deepest token. ttnn.argmax tracks the index as a separate
+        # uint32 and compares natively (correct), at the cost of one
+        # once-per-token all_gather CCL cut. Mechanics proven in
+        # /tmp/test_ttnn_argmax.py.
+        full = ttnn.all_gather(self.logits, dim=1) if self.tp > 1 else self.logits
+        rm = ttnn.untilize(full, use_multicore=True)
+        idx = ttnn.argmax(rm, dim=-1, keepdim=True, use_multicore=True)
+        ttnn.deallocate(rm)
+        if full is not self.logits:
+            ttnn.deallocate(full)
+        kf = ttnn.to_layout(ttnn.typecast(idx, ttnn.float32), ttnn.TILE_LAYOUT)
+        ttnn.deallocate(idx)
+        row, col = ttnn.floor_div(kf, 32.0), ttnn.remainder(kf, 32.0)
+        ttnn.deallocate(kf)
+        atom(make_elem_copy)(row, self.tok)
+        atom(make_elem_copy, out_col=1)(col, self.tok)
+        ttnn.deallocate(row)
+        ttnn.deallocate(col)
         st.advance()
 
     def read_token(self):

@@ -325,13 +325,34 @@ to circle back to.
   Composing gelu from ttl.tanh in the DSL is not viable: a CB value is
   popped after its first consumer, so the multi-read tanh expression
   yields garbage (rel 2.5); the accurate intrinsic is the right fix.
-- pos-5 argmax flip (open): after the gelu fix only pos 5 (deepest, full
-  6-token context) misses. Golden cleanly prefers 31567 over 13391
-  (logit gap 0.61), so it is a real device error, not a near-tie. Two
-  coupled symptoms: post-final-norm xn relL2 grows to 0.26 by pos 5
-  (vs 0.032 at pos 0 -> hidden state drifts with context depth), and the
-  device logits sit at ~66.5 (~8x golden ~7.8) bf16-quantized to 0.5
-  steps, collapsing the 0.61 gap to a tie that softcap-30 then saturates.
-  Next: bisect which layer the pos-5 hidden drift enters (globals L5/11/
-  17/23/29 + last layer feed xn directly) and check whether the lm_head
-  applies a spurious scale (device xn5 @ embed^T vs device logits).
+- pos-5 argmax flip: after the gelu fix only pos 5 (deepest context)
+  missed, picking 13391 over golden 31567 (golden gap 0.61). Root cause
+  was the +64 logit bias (self.lbias), not an 8x scale and not the hidden
+  state: the ~66.5 device logits are raw ~2.5 logits plus the +64 bias,
+  and bf16 ULP at magnitude 64 is 0.5, so close logits quantize into a
+  tie that argmax then breaks arbitrarily.
+  Decisive triage (the principled split): feed the DEVICE's own
+  post-final-norm xn5 through an exact f64 lm_head on host (gB). gB picks
+  31567 at +0.41 margin, so the hidden state is fine despite its relL2
+  0.26 (relL2/PCC do not decide discrete selection; only exact-arithmetic
+  argmax on the device hidden state does). bf16(gB + 64) reproduces the
+  device tie bit for bit (top6 2.5,2.5,2.0,... matches the read-back),
+  and bf16(gB) with no bias picks 31567. So the bias is the sole cause.
+  But dropping the +64 bias alone REGRESSED the chain to 2/6 (pos 0 picked
+  the wrong card, pos 4 was off by 64): the hand-rolled tail's per-chunk
+  topk and cross-card merge depend on the positive-bias magnitude in
+  non-obvious ways the flat host sim never models. So the ttl argmax tail
+  is fragile beyond just the bias, and a host argmax sim is not a faithful
+  model of it (the exact discrete-selection trap: never trust a host sim
+  for the device argmax path, test the path itself).
+  Fix taken (bringup): swap the tail for ttnn.argmax, which tracks the
+  index as a separate uint32 and compares natively, so it is correct with
+  no bias and no packing. all_gather the per-card V/4 logits to the full
+  vocab, untilize, ttnn.argmax(dim=-1), then floor_div/remainder (32) to
+  the tiled (token//32, token%32) the embed gather consumes, placed into
+  the tok tile with make_elem_copy. One once-per-token all_gather CCL cut
+  (sanctioned), mechanics proven in /tmp/test_ttnn_argmax.py.
+  TODO(ttl-argmax): make the device-resident ttl argmax precision-clean
+  (likely an f32 value path through restack/topk/collapse so no bias is
+  needed, operators.matmul_f32 for f32 logits) and restore it to drop the
+  CCL. ttnn.argmax is the bringup shortcut, not the end state.
