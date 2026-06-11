@@ -10,6 +10,7 @@ E/4 per card, router and global K replicated.
 """
 
 import json
+import os
 from pathlib import Path
 
 import torch
@@ -35,11 +36,34 @@ class Checkpoint:
 
 
 def norm(ckpt, layer, name):
-    return 1 + ckpt.get(f"{PRE}.layers.{layer}.{name}.weight")
+    # Gemma4 RMSNorm weights are raw (init ones), not the Gemma2 (1 + w) form.
+    return ckpt.get(f"{PRE}.layers.{layer}.{name}.weight")
+
+
+def cache_path(layer, card):
+    root = os.environ.get("GEMMA4_WEIGHT_CACHE")
+    return Path(root) / f"layer{layer}_card{card}.pt" if root else None
 
 
 def layer_weights(ckpt, cfg, layer, card):
-    """Per-card weight dict for SlidingChain/GlobalChain + FFNChain."""
+    """Per-card weight dict for SlidingChain/GlobalChain + FFNChain.
+
+    GEMMA4_WEIGHT_CACHE caches the dict to disk in bf16 (the dtype to_dev
+    stages anyway), skipping safetensors reads and TP slicing on rerun.
+    """
+    path = cache_path(layer, card)
+    if path is not None and path.exists():
+        w = torch.load(path)
+        return {k: v.float() if torch.is_tensor(v) else v for k, v in w.items()}
+    w = _layer_weights(ckpt, cfg, layer, card)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({k: v.bfloat16() if torch.is_tensor(v) else v
+                    for k, v in w.items()}, path)
+    return w
+
+
+def _layer_weights(ckpt, cfg, layer, card):
     L = f"{PRE}.layers.{layer}"
     H = cfg.hidden
     is_global = cfg.layer_type(layer) == "global"
@@ -54,8 +78,8 @@ def layer_weights(ckpt, cfg, layer, card):
         "g_preffw2": norm(ckpt, layer, "pre_feedforward_layernorm_2"),
         "g_postffw2": norm(ckpt, layer, "post_feedforward_layernorm_2"),
         "g_postffw": norm(ckpt, layer, "post_feedforward_layernorm"),
-        "q_norm": 1 + ckpt.get(f"{L}.self_attn.q_norm.weight"),
-        "k_norm": 1 + ckpt.get(f"{L}.self_attn.k_norm.weight"),
+        "q_norm": ckpt.get(f"{L}.self_attn.q_norm.weight"),
+        "k_norm": ckpt.get(f"{L}.self_attn.k_norm.weight"),
         "layer_scalar": ckpt.get(f"{L}.layer_scalar").item(),
         "router_w": ckpt.get(f"{L}.router.proj.weight"),
         "router_scale": ckpt.get(f"{L}.router.scale"),
@@ -101,4 +125,4 @@ def layer_weights(ckpt, cfg, layer, card):
 
 
 def embed_weights(ckpt):
-    return ckpt.get(f"{PRE}.embed_tokens.weight"), 1 + ckpt.get(f"{PRE}.norm.weight")
+    return ckpt.get(f"{PRE}.embed_tokens.weight"), ckpt.get(f"{PRE}.norm.weight")
