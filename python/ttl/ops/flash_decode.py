@@ -97,7 +97,8 @@ def make_flash_window_core(PNHt, Sk_chunk_t, vDHt, N_CHUNKS, scale=1.0):
     return flash_window_core
 
 
-def make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0, col_stride=None):
+def make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0, col_stride=None,
+                           v_bufs=2):
     St_per_core = Sk_chunk_t * N_CHUNKS if col_stride is None else col_stride
     window_core = make_flash_window_core(PNHt, Sk_chunk_t, vDHt, N_CHUNKS, scale)
 
@@ -106,7 +107,7 @@ def make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0, 
         col_c, row_c = ttl.node(dims=2)
 
         k_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, DHt), block_count=2)
-        v_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, vDHt), block_count=2)
+        v_cb = ttl.make_dataflow_buffer_like(k, shape=(Sk_chunk_t, vDHt), block_count=v_bufs)
         mask_cb = ttl.make_dataflow_buffer_like(masks, shape=(PNHt, Sk_chunk_t), block_count=2)
 
         k_base = col_c * St_per_core
@@ -205,9 +206,10 @@ def make_flash_decode_kev_core(B, PNHt, DHt, Sk_chunk_t, N_CHUNKS, scale=1.0, co
     return flash_decode_kev_core
 
 
-def make_flash_decode(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0):
-    """Standalone masked decode shard (K and V streams)."""
-    core = make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale)
+def make_flash_decode(n_cols, B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale=1.0, v_bufs=2):
+    """Standalone masked decode shard (K and V streams). ``v_bufs=1`` single
+    buffers the V stream when the doubled K+V footprint exceeds L1."""
+    core = make_flash_decode_core(B, PNHt, DHt, vDHt, Sk_chunk_t, N_CHUNKS, scale, v_bufs=v_bufs)
 
     @ttl.atom(grid=(n_cols, B))
     def flash_decode(q, k, v, masks, out_o, out_m, out_l):

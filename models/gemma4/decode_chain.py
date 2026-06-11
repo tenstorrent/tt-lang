@@ -17,13 +17,14 @@ import ttnn
 import ttl  # noqa: F401  (kept first for runtime init)
 from ttl.ops.argmax import (CHUNK, make_collapse, make_elem_copy,
                             make_pick_token, make_restack, make_token_select)
-from ttl.ops.elementwise import make_add, make_binary, make_copy, make_row_scale
+from ttl.ops.elementwise import make_add, make_binary, make_copy
 from ttl.ops.embed_gather import make_embed_gather
-from ttl.ops.flash_decode import make_flash_decode_kev
+from ttl.ops.flash_decode import make_flash_decode
 from ttl.ops.gemv import make_gemv
 from ttl.ops.indexed_gemv import make_indexed_gemv
 from ttl.ops.kv_append import make_kv_append
-from ttl.ops.moe_router import make_idx_gather, make_moe_weights, make_softmax_row
+from ttl.ops.moe_router import (make_idx_gather, make_moe_scale,
+                                make_moe_weights, make_softmax_row)
 from ttl.ops.pos_slice import make_pos_slice, make_pos_step
 from ttl.ops.rmsnorm import make_rmsnorm
 from ttl.ops.rope import make_rope
@@ -57,7 +58,9 @@ def make_add_f32(*args, **kwargs):
     return make_add(*args, **kwargs)
 
 
-def buf(device, n, rows=TILE):
+def buf(device, n, rows=TILE, dtype=None):
+    if dtype is not None:
+        return to_dev(torch.zeros(rows, n), device, dtype)
     return to_dev(torch.zeros(rows, n, dtype=torch.bfloat16), device)
 
 
@@ -131,7 +134,7 @@ class FFNChain:
         self.hn = buf(device, H)
         self.hr, self.rl, self.probs = buf(device, H), buf(device, self.Etot), buf(device, self.Etot)
         self.vals, self.idx, self.wts = (buf(device, K * TILE) for _ in range(3))
-        self.idx_l = buf(device, K * TILE)
+        self.idx_l, self.zero = buf(device, K * TILE), buf(device, K * TILE)
         self.g, self.u, self.act = buf(device, P), buf(device, P), buf(device, P)
         self.dense, self.h1, self.hn2, self.h2 = (buf(device, H) for _ in range(4))
         self.gu = buf(device, 2 * I, K * TILE)
@@ -151,7 +154,7 @@ class FFNChain:
         atom(make_gemv, TILE, H, self.Etot, (1, 2), 1)(self.hr, self.w_router, self.rl)
         atom(make_softmax_row, Et)(self.rl, self.probs)
         atom(make_topk, 1, 1, Et, K, self.Etot)(self.probs, self.ramp, self.vals, self.idx)
-        atom(make_moe_weights, K, Et)(self.vals, self.idx, self.pe, self.wts)
+        atom(make_moe_weights, K, Et)(self.vals, self.idx, self.pe, self.zero, self.wts)
         atom(make_idx_gather, K, Et)(self.idx, self.lut, self.idx_l)
 
         norm(h_d, self.g_preffw, self.hn)
@@ -167,8 +170,7 @@ class FFNChain:
         for t in range(K):
             atom(make_swiglu, 1, 1, It, It,
                  a_off=(t, 0), b_off=(t, It), out_off=(t, 0))(self.gu, self.gu, self.eact)
-            atom(make_row_scale, self.I, It, a_row=t, s_col=t, out_row=t)(
-                self.eact, self.wts, self.eact)
+            atom(make_moe_scale, It, t)(self.eact, self.wts, self.eact)
         for t in range(K):
             atom(make_indexed_gemv, E, self.I, H, 1, (11, 2), 4,
                  x_row=t, idx_col=t * TILE, out_row=t)(
@@ -267,8 +269,13 @@ class GlobalChain:
         self.w_o = shard_cards([c["w_o"] for c in ws], device)
         self.g_postattn = row(w["g_postattn"], H, device)
         self.caches = [buf(device, D, ctx) for _ in range(self.kvh)]
+        # HF global attn: V = unscaled v_norm of the raw K projection, no
+        # rope or k_norm, so K and V need separate caches.
+        self.vcaches = [buf(device, D, ctx) for _ in range(self.kvh)]
+        self.v_one = row(torch.ones(D), D, device)
         self.xn, self.q, self.k = buf(device, H), buf(device, self.qh * D), buf(device, self.kvh * D)
         self.hd, self.hh, self.hr = (buf(device, D) for _ in range(3))
+        self.hv = buf(device, D)
         self.o, self.of = buf(device, D), buf(device, D)
         self.m, self.l = buf(device, TILE), buf(device, TILE)
         self.a_row, self.attn = buf(device, self.qh * D), buf(device, H)
@@ -292,13 +299,17 @@ class GlobalChain:
         atom(make_gemv, TILE, H, self.kvh * D, (8, 2), 2)(self.xn, self.w_k, self.k)
 
         for kv in range(self.kvh):
+            atom(make_copy, 1, 1, Dt, Dt, a_off=(0, kv * Dt))(self.k, self.hd)
+            atom(make_rmsnorm, 1, 1, Dt, Dt, self.D, cfg.eps)(self.hd, self.v_one, self.hv)
+            atom(make_kv_append, S // TILE, Dt)(self.vcaches[kv], self.hv, st.pos_abs, self.vcaches[kv])
             kr = self.head_rot(self.k, kv, self.k_norm)
             atom(make_kv_append, S // TILE, Dt)(self.caches[kv], kr, st.pos_abs, self.caches[kv])
         for h in range(self.qh):
             qr = self.head_rot(self.q, h, self.q_norm)
-            atom(make_flash_decode_kev, 1, 1, 1, Dt, 8, S // chunk)(
-                qr, self.caches[h // (self.qh // self.kvh)], st.mask_gl, self.o, self.m, self.l)
-            atom(make_row_scale, Dt, 8, recip=True)(self.o, self.l, self.of)
+            g = h // (self.qh // self.kvh)
+            atom(make_flash_decode, 1, 1, 1, Dt, Dt, 8, S // chunk, v_bufs=1)(
+                qr, self.caches[g], self.vcaches[g], st.mask_gl, self.o, self.m, self.l)
+            atom(make_moe_scale, Dt, 0, recip=True)(self.o, self.l, self.of)
             atom(make_copy, 1, 1, Dt, Dt, out_off=(0, h * Dt))(self.of, self.a_row)
 
         atom(make_gemv, TILE, self.qh * D, H, (11, 2), 4)(self.a_row, self.w_o, self.attn)
@@ -381,6 +392,10 @@ class DecodeChain:
         self.logits = buf(device, self.V)
         self.tok = to_dev(torch.zeros(TILE, TILE), device, ttnn.float32)
 
+        # topk packs [val|idx]: ordering needs positive values. Logits cap
+        # at softcap 30, so +64 keeps argmax order (bf16 ULP at 64 = 0.5).
+        self.lbias = to_dev(torch.full((TILE, self.V), 64.0, dtype=torch.bfloat16),
+                            device)
         self.tall = buf(device, CHUNK, self.n_chunks * TILE)
         self.vals = buf(device, TILE, self.n_chunks * TILE)
         self.ids = buf(device, TILE, self.n_chunks * TILE)
@@ -432,6 +447,8 @@ class DecodeChain:
         atom(make_gemv, TILE, H, self.V, (8, 2), bn)(self.xn, self.lm, self.logits)
 
         n = self.n_chunks
+        atom(make_binary, "add", 1, 1, self.V // TILE, 8)(
+            self.logits, self.lbias, self.logits)
         atom(make_restack, n)(self.logits, self.tall)
         atom(make_topk, n, 1, CHUNK // TILE, 1, CHUNK)(self.tall, self.ramp256, self.vals, self.ids)
         atom(make_collapse, n)(self.vals, self.cw)

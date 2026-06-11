@@ -121,7 +121,7 @@ class TorchLayer:
         kvh = cfg.kv_heads if kind == "sliding" else cfg.global_kv_heads
         self.D, self.S, self.kvh = D, S, kvh
         self.kc = [torch.zeros(S, D) for _ in range(kvh)]
-        self.vc = [torch.zeros(S, D) for _ in range(kvh)] if kind == "sliding" else self.kc
+        self.vc = [torch.zeros(S, D) for _ in range(kvh)]
 
     def attn(self, x, pos):
         w, cfg, D = self.w, self.cfg, self.D
@@ -136,11 +136,16 @@ class TorchLayer:
         slot = pos % self.S if self.kind == "sliding" else pos
         for i in range(self.kvh):
             self.kc[i][slot] = k[i]
+        # v_norm is unscaled (with_scale=False); global layers take V from
+        # the raw K projection, no rope or k_norm.
         if self.kind == "sliding":
             v = [rms(xn @ w["wv_f"][h * D:(h + 1) * D].T, w["v_norm"], eps)
                  for h in range(self.kvh)]
-            for i in range(self.kvh):
-                self.vc[i][slot] = v[i]
+        else:
+            v = [rms(xn @ w["wk_f"][h * D:(h + 1) * D].T, 1.0, eps)
+                 for h in range(self.kvh)]
+        for i in range(self.kvh):
+            self.vc[i][slot] = v[i]
         mask = torch.full((self.S,), float("-inf"))
         mask[:min(pos + 1, self.S)] = 0.0
         outs = []
