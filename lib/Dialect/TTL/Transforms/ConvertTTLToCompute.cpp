@@ -775,9 +775,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           if (!accTile) {
             return nullptr;
           }
-          if (!isa<BlockArgument>(accTile)) {
-            return nullptr;
-          }
           // The folded matmul's tile result represents the AddOp's result,
           // so derive the tile type from the add op rather than the final
           // sink type. This keeps mid-chain accumulator dtype distinct from

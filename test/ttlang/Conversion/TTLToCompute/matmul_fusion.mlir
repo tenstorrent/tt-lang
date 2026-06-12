@@ -418,17 +418,18 @@ func.func @matmul_add_non_square() attributes {ttl.base_cta_index = 4 : i32, ttl
 
 // -----
 
-// Matmul+add does not fold when the addend is produced by another tile op.
-// The 3-operand matmul form requires the accumulator to trace to a compute
-// input; a computed addend lowers as tile_mul followed by tile_add.
+// Matmul+add folds even when the addend is produced by another tile op: the
+// computed scaled value becomes the matmul accumulator, so add+matmul collapse
+// to a single 3-operand tile_matmul_block (DST += A*B onto the prefilled
+// scaled value) with no explicit tile_add.
 
 // CHECK-LABEL: func.func @matmul_add_computed_addend
 // CHECK:         ttl.compute
 // CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
 // CHECK:      %[[SCALED:.*]] = ttl.tile_mul
-// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %{{.*}}, %{{.*}} into dst
-// CHECK:      %[[SUM:.*]] = ttl.tile_add %[[MM]], %[[SCALED]]
-// CHECK:      ttl.tile_store %[[SUM]]
+// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %{{.*}}, %{{.*}}, %[[SCALED]] into dst
+// CHECK-NOT:  ttl.tile_add
+// CHECK:      ttl.tile_store %[[MM]]
 func.func @matmul_add_computed_addend() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
