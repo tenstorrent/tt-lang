@@ -3,14 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Install-test S3 tt-lang-light wheels under the manylinux_2_34 builder images.
-#
-# Usage:
-#   test-s3-light-wheels.sh --version <version> [options]
-#
-# Options:
-#   --python-tags cp310,cp312  Python ABI tags to test. Default: cp310,cp312.
-#   --docker-tag <tag>         Builder image tag. Default: current Docker tag.
-#   --dist-dir <dir>           Wheel directory. Default: dist.
 
 set -eu
 
@@ -20,7 +12,14 @@ DOCKER_TAG=""
 DIST_DIR=dist
 
 usage() {
-    sed -n '2,14p' "$0" >&2
+    cat >&2 <<'EOF'
+Usage: test-s3-light-wheels.sh --version <version> [options]
+
+Options:
+  --python-tags cp310,cp312  Python ABI tags to test. Default: cp310,cp312.
+  --docker-tag <tag>         Builder image tag. Default: current Docker tag.
+  --dist-dir <dir>           Wheel directory. Default: dist.
+EOF
     exit 2
 }
 

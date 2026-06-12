@@ -1,9 +1,8 @@
 core.*
 .local
-**/build*
-!.github/scripts/build-s3-light-core-wheel.sh
-!.github/scripts/build-s3-light-metapackage-wheel.sh
-!scripts/build-s3-light-wheels-local.sh
+/build/
+/build-*/
+/test/**/build/
 _plans/
 third_party/tt-metal
 third_party/ttnn-python

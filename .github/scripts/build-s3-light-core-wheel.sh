@@ -3,15 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Build one S3 tt-lang-light core wheel inside a manylinux_2_34 builder image.
-#
-# Usage:
-#   build-s3-light-core-wheel.sh --python-tag cp310|cp312 --version <version> [options]
-#
-# Options:
-#   --build-dir <dir>                    CMake build directory. Default: build-<python-tag>.
-#   --raw-dir <dir>                      Unrepaired wheel directory. Default: dist-raw-<python-tag>.
-#   --dist-dir <dir>                     Final wheel directory. Default: dist.
-#   --allow-final-internal-version       Allow final release versions for internal light wheels.
 
 set -eu
 
@@ -23,7 +14,15 @@ DIST_DIR=dist
 ALLOW_FINAL_INTERNAL_VERSION="${TTLANG_ALLOW_FINAL_INTERNAL_VERSION:-false}"
 
 usage() {
-    sed -n '2,16p' "$0" >&2
+    cat >&2 <<'EOF'
+Usage: build-s3-light-core-wheel.sh --python-tag cp310|cp312 --version <version> [options]
+
+Options:
+  --build-dir <dir>               CMake build directory. Default: build-<python-tag>.
+  --raw-dir <dir>                 Unrepaired wheel directory. Default: dist-raw-<python-tag>.
+  --dist-dir <dir>                Final wheel directory. Default: dist.
+  --allow-final-internal-version  Allow final release versions for internal light wheels.
+EOF
     exit 2
 }
 

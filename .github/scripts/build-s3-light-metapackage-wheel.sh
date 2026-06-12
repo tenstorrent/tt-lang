@@ -3,13 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Build the pure-Python tt-lang-light metapackage wheel.
-#
-# Usage:
-#   build-s3-light-metapackage-wheel.sh --version <version> [options]
-#
-# Options:
-#   --dist-dir <dir>                     Final wheel directory. Default: dist.
-#   --allow-final-internal-version       Allow final release versions for internal light wheels.
 
 set -eu
 
@@ -18,7 +11,13 @@ DIST_DIR=dist
 ALLOW_FINAL_INTERNAL_VERSION="${TTLANG_ALLOW_FINAL_INTERNAL_VERSION:-false}"
 
 usage() {
-    sed -n '2,13p' "$0" >&2
+    cat >&2 <<'EOF'
+Usage: build-s3-light-metapackage-wheel.sh --version <version> [options]
+
+Options:
+  --dist-dir <dir>                Final wheel directory. Default: dist.
+  --allow-final-internal-version  Allow final release versions for internal light wheels.
+EOF
     exit 2
 }
 
