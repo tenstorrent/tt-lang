@@ -96,7 +96,7 @@ done
 
 mkdir -p "$OUTPUT_DIR"
 output_dir="$(cd "$OUTPUT_DIR" && pwd)"
-rm -rf "$output_dir/dist"
+rm -rf "$output_dir/dist" "$output_dir"/dist-*
 mkdir -p "$output_dir/dist"
 
 if [ "$BUILD_IMAGES" = true ]; then
@@ -109,6 +109,10 @@ fi
 for python_tag in $python_tags; do
     image="$(ttlang_wheel_builder_image "$python_tag" "$image_tag")"
     echo "=== Building S3 light core wheel for $python_tag with $image ==="
+    # Per-ABI dist dir: build-s3-light-core-wheel.sh runs
+    # check-wheel-ttnn-metadata.py, which requires exactly one tt_lang wheel in
+    # the dir. CI isolates this per matrix leg; mirror that here, then collect.
+    mkdir -p "$output_dir/dist-$python_tag"
     ttlang_docker run --rm \
         --user "$DOCKER_USER" \
         -v "$repo_root:/workspace" \
@@ -121,7 +125,9 @@ for python_tag in $python_tags; do
         .github/scripts/build-s3-light-core-wheel.sh \
             --python-tag "$python_tag" \
             --version "$VERSION" \
-            --dist-dir /out/dist
+            --dist-dir "/out/dist-$python_tag"
+    mv "$output_dir/dist-$python_tag"/*.whl "$output_dir/dist/"
+    rmdir "$output_dir/dist-$python_tag"
 done
 
 image="$(ttlang_wheel_builder_image "$metapackage_python_tag" "$image_tag")"
