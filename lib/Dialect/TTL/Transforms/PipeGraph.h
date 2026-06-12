@@ -26,9 +26,9 @@ namespace mlir::tt::ttl {
 
 /// Key for identifying a pipe by its source, destination, and PipeNet ID.
 struct PipeKey {
-  int64_t srcX, srcY;
-  int64_t dstStartX, dstStartY, dstEndX, dstEndY;
-  int64_t pipeNetId;
+  int64_t srcX = 0, srcY = 0;
+  int64_t dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0;
+  int64_t pipeNetId = 0;
 
   bool operator==(const PipeKey &other) const {
     return srcX == other.srcX && srcY == other.srcY &&
@@ -87,8 +87,14 @@ inline PipeTransferContract getPipeTransferContract(CreatePipeOp op) {
              : PipeTransferContract::PointToPoint;
 }
 
+inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
+  return op.getKind().getValue() == PipeTransferKind::Collective
+             ? PipeTransferContract::Collective
+             : PipeTransferContract::PointToPoint;
+}
+
 /// Graph tracking pipe connections and receiver DFB assignments.
-/// Built after pipe receive copies have been expanded to receive-post ops.
+/// Built after pipe receive copies have been expanded to pipe transfer ops.
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.

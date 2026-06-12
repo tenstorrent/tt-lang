@@ -13,17 +13,17 @@
 namespace mlir::tt::ttl::verify {
 namespace {
 
-// Return true when `v` is a transfer handle produced by `ttl.copy`, allowing
-// the handle to flow through tensor containers and loop-carried values.
-// `ttl.pipe_recv_post` is accepted because receive-side `ttl.copy` expands to
-// that internal op before lowering while preserving the original wait contract.
-static bool isDerivedFromCopy(mlir::Value value) {
+// Return true when `v` is a transfer handle produced by an operation with
+// `ttl.wait` semantics, allowing the handle to flow through tensor containers
+// and loop-carried values.
+static bool isDerivedFromTransfer(mlir::Value value) {
   llvm::SmallPtrSet<mlir::Value, 16> seen;
   return mlir::tt::ttl::traceTransferHandleSource<bool>(
       value,
       [](mlir::Value source) {
         return source.getDefiningOp<mlir::tt::ttl::CopyOp>() != nullptr ||
-               source.getDefiningOp<mlir::tt::ttl::PipeRecvPostOp>() != nullptr;
+               source.getDefiningOp<mlir::tt::ttl::PipeTransferSendOp>() !=
+                   nullptr;
       },
       seen);
 }
@@ -40,11 +40,12 @@ mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
            << handle.getType();
   }
 
-  if (isDerivedFromCopy(handle)) {
+  if (isDerivedFromTransfer(handle)) {
     return mlir::success();
   }
 
-  return op->emitOpError() << "expects operand to be derived from ttl.copy.";
+  return op->emitOpError() << "expects operand to be derived from ttl.copy or "
+                              "ttl.pipe_transfer.send.";
 }
 
 } // namespace mlir::tt::ttl::verify

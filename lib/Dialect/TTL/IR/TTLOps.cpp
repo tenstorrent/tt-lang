@@ -257,34 +257,76 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
-  if (!findCBReserveForPipeReceive(getDst())) {
-    return emitOpError() << "requires a cb_reserve destination";
+mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
+  auto pipeType = mlir::cast<PipeType>(getPipe().getType());
+  int64_t expectedReceivers = static_cast<int64_t>(getExpectedReceivers());
+  if (expectedReceivers <= 0) {
+    return emitOpError() << "requires positive expectedReceivers";
+  }
+  if (expectedReceivers != pipeType.getNumDests()) {
+    return emitOpError()
+           << "expectedReceivers must match the pipe receiver count";
   }
 
-  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
-  if (!handleType) {
-    return emitOpError() << "requires a transfer handle result";
-  }
-  if (handleType.getKind()) {
-    return emitOpError() << "requires an untyped transfer handle result";
+  switch (getKind().getValue()) {
+  case PipeTransferKind::PointToPoint:
+    if (!pipeType.hasSingleReceiver()) {
+      return emitOpError() << "point_to_point transfer requires one receiver";
+    }
+    break;
+  case PipeTransferKind::Collective:
+    break;
   }
 
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeRecvWaitOp::verify() {
-  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
-  if (!handleType) {
-    return emitOpError() << "requires a transfer handle operand";
-  }
-  if (handleType.getKind()) {
-    return emitOpError() << "requires an untyped transfer handle operand";
-  }
+mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
   if (!findCBReserveForPipeReceive(getDst())) {
     return emitOpError() << "requires a cb_reserve destination";
   }
+  auto createOp = findPipeTransferCreateForTransfer(getTransfer());
+  if (!createOp) {
+    return emitOpError()
+           << "requires transfer derived from ttl.pipe_transfer.create";
+  }
+  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
+  auto tokenType = mlir::cast<PipeTokenType>(getToken().getType());
+  if (tokenType.getPipeNetId() != pipeType.getPipeNetId()) {
+    return emitOpError() << "token pipeNetId must match transfer pipeNetId";
+  }
 
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
+  if (!findPipeTransferCreateForTransfer(getTransfer())) {
+    return emitOpError()
+           << "requires transfer derived from ttl.pipe_transfer.create";
+  }
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType || handleType.getKind() != TransferKind::write) {
+    return emitOpError() << "requires a write transfer handle result";
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeTransferWaitOp::verify() {
+  mlir::tt::ttl::PipeTransferPostOp postOp =
+      mlir::tt::ttl::findPipeTransferPostForToken(getToken());
+  if (!postOp) {
+    return emitOpError()
+           << "requires token derived from ttl.pipe_transfer.post";
+  }
+  auto waitTokenType =
+      mlir::cast<mlir::tt::ttl::PipeTokenType>(getToken().getType());
+  auto postTokenType =
+      mlir::cast<mlir::tt::ttl::PipeTokenType>(postOp.getToken().getType());
+  if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
+    return emitOpError()
+           << "token pipeNetId must match pipe transfer post pipeNetId";
+  }
   return success();
 }
 
