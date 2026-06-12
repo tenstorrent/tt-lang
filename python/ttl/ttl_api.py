@@ -1685,8 +1685,10 @@ def _lower_program_to_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        pipeline_passes.append("ttl-verify-pipenet-guards")
-        pipeline_passes.append("ttl-verify-dfb-spsc")
+        if compiler_options.verify_pipenet_guards:
+            pipeline_passes.append("ttl-verify-pipenet-guards")
+        if compiler_options.verify_dfb_spsc:
+            pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:
             pipeline_passes.append(

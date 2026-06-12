@@ -91,6 +91,22 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
     )
     p.add_argument(
+        "--ttl-verify-pipenet-guards",
+        default=None,
+        dest="verify_pipenet_guards",
+        action=argparse.BooleanOptionalAction,
+        help="Verify PipeNet-coupled DFB/pipe ops are role-guarded (default: enabled). "
+        "Disable for kernel fragments whose DFBs are bound externally.",
+    )
+    p.add_argument(
+        "--ttl-verify-dfb-spsc",
+        default=None,
+        dest="verify_dfb_spsc",
+        action=argparse.BooleanOptionalAction,
+        help="Verify each DFB has a single producer and consumer per launch domain "
+        "(default: enabled). Disable for kernel fragments whose DFBs are bound externally.",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -145,6 +161,12 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    # Closed-program DFB/pipe verifiers. Disable when compiling a kernel
+    # fragment whose DFBs are bound externally (producers/consumers live in
+    # other kernels), so its externally-fed cb_waits read as orphaned and the
+    # closed-program checks do not apply.
+    verify_pipenet_guards: bool = True
+    verify_dfb_spsc: bool = True
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from
