@@ -26,9 +26,9 @@ namespace mlir::tt::ttl {
 
 /// Key for identifying a pipe by its source, destination, and PipeNet ID.
 struct PipeKey {
-  int64_t srcX, srcY;
-  int64_t dstStartX, dstStartY, dstEndX, dstEndY;
-  int64_t pipeNetId;
+  int64_t srcX = 0, srcY = 0;
+  int64_t dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0;
+  int64_t pipeNetId = 0;
 
   bool operator==(const PipeKey &other) const {
     return srcX == other.srcX && srcY == other.srcY &&

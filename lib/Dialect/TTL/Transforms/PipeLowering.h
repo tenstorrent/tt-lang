@@ -12,14 +12,10 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
-#include <variant>
 
 namespace mlir::tt::ttl {
 
-/// Receiver-completion semaphores are indexed by PipeNet id. Sender-ready
-/// semaphores are per pipe because different pipes in one PipeNet can be posted
-/// and sent independently. Receiver-authored destination addresses live in
-/// ordinary SRAM so they do not consume semaphore ids.
+/// Receiver-completion semaphores are indexed by PipeNet id.
 inline int64_t getReceiverCompletionSemIdx(int64_t pipeNetId) {
   return pipeNetId;
 }
@@ -33,34 +29,84 @@ struct PipeSramAddressTableInfo {
   int64_t byteOffset;
 };
 
-struct PipeLocalReadyCounterInfo {
-  int64_t senderReadySemIdx = 0;
+struct PipeResourcePlan;
+
+/// Resolved lowering-address form of a ready counter. A GlobalSemaphore counter
+/// resolves to a runtime-arg index because its address is bound at runtime.
+enum class ReadyCounterAddressStorage {
+  LocalSemaphore,
+  GlobalSemaphoreRuntimeArg,
 };
 
-struct PipeGlobalReadyCounterInfo {
-  int64_t globalSemaphoreIndex = 0;
+/// Allocation-time storage kind chosen for a ready counter during planning,
+/// before its address form is resolved.
+enum class PipeReadyCounterStorage {
+  LocalSemaphore,
+  GlobalSemaphore,
 };
 
-using PipeReadyCounterInfo =
-    std::variant<PipeLocalReadyCounterInfo, PipeGlobalReadyCounterInfo>;
+/// Sender-ready counters can live either in local semaphore space or in
+/// GlobalSemaphore-backed SRAM. The storage kind disambiguates the index value.
+struct ReadyCounterAddressInfo {
+  ReadyCounterAddressStorage storage;
+  int64_t index;
+};
+
+/// Visitor for ready-counter accounting. Default no-op methods let each
+/// accounting pass consume only the counter namespace it owns.
+class PipeReadyCounterObserver {
+public:
+  virtual ~PipeReadyCounterObserver() = default;
+
+  virtual void observeLocalSemaphore(int64_t index) {}
+  virtual void observeGlobalSemaphore(int64_t index) {}
+};
+
+/// Sender-ready counter allocation. This translates the stored index into the
+/// lowering address form and reports it in its resource namespace for count and
+/// limit checks.
+class PipeReadyCounterInfo {
+public:
+  /// Allocate a sender-ready counter from TTKernel local semaphore ids.
+  static PipeReadyCounterInfo localSemaphore(int64_t senderReadyCounterSemIdx);
+
+  /// Allocate a sender-ready counter from host-created GlobalSemaphore storage.
+  static PipeReadyCounterInfo globalSemaphore(int64_t globalSemaphoreIndex);
+
+  /// Resolve this allocation to the address consumed by TTKernel lowering.
+  ReadyCounterAddressInfo
+  getAddressInfo(Operation *op, const PipeResourcePlan &pipeResourcePlan) const;
+
+  /// Report this allocation to a pass-specific observer.
+  void observe(PipeReadyCounterObserver &observer) const;
+
+private:
+  PipeReadyCounterInfo(PipeReadyCounterStorage storage, int64_t index)
+      : storage(storage), index(index) {}
+
+  PipeReadyCounterStorage storage;
+  int64_t index;
+};
 
 struct PipeCompletionWaitInfo {
   int64_t pipeNetId;
-  int64_t receiverSemIdx;
+  int64_t receiverCompletionSemIdx;
 };
 
-/// Address storage used by one logical pipe. Each receiver publishes
-/// its DFB write address into the source core's SRAM table before incrementing
-/// the sender-ready counter.
+/// Address storage used by one transfer-allocation unit. Each receiver
+/// publishes its DFB write address into the source core's SRAM table before
+/// incrementing the sender-ready counter.
 struct PipeAddressStorageInfo {
   PipeSramAddressTableInfo sramAddressTable;
 };
 
-/// Lowering information for one logical pipe. This keeps address
-/// storage separate from readiness counting so physical allocation can choose
-/// local semaphores or GlobalSemaphore-backed counters independently.
+/// Lowering information for a set of ttl.pipe_transfer.create ops sharing one
+/// PipeKey. This keeps address storage separate from readiness counting so
+/// physical allocation can choose local semaphores or GlobalSemaphore-backed
+/// counters independently.
 struct PipeResourceInfo {
-  PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
+  PipeKey pipe;
+  PipeTransferContract transferContract;
   PipeReadyCounterInfo readyCounter;
   PipeAddressStorageInfo addressStorage;
 };
@@ -80,58 +126,62 @@ struct PipeSramScratchInfo {
 };
 
 /// Static resource allocation used by pipe lowering. Receiver-completion
-/// semaphore indices are global. Sender-ready indices only need to be unique
-/// among pipes that share a source core. Address table offsets are global
-/// within the compiler-managed SRAM scratch allocation.
+/// semaphore indices are per PipeNet. Sender-ready indices and address-table
+/// offsets are per source core and only need to be unique across concurrently
+/// live transfer intervals.
 struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
-  llvm::MapVector<PipeKey, PipeResourceInfo> resources;
+  llvm::MapVector<Operation *, PipeResourceInfo> resources;
 };
+
+/// Resource totals consumed by TTKernel lowering and runtime setup.
+struct PipeResourceRequirements {
+  int64_t syncSemaphoreCount = 0;
+  int64_t globalSemaphoreCount = 0;
+  int64_t sramScratchBytes = 0;
+};
+
+/// Return all pipe resource totals derived from the selected allocation plan.
+PipeResourceRequirements
+getPipeResourceRequirements(const PipeResourcePlan &info);
 
 /// Diagnose layouts that exceed the hardware semaphore id limit before
 /// emitting ttkernel.get_semaphore ops with invalid ids.
-LogicalResult verifyPipeResourcePlanFitsHardware(ModuleOp mod,
-                                                 const PipeResourcePlan &info);
-
-/// Return the number of semaphore ids referenced by the selected pipe lowering.
-int64_t getRequiredPipeSyncSemaphoreCount(const PipeResourcePlan &info);
-
-/// Return the number of GlobalSemaphore descriptors referenced by pipe
-/// lowering.
-int64_t getRequiredPipeGlobalSemaphoreCount(const PipeResourcePlan &info);
-
-/// Return the per-core SRAM scratch bytes required by pipe address storage.
-int64_t getRequiredPipeSramScratchBytes(const PipeResourcePlan &info);
+LogicalResult
+verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
+                                   const PipeResourceRequirements &reqs);
 
 /// Walk `mod` once and group every pipe transfer by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
-/// Build the pipe resource plan used by pipe lowering.
-void buildPipeResourcePlan(const PipeNetIndex &index, PipeResourcePlan &info);
+/// Build the pipe resource plan used by pipe lowering. Transfer intervals that
+/// cannot be bounded by dominance are conservatively treated as conflicting
+/// with every other transfer interval from the same source core.
+LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
 /// Lower the sender-side pipe transfer. Uses receiver-published destination
-/// addresses and signals destinations via semaphore.
+/// addresses and signals receiver completion.
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe destination address publication.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
 LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
                                     const PipeNetCounterMap *counters,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.

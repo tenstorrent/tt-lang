@@ -508,6 +508,14 @@ static CopyOp findPipeReceiveCopy(Value value) {
       seen);
 }
 
+static PipeTransferSendOp findPipeTransferSend(Value value) {
+  llvm::SmallPtrSet<Value, 16> seen;
+  return traceTransferHandleSource<PipeTransferSendOp>(
+      value,
+      [](Value source) { return source.getDefiningOp<PipeTransferSendOp>(); },
+      seen);
+}
+
 static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
   return isCollectiveTransfer(contract) ? PipeTransferKind::Collective
                                         : PipeTransferKind::PointToPoint;
@@ -1048,7 +1056,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   PipeTransferPostLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
-                           const PipeResourcePlan *pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
         pipeResourcePlan(pipeResourcePlan) {}
 
@@ -1062,13 +1070,13 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   }
 
 private:
-  const PipeResourcePlan *pipeResourcePlan;
+  const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
   PipeTransferSendLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
-                           const PipeResourcePlan *pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
         pipeResourcePlan(pipeResourcePlan) {}
 
@@ -1091,14 +1099,14 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
   }
 
 private:
-  const PipeResourcePlan *pipeResourcePlan;
+  const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
   PipeTransferWaitLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
                            const PipeNetCounterMap *pipeNetCounters,
-                           const PipeResourcePlan *pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
         pipeNetCounters(pipeNetCounters), pipeResourcePlan(pipeResourcePlan) {}
 
@@ -1111,7 +1119,7 @@ struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
 
 private:
   const PipeNetCounterMap *pipeNetCounters;
-  const PipeResourcePlan *pipeResourcePlan;
+  const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
@@ -1120,6 +1128,13 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   LogicalResult
   matchAndRewrite(WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (findPipeTransferSend(op.getXf())) {
+      // Pipe sends wait for the payload write before signaling receiver
+      // completion, so the send handle is complete when the send op returns.
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
     // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
@@ -1537,27 +1552,28 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
   PipeResourcePlan pipeResourcePlan;
-  buildPipeResourcePlan(pipeNetIndex, pipeResourcePlan);
-  if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan))) {
+  if (failed(buildPipeResourcePlan(mod, pipeResourcePlan))) {
     return failure();
   }
-  mod->setAttr(
-      kPipeSyncSemaphoreCountAttrName,
-      IntegerAttr::get(IntegerType::get(&ctx, 64),
-                       getRequiredPipeSyncSemaphoreCount(pipeResourcePlan)));
-  int64_t pipeGlobalSemaphoreCount =
-      getRequiredPipeGlobalSemaphoreCount(pipeResourcePlan);
-  if (pipeGlobalSemaphoreCount > 0) {
+  PipeResourceRequirements pipeResourceRequirements =
+      getPipeResourceRequirements(pipeResourcePlan);
+  if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan,
+                                                pipeResourceRequirements))) {
+    return failure();
+  }
+  mod->setAttr(kPipeSyncSemaphoreCountAttrName,
+               IntegerAttr::get(IntegerType::get(&ctx, 64),
+                                pipeResourceRequirements.syncSemaphoreCount));
+  if (pipeResourceRequirements.globalSemaphoreCount > 0) {
     mod->setAttr(
         kPipeGlobalSemaphoreCountAttrName,
-        IntegerAttr::get(IntegerType::get(&ctx, 64), pipeGlobalSemaphoreCount));
+        IntegerAttr::get(IntegerType::get(&ctx, 64),
+                         pipeResourceRequirements.globalSemaphoreCount));
   }
-  int64_t pipeSramScratchBytes =
-      getRequiredPipeSramScratchBytes(pipeResourcePlan);
-  if (pipeSramScratchBytes > 0) {
-    mod->setAttr(
-        kPipeSramScratchBytesAttrName,
-        IntegerAttr::get(IntegerType::get(&ctx, 64), pipeSramScratchBytes));
+  if (pipeResourceRequirements.sramScratchBytes > 0) {
+    mod->setAttr(kPipeSramScratchBytesAttrName,
+                 IntegerAttr::get(IntegerType::get(&ctx, 64),
+                                  pipeResourceRequirements.sramScratchBytes));
   }
   // [Device 2.0] The kPipeSyncSemaphoreCountAttrName,
   // kPipeGlobalSemaphoreCountAttrName, and kPipeSramScratchBytesAttrName attrs
@@ -1568,9 +1584,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
   patterns.add<PipeTransferPostLowering, PipeTransferSendLowering>(
-      typeConverter, &ctx, &pipeResourcePlan);
+      typeConverter, &ctx, pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
-                                         &pipeResourcePlan);
+                                         pipeResourcePlan);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
