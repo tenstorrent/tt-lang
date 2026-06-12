@@ -17,16 +17,20 @@ import ttl
 @ttl.atom()
 def pipe_send(net: ttl.PipeNet, src: ttl.DFB):
     """Each source core of ``net`` ships its ``src`` block to the pipe."""
+
     def send(pipe):
         b = src.wait()
         ttl.copy(b, pipe)
+
     net.if_src(send)
 
 
 @ttl.atom()
 def pipe_recv(net: ttl.PipeNet, dst: ttl.DFB):
     """Each destination core of ``net`` receives a peer block into ``dst``."""
+
     def recv(pipe):
         d = dst.reserve()
         ttl.copy(pipe, d)
+
     net.if_dst(recv)

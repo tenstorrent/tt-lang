@@ -46,8 +46,11 @@ def to_dram_bfp8(torch_tensor, device):
     """DRAM tensor in bfloat8_b (the KV-cache dtype). The shard typecasts
     K/V back to bf16 for the matmuls."""
     return ttnn.from_torch(
-        torch_tensor, dtype=ttnn.bfloat8_b, layout=ttnn.TILE_LAYOUT,
-        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        torch_tensor,
+        dtype=ttnn.bfloat8_b,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
 
@@ -84,9 +87,14 @@ def test_flash_shard_full(device):
     l_d = to_dram(torch.zeros(PN, TILE, dtype=torch.bfloat16), device)
 
     shard = make_flash_shard(
-        n_cols=1, B=1,
-        PNHt=PNHt, DHt=DHt, vDHt=vDHt,
-        Sk_chunk_t=Sk_chunk_t, N_CHUNKS=N_CHUNKS, scale=scale,
+        n_cols=1,
+        B=1,
+        PNHt=PNHt,
+        DHt=DHt,
+        vDHt=vDHt,
+        Sk_chunk_t=Sk_chunk_t,
+        N_CHUNKS=N_CHUNKS,
+        scale=scale,
     )
     shard(q_d, k_d, v_d, o_d, m_d, l_d)
 
@@ -129,9 +137,14 @@ def test_flash_chain(device):
     norm_d = to_dram(torch.zeros(PN, vD, dtype=torch.bfloat16), device)
 
     shard = make_flash_shard(
-        n_cols=N_COLS, B=1,
-        PNHt=PNHt, DHt=DHt, vDHt=vDHt,
-        Sk_chunk_t=CHAIN_Sk_chunk_t, N_CHUNKS=CHAIN_N_CHUNKS, scale=scale,
+        n_cols=N_COLS,
+        B=1,
+        PNHt=PNHt,
+        DHt=DHt,
+        vDHt=vDHt,
+        Sk_chunk_t=CHAIN_Sk_chunk_t,
+        N_CHUNKS=CHAIN_N_CHUNKS,
+        scale=scale,
     )
     tree_reduce = make_flash_tree_reduce(PNHt=PNHt, vDHt=vDHt, B=1)
     normalize = make_flash_normalize(grid=(1, 1), PNHt=PNHt, vDHt=vDHt)
@@ -172,17 +185,17 @@ def flash_mla_golden(q, kv_cache, position_ids, head_dim_v, scale):
 
 # Production MLA-decode shapes (seq_len=32768, single decode token).
 NUM_HEADS = 64
-KV_LORA_RANK = 512               # head_dim_v
+KV_LORA_RANK = 512  # head_dim_v
 QK_ROPE_HEAD_DIM = 64
 QK_NOPE_HEAD_DIM = 128
-KVPE_DIM = KV_LORA_RANK + QK_ROPE_HEAD_DIM       # 576
+KVPE_DIM = KV_LORA_RANK + QK_ROPE_HEAD_DIM  # 576
 QK_HEAD_DIM = QK_NOPE_HEAD_DIM + QK_ROPE_HEAD_DIM  # 192
 N_CORES = 8
 MAX_SEQ_LEN = 32 * 1024
 
-MLA_PNHt = NUM_HEADS // TILE              # 2  (64 query rows / 32)
-MLA_DHt = KVPE_DIM // TILE                # 18
-MLA_vDHt = KV_LORA_RANK // TILE           # 16
+MLA_PNHt = NUM_HEADS // TILE  # 2  (64 query rows / 32)
+MLA_DHt = KVPE_DIM // TILE  # 18
+MLA_vDHt = KV_LORA_RANK // TILE  # 16
 # The shard typecasts each bfp8 K/V chunk to a bf16 mirror, so a 2-tile
 # compute chunk is the largest that fits one core's L1 at vDHt=16. This is
 # the compute-chunk granularity, independent of the cache layout.
@@ -196,7 +209,7 @@ MLA_N_CHUNKS = (MAX_SEQ_LEN // N_CORES) // (MLA_Sk_chunk_t * TILE)  # 64
 @pytest.mark.parametrize("ttnn_device", [{"worker_l1_size": 1448000}], indirect=True)
 def test_flash_mla_decode(device):
     torch.manual_seed(42)
-    scale = QK_HEAD_DIM ** -0.5
+    scale = QK_HEAD_DIM**-0.5
     decode_position = MAX_SEQ_LEN - 1
 
     torch_q = torch.randn((1, 1, NUM_HEADS, KVPE_DIM), dtype=torch.bfloat16)
@@ -204,8 +217,11 @@ def test_flash_mla_decode(device):
     position_ids = torch.ones(1, dtype=torch.int32) * decode_position
 
     expected = flash_mla_golden(
-        q=torch_q, kv_cache=torch_cache, position_ids=position_ids,
-        head_dim_v=KV_LORA_RANK, scale=scale,
+        q=torch_q,
+        kv_cache=torch_cache,
+        position_ids=position_ids,
+        head_dim_v=KV_LORA_RANK,
+        scale=scale,
     )
 
     # MLA shares one KV cache: K is the full kvpe_dim, V its leading
@@ -218,7 +234,9 @@ def test_flash_mla_decode(device):
     q_d = to_dram(q_2d, device)
     k_d = to_dram_bfp8(k_2d, device)
     v_d = to_dram_bfp8(v_2d, device)
-    po_d = to_dram(torch.zeros(N_CORES * PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
+    po_d = to_dram(
+        torch.zeros(N_CORES * PNr, KV_LORA_RANK, dtype=torch.bfloat16), device
+    )
     pm_d = to_dram(torch.zeros(N_CORES * PNr, TILE, dtype=torch.bfloat16), device)
     pl_d = to_dram(torch.zeros(N_CORES * PNr, TILE, dtype=torch.bfloat16), device)
     o_d = to_dram(torch.zeros(PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
@@ -227,9 +245,14 @@ def test_flash_mla_decode(device):
     norm_d = to_dram(torch.zeros(PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
 
     shard = make_flash_shard(
-        n_cols=N_CORES, B=1,
-        PNHt=MLA_PNHt, DHt=MLA_DHt, vDHt=MLA_vDHt,
-        Sk_chunk_t=MLA_Sk_chunk_t, N_CHUNKS=MLA_N_CHUNKS, scale=scale,
+        n_cols=N_CORES,
+        B=1,
+        PNHt=MLA_PNHt,
+        DHt=MLA_DHt,
+        vDHt=MLA_vDHt,
+        Sk_chunk_t=MLA_Sk_chunk_t,
+        N_CHUNKS=MLA_N_CHUNKS,
+        scale=scale,
     )
     tree_reduce = make_flash_tree_reduce(PNHt=MLA_PNHt, vDHt=MLA_vDHt, B=1)
     normalize = make_flash_normalize(grid=(1, 1), PNHt=MLA_PNHt, vDHt=MLA_vDHt)
@@ -238,7 +261,9 @@ def test_flash_mla_decode(device):
     tree_reduce(po_d, pm_d, pl_d, o_d, l_d)
     normalize(o_d, l_d, norm_d)
 
-    got = ttnn.to_torch(norm_d).reshape(1, 1, NUM_HEADS, KV_LORA_RANK).to(torch.bfloat16)
+    got = (
+        ttnn.to_torch(norm_d).reshape(1, 1, NUM_HEADS, KV_LORA_RANK).to(torch.bfloat16)
+    )
     assert_pcc(expected, got, threshold=0.99)
 
 
@@ -254,7 +279,7 @@ def test_flash_mla_decode_fused(device, sk):
     n_chunks = (MAX_SEQ_LEN // N_CORES) // (sk * TILE)
 
     torch.manual_seed(42)
-    scale = QK_HEAD_DIM ** -0.5
+    scale = QK_HEAD_DIM**-0.5
     decode_position = MAX_SEQ_LEN - 1
 
     torch_q = torch.randn((1, 1, NUM_HEADS, KVPE_DIM), dtype=torch.bfloat16)
@@ -262,8 +287,11 @@ def test_flash_mla_decode_fused(device, sk):
     position_ids = torch.ones(1, dtype=torch.int32) * decode_position
 
     expected = flash_mla_golden(
-        q=torch_q, kv_cache=torch_cache, position_ids=position_ids,
-        head_dim_v=KV_LORA_RANK, scale=scale,
+        q=torch_q,
+        kv_cache=torch_cache,
+        position_ids=position_ids,
+        head_dim_v=KV_LORA_RANK,
+        scale=scale,
     )
 
     q_2d = torch_q.reshape(NUM_HEADS, KVPE_DIM)
@@ -277,11 +305,18 @@ def test_flash_mla_decode_fused(device, sk):
     norm_d = to_dram(torch.zeros(PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
 
     flash = make_flash_mla(
-        n_cols=N_CORES, B=1,
-        PNHt=MLA_PNHt, DHt=MLA_DHt, vDHt=MLA_vDHt,
-        Sk_chunk_t=sk, N_CHUNKS=n_chunks, scale=scale,
+        n_cols=N_CORES,
+        B=1,
+        PNHt=MLA_PNHt,
+        DHt=MLA_DHt,
+        vDHt=MLA_vDHt,
+        Sk_chunk_t=sk,
+        N_CHUNKS=n_chunks,
+        scale=scale,
     )
     flash(q_d, k_d, v_d, norm_d)
 
-    got = ttnn.to_torch(norm_d).reshape(1, 1, NUM_HEADS, KV_LORA_RANK).to(torch.bfloat16)
+    got = (
+        ttnn.to_torch(norm_d).reshape(1, 1, NUM_HEADS, KV_LORA_RANK).to(torch.bfloat16)
+    )
     assert_pcc(expected, got, threshold=0.99)

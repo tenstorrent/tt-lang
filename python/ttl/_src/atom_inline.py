@@ -79,9 +79,7 @@ def _inline_stmts(
             out.append(stmt)
             continue
         callee, call = match
-        out.extend(
-            _expand_call(callee, call, caller_name, top_level, inlined_dfb_tags)
-        )
+        out.extend(_expand_call(callee, call, caller_name, top_level, inlined_dfb_tags))
     return out
 
 
@@ -210,7 +208,9 @@ def _check_callee_buffers(spec, caller_name: str, top_level: bool) -> Set[str]:
 
     declares = False
     for node in ast.walk(spec.fn_ast):
-        if not (isinstance(node, ast.Call) and _call_name(node) in _SETUP_FACTORY_NAMES):
+        if not (
+            isinstance(node, ast.Call) and _call_name(node) in _SETUP_FACTORY_NAMES
+        ):
             continue
         declares = True
         if id(node) not in top_level_decl_calls:

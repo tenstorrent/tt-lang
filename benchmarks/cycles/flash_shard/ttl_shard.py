@@ -29,8 +29,11 @@ from .shapes import DHt, PNHt, SCALE, Sk_chunk_t, TILE, WORKER_L1, vDHt
 
 def _dram(t, device, dtype=ttnn.bfloat16):
     return ttnn.from_torch(
-        t, dtype=dtype, layout=ttnn.TILE_LAYOUT,
-        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        t,
+        dtype=dtype,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
 
@@ -56,9 +59,14 @@ def run(n_chunks=shapes.N_CHUNKS):
         l_d = _dram(torch.zeros(PN, TILE, dtype=torch.bfloat16), device)
 
         shard = make_flash_shard(
-            n_cols=1, B=1,
-            PNHt=PNHt, DHt=DHt, vDHt=vDHt,
-            Sk_chunk_t=Sk_chunk_t, N_CHUNKS=n_chunks, scale=SCALE,
+            n_cols=1,
+            B=1,
+            PNHt=PNHt,
+            DHt=DHt,
+            vDHt=vDHt,
+            Sk_chunk_t=Sk_chunk_t,
+            N_CHUNKS=n_chunks,
+            scale=SCALE,
         )
 
         clear_profile_log()

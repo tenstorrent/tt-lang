@@ -67,12 +67,19 @@ def _shard(torch_t, device, tile):
     h, w = torch_t.shape
     spec = ttnn.ShardSpec(
         ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
-        [h, w], ttnn.ShardOrientation.ROW_MAJOR,
+        [h, w],
+        ttnn.ShardOrientation.ROW_MAJOR,
     )
-    mem = ttnn.MemoryConfig(ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, spec)
+    mem = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, spec
+    )
     return ttnn.from_torch(
-        torch_t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-        device=device, memory_config=mem, tile=tile,
+        torch_t,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=mem,
+        tile=tile,
     )
 
 
@@ -102,8 +109,12 @@ def run(num_chunks=shapes.METAL_NUM_CHUNKS, chunk_size=shapes.METAL_CHUNK_SIZE):
         q = _shard(q_t, device, q_tile)
         # K is DRAM-interleaved: the reader streams it tile-by-tile into cb_k.
         k = ttnn.from_torch(
-            k_t, dtype=ttnn.bfloat8_b, layout=ttnn.TILE_LAYOUT, device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG, tile=k_tile,
+            k_t,
+            dtype=ttnn.bfloat8_b,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            tile=k_tile,
         )
         out = _shard(torch.zeros(out_shape, dtype=torch.bfloat16), device, q_tile)
         stats = _shard(torch.zeros(stats_shape, dtype=torch.bfloat16), device, q_tile)
@@ -114,9 +125,13 @@ def run(num_chunks=shapes.METAL_NUM_CHUNKS, chunk_size=shapes.METAL_CHUNK_SIZE):
         cb_k_desc = ttnn.CBDescriptor(
             total_size=CB_BLOCKS * tiles_per_chunk * k_page_bytes,
             core_ranges=cores,
-            format_descriptors=[ttnn.CBFormatDescriptor(
-                buffer_index=cb_k, data_format=ttnn.bfloat8_b, page_size=k_page_bytes,
-            )],
+            format_descriptors=[
+                ttnn.CBFormatDescriptor(
+                    buffer_index=cb_k,
+                    data_format=ttnn.bfloat8_b,
+                    page_size=k_page_bytes,
+                )
+            ],
         )
         cbs = [
             ttnn.cb_descriptor_from_sharded_tensor(cb_q, q),
@@ -126,7 +141,9 @@ def run(num_chunks=shapes.METAL_NUM_CHUNKS, chunk_size=shapes.METAL_CHUNK_SIZE):
         ]
 
         reader = ttnn.KernelDescriptor(
-            kernel_source=f"{_KERNELS}/reader.cpp", source_type=_FILE, core_ranges=cores,
+            kernel_source=f"{_KERNELS}/reader.cpp",
+            source_type=_FILE,
+            core_ranges=cores,
             compile_time_args=(
                 [cb_q, cb_k, chunk_size, num_chunks, num_tiles_k]
                 + list(ttnn.TensorAccessorArgs(k).get_compile_time_args())
@@ -135,22 +152,35 @@ def run(num_chunks=shapes.METAL_NUM_CHUNKS, chunk_size=shapes.METAL_CHUNK_SIZE):
             config=ttnn.ReaderConfigDescriptor(),
         )
         writer = ttnn.KernelDescriptor(
-            kernel_source=f"{_KERNELS}/writer.cpp", source_type=_FILE, core_ranges=cores,
+            kernel_source=f"{_KERNELS}/writer.cpp",
+            source_type=_FILE,
+            core_ranges=cores,
             compile_time_args=[cb_out, cb_stats, num_tiles_v, num_tiles_stats],
             config=ttnn.WriterConfigDescriptor(),
         )
         compute = ttnn.KernelDescriptor(
-            kernel_source=f"{_KERNELS}/compute.cpp", source_type=_FILE, core_ranges=cores,
+            kernel_source=f"{_KERNELS}/compute.cpp",
+            source_type=_FILE,
+            core_ranges=cores,
             compile_time_args=[
-                cb_q, cb_k, cb_out, cb_stats,
-                chunk_size, num_chunks, num_tiles_k, num_tiles_v, num_tiles_stats,
+                cb_q,
+                cb_k,
+                cb_out,
+                cb_stats,
+                chunk_size,
+                num_chunks,
+                num_tiles_k,
+                num_tiles_v,
+                num_tiles_stats,
                 _float_to_uint32(SCALE),
             ],
             compiler_include_paths=[_SDPA_INCLUDE],
             defines=[("SDPA_NOOP", "1")] if _NOOP else [],
             config=ttnn.ComputeConfigDescriptor(
-                math_fidelity=ttnn.MathFidelity.LoFi, math_approx_mode=False,
-                fp32_dest_acc_en=False, dst_full_sync_en=False,
+                math_fidelity=ttnn.MathFidelity.LoFi,
+                math_approx_mode=False,
+                fp32_dest_acc_en=False,
+                dst_full_sync_en=False,
             ),
         )
 
@@ -174,7 +204,7 @@ def run(num_chunks=shapes.METAL_NUM_CHUNKS, chunk_size=shapes.METAL_CHUNK_SIZE):
     # tiles of K (MLA coupling). Matches compute_sdpa_chunk (scale fused in exp).
     scores = q_t.float() @ k_t.float().T
     gmax = scores.max(dim=-1, keepdim=True).values
-    o_ref = torch.exp((scores - gmax) * SCALE) @ k_t.float()[:, :num_tiles_v * TILE]
+    o_ref = torch.exp((scores - gmax) * SCALE) @ k_t.float()[:, : num_tiles_v * TILE]
     pcc = torch.corrcoef(torch.stack([o_got.flatten(), o_ref.flatten()]))[0, 1].item()
     d["pcc"] = pcc
     return d

@@ -3,7 +3,7 @@
 
 """Flash-shard cycle A/B: run both variants and print the ratio.
 
-    TT_METAL_DEVICE_PROFILER=1 python3 -m benchmarks.cycles.flash_shard
+TT_METAL_DEVICE_PROFILER=1 python3 -m benchmarks.cycles.flash_shard
 """
 
 from . import metal_sdpa, shapes, ttl_shard

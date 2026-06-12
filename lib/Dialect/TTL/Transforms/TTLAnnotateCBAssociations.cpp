@@ -102,6 +102,10 @@ struct TTLAnnotateCBAssociationsPass
       tileOp->setAttr(attrName, bindOp.getCbIndexAttr());
     };
 
+    func.walk([&](TileBinaryBcastOp bcast) {
+      annotateOutputCB(bcast, bcast.getOutput(), kBcastOutputCBIndexAttrName);
+    });
+
     func.walk([&](TileReduceOp reduce) {
       annotateOutputCB(reduce, reduce.getOutput(),
                        kReduceOutputCBIndexAttrName);
