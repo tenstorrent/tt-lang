@@ -62,9 +62,9 @@ def tensor_dst_acc(initial, delta, out):
 # CHECK-CPP:      tile_regs_acquire();
 # CHECK-CPP:      copy_tile_init(get_compile_time_arg_val(0));
 # CHECK-CPP:      copy_tile(get_compile_time_arg_val(0),
-# CHECK-CPP:      binary_dest_reuse_tiles_init<ELWADD, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1));
+# CHECK-CPP:      binary_dest_reuse_tiles_init<EltwiseBinaryType::ELWADD, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1));
 # CHECK-CPP:      for (size_t
-# CHECK-CPP:        binary_dest_reuse_tiles<ELWADD, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1),
+# CHECK-CPP:        binary_dest_reuse_tiles<EltwiseBinaryType::ELWADD, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1),
 # CHECK-CPP-NOT:  llk_pack_reconfig_l1_acc
 # CHECK-CPP:      pack_tile<true>(
 # CHECK-CPP:      tile_regs_release();
