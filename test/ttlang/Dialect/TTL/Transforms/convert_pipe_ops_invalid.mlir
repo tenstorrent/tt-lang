@@ -191,6 +191,57 @@ func.func @same_pipe_receive_ahead_across_blocks_rejected()
 
 // -----
 
+// Two receive posts in one loop-body iteration before the send are rejected:
+// both posts are live within a single iteration, exceeding the queue-depth-1
+// limit just as two posts in a straight-line block would.
+
+func.func @same_pipe_two_posts_in_loop_body_rejected()
+    attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %p {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  scf.for %iter = %zero to %one step %one {
+    %recv0 = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %token0 = ttl.pipe_transfer.post %transfer, %recv0
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    %recv1 = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{pipe transfer for pipe net 0 src(0, 0) dst(1, 0) to(1, 0) requires queue depth greater than 1; current lowering supports one live receive post per pipe before each send}}
+    %token1 = ttl.pipe_transfer.post %transfer, %recv1
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    ttl.pipe_transfer.wait %token0 : !ttl.pipe_token<net 0>
+    ttl.pipe_transfer.wait %token1 : !ttl.pipe_token<net 0>
+  }
+  %send0 = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %send1 = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
 // Receiver completion still uses local semaphore ids. A PipeNet id above the
 // local limit is rejected even when sender-ready counters use GlobalSemaphore
 // allocation.

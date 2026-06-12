@@ -237,6 +237,56 @@ func.func @same_source_two_pipes_use_distinct_sync_state() attributes { "ttl.ker
 
 // -----
 
+// Three same-source transfers with mutually overlapping intervals need three
+// distinct ready semaphores and address-table slots. The third slot must land
+// at byte offset 8, confirming the table grows monotonically rather than
+// aliasing back onto an earlier slot.
+// CHECK-LABEL: func.func @same_source_three_pipes_use_distinct_sync_state
+// CHECK-DAG: %[[P0_READY_IDX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[P1_READY_IDX:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[P2_READY_IDX:.*]] = arith.constant 3 : index
+// CHECK-DAG: %[[P1_TABLE_OFF:.*]] = arith.constant 4 : i32
+// CHECK-DAG: %[[P2_TABLE_OFF:.*]] = arith.constant 8 : i32
+// First post publishes to p0 table slot and increments p0 ready sem.
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.get_semaphore(%[[P0_READY_IDX]])
+// Second post publishes to p1 table slot (offset 4) and increments p1 ready sem.
+// CHECK: arith.addi {{.*}}, %[[P1_TABLE_OFF]]
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
+// Third post publishes to p2 table slot (offset 8) and increments p2 ready sem.
+// CHECK: arith.addi {{.*}}, %[[P2_TABLE_OFF]]
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.get_semaphore(%[[P2_READY_IDX]])
+func.func @same_source_three_pipes_use_distinct_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
+  %p2 = ttl.create_pipe src(0, 0) dst(3, 0) to(3, 0) net 0 : !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>
+  %recv0 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %recv2 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %send0 = ttl.copy %src_cb, %p0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %send1 = ttl.copy %src_cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  %send2 = ttl.copy %src_cb, %p2 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %send2 : !ttl.transfer_handle<write>
+  ttl.wait %post0 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  ttl.wait %post1 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  ttl.wait %post2 : !ttl.transfer_handle
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
 // Two same-source transfers with non-overlapping post-to-send intervals reuse
 // the same ready semaphore and SRAM address-table slot.
 // CHECK-LABEL: func.func @same_source_sequential_transfers_reuse_sync_state
