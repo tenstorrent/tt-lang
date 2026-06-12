@@ -31,11 +31,15 @@ struct PipeSramAddressTableInfo {
 
 struct PipeResourcePlan;
 
+/// Resolved lowering-address form of a ready counter. A GlobalSemaphore counter
+/// resolves to a runtime-arg index because its address is bound at runtime.
 enum class ReadyCounterAddressStorage {
   LocalSemaphore,
   GlobalSemaphoreRuntimeArg,
 };
 
+/// Allocation-time storage kind chosen for a ready counter during planning,
+/// before its address form is resolved.
 enum class PipeReadyCounterStorage {
   LocalSemaphore,
   GlobalSemaphore,
@@ -166,18 +170,18 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 /// addresses and signals receiver completion.
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe destination address publication.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
 LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
                                     const PipeNetCounterMap *counters,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.

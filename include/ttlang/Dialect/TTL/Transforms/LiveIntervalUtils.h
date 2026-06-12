@@ -28,6 +28,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cassert>
 #include <cstdint>
 #include <limits>
 
@@ -65,6 +66,8 @@ inline bool halfOpenIntervalsOverlap(int64_t lhsStart, int64_t lhsEnd,
 /// Return true when two value live intervals overlap in linear event order.
 inline bool intervalsOverlap(const ValueLiveInterval &lhs,
                              const ValueLiveInterval &rhs) {
+  assert(lhs.start <= lhs.end && rhs.start <= rhs.end &&
+         "value live interval end must not precede its start");
   return halfOpenIntervalsOverlap(lhs.start, lhs.end, rhs.start, rhs.end);
 }
 
@@ -143,11 +146,12 @@ inline void updateIntervalEnd(OperationLiveInterval &interval, Operation *op,
 ///
 /// Missing endpoints, non-dominating start/end pairs, and ends that do not
 /// post-dominate starts are marked unbounded. This makes callers conservative
-/// in the presence of one-sided IR fragments or control flow.
-inline void finalizeInterval(OperationLiveInterval &interval, bool hasStart,
-                             bool hasEnd, const DominanceInfo &dominanceInfo,
+/// in the presence of one-sided IR fragments or control flow. Endpoint presence
+/// is derived from the start and end operations recorded by the update helpers.
+inline void finalizeInterval(OperationLiveInterval &interval,
+                             const DominanceInfo &dominanceInfo,
                              const PostDominanceInfo &postDominanceInfo) {
-  if (!hasStart || !hasEnd || !interval.start || !interval.end) {
+  if (!interval.start || !interval.end) {
     setUnbounded(interval, OperationLiveInterval::State::MissingEndpoint);
     return;
   }

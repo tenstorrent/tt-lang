@@ -1056,7 +1056,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   PipeTransferPostLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
-                           const PipeResourcePlan *pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
         pipeResourcePlan(pipeResourcePlan) {}
 
@@ -1070,13 +1070,13 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   }
 
 private:
-  const PipeResourcePlan *pipeResourcePlan;
+  const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
   PipeTransferSendLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
-                           const PipeResourcePlan *pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
         pipeResourcePlan(pipeResourcePlan) {}
 
@@ -1099,14 +1099,14 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
   }
 
 private:
-  const PipeResourcePlan *pipeResourcePlan;
+  const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
   PipeTransferWaitLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
                            const PipeNetCounterMap *pipeNetCounters,
-                           const PipeResourcePlan *pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
         pipeNetCounters(pipeNetCounters), pipeResourcePlan(pipeResourcePlan) {}
 
@@ -1119,7 +1119,7 @@ struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
 
 private:
   const PipeNetCounterMap *pipeNetCounters;
-  const PipeResourcePlan *pipeResourcePlan;
+  const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
@@ -1359,9 +1359,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
   patterns.add<PipeTransferPostLowering, PipeTransferSendLowering>(
-      typeConverter, &ctx, &pipeResourcePlan);
+      typeConverter, &ctx, pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
-                                         &pipeResourcePlan);
+                                         pipeResourcePlan);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(

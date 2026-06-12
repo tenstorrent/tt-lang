@@ -124,20 +124,18 @@ static FailureOr<PipeTransferCreateOp> getPipeTransferCreate(Operation *op,
 
 static PipeResourceInfo
 lookupPipeResourceInfo(PipeTransferCreateOp createOp,
-                       const PipeResourcePlan *pipeResourcePlan) {
-  assert(pipeResourcePlan && "missing pipe resource plan");
-  auto it = pipeResourcePlan->resources.find(createOp.getOperation());
-  assert(it != pipeResourcePlan->resources.end() &&
+                       const PipeResourcePlan &pipeResourcePlan) {
+  auto it = pipeResourcePlan.resources.find(createOp.getOperation());
+  assert(it != pipeResourcePlan.resources.end() &&
          "pipe transfer missing from pipe resource plan");
   return it->second;
 }
 
 static PipeCompletionWaitInfo
 lookupPipeCompletionWaitInfo(PipeType pipeType,
-                             const PipeResourcePlan *pipeResourcePlan) {
-  assert(pipeResourcePlan && "missing pipe resource plan");
-  auto it = pipeResourcePlan->completionWaits.find(pipeType.getPipeNetId());
-  assert(it != pipeResourcePlan->completionWaits.end() &&
+                             const PipeResourcePlan &pipeResourcePlan) {
+  auto it = pipeResourcePlan.completionWaits.find(pipeType.getPipeNetId());
+  assert(it != pipeResourcePlan.completionWaits.end() &&
          "pipe net missing from pipe completion info");
   return it->second;
 }
@@ -426,17 +424,16 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
 /// destination address, then signal arrival.
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  FailureOr<PipeTransferCreateOp> createOp =
-      getPipeTransferCreate(op, op.getTransfer());
-  if (failed(createOp)) {
-    return failure();
-  }
-  auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
+  PipeTransferCreateOp createOp =
+      findPipeTransferCreateForTransfer(op.getTransfer());
+  assert(createOp &&
+         "pipe resource plan analysis already validated transfer provenance");
+  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   PipeResourceInfo pipeResource =
-      lookupPipeResourceInfo(*createOp, pipeResourcePlan);
+      lookupPipeResourceInfo(createOp, pipeResourcePlan);
   PipeCompletionWaitInfo completionInfo =
       lookupPipeCompletionWaitInfo(pipeType, pipeResourcePlan);
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -455,7 +452,7 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   int64_t pageSizeBytes = tileType.getSizeBytes();
 
   ReadyCounterAddressInfo readyCounterInfo =
-      getReadyCounterAddressInfo(op, pipeResource, *pipeResourcePlan);
+      getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
   AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
 
   int64_t dstStartX = pipeType.getDstStartX();
@@ -642,17 +639,16 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 }
 
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  FailureOr<PipeTransferCreateOp> createOp =
-      getPipeTransferCreate(op, op.getTransfer());
-  if (failed(createOp)) {
-    return failure();
-  }
-  auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
+  PipeTransferCreateOp createOp =
+      findPipeTransferCreateForTransfer(op.getTransfer());
+  assert(createOp &&
+         "pipe resource plan analysis already validated transfer provenance");
+  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   PipeResourceInfo pipeResource =
-      lookupPipeResourceInfo(*createOp, pipeResourcePlan);
+      lookupPipeResourceInfo(createOp, pipeResourcePlan);
   FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
       getReceiverPublishedAddressInfo(op, dst, rewriter);
   if (failed(publishedAddressInfo)) {
@@ -660,7 +656,7 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   }
   AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
   ReadyCounterAddressInfo readyCounterInfo =
-      getReadyCounterAddressInfo(op, pipeResource, *pipeResourcePlan);
+      getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
 
   int64_t nocIdx = getNocIndex(op);
   auto indexTy = rewriter.getIndexType();
@@ -710,13 +706,13 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
 /// Lower the receiver completion wait with a per-PipeNet runtime counter.
 LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
                                     const PipeNetCounterMap *counters,
-                                    const PipeResourcePlan *pipeResourcePlan,
+                                    const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto tokenType = mlir::cast<PipeTokenType>(op.getToken().getType());
   auto completionIt =
-      pipeResourcePlan->completionWaits.find(tokenType.getPipeNetId());
-  if (completionIt == pipeResourcePlan->completionWaits.end()) {
+      pipeResourcePlan.completionWaits.find(tokenType.getPipeNetId());
+  if (completionIt == pipeResourcePlan.completionWaits.end()) {
     op.emitError("pipe transfer wait references PipeNet ")
         << tokenType.getPipeNetId() << " with no completion resource";
     return failure();
@@ -1072,12 +1068,6 @@ struct PipeTransferAllocationUnit {
   /// Conservative post-to-send lifetime for source-node rendezvous resources.
   OperationLiveInterval interval;
 
-  /// True when at least one receive post contributes to the interval.
-  bool hasPost = false;
-
-  /// True when at least one send contributes to the interval.
-  bool hasSend = false;
-
   /// Assigned first-fit color within the source node's allocation group.
   int64_t resourceColor = 0;
 
@@ -1270,7 +1260,6 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
       if (failed(unit)) {
         return WalkResult::interrupt();
       }
-      (*unit)->hasPost = true;
       (*unit)->rendezvousEvents.push_back(
           PipeTransferRendezvousEvent::post(op));
       updateIntervalStart((*unit)->interval, op, eventOrdinal, dominanceInfo);
@@ -1283,7 +1272,6 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
       if (failed(unit)) {
         return WalkResult::interrupt();
       }
-      (*unit)->hasSend = true;
       (*unit)->rendezvousEvents.push_back(
           PipeTransferRendezvousEvent::send(op));
       updateIntervalEnd((*unit)->interval, op, dominanceInfo);
@@ -1300,8 +1288,7 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
     if (failed(validateMaxLivePosts(unit, /*maxLivePosts=*/1))) {
       return failure();
     }
-    finalizeInterval(unit.interval, unit.hasPost, unit.hasSend, dominanceInfo,
-                     postDominanceInfo);
+    finalizeInterval(unit.interval, dominanceInfo, postDominanceInfo);
   }
 
   return units;
