@@ -474,3 +474,54 @@ module {
     func.return
   }
 }
+
+// -----
+
+// Read f32 from an attach_cb-wrapped cb_wait block (the form the Python
+// frontend emits). Must trace through attach_cb to get_read_ptr.
+// CHECK-LABEL: func.func @read_attach_cb_wait
+// CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[PTR:.*]] = ttkernel.get_read_ptr(%[[CB]])
+// CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast<tt_l1_ptr uint32_t*>(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
+// CHECK: ttkernel.load_from_l1(%[[L1]], {{.*}}) : (!ttkernel.l1_addr_ptr, i32) -> i32
+module {
+  func.func @read_attach_cb_wait()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %wait = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %block = ttl.attach_cb %wait, %cb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %c5 = arith.constant 5 : index
+    %val = ttl.raw_element_read %block[%c0, %c5] : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+    func.return
+  }
+}
+
+// -----
+
+// Write f32 to an attach_cb-wrapped cb_reserve block. Must trace through
+// attach_cb to get_write_ptr.
+// 1.0f = 0x3F800000 = 1065353216.
+// CHECK-LABEL: func.func @write_attach_cb_reserve
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
+// CHECK-DAG: %[[BITS:.*]] = arith.constant 1065353216 : i32
+// CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr(%[[CB]])
+// CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast<tt_l1_ptr uint32_t*>(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
+// CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], %[[C0]]) : (i32, !ttkernel.l1_addr_ptr, i32) -> ()
+module {
+  func.func @write_attach_cb_reserve()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %res = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %block = ttl.attach_cb %res, %cb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 1.000000e+00 : f32
+    ttl.raw_element_write %block[%c0, %c0], %cst : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
+    func.return
+  }
+}

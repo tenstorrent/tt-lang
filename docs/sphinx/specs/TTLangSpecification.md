@@ -1043,8 +1043,8 @@ Values from `raw_element_read` support scalar float comparisons:
 | :---- | :---- |
 | `>` | Yes |
 | `<` | Yes |
-| `==` | Yes |
-| `!=` | Yes |
+| `==` | No (compile-time error) |
+| `!=` | No (compile-time error) |
 | `>=` | No (compile-time error) |
 | `<=` | No (compile-time error) |
 
@@ -1064,6 +1064,7 @@ def dm_write():
             tx = ttl.copy(wblk, out[0, 0])
             tx.wait()
 ```
+Note this example currently does not work with the compiler due to conditional scalar variable assignment, issue #380
 
 ### Write Value Sources
 
