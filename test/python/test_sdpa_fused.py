@@ -30,7 +30,12 @@ M_PARTS = 4
 N_PARTS = 4
 K_BLOCKS = K1_DIM // (BLOCK_K * TILE)
 N1_BLOCKS = N1_DIM // (BLOCK_N * TILE)
-WORKER_L1_SIZE = 1448000
+# The kernel-config ringbuffer occupies the L1 between the kernel-config base
+# and the worker region, so it shrinks as worker_l1_size grows. A near-max
+# worker_l1_size starves it and this multi-kernel pipe program overflows it on
+# Wormhole (n150). The dataflow buffers need ~0.7 MB, so cap the worker region
+# well below the maximum to leave the ringbuffer room.
+WORKER_L1_SIZE = 1200000
 
 assert N1_BLOCKS == N_PARTS
 
