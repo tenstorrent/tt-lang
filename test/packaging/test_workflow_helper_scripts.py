@@ -25,6 +25,11 @@ COMPUTE_NIGHTLY_VERSION = SCRIPTS_DIR / "compute-nightly-version.py"
 CHECK_INSTALLED_TTNN = SCRIPTS_DIR / "check-installed-ttnn.py"
 CHECK_BUNDLED_PAYLOAD = SCRIPTS_DIR / "check-wheel-bundled-payload.py"
 PUBLISH_S3_PYPI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-s3-pypi.yml"
+PUBLISH_PYPI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-pypi.yml"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+CALL_BUILD_DOCKER_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-build-docker.yml"
+)
 
 
 def _run_script(
@@ -64,6 +69,24 @@ def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     assert ".github/scripts/build-s3-light-metapackage-wheel.sh" in workflow
     assert ".github/scripts/test-s3-light-wheels.sh" in workflow
     assert "standard_wheel_matrix" in workflow
+
+
+def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
+    build_docker_workflow = CALL_BUILD_DOCKER_WORKFLOW.read_text()
+    ci_workflow = CI_WORKFLOW.read_text()
+    s3_workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    pypi_workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+
+    assert "build_manylinux_wheel_images" in build_docker_workflow
+    assert "build-manylinux-wheel-images:" in build_docker_workflow
+    assert "python_tag: [cp310, cp312]" in build_docker_workflow
+    assert "build-wheel-manylinux-images.sh --python-tags" in build_docker_workflow
+    assert "build_manylinux_wheel_images: true" in ci_workflow
+    assert (
+        "build_manylinux_wheel_images: ${{ contains(fromJSON("
+        "needs.preflight.outputs.wheel_variants), 'light') }}"
+    ) in s3_workflow
+    assert "build_manylinux_wheel_images" not in pypi_workflow
 
 
 def test_s3_stable_tags_publish_clean_version_wheels() -> None:

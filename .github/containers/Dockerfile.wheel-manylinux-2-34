@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Build a tt-lang wheel-builder image for S3 light wheels. The toolchain is
-# built inside manylinux_2_34 base (matching tt-metal's base image) to ensure
-# the same glibc version is used for both the toolchain and the wheel build. The
+# built inside manylinux_2_34 base (matching tt-metal's base image) so the
+# toolchain and the wheel are compiled against the same glibc version.
 
 FROM quay.io/pypa/manylinux_2_34_x86_64
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
