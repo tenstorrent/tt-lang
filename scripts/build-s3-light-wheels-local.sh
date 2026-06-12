@@ -83,12 +83,11 @@ repo_root="$(git rev-parse --show-toplevel)"
 . "$repo_root/.github/scripts/lib/docker-image-utils.sh"
 image_tag="${IMAGE_TAG:-$("$repo_root/.github/containers/get-version-tag.sh")}"
 python_tags_csv="$PYTHON_TAGS"
-if [ -z "$PYTHON_TAGS" ]; then
-    echo "At least one Python tag is required" >&2
+if ! python_tags="$(ttlang_python_tags "$PYTHON_TAGS")"; then
     exit 2
 fi
 metapackage_python_tag="${PYTHON_TAGS%%,*}"
-for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
+for python_tag in $python_tags; do
     if [ "$python_tag" = "cp312" ]; then
         metapackage_python_tag=cp312
         break
@@ -107,26 +106,10 @@ if [ "$BUILD_IMAGES" = true ]; then
         --python-tags "$python_tags_csv"
 fi
 
-image_for_tag() {
-    python_tag="$1"
-    ttlang_image_for_tag "tt-lang-wheel-manylinux-2-34-${python_tag}" "$image_tag"
-}
-
-validate_python_tag() {
-    case "$1" in
-        cp310 | cp312) ;;
-        *)
-            echo "Unsupported Python tag: $1" >&2
-            exit 2
-            ;;
-    esac
-}
-
-for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
-    validate_python_tag "$python_tag"
-    image="$(image_for_tag "$python_tag")"
+for python_tag in $python_tags; do
+    image="$(ttlang_wheel_builder_image "$python_tag" "$image_tag")"
     echo "=== Building S3 light core wheel for $python_tag with $image ==="
-    ${DOCKER:-docker} run --rm \
+    ttlang_docker run --rm \
         --user "$DOCKER_USER" \
         -v "$repo_root:/workspace" \
         -v "$output_dir:/out" \
@@ -141,9 +124,9 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
             --dist-dir /out/dist
 done
 
-image="$(image_for_tag "$metapackage_python_tag")"
+image="$(ttlang_wheel_builder_image "$metapackage_python_tag" "$image_tag")"
 echo "=== Building tt-lang-light metapackage with $image ==="
-${DOCKER:-docker} run --rm \
+ttlang_docker run --rm \
     --user "$DOCKER_USER" \
     -v "$repo_root:/workspace" \
     -v "$output_dir:/out" \

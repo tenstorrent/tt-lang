@@ -62,25 +62,14 @@ repo_root="$(git rev-parse --show-toplevel)"
 docker_tag="${DOCKER_TAG:-$("$repo_root/.github/containers/get-version-tag.sh")}"
 dist_dir="$(cd "$DIST_DIR" && pwd)"
 
-if [ -z "$PYTHON_TAGS" ]; then
-    echo "At least one Python tag is required" >&2
+if ! python_tags="$(ttlang_python_tags "$PYTHON_TAGS")"; then
     exit 2
 fi
 
-image_for_tag() {
-    python_tag="$1"
-    ttlang_image_for_tag "tt-lang-wheel-manylinux-2-34-${python_tag}" "$docker_tag"
-}
-
-for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
-    case "$python_tag" in
-        cp310 | cp312) ;;
-        *) echo "Unsupported Python tag: $python_tag" >&2; exit 2 ;;
-    esac
-
-    image="$(image_for_tag "$python_tag")"
+for python_tag in $python_tags; do
+    image="$(ttlang_wheel_builder_image "$python_tag" "$docker_tag")"
     echo "Install-testing tt-lang-light on $python_tag with $image"
-    ${DOCKER:-docker} run --rm \
+    ttlang_docker run --rm \
         -v "$repo_root:/workspace" \
         -v "$dist_dir:/dist" \
         -w /workspace \
