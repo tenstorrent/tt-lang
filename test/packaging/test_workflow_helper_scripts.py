@@ -51,13 +51,19 @@ def _write_wheel(dist_dir: Path, filename: str, metadata: str) -> Path:
     return wheel_path
 
 
-def test_s3_schedule_publishes_bundled_and_light_wheels() -> None:
+def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
 
     assert (
         "github.event_name == 'workflow_dispatch' && inputs.wheel_variant || ''"
     ) in workflow
     assert "EVENT_NAME: ${{ github.event_name }}" in workflow
+    assert "tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}" in workflow
+    assert "python_tag: [cp310, cp312]" in workflow
+    assert ".github/scripts/build-s3-light-core-wheel.sh" in workflow
+    assert ".github/scripts/build-s3-light-metapackage-wheel.sh" in workflow
+    assert ".github/scripts/test-s3-light-wheels.sh" in workflow
+    assert "standard_wheel_matrix" in workflow
 
 
 def test_s3_stable_tags_publish_clean_version_wheels() -> None:

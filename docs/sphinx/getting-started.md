@@ -15,8 +15,8 @@ functional simulator (no compiler or hardware support) and does not depend on
 `ttnn`.
 
 First, create an isolated Python environment (venv, conda, etc.) with Python
-3.11 or later (Python 3.12 recommended). The wheel targets a specific CPython
-ABI, so the venv's Python must match — invoke `python3.12` (or `python3.11`)
+3.10 or later (Python 3.12 recommended). The wheel targets a specific CPython
+ABI, so the venv's Python must match — invoke `python3.12` (or `python3.10`)
 explicitly rather than the system default `python3`:
 
 ```bash

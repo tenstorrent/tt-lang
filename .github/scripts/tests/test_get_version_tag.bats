@@ -54,7 +54,7 @@ fresh_tagged_repo() {
     assert_output "$BASE_TAG"
 }
 
-# --- Per-path uplift: each of the 5 uplift paths separately ---
+# --- Per-path uplift: each uplift path separately ---
 
 uplift_one_path() {
     local path_to_change="$1"
@@ -79,6 +79,10 @@ uplift_one_path() {
 
 @test "uplift in .github/containers/Dockerfile.base -> -uplift-<hash> form" {
     uplift_one_path ".github/containers/Dockerfile.base"
+}
+
+@test "uplift in .github/containers/Dockerfile.wheel-manylinux-2-34 -> -uplift-<hash> form" {
+    uplift_one_path ".github/containers/Dockerfile.wheel-manylinux-2-34"
 }
 
 @test "uplift in requirements-runtime.txt -> -uplift-<hash> form" {
@@ -246,6 +250,7 @@ uplift_one_path() {
 UPLIFT_PATHS=(
     requirements-runtime.txt
     .github/containers/Dockerfile.base
+    .github/containers/Dockerfile.wheel-manylinux-2-34
     third-party/tt-metal
     third-party/llvm-project
     third-party/tt-metal-version

@@ -1,7 +1,9 @@
 # Build directories
-build/
-.build/
-*.build/
+/build*/
+/.build/
+/*.build/
+/dist*/
+/*.whl
 
 # Python cache
 __pycache__/

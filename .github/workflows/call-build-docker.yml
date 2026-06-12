@@ -336,6 +336,13 @@ jobs:
           docker tag "$LOCAL" "$LATEST"
           docker push "$LATEST"
 
+      - name: Build and push manylinux wheel-builder images
+        if: ${{ inputs.push }}
+        env:
+          DOCKER_BUILDKIT: 1
+          BUILDKIT_STEP_LOG_MAX_SIZE: -1
+        run: .github/containers/build-wheel-manylinux-images.sh
+
       - name: Clean up Docker after build
         if: always()
         run: |

@@ -44,7 +44,7 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.
 
-First, create an isolated Python environment (venv, conda, etc.) with Python 3.11 or later (python3.12 recommended). For example:
+First, create an isolated Python environment (venv, conda, etc.) with Python 3.10 or later (python3.12 recommended). For example:
 
 ```bash
 python3 -m venv --prompt ttlang ttlang-venv

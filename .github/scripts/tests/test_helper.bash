@@ -21,6 +21,8 @@ BIN_DIR="$(dirname "$SCRIPTS_DIR")/../bin"
 # scripts/ (top-level) without hard-coding a path.
 TTLANG_REPO_ROOT="$(dirname "$(dirname "$SCRIPTS_DIR")")"
 WHEEL_PYTAG="cp312-cp312-linux_x86_64"
+LIGHT_CP310_PYTAG="cp310-cp310-manylinux_2_34_x86_64"
+LIGHT_CP312_PYTAG="cp312-cp312-manylinux_2_34_x86_64"
 TEST_TTNN_PYPI_VERSION="99.88.77"
 TEST_TT_METAL_TAG="v99.88.77"
 TEST_TT_METAL_RC1_TAG="v99.88.77-rc1"
@@ -31,6 +33,9 @@ whl()       { printf 'tt_lang-%s-%s.whl' "$1" "$WHEEL_PYTAG"; }
 whl_sim()   { printf 'tt_lang_sim-%s-py3-none-any.whl' "$1"; }
 whl_light() { printf 'tt_lang_light-%s-py3-none-any.whl' "$1"; }
 whl_build() { printf 'tt_lang-%s-%s-%s.whl' "$1" "$2" "$WHEEL_PYTAG"; }
+whl_light_core_cp310() { printf 'tt_lang-%s+light-%s.whl' "$1" "$LIGHT_CP310_PYTAG"; }
+whl_light_core_cp312() { printf 'tt_lang-%s+light-%s.whl' "$1" "$LIGHT_CP312_PYTAG"; }
+whl_light_core_tagged() { printf 'tt_lang-%s+light-%s.whl' "$1" "$2"; }
 
 make_wheel_dir() {
     local dir

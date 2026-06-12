@@ -247,29 +247,53 @@ function(ttlang_verify_ttmetal_sha SUBMODULE_DIR EXPECTED_SHA)
   endif()
 endfunction()
 
+# _ttlang_apply_patch(SOURCE_DIR PATCH SOURCE_HAS_GIT)
+# Applies one patch, skipping it when already applied.
+function(_ttlang_apply_patch SOURCE_DIR PATCH SOURCE_HAS_GIT)
+  if(SOURCE_HAS_GIT)
+    set(_reverse_check_command git -C "${SOURCE_DIR}" apply --check --reverse "${PATCH}")
+    set(_apply_command git -C "${SOURCE_DIR}" apply "${PATCH}")
+  else()
+    set(_reverse_check_command patch -d "${SOURCE_DIR}" -p1 --dry-run --reverse -i "${PATCH}")
+    set(_apply_command patch -d "${SOURCE_DIR}" -p1 --forward -i "${PATCH}")
+  endif()
+
+  execute_process(
+    COMMAND ${_reverse_check_command}
+    RESULT_VARIABLE _already_applied
+    OUTPUT_QUIET ERROR_QUIET
+  )
+  if(_already_applied EQUAL 0)
+    return()
+  endif()
+
+  get_filename_component(_name "${PATCH}" NAME)
+  message(STATUS "Applying patch: ${_name}")
+  execute_process(
+    COMMAND ${_apply_command}
+    RESULT_VARIABLE _result
+  )
+  if(NOT _result EQUAL 0)
+    message(FATAL_ERROR "Failed to apply patch: ${_name}")
+  endif()
+endfunction()
+
 # ttlang_apply_patches(SOURCE_DIR PATCHES_GLOB)
-# Applies git patches matching PATCHES_GLOB to SOURCE_DIR.
-# Skips patches that are already applied (checked via git apply --reverse --check).
+# Applies patches matching PATCHES_GLOB to SOURCE_DIR.
 function(ttlang_apply_patches SOURCE_DIR PATCHES_GLOB)
   file(GLOB _patches "${PATCHES_GLOB}")
+
+  execute_process(
+    COMMAND git -C "${SOURCE_DIR}" rev-parse --is-inside-work-tree
+    RESULT_VARIABLE _source_has_git
+    OUTPUT_QUIET ERROR_QUIET
+  )
+  set(_source_is_git FALSE)
+  if(_source_has_git EQUAL 0)
+    set(_source_is_git TRUE)
+  endif()
+
   foreach(_patch ${_patches})
-    # Skip if already applied.
-    execute_process(
-      COMMAND git -C "${SOURCE_DIR}" apply --check --reverse "${_patch}"
-      RESULT_VARIABLE _already_applied
-      OUTPUT_QUIET ERROR_QUIET
-    )
-    if(_already_applied EQUAL 0)
-      continue()
-    endif()
-    get_filename_component(_name "${_patch}" NAME)
-    message(STATUS "Applying patch: ${_name}")
-    execute_process(
-      COMMAND git -C "${SOURCE_DIR}" apply "${_patch}"
-      RESULT_VARIABLE _result
-    )
-    if(NOT _result EQUAL 0)
-      message(FATAL_ERROR "Failed to apply patch: ${_name}")
-    endif()
+    _ttlang_apply_patch("${SOURCE_DIR}" "${_patch}" "${_source_is_git}")
   endforeach()
 endfunction()
