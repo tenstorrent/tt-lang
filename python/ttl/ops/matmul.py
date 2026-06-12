@@ -76,13 +76,15 @@ def make_ksplit(
     if Mt % bm or Nt % bn or Kt % bk:
         raise ValueError(
             f"block must divide shape in tiles: Mt={Mt} Nt={Nt} Kt={Kt} "
-            f"block=(bm={bm}, bn={bn}, bk={bk})")
+            f"block=(bm={bm}, bn={bn}, bk={bk})"
+        )
 
     Mb, Nb, Kb = Mt // bm, Nt // bn, Kt // bk
     if Mb % Mp or Nb % Np or Kb % Kp:
         raise ValueError(
             f"block/part mismatch: Mb={Mb} Nb={Nb} Kb={Kb} must divide "
-            f"Mp={Mp} Np={Np} Kp={Kp}")
+            f"Mp={Mp} Np={Np} Kp={Kp}"
+        )
 
     M_BPN = Mb // Mp
     N_BPN = Nb // Np
@@ -100,8 +102,12 @@ def make_ksplit(
         # Split the partial per consumer: compute folds the received partial in
         # via partial_for_sum_cb; the DM thread ships the partial off via
         # partial_for_send_cb. One producer cannot feed both compute and DM.
-        partial_for_sum_cb = ttl.make_dataflow_buffer_like(out, shape=(bm, bn), block_count=2)
-        partial_for_send_cb = ttl.make_dataflow_buffer_like(out, shape=(bm, bn), block_count=2)
+        partial_for_sum_cb = ttl.make_dataflow_buffer_like(
+            out, shape=(bm, bn), block_count=2
+        )
+        partial_for_send_cb = ttl.make_dataflow_buffer_like(
+            out, shape=(bm, bn), block_count=2
+        )
         recv_cb = ttl.make_dataflow_buffer_like(out, shape=(bm, bn), block_count=2)
         out_cb = ttl.make_dataflow_buffer_like(out, shape=(bm, bn), block_count=2)
 

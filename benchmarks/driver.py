@@ -78,7 +78,9 @@ def main(argv=None):
     for name, sweep_fn, panel_fn, fields in cycles:
         print(f"\n=== {name} ===", flush=True)
         if not _profiler_on():
-            print("  skipped: cycles needs TT_METAL_DEVICE_PROFILER=1 (Tracy)", flush=True)
+            print(
+                "  skipped: cycles needs TT_METAL_DEVICE_PROFILER=1 (Tracy)", flush=True
+            )
             continue
         rows = sweep_fn(filter=args.filter)
         csv_path = out_dir / f"{name}.csv"

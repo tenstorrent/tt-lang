@@ -57,7 +57,9 @@ def _line(spec: BenchSpec, row: dict) -> str:
     return f"{str(row.get('label', '')):<32}  {body}"
 
 
-def sweep(spec: BenchSpec, *, filter: Optional[str] = None, warmup=3, runs=5) -> List[dict]:
+def sweep(
+    spec: BenchSpec, *, filter: Optional[str] = None, warmup=3, runs=5
+) -> List[dict]:
     """Open the device, run every (selected) case, return the result rows."""
     device = spec.open_device()
     rows: List[dict] = []
@@ -110,7 +112,9 @@ def cli(spec: BenchSpec, argv=None) -> List[dict]:
     ap = argparse.ArgumentParser(description=f"{spec.name} e2e benchmark")
     ap.add_argument("--filter", default=None, help="substring to select cases by label")
     ap.add_argument("--csv", default=None, help="output CSV path")
-    ap.add_argument("--plot", action="store_true", help="write a ratio PNG next to the CSV")
+    ap.add_argument(
+        "--plot", action="store_true", help="write a ratio PNG next to the CSV"
+    )
     ap.add_argument("--warmup", type=int, default=3)
     ap.add_argument("--runs", type=int, default=5)
     args = ap.parse_args(argv)

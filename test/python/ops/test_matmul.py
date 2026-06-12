@@ -58,8 +58,8 @@ def run_ksplit(device, M, K, N, block_cfg, part_cfg):
     "M, K, N, block_cfg, part_cfg",
     [
         # (M, K, N, (bm,bn,bk), (Mp,Np,Kp))  -- comment: blocks per core
-        (128, 256, 128, (2, 2, 2), (2, 2, 2)),   # 1 block/core (atom baseline)
-        (256, 256, 256, (2, 2, 2), (2, 2, 2)),   # 4 blocks/core (loop)
+        (128, 256, 128, (2, 2, 2), (2, 2, 2)),  # 1 block/core (atom baseline)
+        (256, 256, 256, (2, 2, 2), (2, 2, 2)),  # 4 blocks/core (loop)
     ],
 )
 def test_ksplit(device, M, K, N, block_cfg, part_cfg):

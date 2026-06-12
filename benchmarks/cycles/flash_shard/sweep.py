@@ -29,8 +29,15 @@ SHAPES = [
 ]
 
 FIELDS = (
-    "label", "tile_rows", "ttl_cyc", "ttl_us", "metal_cyc", "metal_us",
-    "ratio", "ttl_pcc", "metal_pcc",
+    "label",
+    "tile_rows",
+    "ttl_cyc",
+    "ttl_us",
+    "metal_cyc",
+    "metal_us",
+    "ratio",
+    "ttl_pcc",
+    "metal_pcc",
 )
 
 
@@ -83,7 +90,9 @@ def panel(rows):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="flash-shard cycle A/B sweep")
-    ap.add_argument("--filter", default=None, help="substring to select a shape by label")
+    ap.add_argument(
+        "--filter", default=None, help="substring to select a shape by label"
+    )
     args = ap.parse_args(argv)
     sweep(filter=args.filter)
 

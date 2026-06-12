@@ -59,10 +59,23 @@ TTNN_CFG = ttnn.WormholeComputeKernelConfig(
 )
 
 FIELDS = (
-    "label", "M", "K", "N",
-    "bm", "bn", "bk", "Mp", "Np", "Kp",
-    "cores", "iter_per_core", "pad",
-    "ttlang_ms", "ttnn_ms", "ratio", "pcc",
+    "label",
+    "M",
+    "K",
+    "N",
+    "bm",
+    "bn",
+    "bk",
+    "Mp",
+    "Np",
+    "Kp",
+    "cores",
+    "iter_per_core",
+    "pad",
+    "ttlang_ms",
+    "ttnn_ms",
+    "ratio",
+    "pcc",
 )
 
 
@@ -133,9 +146,15 @@ def run_case(device, case, *, warmup, runs):
     Mp, Np, Kp = plan.part_cfg
     return {
         "label": label,
-        "M": M, "K": K, "N": N,
-        "bm": bm, "bn": bn, "bk": bk,
-        "Mp": Mp, "Np": Np, "Kp": Kp,
+        "M": M,
+        "K": K,
+        "N": N,
+        "bm": bm,
+        "bn": bn,
+        "bk": bk,
+        "Mp": Mp,
+        "Np": Np,
+        "Kp": Kp,
         "cores": plan.cores,
         "iter_per_core": plan.iters_per_core,
         "pad": round(plan.pad_ratio, 4),
@@ -157,9 +176,7 @@ def _format_row(r):
 
 
 def _plot_label(r):
-    base = (
-        str(r["label"]).split(" (")[0].strip().replace(" x ", "×").replace("^3", "³")
-    )
+    base = str(r["label"]).split(" (")[0].strip().replace(" x ", "×").replace("^3", "³")
     return f"{base}\n({r['bm']},{r['bn']},{r['bk']}) Kp={r['Kp']}\n{r['cores']} cores"
 
 

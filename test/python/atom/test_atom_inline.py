@@ -244,8 +244,12 @@ def test_atom_two_scratch(device):
 
     got0 = ttnn.to_torch(out0).reshape(tile, tile).to(torch.bfloat16)
     got1 = ttnn.to_torch(out1).reshape(tile, tile).to(torch.bfloat16)
-    assert_allclose(got0, torch.exp(in0_t.float()).to(torch.bfloat16), rtol=2e-2, atol=2e-2)
-    assert_allclose(got1, torch.exp(in1_t.float()).to(torch.bfloat16), rtol=2e-2, atol=2e-2)
+    assert_allclose(
+        got0, torch.exp(in0_t.float()).to(torch.bfloat16), rtol=2e-2, atol=2e-2
+    )
+    assert_allclose(
+        got1, torch.exp(in1_t.float()).to(torch.bfloat16), rtol=2e-2, atol=2e-2
+    )
 
 
 def test_atom_cross_thread_scratch(device):

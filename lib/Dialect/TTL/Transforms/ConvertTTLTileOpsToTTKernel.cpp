@@ -759,8 +759,7 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
 
 /// Lower ttl.tile_binary_bcast to ttkernel.binary_bcast. lhs and rhs are read
 /// from CBs (FPU path); rhs is the single tile broadcast along bcast_type.
-struct TTLTileBinaryBcastToTTKernel
-    : OpConversionPattern<TileBinaryBcastOp> {
+struct TTLTileBinaryBcastToTTKernel : OpConversionPattern<TileBinaryBcastOp> {
   using OpConversionPattern<TileBinaryBcastOp>::OpConversionPattern;
 
   LogicalResult
@@ -774,9 +773,8 @@ struct TTLTileBinaryBcastToTTKernel
     }
 
     auto funcOp = op->getParentOfType<func::FuncOp>();
-    auto rhsCB = lookupAndConvertCB(op.getRhs(), funcOp,
-                                    this->getTypeConverter(), rewriter,
-                                    op.getLoc());
+    auto rhsCB = lookupAndConvertCB(
+        op.getRhs(), funcOp, this->getTypeConverter(), rewriter, op.getLoc());
     if (failed(rhsCB)) {
       return rewriter.notifyMatchFailure(op, "cannot find/convert rhs CB");
     }

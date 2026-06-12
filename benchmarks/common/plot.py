@@ -89,9 +89,7 @@ def save_stacked_ratio_plot(panels: List[Mapping], *, path: str) -> None:
         print("matplotlib not available, skipping plot", flush=True)
         return
 
-    drawable = [
-        (p, _plottable(p["rows"], p.get("ratio_key", "ratio"))) for p in panels
-    ]
+    drawable = [(p, _plottable(p["rows"], p.get("ratio_key", "ratio"))) for p in panels]
     drawable = [(p, rows) for p, rows in drawable if rows]
     if not drawable:
         print("no rows to plot", flush=True)

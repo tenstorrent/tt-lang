@@ -245,7 +245,8 @@ static bool isFoldableBcastBinary(Operation *op, Value bcastResult) {
   return false;
 }
 
-/// Map a TTL binary elementwise op to the matching TTKernel eltwise binary type.
+/// Map a TTL binary elementwise op to the matching TTKernel eltwise binary
+/// type.
 static ttkernel::EltwiseBinaryType eltwiseBinaryTypeFor(Operation *op) {
   if (isa<AddOp>(op)) {
     return ttkernel::EltwiseBinaryType::Add;
@@ -751,7 +752,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
               isa<BlockArgument>(d.sourceTile)) {
             Value outputTile = body->getArguments().back();
             tileResult = createTileOpWithPlaceholderDstIndex<TileBinaryBcastOp>(
-                rewriter, loc, fusedTileType, dataTile, d.sourceTile, outputTile,
+                rewriter, loc, fusedTileType, dataTile, d.sourceTile,
+                outputTile,
                 ttkernel::EltwiseBinaryTypeAttr::get(rewriter.getContext(),
                                                      eltwiseBinaryTypeFor(op)),
                 BcastTypeAttr::get(rewriter.getContext(), d.bcastType));

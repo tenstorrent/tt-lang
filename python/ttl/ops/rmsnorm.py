@@ -45,14 +45,14 @@ def make_rmsnorm(Rt, PNt, Dt, WCt, D, eps):
         bpc = (n_blocks + cores - 1) // cores
         cid = col_c * gy + row_c
 
-        xq_cb   = ttl.make_dataflow_buffer_like(x,      shape=(PNt, WCt), block_count=2)
-        xr_cb   = ttl.make_dataflow_buffer_like(x,      shape=(PNt, WCt), block_count=2)
-        w_cb    = ttl.make_dataflow_buffer_like(weight, shape=(1, WCt),   block_count=2)
-        out_cb  = ttl.make_dataflow_buffer_like(out,    shape=(PNt, WCt), block_count=2)
-        sq_cb   = ttl.make_dataflow_buffer_like(x,      shape=(PNt, WCt), block_count=2)
-        part_cb = ttl.make_dataflow_buffer_like(x,      shape=(PNt, 1),   block_count=2)
-        acc_cb  = ttl.make_dataflow_buffer_like(x,      shape=(PNt, 1),   block_count=2)
-        inv_cb  = ttl.make_dataflow_buffer_like(x,      shape=(PNt, 1),   block_count=2)
+        xq_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, WCt), block_count=2)
+        xr_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, WCt), block_count=2)
+        w_cb = ttl.make_dataflow_buffer_like(weight, shape=(1, WCt), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(PNt, WCt), block_count=2)
+        sq_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, WCt), block_count=2)
+        part_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, 1), block_count=2)
+        acc_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, 1), block_count=2)
+        inv_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, 1), block_count=2)
 
         for blk in range(bpc):
             b = cid * bpc + blk
@@ -64,7 +64,7 @@ def make_rmsnorm(Rt, PNt, Dt, WCt, D, eps):
                 for c in range(n_wc):
                     wc = c * WCt
                     xqd = xq_cb.reserve()
-                    ttl.copy(x[base:base + PNt, wc:wc + WCt], xqd)
+                    ttl.copy(x[base : base + PNt, wc : wc + WCt], xqd)
                     xq = xq_cb.wait()
                     sqd = sq_cb.reserve()
                     sqd.store(ttl.mul(xq, xq))
@@ -76,23 +76,37 @@ def make_rmsnorm(Rt, PNt, Dt, WCt, D, eps):
 
                 acc_final = acc_cb.wait()
                 inv_w = inv_cb.reserve()
-                inv_w.store(ttl.recip(ttl.sqrt(ttl.add(
-                    ttl.mul(acc_final, ttl.block.fill(inv_d, shape=inv_w.shape)),
-                    ttl.block.fill(eps, shape=inv_w.shape)))))
+                inv_w.store(
+                    ttl.recip(
+                        ttl.sqrt(
+                            ttl.add(
+                                ttl.mul(
+                                    acc_final, ttl.block.fill(inv_d, shape=inv_w.shape)
+                                ),
+                                ttl.block.fill(eps, shape=inv_w.shape),
+                            )
+                        )
+                    )
+                )
 
                 inv = inv_cb.wait()
                 for c in range(n_wc):
                     wc = c * WCt
                     xrd = xr_cb.reserve()
-                    ttl.copy(x[base:base + PNt, wc:wc + WCt], xrd)
+                    ttl.copy(x[base : base + PNt, wc : wc + WCt], xrd)
                     wrd = w_cb.reserve()
-                    ttl.copy(weight[0:1, wc:wc + WCt], wrd)
+                    ttl.copy(weight[0:1, wc : wc + WCt], wrd)
                     xr = xr_cb.wait()
                     w = w_cb.wait()
                     ow = out_cb.reserve()
-                    ow.store(ttl.mul(
-                        ttl.mul(xr, ttl.block.broadcast(inv, dims=[1], shape=xr.shape)),
-                        ttl.block.broadcast(w, dims=[0], shape=xr.shape)))
-                    ttl.copy(out_cb.wait(), out[base:base + PNt, wc:wc + WCt])
+                    ow.store(
+                        ttl.mul(
+                            ttl.mul(
+                                xr, ttl.block.broadcast(inv, dims=[1], shape=xr.shape)
+                            ),
+                            ttl.block.broadcast(w, dims=[0], shape=xr.shape),
+                        )
+                    )
+                    ttl.copy(out_cb.wait(), out[base : base + PNt, wc : wc + WCt])
 
     return rmsnorm

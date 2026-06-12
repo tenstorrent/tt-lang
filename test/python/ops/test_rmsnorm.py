@@ -57,8 +57,8 @@ def run_rmsnorm(device, n_rows, PNt, Dt, WCt, D):
 @pytest.mark.parametrize(
     "n_rows, PNt, Dt, WCt, D",
     [
-        (2 * TILE, 1, 2, 2, 64),       # fewer blocks than cores: idle cores
-        (261 * TILE, 1, 2, 2, 64),     # block count indivisible by cores: tail guard
+        (2 * TILE, 1, 2, 2, 64),  # fewer blocks than cores: idle cores
+        (261 * TILE, 1, 2, 2, 64),  # block count indivisible by cores: tail guard
     ],
 )
 def test_rmsnorm(device, n_rows, PNt, Dt, WCt, D):

@@ -52,20 +52,20 @@ def make_topk(Rt, PNt, Wt, K, N):
         bpc = (n_blocks + gx * gy - 1) // (gx * gy)
         cid = col_c * gy + row_c
 
-        xin_cb     = ttl.make_dataflow_buffer_like(x,        shape=(PNt, Wt), block_count=2)
-        xs_cb      = ttl.make_dataflow_buffer_like(x,        shape=(PNt, Wt), block_count=2)
-        idx_cb     = ttl.make_dataflow_buffer_like(index,    shape=(1, Wt), block_count=2)
-        irev_cb    = ttl.make_dataflow_buffer_like(x,        shape=(1, Wt), block_count=2)
-        m_cb       = ttl.make_dataflow_buffer_like(x,        shape=(PNt, 1), block_count=2)
-        vd_cb      = ttl.make_dataflow_buffer_like(x,        shape=(PNt, Wt), block_count=2)
-        vmask_cb   = ttl.make_dataflow_buffer_like(x,        shape=(PNt, Wt), block_count=2)
-        contrib_cb = ttl.make_dataflow_buffer_like(x,        shape=(PNt, Wt), block_count=2)
-        ridx_cb    = ttl.make_dataflow_buffer_like(x,        shape=(PNt, 1), block_count=2)
-        fidx_cb    = ttl.make_dataflow_buffer_like(x,        shape=(PNt, 1), block_count=2)
-        id_cb      = ttl.make_dataflow_buffer_like(x,        shape=(PNt, Wt), block_count=2)
-        imask_cb   = ttl.make_dataflow_buffer_like(x,        shape=(PNt, Wt), block_count=2)
-        ov_cb      = ttl.make_dataflow_buffer_like(out_vals, shape=(PNt, 1), block_count=2)
-        oi_cb      = ttl.make_dataflow_buffer_like(out_idxs, shape=(PNt, 1), block_count=2)
+        xin_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, Wt), block_count=2)
+        xs_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, Wt), block_count=2)
+        idx_cb = ttl.make_dataflow_buffer_like(index, shape=(1, Wt), block_count=2)
+        irev_cb = ttl.make_dataflow_buffer_like(x, shape=(1, Wt), block_count=2)
+        m_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, 1), block_count=2)
+        vd_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, Wt), block_count=2)
+        vmask_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, Wt), block_count=2)
+        contrib_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, Wt), block_count=2)
+        ridx_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, 1), block_count=2)
+        fidx_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, 1), block_count=2)
+        id_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, Wt), block_count=2)
+        imask_cb = ttl.make_dataflow_buffer_like(x, shape=(PNt, Wt), block_count=2)
+        ov_cb = ttl.make_dataflow_buffer_like(out_vals, shape=(PNt, 1), block_count=2)
+        oi_cb = ttl.make_dataflow_buffer_like(out_idxs, shape=(PNt, 1), block_count=2)
 
         sW = (PNt, Wt)
         s1 = (PNt, 1)
@@ -87,7 +87,7 @@ def make_topk(Rt, PNt, Wt, K, N):
                 # Load on the DM thread into xin, then initialize the compute
                 # working set on the compute thread so xs has a single producer.
                 xin0 = xin_cb.reserve()
-                ttl.copy(x[base:base + PNt, 0:Wt], xin0)
+                ttl.copy(x[base : base + PNt, 0:Wt], xin0)
                 xs0 = xs_cb.reserve()
                 xs0.store(xin_cb.wait())
 
@@ -104,42 +104,52 @@ def make_topk(Rt, PNt, Wt, K, N):
                     # width tiles overflows the dst register file when nested
                     # deeper, leaving high tiles uninitialized.
                     vd_w = vd_cb.reserve()
-                    vd_w.store(ttl.sub(
-                        ttl.block.broadcast(m, dims=[1], shape=sW), xs))
+                    vd_w.store(ttl.sub(ttl.block.broadcast(m, dims=[1], shape=sW), xs))
                     vmask_w = vmask_cb.reserve()
-                    vmask_w.store(ttl.sub(
-                        ttl.block.fill(1.0, shape=sW), ttl.sign(vd_cb.wait())))
+                    vmask_w.store(
+                        ttl.sub(ttl.block.fill(1.0, shape=sW), ttl.sign(vd_cb.wait()))
+                    )
                     vmask = vmask_cb.wait()
 
                     # first column index of the max = (N-1) - max(vmask*iota_rev).
                     contrib_w = contrib_cb.reserve()
-                    contrib_w.store(ttl.mul(
-                        vmask, ttl.block.broadcast(irev, dims=[0], shape=sW)))
+                    contrib_w.store(
+                        ttl.mul(vmask, ttl.block.broadcast(irev, dims=[0], shape=sW))
+                    )
                     ridx_w = ridx_cb.reserve()
                     ridx_w.store(ttl.math.reduce_max(contrib_cb.wait(), dims=[1]))
                     fidx_w = fidx_cb.reserve()
                     fidx_w.store(ttl.sub(ttl.block.fill(Nm1, shape=s1), ridx_cb.wait()))
                     fidx = fidx_cb.wait()
 
-                    ov_w = ov_cb.reserve(); ov_w.store(m)
-                    ttl.copy(ov_cb.wait(), out_vals[base:base + PNt, r:r + 1])
-                    oi_w = oi_cb.reserve(); oi_w.store(fidx)
-                    ttl.copy(oi_cb.wait(), out_idxs[base:base + PNt, r:r + 1])
+                    ov_w = ov_cb.reserve()
+                    ov_w.store(m)
+                    ttl.copy(ov_cb.wait(), out_vals[base : base + PNt, r : r + 1])
+                    oi_w = oi_cb.reserve()
+                    oi_w.store(fidx)
+                    ttl.copy(oi_cb.wait(), out_idxs[base : base + PNt, r : r + 1])
 
                     # knock out exactly the selected column (handles value
                     # ties). Materialized in two steps for the same dst-register
                     # reason as vmask above.
                     id_w = id_cb.reserve()
-                    id_w.store(ttl.abs(ttl.sub(
-                        ttl.block.broadcast(idx_w, dims=[0], shape=sW),
-                        ttl.block.broadcast(fidx, dims=[1], shape=sW))))
+                    id_w.store(
+                        ttl.abs(
+                            ttl.sub(
+                                ttl.block.broadcast(idx_w, dims=[0], shape=sW),
+                                ttl.block.broadcast(fidx, dims=[1], shape=sW),
+                            )
+                        )
+                    )
                     imask_w = imask_cb.reserve()
-                    imask_w.store(ttl.sub(
-                        ttl.block.fill(1.0, shape=sW), ttl.sign(id_cb.wait())))
+                    imask_w.store(
+                        ttl.sub(ttl.block.fill(1.0, shape=sW), ttl.sign(id_cb.wait()))
+                    )
                     imask = imask_cb.wait()
 
                     xs_new = xs_cb.reserve()
-                    xs_new.store(ttl.sub(xs, ttl.mul(
-                        imask, ttl.block.fill(_KNOCKOUT, shape=sW))))
+                    xs_new.store(
+                        ttl.sub(xs, ttl.mul(imask, ttl.block.fill(_KNOCKOUT, shape=sW)))
+                    )
 
     return topk

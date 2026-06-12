@@ -34,48 +34,97 @@ from benchmarks.common import BenchSpec, cli, pcc, time_runs
 TILE = 32
 
 NUM_HEADS = 64
-KV_LORA_RANK = 512                       # head_dim_v
+KV_LORA_RANK = 512  # head_dim_v
 QK_ROPE_HEAD_DIM = 64
 QK_NOPE_HEAD_DIM = 128
-KVPE_DIM = KV_LORA_RANK + QK_ROPE_HEAD_DIM        # 576
+KVPE_DIM = KV_LORA_RANK + QK_ROPE_HEAD_DIM  # 576
 QK_HEAD_DIM = QK_NOPE_HEAD_DIM + QK_ROPE_HEAD_DIM  # 192
-N_CORES = 8                              # ttl K-split (n_cols)
+N_CORES = 8  # ttl K-split (n_cols)
 
-PNHt = NUM_HEADS // TILE                  # 2
-DHt = KVPE_DIM // TILE                     # 18
-vDHt = KV_LORA_RANK // TILE                # 16
+PNHt = NUM_HEADS // TILE  # 2
+DHt = KVPE_DIM // TILE  # 18
+vDHt = KV_LORA_RANK // TILE  # 16
 Sk_chunk_t = 2
 
 # Attended length must be a multiple of the ttl op's per-core chunk.
-TTL_CHUNK = N_CORES * Sk_chunk_t * TILE   # 512
+TTL_CHUNK = N_CORES * Sk_chunk_t * TILE  # 512
 
 # Production tile counts make the compute kernel large; trim worker L1 to
 # enlarge the kernel-config buffer past the default TENSIX limit. The fused
 # single-kernel op inlines all three phases, so it needs the larger buffer.
 WORKER_L1 = 1430000
 
-OURS_SCALE = QK_HEAD_DIM ** -0.5                   # 192 ** -0.5
-DEEPSEEK_SCALE = (192 + 64) ** -0.5                # deepseek qk_head_dim = 256
+OURS_SCALE = QK_HEAD_DIM**-0.5  # 192 ** -0.5
+DEEPSEEK_SCALE = (192 + 64) ** -0.5  # deepseek qk_head_dim = 256
 
 CACHE_32K = 32 * 1024
 
 # Each case is a dict: label, users, heads, cache (KV-cache length), pos
 # (per-user decode positions), scale.
 CASES = (
-    {"label": "ctx-512", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [511], "scale": OURS_SCALE},
-    {"label": "ctx-1k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [1023], "scale": OURS_SCALE},
-    {"label": "ctx-2k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [2047], "scale": OURS_SCALE},
-    {"label": "ctx-8k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [8191], "scale": OURS_SCALE},
-    {"label": "ctx-32k", "users": 1, "heads": NUM_HEADS, "cache": CACHE_32K, "pos": [32767], "scale": OURS_SCALE},
+    {
+        "label": "ctx-512",
+        "users": 1,
+        "heads": NUM_HEADS,
+        "cache": CACHE_32K,
+        "pos": [511],
+        "scale": OURS_SCALE,
+    },
+    {
+        "label": "ctx-1k",
+        "users": 1,
+        "heads": NUM_HEADS,
+        "cache": CACHE_32K,
+        "pos": [1023],
+        "scale": OURS_SCALE,
+    },
+    {
+        "label": "ctx-2k",
+        "users": 1,
+        "heads": NUM_HEADS,
+        "cache": CACHE_32K,
+        "pos": [2047],
+        "scale": OURS_SCALE,
+    },
+    {
+        "label": "ctx-8k",
+        "users": 1,
+        "heads": NUM_HEADS,
+        "cache": CACHE_32K,
+        "pos": [8191],
+        "scale": OURS_SCALE,
+    },
+    {
+        "label": "ctx-32k",
+        "users": 1,
+        "heads": NUM_HEADS,
+        "cache": CACHE_32K,
+        "pos": [32767],
+        "scale": OURS_SCALE,
+    },
     # The deepseek demo's exact 4-user / 128-head / 1k problem (ttnn-side only:
     # our op reads one shared K/V so it can't run 4 distinct users, and its
     # 128-head shard overflows L1 -- it puts every query-head tile on each core,
     # so it tops out at 64 heads / PNHt=2, which the ctx-* cases already cover).
-    {"label": "deepseek-1k", "users": 4, "heads": 128, "cache": 1024, "pos": [0, 170, 341, 512], "scale": DEEPSEEK_SCALE},
+    {
+        "label": "deepseek-1k",
+        "users": 4,
+        "heads": 128,
+        "cache": 1024,
+        "pos": [0, 170, 341, 512],
+        "scale": DEEPSEEK_SCALE,
+    },
     # A single-user slice at deepseek's 128-head count. The ttl shard overflows
     # L1 at PNHt=4, so this records the ttnn side and a guarded ttl=n/a -- a
     # standing marker of the op's per-core head ceiling.
-    {"label": "deepseek-near", "users": 1, "heads": 128, "cache": 1024, "pos": [511], "scale": DEEPSEEK_SCALE},
+    {
+        "label": "deepseek-near",
+        "users": 1,
+        "heads": 128,
+        "cache": 1024,
+        "pos": [511],
+        "scale": DEEPSEEK_SCALE,
+    },
 )
 
 FIELDS = ("label", "users", "heads", "ctx", "ttlang_ms", "ttnn_ms", "ratio", "pcc")
@@ -83,15 +132,21 @@ FIELDS = ("label", "users", "heads", "ctx", "ttlang_ms", "ttnn_ms", "ratio", "pc
 
 def _to_dev(t, device):
     return ttnn.from_torch(
-        t.contiguous(), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        t.contiguous(),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
 
 def _to_dev_bfp8(t, device):
     return ttnn.from_torch(
-        t.contiguous(), dtype=ttnn.bfloat8_b, layout=ttnn.TILE_LAYOUT,
-        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        t.contiguous(),
+        dtype=ttnn.bfloat8_b,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
 
@@ -137,15 +192,23 @@ def _run_ttl_chain(device, num_heads, seq, scale, *, warmup, runs):
     norm_d = _to_dev(torch.zeros(PNr, KV_LORA_RANK, dtype=torch.bfloat16), device)
 
     flash = make_flash_mla(
-        n_cols=N_CORES, B=1, PNHt=pnht, DHt=DHt, vDHt=vDHt,
-        Sk_chunk_t=Sk_chunk_t, N_CHUNKS=n_chunks, scale=scale,
+        n_cols=N_CORES,
+        B=1,
+        PNHt=pnht,
+        DHt=DHt,
+        vDHt=vDHt,
+        Sk_chunk_t=Sk_chunk_t,
+        N_CHUNKS=n_chunks,
+        scale=scale,
     )
 
     def fused():
         flash(q_d, k_d, v_d, norm_d)
 
     ttlang_s = time_runs(fused, lambda _r: None, device, warmup=warmup, runs=runs)
-    got = ttnn.to_torch(norm_d).reshape(1, 1, num_heads, KV_LORA_RANK).to(torch.bfloat16)
+    got = (
+        ttnn.to_torch(norm_d).reshape(1, 1, num_heads, KV_LORA_RANK).to(torch.bfloat16)
+    )
     pcc_v = pcc(got, expected)
 
     for t in (q_d, k_d, v_d, norm_d):
@@ -158,14 +221,18 @@ def _run_ttl_chain(device, num_heads, seq, scale, *, warmup, runs):
 # --------------------------------------------------------------------------
 def _build_page_table(device, num_users, num_blocks):
     blocks_per_user = num_blocks // num_users
-    pt = torch.randperm(num_blocks, dtype=torch.int32).reshape(num_users, blocks_per_user)
+    pt = torch.randperm(num_blocks, dtype=torch.int32).reshape(
+        num_users, blocks_per_user
+    )
     tt = ttnn.from_torch(
         pt, dtype=ttnn.int32, device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG
     )
     return tt, pt
 
 
-def _build_paged_cache(device, num_users, seq, head_dim, num_blocks, block_size, mapping):
+def _build_paged_cache(
+    device, num_users, seq, head_dim, num_blocks, block_size, mapping
+):
     cache = torch.randn((num_users, 1, seq, head_dim), dtype=torch.bfloat16) * 0.1
     paged = (
         cache.reshape(num_users, 1, -1, block_size, head_dim)
@@ -174,12 +241,17 @@ def _build_paged_cache(device, num_users, seq, head_dim, num_blocks, block_size,
     )
     paged = paged[torch.argsort(mapping.view(-1))]
     return ttnn.from_torch(
-        paged, dtype=ttnn.bfloat16, device=device, layout=ttnn.TILE_LAYOUT,
+        paged,
+        dtype=ttnn.bfloat16,
+        device=device,
+        layout=ttnn.TILE_LAYOUT,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
 
-def _reference_ms(device, num_users, num_heads, cache_seq, positions, scale, *, warmup, runs):
+def _reference_ms(
+    device, num_users, num_heads, cache_seq, positions, scale, *, warmup, runs
+):
     """Time the production paged + height-sharded ttnn MLA decode reading the
     given per-user positions. Sharding keeps the per-core CBs small so it fits
     L1. Returns mean ms, or None if the op rejects the shapes."""
@@ -198,29 +270,38 @@ def _reference_ms(device, num_users, num_heads, cache_seq, positions, scale, *, 
         grid = device.compute_with_storage_grid_size()
         q_grid = ttnn.num_cores_to_corerangeset(num_cores, grid, row_wise=True)
         q_mem = ttnn.create_sharded_memory_config(
-            shape=[TILE, KVPE_DIM], core_grid=q_grid,
-            strategy=ttnn.ShardStrategy.HEIGHT, orientation=ttnn.ShardOrientation.ROW_MAJOR,
+            shape=[TILE, KVPE_DIM],
+            core_grid=q_grid,
+            strategy=ttnn.ShardStrategy.HEIGHT,
+            orientation=ttnn.ShardOrientation.ROW_MAJOR,
             use_height_and_width_as_shard_shape=True,
         )
         out_mem = ttnn.create_sharded_memory_config(
-            shape=[TILE, KV_LORA_RANK], core_grid=q_grid,
-            strategy=ttnn.ShardStrategy.HEIGHT, orientation=ttnn.ShardOrientation.ROW_MAJOR,
+            shape=[TILE, KV_LORA_RANK],
+            core_grid=q_grid,
+            strategy=ttnn.ShardStrategy.HEIGHT,
+            orientation=ttnn.ShardOrientation.ROW_MAJOR,
             use_height_and_width_as_shard_shape=True,
         )
         tt_q = ttnn.to_memory_config(
             ttnn.from_torch(
-                q, dtype=ttnn.bfloat16, device=device, layout=ttnn.TILE_LAYOUT,
+                q,
+                dtype=ttnn.bfloat16,
+                device=device,
+                layout=ttnn.TILE_LAYOUT,
                 memory_config=ttnn.L1_MEMORY_CONFIG,
             ),
             q_mem,
         )
         tt_pos = ttnn.from_torch(
             torch.tensor(positions, dtype=torch.int32),
-            dtype=ttnn.int32, device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            dtype=ttnn.int32,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         pc = ttnn.SDPAProgramConfig(
             compute_with_storage_grid_size=grid,
-            q_chunk_size=0,        # unused in decode
+            q_chunk_size=0,  # unused in decode
             k_chunk_size=128,
             exp_approx_mode=True,
         )
@@ -234,7 +315,8 @@ def _reference_ms(device, num_users, num_heads, cache_seq, positions, scale, *, 
 
         def ref():
             return ttnn.transformer.paged_flash_multi_latent_attention_decode(
-                tt_q, tt_cache,
+                tt_q,
+                tt_cache,
                 page_table_tensor=tt_pt,
                 cur_pos_tensor=tt_pos,
                 head_dim_v=KV_LORA_RANK,
@@ -280,12 +362,22 @@ def run_case(device, case, *, warmup, runs):
             finally:
                 ttnn.close_device(ttl_dev)
         else:
-            print(f"  ({label}: ttl skipped, attended {attended} not a multiple of {TTL_CHUNK})", flush=True)
+            print(
+                f"  ({label}: ttl skipped, attended {attended} not a multiple of {TTL_CHUNK})",
+                flush=True,
+            )
 
     ttnn_dev = ttnn.open_device(device_id=0)
     try:
         ttnn_s = _reference_ms(
-            ttnn_dev, num_users, num_heads, cache_seq, positions, scale, warmup=warmup, runs=runs
+            ttnn_dev,
+            num_users,
+            num_heads,
+            cache_seq,
+            positions,
+            scale,
+            warmup=warmup,
+            runs=runs,
         )
     finally:
         ttnn.close_device(ttnn_dev)

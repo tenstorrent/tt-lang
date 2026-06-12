@@ -164,7 +164,8 @@ struct TTLFinalizeDFBIndicesPass
       LogicalDFB &dfb = dfbs[idx];
       dfb.origIndex = idx;
       dfb.binds.push_back(bindOp);
-      auto cbType = mlir::cast<CircularBufferType>(bindOp.getResult().getType());
+      auto cbType =
+          mlir::cast<CircularBufferType>(bindOp.getResult().getType());
       dfb.elemType = cbType.getElementType();
       dfb.blockCount = cbType.getBlockCount();
       dfb.elemsPerBlock =
@@ -399,12 +400,12 @@ struct TTLFinalizeDFBIndicesPass
         continue;
       }
       mapEntries.push_back(DictionaryAttr::get(
-          ctx, {builder.getNamedAttr(
-                    "old_index",
-                    builder.getI32IntegerAttr(static_cast<int32_t>(idx))),
-                builder.getNamedAttr("new_index",
-                                     builder.getI32IntegerAttr(
-                                         static_cast<int32_t>(dfb.finalIndex)))}));
+          ctx,
+          {builder.getNamedAttr("old_index", builder.getI32IntegerAttr(
+                                                 static_cast<int32_t>(idx))),
+           builder.getNamedAttr("new_index",
+                                builder.getI32IntegerAttr(
+                                    static_cast<int32_t>(dfb.finalIndex)))}));
     }
     if (!mapEntries.empty()) {
       moduleOp->setAttr(kDFBIndexMapAttrName, ArrayAttr::get(ctx, mapEntries));
