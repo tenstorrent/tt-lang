@@ -144,7 +144,7 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
-        run: .github/containers/build-wheel-manylinux-images.sh --python-tags "${{ matrix.python_tag }}"
+        run: .github/containers/build-wheel-manylinux-images.sh --python-tags "${{ matrix.python_tag }}" --build-parallel-level 2
 
       - name: Show disk usage on failure
         if: failure()

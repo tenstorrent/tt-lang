@@ -5,6 +5,7 @@
 /third-party/llvm-project/build*/
 /third-party/tt-metal/build*/
 /third-party/tt-mlir/build*/
+/third-party/*/.cpmcache/
 /ird-toolchain/
 /dist*/
 /*.whl

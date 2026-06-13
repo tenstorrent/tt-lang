@@ -10,10 +10,11 @@ set -eu
 NO_PUSH=false
 PYTHON_TAGS=cp310,cp312
 DOCKER_TAG=""
+BUILD_PARALLEL_LEVEL=""
 
 usage() {
     cat >&2 <<'EOF'
-Usage: build-wheel-manylinux-images.sh [--no-push] [--image-tag <tag>] [--python-tags cp310,cp312]
+Usage: build-wheel-manylinux-images.sh [--no-push] [--image-tag <tag>] [--python-tags cp310,cp312] [--build-parallel-level <jobs>]
 EOF
     exit 2
 }
@@ -38,6 +39,13 @@ while [ "$#" -gt 0 ]; do
             DOCKER_TAG="$2"
             shift 2
             ;;
+        --build-parallel-level)
+            if [ "$#" -lt 2 ]; then
+                usage
+            fi
+            BUILD_PARALLEL_LEVEL="$2"
+            shift 2
+            ;;
         *)
             usage
             ;;
@@ -60,6 +68,38 @@ if [ -z "$PYTHON_TAGS" ]; then
     exit 2
 fi
 
+case "$BUILD_PARALLEL_LEVEL" in
+    "" | *[!0-9]* | 0)
+        if [ -n "$BUILD_PARALLEL_LEVEL" ]; then
+            echo "Build parallel level must be a positive integer: $BUILD_PARALLEL_LEVEL" >&2
+            exit 2
+        fi
+        ;;
+esac
+
+docker_build() {
+    if [ -n "$BUILD_PARALLEL_LEVEL" ]; then
+        ${DOCKER:-docker} build \
+            --progress=plain \
+            --build-arg "PYTHON_TAG=$python_tag" \
+            --build-arg "TT_METAL_TAG=$TT_METAL_TAG" \
+            --build-arg "TT_METAL_SHORT_SHA=$tt_metal_short_sha" \
+            --build-arg "TTLANG_BUILD_PARALLEL_LEVEL=$BUILD_PARALLEL_LEVEL" \
+            "$@" \
+            -f "$dockerfile" \
+            "$repo_root"
+    else
+        ${DOCKER:-docker} build \
+            --progress=plain \
+            --build-arg "PYTHON_TAG=$python_tag" \
+            --build-arg "TT_METAL_TAG=$TT_METAL_TAG" \
+            --build-arg "TT_METAL_SHORT_SHA=$tt_metal_short_sha" \
+            "$@" \
+            -f "$dockerfile" \
+            "$repo_root"
+    fi
+}
+
 for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
     case "$python_tag" in
         cp310 | cp312) ;;
@@ -75,25 +115,10 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
 
     if [ "$NO_PUSH" = true ]; then
         echo "Building local image: $local_image"
-        ${DOCKER:-docker} build \
-            --progress=plain \
-            --build-arg "PYTHON_TAG=$python_tag" \
-            --build-arg "TT_METAL_TAG=$TT_METAL_TAG" \
-            --build-arg "TT_METAL_SHORT_SHA=$tt_metal_short_sha" \
-            -t "$local_image" \
-            -f "$dockerfile" \
-            "$repo_root"
+        docker_build -t "$local_image"
     else
         echo "Building registry image: $registry_image"
-        ${DOCKER:-docker} build \
-            --progress=plain \
-            --build-arg "PYTHON_TAG=$python_tag" \
-            --build-arg "TT_METAL_TAG=$TT_METAL_TAG" \
-            --build-arg "TT_METAL_SHORT_SHA=$tt_metal_short_sha" \
-            -t "$registry_image" \
-            -t "$local_image" \
-            -f "$dockerfile" \
-            "$repo_root"
+        docker_build -t "$registry_image" -t "$local_image"
     fi
 
     if [ "$NO_PUSH" != true ]; then

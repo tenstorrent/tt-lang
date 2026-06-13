@@ -14,6 +14,8 @@ Tests cover:
 - Runtime: complex control flow (nested loops, if-inside-for, issue #536 pattern)
 """
 
+import sys
+
 import pytest
 
 from sim import ttl, ttnn
@@ -23,6 +25,7 @@ from sim.analysis import (
     KernelAnalysis,
     analyze_kernel_function,
     collect_reachable_analyses,
+    install_copy_wait_hooks,
     validate_kernel_function,
 )
 from sim.context import get_context, reset_context
@@ -62,6 +65,41 @@ class TestAnalyzeKernelFunction:
 
         ips = analyze_kernel_function(dm).injection_points
         assert ips == ()
+
+    def test_importable_without_sys_monitoring_until_hooks_required(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Python 3.10 can import ttl.sim; copy-wait hooks require Python 3.12."""
+
+        monkeypatch.delattr(sys, "monitoring", raising=False)
+
+        def dm():
+            return None
+
+        analysis = KernelAnalysis(
+            injection_points=(InjectionPoint("tx", 1),),
+            bare_copy_linenos=frozenset(),
+        )
+
+        with pytest.raises(RuntimeError, match="Python 3.12"):
+            install_copy_wait_hooks({dm.__code__: analysis})
+
+    def test_bare_copy_analysis_does_not_require_sys_monitoring(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Bare copies are handled by copy() and do not need interpreter hooks."""
+
+        monkeypatch.delattr(sys, "monitoring", raising=False)
+
+        def dm():
+            return None
+
+        analysis = KernelAnalysis(
+            injection_points=(),
+            bare_copy_linenos=frozenset({1}),
+        )
+
+        install_copy_wait_hooks({dm.__code__: analysis})
 
     def test_explicit_pop_suppresses_injection(self):
         """When an explicit pop() is present no injection point is generated."""

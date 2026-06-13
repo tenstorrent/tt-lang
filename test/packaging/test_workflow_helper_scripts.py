@@ -30,6 +30,10 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 CALL_BUILD_DOCKER_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-build-docker.yml"
 )
+MANYLINUX_WHEEL_DOCKERFILE = (
+    REPO_ROOT / ".github" / "containers" / "Dockerfile.wheel-manylinux-2-34"
+)
+SETUP_PY = REPO_ROOT / "setup.py"
 
 
 def _run_script(
@@ -76,17 +80,34 @@ def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
     ci_workflow = CI_WORKFLOW.read_text()
     s3_workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
     pypi_workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+    manylinux_dockerfile = MANYLINUX_WHEEL_DOCKERFILE.read_text()
 
     assert "build_manylinux_wheel_images" in build_docker_workflow
     assert "build-manylinux-wheel-images:" in build_docker_workflow
     assert "python_tag: [cp310, cp312]" in build_docker_workflow
     assert "build-wheel-manylinux-images.sh --python-tags" in build_docker_workflow
+    assert "--build-parallel-level 2" in build_docker_workflow
+    assert "ARG TTLANG_BUILD_PARALLEL_LEVEL" in manylinux_dockerfile
+    assert (
+        'ENV CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"'
+        in manylinux_dockerfile
+    )
     assert "build_manylinux_wheel_images: true" in ci_workflow
     assert (
         "build_manylinux_wheel_images: ${{ contains(fromJSON("
         "needs.preflight.outputs.wheel_variants), 'light') }}"
     ) in s3_workflow
     assert "build_manylinux_wheel_images" not in pypi_workflow
+
+
+def test_setup_py_removes_stale_native_payloads_before_wheel_install() -> None:
+    setup_py = SETUP_PY.read_text()
+
+    assert 'mlir_libs_dir = install_dir / "ttl" / "_mlir_libs"' in setup_py
+    assert "shutil.rmtree(mlir_libs_dir)" in setup_py
+    assert setup_py.index("self._remove_stale_native_payloads(install_dir)") < (
+        setup_py.index('"cmake",\n                "--install"')
+    )
 
 
 def test_s3_stable_tags_publish_clean_version_wheels() -> None:
