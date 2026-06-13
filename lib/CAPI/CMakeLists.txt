@@ -16,4 +16,18 @@ add_mlir_library(TTLangCAPI
   MLIRTTLDialect
   TTLangTTLTransforms
   TTLangTTLPipelines
+
+  # Minimal upstream dialects + passes the tt-lang pipeline uses, registered in
+  # Dialects.cpp in place of MLIR's RegisterEverything.
+  MLIRArithDialect
+  MLIRMemRefDialect
+  MLIRSCFDialect
+  MLIRControlFlowDialect
+  MLIRAffineDialect
+  MLIREmitCDialect
+  MLIRIndexDialect
+  MLIRUBDialect
+  MLIRMathDialect
+  MLIRTransforms
+  MLIRAffineToStandard
 )

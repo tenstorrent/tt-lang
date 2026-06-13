@@ -22,6 +22,12 @@ MLIR_CAPI_EXPORTED void ttlangRegisterAllDialects(MlirContext context);
 /// Register the TTL dialect with the given MlirDialectRegistry.
 MLIR_CAPI_EXPORTED void ttlangRegisterTTLDialect(MlirDialectRegistry registry);
 
+/// Register the minimal set of upstream MLIR dialects the tt-lang pipeline uses
+/// with the given MlirDialectRegistry. Replaces MLIR's RegisterEverything so
+/// the Python CAPI library does not statically link every upstream dialect.
+MLIR_CAPI_EXPORTED void
+ttlangRegisterUpstreamDialects(MlirDialectRegistry registry);
+
 /// Load the TTL dialect into the given MlirContext.
 MLIR_CAPI_EXPORTED MlirDialectHandle ttlangGetTTLDialectHandle(void);
 
