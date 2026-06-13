@@ -204,6 +204,9 @@ def TTLLowerAccumulationScopes
     satisfies the DST legality rules and otherwise uses L1 packer accumulation.
     `strategy=dst` requires DST and emits an error when the tensor scope is not
     DST-compatible. `strategy=l1-pack` always uses the L1 packer strategy.
+    For f32 recurrences the DST strategy feeds the accumulator back through SRCA
+    each iteration, truncating to tf32; `l1-pack` accumulates in f32 L1 and
+    retains full f32 precision.
     DFB scopes always lower to L1 packer metadata because their storage target
     is the reserved output dataflow buffer slot.
   }];

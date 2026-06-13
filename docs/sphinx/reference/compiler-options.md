@@ -21,6 +21,13 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs at fusion split points where an operation requires DFB-attached inputs (reduce, broadcast, matmul, transpose). When disabled, the compiler emits an error if any fused computation requires an intermediate DFB. |
 
+**f32 accumulation precision:** `dst` keeps the accumulator in the DST register
+but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
+mantissa); deep f32 recurrences therefore do not retain full f32 precision.
+`auto` selects `dst` for DST-compatible recurrences and inherits the same limit.
+Use `l1-pack` when full f32 accumulation precision is required; it accumulates
+in f32 L1.
+
 ### Other Ways to Set These
 
 Besides the command line, the same flags can be set through three other

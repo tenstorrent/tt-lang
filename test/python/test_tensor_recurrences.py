@@ -73,21 +73,21 @@ def _make_loop_carried_add_kernel():
     return kernel
 
 
-def _make_direct_loop_carried_add_kernel():
+def _make_direct_loop_carried_add_kernel(n_iters=N_ITERS):
     @ttl.operation(grid=(1, 1))
     def kernel(initial, delta, out):
         initial_dfb = ttl.make_dataflow_buffer_like(
             initial, shape=(1, 1), block_count=2
         )
         delta_dfb = ttl.make_dataflow_buffer_like(
-            delta, shape=(1, 1), block_count=N_ITERS
+            delta, shape=(1, 1), block_count=n_iters
         )
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
         @ttl.compute()
         def compute():
             with initial_dfb.wait() as acc:
-                for _ in range(N_ITERS):
+                for _ in range(n_iters):
                     with delta_dfb.wait() as delta_blk:
                         acc = acc + delta_blk
 
@@ -98,7 +98,7 @@ def _make_direct_loop_carried_add_kernel():
         def reader():
             with initial_dfb.reserve() as initial_blk:
                 ttl.copy(initial[0:1, 0:1], initial_blk).wait()
-            for _ in range(N_ITERS):
+            for _ in range(n_iters):
                 with delta_dfb.reserve() as delta_blk:
                     ttl.copy(delta[0:1, 0:1], delta_blk).wait()
 
@@ -153,6 +153,21 @@ _DTYPE_TOL = {
 }
 
 
+def _run_io_kernel_results(
+    kernel, in_tensors, out_zeros, device, kernel_options=None
+):
+    """Move inputs and outputs to device, invoke the kernel, and return each
+    output as a float tensor."""
+    in_devs = [to_dram(t, device) for t in in_tensors]
+    out_devs = [to_dram(t, device) for t in out_zeros]
+    if kernel_options is None:
+        kernel(*in_devs, *out_devs)
+    else:
+        kernel(*in_devs, *out_devs, options=kernel_options)
+    ttnn.synchronize_device(device)
+    return [ttnn.to_torch(out_dev).float() for out_dev in out_devs]
+
+
 def _run_io_kernel(
     kernel,
     in_tensors,
@@ -161,19 +176,16 @@ def _run_io_kernel(
     dtype,
     device,
     kernel_options=None,
+    tol=None,
 ):
-    """Common test runner: move inputs and outputs to device, invoke the
-    kernel, then assert each output tensor matches its expected value."""
-    in_devs = [to_dram(t, device) for t in in_tensors]
-    out_devs = [to_dram(t, device) for t in out_zeros]
-    if kernel_options is None:
-        kernel(*in_devs, *out_devs)
-    else:
-        kernel(*in_devs, *out_devs, options=kernel_options)
-    ttnn.synchronize_device(device)
-    for out_dev, expected in zip(out_devs, expected_list):
-        result = ttnn.to_torch(out_dev).float()
-        assert_allclose(result, expected.float(), **_DTYPE_TOL[dtype])
+    """Common test runner: invoke the kernel, then assert each output tensor
+    matches its expected value. `tol` overrides the per-dtype tolerance."""
+    tolerances = tol if tol is not None else _DTYPE_TOL[dtype]
+    results = _run_io_kernel_results(
+        kernel, in_tensors, out_zeros, device, kernel_options
+    )
+    for result, expected in zip(results, expected_list):
+        assert_allclose(result, expected.float(), **tolerances)
 
 
 @pytest.mark.requires_device
@@ -221,6 +233,60 @@ def test_tensor_accumulation_strategy_options(device, dtype, accumulation_strate
         dtype=dtype,
         device=device,
         kernel_options=f"--ttl-accumulation-strategy={accumulation_strategy}",
+    )
+
+
+# A deep accumulation of 0.1 (which has no exact 16-bit value) exposes the
+# precision a strategy actually delivers. The shallow N_ITERS=3 tests above use
+# values that are exact in bf16, so they pass at any precision and cannot tell
+# the strategies apart.
+_DEEP_N_ITERS = 32
+
+
+def _deep_add_error(strategy, dtype, device):
+    """Return the max absolute error of a deep loop-carried add under a given
+    accumulation strategy and dtype."""
+    initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 0.1, dtype=dtype)
+    expected = initial.float() + _DEEP_N_ITERS * delta.float()
+    (result,) = _run_io_kernel_results(
+        _make_direct_loop_carried_add_kernel(n_iters=_DEEP_N_ITERS),
+        in_tensors=[initial, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        device=device,
+        kernel_options=f"--ttl-accumulation-strategy={strategy}",
+    )
+    return (result - expected.float()).abs().max().item()
+
+
+@pytest.mark.requires_device
+def test_l1_pack_strategy_preserves_fp32_accumulation(device):
+    """l1-pack accumulates in fp32 L1, so a deep fp32 loop stays within fp32
+    tolerance. A regression that dropped L1 accumulation to a 16-bit format
+    would drift roughly two orders of magnitude past this bound."""
+    initial = torch.full((TILE, TILE), 4.0, dtype=torch.float32)
+    delta = torch.full((TILE, TILE), 0.1, dtype=torch.float32)
+    expected = initial.float() + _DEEP_N_ITERS * delta.float()
+    _run_io_kernel(
+        _make_direct_loop_carried_add_kernel(n_iters=_DEEP_N_ITERS),
+        in_tensors=[initial, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=torch.float32)],
+        expected_list=[expected],
+        dtype=torch.float32,
+        device=device,
+        kernel_options="--ttl-accumulation-strategy=l1-pack",
+        tol=dict(rtol=1e-3, atol=5e-3),
+    )
+
+
+@pytest.mark.requires_device
+def test_dst_strategy_fp32_more_precise_than_bf16(device):
+    """dst keeps the accumulator in DST but feeds it back through SRCA each
+    iteration, which truncates to tf32; deep fp32 accumulation therefore does
+    not reach full fp32 (use l1-pack for that). It is still more precise than
+    bf16, which this asserts directly rather than pinning a tf32 tolerance."""
+    assert _deep_add_error("dst", torch.float32, device) < _deep_add_error(
+        "dst", torch.bfloat16, device
     )
 
 
