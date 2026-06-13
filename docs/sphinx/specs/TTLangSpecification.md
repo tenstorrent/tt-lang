@@ -1003,6 +1003,83 @@ def writer():
 | `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
 
+## Scalar Element Access
+
+`ttl.raw_element_read` and `ttl.raw_element_write` provide per-element L1
+access within DFB blocks from data movement (noc) threads. These
+operations fill the gap between the whole-block DFB interface and
+use cases requiring element-level manipulation, such as KV-cache updates,
+top-K selection, and argmax reductions.
+
+### API
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.raw_element_read(block, *coords) -> float` | Read a single scalar element from a DFB block at the given coordinates. The block must come from `ttl.cb_wait`. Returns an `f32` or `bf16` value matching the block's element dtype. |
+| `ttl.raw_element_write(block, *coords, val)` | Write a scalar value to a DFB block at the given coordinates. The block must come from `ttl.cb_reserve`. |
+
+Coordinates are flat scalar-element positions (one per tensor dimension).
+For tiled blocks the compiler decomposes coordinates into tile index and
+intra-tile face-order offset. For row-major blocks coordinates linearize
+directly.
+
+### Supported Dtypes
+
+Only `f32` and `bf16` element types are supported. The L1 pointer width
+matches the dtype: 32-bit (`uint32_t*`) for f32, 16-bit (`uint16_t*`) for
+bf16.
+
+### Thread Restriction
+
+Both operations are restricted to data movement (noc) kernel threads.
+The verifier rejects them if the enclosing function does not carry the
+`ttl.kernel_thread = #ttkernel.thread<noc>` attribute.
+
+### Comparison Operators
+
+Values from `raw_element_read` support scalar float comparisons:
+
+| Python operator | Supported |
+| :---- | :---- |
+| `>` | Yes |
+| `<` | Yes |
+| `==` | No (compile-time error) |
+| `!=` | No (compile-time error) |
+| `>=` | No (compile-time error) |
+| `<=` | No (compile-time error) |
+
+### Example
+
+```python
+@ttl.datamovement()
+def dm_write():
+    with inp_dfb.wait() as rblk:
+        with out_dfb.reserve() as wblk:
+            max_val = ttl.raw_element_read(rblk, 0, 0)
+            for c in range(1, 32):
+                val = ttl.raw_element_read(rblk, 0, c)
+                if val > max_val:
+                    max_val = val
+            ttl.raw_element_write(wblk, 0, 0, max_val)
+            tx = ttl.copy(wblk, out[0, 0])
+            tx.wait()
+```
+Note this example currently does not work with the compiler due to conditional scalar variable assignment, issue #380
+
+### Write Value Sources
+
+Values written via `raw_element_write` must originate from one of:
+
+- A prior `raw_element_read` on the same or another block.
+- A Python float constant (materializes the IEEE-754 bit pattern).
+- An f32 value written to a bf16 block (the DSL auto-inserts
+  `arith.truncf`; truncation is lossy for values not exactly
+  representable in bf16).
+
+Other SSA float values (e.g., results of arithmetic operations) are not
+supported and fail at compile time.
+
+
 ## Semaphore
 
 A *semaphore* is a communication primitive for general synchronization between data movement kernels on different nodes. Each semaphore has an associated 32-bit unsigned integer *semaphore value* for each node. This value can be changed (set or incremented) by a data movement kernel on the local or a remote node. When changing semaphore value remotely a single node coordinate for unicast change or a node range for multicast change is specified. Only setting the semaphore value is supported as a multicast change. A data movement kernel can wait on a semaphore until its value satisfies a condition. It is possible to specify either a condition with exact value or a condition with minimum value. Only local data movement kernels can wait on a semaphore.

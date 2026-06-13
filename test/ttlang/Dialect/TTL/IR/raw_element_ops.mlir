@@ -1,5 +1,5 @@
 // Verifier acceptance tests for ttl.raw_element_read and ttl.raw_element_write.
-// Each block operand must trace to a circular buffer (cb_wait or cb_reserve).
+// Reads require a cb_wait block (consumer); writes require a cb_reserve block (producer).
 // RUN: ttlang-opt %s --split-input-file | FileCheck %s
 
 // -----
@@ -195,5 +195,44 @@ func.func @raw_element_write_rank1_row_major(%val: bf16)
   %block = ttl.cb_reserve %cb : <[256], bf16, 2> -> tensor<256xbf16>
   %c100 = arith.constant 100 : index
   ttl.raw_element_write %block[%c100], %val : tensor<256xbf16>, bf16
+  func.return
+}
+
+// -----
+
+// Read f32 from an attach_cb-wrapped cb_wait block.
+// CHECK-LABEL: func.func @raw_element_read_attach_cb_wait
+// CHECK: %[[WAIT:.*]] = ttl.cb_wait
+// CHECK: %[[ATT:.*]] = ttl.attach_cb %[[WAIT]]
+// CHECK: ttl.raw_element_read %[[ATT]][%{{.*}}, %{{.*}}] : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+func.func @raw_element_read_attach_cb_wait()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %wait = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %block = ttl.attach_cb %wait, %cb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c5 = arith.constant 5 : index
+  %val = ttl.raw_element_read %block[%c0, %c5] : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+  func.return
+}
+
+// -----
+
+// Write f32 to an attach_cb-wrapped cb_reserve block.
+// CHECK-LABEL: func.func @raw_element_write_attach_cb_reserve
+// CHECK: %[[RES:.*]] = ttl.cb_reserve
+// CHECK: %[[ATT:.*]] = ttl.attach_cb %[[RES]]
+// CHECK: ttl.raw_element_write %[[ATT]][%{{.*}}, %{{.*}}], %{{.*}} : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
+func.func @raw_element_write_attach_cb_reserve(%val: f32)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %res = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %block = ttl.attach_cb %res, %cb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  ttl.raw_element_write %block[%c0, %c0], %val : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
   func.return
 }
