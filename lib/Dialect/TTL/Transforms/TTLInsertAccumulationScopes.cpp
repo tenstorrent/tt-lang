@@ -246,9 +246,10 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
   return stores;
 }
 
-/// Insert a semantic accumulation scope around one user-written DFB accumulation
-/// loop. The scope carries the initial-mode decision so later lowering does not
-/// rediscover it from neighboring stores or dataflow buffer operations.
+/// Insert a semantic accumulation scope around one user-written DFB
+/// accumulation loop. The scope carries the initial-mode decision so later
+/// lowering does not rediscover it from neighboring stores or dataflow buffer
+/// operations.
 static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
                                                 DominanceInfo &domInfo,
                                                 bool &hadFailure,
