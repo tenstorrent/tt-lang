@@ -333,12 +333,6 @@ def _make_tensor_slice(tensor, indices, slice_shape):
             f"tensor, got {len(indices)}"
         )
 
-    if len(slice_shape) > tensor_type.rank:
-        raise ValueError(
-            f"CB shape rank ({len(slice_shape)}) must be <= tensor rank "
-            f"({tensor_type.rank})"
-        )
-
     result_type = RankedTensorType.get(
         list(slice_shape), tensor_type.element_type, tensor_type.encoding
     )
