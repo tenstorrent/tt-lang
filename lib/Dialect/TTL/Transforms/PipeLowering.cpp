@@ -550,7 +550,7 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   if (pipeType.hasSingleReceiver()) {
     ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
                                  ValueRange{dstStartXVal, dstStartYVal},
-                                 ValueRange{}, dstAddr, totalSizeVal);
+                                 ValueRange{}, dstAddr, totalSizeVal, nocVal);
   } else {
     if (pipeType.srcInDstRange()) {
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(

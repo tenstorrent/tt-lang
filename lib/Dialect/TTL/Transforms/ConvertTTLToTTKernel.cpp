@@ -956,10 +956,11 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
 
         if (isRead) {
           ttk::NocAsyncReadTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
-                                          accessor, cbAddr);
+                                          accessor, cbAddr, Value());
         } else {
           ttk::NocAsyncWriteTileOp::create(loopBuilder, bodyLoc,
-                                           tensorTileIdx32, accessor, cbAddr);
+                                           tensorTileIdx32, accessor, cbAddr,
+                                           Value());
         }
       });
 
