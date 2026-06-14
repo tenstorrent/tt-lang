@@ -58,9 +58,18 @@ def inline_atom_calls(
     anywhere but the body top level.
     """
     inlined_dfb_tags: Dict[str, int] = {}
+    hoisted: List[ast.stmt] = []
     fn_def.body = _inline_stmts(
-        fn_def.body, fn_globals, caller_name, inlined_dfb_tags, top_level=True
+        fn_def.body, fn_globals, caller_name, inlined_dfb_tags, hoisted, top_level=True
     )
+    if hoisted:
+        from ttl.atom import _setup_assign_target
+
+        first_body = next(
+            (i for i, s in enumerate(fn_def.body) if _setup_assign_target(s) is None),
+            len(fn_def.body),
+        )
+        fn_def.body[first_body:first_body] = hoisted
     return inlined_dfb_tags
 
 
@@ -69,20 +78,32 @@ def _inline_stmts(
     fn_globals: Dict[str, object],
     caller_name: str,
     inlined_dfb_tags: Dict[str, int],
+    hoisted: List[ast.stmt],
     top_level: bool,
 ) -> List[ast.stmt]:
     out: List[ast.stmt] = []
     for stmt in stmts:
-        _inline_inside_compound(stmt, fn_globals, caller_name, inlined_dfb_tags)
+        _inline_inside_compound(stmt, fn_globals, caller_name, inlined_dfb_tags, hoisted)
         match = _match_atom_call(stmt, fn_globals)
         if match is None:
             out.append(stmt)
             continue
         callee, call = match
-        out.extend(
-            _expand_call(callee, call, caller_name, top_level, inlined_dfb_tags)
-        )
+        body = _expand_call(callee, call, caller_name, inlined_dfb_tags)
+        if top_level:
+            out.extend(body)
+        else:
+            # Buffer/PipeNet decls cannot live inside a compound statement;
+            # hoist them to the caller's setup region, keep compute in place.
+            for s in body:
+                (hoisted if _is_setup_assign(s) else out).append(s)
     return out
+
+
+def _is_setup_assign(stmt: ast.stmt) -> bool:
+    from ttl.atom import _setup_assign_target
+
+    return _setup_assign_target(stmt) is not None
 
 
 def _inline_inside_compound(
@@ -90,11 +111,12 @@ def _inline_inside_compound(
     fn_globals: Dict[str, object],
     caller_name: str,
     inlined_dfb_tags: Dict[str, int],
+    hoisted: List[ast.stmt],
 ) -> None:
     """Recurse into compound-statement bodies so nested calls inline too.
 
-    Calls discovered here are not at the body top level, so a callee that
-    declares its own buffers cannot be inlined into them.
+    Calls discovered here are not at the body top level; buffer decls from
+    these callees are hoisted to the caller's setup region.
     """
     for attr in ("body", "orelse", "finalbody"):
         body = getattr(stmt, attr, None)
@@ -103,7 +125,8 @@ def _inline_inside_compound(
                 stmt,
                 attr,
                 _inline_stmts(
-                    body, fn_globals, caller_name, inlined_dfb_tags, top_level=False
+                    body, fn_globals, caller_name, inlined_dfb_tags, hoisted,
+                    top_level=False
                 ),
             )
     # try/except handler bodies
@@ -112,7 +135,8 @@ def _inline_inside_compound(
         for h in handlers:
             if isinstance(h, ast.ExceptHandler):
                 h.body = _inline_stmts(
-                    h.body, fn_globals, caller_name, inlined_dfb_tags, top_level=False
+                    h.body, fn_globals, caller_name, inlined_dfb_tags, hoisted,
+                    top_level=False
                 )
 
 
@@ -139,11 +163,10 @@ def _expand_call(
     callee: "Atom",
     call: ast.Call,
     caller_name: str,
-    top_level: bool,
     inlined_dfb_tags: Dict[str, int],
 ) -> List[ast.stmt]:
     spec = callee._spec
-    dfb_decl_names = _check_callee_buffers(spec, caller_name, top_level)
+    dfb_decl_names = _check_callee_buffers(spec, caller_name)
 
     bindings = _bind_args_to_params(spec, call, caller_name)
     # Fold the callee's constant closure freevars (e.g. factory tile-count
@@ -175,13 +198,12 @@ def _expand_call(
     return inlined
 
 
-def _check_callee_buffers(spec, caller_name: str, top_level: bool) -> Set[str]:
+def _check_callee_buffers(spec, caller_name: str) -> Set[str]:
     """Validate a callee's buffer declarations and return its top-level
     DFB-decl names.
 
     A callee may declare its own DFBs / Pipes / PipeNets only as top-level
-    statements (so they can be hoisted) and only when inlined at the caller
-    body top level (so the hoist target is the caller's top level too).
+    statements (so they can be hoisted into the caller's setup region).
     Returns the names of the callee's top-level ``make_dfb`` /
     ``make_dataflow_buffer_like`` assigns (the scratch buffers eligible for
     reuse); Pipes / PipeNets are hoisted but not reused.
@@ -208,24 +230,15 @@ def _check_callee_buffers(spec, caller_name: str, top_level: bool) -> Set[str]:
         if _call_name(stmt.value) in _DFB_FACTORY_NAMES:
             dfb_names.add(stmt.targets[0].id)
 
-    declares = False
     for node in ast.walk(spec.fn_ast):
         if not (isinstance(node, ast.Call) and _call_name(node) in _SETUP_FACTORY_NAMES):
             continue
-        declares = True
         if id(node) not in top_level_decl_calls:
             raise ValueError(
                 f"@ttl.atom: cannot inline {spec.name!r} into {caller_name!r}: "
                 "buffer declarations must be top-level statements of the callee "
                 "so they can be hoisted; found one nested in its body."
             )
-
-    if declares and not top_level:
-        raise ValueError(
-            f"@ttl.atom: cannot inline {spec.name!r} into {caller_name!r}: it "
-            "declares its own DFBs / PipeNets, so it must be called at the atom "
-            "body top level, not inside a for / if / while / with."
-        )
 
     return dfb_names
 
