@@ -756,6 +756,56 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Binary Broadcast Tile Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_binary_bcast to ttkernel.binary_bcast. lhs and rhs are read
+/// from CBs (FPU path); rhs is the single tile broadcast along bcast_type.
+struct TTLTileBinaryBcastToTTKernel
+    : OpConversionPattern<TileBinaryBcastOp> {
+  using OpConversionPattern<TileBinaryBcastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileBinaryBcastOp op, TileBinaryBcastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto setup =
+        CBInputTileOpSetup::create(op, op.getLhs(), adaptor.getDstIndex(),
+                                   rewriter, this->getTypeConverter());
+    if (failed(setup)) {
+      return failure();
+    }
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    auto rhsCB = lookupAndConvertCB(op.getRhs(), funcOp,
+                                    this->getTypeConverter(), rewriter,
+                                    op.getLoc());
+    if (failed(rhsCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert rhs CB");
+    }
+    auto rhsIdx = computeCBTileIndex(op.getRhs(), rewriter, op.getLoc());
+    if (failed(rhsIdx)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot compute rhs CB tile index from tensor.extract");
+    }
+
+    auto binaryBcastOp = ttk::BinaryBcastTileOp::create(
+        rewriter, op.getLoc(), setup->inCB, *rhsCB, setup->inCBIdx, *rhsIdx,
+        setup->dstIdx, op.getEltwiseBinaryTypeAttr(),
+        ttk::BcastTypeAttr::get(op.getContext(),
+                                convertBcastType(op.getBcastType())));
+
+    // Propagate output CB index for per-op init insertion.
+    if (auto cbIdxAttr =
+            op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
+      binaryBcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdxAttr);
+    }
+
+    rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Transpose Tile Lowering
 //===----------------------------------------------------------------------===//
 
@@ -1053,6 +1103,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileBinaryBcastToTTKernel>(*typeConverter, ctx);
 
   // Reduce and transpose ops need the type converter for CB lookup.
   patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx, reduceFullFp32);

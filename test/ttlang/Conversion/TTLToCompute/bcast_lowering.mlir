@@ -89,9 +89,9 @@ func.func @bcast_scalar(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<2
 
 // -----
 
-// Broadcast feeding an elementwise op should be handled by fused lowering.
-// The broadcast has no direct store user, so standalone broadcast lowering
-// defers and buildFusedCompute emits tile_bcast before tile_add.
+// Broadcast feeding an elementwise binary op fuses into a single FPU
+// binary_bcast (keeping the broadcast off the SFPU). The broadcast source
+// becomes the binary_bcast rhs and the other operand is the lhs.
 // CHECK-LABEL: func.func @bcast_row_fused_add
 func.func @bcast_row_fused_add(%arg0: tensor<1x2x!ttcore.tile<32x32, f32>>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
@@ -109,9 +109,8 @@ func.func @bcast_row_fused_add(%arg0: tensor<1x2x!ttcore.tile<32x32, f32>>, %arg
   // CHECK-NEXT: ^bb0(%[[BCAST_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[RHS_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT: %[[ROW:.*]] = ttl.iter_index 0
   // CHECK-NEXT: %[[COL:.*]] = ttl.iter_index 1
-  // CHECK-NEXT: %[[BCASTED:.*]] = ttl.tile_bcast %[[BCAST_TILE]], %[[OUT_TILE]] 2 : i32
-  // CHECK-NEXT: %[[ADDED:.*]] = ttl.tile_add %[[BCASTED]], %[[RHS_TILE]]
-  // CHECK-NEXT: ttl.tile_store %[[ADDED]], %[[OUT]][%[[ROW]], %[[COL]]] from dst
+  // CHECK-NEXT: %[[FUSED:.*]] = ttl.tile_binary_bcast %[[RHS_TILE]], %[[BCAST_TILE]], %[[OUT_TILE]] <add> 2 : i32 into dst
+  // CHECK-NEXT: ttl.tile_store %[[FUSED]], %[[OUT]][%[[ROW]], %[[COL]]] from dst
   // CHECK-NEXT: ttl.yield
   // CHECK: return %[[COMPUTE]]
   %reserve = ttl.cb_reserve %cb2 : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -119,6 +118,41 @@ func.func @bcast_row_fused_add(%arg0: tensor<1x2x!ttcore.tile<32x32, f32>>, %arg
   %add = ttl.add %bcast, %arg1_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   ttl.store %add, %reserve : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %add : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Column broadcast feeding a multiply fuses into a single FPU binary_bcast
+// (the OPT8 rewrite): mul(broadcast_col(alpha), data) -> tile_binary_bcast
+// with eltwise <mul> and BcastType Col (1). No standalone tile_bcast/tile_mul.
+// The broadcast source (alpha) becomes the rhs; data becomes the lhs.
+// CHECK-LABEL: func.func @bcast_col_fused_mul
+func.func @bcast_col_fused_mul(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %arg0_cb = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x1x!ttcore.tile<32x32, f32>>
+  %arg1_cb = ttl.attach_cb %arg1, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // CHECK: %[[BCAST_CB:.*]] = ttl.attach_cb %arg0
+  // CHECK: %[[DATA_CB:.*]] = ttl.attach_cb %arg1
+  // CHECK: %[[OUT:.*]] = ttl.cb_reserve
+  // CHECK: %[[INIT:.*]] = ttl.attach_cb {{.*}}
+  // CHECK: %[[COMPUTE:.*]] = ttl.compute ins(%[[BCAST_CB]], %[[DATA_CB]]
+  // CHECK-SAME: outs(%[[INIT]]
+  // CHECK-NEXT: ^bb0(%[[BCAST_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[DATA_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT: %[[ROW:.*]] = ttl.iter_index 0
+  // CHECK-NEXT: %[[COL:.*]] = ttl.iter_index 1
+  // CHECK-NEXT: %[[FUSED:.*]] = ttl.tile_binary_bcast %[[DATA_TILE]], %[[BCAST_TILE]], %[[OUT_TILE]] <mul> 1 : i32 into dst
+  // CHECK-NEXT: ttl.tile_store %[[FUSED]], %[[OUT]][%[[ROW]], %[[COL]]] from dst
+  // CHECK-NEXT: ttl.yield
+  // CHECK-NOT: ttl.tile_bcast
+  // CHECK: return %[[COMPUTE]]
+  %reserve = ttl.cb_reserve %cb2 : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %bcast = ttl.block.broadcast %arg0_cb dims = [-1], shape = [2, 2] : tensor<2x1x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %mul = ttl.mul %bcast, %arg1_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %mul, %reserve : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %mul : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
 
 // -----

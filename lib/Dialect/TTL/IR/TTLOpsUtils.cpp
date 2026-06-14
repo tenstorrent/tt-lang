@@ -181,7 +181,7 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<CopyDstOp>(op)) {
     return TileOpCategory::CopyDst;
   }
-  if (isa<TileBcastOp>(op)) {
+  if (isa<TileBcastOp, TileBinaryBcastOp>(op)) {
     return TileOpCategory::Bcast;
   }
   if (isa<TileMatmulBlockOp>(op)) {

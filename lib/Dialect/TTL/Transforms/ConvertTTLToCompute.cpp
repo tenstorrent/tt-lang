@@ -246,6 +246,33 @@ static Type getFusedResultTileType(Operation *sourceOp) {
   return ttcore::TileType::get(resultTensor.getElementType());
 }
 
+/// A binary op can consume a row/col/scalar broadcast on the FPU via
+/// binary_bcast when the broadcast is one of its operands. add/mul are
+/// commutative (the broadcast may be either operand); sub computes
+/// `A - broadcast(B)`, so the broadcast must be the subtrahend (rhs).
+static bool isFoldableBcastBinary(Operation *op, Value bcastResult) {
+  if (isa<MulOp, AddOp>(op)) {
+    return true;
+  }
+  if (isa<SubOp>(op)) {
+    auto operands = getElementwiseOperands(op);
+    return operands.size() == 2 && operands[1] == bcastResult;
+  }
+  return false;
+}
+
+/// Map a TTL binary elementwise op to the matching TTKernel eltwise binary type.
+static ttkernel::EltwiseBinaryType eltwiseBinaryTypeFor(Operation *op) {
+  if (isa<AddOp>(op)) {
+    return ttkernel::EltwiseBinaryType::Add;
+  }
+  if (isa<SubOp>(op)) {
+    return ttkernel::EltwiseBinaryType::Sub;
+  }
+  assert(isa<MulOp>(op) && "unsupported binary op for bcast fold");
+  return ttkernel::EltwiseBinaryType::Mul;
+}
+
 /// Returns the result Value, or null if the source op is unsupported.
 /// Fusable ops, including `ttl.fill`, derive their tile type from the source
 /// op's tensor result so dtype-changing ops such as `ttl.typecast` produce
@@ -624,6 +651,19 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // by buildFusedCompute above.
   DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
 
+  // A column/row/scalar BlockBroadcastOp whose sole consumer is an add/sub/mul
+  // is deferred and fused into that binary op as a single FPU binary_bcast,
+  // instead of materializing the broadcast into DST for an SFPU binary op. When
+  // the fold does not apply at the consumer (e.g. the partner operand is a
+  // matmul accumuland, or both operands are broadcasts), the broadcast is
+  // materialized as a standalone tile_bcast -- mirroring deferredMatmul.
+  struct DeferredBcast {
+    Value sourceTile;
+    BcastType bcastType;
+    Type tileType;
+  };
+  DenseMap<Value, DeferredBcast> deferredBcast;
+
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
     auto it = opsBefore.find(op);
@@ -653,10 +693,24 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           return rewriter.notifyMatchFailure(
               op, "fusion failed: cannot derive tile type for bcast");
         }
-        Value outputTile = body->getArguments().back();
-        auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
-            rewriter, loc, bcastTileType, inputTile, outputTile, *tileBcast);
-        tileResult = bcastTileOp;
+        // Defer when the sole consumer is a foldable binary op so it can be
+        // fused into a single FPU binary_bcast; otherwise materialize now.
+        Value bcastResult = bcastOp.getResult();
+        bool deferred = false;
+        if (bcastResult.hasOneUse()) {
+          Operation *user = *bcastResult.getUsers().begin();
+          if (trace.opsInOrder.contains(user) &&
+              isFoldableBcastBinary(user, bcastResult)) {
+            deferredBcast[bcastResult] = {inputTile, *tileBcast, bcastTileType};
+            deferred = true;
+          }
+        }
+        if (!deferred) {
+          Value outputTile = body->getArguments().back();
+          auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
+              rewriter, loc, bcastTileType, inputTile, outputTile, *tileBcast);
+          tileResult = bcastTileOp;
+        }
       } else {
         tileResult = inputTile;
       }
@@ -685,8 +739,64 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         tileResult = matmulTileOp;
       }
     } else {
+      // Fuse a deferred row/col/scalar broadcast into this binary op as a
+      // single FPU binary_bcast. add/mul accept the broadcast as either
+      // operand; sub requires it as the subtrahend (guaranteed by the defer
+      // check). The data operand must already be a CB tile (binary_bcast reads
+      // both inputs from CBs).
+      if (isa<MulOp, AddOp, SubOp>(op)) {
+        auto operands = getElementwiseOperands(op);
+        Value bcastTensor, dataTensor;
+        if (deferredBcast.count(operands[1])) {
+          bcastTensor = operands[1];
+          dataTensor = operands[0];
+        } else if (deferredBcast.count(operands[0]) && !isa<SubOp>(op)) {
+          bcastTensor = operands[0];
+          dataTensor = operands[1];
+        }
+        if (bcastTensor) {
+          const DeferredBcast &d = deferredBcast[bcastTensor];
+          Value dataTile = tensorToTile.lookup(dataTensor);
+          Type fusedTileType = getFusedResultTileType(op);
+          // binary_bcast reads both inputs from CBs, so the data operand and
+          // the broadcast source must both be CB reads (compute block
+          // arguments), not DST-resident intermediates produced earlier in the
+          // fused chain. When the data operand is a DST value, fall through:
+          // the broadcast is materialized below and the op stays on the SFPU.
+          if (dataTile && fusedTileType && isa<BlockArgument>(dataTile) &&
+              isa<BlockArgument>(d.sourceTile)) {
+            Value outputTile = body->getArguments().back();
+            tileResult = createTileOpWithPlaceholderDstIndex<TileBinaryBcastOp>(
+                rewriter, loc, fusedTileType, dataTile, d.sourceTile, outputTile,
+                ttkernel::EltwiseBinaryTypeAttr::get(rewriter.getContext(),
+                                                     eltwiseBinaryTypeFor(op)),
+                BcastTypeAttr::get(rewriter.getContext(), d.bcastType));
+            deferredBcast.erase(bcastTensor);
+          }
+        }
+      }
+
+      // Materialize any deferred broadcast operands that were not fused (e.g.
+      // a broadcast feeding a matmul accumuland, or two broadcasts into one
+      // binary op) so the matmul-fold and elementwise paths can resolve them.
+      if (!tileResult) {
+        for (Value operand : getElementwiseOperands(op)) {
+          auto bcIt = deferredBcast.find(operand);
+          if (bcIt == deferredBcast.end()) {
+            continue;
+          }
+          DeferredBcast d = bcIt->second;
+          Value outputTile = body->getArguments().back();
+          tensorToTile[operand] =
+              createTileOpWithPlaceholderDstIndex<TileBcastOp>(
+                  rewriter, loc, d.tileType, d.sourceTile, outputTile,
+                  d.bcastType);
+          deferredBcast.erase(bcIt);
+        }
+      }
+
       // Check for matmul+add fold before falling through to elementwise.
-      if (isa<AddOp>(op)) {
+      if (!tileResult && isa<AddOp>(op)) {
         auto operands = getElementwiseOperands(op);
         auto tryFold = [&](Value tensorA, Value tensorB) -> Value {
           auto dfIt = deferredMatmul.find(tensorA);

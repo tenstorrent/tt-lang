@@ -1163,6 +1163,27 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstR
   let assemblyFormat = "$input `,` $output $bcast_type `into` `dst` `[` $dst_index `]` attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
+def TTL_TileBinaryBcastOp : TTL_TileOp<"tile_binary_bcast", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
+  let summary = "Tile-level fused binary broadcast operation";
+  let description = [{
+    Fused element-wise binary op `result = lhs (op) broadcast(rhs)`, where `rhs`
+    is a single row/col/scalar tile broadcast along `bcast_type` and `op` is
+    selected by `eltwise_binary_type` (add/sub/mul). Both inputs are read from
+    CBs and the result is written to DST (the FPU broadcast path). The output
+    operand carries the output CB for init-time configuration only. Maps to
+    ttkernel.binary_bcast_init + ttkernel.binary_bcast.
+
+    This is the fused form of a ttl.tile_bcast feeding a ttl.tile_{add,sub,mul}:
+    it keeps the broadcast on the FPU instead of materializing it into DST for an
+    SFPU binary op.
+  }];
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs, AnyType:$output,
+                       TTKernel_EltwiseBinaryTypeAttr:$eltwise_binary_type,
+                       TTL_BcastTypeAttr:$bcast_type, Index:$dst_index);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$lhs `,` $rhs `,` $output $eltwise_binary_type $bcast_type `into` `dst` `[` $dst_index `]` attr-dict `:` `(` type($lhs) `,` type($rhs) `,` type($output) `)` `->` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // Reduce Operation
 //===----------------------------------------------------------------------===//
