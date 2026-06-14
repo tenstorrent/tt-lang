@@ -1020,7 +1020,7 @@ def read_index(block, *coords):
     if val.type != f32:
         val = arith.ExtFOp(f32, val)
     i32 = arith.FPToSIOp(IntegerType.get_signless(32, ctx), val)
-    return arith.IndexCastOp(IndexType.get(ctx), i32)
+    return arith.IndexCastOp(IndexType.get(ctx), i32).result
 
 
 @syntax("raw_element_write")
