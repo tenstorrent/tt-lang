@@ -558,6 +558,7 @@ class CompiledTTNNKernel:
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
         kernel_pipe_computed_address_dfb_indices=None,
+        mesh_program_placements=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -587,6 +588,8 @@ class CompiledTTNNKernel:
                 PipeNet ready counters used by this kernel.
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
+            mesh_program_placements: Optional mesh device ranges. When present,
+                execution uses ttnn.MeshProgramDescriptor.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -607,6 +610,7 @@ class CompiledTTNNKernel:
         self.kernel_pipe_computed_address_dfb_indices = (
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
+        self.mesh_program_placements = mesh_program_placements
         self._pipe_global_semaphore_lifetime = []
 
     def __call__(self, *args):
@@ -653,6 +657,7 @@ class CompiledTTNNKernel:
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            mesh_program_placements=self.mesh_program_placements,
         )
 
 
