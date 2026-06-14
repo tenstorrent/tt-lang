@@ -935,6 +935,30 @@ def typecast(input: TensorBlock, dtype) -> TensorBlock:
     return ttl.typecast(result_type, input)
 
 
+def matmul_f32(lhs: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+    """Matmul packing an f32 result from low-precision inputs.
+
+    ``@`` types its result from the lhs dtype, so a bf16 matmul feeding an
+    f32 partial would need a typecast the compiler rejects (a bf16 result
+    tile and the f32 target can't share the DST register). Packing f32
+    straight from the f32 matmul accumulator keeps a single dtype in DST.
+    """
+    from ttl.dialects import ttcore
+
+    lhs_type = lhs.type
+    rhs_type = rhs.type
+    in_tile = ttcore.ir.TileType.maybe_downcast(lhs_type.element_type)
+    if in_tile is None:
+        raise ValueError(
+            f"matmul_f32 expects tile-typed lhs, got {lhs_type.element_type}")
+    f32_tile = ttcore.ir.TileType.get(
+        lhs_type.context, in_tile.shape[0], in_tile.shape[1],
+        ttcore.DataType.Float32)
+    result_type = RankedTensorType.get(
+        [lhs_type.shape[0], rhs_type.shape[1]], f32_tile, lhs_type.encoding)
+    return ttl.matmul(result_type, lhs, rhs)
+
+
 def _get_block_scalar_type(block):
     """Extract the scalar MLIR type from a block's tensor element type.
 
@@ -1079,6 +1103,7 @@ __all__ = [
     "matmul",
     "fill",
     "typecast",
+    "matmul_f32",
     "raw_element_read",
     "raw_element_write",
     "read_index",
