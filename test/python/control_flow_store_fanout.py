@@ -25,6 +25,8 @@ for case_name, kernel, grid_width, output_count in CONTROL_FLOW_CASES:
     kernel(input_tensor, *output_tensors)
     print(f"COMPILED {case_name}")
 
+# CHECK: COMPILED then_only
+# CHECK: COMPILED else_only
 # CHECK: COMPILED if_else
 # CHECK: COMPILED elif_chain
 # CHECK: COMPILED nested_if

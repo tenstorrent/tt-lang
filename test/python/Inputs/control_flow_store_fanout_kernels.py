@@ -19,6 +19,98 @@ def _is_compile_only():
 
 
 @ttl.operation(grid=(2, 1))
+def then_only_store_kernel(input_tensor, output_tensor):
+    input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dataflow_buffer_like(
+        output_tensor, shape=(1, 1), block_count=2
+    )
+
+    @ttl.compute()
+    def compute():
+        node_x, _node_y = ttl.node(dims=2)
+        with input_dfb.wait() as input_block:
+            value = ttl.exp(input_block)
+            if node_x == 0:
+                with output_dfb.reserve() as output_block:
+                    output_block.store(value)
+
+    if _is_compile_only():
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as _input_block:
+                pass
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with output_dfb.wait() as _output_block:
+                    pass
+
+        return
+
+    @ttl.datamovement()
+    def dm_read():
+        node_x, node_y = ttl.node(dims=2)
+        with input_dfb.reserve() as input_block:
+            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        node_x, node_y = ttl.node(dims=2)
+        if node_x == 0:
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[node_y, 0]).wait()
+
+
+@ttl.operation(grid=(2, 1))
+def else_only_store_kernel(input_tensor, output_tensor):
+    input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dataflow_buffer_like(
+        output_tensor, shape=(1, 1), block_count=2
+    )
+
+    @ttl.compute()
+    def compute():
+        node_x, _node_y = ttl.node(dims=2)
+        with input_dfb.wait() as input_block:
+            value = ttl.exp(input_block)
+            if node_x != 0:
+                with output_dfb.reserve() as output_block:
+                    output_block.store(value)
+
+    if _is_compile_only():
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as _input_block:
+                pass
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x != 0:
+                with output_dfb.wait() as _output_block:
+                    pass
+
+        return
+
+    @ttl.datamovement()
+    def dm_read():
+        node_x, node_y = ttl.node(dims=2)
+        with input_dfb.reserve() as input_block:
+            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        node_x, node_y = ttl.node(dims=2)
+        if node_x != 0:
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[node_y, 0]).wait()
+
+
+@ttl.operation(grid=(2, 1))
 def if_else_store_fanout_kernel(input_tensor, then_output, else_output):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
     then_dfb = ttl.make_dataflow_buffer_like(then_output, shape=(1, 1), block_count=2)
@@ -411,6 +503,8 @@ def loop_wrapped_store_fanout_kernel(input_tensor, first_output, second_output):
 
 
 CONTROL_FLOW_CASES = [
+    ("then_only", then_only_store_kernel, 2, 1),
+    ("else_only", else_only_store_kernel, 2, 1),
     ("if_else", if_else_store_fanout_kernel, 2, 2),
     ("elif_chain", elif_chain_store_fanout_kernel, 3, 3),
     ("nested_if", nested_if_store_fanout_kernel, 3, 3),
@@ -425,4 +519,9 @@ RUNTIME_CASES = [
     ("nested_if", nested_if_store_fanout_kernel, 3, 3),
     ("sibling_ifs", sibling_if_store_fanout_kernel, 3, 3),
     ("loop_wrapped", loop_wrapped_store_fanout_kernel, 2, 2),
+]
+
+SINGLE_BRANCH_RUNTIME_CASES = [
+    ("then_only", then_only_store_kernel, 2, 0),
+    ("else_only", else_only_store_kernel, 2, 1),
 ]

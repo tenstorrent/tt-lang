@@ -290,6 +290,45 @@ func.func @single_branch_reduce_store_unchanged(%cond: i1)
 
 // -----
 
+// A single else-branch store has one store block, so it does not need a
+// compiler-managed DFB.
+
+// CHECK-LABEL: func.func @single_else_branch_reduce_store_unchanged
+// CHECK-NOT: ttl.compiler_allocated
+// CHECK: %[[VALUE:.+]] = ttl.reduce
+// CHECK: scf.if
+// CHECK: } else {
+// CHECK: ttl.store %[[VALUE]]
+// CHECK: return
+
+// PIPELINE-LABEL: func.func @single_else_branch_reduce_store_unchanged
+// PIPELINE-COUNT-1: ttl.compute
+// PIPELINE-NOT: ttl.store
+// PIPELINE: return
+func.func @single_else_branch_reduce_store_unchanged(%cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 11 : i32, ttl.crta_indices = []} {
+  %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %scale_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %out_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %input_wait = ttl.cb_wait %input_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scale_wait = ttl.cb_wait %scale_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scale = ttl.attach_cb %scale_wait, %scale_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %value = ttl.reduce %input, %scale 0 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  scf.if %cond {
+  } else {
+    %out_reserve = ttl.cb_reserve %out_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %out_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+
+  return
+}
+
+// -----
+
 // Multiple stores in the same branch-local block are legal same-block
 // multi-output stores and do not need a compiler-managed DFB.
 

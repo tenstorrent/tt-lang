@@ -13,7 +13,10 @@ from ttlang_test_utils import assert_allclose, to_dram
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from Inputs.control_flow_store_fanout_kernels import RUNTIME_CASES  # noqa: E402
+from Inputs.control_flow_store_fanout_kernels import (  # noqa: E402
+    RUNTIME_CASES,
+    SINGLE_BRANCH_RUNTIME_CASES,
+)
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
@@ -54,4 +57,33 @@ def test_control_flow_store_fanout_runs(
         output_tensors, _expected_exp_outputs(input_torch, output_count)
     ):
         actual = ttnn.to_torch(output_tensor).float()
-        assert_allclose(actual, expected.float(), rtol=0.05, atol=0.5)
+        assert_allclose(actual, expected.float(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
+    "_case_name,kernel,grid_width,source_tile_index",
+    SINGLE_BRANCH_RUNTIME_CASES,
+    ids=[
+        case_name
+        for case_name, _kernel, _grid_width, _source_tile_index in SINGLE_BRANCH_RUNTIME_CASES
+    ],
+)
+def test_single_branch_store_runs(
+    _case_name, kernel, grid_width, source_tile_index, device, monkeypatch
+):
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    input_torch = _runtime_input(grid_width)
+    input_tensor = to_dram(input_torch, device)
+    output_tensor = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+
+    kernel(input_tensor, output_tensor)
+
+    expected = torch.exp(
+        input_torch[
+            :,
+            source_tile_index * 32 : (source_tile_index + 1) * 32,
+        ].float()
+    )
+    actual = ttnn.to_torch(output_tensor).float()
+    assert_allclose(actual, expected.float(), rtol=1e-2, atol=1e-2)
