@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s | FileCheck %s
 
 """Compile-only frontend coverage for control-flow store fanout."""

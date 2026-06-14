@@ -13,7 +13,9 @@ from ttlang_test_utils import assert_allclose, to_dram
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from Inputs.control_flow_store_fanout_kernels import RUNTIME_CASES, ttnn  # noqa: E402
+from Inputs.control_flow_store_fanout_kernels import RUNTIME_CASES  # noqa: E402
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 
 def _runtime_input(grid_width):

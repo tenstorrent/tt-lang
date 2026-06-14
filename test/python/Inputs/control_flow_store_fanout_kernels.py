@@ -4,19 +4,18 @@
 
 """Shared control-flow store fanout kernels for lit and pytest coverage."""
 
-import pytest
+import os
+
 import torch
 import ttl
 
-ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
-
 
 def host_tensor(shape):
-    return ttnn.from_torch(
-        torch.zeros(shape, dtype=torch.bfloat16),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-    )
+    return torch.zeros(shape, dtype=torch.bfloat16)
+
+
+def _is_compile_only():
+    return os.environ.get("TTLANG_COMPILE_ONLY") == "1"
 
 
 @ttl.operation(grid=(2, 1))
@@ -36,6 +35,25 @@ def if_else_store_fanout_kernel(input_tensor, then_output, else_output):
             else:
                 with else_dfb.reserve() as output_block:
                     output_block.store(value)
+
+    if _is_compile_only():
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as _input_block:
+                pass
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with then_dfb.wait() as _output_block:
+                    pass
+            else:
+                with else_dfb.wait() as _output_block:
+                    pass
+
+        return
 
     @ttl.datamovement()
     def dm_read():
@@ -79,6 +97,28 @@ def elif_chain_store_fanout_kernel(
             else:
                 with third_dfb.reserve() as output_block:
                     output_block.store(value)
+
+    if _is_compile_only():
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as _input_block:
+                pass
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with first_dfb.wait() as _output_block:
+                    pass
+            elif node_x == 1:
+                with second_dfb.wait() as _output_block:
+                    pass
+            else:
+                with third_dfb.wait() as _output_block:
+                    pass
+
+        return
 
     @ttl.datamovement()
     def dm_read():
@@ -127,6 +167,29 @@ def nested_if_store_fanout_kernel(
                 with third_dfb.reserve() as output_block:
                     output_block.store(value)
 
+    if _is_compile_only():
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as _input_block:
+                pass
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x < 2:
+                if node_x == 0:
+                    with first_dfb.wait() as _output_block:
+                        pass
+                else:
+                    with second_dfb.wait() as _output_block:
+                        pass
+            else:
+                with third_dfb.wait() as _output_block:
+                    pass
+
+        return
+
     @ttl.datamovement()
     def dm_read():
         node_x, node_y = ttl.node(dims=2)
@@ -173,6 +236,28 @@ def sibling_if_store_fanout_kernel(
             if node_x == 2:
                 with third_dfb.reserve() as output_block:
                     output_block.store(value)
+
+    if _is_compile_only():
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as _input_block:
+                pass
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with first_dfb.wait() as _output_block:
+                    pass
+            if node_x == 1:
+                with second_dfb.wait() as _output_block:
+                    pass
+            if node_x == 2:
+                with third_dfb.wait() as _output_block:
+                    pass
+
+        return
 
     @ttl.datamovement()
     def dm_read():
@@ -222,6 +307,29 @@ def nested_def_store_fanout_kernel(
                 with third_dfb.reserve() as output_block:
                     output_block.store(fallback)
 
+    if _is_compile_only():
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as _input_block:
+                pass
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x < 2:
+                if node_x == 0:
+                    with first_dfb.wait() as _output_block:
+                        pass
+                else:
+                    with second_dfb.wait() as _output_block:
+                        pass
+            else:
+                with third_dfb.wait() as _output_block:
+                    pass
+
+        return
+
     @ttl.datamovement()
     def dm_read():
         node_x, node_y = ttl.node(dims=2)
@@ -263,6 +371,26 @@ def loop_wrapped_store_fanout_kernel(input_tensor, first_output, second_output):
                 else:
                     with second_dfb.reserve() as output_block:
                         output_block.store(value)
+
+    if _is_compile_only():
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as _input_block:
+                pass
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            for _iteration in range(2):
+                if node_x == 0:
+                    with first_dfb.wait() as _output_block:
+                        pass
+                else:
+                    with second_dfb.wait() as _output_block:
+                        pass
+
+        return
 
     @ttl.datamovement()
     def dm_read():
