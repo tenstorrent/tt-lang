@@ -1,5 +1,6 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
+  ControlFlowUtils.cpp
   DFBMaterialization.cpp
   PipeGraph.cpp
   PipeLowering.cpp
@@ -35,6 +36,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRAnalysis
   MLIRAffineTransforms
   MLIRArithDialect
+  MLIRControlFlowInterfaces
   MLIREmitCDialect
   MLIRFuncDialect
   MLIRLinalgDialect

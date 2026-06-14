@@ -198,12 +198,18 @@ def TTLInsertIntermediateDFBs
     occupy at least two distinct blocks, which is the condition that can make
     `convert-ttl-to-compute` compare operation order across blocks.
 
-    The pass classifies cross-block store fanout before mutating IR. Cheap
-    backward slices stored from a suitable `scf.if` are rematerialized
-    into the store blocks so the output DFB reserve/store/push remains
-    conditional and no intermediate L1 round trip is introduced. Other
-    cross-block store fanout, and ordinary `DFBInputOpInterface` operands that
-    require storage, are materialized with a compiler-allocated DFB:
+    The pass classifies cross-block store fanout before mutating IR.
+    Clone-supported backward slices are relocated into store blocks only when
+    upstream `mlir::insideMutuallyExclusiveRegions` proves every pair of store
+    block representatives mutually exclusive, every external use of the slice
+    is one of the rewritten stores, and no loop sits between the producer scope
+    and a rewritten store. This accepts direct if/else and nested if/else
+    trees, but rejects sibling `scf.if` operations that may both execute. The
+    clone rewrite keeps output DFB reserve/store/push operations conditional
+    and avoids an intermediate L1 round trip in the exclusive if/else case.
+    Other cross-block store fanout, and ordinary `DFBInputOpInterface`
+    operands that require storage, are materialized with a compiler-allocated
+    DFB:
 
       bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
 
@@ -221,10 +227,10 @@ def TTLInsertIntermediateDFBs
     that `ttl-finalize-dfb-indices` can register them for the Python
     runtime.
 
-    When `enable` is false, rematerializable cross-block store fanout is still
+    When `enable` is false, cloneable cross-block store fanout is still
     rewritten because it does not allocate a compiler DFB. If any
     `DFBInputOpInterface` op has a non-DFB-attached operand, or if
-    non-rematerializable cross-block store fanout requires DFB materialization,
+    non-cloneable cross-block store fanout requires DFB materialization,
     the pass emits an error diagnostic and signals failure.
   }];
 

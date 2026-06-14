@@ -293,6 +293,8 @@ CONTROL_FLOW_CASES = [
 
 RUNTIME_CASES = [
     ("if_else", if_else_store_fanout_kernel, 2, 2),
+    ("elif_chain", elif_chain_store_fanout_kernel, 3, 3),
+    ("nested_if", nested_if_store_fanout_kernel, 3, 3),
     ("sibling_ifs", sibling_if_store_fanout_kernel, 3, 3),
     ("loop_wrapped", loop_wrapped_store_fanout_kernel, 2, 2),
 ]

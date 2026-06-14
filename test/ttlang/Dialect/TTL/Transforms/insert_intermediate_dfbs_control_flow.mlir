@@ -1,12 +1,12 @@
-// Tests rematerialization and fallback DFB materialization for values stored
+// Tests branch-local cloning and fallback DFB materialization for values stored
 // from multiple control-flow regions.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs))' | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync,convert-ttl-to-compute))' | FileCheck %s --check-prefix=PIPELINE
 
 // -----
 
-// A cheap value stored by mutually exclusive branches is rematerialized
-// into each branch, avoiding an intermediate compiler-managed DFB.
+// A clone-supported value stored by mutually exclusive branches is cloned into
+// each branch, avoiding an intermediate compiler-managed DFB.
 
 // CHECK-LABEL: func.func @store_fanout_across_scf_if
 // CHECK-NOT: ttl.compiler_allocated
@@ -47,10 +47,63 @@ func.func @store_fanout_across_scf_if(%cond: i1)
 
 // -----
 
-// A multi-op cheap backward slice stored more than once in one branch block is cloned
-// before the earliest store in that block.
+// Nested if/else regions clone the producer when every store block is pairwise
+// mutually exclusive.
 
-// CHECK-LABEL: func.func @multi_store_branch_rematerializes_once_per_block
+// CHECK-LABEL: func.func @nested_if_store_fanout_clones
+// CHECK-NOT: ttl.compiler_allocated
+// CHECK: %[[INPUT:.+]] = ttl.attach_cb
+// CHECK-NOT: ttl.exp
+// CHECK: scf.if
+// CHECK: scf.if
+// CHECK: %[[FIRST_VALUE:.+]] = ttl.exp %[[INPUT]]
+// CHECK: ttl.store %[[FIRST_VALUE]]
+// CHECK: } else {
+// CHECK: %[[SECOND_VALUE:.+]] = ttl.exp %[[INPUT]]
+// CHECK: ttl.store %[[SECOND_VALUE]]
+// CHECK: } else {
+// CHECK: %[[THIRD_VALUE:.+]] = ttl.exp %[[INPUT]]
+// CHECK: ttl.store %[[THIRD_VALUE]]
+// CHECK: return
+
+// PIPELINE-LABEL: func.func @nested_if_store_fanout_clones
+// PIPELINE-COUNT-3: ttl.compute
+// PIPELINE-NOT: ttl.store
+// PIPELINE: return
+func.func @nested_if_store_fanout_clones(%outer_cond: i1, %inner_cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 9 : i32, ttl.crta_indices = []} {
+  %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %third_cb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %input_wait = ttl.cb_wait %input_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %value = ttl.exp %input : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  scf.if %outer_cond {
+    scf.if %inner_cond {
+      %first_reserve = ttl.cb_reserve %first_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.store %value, %first_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    } else {
+      %second_reserve = ttl.cb_reserve %second_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.store %value, %second_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+  } else {
+    %third_reserve = ttl.cb_reserve %third_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %third_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+
+  return
+}
+
+// -----
+
+// A multi-op backward slice stored more than once in one branch block is cloned
+// once before the earliest store in that block.
+
+// CHECK-LABEL: func.func @multi_store_branch_clones_once_per_block
 // CHECK-NOT: ttl.compiler_allocated
 // CHECK: %[[LHS:.+]] = ttl.attach_cb
 // CHECK: %[[RHS:.+]] = ttl.attach_cb
@@ -67,11 +120,11 @@ func.func @store_fanout_across_scf_if(%cond: i1)
 // CHECK: ttl.store %[[ELSE_VALUE]]
 // CHECK: return
 
-// PIPELINE-LABEL: func.func @multi_store_branch_rematerializes_once_per_block
+// PIPELINE-LABEL: func.func @multi_store_branch_clones_once_per_block
 // PIPELINE-COUNT-2: ttl.compute
 // PIPELINE-NOT: ttl.store
 // PIPELINE: return
-func.func @multi_store_branch_rematerializes_once_per_block(%cond: i1)
+func.func @multi_store_branch_clones_once_per_block(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 5 : i32, ttl.crta_indices = []} {
   %lhs_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -102,10 +155,10 @@ func.func @multi_store_branch_rematerializes_once_per_block(%cond: i1)
 
 // -----
 
-// Independent sibling ifs may both execute, so even a cheap backward slice uses the DFB
-// fallback instead of being cloned into every store block.
+// Independent sibling ifs are not structurally mutually exclusive, so the
+// branch stores use a compiler-managed DFB.
 
-// CHECK-LABEL: func.func @sibling_if_store_fanout_uses_dfb_fallback
+// CHECK-LABEL: func.func @sibling_if_store_fanout_materializes
 // CHECK: %[[COMPILER_DFB:.+]] = ttl.bind_cb{{.*}}{ttl.compiler_allocated}
 // CHECK: %[[VALUE:.+]] = ttl.exp
 // CHECK: %[[RESERVED:.+]] = ttl.cb_reserve %[[COMPILER_DFB]]
@@ -118,11 +171,11 @@ func.func @multi_store_branch_rematerializes_once_per_block(%cond: i1)
 // CHECK: ttl.store %[[ATTACHED]]
 // CHECK: return
 
-// PIPELINE-LABEL: func.func @sibling_if_store_fanout_uses_dfb_fallback
-// PIPELINE-COUNT-3: ttl.compute
+// PIPELINE-LABEL: func.func @sibling_if_store_fanout_materializes
+// PIPELINE: ttl.compute
 // PIPELINE-NOT: ttl.store
 // PIPELINE: return
-func.func @sibling_if_store_fanout_uses_dfb_fallback(%cond_a: i1, %cond_b: i1)
+func.func @sibling_if_store_fanout_materializes(%cond_a: i1, %cond_b: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 6 : i32, ttl.crta_indices = []} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -140,6 +193,59 @@ func.func @sibling_if_store_fanout_uses_dfb_fallback(%cond_a: i1, %cond_b: i1)
   scf.if %cond_b {
     %second_reserve = ttl.cb_reserve %second_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %value, %second_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+
+  return
+}
+
+// -----
+
+// Sibling ifs under a common outer branch are still not pairwise exclusive.
+
+// CHECK-LABEL: func.func @nested_sibling_if_store_fanout_materializes
+// CHECK: %[[COMPILER_DFB:.+]] = ttl.bind_cb{{.*}}{ttl.compiler_allocated}
+// CHECK: %[[VALUE:.+]] = ttl.exp
+// CHECK: %[[RESERVED:.+]] = ttl.cb_reserve %[[COMPILER_DFB]]
+// CHECK: ttl.store %[[VALUE]], %[[RESERVED]]
+// CHECK: %[[WAITED:.+]] = ttl.cb_wait %[[COMPILER_DFB]]
+// CHECK: %[[ATTACHED:.+]] = ttl.attach_cb %[[WAITED]], %[[COMPILER_DFB]]
+// CHECK: scf.if
+// CHECK: scf.if
+// CHECK: ttl.store %[[ATTACHED]]
+// CHECK: scf.if
+// CHECK: ttl.store %[[ATTACHED]]
+// CHECK: } else {
+// CHECK: ttl.store %[[ATTACHED]]
+// CHECK: return
+
+// PIPELINE-LABEL: func.func @nested_sibling_if_store_fanout_materializes
+// PIPELINE: ttl.compute
+// PIPELINE-NOT: ttl.store
+// PIPELINE: return
+func.func @nested_sibling_if_store_fanout_materializes(%outer_cond: i1, %cond_a: i1, %cond_b: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 10 : i32, ttl.crta_indices = []} {
+  %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %third_cb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %input_wait = ttl.cb_wait %input_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %value = ttl.exp %input : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  scf.if %outer_cond {
+    scf.if %cond_a {
+      %first_reserve = ttl.cb_reserve %first_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.store %value, %first_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    scf.if %cond_b {
+      %second_reserve = ttl.cb_reserve %second_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.store %value, %second_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+  } else {
+    %third_reserve = ttl.cb_reserve %third_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %third_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   }
 
   return
@@ -225,8 +331,8 @@ func.func @same_branch_reduce_multi_store_unchanged(%cond: i1)
 
 // -----
 
-// A value produced by an expensive DFB-input op uses the compiler-managed DFB
-// fallback instead of cloning the producer into each branch.
+// A producer outside the current clone-supported set uses the compiler-managed
+// DFB fallback.
 
 // CHECK-LABEL: func.func @reduce_fanout_across_scf_if
 // CHECK: %[[COMPILER_DFB:.+]] = ttl.bind_cb{{.*}}{ttl.compiler_allocated}
@@ -265,6 +371,50 @@ func.func @reduce_fanout_across_scf_if(%cond: i1)
   } else {
     %else_reserve = ttl.cb_reserve %else_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %value, %else_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+
+  return
+}
+
+// -----
+
+// A value stored both in its defining block and in a branch spans two blocks,
+// but the stores are not mutually exclusive. The branch store uses the DFB
+// fallback and the defining-block store keeps the original value.
+
+// CHECK-LABEL: func.func @store_fanout_defining_block_and_branch_materializes
+// CHECK: %[[COMPILER_DFB:.+]] = ttl.bind_cb{{.*}}{ttl.compiler_allocated}
+// CHECK: %[[VALUE:.+]] = ttl.exp
+// CHECK: %[[RESERVED:.+]] = ttl.cb_reserve %[[COMPILER_DFB]]
+// CHECK: ttl.store %[[VALUE]], %[[RESERVED]]
+// CHECK: %[[WAITED:.+]] = ttl.cb_wait %[[COMPILER_DFB]]
+// CHECK: %[[ATTACHED:.+]] = ttl.attach_cb %[[WAITED]], %[[COMPILER_DFB]]
+// CHECK: ttl.store %[[VALUE]], %{{.+}}
+// CHECK: scf.if
+// CHECK: ttl.store %[[ATTACHED]]
+// CHECK: return
+
+// PIPELINE-LABEL: func.func @store_fanout_defining_block_and_branch_materializes
+// PIPELINE: ttl.compute
+// PIPELINE-NOT: ttl.store
+// PIPELINE: return
+func.func @store_fanout_defining_block_and_branch_materializes(%cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 9 : i32, ttl.crta_indices = []} {
+  %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %always_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %branch_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %input_wait = ttl.cb_wait %input_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %value = ttl.exp %input : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %always_reserve = ttl.cb_reserve %always_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %value, %always_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  scf.if %cond {
+    %branch_reserve = ttl.cb_reserve %branch_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %branch_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   }
 
   return

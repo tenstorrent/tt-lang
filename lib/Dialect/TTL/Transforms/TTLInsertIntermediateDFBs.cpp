@@ -7,25 +7,26 @@
 //===----------------------------------------------------------------------===//
 //
 // Resolves DFB attachment and cross-block store fanout before
-// convert-ttl-to-compute. Cheap backward slices stored from mutually exclusive
-// control-flow regions are rematerialized in those regions. Values whose
-// consumers require DFB-attached inputs, or whose control-flow stores cannot be
-// safely rematerialized, are materialized through compiler-allocated
-// intermediate dataflow buffers.
+// convert-ttl-to-compute. Cloneable backward slices feeding mutually exclusive
+// cross-block stores are relocated into those store blocks. Values whose
+// consumers require DFB-attached inputs, or whose store fanout cannot be proven
+// exclusive, are materialized through compiler-allocated intermediate dataflow
+// buffers.
 //
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/ControlFlowUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -47,7 +48,7 @@ struct StoreBlockGroup {
 };
 
 enum class CrossRegionStoreAction {
-  Rematerialize,
+  CloneBackwardSlice,
   MaterializeToDFB,
 };
 
@@ -57,140 +58,6 @@ struct CrossRegionStorePlan {
   CrossRegionStoreAction action = CrossRegionStoreAction::MaterializeToDFB;
   FusionTraceResult backwardSlice;
 };
-
-static SmallVector<StoreOp> getCrossRegionStores(Value value) {
-  Operation *definingOp = value.getDefiningOp();
-  if (!definingOp) {
-    return {};
-  }
-
-  Block *definingBlock = definingOp->getBlock();
-  SmallVector<StoreOp> stores;
-  for (OpOperand &use : value.getUses()) {
-    auto storeOp = dyn_cast<StoreOp>(use.getOwner());
-    if (!storeOp || storeOp.getTensor() != value) {
-      continue;
-    }
-    if (storeOp->getBlock() != definingBlock) {
-      stores.push_back(storeOp);
-    }
-  }
-  return stores;
-}
-
-static bool hasStoresInMultipleBlocks(Value value) {
-  llvm::SmallPtrSet<Block *, 2> storeBlocks;
-  for (OpOperand &use : value.getUses()) {
-    auto storeOp = dyn_cast<StoreOp>(use.getOwner());
-    if (!storeOp || storeOp.getTensor() != value) {
-      continue;
-    }
-    storeBlocks.insert(storeOp->getBlock());
-    if (storeBlocks.size() > 1) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static bool isCheapRematerializableOp(Operation *op) {
-  return isa<FillOp>(op) || isElementwiseOp(op);
-}
-
-static bool hasLoopBetween(Operation *ancestor, Operation *descendant) {
-  for (Operation *parent = descendant->getParentOp();
-       parent && parent != ancestor; parent = parent->getParentOp()) {
-    if (isa<scf::ForOp, scf::ForallOp, scf::ParallelOp, scf::WhileOp>(parent)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static bool containsAllStores(Operation *ancestor, ArrayRef<StoreOp> stores) {
-  return llvm::all_of(stores, [&](StoreOp storeOp) {
-    return ancestor->isProperAncestor(storeOp);
-  });
-}
-
-static scf::IfOp findExclusiveStoreIf(Value value, ArrayRef<StoreOp> stores) {
-  Operation *definingOp = value.getDefiningOp();
-  if (!definingOp) {
-    return nullptr;
-  }
-  Block *definingBlock = definingOp->getBlock();
-
-  for (StoreOp storeOp : stores) {
-    for (Operation *parent = storeOp->getParentOp(); parent;
-         parent = parent->getParentOp()) {
-      auto ifOp = dyn_cast<scf::IfOp>(parent);
-      if (!ifOp || ifOp->getBlock() != definingBlock) {
-        continue;
-      }
-      if (!containsAllStores(ifOp, stores)) {
-        continue;
-      }
-      if (llvm::any_of(stores, [&](StoreOp candidateStore) {
-            return hasLoopBetween(ifOp, candidateStore);
-          })) {
-        continue;
-      }
-      return ifOp;
-    }
-  }
-  return nullptr;
-}
-
-static bool getRematerializableBackwardSlice(Value value,
-                                             ArrayRef<StoreOp> stores,
-                                             FusionTraceResult &backwardSlice) {
-  if (!findExclusiveStoreIf(value, stores)) {
-    return false;
-  }
-
-  backwardSlice = traceFusionToRoots(value);
-  if (backwardSlice.failureReason != TraceFailureReason::Success ||
-      backwardSlice.opsInOrder.empty()) {
-    return false;
-  }
-
-  return llvm::all_of(backwardSlice.opsInOrder, isCheapRematerializableOp);
-}
-
-static CrossRegionStorePlan
-buildCrossRegionStorePlan(Value value, SmallVector<StoreOp> stores) {
-  CrossRegionStorePlan plan;
-  plan.value = value;
-  plan.stores = std::move(stores);
-
-  FusionTraceResult backwardSlice;
-  if (getRematerializableBackwardSlice(value, plan.stores, backwardSlice)) {
-    plan.action = CrossRegionStoreAction::Rematerialize;
-    plan.backwardSlice = std::move(backwardSlice);
-  }
-  return plan;
-}
-
-static SmallVector<CrossRegionStorePlan>
-collectCrossRegionStorePlans(func::FuncOp funcOp) {
-  SmallVector<CrossRegionStorePlan> plans;
-  funcOp.walk([&](Operation *op) {
-    for (Value result : op->getResults()) {
-      if (!isa<RankedTensorType>(result.getType()) || getAttachedCB(result)) {
-        continue;
-      }
-      if (!hasStoresInMultipleBlocks(result)) {
-        continue;
-      }
-      SmallVector<StoreOp> stores = getCrossRegionStores(result);
-      if (stores.empty()) {
-        continue;
-      }
-      plans.push_back(buildCrossRegionStorePlan(result, std::move(stores)));
-    }
-  });
-  return plans;
-}
 
 static SmallVector<StoreBlockGroup>
 groupStoresByBlock(ArrayRef<StoreOp> stores) {
@@ -207,6 +74,139 @@ groupStoresByBlock(ArrayRef<StoreOp> stores) {
     iter->stores.push_back(storeOp);
   }
   return groups;
+}
+
+// Returns `value`'s stores that live outside its defining block, but only when
+// its stores span at least two distinct blocks -- the condition under which
+// convert-ttl-to-compute orders stores across blocks and asserts. Returns {}
+// for single-block store sets, which lower without help.
+static SmallVector<StoreOp> getCrossRegionStores(Value value) {
+  Operation *definingOp = value.getDefiningOp();
+  if (!definingOp) {
+    return {};
+  }
+
+  Block *definingBlock = definingOp->getBlock();
+  SmallVector<StoreOp> crossRegionStores;
+  llvm::SmallPtrSet<Block *, 2> storeBlocks;
+  for (OpOperand &use : value.getUses()) {
+    auto storeOp = dyn_cast<StoreOp>(use.getOwner());
+    if (!storeOp || storeOp.getTensor() != value) {
+      continue;
+    }
+    storeBlocks.insert(storeOp->getBlock());
+    if (storeOp->getBlock() != definingBlock) {
+      crossRegionStores.push_back(storeOp);
+    }
+  }
+  if (storeBlocks.size() < 2) {
+    return {};
+  }
+  return crossRegionStores;
+}
+
+static bool hasLoopBetween(Operation *ancestor, Operation *descendant) {
+  for (Operation *parent = descendant->getParentOp();
+       parent && parent != ancestor; parent = parent->getParentOp()) {
+    if (isa<LoopLikeOpInterface>(parent)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool areStoreBlocksPairwiseExclusive(ArrayRef<StoreOp> stores) {
+  SmallVector<Operation *> representatives;
+  for (StoreBlockGroup &group : groupStoresByBlock(stores)) {
+    representatives.push_back(group.stores.front().getOperation());
+  }
+  return arePairwiseInsideMutuallyExclusiveRegions(representatives);
+}
+
+static bool sliceExternalUsesAreStores(Value value,
+                                       const FusionTraceResult &backwardSlice,
+                                       ArrayRef<StoreOp> stores) {
+  llvm::SmallPtrSet<Operation *, 8> sliceOps;
+  llvm::SmallPtrSet<Operation *, 8> storeOps;
+  for (Operation *op : backwardSlice.opsInOrder) {
+    sliceOps.insert(op);
+  }
+  for (StoreOp storeOp : stores) {
+    storeOps.insert(storeOp.getOperation());
+  }
+
+  for (Operation *op : backwardSlice.opsInOrder) {
+    for (Value result : op->getResults()) {
+      for (Operation *user : result.getUsers()) {
+        if (sliceOps.contains(user)) {
+          continue;
+        }
+        if (result == value && storeOps.contains(user)) {
+          continue;
+        }
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Cloning is selected only when the original producer slice is completely
+// relocated into mutually exclusive store blocks. Otherwise materialization
+// preserves single producer execution without depending on predicate analysis.
+static bool getCloneableBackwardSlice(Value value, ArrayRef<StoreOp> stores,
+                                      FusionTraceResult &backwardSlice) {
+  if (!areStoreBlocksPairwiseExclusive(stores)) {
+    return false;
+  }
+
+  backwardSlice = traceFusionToRoots(value);
+  if (backwardSlice.failureReason != TraceFailureReason::Success ||
+      backwardSlice.opsInOrder.empty()) {
+    return false;
+  }
+  // TODO(#686): Add explicit exclusions here if a producer recognized by
+  // `traceFusionToRoots` has a concrete clone-safety issue.
+  if (!sliceExternalUsesAreStores(value, backwardSlice, stores)) {
+    return false;
+  }
+
+  Operation *producerScope = value.getDefiningOp()->getParentOp();
+  return llvm::none_of(stores, [&](StoreOp storeOp) {
+    return hasLoopBetween(producerScope, storeOp);
+  });
+}
+
+static CrossRegionStorePlan
+buildCrossRegionStorePlan(Value value, SmallVector<StoreOp> stores) {
+  CrossRegionStorePlan plan;
+  plan.value = value;
+  plan.stores = std::move(stores);
+
+  FusionTraceResult backwardSlice;
+  if (getCloneableBackwardSlice(value, plan.stores, backwardSlice)) {
+    plan.action = CrossRegionStoreAction::CloneBackwardSlice;
+    plan.backwardSlice = std::move(backwardSlice);
+  }
+  return plan;
+}
+
+static SmallVector<CrossRegionStorePlan>
+collectCrossRegionStorePlans(func::FuncOp funcOp) {
+  SmallVector<CrossRegionStorePlan> plans;
+  funcOp.walk([&](Operation *op) {
+    for (Value result : op->getResults()) {
+      if (!isa<RankedTensorType>(result.getType()) || getAttachedCB(result)) {
+        continue;
+      }
+      SmallVector<StoreOp> stores = getCrossRegionStores(result);
+      if (stores.empty()) {
+        continue;
+      }
+      plans.push_back(buildCrossRegionStorePlan(result, std::move(stores)));
+    }
+  });
+  return plans;
 }
 
 static Value
@@ -246,12 +246,12 @@ eraseUnusedBackwardSliceOps(const FusionTraceResult &backwardSlice) {
   }
 }
 
-static void rematerializeStores(Value value, ArrayRef<StoreOp> stores,
-                                const FusionTraceResult &backwardSlice,
-                                OpBuilder &builder) {
-  // The backward slice contains only pure cheap ops, and the root inputs
-  // already dominate the stores. Rewriting store operands preserves branch
-  // control.
+static void cloneStores(Value value, ArrayRef<StoreOp> stores,
+                        const FusionTraceResult &backwardSlice,
+                        OpBuilder &builder) {
+  // Root inputs already dominate the stores. Rewriting store operands preserves
+  // branch control. Root-input DFB slots stay live at the clone sites because
+  // ttl-insert-cb-sync runs after this pass and releases after the cloned uses.
   for (StoreBlockGroup &group : groupStoresByBlock(stores)) {
     Value replacement = cloneBackwardSliceForStoreBlock(value, backwardSlice,
                                                         group.stores, builder);
@@ -274,16 +274,16 @@ verifyCompilerDFBEnabledForPlans(ArrayRef<CrossRegionStorePlan> plans,
   }
 
   for (const CrossRegionStorePlan &plan : plans) {
-    if (plan.action == CrossRegionStoreAction::Rematerialize) {
+    if (plan.action == CrossRegionStoreAction::CloneBackwardSlice) {
       continue;
     }
 
     Operation *definingOp = plan.value.getDefiningOp();
     definingOp->emitOpError()
         << "result is stored from a different block and cannot be "
-           "rematerialized without changing the producer placement; enable "
-           "compiler DFBs or store the intermediate to a user-declared DFB "
-           "before the control-flow split";
+           "cloned into mutually exclusive store blocks; enable compiler DFBs "
+           "or store the intermediate to a user-declared DFB before the "
+           "control-flow split";
     return failure();
   }
   return success();
@@ -297,8 +297,8 @@ static LogicalResult applyCrossRegionStorePlans(
   }
 
   for (const CrossRegionStorePlan &plan : plans) {
-    if (plan.action == CrossRegionStoreAction::Rematerialize) {
-      rematerializeStores(plan.value, plan.stores, plan.backwardSlice, builder);
+    if (plan.action == CrossRegionStoreAction::CloneBackwardSlice) {
+      cloneStores(plan.value, plan.stores, plan.backwardSlice, builder);
       continue;
     }
 
@@ -371,8 +371,8 @@ struct TTLInsertIntermediateDFBsPass
     SmallVector<DFBInputOpInterface> candidates;
     funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
     // Snapshot all cross-region store decisions before rewriting. A
-    // rematerialization can erase the original backward slice and rewrite its
-    // uses.
+    // clone rewrite can erase the original backward slice and rewrite its uses;
+    // eraseUnusedBackwardSliceOps only removes ops with no remaining users.
     SmallVector<CrossRegionStorePlan> crossRegionStorePlans =
         collectCrossRegionStorePlans(funcOp);
 
