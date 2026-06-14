@@ -90,6 +90,7 @@ _TTL_OPS: Dict[str, str] = {
     "log": "trisc",
     "abs": "trisc",
     "relu": "trisc",
+    "sign": "trisc",
     "sigmoid": "trisc",
     "gelu": "trisc",
     # Compile-time / scalar producers: duplicated, not anchored.
