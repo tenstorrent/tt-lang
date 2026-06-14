@@ -46,11 +46,11 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
   Location loc = intermediate.getLoc();
   MLIRContext *ctx = builder.getContext();
 
-  // Intra-thread push/wait requires double-buffering so the packer and
-  // unpacker can operate on different buffer halves simultaneously.
+  // Single block: producer and consumer are the same compute kernel, so a
+  // second block buys no overlap and doubles the L1 footprint.
   SmallVector<int64_t> shape(tensorType.getShape());
   Type elementType = tensorType.getElementType();
-  int64_t blockCount = 2;
+  int64_t blockCount = 1;
   auto cbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
