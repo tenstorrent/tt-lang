@@ -162,6 +162,21 @@ struct TTLValidateCBBudgetPass
     }
     llvm::sort(sortedIndices);
 
+    if (::getenv("TTL_CB_BUDGET_DEBUG")) {
+      for (int64_t idx : sortedIndices) {
+        BindCBOp b = bindForIndex[idx];
+        auto t = mlir::cast<CircularBufferType>(b.getResult().getType());
+        llvm::errs() << "[cb-budget] CB[" << idx << "] " << maxBytesByIndex[idx]
+                     << " bytes elemsPerBlock=" << t.getElementsPerBlock()
+                     << " blockCount=" << t.getBlockCount()
+                     << (b->hasAttr(kCompilerAllocatedAttrName) ? " (compiler)"
+                                                                : "")
+                     << "\n";
+      }
+      llvm::errs() << "[cb-budget] total=" << totalBytes
+                   << " budget=" << budgetBytes << "\n";
+    }
+
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {
       for (int64_t idx : sortedIndices) {
         BindCBOp bindOp = bindForIndex[idx];
