@@ -136,6 +136,14 @@ class PipeRuntimeResources:
     expected_extra_common_runtime_args: int
 
 
+@dataclass(frozen=True)
+class MeshProgramPlacement:
+    """Device range for one program inside a mesh descriptor."""
+
+    start: Any
+    end: Optional[Any] = None
+
+
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     """
     Build compile-time args for tensor accessors.
@@ -653,6 +661,63 @@ def build_generic_op_io_tensors(
     return io_tensors
 
 
+def build_program_descriptor(
+    kernel_descriptors: List[Any],
+    cb_descriptors: List[Any],
+    semaphore_descriptors: List[Any],
+) -> Any:
+    """Build the single-device descriptor used by current intra-chip execution."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    return ttnn.ProgramDescriptor(
+        kernels=kernel_descriptors,
+        cbs=cb_descriptors,
+        semaphores=semaphore_descriptors,
+    )
+
+
+def _build_mesh_coordinate(coord: Any) -> Any:
+    if isinstance(coord, (tuple, list)):
+        try:
+            return ttnn.MeshCoordinate(*coord)
+        except TypeError:
+            return ttnn.MeshCoordinate(coord)
+    return coord
+
+
+def _build_mesh_coordinate_range(placement: Any) -> Any:
+    if isinstance(placement, MeshProgramPlacement):
+        start = _build_mesh_coordinate(placement.start)
+        end = _build_mesh_coordinate(
+            placement.start if placement.end is None else placement.end
+        )
+        return ttnn.MeshCoordinateRange(start, end)
+    if isinstance(placement, (tuple, list)):
+        coord = _build_mesh_coordinate(placement)
+        return ttnn.MeshCoordinateRange(coord, coord)
+    return placement
+
+
+def build_mesh_program_descriptor(
+    program_descriptor: Any,
+    mesh_program_placements: List[Any],
+) -> Any:
+    """Build a mesh descriptor that runs a program over selected device ranges."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    if not mesh_program_placements:
+        raise ValueError("mesh_program_placements must not be empty")
+
+    mesh_program_descriptor = ttnn.MeshProgramDescriptor()
+    for placement in mesh_program_placements:
+        mesh_range = _build_mesh_coordinate_range(placement)
+        mesh_program_descriptor[mesh_range] = program_descriptor
+    return mesh_program_descriptor
+
+
 def run_kernel_on_device(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -663,6 +728,7 @@ def run_kernel_on_device(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
+    mesh_program_placements: Optional[List[Any]] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -689,6 +755,9 @@ def run_kernel_on_device(
         pipe_global_semaphore_lifetime: Optional list replaced with the current
             call's GlobalSemaphore objects. Cached kernels keep this bounded
             owner list so repeated calls do not retain old semaphore objects.
+        mesh_program_placements: Optional mesh device ranges. When present,
+            execution uses ttnn.MeshProgramDescriptor instead of
+            ttnn.ProgramDescriptor.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -756,14 +825,20 @@ def run_kernel_on_device(
     )
 
     # Build and execute program.
-    program = ttnn.ProgramDescriptor(
-        kernels=kernel_descriptors,
-        cbs=cb_descriptors,
-        semaphores=semaphore_descriptors,
+    program_descriptor = build_program_descriptor(
+        kernel_descriptors=kernel_descriptors,
+        cb_descriptors=cb_descriptors,
+        semaphore_descriptors=semaphore_descriptors,
     )
     normalized_program_hash = normalize_program_hash(program_hash)
     if normalized_program_hash is not None:
-        program.custom_program_hash = normalized_program_hash
+        program_descriptor.custom_program_hash = normalized_program_hash
+    program = program_descriptor
+    if mesh_program_placements is not None:
+        program = build_mesh_program_descriptor(
+            program_descriptor=program_descriptor,
+            mesh_program_placements=mesh_program_placements,
+        )
 
     # ttnn.generic_op requires io_tensors to contain at least one input
     # and one output (size >= 2).  Output-only kernels (e.g. fill with no
@@ -842,6 +917,17 @@ def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
     )
 
 
+def _mesh_program_placement_to_source(placement: Any) -> str:
+    if isinstance(placement, MeshProgramPlacement):
+        return f"MeshProgramPlacement({placement.start!r}, {placement.end!r})"
+    if isinstance(placement, (tuple, list)):
+        return repr(tuple(placement))
+    raise TypeError(
+        "standalone runner mesh placements must be coordinate tuples "
+        "or MeshProgramPlacement values"
+    )
+
+
 def emit_runner_source(
     kernel_specs: List[KernelSpec],
     cb_configs: List[Any],
@@ -853,6 +939,7 @@ def emit_runner_source(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     program_hash: Optional[int] = None,
+    mesh_program_placements: Optional[List[Any]] = None,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -863,6 +950,8 @@ def emit_runner_source(
 
     program_hash, if provided, is normalized to uint64 and embedded as the
     emitted runner's tt-metal program-cache key.
+    mesh_program_placements, if provided, selects the device ranges that run
+    the emitted program.
     """
     lines = []
 
@@ -875,11 +964,14 @@ def emit_runner_source(
     lines.append("")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    KernelSpec,")
+    lines.append("    MeshProgramPlacement,")
     lines.append("    build_cb_descriptors,")
     lines.append("    build_generic_op_io_tensors,")
     lines.append("    build_kernel_descriptors,")
+    lines.append("    build_mesh_program_descriptor,")
     lines.append("    build_pipe_runtime_resources,")
     lines.append("    build_pipe_sync_semaphore_descriptors,")
+    lines.append("    build_program_descriptor,")
     lines.append("    build_tensor_accessor_args,")
     lines.append(")")
     lines.append("")
@@ -901,6 +993,13 @@ def emit_runner_source(
     lines.append(
         f"PIPE_COMPUTED_ADDRESS_DFB_INDICES = {computed_address_dfb_indices!r}"
     )
+    if mesh_program_placements is None:
+        lines.append("MESH_PROGRAM_PLACEMENTS = None")
+    else:
+        lines.append("MESH_PROGRAM_PLACEMENTS = [")
+        for placement in mesh_program_placements:
+            lines.append(f"    {_mesh_program_placement_to_source(placement)},")
+        lines.append("]")
     lines.append("")
 
     lines.append("KERNEL_PATHS = [")
@@ -1065,13 +1164,19 @@ def emit_runner_source(
     lines.append("    )")
     lines.append("")
 
-    lines.append("    program = ttnn.ProgramDescriptor(")
-    lines.append("        kernels=kernel_descriptors,")
-    lines.append("        cbs=cb_descriptors,")
-    lines.append("        semaphores=semaphore_descriptors,")
+    lines.append("    program_descriptor = build_program_descriptor(")
+    lines.append("        kernel_descriptors=kernel_descriptors,")
+    lines.append("        cb_descriptors=cb_descriptors,")
+    lines.append("        semaphore_descriptors=semaphore_descriptors,")
     lines.append("    )")
     lines.append("    if PROGRAM_HASH is not None:")
-    lines.append("        program.custom_program_hash = PROGRAM_HASH")
+    lines.append("        program_descriptor.custom_program_hash = PROGRAM_HASH")
+    lines.append("    program = program_descriptor")
+    lines.append("    if MESH_PROGRAM_PLACEMENTS is not None:")
+    lines.append("        program = build_mesh_program_descriptor(")
+    lines.append("            program_descriptor=program_descriptor,")
+    lines.append("            mesh_program_placements=MESH_PROGRAM_PLACEMENTS,")
+    lines.append("        )")
     lines.append("")
     lines.append("    io_tensors = build_generic_op_io_tensors(")
     lines.append("        tensors=tensors,")
@@ -1104,12 +1209,15 @@ def emit_runner_file(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     program_hash: Optional[int] = None,
+    mesh_program_placements: Optional[List[Any]] = None,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
 
     program_hash, if provided, is forwarded to the emitted runner as its
     normalized tt-metal program-cache key.
+    mesh_program_placements, if provided, is forwarded as the emitted
+    program's device ranges.
 
     Returns the output path.
     """
@@ -1126,6 +1234,7 @@ def emit_runner_file(
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        mesh_program_placements=mesh_program_placements,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -1138,6 +1247,7 @@ def emit_runner_file(
 
 __all__ = [
     "KernelSpec",
+    "MeshProgramPlacement",
     "PipeRuntimeResources",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
@@ -1149,6 +1259,8 @@ __all__ = [
     "build_pipe_sync_semaphore_descriptors",
     "normalize_program_hash",
     "build_generic_op_io_tensors",
+    "build_mesh_program_descriptor",
+    "build_program_descriptor",
     "run_kernel_on_device",
     "emit_runner_source",
     "emit_runner_file",
