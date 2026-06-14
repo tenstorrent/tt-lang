@@ -188,14 +188,31 @@ def TTLAnnotateL1AccLoops
 
 def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
-  let summary = "Insert intermediate dataflow buffers at fusion split points";
+  let summary = "Resolve DFB attachment and cross-block store fanout";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
-    When an operand comes from a fused expression chain (not DFB-attached),
-    the pass inserts a compiler-allocated DFB:
+    It also collects direct `ttl.store` users of non-DFB-attached tensor
+    values when the stores are in blocks other than the defining op's block.
+    A value is a cross-block store candidate only when its direct store users
+    occupy at least two distinct blocks, which is the condition that can make
+    `convert-ttl-to-compute` compare operation order across blocks.
+
+    The pass classifies cross-block store fanout before mutating IR. Cheap
+    backward slices stored from a suitable `scf.if` are rematerialized
+    into the store blocks so the output DFB reserve/store/push remains
+    conditional and no intermediate L1 round trip is introduced. Other
+    cross-block store fanout, and ordinary `DFBInputOpInterface` operands that
+    require storage, are materialized with a compiler-allocated DFB:
 
       bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
+
+    For the DFB fallback, cross-block stores are rewritten to consume the
+    attached value from that private DFB while same-block users keep the
+    original SSA value. This follows the storage materialization model used by
+    upstream MLIR bufferization: tensor SSA values crossing control-flow
+    regions receive concrete storage, and branch-local users read from that
+    storage.
 
     `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
     based on transitive use analysis.
@@ -204,10 +221,11 @@ def TTLInsertIntermediateDFBs
     that `ttl-finalize-dfb-indices` can register them for the Python
     runtime.
 
-    When `enable` is false, the pass verifies that no operations require
-    compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
-    non-DFB-attached operand, the pass emits an error diagnostic and
-    signals failure.
+    When `enable` is false, rematerializable cross-block store fanout is still
+    rewritten because it does not allocate a compiler DFB. If any
+    `DFBInputOpInterface` op has a non-DFB-attached operand, or if
+    non-rematerializable cross-block store fanout requires DFB materialization,
+    the pass emits an error diagnostic and signals failure.
   }];
 
   let options = [
