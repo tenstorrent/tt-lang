@@ -285,9 +285,25 @@ def _synthesize_thread_module(fn_name: str, body: List[ast.stmt]) -> ast.Module:
     return ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[]))
 
 
+def _dfb_l1_elems(dfb: DataflowBuffer) -> int:
+    """Total tiles a DFB occupies in L1 (per-block elements x block_count)."""
+    n = dfb.block_count
+    for s in dfb.shape:
+        n *= s
+    return n
+
+
 def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
-    """DataflowBuffer list indexed by CB index, matching _collect_cb_configs."""
-    by_index = {dfb._cb_index: dfb for dfb in lifted.values()}
+    """DataflowBuffer list indexed by CB index, matching _collect_cb_configs.
+
+    Indices are declaration-dense here; the finalize pass overlays scratch
+    DFBs onto shared indices in MLIR and the runtime applies its index map.
+    """
+    by_index: Dict[int, DataflowBuffer] = {}
+    for dfb in lifted.values():
+        cur = by_index.get(dfb._cb_index)
+        if cur is None or _dfb_l1_elems(dfb) > _dfb_l1_elems(cur):
+            by_index[dfb._cb_index] = dfb
     if not by_index:
         return []
     return [by_index.get(i) for i in range(max(by_index) + 1)]
