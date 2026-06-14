@@ -29,7 +29,11 @@ for case_name, kernel, grid_width, output_count in CONTROL_FLOW_CASES:
 # CHECK: COMPILED else_only
 # CHECK: COMPILED if_else
 # CHECK: COMPILED elif_chain
+# CHECK: COMPILED elif_gap
 # CHECK: COMPILED nested_if
 # CHECK: COMPILED sibling_ifs
 # CHECK: COMPILED nested_def
 # CHECK: COMPILED loop_wrapped
+# CHECK: COMPILED external_use
+# CHECK: COMPILED parent_and_branch
+# CHECK: COMPILED attached_input

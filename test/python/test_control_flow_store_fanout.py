@@ -16,6 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from Inputs.control_flow_store_fanout_kernels import (  # noqa: E402
     RUNTIME_CASES,
     SINGLE_BRANCH_RUNTIME_CASES,
+    attached_input_store_fanout_kernel,
+    elif_gap_store_fanout_kernel,
+    external_use_store_fanout_kernel,
+    nested_def_store_fanout_kernel,
+    parent_and_branch_store_fanout_kernel,
 )
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
@@ -32,6 +37,13 @@ def _expected_exp_outputs(input_tensor, output_count):
         torch.exp(input_tensor[:, output_index * 32 : (output_index + 1) * 32].float())
         for output_index in range(output_count)
     ]
+
+
+def _source_tile(input_tensor, source_tile_index):
+    return input_tensor[
+        :,
+        source_tile_index * 32 : (source_tile_index + 1) * 32,
+    ].float()
 
 
 @pytest.mark.requires_device
@@ -79,11 +91,139 @@ def test_single_branch_store_runs(
 
     kernel(input_tensor, output_tensor)
 
-    expected = torch.exp(
-        input_torch[
-            :,
-            source_tile_index * 32 : (source_tile_index + 1) * 32,
-        ].float()
-    )
+    expected = torch.exp(_source_tile(input_torch, source_tile_index))
     actual = ttnn.to_torch(output_tensor).float()
     assert_allclose(actual, expected.float(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.requires_device
+def test_elif_gap_store_fanout_runs(device, monkeypatch):
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    input_torch = _runtime_input(3)
+    input_tensor = to_dram(input_torch, device)
+    first_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+    third_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+
+    elif_gap_store_fanout_kernel(input_tensor, first_output, third_output)
+
+    assert_allclose(
+        ttnn.to_torch(first_output).float(),
+        torch.exp(_source_tile(input_torch, 0)),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    assert_allclose(
+        ttnn.to_torch(third_output).float(),
+        torch.exp(_source_tile(input_torch, 2)),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+
+@pytest.mark.requires_device
+def test_nested_def_store_fanout_runs(device, monkeypatch):
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    input_torch = _runtime_input(3)
+    input_tensor = to_dram(input_torch, device)
+    output_tensors = [
+        to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+        for _output_index in range(3)
+    ]
+
+    nested_def_store_fanout_kernel(input_tensor, *output_tensors)
+
+    expected_outputs = [
+        torch.exp(_source_tile(input_torch, 0)),
+        torch.exp(_source_tile(input_torch, 1)),
+        -_source_tile(input_torch, 2),
+    ]
+    for output_tensor, expected in zip(output_tensors, expected_outputs):
+        assert_allclose(
+            ttnn.to_torch(output_tensor).float(),
+            expected,
+            rtol=1e-2,
+            atol=1e-2,
+        )
+
+
+@pytest.mark.requires_device
+def test_external_use_store_fanout_runs(device, monkeypatch):
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    input_torch = _runtime_input(2)
+    input_tensor = to_dram(input_torch, device)
+    first_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+    second_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+    side_output = to_dram(torch.zeros((32, 64), dtype=torch.bfloat16), device)
+
+    external_use_store_fanout_kernel(
+        input_tensor, first_output, second_output, side_output
+    )
+
+    expected_full = torch.exp(input_torch.float())
+    assert_allclose(
+        ttnn.to_torch(first_output).float(),
+        expected_full[:, 0:32],
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    assert_allclose(
+        ttnn.to_torch(second_output).float(),
+        expected_full[:, 32:64],
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    assert_allclose(
+        ttnn.to_torch(side_output).float(),
+        -expected_full,
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+
+@pytest.mark.requires_device
+def test_parent_and_branch_store_fanout_runs(device, monkeypatch):
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    input_torch = _runtime_input(2)
+    input_tensor = to_dram(input_torch, device)
+    always_output = to_dram(torch.zeros((32, 64), dtype=torch.bfloat16), device)
+    branch_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+
+    parent_and_branch_store_fanout_kernel(input_tensor, always_output, branch_output)
+
+    expected_full = torch.exp(input_torch.float())
+    assert_allclose(
+        ttnn.to_torch(always_output).float(),
+        expected_full,
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    assert_allclose(
+        ttnn.to_torch(branch_output).float(),
+        expected_full[:, 0:32],
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+
+@pytest.mark.requires_device
+def test_attached_input_store_fanout_runs(device, monkeypatch):
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    input_torch = _runtime_input(2)
+    input_tensor = to_dram(input_torch, device)
+    first_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+    second_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+
+    attached_input_store_fanout_kernel(input_tensor, first_output, second_output)
+
+    assert_allclose(
+        ttnn.to_torch(first_output).float(),
+        _source_tile(input_torch, 0),
+        rtol=0,
+        atol=0,
+    )
+    assert_allclose(
+        ttnn.to_torch(second_output).float(),
+        _source_tile(input_torch, 1),
+        rtol=0,
+        atol=0,
+    )
