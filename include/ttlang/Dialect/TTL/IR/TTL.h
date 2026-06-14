@@ -149,6 +149,10 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral
     kCompilerAllocatedAttrName("ttl.compiler_allocated");
 
+/// Module attribute mapping user DFB indices renumbered by index reuse
+/// (array of {old_index, new_index} dictionaries).
+constexpr llvm::StringLiteral kDFBIndexMapAttrName("ttl.dfb_index_map");
+
 /// Function attribute recording the base compile-time argument index.
 /// CTA layout is [CBs, TAs], so this equals the number of CBs.
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");

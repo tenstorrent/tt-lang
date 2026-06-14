@@ -8,9 +8,10 @@
 
 """@ttl.atom-in-@ttl.atom inlining. A small DFB-parameter helper atom is
 inlined into a larger atom; the helper takes its DFBs as ttl.DFB
-parameters (it has no way to be supplied buffers except by inlining).
-Also checks that a callee declaring its own DFB is rejected at the outer
-atom's decoration time."""
+parameters. An inlined callee may also declare its own scratch DFBs when
+inlined at the body top level: the decls are hoisted, and the scratch
+buffers of sequential sibling callees reuse one CB index. A callee that
+declares buffers but is inlined inside a for/if is rejected."""
 
 import pytest
 import torch
@@ -19,7 +20,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_dram, to_l1
 
 
 @ttl.atom()
@@ -44,42 +45,158 @@ def atom_outer_exp(in_t, out_t):
     ttl.copy(out_done, out_t[0:1, 0:1])
 
 
-def test_callee_with_dfb_decl_rejected():
-    """A callee that declares its own DFB cannot be inlined."""
+@ttl.atom()
+def _exp_via_scratch(in_cb: ttl.DFB, out_t):
+    """Inlined helper that declares its own scratch DFB: compute writes
+    exp(x) into the scratch, data movement drains it to ``out_t``."""
+    scratch = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+    x = in_cb.wait()
+    s = scratch.reserve()
+    s.store(ttl.exp(x))
+    done = scratch.wait()
+    ttl.copy(done, out_t[0:1, 0:1])
+
+
+@ttl.atom(grid=(1, 1))
+def atom_two_scratch(in0, in1, out0, out1):
+    """Inlines two sibling scratch-declaring helpers; their scratch DFBs run
+    sequentially, so they share one CB index."""
+    a0 = ttl.make_dataflow_buffer_like(in0, shape=(1, 1), block_count=2)
+    a1 = ttl.make_dataflow_buffer_like(in1, shape=(1, 1), block_count=2)
+
+    b0 = a0.reserve()
+    ttl.copy(in0[0:1, 0:1], b0)
+    b1 = a1.reserve()
+    ttl.copy(in1[0:1, 0:1], b1)
+
+    _exp_via_scratch(a0, out0)
+    _exp_via_scratch(a1, out1)
+
+
+@ttl.atom()
+def _scratch_dm_then_compute(in_t, out_t):
+    """Two scratch DFBs whose textual spans are disjoint but whose runtime
+    lifetimes overlap across threads: ``a`` is data-movement-produced (copied
+    from a tensor) and compute-consumed; ``b`` is compute-produced and
+    data-movement-consumed. A statement-span reuse would merge a and b (their
+    text spans don't overlap), giving one CB two producers on two threads and
+    interleaving the streams. Site-based reuse keeps them distinct."""
+    a = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+    b = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+
+    ad = a.reserve()
+    ttl.copy(in_t[0:1, 0:1], ad)  # data movement: in_t -> a
+    av = a.wait()  # compute consumes a
+    bd = b.reserve()
+    bd.store(ttl.exp(av))  # compute produces b
+    bv = b.wait()
+    ttl.copy(bv, out_t[0:1, 0:1])  # data movement: b -> out_t
+
+
+@ttl.atom(grid=(1, 1))
+def atom_cross_thread_scratch(in_t, out_t):
+    _scratch_dm_then_compute(in_t, out_t)
+
+
+@ttl.atom()
+def _forward_pipe(a, send_cb: ttl.DFB, recv_cb: ttl.DFB):
+    """Inlined helper that declares its OWN PipeNet (pure hoist, no reuse):
+    core (1,0) sends a[1] over the pipe, core (0,0) receives it into recv_cb."""
+    fwd_net = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
+    s_blk = send_cb.reserve()
+    r_dst = recv_cb.reserve()
+
+    def send(pipe):
+        ttl.copy(a[1:2, 0:1], s_blk)
+        ttl.copy(s_blk, pipe)
+
+    fwd_net.if_src(send)
+
+    def recv(pipe):
+        ttl.copy(pipe, r_dst)
+
+    fwd_net.if_dst(recv)
+
+
+@ttl.atom(grid=(2, 1))
+def atom_inline_pipenet(a, out):
+    own_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    send_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    node_x, _ = ttl.node(dims=2)
+
+    _forward_pipe(a, send_cb, recv_cb)  # inlined; declares its own PipeNet
+
+    if node_x == 0:
+        own_blk = own_cb.reserve()
+        ttl.copy(a[0:1, 0:1], own_blk)
+        s = out_cb.reserve()
+        s.store(own_cb.wait() + recv_cb.wait())
+        ttl.copy(out_cb.wait(), out[0:1, 0:1])
+
+
+def test_dfb_callee_in_loop_rejected():
+    """A callee that declares its own DFB cannot be inlined inside a loop:
+    its decl could not be hoisted to the body top level."""
 
     @ttl.atom()
     def _declares_dfb(inp: ttl.DFB, out: ttl.DFB):
         scratch = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
         x = inp.wait()
+        s = scratch.reserve()
+        s.store(x)
+        done = scratch.wait()
         r = out.reserve()
-        r.store(x)
+        r.store(done)
 
-    with pytest.raises(ValueError, match="make_dataflow_buffer_like"):
+    with pytest.raises(ValueError, match="atom body top level"):
 
         @ttl.atom(grid=(1, 1))
         def _outer_bad(in_t, out_t):
             a_cb = ttl.make_dataflow_buffer_like(in_t, shape=(1, 1), block_count=2)
             out_cb = ttl.make_dataflow_buffer_like(out_t, shape=(1, 1), block_count=2)
-            _declares_dfb(a_cb, out_cb)
+            for _ in range(2):
+                _declares_dfb(a_cb, out_cb)
 
 
-def test_callee_with_make_dfb_decl_rejected():
-    """A callee that declares its own DFB via make_dfb cannot be inlined."""
+def _dfbs(n):
+    """n fresh bf16 (1,1) double-buffered DFBs with sequential CB indices."""
+    from ttl.dataflow_buffer import DataflowBuffer, _reset_cb_counter
+
+    _reset_cb_counter()
+    return [DataflowBuffer(None, (1, 1), 2, dtype="bf16") for _ in range(n)]
+
+
+def test_dfb_indices_declaration_dense():
+    """Python assigns declaration-dense CB indices and never overlays them;
+    index reuse happens in MLIR (ttl-finalize-dfb-indices) where thread
+    identity and lifetimes are known."""
+    buffers = _dfbs(4)
+    assert [b._cb_index for b in buffers] == [0, 1, 2, 3]
+
+
+def test_callee_with_make_dfb_decl_inlines():
+    """A callee may declare its own scratch DFB via make_dfb at its top
+    level; the declaration hoists to the caller body on inlining."""
 
     @ttl.atom()
     def _declares_make_dfb(inp: ttl.DFB, out: ttl.DFB):
         scratch = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
         x = inp.wait()
+        s = scratch.reserve()
+        s.store(x)
+        y = scratch.wait()
         r = out.reserve()
-        r.store(x)
+        r.store(y)
 
-    with pytest.raises(ValueError, match="make_dfb"):
+    @ttl.atom(grid=(1, 1))
+    def _outer(in_t, out_t):
+        a_cb = ttl.make_dataflow_buffer_like(in_t, shape=(1, 1), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out_t, shape=(1, 1), block_count=2)
+        _declares_make_dfb(a_cb, out_cb)
 
-        @ttl.atom(grid=(1, 1))
-        def _outer_bad(in_t, out_t):
-            a_cb = ttl.make_dataflow_buffer_like(in_t, shape=(1, 1), block_count=2)
-            out_cb = ttl.make_dataflow_buffer_like(out_t, shape=(1, 1), block_count=2)
-            _declares_make_dfb(a_cb, out_cb)
+    assert "scratch___declares_make_dfb_inl" in _outer._spec.source
 
 
 def test_atom_outer_exp(device):
@@ -91,6 +208,58 @@ def test_atom_outer_exp(device):
     out_t = to_l1(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
 
     atom_outer_exp(in_t, out_t)
+
+    got = ttnn.to_torch(out_t).reshape(tile, tile).to(torch.bfloat16)
+    assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
+
+
+def test_atom_inline_pipenet(device):
+    """An inlined callee that declares its own PipeNet is hoisted and runs."""
+    tile = ttnn.TILE_SIZE
+    a_t = torch.randn(2 * tile, tile, dtype=torch.bfloat16) * 0.5
+    expected = (a_t[:tile].float() + a_t[tile:].float()).to(torch.bfloat16)
+
+    a = to_dram(a_t, device)
+    out = to_dram(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
+
+    atom_inline_pipenet(a, out)
+
+    got = ttnn.to_torch(out).reshape(tile, tile).to(torch.bfloat16)
+    assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
+
+
+def test_atom_two_scratch(device):
+    tile = ttnn.TILE_SIZE
+
+    def rand():
+        return (torch.randn(tile, tile, dtype=torch.bfloat16) * 0.5).clamp(-1.0, 1.0)
+
+    in0_t, in1_t = rand(), rand()
+    in0 = to_l1(in0_t, device)
+    in1 = to_l1(in1_t, device)
+    out0 = to_l1(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
+    out1 = to_l1(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
+
+    atom_two_scratch(in0, in1, out0, out1)
+
+    got0 = ttnn.to_torch(out0).reshape(tile, tile).to(torch.bfloat16)
+    got1 = ttnn.to_torch(out1).reshape(tile, tile).to(torch.bfloat16)
+    assert_allclose(got0, torch.exp(in0_t.float()).to(torch.bfloat16), rtol=2e-2, atol=2e-2)
+    assert_allclose(got1, torch.exp(in1_t.float()).to(torch.bfloat16), rtol=2e-2, atol=2e-2)
+
+
+def test_atom_cross_thread_scratch(device):
+    """The cross-thread hazard runs correctly: the two same-site scratch DFBs
+    must not share a CB index, or the DM-produced and compute-produced streams
+    would interleave."""
+    tile = ttnn.TILE_SIZE
+    inp_t = (torch.randn(tile, tile, dtype=torch.bfloat16) * 0.5).clamp(-1.0, 1.0)
+    expected = torch.exp(inp_t.float()).to(torch.bfloat16)
+
+    in_t = to_l1(inp_t, device)
+    out_t = to_l1(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
+
+    atom_cross_thread_scratch(in_t, out_t)
 
     got = ttnn.to_torch(out_t).reshape(tile, tile).to(torch.bfloat16)
     assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
