@@ -64,6 +64,40 @@ class _FakeTTNN:
             self.semaphores = semaphores
             self.custom_program_hash = None
 
+    class MeshCoordinate:
+        def __init__(self, *coords):
+            if len(coords) == 1 and isinstance(coords[0], (tuple, list)):
+                coords = tuple(coords[0])
+            self.coords = tuple(coords)
+
+        def __eq__(self, other):
+            return (
+                isinstance(other, _FakeTTNN.MeshCoordinate)
+                and self.coords == other.coords
+            )
+
+    class MeshCoordinateRange:
+        def __init__(self, start, end):
+            self.start = start
+            self.end = end
+
+        def __eq__(self, other):
+            return (
+                isinstance(other, _FakeTTNN.MeshCoordinateRange)
+                and self.start == other.start
+                and self.end == other.end
+            )
+
+        def __hash__(self):
+            return hash((self.start.coords, self.end.coords))
+
+    class MeshProgramDescriptor:
+        def __init__(self):
+            self.mesh_programs = []
+
+        def __setitem__(self, key, value):
+            self.mesh_programs.append((key, value))
+
     class KernelDescriptor:
         def __init__(
             self,
@@ -358,6 +392,50 @@ def test_run_kernel_passes_through_in_range_program_hash(monkeypatch):
     assert result["program"].custom_program_hash == 5
 
 
+def test_run_kernel_with_mesh_program_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensorWithoutDevice()
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        program_hash=5,
+        mesh_program_placements=[
+            (0, 0),
+            kernel_runner.MeshProgramPlacement((0, 1), (0, 3)),
+        ],
+    )
+
+    mesh_program = result["program"]
+    assert isinstance(mesh_program, _FakeTTNN.MeshProgramDescriptor)
+    assert len(mesh_program.mesh_programs) == 2
+    first_range, first_program = mesh_program.mesh_programs[0]
+    second_range, second_program = mesh_program.mesh_programs[1]
+    assert first_range == _FakeTTNN.MeshCoordinateRange(
+        _FakeTTNN.MeshCoordinate(0, 0),
+        _FakeTTNN.MeshCoordinate(0, 0),
+    )
+    assert second_range == _FakeTTNN.MeshCoordinateRange(
+        _FakeTTNN.MeshCoordinate(0, 1),
+        _FakeTTNN.MeshCoordinate(0, 3),
+    )
+    assert first_program is second_program
+    assert first_program.kernels == []
+    assert first_program.custom_program_hash == 5
+
+
+def test_build_mesh_program_descriptor_rejects_empty_placements(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(ValueError, match="mesh_program_placements must not be empty"):
+        kernel_runner.build_mesh_program_descriptor(
+            program_descriptor=object(),
+            mesh_program_placements=[],
+        )
+
+
 def test_build_generic_op_io_tensors_duplicates_single_output():
     tensor = _FakeTensorWithoutDevice()
 
@@ -500,11 +578,13 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
 
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
     assert "PROGRAM_HASH = 18446744073709551614" in source
+    assert "MESH_PROGRAM_PLACEMENTS = None" in source
     assert "build_pipe_runtime_resources(" in source
     assert "build_kernel_descriptors(" in source
+    assert "build_program_descriptor(" in source
     assert "build_pipe_sync_semaphore_descriptors(" in source
     assert "build_generic_op_io_tensors(" in source
-    assert "program.custom_program_hash = PROGRAM_HASH" in source
+    assert "program_descriptor.custom_program_hash = PROGRAM_HASH" in source
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
 
 
@@ -714,3 +794,23 @@ def test_emit_runner_file_preserves_positional_options(tmp_path):
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+
+
+def test_emit_runner_source_with_mesh_program_placements():
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        mesh_program_placements=[
+            (0, 0),
+            kernel_runner.MeshProgramPlacement((0, 1), (0, 3)),
+        ],
+    )
+
+    assert "MeshProgramPlacement" in source
+    assert "MESH_PROGRAM_PLACEMENTS = [" in source
+    assert "    (0, 0)," in source
+    assert "    MeshProgramPlacement((0, 1), (0, 3))," in source
+    assert "build_mesh_program_descriptor(" in source
