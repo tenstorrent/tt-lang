@@ -109,14 +109,16 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
 }
 
 /// Materialize an integer value representing the bit pattern of a float-typed
-/// SSA value. Handles three cases (checked in order):
+/// SSA value. Handles four cases (checked in order):
 ///   1. arith.truncf (e.g. f32 -> bf16) -- recursively materialize the wider
 ///      source bits, then extract the upper target-width bits via shift+trunc.
 ///      bf16 is the upper 16 bits of the f32 IEEE-754 encoding.
-///   2. unrealized_conversion_cast(iN -> fN) from a prior
+///   2. arith.extf (e.g. bf16 -> f32) -- recursively materialize the narrower
+///      source bits, then widen and shift them into the upper target bits.
+///   3. unrealized_conversion_cast(iN -> fN) from a prior
 ///   RawElementReadLowering
 ///      -- unwrap to get the integer directly.
-///   3. arith.constant float -- create the integer bit pattern.
+///   4. arith.constant float -- create the integer bit pattern.
 inline FailureOr<Value> materializeIntBits(Value floatVal, Type intTy,
                                            OpBuilder &builder, Location loc) {
   if (auto truncOp = floatVal.getDefiningOp<arith::TruncFOp>()) {
@@ -133,6 +135,21 @@ inline FailureOr<Value> materializeIntBits(Value floatVal, Type intTy,
     Value shifted = arith::ShRUIOp::create(builder, loc, *srcBits, shift);
     Value truncated = arith::TruncIOp::create(builder, loc, intTy, shifted);
     return truncated;
+  }
+  if (auto extOp = floatVal.getDefiningOp<arith::ExtFOp>()) {
+    Value src = extOp.getIn();
+    unsigned srcWidth = src.getType().getIntOrFloatBitWidth();
+    unsigned dstWidth = floatVal.getType().getIntOrFloatBitWidth();
+    auto srcIntTy = IntegerType::get(builder.getContext(), srcWidth);
+    auto srcBits = materializeIntBits(src, srcIntTy, builder, loc);
+    if (failed(srcBits)) {
+      return failure();
+    }
+    Value wide = arith::ExtUIOp::create(builder, loc, intTy, *srcBits);
+    Value shift = arith::ConstantIntOp::create(builder, loc,
+                                               dstWidth - srcWidth, dstWidth);
+    Value widened = arith::ShLIOp::create(builder, loc, wide, shift);
+    return widened;
   }
   if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>()) {
     if (cast.getInputs().size() == 1 &&
