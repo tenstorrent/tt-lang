@@ -60,6 +60,8 @@ test/pytest.ini
 
 # Wheel Artifacts
 **/dist/
+**/dist-raw/
+**/dist-light/
 
 # Pykernel Artifacts
 generated/pykernels/*
