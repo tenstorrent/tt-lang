@@ -5,6 +5,17 @@
 # TT-Lang Python Package
 
 from ttl.version import __version__
+from ttl.topology import (
+    DeviceDomain,
+    DeviceRange,
+    DeviceRef,
+    Fabric1D,
+    FabricRing,
+    FabricTopology,
+    TopologyLevelInfo,
+    TransferEdge,
+    TransferGraph,
+)
 
 # `ttl._sim_only_marker` is shipped by the tt-lang-sim wheel and absent from
 # the tt-lang wheel. Detection is marker-based, not try/except, so a broken
@@ -24,7 +35,18 @@ except ImportError:
 
 if _SIM_ONLY_INSTALL:
     _elementwise_all: list[str] = []
-    __all__ = ["__version__"]
+    __all__ = [
+        "__version__",
+        "DeviceDomain",
+        "DeviceRange",
+        "DeviceRef",
+        "Fabric1D",
+        "FabricRing",
+        "FabricTopology",
+        "TopologyLevelInfo",
+        "TransferEdge",
+        "TransferGraph",
+    ]
 else:
     from ttl.ttl import (
         operation,
@@ -63,6 +85,15 @@ else:
         "CopyTransferHandler",
         "Pipe",
         "PipeNet",
+        "DeviceDomain",
+        "DeviceRange",
+        "DeviceRef",
+        "Fabric1D",
+        "FabricRing",
+        "FabricTopology",
+        "TopologyLevelInfo",
+        "TransferEdge",
+        "TransferGraph",
         "make_dataflow_buffer_like",
         "copy",
         "node",

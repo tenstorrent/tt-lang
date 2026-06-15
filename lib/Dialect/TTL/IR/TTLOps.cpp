@@ -18,10 +18,14 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 #include <functional>
 #include <numeric>
+#include <optional>
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
 
@@ -50,6 +54,540 @@ void TTLDialect::registerTypes() {
       >();
 }
 
+namespace {
+
+using EmitErrorFn = llvm::function_ref<mlir::InFlightDiagnostic()>;
+using DeviceCoordinate = llvm::SmallVector<llvm::SmallVector<int64_t>>;
+
+constexpr llvm::StringLiteral kFabric1DTopology("fabric_1d");
+constexpr llvm::StringLiteral kFabricRingTopology("fabric_ring");
+constexpr llvm::StringLiteral kAxisNeighborTransfer("axis_neighbor");
+constexpr llvm::StringLiteral kGatherTransfer("gather");
+constexpr llvm::StringLiteral kMulticastTransfer("multicast");
+
+struct LevelInfo {
+  llvm::StringRef name;
+  llvm::SmallVector<int64_t> extent;
+  llvm::StringRef topology;
+  int64_t clusterAxis = 0;
+  bool periodic = false;
+  int64_t meshId = 0;
+};
+
+struct DeviceRangeInfo {
+  DeviceCoordinate lo;
+  DeviceCoordinate hi;
+};
+
+static mlir::FailureOr<llvm::StringRef>
+getStringField(mlir::DictionaryAttr dictionary, llvm::StringRef fieldName,
+               EmitErrorFn emitError, llvm::StringRef context) {
+  auto attr =
+      mlir::dyn_cast_or_null<mlir::StringAttr>(dictionary.get(fieldName));
+  if (!attr) {
+    emitError() << context << " requires string field `" << fieldName << "`";
+    return mlir::failure();
+  }
+  return attr.getValue();
+}
+
+static mlir::FailureOr<int64_t> getIntegerField(mlir::DictionaryAttr dictionary,
+                                                llvm::StringRef fieldName,
+                                                EmitErrorFn emitError,
+                                                llvm::StringRef context) {
+  auto attr =
+      mlir::dyn_cast_or_null<mlir::IntegerAttr>(dictionary.get(fieldName));
+  if (!attr) {
+    emitError() << context << " requires integer field `" << fieldName << "`";
+    return mlir::failure();
+  }
+  return attr.getInt();
+}
+
+static mlir::FailureOr<bool> getBoolField(mlir::DictionaryAttr dictionary,
+                                          llvm::StringRef fieldName,
+                                          EmitErrorFn emitError,
+                                          llvm::StringRef context) {
+  auto attr = mlir::dyn_cast_or_null<mlir::BoolAttr>(dictionary.get(fieldName));
+  if (!attr) {
+    emitError() << context << " requires bool field `" << fieldName << "`";
+    return mlir::failure();
+  }
+  return attr.getValue();
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t>>
+getDenseI64ArrayField(mlir::DictionaryAttr dictionary,
+                      llvm::StringRef fieldName, EmitErrorFn emitError,
+                      llvm::StringRef context) {
+  auto attr = mlir::dyn_cast_or_null<mlir::DenseI64ArrayAttr>(
+      dictionary.get(fieldName));
+  if (!attr) {
+    emitError() << context << " requires dense i64 array field `" << fieldName
+                << "`";
+    return mlir::failure();
+  }
+  return llvm::SmallVector<int64_t>(attr.asArrayRef().begin(),
+                                    attr.asArrayRef().end());
+}
+
+static mlir::FailureOr<LevelInfo>
+parseLevelInfo(mlir::DictionaryAttr levelDictionary, unsigned levelIndex,
+               EmitErrorFn emitError) {
+  std::string context =
+      ("device_domain level " + llvm::Twine(levelIndex)).str();
+  mlir::FailureOr<llvm::StringRef> name =
+      getStringField(levelDictionary, "name", emitError, context);
+  if (mlir::failed(name)) {
+    return mlir::failure();
+  }
+  if (name->empty()) {
+    emitError() << context << " name must not be empty";
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<llvm::SmallVector<int64_t>> extent =
+      getDenseI64ArrayField(levelDictionary, "extent", emitError, context);
+  if (mlir::failed(extent)) {
+    return mlir::failure();
+  }
+  if (extent->empty()) {
+    emitError() << context << " extent must not be empty";
+    return mlir::failure();
+  }
+  for (auto [axisIndex, dimension] : llvm::enumerate(*extent)) {
+    if (dimension <= 0) {
+      emitError() << context << " extent axis " << axisIndex
+                  << " must be positive, got " << dimension;
+      return mlir::failure();
+    }
+  }
+
+  mlir::FailureOr<llvm::StringRef> topology =
+      getStringField(levelDictionary, "topology", emitError, context);
+  if (mlir::failed(topology)) {
+    return mlir::failure();
+  }
+  if (*topology != kFabric1DTopology && *topology != kFabricRingTopology) {
+    emitError() << context << " has unsupported topology `" << *topology << "`";
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<int64_t> clusterAxis =
+      getIntegerField(levelDictionary, "cluster_axis", emitError, context);
+  if (mlir::failed(clusterAxis)) {
+    return mlir::failure();
+  }
+  if (*clusterAxis < 0 || static_cast<size_t>(*clusterAxis) >= extent->size()) {
+    emitError() << context << " cluster_axis " << *clusterAxis
+                << " is out of bounds for rank " << extent->size();
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<bool> periodic =
+      getBoolField(levelDictionary, "periodic", emitError, context);
+  if (mlir::failed(periodic)) {
+    return mlir::failure();
+  }
+  if (*topology == kFabricRingTopology && !*periodic) {
+    emitError() << context << " fabric_ring topology requires periodic = true";
+    return mlir::failure();
+  }
+  if (*topology == kFabric1DTopology && *periodic) {
+    emitError() << context << " fabric_1d topology requires periodic = false";
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<int64_t> meshId =
+      getIntegerField(levelDictionary, "mesh_id", emitError, context);
+  if (mlir::failed(meshId)) {
+    return mlir::failure();
+  }
+  if (*meshId < 0) {
+    emitError() << context << " mesh_id must be non-negative, got " << *meshId;
+    return mlir::failure();
+  }
+
+  return LevelInfo{*name, *extent, *topology, *clusterAxis, *periodic, *meshId};
+}
+
+static mlir::FailureOr<llvm::SmallVector<LevelInfo>>
+parseDomainLevels(mlir::ArrayAttr levels, EmitErrorFn emitError) {
+  if (levels.empty()) {
+    emitError() << "device_domain requires at least one level";
+    return mlir::failure();
+  }
+
+  llvm::StringSet<> levelNames;
+  llvm::SmallVector<LevelInfo> result;
+  result.reserve(levels.size());
+  for (auto [levelIndex, levelAttr] : llvm::enumerate(levels)) {
+    auto levelDictionary = mlir::dyn_cast<mlir::DictionaryAttr>(levelAttr);
+    if (!levelDictionary) {
+      emitError() << "device_domain level " << levelIndex
+                  << " must be a dictionary attribute";
+      return mlir::failure();
+    }
+    mlir::FailureOr<LevelInfo> level =
+        parseLevelInfo(levelDictionary, levelIndex, emitError);
+    if (mlir::failed(level)) {
+      return mlir::failure();
+    }
+    if (!levelNames.insert(level->name).second) {
+      emitError() << "duplicate device_domain level name `" << level->name
+                  << "`";
+      return mlir::failure();
+    }
+    result.push_back(*level);
+  }
+  return result;
+}
+
+static mlir::FailureOr<DeviceCoordinate>
+parseDeviceCoordinate(mlir::Attribute attr, EmitErrorFn emitError,
+                      llvm::StringRef context) {
+  auto coordinateArray = mlir::dyn_cast_or_null<mlir::ArrayAttr>(attr);
+  if (!coordinateArray) {
+    emitError() << context
+                << " must be an array of dense i64 coordinate arrays";
+    return mlir::failure();
+  }
+
+  DeviceCoordinate coordinate;
+  coordinate.reserve(coordinateArray.size());
+  for (auto [levelIndex, levelCoordinateAttr] :
+       llvm::enumerate(coordinateArray)) {
+    auto denseCoordinate =
+        mlir::dyn_cast<mlir::DenseI64ArrayAttr>(levelCoordinateAttr);
+    if (!denseCoordinate) {
+      emitError() << context << " level " << levelIndex
+                  << " must be a dense i64 array";
+      return mlir::failure();
+    }
+    coordinate.push_back(
+        llvm::SmallVector<int64_t>(denseCoordinate.asArrayRef().begin(),
+                                   denseCoordinate.asArrayRef().end()));
+  }
+  return coordinate;
+}
+
+static mlir::LogicalResult
+verifyCoordinateBounds(llvm::ArrayRef<LevelInfo> levels,
+                       const DeviceCoordinate &coordinate, bool allowUpperBound,
+                       EmitErrorFn emitError, llvm::StringRef context) {
+  if (coordinate.size() != levels.size()) {
+    return emitError() << context << " has " << coordinate.size()
+                       << " level coordinates, expected " << levels.size();
+  }
+
+  for (auto [levelIndex, level] : llvm::enumerate(levels)) {
+    const llvm::SmallVector<int64_t> &levelCoordinate = coordinate[levelIndex];
+    if (levelCoordinate.size() != level.extent.size()) {
+      return emitError() << context << " level `" << level.name << "` has rank "
+                         << levelCoordinate.size() << ", expected "
+                         << level.extent.size();
+    }
+    for (auto [axisIndex, component] : llvm::enumerate(levelCoordinate)) {
+      int64_t extent = level.extent[axisIndex];
+      bool upperBoundOk =
+          allowUpperBound ? component <= extent : component < extent;
+      if (component < 0 || !upperBoundOk) {
+        return emitError() << context << " level `" << level.name << "` axis "
+                           << axisIndex << " is out of bounds for extent "
+                           << extent << ", got " << component;
+      }
+    }
+  }
+
+  return mlir::success();
+}
+
+static mlir::FailureOr<DeviceRangeInfo>
+parseDeviceRange(mlir::Attribute attr, llvm::ArrayRef<LevelInfo> levels,
+                 EmitErrorFn emitError, llvm::StringRef context) {
+  auto rangeDictionary = mlir::dyn_cast_or_null<mlir::DictionaryAttr>(attr);
+  if (!rangeDictionary) {
+    emitError() << context << " must be a dictionary attribute";
+    return mlir::failure();
+  }
+
+  std::string loContext = (llvm::Twine(context) + ".lo").str();
+  std::string hiContext = (llvm::Twine(context) + ".hi").str();
+  mlir::FailureOr<DeviceCoordinate> lo =
+      parseDeviceCoordinate(rangeDictionary.get("lo"), emitError, loContext);
+  if (mlir::failed(lo)) {
+    return mlir::failure();
+  }
+  mlir::FailureOr<DeviceCoordinate> hi =
+      parseDeviceCoordinate(rangeDictionary.get("hi"), emitError, hiContext);
+  if (mlir::failed(hi)) {
+    return mlir::failure();
+  }
+
+  if (mlir::failed(verifyCoordinateBounds(levels, *lo,
+                                          /*allowUpperBound=*/false, emitError,
+                                          loContext)) ||
+      mlir::failed(verifyCoordinateBounds(levels, *hi,
+                                          /*allowUpperBound=*/true, emitError,
+                                          hiContext))) {
+    return mlir::failure();
+  }
+
+  for (auto [levelIndex, level] : llvm::enumerate(levels)) {
+    for (auto [axisIndex, loComponent] : llvm::enumerate((*lo)[levelIndex])) {
+      int64_t hiComponent = (*hi)[levelIndex][axisIndex];
+      if (loComponent >= hiComponent) {
+        emitError() << context << " level `" << level.name << "` axis "
+                    << axisIndex << " requires lo < hi, got lo=" << loComponent
+                    << ", hi=" << hiComponent;
+        return mlir::failure();
+      }
+    }
+  }
+
+  return DeviceRangeInfo{*lo, *hi};
+}
+
+static llvm::SmallVector<unsigned>
+findDifferingPointLevels(const DeviceCoordinate &source,
+                         const DeviceCoordinate &destination) {
+  llvm::SmallVector<unsigned> differingLevels;
+  for (auto [levelIndex, sourceLevelCoordinate] : llvm::enumerate(source)) {
+    if (sourceLevelCoordinate != destination[levelIndex]) {
+      differingLevels.push_back(levelIndex);
+    }
+  }
+  return differingLevels;
+}
+
+static llvm::SmallVector<unsigned>
+findDifferingRangeLevels(const DeviceCoordinate &source,
+                         const DeviceRangeInfo &destinationRange) {
+  llvm::SmallVector<unsigned> differingLevels;
+  for (auto [levelIndex, sourceLevelCoordinate] : llvm::enumerate(source)) {
+    const llvm::SmallVector<int64_t> &loCoordinate =
+        destinationRange.lo[levelIndex];
+    const llvm::SmallVector<int64_t> &hiCoordinate =
+        destinationRange.hi[levelIndex];
+    bool differs = false;
+    for (auto [axisIndex, sourceComponent] :
+         llvm::enumerate(sourceLevelCoordinate)) {
+      if (loCoordinate[axisIndex] != sourceComponent ||
+          hiCoordinate[axisIndex] != sourceComponent + 1) {
+        differs = true;
+        break;
+      }
+    }
+    if (differs) {
+      differingLevels.push_back(levelIndex);
+    }
+  }
+  return differingLevels;
+}
+
+static mlir::LogicalResult
+verifyPointRoutability(const LevelInfo &level,
+                       llvm::ArrayRef<int64_t> sourceCoordinate,
+                       llvm::ArrayRef<int64_t> destinationCoordinate,
+                       EmitErrorFn emitError, llvm::StringRef context) {
+  for (auto [axisIndex, sourceComponent] : llvm::enumerate(sourceCoordinate)) {
+    if (axisIndex == static_cast<unsigned>(level.clusterAxis)) {
+      continue;
+    }
+    if (sourceComponent != destinationCoordinate[axisIndex]) {
+      return emitError() << context << " requires non-cluster axis "
+                         << axisIndex << " on level `" << level.name
+                         << "` to stay fixed";
+    }
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyRangeRoutability(
+    const LevelInfo &level, llvm::ArrayRef<int64_t> sourceCoordinate,
+    llvm::ArrayRef<int64_t> loCoordinate, llvm::ArrayRef<int64_t> hiCoordinate,
+    EmitErrorFn emitError, llvm::StringRef context) {
+  bool sourceInside = true;
+  for (auto [axisIndex, sourceComponent] : llvm::enumerate(sourceCoordinate)) {
+    int64_t loComponent = loCoordinate[axisIndex];
+    int64_t hiComponent = hiCoordinate[axisIndex];
+    if (!(loComponent <= sourceComponent && sourceComponent < hiComponent)) {
+      sourceInside = false;
+    }
+    if (axisIndex == static_cast<unsigned>(level.clusterAxis)) {
+      continue;
+    }
+    if (loComponent != sourceComponent || hiComponent != sourceComponent + 1) {
+      return emitError() << context << " requires non-cluster axis "
+                         << axisIndex << " on level `" << level.name
+                         << "` to stay fixed at the source coordinate";
+    }
+  }
+  if (sourceInside) {
+    return emitError()
+           << context << " source-in-destination multicast is deferred to MD-6";
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyExplicitEdge(mlir::DictionaryAttr edgeDictionary,
+                   llvm::ArrayRef<LevelInfo> levels, unsigned edgeIndex,
+                   EmitErrorFn emitError) {
+  std::string context = ("transfer_graph edge " + llvm::Twine(edgeIndex)).str();
+  mlir::FailureOr<DeviceCoordinate> source = parseDeviceCoordinate(
+      edgeDictionary.get("source"), emitError, context + ".source");
+  if (mlir::failed(source) ||
+      mlir::failed(verifyCoordinateBounds(levels, *source,
+                                          /*allowUpperBound=*/false, emitError,
+                                          context + ".source"))) {
+    return mlir::failure();
+  }
+
+  bool hasDestination = edgeDictionary.get("destination") != nullptr;
+  bool hasDestinationRange = edgeDictionary.get("destination_range") != nullptr;
+  if (hasDestination == hasDestinationRange) {
+    return emitError() << context
+                       << " requires exactly one of `destination` or "
+                          "`destination_range`";
+  }
+
+  llvm::SmallVector<unsigned> differingLevels;
+  std::optional<DeviceCoordinate> destination;
+  std::optional<DeviceRangeInfo> destinationRange;
+  if (hasDestination) {
+    mlir::FailureOr<DeviceCoordinate> parsedDestination = parseDeviceCoordinate(
+        edgeDictionary.get("destination"), emitError, context + ".destination");
+    if (mlir::failed(parsedDestination) ||
+        mlir::failed(verifyCoordinateBounds(
+            levels, *parsedDestination,
+            /*allowUpperBound=*/false, emitError, context + ".destination"))) {
+      return mlir::failure();
+    }
+    destination = *parsedDestination;
+    differingLevels = findDifferingPointLevels(*source, *destination);
+  } else {
+    mlir::FailureOr<DeviceRangeInfo> parsedRange =
+        parseDeviceRange(edgeDictionary.get("destination_range"), levels,
+                         emitError, context + ".destination_range");
+    if (mlir::failed(parsedRange)) {
+      return mlir::failure();
+    }
+    destinationRange = *parsedRange;
+    differingLevels = findDifferingRangeLevels(*source, *destinationRange);
+  }
+
+  if (differingLevels.empty()) {
+    return mlir::success();
+  }
+  if (differingLevels.size() > 1) {
+    return emitError() << context
+                       << " requires multiple topology levels; multi-level "
+                          "route lowering is deferred to MD-14";
+  }
+
+  unsigned levelIndex = differingLevels.front();
+  const LevelInfo &level = levels[levelIndex];
+  if (destination) {
+    return verifyPointRoutability(level, (*source)[levelIndex],
+                                  (*destination)[levelIndex], emitError,
+                                  context);
+  }
+  return verifyRangeRoutability(
+      level, (*source)[levelIndex], destinationRange->lo[levelIndex],
+      destinationRange->hi[levelIndex], emitError, context);
+}
+
+static mlir::LogicalResult
+verifyStructuredTransfer(mlir::DictionaryAttr structured,
+                         llvm::ArrayRef<LevelInfo> levels,
+                         EmitErrorFn emitError) {
+  mlir::FailureOr<llvm::StringRef> kind =
+      getStringField(structured, "kind", emitError, "structured transfer");
+  if (mlir::failed(kind)) {
+    return mlir::failure();
+  }
+  mlir::FailureOr<llvm::StringRef> levelName =
+      getStringField(structured, "level", emitError, "structured transfer");
+  if (mlir::failed(levelName)) {
+    return mlir::failure();
+  }
+
+  std::optional<unsigned> levelIndex;
+  for (auto [candidateIndex, candidate] : llvm::enumerate(levels)) {
+    if (candidate.name == *levelName) {
+      levelIndex = candidateIndex;
+      break;
+    }
+  }
+  if (!levelIndex) {
+    return emitError() << "structured transfer references unknown level `"
+                       << *levelName << "`";
+  }
+
+  const LevelInfo &level = levels[*levelIndex];
+  if (*kind == kAxisNeighborTransfer) {
+    mlir::FailureOr<int64_t> axis =
+        getIntegerField(structured, "axis", emitError, "axis_neighbor");
+    mlir::FailureOr<int64_t> offset =
+        getIntegerField(structured, "offset", emitError, "axis_neighbor");
+    mlir::FailureOr<bool> wrap =
+        getBoolField(structured, "wrap", emitError, "axis_neighbor");
+    if (mlir::failed(axis) || mlir::failed(offset) || mlir::failed(wrap)) {
+      return mlir::failure();
+    }
+    if (*axis < 0 || static_cast<size_t>(*axis) >= level.extent.size()) {
+      return emitError() << "axis_neighbor axis " << *axis
+                         << " is out of bounds for level `" << level.name
+                         << "` rank " << level.extent.size();
+    }
+    if (*axis != level.clusterAxis) {
+      return emitError() << "axis_neighbor on level `" << level.name
+                         << "` must use cluster_axis " << level.clusterAxis
+                         << ", got axis " << *axis;
+    }
+    if (*offset <= 0) {
+      return emitError() << "axis_neighbor offset must be positive, got "
+                         << *offset;
+    }
+    return mlir::success();
+  }
+
+  if (*kind == kGatherTransfer || *kind == kMulticastTransfer) {
+    llvm::StringRef endpointField =
+        *kind == kGatherTransfer ? "root" : "source";
+    std::string endpointContext =
+        (llvm::Twine("structured transfer ") + endpointField).str();
+    mlir::FailureOr<DeviceCoordinate> endpoint = parseDeviceCoordinate(
+        structured.get(endpointField), emitError, endpointContext);
+    if (mlir::failed(endpoint) ||
+        mlir::failed(verifyCoordinateBounds(levels, *endpoint,
+                                            /*allowUpperBound=*/false,
+                                            emitError, endpointContext))) {
+      return mlir::failure();
+    }
+
+    llvm::SmallVector<unsigned> activeLevels;
+    for (auto [candidateIndex, candidate] : llvm::enumerate(levels)) {
+      if (llvm::any_of(candidate.extent,
+                       [](int64_t extent) { return extent != 1; })) {
+        activeLevels.push_back(candidateIndex);
+      }
+    }
+    if (activeLevels.size() != 1 || activeLevels.front() != *levelIndex) {
+      return emitError()
+             << *kind << " spans multiple topology levels; multi-level route "
+             << "lowering is deferred to MD-14";
+    }
+    return mlir::success();
+  }
+
+  return emitError() << "unsupported structured transfer kind `" << *kind
+                     << "`";
+}
+
+} // namespace
+
 llvm::LogicalResult
 SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                   int64_t start, int64_t stop, int64_t step) {
@@ -65,6 +603,54 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        << start << ") when step is negative";
   }
   return llvm::success();
+}
+
+llvm::LogicalResult DeviceDomainAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    ArrayAttr levels) {
+  mlir::FailureOr<llvm::SmallVector<LevelInfo>> parsedLevels =
+      parseDomainLevels(levels, emitError);
+  if (mlir::failed(parsedLevels)) {
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult TransferGraphAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceDomainAttr domain, ArrayAttr edges, DictionaryAttr structured) {
+  mlir::FailureOr<llvm::SmallVector<LevelInfo>> levels =
+      parseDomainLevels(domain.getLevels(), emitError);
+  if (mlir::failed(levels)) {
+    return mlir::failure();
+  }
+
+  if (structured && !edges.empty()) {
+    return emitError()
+           << "transfer_graph must be explicit or structured, not both";
+  }
+  if (!structured && edges.empty()) {
+    return emitError()
+           << "transfer_graph explicit form requires at least one edge";
+  }
+
+  if (structured) {
+    return verifyStructuredTransfer(structured, *levels, emitError);
+  }
+
+  for (auto [edgeIndex, edgeAttr] : llvm::enumerate(edges)) {
+    auto edgeDictionary = mlir::dyn_cast<mlir::DictionaryAttr>(edgeAttr);
+    if (!edgeDictionary) {
+      return emitError() << "transfer_graph edge " << edgeIndex
+                         << " must be a dictionary attribute";
+    }
+    if (mlir::failed(verifyExplicitEdge(edgeDictionary, *levels, edgeIndex,
+                                        emitError))) {
+      return mlir::failure();
+    }
+  }
+
+  return mlir::success();
 }
 
 llvm::LogicalResult
