@@ -922,11 +922,10 @@ static Value buildIntegerRangeMatch(RewriterBase &rewriter, Location loc,
                                     Value value, int64_t start, int64_t end) {
   Value startValue = arith::ConstantIndexOp::create(rewriter, loc, start);
   Value endValue = arith::ConstantIndexOp::create(rewriter, loc, end);
-  Value atStart =
-      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge, value,
-                            startValue);
-  Value atEnd = arith::CmpIOp::create(
-      rewriter, loc, arith::CmpIPredicate::sle, value, endValue);
+  Value atStart = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::sge, value, startValue);
+  Value atEnd = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sle,
+                                      value, endValue);
   return arith::AndIOp::create(rewriter, loc, atStart, atEnd);
 }
 
@@ -977,12 +976,15 @@ static LogicalResult lowerPipeNetForeachDirect(
   Location loc = op.getLoc();
   PipeNetRecordsAttr records = op.getRecords();
   rewriter.setInsertionPoint(op);
-  Value nodeX = ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
-  Value nodeY = ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
   for (PipeRecordAttr record : records.getPipes()) {
     Value staticPipe =
         buildStaticPipeForRecord(rewriter, loc, records, record).getResult();
-    Value isActiveRecord = buildRecordMatch(rewriter, loc, nodeX, nodeY, record);
+    Value isActiveRecord =
+        buildRecordMatch(rewriter, loc, nodeX, nodeY, record);
     auto ifOp = scf::IfOp::create(rewriter, loc, isActiveRecord,
                                   /*withElseRegion=*/false);
     rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
@@ -2171,8 +2173,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
                          func::FuncDialect, ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
-  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp,
-                    SelectPipeSrcOp, SelectPipeDstOp>();
+  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp, SelectPipeSrcOp,
+                    SelectPipeDstOp>();
   target.addLegalOp<PipeTransferCreateOp>();
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
