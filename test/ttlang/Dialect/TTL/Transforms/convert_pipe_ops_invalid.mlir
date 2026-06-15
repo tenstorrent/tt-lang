@@ -1,6 +1,6 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -convert-ttl-to-ttkernel
 
-// Summary: Negative tests for pipe receiver DFB validation and rendezvous
+// Summary: Negative tests for pipe receiver DFB validation and pipe synchronization
 // resource diagnostics in ttl-convert-ttl-to-ttkernel.
 
 // Two unicast pipes converging on node (1, 0) need distinct slots in the
@@ -37,10 +37,10 @@ func.func @gather_block_count_too_small()
 
 // -----
 
-// A multicast pipe cannot publish different receiver DFB slice offsets until
-// per-destination multicast receive addresses are implemented.
+// A collective pipe cannot publish different receiver DFB slice offsets because
+// NoC multicast uses one destination SRAM address for all receivers.
 
-func.func @multicast_receive_addresses_differ_by_destination()
+func.func @collective_destination_addresses_differ_by_destination()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
@@ -52,7 +52,7 @@ func.func @multicast_receive_addresses_differ_by_destination()
   %recv0 = tensor.extract_slice %recv_group[0, 0] [1, 1] [1, 1]
       : tensor<1x2x!ttcore.tile<32x32, f32>>
       to tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-note @below {{previous multicast receive post for this pipe was here}}
+  // expected-note @below {{previous collective receive post for this pipe was here}}
   %xf0 = ttl.copy %p, %recv0
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -61,7 +61,7 @@ func.func @multicast_receive_addresses_differ_by_destination()
   %recv1 = tensor.extract_slice %recv_group[0, 1] [1, 1] [1, 1]
       : tensor<1x2x!ttcore.tile<32x32, f32>>
       to tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{multicast pipe receive posts publish non-uniform destination addresses; per-destination multicast receive addresses are tracked by issue #617}}
+  // expected-error @below {{collective pipe receive posts publish different destination addresses; TT-Metal NoC multicast requires one destination SRAM address for all receivers}}
   %xf1 = ttl.copy %p, %recv1
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -72,10 +72,10 @@ func.func @multicast_receive_addresses_differ_by_destination()
 
 // -----
 
-// Multicast receive addresses must be statically traceable until
-// per-destination receive addresses are represented explicitly.
+// Collective destination addresses must be statically traceable because NoC
+// multicast uses one destination SRAM address for all receivers.
 
-func.func @multicast_receive_address_dynamic_offset_rejected(%offset: index)
+func.func @collective_destination_address_dynamic_offset_rejected(%offset: index)
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
@@ -87,7 +87,7 @@ func.func @multicast_receive_address_dynamic_offset_rejected(%offset: index)
   %recv = tensor.extract_slice %recv_group[0, %offset] [1, 1] [1, 1]
       : tensor<1x2x!ttcore.tile<32x32, f32>>
       to tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{multicast pipe receive posts publish non-uniform destination addresses; per-destination multicast receive addresses are tracked by issue #617}}
+  // expected-error @below {{collective pipe destination address could not be determined statically; TT-Metal NoC multicast requires one statically proven destination SRAM address for all receivers}}
   %xf = ttl.copy %p, %recv
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -98,14 +98,158 @@ func.func @multicast_receive_address_dynamic_offset_rejected(%offset: index)
 
 // -----
 
-// Eight unicast pipes from one source require one receiver-arrival semaphore,
-// one mailbox-staging semaphore, and two source-local semaphore ids per pipe.
-// This exceeds the hardware semaphore id limit.
+// The current lowering has queue depth 1 for each logical pipe. A second
+// receive post before the first send would overwrite the sender-visible
+// destination address table entry.
 
-// expected-error @below {{pipe rendezvous requires 18 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable rendezvous allocation}}
-// expected-note @below {{highest allocated semaphore id is 17 for posted-address mailbox for pipe net 0 src(0, 0) dst(8, 0) to(8, 0)}}
+func.func @same_pipe_two_posts_before_send_rejected()
+    attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %recv0 = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %post0 = ttl.copy %p, %recv0
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  %recv1 = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{pipe transfer for pipe net 0 src(0, 0) dst(1, 0) to(1, 0) requires queue depth greater than 1; current lowering supports one live receive post per pipe before each send}}
+  %post1 = ttl.copy %p, %recv1
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  %send0 = ttl.copy %src_cb, %p
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %send1 = ttl.copy %src_cb, %p
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  ttl.wait %post0 : !ttl.transfer_handle
+  ttl.wait %post1 : !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+// Receive-ahead posts in different blocks are rejected because the current
+// queue-depth-1 lowering cannot prove that the first post is consumed before
+// the second one publishes a new destination address.
+
+func.func @same_pipe_receive_ahead_across_blocks_rejected()
+    attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cond = arith.constant true
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %p {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  %recv0 = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token0 = ttl.pipe_transfer.post %transfer, %recv0
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.pipe_token<net 0>
+  scf.if %cond {
+    %recv1 = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{pipe transfer for pipe net 0 src(0, 0) dst(1, 0) to(1, 0) requires queue depth greater than 1; current lowering supports one live receive post per pipe before each send}}
+    %token1 = ttl.pipe_transfer.post %transfer, %recv1
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+  }
+  %send0 = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %send1 = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  ttl.pipe_transfer.wait %token0 : !ttl.pipe_token<net 0>
+  func.return
+}
+
+// -----
+
+// Two receive posts in one loop-body iteration before the send are rejected:
+// both posts are live within a single iteration, exceeding the queue-depth-1
+// limit just as two posts in a straight-line block would.
+
+func.func @same_pipe_two_posts_in_loop_body_rejected()
+    attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %p {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  scf.for %iter = %zero to %one step %one {
+    %recv0 = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %token0 = ttl.pipe_transfer.post %transfer, %recv0
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    %recv1 = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{pipe transfer for pipe net 0 src(0, 0) dst(1, 0) to(1, 0) requires queue depth greater than 1; current lowering supports one live receive post per pipe before each send}}
+    %token1 = ttl.pipe_transfer.post %transfer, %recv1
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    ttl.pipe_transfer.wait %token0 : !ttl.pipe_token<net 0>
+    ttl.pipe_transfer.wait %token1 : !ttl.pipe_token<net 0>
+  }
+  %send0 = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %send1 = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// Receiver completion still uses local semaphore ids. A PipeNet id above the
+// local limit is rejected even when sender-ready counters use GlobalSemaphore
+// allocation.
+
+// expected-error @below {{pipe synchronization requires 17 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable pipe synchronization allocation}}
+// expected-note @below {{highest allocated semaphore id is 16 for receiver-completion counter}}
 module {
-  func.func @unicast_rendezvous_exceeds_hardware_semaphore_limit()
+  func.func @unicast_pipe_sync_exceeds_hardware_semaphore_limit()
       attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -125,6 +269,22 @@ module {
         : !ttl.pipe<src(0, 0) dst(7, 0) to(7, 0) net 0>
     %p8 = ttl.create_pipe src(0, 0) dst(8, 0) to(8, 0) net 0
         : !ttl.pipe<src(0, 0) dst(8, 0) to(8, 0) net 0>
+    %p9 = ttl.create_pipe src(0, 0) dst(9, 0) to(9, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 0>
+    %p10 = ttl.create_pipe src(0, 0) dst(10, 0) to(10, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 0>
+    %p11 = ttl.create_pipe src(0, 0) dst(11, 0) to(11, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 0>
+    %p12 = ttl.create_pipe src(0, 0) dst(12, 0) to(12, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 0>
+    %p13 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 0>
+    %p14 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 0>
+    %p15 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 0>
+    %p16 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 16
+        : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 16>
     %recv1 = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -189,17 +349,25 @@ module {
            tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.transfer_handle
     ttl.wait %xf8 : !ttl.transfer_handle
+    %recv16 = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf16 = ttl.copy %p16, %recv16
+        : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 16>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf16 : !ttl.transfer_handle
     func.return
   }
 }
 
 // -----
 
-// Two multicast pipes whose destinations overlap at node (1, 0) each need a
+// Two collective pipes whose destinations overlap at node (1, 0) each need a
 // distinct slot in the receiver DFB. With block_count=1 the second pipe's
 // assigned slot (1) exceeds the DFB capacity.
 
-func.func @multicast_overlap_block_count_too_small()
+func.func @collective_overlap_block_count_too_small()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -218,7 +386,7 @@ func.func @multicast_overlap_block_count_too_small()
   %recv2 = ttl.cb_reserve %cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{multicast overlap pipe receiver DFB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2}}
+  // expected-error @below {{collective overlap pipe receiver DFB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2}}
   %xf2 = ttl.copy %p2, %recv2
       : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)

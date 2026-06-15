@@ -16,7 +16,7 @@
 set -euo pipefail
 
 TAG="${1:?usage: probe-docker-image.sh <tag>}"
-IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${TAG}"
+IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${TAG}"
 
 if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
     echo "needs_rebuild=false" >> "$GITHUB_OUTPUT"

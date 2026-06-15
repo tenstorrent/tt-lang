@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from .config import validate_against_golden
+from .config import validate_against_golden, validate_exact_mask_against_golden
 
 
 class ME2ETestBase:
@@ -228,10 +228,14 @@ class ME2ETestBase:
         ulp_threshold = getattr(self, "ULP_THRESHOLD", None)
         pcc_threshold = getattr(self, "PCC_THRESHOLD", None)
         use_allclose = getattr(self, "ALLCLOSE", None)
-        validate_against_golden(
-            golden,
-            result,
-            ulp_threshold=ulp_threshold,
-            pcc_threshold=pcc_threshold,
-            use_allclose=use_allclose,
-        )
+        exact_bool_output = getattr(self, "EXACT_BOOL_OUTPUT", False)
+        if exact_bool_output:
+            validate_exact_mask_against_golden(golden, result)
+        else:
+            validate_against_golden(
+                golden,
+                result,
+                ulp_threshold=ulp_threshold,
+                pcc_threshold=pcc_threshold,
+                use_allclose=use_allclose,
+            )

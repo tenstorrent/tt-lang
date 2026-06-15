@@ -6,6 +6,8 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
   DFBMaterialization.cpp
   LowerDPrintToEmitC.cpp
+  LaunchNodeDomainAnalysis.cpp
+  LowerScalarCmpFToTTKernel.cpp
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
   PipeGraph.cpp

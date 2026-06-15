@@ -8,10 +8,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/Support/LogicalResult.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir::tt::ttl {
@@ -24,9 +26,9 @@ namespace mlir::tt::ttl {
 
 /// Key for identifying a pipe by its source, destination, and PipeNet ID.
 struct PipeKey {
-  int64_t srcX, srcY;
-  int64_t dstStartX, dstStartY, dstEndX, dstEndY;
-  int64_t pipeNetId;
+  int64_t srcX = 0, srcY = 0;
+  int64_t dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0;
+  int64_t pipeNetId = 0;
 
   bool operator==(const PipeKey &other) const {
     return srcX == other.srcX && srcY == other.srcY &&
@@ -42,14 +44,6 @@ namespace llvm {
 template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
   using Key = mlir::tt::ttl::PipeKey;
-  static Key getEmptyKey() {
-    int64_t s = DenseMapInfo<int64_t>::getEmptyKey();
-    return {s, s, s, s, s, s, s};
-  }
-  static Key getTombstoneKey() {
-    int64_t s = DenseMapInfo<int64_t>::getTombstoneKey();
-    return {s, s, s, s, s, s, s};
-  }
   static unsigned getHashValue(const Key &k) {
     return hash_combine(k.srcX, k.srcY, k.dstStartX, k.dstStartY, k.dstEndX,
                         k.dstEndY, k.pipeNetId);
@@ -70,8 +64,37 @@ struct ReceiverDFBInfo {
   Location loc;               // Source location for error reporting
 };
 
+enum class PipeTransferContract {
+  PointToPoint,
+  Collective,
+};
+
+inline bool isCollectiveTransfer(PipeTransferContract contract) {
+  return contract == PipeTransferContract::Collective;
+}
+
+/// Return the semantic transfer contract used by pipe synchronization. The
+/// frontend `isCollective` attr is authoritative when present because a
+/// degenerate one-receiver collective still requires collective pipe
+/// synchronization. This does not choose the physical NOC write instruction.
+inline PipeTransferContract getPipeTransferContract(CreatePipeOp op) {
+  if (auto attr = op.getIsCollectiveAttr()) {
+    return attr.getValue() ? PipeTransferContract::Collective
+                           : PipeTransferContract::PointToPoint;
+  }
+  return mlir::cast<PipeType>(op.getResult().getType()).hasMultipleReceivers()
+             ? PipeTransferContract::Collective
+             : PipeTransferContract::PointToPoint;
+}
+
+inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
+  return op.getKind().getValue() == PipeTransferKind::Collective
+             ? PipeTransferContract::Collective
+             : PipeTransferContract::PointToPoint;
+}
+
 /// Graph tracking pipe connections and receiver DFB assignments.
-/// Built after pipe receive copies have been expanded to receive-post ops.
+/// Built after pipe receive copies have been expanded to pipe transfer ops.
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.
@@ -93,15 +116,18 @@ public:
   /// Assign per-pipe slot indices via greedy coloring keyed by
   /// (receiver, DFB index). Pipes sharing a receiver DFB get distinct
   /// slots so their writes do not overwrite each other in that receiver's
-  /// DFB. Pipes ordered by (srcX, srcY) for reproducibility.
+  /// DFB. Slot assignment is sorted by pipe coordinates for deterministic
+  /// results under user pipe reordering.
   void assignGatherSlotIndices();
 
   /// Each pipe needs `block_count >= gatherSlotIdx + 1` in its receiver
-  /// DFB. Covers unicast gather and multicast overlap uniformly.
+  /// DFB. Covers point-to-point gather and collective overlap uniformly.
   LogicalResult verifyReceiverDFBBlockCounts() const;
 
+  const ReceiverDFBInfo *lookupReceiverDFB(const PipeKey &key) const;
+
 private:
-  llvm::DenseMap<PipeKey, ReceiverDFBInfo> receiverDFBs;
+  llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
 };
 
 } // namespace mlir::tt::ttl

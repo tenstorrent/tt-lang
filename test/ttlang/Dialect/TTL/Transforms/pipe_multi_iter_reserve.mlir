@@ -77,8 +77,7 @@ func.func @sender_uses_published_multicast_addresses() attributes { "ttl.kernel_
 // CHECK-LABEL: func.func @receiver_publishes_reserved_dfb_address
 // CHECK: ttkernel.cb_reserve_back
 // CHECK: %[[DST_WP:.+]] = ttkernel.get_write_ptr
-// CHECK: ttkernel.store_to_l1(%[[DST_WP]]
-// CHECK: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[DST_WP]]
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[OLD:.+]] = memref.load
 // CHECK: %[[NEW:.+]] = arith.addi %[[OLD]]
@@ -114,8 +113,7 @@ func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_th
 // CHECK: scf.for
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[DST_ADDR:.+]] = ttkernel.get_write_ptr(%[[DST_DFB]])
-// CHECK: ttkernel.store_to_l1(%[[DST_ADDR]]
-// CHECK: ttkernel.remote_sram_write_u32
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[DST_ADDR]]
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[DONE_PTR:.+]] = ttkernel.reinterpret_cast
 // CHECK: memref.load %[[CTR]]

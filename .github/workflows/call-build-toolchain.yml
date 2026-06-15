@@ -11,13 +11,61 @@ permissions:
   contents: read
 
 jobs:
+  # Choose the runner based on whether the toolchain cache already exists.
+  # On a cache hit, configure-deps only restores the cache, so the cheap
+  # standard runner is enough. On a cache miss it must build LLVM + tt-metal
+  # from scratch, which needs the large runner's disk and cores. A job's
+  # runs-on is fixed when the job is scheduled, so a separate lookup job has
+  # to decide the label before configure-deps starts. Both labels are
+  # Ubuntu 24.04 (glibc 2.39), matching the ubuntu:24.04 Docker base image
+  # that consumes the cached toolchain.
+  select-runner:
+    name: "Select runner"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.decide.outputs.runner }}
+      cache-key: ${{ steps.submodule-shas.outputs.cache-key }}
+    steps:
+      - name: Checkout tt-lang (without submodules)
+        uses: actions/checkout@v6
+
+      - name: Extract submodule SHAs for cache keys
+        id: submodule-shas
+        run: |
+          LLVM_SHA=$(git ls-tree HEAD third-party/llvm-project | awk '{print substr($3,1,7)}')
+          TTMETAL_SHA=$(git ls-tree HEAD third-party/tt-metal | awk '{print substr($3,1,7)}')
+          CACHE_KEY="Linux-toolchain_llvm-${LLVM_SHA}_ttmetal-${TTMETAL_SHA}"
+          echo "cache-key=$CACHE_KEY" >> $GITHUB_OUTPUT
+          echo "Cache key: $CACHE_KEY"
+
+      - name: Look up toolchain cache (no download)
+        id: cache-lookup
+        uses: actions/cache/restore@v5
+        with:
+          path: /opt/ttlang-toolchain
+          key: ${{ steps.submodule-shas.outputs.cache-key }}
+          lookup-only: true
+
+      - name: Decide runner
+        id: decide
+        run: |
+          if [ "${{ steps.cache-lookup.outputs.cache-hit }}" = "true" ]; then
+            echo "runner=ubuntu-24.04" >> "$GITHUB_OUTPUT"
+            echo "Toolchain cache hit -> standard runner (restore only)"
+          else
+            echo "runner=mlir-large-runner-lang" >> "$GITHUB_OUTPUT"
+            echo "Toolchain cache miss -> large runner (cold LLVM + tt-metal build)"
+          fi
+
   configure-deps:
     name: "Configure dependencies"
-    runs-on: ubuntu-22.04
+    needs: select-runner
+    runs-on: ${{ needs.select-runner.outputs.runner }}
     timeout-minutes: 360
 
     outputs:
-      cache-key: ${{ steps.submodule-shas.outputs.cache-key }}
+      cache-key: ${{ needs.select-runner.outputs.cache-key }}
 
     defaults:
       run:
@@ -30,25 +78,12 @@ jobs:
       - name: Checkout tt-lang (without submodules)
         uses: actions/checkout@v6
 
-      - name: Extract submodule SHAs for cache keys
-        id: submodule-shas
-        run: |
-          LLVM_SHA=$(git ls-tree HEAD third-party/llvm-project | awk '{print substr($3,1,7)}')
-          TTMETAL_SHA=$(git ls-tree HEAD third-party/tt-metal | awk '{print substr($3,1,7)}')
-          CACHE_KEY="Linux-toolchain_llvm-${LLVM_SHA}_ttmetal-${TTMETAL_SHA}"
-          echo "llvm-sha=$LLVM_SHA" >> $GITHUB_OUTPUT
-          echo "ttmetal-sha=$TTMETAL_SHA" >> $GITHUB_OUTPUT
-          echo "cache-key=$CACHE_KEY" >> $GITHUB_OUTPUT
-          echo "LLVM submodule SHA: $LLVM_SHA"
-          echo "tt-metal submodule SHA: $TTMETAL_SHA"
-          echo "Cache key: $CACHE_KEY"
-
       - name: Restore toolchain cache
         id: cache-toolchain
         uses: actions/cache/restore@v5
         with:
           path: /opt/ttlang-toolchain
-          key: ${{ steps.submodule-shas.outputs.cache-key }}
+          key: ${{ needs.select-runner.outputs.cache-key }}
 
       # Everything below only runs on cache miss
       - name: Checkout submodules
@@ -126,4 +161,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: /opt/ttlang-toolchain
-          key: ${{ steps.submodule-shas.outputs.cache-key }}
+          key: ${{ needs.select-runner.outputs.cache-key }}

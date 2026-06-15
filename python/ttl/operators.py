@@ -12,6 +12,7 @@ from ttl.dialects import arith
 from ttl.ir import (
     Context,
     F32Type,
+    BF16Type,
     FloatAttr,
     IndexType,
     IntegerAttr,
@@ -174,6 +175,22 @@ class TensorBlock:
         """Element-wise division using ttl.div."""
         return ttl.div(ast_self.type, ast_self, rhs)
 
+    def __gt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Element-wise greater-than using ttl.gt."""
+        return ttl.gt(ast_self.type, ast_self, rhs)
+
+    def __lt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Element-wise less-than using ttl.lt."""
+        return ttl.lt(ast_self.type, ast_self, rhs)
+
+    def __eq__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
+        """Element-wise equality using ttl.eq."""
+        return ttl.eq(ast_self.type, ast_self, rhs)
+
+    def __ne__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
+        """Element-wise inequality using ttl.ne."""
+        return ttl.ne(ast_self.type, ast_self, rhs)
+
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Matrix multiplication using ttl.matmul.
 
@@ -286,7 +303,16 @@ def _make_tensor_slice(tensor, indices, slice_shape):
     Args:
         tensor: The source tensor to slice from
         indices: Tile indices for the slice start position (one per tensor dim)
-        slice_shape: CB shape in tiles (same rank as tensor)
+        slice_shape: CB shape in tiles. May be lower rank than the tensor,
+            in which case the leading ``tensor.rank - len(slice_shape)`` tensor
+            dims are squeezed out of the result by scalar indexing (e.g. a
+            ``(B, N, S, KVPE)`` tensor read into a ``(S, KVPE)`` block via
+            ``t[b, n, s0:s1, 0:KVPE]``). The squeeze matches a numpy-style
+            scalar-index reduction: the squeezed scalar index selects one slot
+            in each leading dim and contributes its offset to the per-tile
+            tensor coordinate. The caller's responsibility to pass scalar (not
+            range) indices in the squeezed positions is enforced by
+            ``_process_tensor_subscript``.
     """
     tensor_type = tensor.type
     if not isinstance(tensor_type, RankedTensorType):
@@ -303,9 +329,9 @@ def _make_tensor_slice(tensor, indices, slice_shape):
             f"tensor, got {len(indices)}"
         )
 
-    if len(slice_shape) != tensor_type.rank:
+    if len(slice_shape) > tensor_type.rank:
         raise ValueError(
-            f"CB shape rank ({len(slice_shape)}) must match tensor rank "
+            f"CB shape rank ({len(slice_shape)}) must be <= tensor rank "
             f"({tensor_type.rank})"
         )
 
@@ -364,7 +390,9 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
 
     Args:
         subscript_tuple: (tensor, indices) where indices are [(value, is_range), ...]
-        cb_shape: Shape from the CB (matches tensor rank)
+        cb_shape: Shape from the CB. Its rank may be less than the tensor rank;
+            the leading (tensor_rank - cb_rank) dims are then squeezed via
+            scalar indices and the trailing dims map to the CB shape.
 
     Returns:
         Tensor slice with shape matching cb_shape
@@ -383,7 +411,20 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
         )
 
     cb_is_multi_tile = any(d > 1 for d in cb_shape)
-    uses_ranges = any(is_range for _, is_range in indices)
+    rank_diff = expected_indices - len(cb_shape)
+    if rank_diff > 0:
+        for d in range(rank_diff):
+            if indices[d][1]:
+                raise ValueError(
+                    f"slice rank reduction: leading squeezed index {d} must "
+                    f"be scalar (e.g. t[batch, 0, kc:..., 0:...]), got range "
+                    f"syntax for a tensor dim being squeezed to match a "
+                    f"rank-{len(cb_shape)} CB"
+                )
+        trailing_indices = indices[rank_diff:]
+    else:
+        trailing_indices = indices
+    uses_ranges = any(is_range for _, is_range in trailing_indices)
 
     if cb_is_multi_tile and not uses_ranges:
         raise ValueError(
@@ -428,8 +469,8 @@ def copy(src, dst) -> CopyTransferHandler:
     For single-tile CBs (shape 1x1), use index syntax: tensor[0, 0]
 
     For pipe transfers:
-        ttl.copy(block, pipe) - send from CB to pipe (multicast write)
-        ttl.copy(pipe, block) - receive from pipe to CB (no-op, data arrives via multicast)
+        ttl.copy(block, pipe) - send from DFB block to pipe
+        ttl.copy(pipe, block) - receive from pipe to DFB block
     """
     # Check for pipe operands first
     src_is_pipe = _is_pipe(src)
@@ -441,7 +482,7 @@ def copy(src, dst) -> CopyTransferHandler:
             raise ValueError("copy() cannot transfer directly between two pipes")
 
         if dst_is_pipe:
-            # CB -> Pipe (send via multicast)
+            # DFB -> Pipe send.
             if not _is_block(src):
                 raise ValueError(
                     "copy() to pipe requires block src (from cb.reserve() or cb.wait())"
@@ -452,8 +493,7 @@ def copy(src, dst) -> CopyTransferHandler:
             xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
             return ttl.copy(xf_type, src_cb, pipe_val)
         else:
-            # Pipe -> CB (receive, data arrives via multicast from source)
-            # No transfer kind - data is already in CB after source's write barrier
+            # Pipe -> DFB receive. The sender writes into the receiver-owned block.
             if not _is_block(dst):
                 raise ValueError(
                     "copy() from pipe requires block dst (from cb.reserve() or cb.wait())"
@@ -914,6 +954,8 @@ def raw_element_write(block, *args):
     is the value to write; all preceding arguments are coordinates.
 
     For tiled blocks, lowering decomposes them into tile + intra-tile offsets.
+    If the value is f32 and the block element type is bf16, the value is
+    implicitly truncated (precision loss is expected).
 
     Only supported in data movement (noc) threads.
 
@@ -940,6 +982,12 @@ def raw_element_write(block, *args):
             index_vals.append(c)
         else:
             index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
+
+    block_scalar_type = _get_block_scalar_type(block)
+    if hasattr(val, "type") and val.type != block_scalar_type:
+        if val.type == F32Type.get(ctx) and block_scalar_type == BF16Type.get(ctx):
+            val = arith.TruncFOp(block_scalar_type, val)
+
     ttl.raw_element_write(block, index_vals, val)
 
 

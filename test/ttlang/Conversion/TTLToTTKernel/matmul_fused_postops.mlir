@@ -17,7 +17,7 @@
 // CHECK-DAG: %[[CB_BI:.*]] = ttkernel.get_compile_time_arg_val(3)
 // CHECK-DAG: %[[CB_OUT:.*]] = ttkernel.get_compile_time_arg_val(4)
 //
-// Matmul block.
+// Matmul writes output slot DST[0]; post-ops reuse it in place.
 // CHECK:      ttkernel.tile_regs_acquire
 // CHECK:      ttkernel.matmul_block(%[[CB_A]], %[[CB_B]],
 //

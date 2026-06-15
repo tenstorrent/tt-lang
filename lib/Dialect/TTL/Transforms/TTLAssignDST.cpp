@@ -41,6 +41,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -245,10 +246,9 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
 
 /// Build live intervals for all tile values in the compute body.
 /// Also performs in-place merging: in-place op input and output share DST.
-static void buildLiveIntervals(Block *body,
-                               llvm::MapVector<Value, Interval> &intervals,
-                               MergedClasses &merged,
-                               DenseMap<Operation *, int64_t> &opIndex) {
+static void buildLiveIntervals(
+    Block *body, llvm::MapVector<Value, ValueLiveInterval> &intervals,
+    MergedClasses &merged, DenseMap<Operation *, int64_t> &opIndex) {
   // Number operations
   int64_t idx = 0;
   for (Operation &op : *body) {
@@ -458,22 +458,24 @@ static bool isStoredValue(Value val, Block &body) {
 /// Returns the maximum DST index used + 1 (footprint).
 template <typename FilterFn>
 static FailureOr<std::uint32_t> linearScanAllocateFiltered(
-    llvm::MapVector<Value, Interval> &intervals, MergedClasses &merged,
+    llvm::MapVector<Value, ValueLiveInterval> &intervals, MergedClasses &merged,
     llvm::SmallBitVector &freeRegs, DenseMap<Value, std::uint32_t> &assignment,
     FilterFn &&shouldProcess, ComputeOp computeOp, StringRef phaseName) {
   // Sort intervals by start position
-  SmallVector<Interval *> sortedIntervals;
-  for (auto &[val, interval] : intervals) {
+  SmallVector<ValueLiveInterval *> sortedIntervals;
+  for (auto &[value, interval] : intervals) {
     sortedIntervals.push_back(&interval);
   }
   llvm::sort(sortedIntervals,
-             [](Interval *a, Interval *b) { return a->start < b->start; });
+             [](ValueLiveInterval *lhs, ValueLiveInterval *rhs) {
+               return lhs->start < rhs->start;
+             });
 
-  SmallVector<Interval *> active;
+  SmallVector<ValueLiveInterval *> active;
   DenseSet<Value> processedRoots;
   std::optional<std::uint32_t> maxDstUsed; // Track highest DST index allocated
 
-  for (Interval *interval : sortedIntervals) {
+  for (ValueLiveInterval *interval : sortedIntervals) {
     if (!shouldProcess(interval->value)) {
       continue;
     }
@@ -490,8 +492,8 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
     }
 
     // Expire old intervals (free registers for reuse)
-    SmallVector<Interval *> toRemove;
-    for (Interval *activeInterval : active) {
+    SmallVector<ValueLiveInterval *> toRemove;
+    for (ValueLiveInterval *activeInterval : active) {
       if (activeInterval->end <= interval->start) {
         auto it = assignment.find(activeInterval->value);
         if (it != assignment.end()) {
@@ -505,8 +507,8 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
         toRemove.push_back(activeInterval);
       }
     }
-    for (Interval *i : toRemove) {
-      active.erase(std::find(active.begin(), active.end(), i));
+    for (ValueLiveInterval *expiredInterval : toRemove) {
+      active.erase(std::find(active.begin(), active.end(), expiredInterval));
     }
 
     // Find first free register
@@ -573,7 +575,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
       //=== Phase 2: Build Live Intervals ===
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 2: Build Live Intervals ===\n");
-      llvm::MapVector<Value, Interval> intervals;
+      llvm::MapVector<Value, ValueLiveInterval> intervals;
       MergedClasses merged;
       DenseMap<Operation *, int64_t> opIndex;
       buildLiveIntervals(body, intervals, merged, opIndex);

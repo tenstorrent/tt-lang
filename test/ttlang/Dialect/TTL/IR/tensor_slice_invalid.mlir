@@ -17,11 +17,12 @@ func.func @index_count_mismatch(%t: tensor<2x2x!ttcore.tile<32x32, f32>, #layout
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
-// Result rank does not match tensor rank.
-func.func @result_rank_mismatch(%t: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>) {
+// Result rank exceeds tensor rank (rank-reducing slices are allowed, but the
+// result may not have more dims than the source).
+func.func @result_rank_exceeds_tensor_rank(%t: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>) {
   %c0 = arith.constant 0 : index
-  // expected-error @+1 {{'ttl.tensor_slice' op result rank (1) must match tensor rank (2)}}
-  %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<1x!ttcore.tile<32x32, f32>, #layout>
+  // expected-error @+1 {{'ttl.tensor_slice' op result rank (3) cannot exceed tensor rank (2)}}
+  %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<1x1x1x!ttcore.tile<32x32, f32>, #layout>
   func.return
 }
 

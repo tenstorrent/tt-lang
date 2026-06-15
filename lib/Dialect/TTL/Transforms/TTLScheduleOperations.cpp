@@ -17,6 +17,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttl-schedule-operations"
@@ -28,13 +29,12 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Extract dst_index from a tile op's SSA operand, or return max int64
-/// for non-tile ops.
-static int64_t getDstIdx(Operation *op) {
-  if (auto dstVal = getTileOpDstIndex(op)) {
-    if (auto constIdx = foldIndexToConstant(*dstVal)) {
-      return *constIdx;
-    }
+/// Return the first written DST index for deterministic sorting, or max int64
+/// for operations that do not write DST.
+static int64_t getSortDstIdx(Operation *op) {
+  FailureOr<SmallVector<int64_t>> writeIndices = getConstantDstWriteIndices(op);
+  if (succeeded(writeIndices) && !writeIndices->empty()) {
+    return writeIndices->front();
   }
   return std::numeric_limits<int64_t>::max();
 }
@@ -105,38 +105,13 @@ struct TileOpSortKey {
   }
 };
 
-/// Get the DST indices that an op reads from. CopyTileOp reads from a CB (not
-/// DST), so it has no DST read indices. All other tile ops read from DST slots
-/// determined by their SSA operands' defining ops.
-static llvm::SmallVector<int64_t, 2>
-getReadDstIndices(Operation *op, const llvm::DenseSet<Operation *> &tileOpSet) {
-  llvm::SmallVector<int64_t, 2> indices;
-
-  // CopyTile reads from CB, not DST.
-  if (isa<CopyTileOp>(op)) {
-    return indices;
-  }
-
-  // Trace SSA operands to find their defining tile ops' DST indices.
-  for (Value operand : op->getOperands()) {
-    if (auto *defOp = operand.getDefiningOp()) {
-      if (tileOpSet.contains(defOp)) {
-        int64_t idx = getDstIdx(defOp);
-        if (idx != std::numeric_limits<int64_t>::max()) {
-          indices.push_back(idx);
-        }
-      }
-    }
-  }
-  return indices;
-}
-
 /// Compute the dependency depth of each tile op. Assumes tileOps are in
 /// original block order (used for WAW/WAR "most recent" tracking).
 ///
 /// The depth is the length of the longest path through predecessors,
 /// considering:
-///   - RAW (Read-After-Write): via SSA def-use chains
+///   - SSA RAW (Read-After-Write): via def-use chains
+///   - DST RAW: operations reading a DST slot depend on its last writer
 ///   - WAW (Write-After-Write): ops writing the same DST index
 ///   - WAR (Write-After-Read): a write must come after prior reads of that DST
 ///
@@ -144,10 +119,10 @@ getReadDstIndices(Operation *op, const llvm::DenseSet<Operation *> &tileOpSet) {
 /// same DST slot (e.g., copy b -> dst1, use dst1, then copy c -> dst1).
 /// Without WAR tracking, the scheduler could move the second copy before the
 /// consumer of the first, clobbering the value.
-static llvm::DenseMap<Operation *, unsigned>
+static FailureOr<llvm::DenseMap<Operation *, unsigned>>
 computeDepthLevels(llvm::ArrayRef<Operation *> tileOps) {
-  llvm::DenseSet<Operation *> tileOpSet(tileOps.begin(), tileOps.end());
   llvm::DenseMap<Operation *, unsigned> levels;
+  llvm::DenseSet<Operation *> tileOpSet(tileOps.begin(), tileOps.end());
 
   // Track DST register hazards.
   // lastWriter[i]: the most recent op that wrote to DST[i].
@@ -168,16 +143,24 @@ computeDepthLevels(llvm::ArrayRef<Operation *> tileOps) {
     }
 
     // Determine DST indices this op reads from and writes to.
-    auto readIndices = getReadDstIndices(op, tileOpSet);
-    int64_t writeIdx = getDstIdx(op);
-
-    // Register reads for WAR tracking.
-    for (int64_t ri : readIndices) {
-      pendingReaders[ri].push_back(op);
+    FailureOr<SmallVector<int64_t>> readIndices = getConstantDstReadIndices(op);
+    FailureOr<SmallVector<int64_t>> writeIndices =
+        getConstantDstWriteIndices(op);
+    if (failed(readIndices) || failed(writeIndices)) {
+      op->emitOpError("requires constant DST footprints after DST assignment");
+      return failure();
     }
 
-    // WAW + WAR dependencies for the written DST index.
-    if (writeIdx != std::numeric_limits<int64_t>::max()) {
+    // DST RAW and WAR tracking.
+    for (int64_t readIdx : *readIndices) {
+      if (auto it = lastWriter.find(readIdx); it != lastWriter.end()) {
+        maxPredLevel = std::max(maxPredLevel, levels[it->second] + 1);
+      }
+      pendingReaders[readIdx].push_back(op);
+    }
+
+    // WAW + WAR dependencies for every written DST index.
+    for (int64_t writeIdx : *writeIndices) {
       // WAW: must come after the previous writer to this DST index.
       if (auto it = lastWriter.find(writeIdx); it != lastWriter.end()) {
         maxPredLevel = std::max(maxPredLevel, levels[it->second] + 1);
@@ -201,26 +184,30 @@ computeDepthLevels(llvm::ArrayRef<Operation *> tileOps) {
 }
 
 /// Process a single sync region: reorder tile ops between acquire and commit.
-static void scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
+static LogicalResult scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
   if (tileOps.size() <= 1) {
-    return;
+    return success();
   }
 
   // Compute dependency levels.
-  auto levels = computeDepthLevels(tileOps);
+  FailureOr<llvm::DenseMap<Operation *, unsigned>> levels =
+      computeDepthLevels(tileOps);
+  if (failed(levels)) {
+    return failure();
+  }
 
   // Build sort keys.
   llvm::SmallVector<TileOpSortKey, 16> keys;
   keys.reserve(tileOps.size());
   for (auto [i, op] : llvm::enumerate(tileOps)) {
-    keys.push_back({levels[op], classifyTileOp(op),
+    keys.push_back({(*levels)[op], classifyTileOp(op),
                     op->getName().getStringRef(), getInitAffinity(op),
-                    getDstIdx(op), static_cast<unsigned>(i), op});
+                    getSortDstIdx(op), static_cast<unsigned>(i), op});
   }
 
   // Skip sort and IR mutation if already in order.
   if (llvm::is_sorted(keys)) {
-    return;
+    return success();
   }
 
   llvm::sort(keys);
@@ -242,6 +229,7 @@ static void scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
   for (auto &key : keys) {
     key.op->moveBefore(insertionPoint);
   }
+  return success();
 }
 
 struct TTLScheduleOperationsPass
@@ -250,7 +238,7 @@ struct TTLScheduleOperationsPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    funcOp.walk([](DstSectionOp dstSection) {
+    WalkResult result = funcOp.walk([&](DstSectionOp dstSection) {
       SmallVector<Operation *, 16> mathOps;
       for (Operation &op : dstSection.getBody().front().without_terminator()) {
         if (isa<TileStoreOp>(op)) {
@@ -262,9 +250,15 @@ struct TTLScheduleOperationsPass
         }
       }
       if (!mathOps.empty()) {
-        scheduleOpsInRegion(mathOps);
+        if (failed(scheduleOpsInRegion(mathOps))) {
+          return WalkResult::interrupt();
+        }
       }
+      return WalkResult::advance();
     });
+    if (result.wasInterrupted()) {
+      signalPassFailure();
+    }
   }
 };
 

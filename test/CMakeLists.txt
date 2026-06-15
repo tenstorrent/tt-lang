@@ -74,9 +74,8 @@ set_target_properties(check-ttlang-python-bindings PROPERTIES FOLDER "Tests")
 add_custom_target(check-ttlang-packaging
   COMMAND ${Python3_EXECUTABLE} -m pytest
     --rootdir=${CMAKE_CURRENT_SOURCE_DIR}/..
-    -c /dev/null
+    -c /dev/null -q
     ${CMAKE_CURRENT_SOURCE_DIR}/packaging
-    -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/packaging-pytest-report.xml
   COMMENT "Running ttlang packaging pytest tests"
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

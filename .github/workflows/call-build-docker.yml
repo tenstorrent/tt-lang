@@ -40,7 +40,7 @@ jobs:
   # Builds the base image (system deps, Python, Clang)
   build-image-base:
     if: ${{ inputs.push }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     outputs:
@@ -154,7 +154,7 @@ jobs:
           # When push: false, we pull the existing base image at the same
           # tag (released images already exist at clean tags; dryrun only
           # runs on non-uplift PRs so the tag is a release tag).
-          BASE_IMAGE="ghcr.io/${{ github.repository }}/tt-lang-base-ubuntu-22-04:${{ steps.docker-tag.outputs.docker-tag }}"
+          BASE_IMAGE="ghcr.io/${{ github.repository }}/tt-lang-base-ubuntu-24-04:${{ steps.docker-tag.outputs.docker-tag }}"
           docker pull "$BASE_IMAGE"
           echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
 

@@ -37,7 +37,7 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 # Defaults
 BUILD_DIR="build-dev"
 DOCKER_TAG="${DOCKER_TAG:-latest}"
-IMAGE="${DOCKER_IMAGE:-ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG}"
+IMAGE="${DOCKER_IMAGE:-ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:$DOCKER_TAG}"
 CONTAINER_NAME="${USER}-test-$$"
 TARGET=""
 

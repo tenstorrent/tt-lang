@@ -74,7 +74,7 @@ def stage() -> None:
     ttl.mkdir(parents=True)
 
     src_ttl = REPO_ROOT / "python" / "ttl"
-    for fn in ("__init__.py", "version.py"):
+    for fn in ("__init__.py", "version.py", "constants.py"):
         shutil.copy(src_ttl / fn, ttl / fn)
 
     (ttl / "config.py").write_text(
