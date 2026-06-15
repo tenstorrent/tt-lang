@@ -171,8 +171,8 @@ getPipeRecordDestinationLaunchNodeDomain(PipeRecordAttr record) {
   return result;
 }
 
-LaunchNodeDomain
-getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records, PipeRole role) {
+LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
+                                                    PipeRole role) {
   LaunchNodeDomain result;
   for (PipeRecordAttr record : records.getPipes()) {
     LaunchNodeDomain recordDomain =
@@ -247,9 +247,8 @@ void LaunchNodeDomainState::recordPipeNet(PipeType pipeType, Location loc,
   int64_t pipeNetId = pipeType.getPipeNetId();
   netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
       getPipeSourceLaunchNodeDomain(pipeType));
-  netDestinationDomains[pipeNetId] =
-      netDestinationDomains[pipeNetId].unionWith(
-          getPipeDestinationLaunchNodeDomain(pipeType));
+  netDestinationDomains[pipeNetId] = netDestinationDomains[pipeNetId].unionWith(
+      getPipeDestinationLaunchNodeDomain(pipeType));
   pipeNetLocs[pipeNetId].push_back(loc);
   auto &storedName = pipeNetNames[pipeNetId];
   if (storedName.empty() && name && !name->empty()) {
@@ -763,14 +762,14 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
             getPipeDestinationLaunchNodeDomain(pipeType));
       })
       .Case<PipeNetForeachSrcOp>([&](PipeNetForeachSrcOp foreachSrc) {
-        narrowed = before.getDomain().intersectWith(
-            getPipeRecordsRoleLaunchNodeDomain(foreachSrc.getRecords(),
-                                               PipeRole::Source));
+        narrowed =
+            before.getDomain().intersectWith(getPipeRecordsRoleLaunchNodeDomain(
+                foreachSrc.getRecords(), PipeRole::Source));
       })
       .Case<PipeNetForeachDstOp>([&](PipeNetForeachDstOp foreachDst) {
-        narrowed = before.getDomain().intersectWith(
-            getPipeRecordsRoleLaunchNodeDomain(foreachDst.getRecords(),
-                                               PipeRole::Destination));
+        narrowed =
+            before.getDomain().intersectWith(getPipeRecordsRoleLaunchNodeDomain(
+                foreachDst.getRecords(), PipeRole::Destination));
       })
       .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
         auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state);

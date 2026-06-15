@@ -1078,9 +1078,8 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 
   auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
       rewriter, loc, completionInfo.receiverCompletionSemIdx);
-  auto receiverCompletionCounterAddr =
-      ttk::GetSemaphoreOp::create(rewriter, loc,
-                                  receiverCompletionCounterSemIdx);
+  auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
+      rewriter, loc, receiverCompletionCounterSemIdx);
   auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
   auto completionIf =
       scf::IfOp::create(rewriter, loc, isCollective, /*withElseRegion=*/true);
@@ -1121,9 +1120,9 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
     rewriter.setInsertionPointAfter(selfIncIf);
 
     rewriter.setInsertionPointToStart(&completionIf.getElseRegion().front());
-    auto receiverCompletionNocAddr = ttk::GetNocAddrOp::create(
-        rewriter, loc, dstStartXVal, dstStartYVal,
-        receiverCompletionCounterAddr, nocVal);
+    auto receiverCompletionNocAddr =
+        ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal, dstStartYVal,
+                                  receiverCompletionCounterAddr, nocVal);
     ttk::NocSemaphoreIncOp::create(
         rewriter, loc, receiverCompletionNocAddr.getResult(),
         completionIncrement, nocVal, /*posted=*/BoolAttr());
@@ -2188,8 +2187,8 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
                                                              units[rhsIndex]);
             },
             [&](unsigned lhsIndex, unsigned rhsIndex) {
-              return pipeResourceUnitsInterfere(
-                  units[lhsIndex], units[rhsIndex], dominanceInfo);
+              return pipeResourceUnitsInterfere(units[lhsIndex],
+                                                units[rhsIndex], dominanceInfo);
             });
 
     for (auto indexedColor : llvm::enumerate(colorUsers)) {
