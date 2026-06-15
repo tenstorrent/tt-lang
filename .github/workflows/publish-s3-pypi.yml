@@ -56,7 +56,7 @@ permissions:
 jobs:
   preflight:
     name: "Resolve S3 publish inputs"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       docker_tag: ${{ steps.resolve.outputs.docker_tag }}
@@ -124,7 +124,7 @@ jobs:
     name: "Publish wheels to S3 PyPI"
     needs: [preflight, build-wheels]
     if: ${{ always() && needs.preflight.result == 'success' && needs.build-wheels.result == 'success' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     defaults:

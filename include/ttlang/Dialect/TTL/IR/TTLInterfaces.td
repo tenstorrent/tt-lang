@@ -56,4 +56,49 @@ def TTL_PipeNetPredicateOpInterface
   ];
 }
 
+def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
+  let description = [{
+    Tile-level operations that expose concrete DST register reads, writes, and
+    result residency. The interface is specific to DST behavior after tile
+    lowering has assigned DST indices; it does not model dataflow buffer,
+    packer, or generic memory effects.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return DST slots read by this operation.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>",
+      /*methodName=*/"getDstReadFootprints",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultDstReadFootprints($_op.getOperation());
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return DST slots written by this operation.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>",
+      /*methodName=*/"getDstWriteFootprints",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultDstWriteFootprints($_op.getOperation());
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the DST footprint represented by `result` when it is a DST-resident tile result of this operation.",
+      /*retTy=*/"::mlir::FailureOr<::mlir::tt::ttl::DstFootprint>",
+      /*methodName=*/"getResultDstFootprint",
+      /*args=*/(ins "::mlir::Value":$result),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultResultDstFootprint(
+            $_op.getOperation(), result);
+      }]
+    >
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLINTERFACES_TD

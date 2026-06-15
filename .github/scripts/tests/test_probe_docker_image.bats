@@ -6,7 +6,7 @@
 
 load test_helper
 
-IRD_IMAGE_BASE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04"
+IRD_IMAGE_BASE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04"
 BARE_TAG="v99.99.99"
 UPLIFT_TAG="v99.99.99-uplift-abcd1234"
 RC_TAG="v99.99.99-rc1"

@@ -79,13 +79,15 @@ CBs, and accumulates the reduction result into a fresh DST slot:
   called after the last `reduce_tile` to clear this mask before any
   non-reduce operation.
 
-**(TTL) Matmul** (`ttl.tile_matmul_block`) reads A and B tiles from CBs and
-accumulates the matrix product into a fresh DST slot:
-- Both inputs stay in CBs (`TTLCBInputTileOpTrait`)
-- Output gets a fresh DST slot (not in-place)
+**(TTL) Matmul** (`ttl.tile_matmul_block`) reads A and B tiles from dataflow
+buffers and accumulates the matrix product into DST:
+- Both inputs stay in dataflow buffers (`TTLCBInputTileOpTrait`)
+- A tile-level matmul result occupies one DST slot before block expansion
+- A block matmul result occupies a contiguous `M*N` DST footprint after block
+  expansion, starting at the op's `dst_index`
 - `inputs_footprint = 0`
 - Accumulation: Multiple `matmul_tiles` calls to the same DST index
-  accumulate C += A * B across K-dimension tiles. The DST slot must
+  accumulate C += A * B across K-dimension tiles. The DST footprint must
   remain live across the entire K loop. `tile_regs_acquire` implicitly
   zeros DST before the loop; all K iterations accumulate before
   `tile_regs_commit`:
@@ -108,6 +110,10 @@ accumulates the matrix product into a fresh DST slot:
   results are spilled to an intermediate CB and reloaded with
   `copy_tile` in subsequent blocks (see
   `bmm_large_block_zm.cpp` in tt-metal for this pattern).
+- A scaled additive recurrence such as `scale * acc + (a @ b)` precomputes
+  `scale * acc` into the output DST footprint, then emits `matmul_block` over
+  the same footprint. The matmul op has no accumulator operand in this form;
+  hardware accumulation into prefilled DST preserves the final stored value.
 - Init: `mm_init_short` configures UNPACK + MATH (not PACK). Can
   be called multiple times per kernel to re-enter matmul mode after
   other operations.
@@ -150,9 +156,37 @@ The following table summarizes DST slot requirements per category:
 | Unary | DST | 0 | 0 (overwrites input) | Yes | No |
 | Broadcast | CB | 0 | 1 (fresh) | No | No |
 | Reduce | CB (input + scaler) | 0 | 1 (fresh) | No | Yes (reduction dim) |
-| Matmul | CB (A + B) | 0 | 1 (fresh) | No | Yes (K dim) |
+| Matmul | CB (A + B) | 0 | 1 or M*N | No | Yes (K dim) |
 | Transpose (CB) | CB | 0 | 1 (fresh) | No | No |
 | Transpose (DST) | DST | 0 | 0 (overwrites input) | Yes | No |
+
+### DST Access Interface
+
+`DstAccessOpInterface` exposes the concrete DST behavior required after DST
+assignment:
+
+- `getDstReadFootprints()` reports DST slots consumed by the operation.
+- `getDstWriteFootprints()` reports DST slots written by the operation.
+- `getResultDstFootprint(result)` reports the DST residency denoted by an SSA
+  tile result.
+
+Most tile operations use the default implementation derived from existing
+traits and `dst_index`. Operations with non-scalar DST behavior refine the
+default:
+
+- `ttl.tile_matmul_block` reports one result slot in tile-body form and an
+  `M*N` contiguous write/result footprint after block expansion.
+- `ttl.dst_index` reports result residency for a single DST slot but no writes.
+
+`ttl.dst_index` has no hardware side effect. It names one tile inside a
+range-producing operation's DST footprint while preserving SSA dependence on
+the source value. This is required when a block op writes multiple DST slots
+but later single-tile operations or stores need an SSA value for one slot.
+
+Matmul expansion preserves post-op DST reuse assignments produced by
+`ttl-assign-dst`. For example, a scale or bias post-op may overwrite the
+matmul output slot after the raw matmul value is dead, instead of consuming
+an additional scratch slot.
 
 ### Operation Category Traits
 

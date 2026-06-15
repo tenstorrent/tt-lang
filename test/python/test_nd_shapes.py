@@ -27,7 +27,12 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from conftest import temp_kernel_files
-from ttlang_test_utils import assert_allclose, to_dram
+from ttlang_test_utils import (
+    assert_allclose,
+    assert_compare_result,
+    make_compare_inputs,
+    to_dram,
+)
 
 TILE_SIZE = 32
 
@@ -72,7 +77,14 @@ BINARY_OPS = {
 
 BINARY_FN_OPS = {
     "max": ("max", torch.maximum),
+    "gt": ("gt", torch.gt),
+    "lt": ("lt", torch.lt),
+    "eq": ("eq", torch.eq),
+    "ne": ("ne", torch.ne),
 }
+
+COMPARE_OP_NAMES = frozenset({"gt", "lt", "eq", "ne"})
+
 
 UNARY_OPS = {
     "exp": ("exp", torch.exp),
@@ -335,8 +347,11 @@ def test_nd_binary_op(device, op_name, shape):
     code = _make_binary_kernel_code(shape, op_str)
     kernel = _load_kernel(("binary", op_name, shape), code, f"kernel_nd_{op_name}_")
 
-    lhs_torch = torch.rand(shape, dtype=torch.bfloat16)
-    rhs_torch = torch.rand(shape, dtype=torch.bfloat16)
+    if op_name in COMPARE_OP_NAMES:
+        lhs_torch, rhs_torch = make_compare_inputs(shape, torch.bfloat16)
+    else:
+        lhs_torch = torch.rand(shape, dtype=torch.bfloat16)
+        rhs_torch = torch.rand(shape, dtype=torch.bfloat16)
     out_torch = torch.zeros(shape, dtype=torch.bfloat16)
     expected = torch_fn(lhs_torch, rhs_torch)
 
@@ -347,7 +362,10 @@ def test_nd_binary_op(device, op_name, shape):
     kernel(lhs, rhs, out)
     result = ttnn.to_torch(out)
 
-    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+    if op_name in COMPARE_OP_NAMES:
+        assert_compare_result(result, expected)
+    else:
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("shape", ND_SHAPES, ids=[_shape_id(s) for s in ND_SHAPES])

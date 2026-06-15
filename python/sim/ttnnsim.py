@@ -1059,16 +1059,48 @@ def close_mesh_device(mesh: MeshDevice) -> None:
 
 @dataclass
 class MeshShardInfo:
-    """Mesh-level partition metadata attached to a Tensor by ShardTensorToMesh.
+    """Mesh-level partition metadata attached to a Tensor by a mesh mapper.
 
-    Records which axis of the full tensor is partitioned across devices and
-    how many device partitions exist.  Kept separate from MemoryConfig to
-    avoid conflating inter-device distribution with intra-device sharding
-    strategies (HEIGHT_SHARDED, WIDTH_SHARDED, etc.).
+    Stores the logical shape of the mesh device grid and which tensor dimension
+    each mesh axis partitions.  ``None`` in ``dims`` means the corresponding
+    mesh axis does not partition the tensor; a non-negative integer means it
+    partitions that tensor dimension (already normalized by ``from_torch``).
+
+    For a 1D mesh (MeshShape(1, n)) sharding along tensor dim d:
+        mesh_shape=(1, n), dims=(None, d)
+    For a 2D mesh (MeshShape(rows, cols)) sharding along dims (d0, d1):
+        mesh_shape=(rows, cols), dims=(d0, d1)
+
+    Kept separate from MemoryConfig to avoid conflating inter-device
+    distribution with intra-device sharding strategies (HEIGHT_SHARDED, etc.).
     """
 
-    dim: int
-    num_devices: int
+    mesh_shape: tuple[int, int]
+    dims: tuple[Optional[int], Optional[int]]
+
+    @property
+    def num_devices(self) -> int:
+        """Total number of devices across all mesh axes."""
+        return self.mesh_shape[0] * self.mesh_shape[1]
+
+    @property
+    def dim(self) -> int:
+        """Single partition dim for 1D meshes.
+
+        Returns the one active (non-``None``) entry in ``dims``.  Raises
+        ValueError when no axis or more than one axis actively shards the
+        tensor; callers should use ``dims`` directly in those cases.
+        """
+        active = [d for d in self.dims if d is not None]
+        if len(active) == 1:
+            return active[0]
+        if len(active) == 0:
+            raise ValueError(
+                "MeshShardInfo.dim is undefined: no mesh axis is actively sharding this tensor"
+            )
+        raise ValueError(
+            "MeshShardInfo.dim is ambiguous for 2D-sharded meshes; use .dims directly"
+        )
 
 
 class TensorToMesh:
@@ -1076,17 +1108,52 @@ class TensorToMesh:
 
 
 class ShardTensorToMesh(TensorToMesh):
-    """Mapper for from_torch: shards a tensor across mesh devices along ``dim``.
+    """Mapper for from_torch: shards a tensor across a 1D mesh along ``dim``.
 
     When passed to :func:`from_torch`, the resulting :class:`Tensor` carries a
-    :class:`MeshShardInfo` recording the partition axis and device count.
-    :func:`all_reduce` reads this metadata to perform the reduction without
-    consulting global device-count state or intra-device sharding strategies.
+    :class:`MeshShardInfo` recording the partition axis and mesh shape.
+    Collective operations (:func:`all_reduce`, :func:`all_gather`) read this
+    metadata to determine the partition structure without consulting global
+    device-count state or intra-device sharding strategies.
     """
 
     def __init__(self, mesh: MeshDevice, dim: int) -> None:
         self.mesh = mesh
         self.dim = dim
+
+
+class ShardTensor2dMesh(TensorToMesh):
+    """Mapper for from_torch: shards a tensor across a 2D mesh device grid.
+
+    Each mesh axis independently partitions a different tensor dimension.
+    Pass ``None`` in ``dims`` when a mesh axis should not shard the tensor;
+    negative integers are interpreted as Python-style dim indices and normalized.
+
+    Args:
+        mesh: 2D mesh device (e.g. from :func:`open_mesh_device`).
+        mesh_shape: ``(rows, cols)`` grid shape for the mesh.
+        dims: ``(dim_for_row_axis, dim_for_col_axis)`` — which tensor dim
+            each mesh axis partitions.  Use ``None`` to leave that axis
+            unsharded.
+
+    Example::
+
+        mesh = ttnnsim.open_mesh_device(ttnnsim.MeshShape(2, 4))
+        t = ttnnsim.from_torch(
+            data,
+            mesh_mapper=ttnnsim.ShardTensor2dMesh(mesh, mesh_shape=(2, 4), dims=(0, 1)),
+        )
+    """
+
+    def __init__(
+        self,
+        mesh: MeshDevice,
+        mesh_shape: tuple[int, int],
+        dims: tuple[Optional[int], Optional[int]],
+    ) -> None:
+        self.mesh = mesh
+        self.mesh_shape = mesh_shape
+        self.dims = dims
 
 
 class ReplicateTensorToMesh(TensorToMesh):
@@ -1762,9 +1829,6 @@ def from_torch(
         eff_mc = (
             spec.memory_config if spec.memory_config is not None else DRAM_MEMORY_CONFIG
         )
-    elif isinstance(mesh_mapper, ShardTensorToMesh):
-        eff_dtype = dtype
-        eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
     else:
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
@@ -1780,9 +1844,16 @@ def from_torch(
             result = Tensor(tensor, layout, memory_config=eff_mc)
 
     if isinstance(mesh_mapper, ShardTensorToMesh):
+        n = mesh_mapper.mesh.num_devices
+        d = mesh_mapper.dim % tensor.ndim
+        result.mesh_shard_info = MeshShardInfo(mesh_shape=(1, n), dims=(None, d))
+    elif isinstance(mesh_mapper, ShardTensor2dMesh):
+        rows, cols = mesh_mapper.mesh_shape
+        d0, d1 = mesh_mapper.dims
+        norm_d0 = None if d0 is None else d0 % tensor.ndim
+        norm_d1 = None if d1 is None else d1 % tensor.ndim
         result.mesh_shard_info = MeshShardInfo(
-            dim=mesh_mapper.dim % tensor.ndim,
-            num_devices=mesh_mapper.mesh.num_devices,
+            mesh_shape=(rows, cols), dims=(norm_d0, norm_d1)
         )
     return result
 
@@ -2097,46 +2168,60 @@ def all_reduce(
     dtype: Optional[torch.dtype] = None,
     **kwargs: Any,
 ) -> Tensor:
-    """Sum-reduce across all simulated devices.
+    """Sum-reduce across simulated devices.
 
     The partition structure is read from the tensor's :attr:`~Tensor.mesh_shard_info`
     attribute, which is set by :func:`from_torch` when a :class:`ShardTensorToMesh`
-    mapper is provided.  This attribute records the partition axis (``dim``) and
-    device count directly, keeping inter-device distribution separate from
-    intra-device sharding strategies stored in :class:`MemoryConfig`.
+    or :class:`ShardTensor2dMesh` mapper is provided.
 
     The correct output for the all-reduce collective is: sum each group of
     corresponding slices element-wise across all partitions, then give every
     partition that same sum.
 
+    For 2D meshes, ``cluster_axis`` selects which mesh axis to reduce across:
+
+    * ``cluster_axis=0`` — reduce across the row axis (``msi.mesh_shape[0]``
+      devices, partitioned along ``msi.dims[0]``).
+    * ``cluster_axis=1`` — reduce across the column axis (``msi.mesh_shape[1]``
+      devices, partitioned along ``msi.dims[1]``).
+    * ``cluster_axis=None`` — reduce across all active mesh axes sequentially.
+
     Args:
-        input_tensor: Input tensor (must have been created with ShardTensorToMesh).
-        cluster_axis: Ignored (accepted for API compatibility).
+        input_tensor: Input tensor (must have been created with a mesh mapper).
+        cluster_axis: Which mesh axis to reduce across (0 or 1).  ``None``
+            reduces across all active axes.
         mesh_device: Ignored (accepted for API compatibility).
         memory_config: Optional output memory config.
         dtype: Optional output dtype.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Returns:
-        Tensor where every partition contains the element-wise sum of all
-        partitions.
+        Tensor where every partition contains the element-wise sum across the
+        selected devices.
     """
     msi = input_tensor.mesh_shard_info
     if msi is None:
         raise ValueError("Mesh device is required for all_reduce operation")
 
     t = input_tensor.to_torch()
-    d = msi.dim % t.ndim
-    n = msi.num_devices
-    shard = t.shape[d] // n
 
-    if t.shape[d] != n * shard:
-        return input_tensor
+    axes = [cluster_axis] if cluster_axis is not None else range(2)
+    active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
-    # Sum corresponding slices across all n partitions.
-    reduced = sum(t.narrow(d, i * shard, shard) for i in range(n))
-    # Every partition gets the same reduced result.
-    result = torch.cat([reduced] * n, dim=d).contiguous()  # type: ignore[arg-type]
+    result = t
+    for k in active_axes:
+        d = cast(int, msi.dims[k]) % result.ndim
+        n = msi.mesh_shape[k]
+        if result.shape[d] % n != 0:
+            raise ValueError(
+                f"Tensor size {result.shape[d]} along dim {d} is not divisible "
+                f"by {n} devices on mesh axis {k}"
+            )
+        shard = result.shape[d] // n
+        # Sum corresponding slices across all n partitions along this mesh axis.
+        reduced = sum(result.narrow(d, i * shard, shard) for i in range(n))
+        # Every partition gets the same reduced result.
+        result = torch.cat([reduced] * n, dim=d).contiguous()  # type: ignore[arg-type]
 
     if dtype is not None and result.dtype != dtype:
         result = result.to(dtype)
@@ -2159,58 +2244,75 @@ def all_gather(
     memory_config: Optional[MemoryConfig] = None,
     **kwargs: Any,
 ) -> Tensor:
-    """Gather shards from all simulated devices along ``dim``.
+    """Gather shards from simulated devices along ``dim``.
 
     The partition structure is read from the tensor's :attr:`~Tensor.mesh_shard_info`
     attribute, which is set by :func:`from_torch` when a :class:`ShardTensorToMesh`
-    mapper is provided.
+    or :class:`ShardTensor2dMesh` mapper is provided.
 
-    Each device contributes its local shard (partitioned along ``msi.dim``).
-    After the gather every device holds an identical result: all shards
-    concatenated along ``dim``.  The simulator represents n identical copies
-    by stacking them along ``msi.dim``, matching the output of
-    ``ttnn.to_torch(..., mesh_composer=ConcatMeshToTensor(mesh, msi.dim))``.
+    Each device contributes its local shard.  After the gather every device holds
+    an identical result: all shards concatenated along ``dim``.  The simulator
+    represents n identical copies by stacking them along the shard dimension,
+    matching what ``ttnn.to_torch(..., mesh_composer=ConcatMeshToTensor(...))``
+    would produce.
+
+    For 2D meshes, ``cluster_axis`` selects which mesh axis to gather across:
+
+    * ``cluster_axis=0`` — gather across the row axis (``msi.mesh_shape[0]``
+      devices, partitioned along ``msi.dims[0]``).
+    * ``cluster_axis=1`` — gather across the column axis (``msi.mesh_shape[1]``
+      devices, partitioned along ``msi.dims[1]``).
+    * ``cluster_axis=None`` — gather across all active mesh axes sequentially,
+      applying the same ``dim`` for each.
 
     Args:
-        input_tensor: Input tensor (must have been created with ShardTensorToMesh).
+        input_tensor: Input tensor (must have been created with a mesh mapper).
         dim: Dimension along which to concatenate the gathered shards.
-        cluster_axis: Ignored (accepted for API compatibility).
+        cluster_axis: Which mesh axis to gather across (0 or 1).  ``None``
+            gathers across all active axes.
         mesh_device: Ignored (accepted for API compatibility).
         memory_config: Optional output memory config.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Returns:
         Tensor where every partition contains all shards concatenated along
-        ``dim``.  Output shape equals input shape on all dimensions except
-        ``dim``, which grows by a factor of ``num_devices``.
+        ``dim``.
     """
     msi = input_tensor.mesh_shard_info
     if msi is None:
         raise ValueError("Mesh device is required for all_gather operation")
 
     t = input_tensor.to_torch()
-    shard_dim = msi.dim % t.ndim
-    n = msi.num_devices
-    shard_size = t.shape[shard_dim] // n
 
-    if t.shape[shard_dim] != n * shard_size:
-        return input_tensor
+    axes = [cluster_axis] if cluster_axis is not None else range(2)
+    active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
+    result = t
     gather_dim = dim % t.ndim
-
-    # Each device's shard, sliced along shard_dim.
-    shards = [t.narrow(shard_dim, i * shard_size, shard_size) for i in range(n)]
-    # All n devices get the same result: every shard concatenated along gather_dim.
-    gathered = torch.cat(shards, dim=gather_dim)
-    # Stack n identical copies along shard_dim to match the simulator's
-    # multi-device representation (same as ConcatMeshToTensor would produce).
-    result = torch.cat([gathered] * n, dim=shard_dim).contiguous()
+    for k in active_axes:
+        shard_dim = cast(int, msi.dims[k]) % result.ndim
+        n = msi.mesh_shape[k]
+        if result.shape[shard_dim] % n != 0:
+            raise ValueError(
+                f"Tensor size {result.shape[shard_dim]} along dim {shard_dim} is not divisible "
+                f"by {n} devices on mesh axis {k}"
+            )
+        shard_size = result.shape[shard_dim] // n
+        # Each device's shard, sliced along shard_dim.
+        shards = [
+            result.narrow(shard_dim, i * shard_size, shard_size) for i in range(n)
+        ]
+        # All n devices get the same result: every shard concatenated along gather_dim.
+        gathered = torch.cat(shards, dim=gather_dim)
+        # Stack n identical copies along shard_dim so the simulator tensor
+        # represents all devices holding the gathered result.
+        result = torch.cat([gathered] * n, dim=shard_dim).contiguous()
 
     out_memory_config = (
         memory_config if memory_config is not None else input_tensor.memory_config
     )
     result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
-    result_tensor.mesh_shard_info = MeshShardInfo(dim=msi.dim, num_devices=n)
+    result_tensor.mesh_shard_info = msi
     if hasattr(input_tensor, "_name"):
         result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
     return result_tensor

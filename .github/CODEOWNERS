@@ -25,11 +25,11 @@
 
 # Python frontend, APIs, and runtime integration.
 /python/ zcarver@tenstorrent.com bnorris@tenstorrent.com
-/python/sim/ kfragkiadakis@tenstorrent.com
+/python/sim/ kfragkiadakis@tenstorrent.com phizalev@tenstorrent.com
 
 # Tests and examples.
 /test/ bnorris@tenstorrent.com zcarver@tenstorrent.com kfragkiadakis@tenstorrent.com
-/test/sim/ kfragkiadakis@tenstorrent.com
+/test/sim/ kfragkiadakis@tenstorrent.com phizalev@tenstorrent.com
 /examples/ phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com arichins@tenstorrent.com
 /examples/metal_examples/ arichins@tenstorrent.com
 /examples/matmul-tutorial/ phizalev@tenstorrent.com
