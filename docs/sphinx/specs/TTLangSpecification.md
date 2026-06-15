@@ -57,7 +57,7 @@
 
 ## Introduction
 
-TT-Lang is a Python based *domain specific language (DSL)* designed to express low-level programs for Tenstorrent hardware. Here the low-level is used to contrast with the high-level programming model represented in [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html). Specifically, this means that computation and dataflow *kernels* are programmed separately and need to be explictly syncronized, while TT-NN hides this from the user in its built-in operations. Furthermore, instead of operating on entire tensors, like TT-NN, TT-Lang operates on chunks of tensors called *blocks*, for which the user has to pick the shape to achieve best performance. While based on Python the TT-Lang maintains a number of constraints to what parts of Python can be used in what context, hence the DSL nature of it. The TT-Lang is tightly integrated with TT-NN to provide seamless experience of mixing built-in TT-NN operations and user-written TT-Lang operations in a single program.
+TT-Lang is a Python based *domain specific language (DSL)* designed to express low-level programs for Tenstorrent hardware. Here the low-level is used to contrast with the high-level programming model represented in [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html). Specifically, this means that computation and data movement are programmed explicitly and need to be synchronized, while TT-NN hides this from the user in its built-in operations. Furthermore, instead of operating on entire tensors, like TT-NN, TT-Lang operates on chunks of tensors called *blocks*, for which the user has to pick the shape to achieve best performance. While based on Python the TT-Lang maintains a number of constraints to what parts of Python can be used in what context, hence the DSL nature of it. The TT-Lang is tightly integrated with TT-NN to provide seamless experience of mixing built-in TT-NN operations and user-written TT-Lang operations in a single program.
 
 In addition to kernels, TT-Lang offers other abstractions familiar to [TT-Metalium](https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/index.html) users such as *dataflow buffers* and *semaphores*. In contrast with TT-Metalium, TT-Lang also offers new, higher level abstractions. In addition to blocks these new abstractions include *tensor slices* and *pipes* that wrap the complexity of dealing with tensor memory layout and node-to-node communication correspondingly.
 
@@ -119,7 +119,7 @@ An operation distinguishes *runtime arguments* from *compile-time arguments*.
 
 *Compile-time arguments* are values fixed when the operation is defined. They are captured from the enclosing Python scope, for example as the parameters of a factory function that returns the operation, or as module-level constants. They are substituted into the body before compilation, so changing one defines a different operation. Block shapes, loop bounds, grid dimensions, and scalar coefficients are compile-time arguments.
 
-An operation function therefore takes only tensors as parameters; all other configuration is passed as compile-time arguments through the enclosing scope.
+An operation function therefore takes only tensors as parameters; all other configuration is passed as compile-time arguments through the enclosing scope. Operation parameters have no default values, and the signature uses no `*args` or `**kwargs`.
 
 
 ### Thread assignment
@@ -192,7 +192,7 @@ A *grid* defines a space of nodes to which the TT-Lang operation is submitted fo
 
 ### Grid size function
 
-The `ttl.grid_size` function returns the size of the grid. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of one. The `ttl.grid_size` can be used inside an operation function as well as inside kernel functions.
+The `ttl.grid_size` function returns the size of the grid. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of one. The `ttl.grid_size` can be used anywhere in an operation.
 
 | Type alias/Function | Description |
 | :---- | :---- |
@@ -217,7 +217,7 @@ x_size, y_size, z_size = ttl.grid_size(dims = 3)
 
 ### Node function
 
-The `ttl.node` function returns *node coordinates* of the current node. Node coordinates are zero based and contiguous, which corresponds to a logical indexing scheme. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of zero. The `ttl.node` can be used inside an operation function as well as inside kernel functions.
+The `ttl.node` function returns *node coordinates* of the current node. Node coordinates are zero based and contiguous, which corresponds to a logical indexing scheme. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of zero. The `ttl.node` can be used anywhere in an operation.
 
 | Type alias/Function | Description |
 | :---- | :---- |
@@ -242,7 +242,7 @@ x, y, z = ttl.node(dims = 3)
 
 ## Dataflow buffer
 
-A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
+A *dataflow buffer* is a communication primitive for synchronizing the passing of data between threads running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
 The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. Shape unit can be either a tile (32 by 32 scalar elements) or a scalar element. In order for block to be used with tiled tensor, it needs to have at least two dimensions (see example below). In this case, the translation from Torch shape affects two innermost dimensions. For example, if a TT-NN tensor is of tiled layout and has Torch shape of `(2, 2, 120, 30)`, the corresponding block that fits this entire tensor will have shape of `(2, 2, 4, 1)`.
 
@@ -298,9 +298,9 @@ row_major_shape(from_torch(torch.randn((2, 2, 128, 32)))) # prints [2, 2, 128, 3
 row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) # prints [2, 2, 120, 30]
 ```
 
-Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
+Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one thread can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
-A dataflow buffer is constructed in the scope of an operation function but its object functions can only be used inside of kernel functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
+A dataflow buffer is constructed in the scope of an operation function but its object functions run on threads. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
 
 #### Dataflow buffer example
 
@@ -341,7 +341,7 @@ def some_compute():
 
 ## Block
 
-A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute kernel a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using `store` function. Inside of data movement kernels a block can participate in `ttl.copy` as a source or a destination.
+A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. On a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using `store` function. On a data movement thread a block can participate in `ttl.copy` as a source or a destination.
 
 #### Tiled element-wise with broadcast and reduce example
 
@@ -705,18 +705,18 @@ Blocks have a life cycle that starts with acquisition by using dataflow buffer's
 | **NAW** | **No Access while Writing**: the block is being asynchronously written to. |
 | **OS** | **Out of Scope**: the block was pushed or popped. |
 
-![Compute kernel reserve-push](c-reserve-push.png)
+![Compute thread reserve-push](c-reserve-push.png)
 
-![Compute kernel wait-pop](c-wait-pop.png)
+![Compute thread wait-pop](c-wait-pop.png)
 
-![Datamovement kernel reserve-push](dm-reserve-push.png)
+![Data movement thread reserve-push](dm-reserve-push.png)
 
-![Datamovement kernel wait-pop](dm-wait-pop.png)
+![Data movement thread wait-pop](dm-wait-pop.png)
 
 
 ## Pipe
 
-A *pipe* is a communication primitive for organizing the passing of data between data movement kernels on different nodes. A pipe is used as a source or a destination in the `ttl.copy`. The pipe is constructed with source node coordinate (`src`) and destination (`dst`), which is either a single node coordinate for unicast or *node range* for multicast. The node range uses a combination of dimension slices and values to describe a contiguous hypercube.
+A *pipe* is a communication primitive for organizing the passing of data between data movement threads on different nodes. A pipe is used as a source or a destination in the `ttl.copy`. The pipe is constructed with source node coordinate (`src`) and destination (`dst`), which is either a single node coordinate for unicast or *node range* for multicast. The node range uses a combination of dimension slices and values to describe a contiguous hypercube.
 
 A node range has the same number of dimensions as `grid_size(dims=N)`, and each coordinate `c_i` lies within the corresponding grid extent `G_i` (i.e. `0 <= c_i < G_i`). The range may be smaller than the grid: pipes are not required to span every node along any dimension.
 
@@ -746,7 +746,7 @@ A *pipe net* is a communication primitive that groups pipes into a network. A pi
 
 Condition body function is invoked for each pipe in case of `if_src` if the current node is a source, and in case of `if_dst` if the current node is a destination. The condition body function has a single argument: a pipe identity that satisfies the condition. Condition body function can identify the source and the destination by its `src` and `dst` read-only properties correspondingly.
 
-A pipe net is constructed either in the scope of an operation function or in an enclosing scope and captured by the operation function. It can only be used with its `if_src` and `if_dst` functions inside of a data movement kernel function. The corresponding  `ttl.copy` where a pipe is a source or a destination can be called only inside of a condition body function. Calls into `if_src` and `if_dst` can be nested within condition functions for different pipe nets.
+A pipe net is constructed either in the scope of an operation function or in an enclosing scope and captured by the operation function. It can only be used with its `if_src` and `if_dst` functions and is executed on a data movement thread. The corresponding  `ttl.copy` where a pipe is a source or a destination can be called only inside of a condition body function. Calls into `if_src` and `if_dst` can be nested within condition functions for different pipe nets.
 
 The *active set* of an operation is the union, over every pipe in every pipe net in scope of the operation (constructed in its body or captured from an enclosing scope), of the pipe's source coordinate and its destination coordinate or range. The *role domain* of a pipe net is its per-net active set; `pipe_net.is_src()`, `pipe_net.is_dst()`, and `pipe_net.is_active()` are predicates that evaluate to `True` on the source role, destination role, and their union, respectively.
 The active predicates are only required for code that includes pipe-coupled computations. Any non-pipe-related code segment can execute on all nodes of the operation's grid or have its own guards that are independent of pipes.
@@ -784,7 +784,7 @@ The active predicates are only required for code that includes pipe-coupled comp
 # The pipe net is sized from the active set, not the launch extent.
 # ROWS and COLS describe the rectangle that bounds the active set.
 # Nodes outside the active rectangle (row 0..ROWS-1, column 0..COLS-1)
-# skip the kernel body.
+# skip the operation body.
 
 ROWS = ...  # rows participating in the gather
 COLS = ...  # columns participating in the gather
@@ -979,7 +979,7 @@ def dm():
 
 ## Tensor slice
 
-A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension slice or value for each of the tensor's dimensions. A tensor slice can participate in `ttl.copy` as a source or a destination with the corresponding destination and source being a block. Tensor slice can only be used in the scope of a data movement kernel function.
+A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension slice or value for each of the tensor's dimensions. A tensor slice can participate in `ttl.copy` as a source or a destination with the corresponding destination and source being a block. Tensor slice is executed on a data movement thread.
 
 | Function | Description |
 | :---- | :---- |
@@ -1020,7 +1020,7 @@ def dm():
 
 ## Copy
 
-The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` can only be used inside of a data movement kernel function.
+The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` is executed on a data movement thread.
 
 
 ### Group transfer
@@ -1091,11 +1091,88 @@ def writer():
 | `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
 
+## Scalar Element Access
+
+`ttl.raw_element_read` and `ttl.raw_element_write` provide per-element L1
+access within DFB blocks from data movement (noc) threads. These
+operations fill the gap between the whole-block DFB interface and
+use cases requiring element-level manipulation, such as KV-cache updates,
+top-K selection, and argmax reductions.
+
+### API
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.raw_element_read(block, *coords) -> float` | Read a single scalar element from a DFB block at the given coordinates. The block must come from `ttl.cb_wait`. Returns an `f32` or `bf16` value matching the block's element dtype. |
+| `ttl.raw_element_write(block, *coords, val)` | Write a scalar value to a DFB block at the given coordinates. The block must come from `ttl.cb_reserve`. |
+
+Coordinates are flat scalar-element positions (one per tensor dimension).
+For tiled blocks the compiler decomposes coordinates into tile index and
+intra-tile face-order offset. For row-major blocks coordinates linearize
+directly.
+
+### Supported Dtypes
+
+Only `f32` and `bf16` element types are supported. The L1 pointer width
+matches the dtype: 32-bit (`uint32_t*`) for f32, 16-bit (`uint16_t*`) for
+bf16.
+
+### Thread Restriction
+
+Both operations are restricted to data movement (noc) threads.
+The verifier rejects them if the enclosing function does not carry the
+`ttl.kernel_thread = #ttkernel.thread<noc>` attribute.
+
+### Comparison Operators
+
+Values from `raw_element_read` support scalar float comparisons:
+
+| Python operator | Supported |
+| :---- | :---- |
+| `>` | Yes |
+| `<` | Yes |
+| `==` | No (compile-time error) |
+| `!=` | No (compile-time error) |
+| `>=` | No (compile-time error) |
+| `<=` | No (compile-time error) |
+
+### Example
+
+```python
+@ttl.datamovement()
+def dm_write():
+    with inp_dfb.wait() as rblk:
+        with out_dfb.reserve() as wblk:
+            max_val = ttl.raw_element_read(rblk, 0, 0)
+            for c in range(1, 32):
+                val = ttl.raw_element_read(rblk, 0, c)
+                if val > max_val:
+                    max_val = val
+            ttl.raw_element_write(wblk, 0, 0, max_val)
+            tx = ttl.copy(wblk, out[0, 0])
+            tx.wait()
+```
+Note this example currently does not work with the compiler due to conditional scalar variable assignment, issue #380
+
+### Write Value Sources
+
+Values written via `raw_element_write` must originate from one of:
+
+- A prior `raw_element_read` on the same or another block.
+- A Python float constant (materializes the IEEE-754 bit pattern).
+- An f32 value written to a bf16 block (the DSL auto-inserts
+  `arith.truncf`; truncation is lossy for values not exactly
+  representable in bf16).
+
+Other SSA float values (e.g., results of arithmetic operations) are not
+supported and fail at compile time.
+
+
 ## Semaphore
 
-A *semaphore* is a communication primitive for general synchronization between data movement kernels on different nodes. Each semaphore has an associated 32-bit unsigned integer *semaphore value* for each node. This value can be changed (set or incremented) by a data movement kernel on the local or a remote node. When changing semaphore value remotely a single node coordinate for unicast change or a node range for multicast change is specified. Only setting the semaphore value is supported as a multicast change. A data movement kernel can wait on a semaphore until its value satisfies a condition. It is possible to specify either a condition with exact value or a condition with minimum value. Only local data movement kernels can wait on a semaphore.
+A *semaphore* is a communication primitive for general synchronization between nodes. Each semaphore has an associated 32-bit unsigned integer *semaphore value* for each node. This value can be changed (set or incremented) on the local node or on a remote node. When changing a semaphore value remotely, a single node coordinate for a unicast change or a node range for a multicast change is specified. Only setting the semaphore value is supported as a multicast change. A node can wait on its local semaphore value until it satisfies a condition, specified as either an exact value or a minimum value. Semaphore value changes and waits run on data movement threads.
 
-`ttl.Semaphore` class is constructed with its initial value that defaults to zero. A `ttl.Semaphore` instance can be constructed in a operation function scope. A `ttl.Semaphore` instance provides `wait_eq`, `wait_ge` and `set` functions for managing local semaphore value. To change a remote semaphore value an instance of `ttl.UnicastRemoteSemaphore` or `ttl.MulticastRemoteSemaphore` is obtained by calling `get_remote` and `get_remote_multicast` functions correspondingly. The `ttl.UnicastRemoteSemaphore` supports `inc` and `set` while `ttl.MulticastRemoteSemaphore` supports only `set`. Functions that change the value or wait on condition can be used only in the scope of a data movement kernel function. Functions that obtain remote semaphores can be used in scopes of both operation and data movement kernel functions.
+`ttl.Semaphore` class is constructed with its initial value that defaults to zero. A `ttl.Semaphore` instance can be constructed in a operation function scope. A `ttl.Semaphore` instance provides `wait_eq`, `wait_ge` and `set` functions for managing local semaphore value. To change a remote semaphore value an instance of `ttl.UnicastRemoteSemaphore` or `ttl.MulticastRemoteSemaphore` is obtained by calling `get_remote` and `get_remote_multicast` functions correspondingly. The `ttl.UnicastRemoteSemaphore` supports `inc` and `set` while `ttl.MulticastRemoteSemaphore` supports only `set`. The functions that obtain remote semaphores can be used anywhere in an operation.
 
 #### One-to-many barrier example
 
@@ -1141,14 +1218,14 @@ def dm():
 | Function | Description |
 | :---- | :---- |
 | `ttl.Count = ttl.NaturalInt` | A type for semaphore value. |
-| `ttl.Semaphore.wait_eq(self, value: ttl.Count)` | Wait until the local semaphore value is equal to specified value. **This function is blocking.** Can be used only in the scope of a data movement kernel function. |
-| `ttl.Semaphore.wait_ge(self, value: ttl.Count)` | Wait until the local semaphore value is greater or equal to specified value. **This function is blocking.** Can be used only in the scope of a data movement kernel function. |
-| `ttl.Semaphore.set(self, value: ttl.Count)` | Set the local semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement kernel function. |
-| `ttl.Semaphore.get_remote(self, ttl.NodeCoord: node) -> ttl.UnicastRemoteSemaphore` | Get remote unicast semaphore for specified node coordinate. Returns an instance of `ttl.UnicastRemoteSemaphore`. Can be used in both operation and kernel function scopes. |
-| `ttl.Semaphore.get_remote_multicast(self, ttl.NodeRange: node_range) -> ttl.MulticastRemoteSemaphore` | Get remote multicast semaphore for specified node range. When called with no arguments returns remote multicast semaphore for the entire grid. Returns an instance of `ttl.MulticastRemoteSemaphore`. Can be used in both operation and kernel function scopes. |
-| `ttl.UnicastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote unicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement kernel function. |
-| `ttl.UnicastRemoteSemaphore.inc(self, value: ttl.Count)` | Increment remote unicast semaphore value by specified value. **This function is non-blocking.** Can be used only in the scope of a data movement kernel function. |
-| `ttl.MulticastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote multicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement kernel function. |
+| `ttl.Semaphore.wait_eq(self, value: ttl.Count)` | Wait until the local semaphore value is equal to specified value. **This function is blocking.** |
+| `ttl.Semaphore.wait_ge(self, value: ttl.Count)` | Wait until the local semaphore value is greater or equal to specified value. **This function is blocking.** |
+| `ttl.Semaphore.set(self, value: ttl.Count)` | Set the local semaphore value to specified value. **This function is non-blocking.** |
+| `ttl.Semaphore.get_remote(self, ttl.NodeCoord: node) -> ttl.UnicastRemoteSemaphore` | Get remote unicast semaphore for specified node coordinate. Returns an instance of `ttl.UnicastRemoteSemaphore`. |
+| `ttl.Semaphore.get_remote_multicast(self, ttl.NodeRange: node_range) -> ttl.MulticastRemoteSemaphore` | Get remote multicast semaphore for specified node range. When called with no arguments returns remote multicast semaphore for the entire grid. Returns an instance of `ttl.MulticastRemoteSemaphore`. |
+| `ttl.UnicastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote unicast semaphore value to specified value. **This function is non-blocking.** |
+| `ttl.UnicastRemoteSemaphore.inc(self, value: ttl.Count)` | Increment remote unicast semaphore value by specified value. **This function is non-blocking.** |
+| `ttl.MulticastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote multicast semaphore value to specified value. **This function is non-blocking.** |
 
 
 ## Performance and debugging
@@ -1285,29 +1362,35 @@ def matmul_read():
 | Term | Description |
 | :---- | :---- |
 | *Domain specific language (DSL)* | A language based on a constrained subset of the host language, Python in the case of TT-Lang. |
-| *Operation function* | A Python function that encapsulates an operation written in TT-Lang, which can be used as TT-NN operation. |
-| *Kernel function* | A Python function defined inside of the scope of an operation function that encapsulates a particular kernel behavior. |
-| *Data movement kernel function* | A Python function that encapsulates data movement kernel behavior. |
-| *Compute kernel function* | A Python function that encapsulates compute kernel behavior. |
+| *Operation function* | A Python function, decorated with `ttl.operation`, that encapsulates an operation written in TT-Lang and can be used as a TT-NN operation. Its body describes the work of all the operation's threads and is split across them by the compiler. |
+| *Composed operation* | An operation called from the body of another operation. It is expanded in place when the calling operation is defined. |
+| *Runtime argument* | A value supplied at each call of an operation. Runtime arguments are TT-NN tensors. |
+| *Compile-time argument* | A value fixed when an operation is defined, captured from the enclosing Python scope and substituted into the body before compilation. |
+| *Thread* | A unit of concurrent execution on a node. |
+| *Compute thread* | A thread that evaluates block expressions. |
+| *Data movement thread* | A thread that moves data between dataflow buffers, tensor slices, and pipes. |
+| *Kernel function (legacy)* | In a multi-kernel operation, a Python function defined inside the operation function that encapsulates the behavior of one thread, annotated with `ttl.compute` or `ttl.datamovement`. |
+| *Data movement kernel function (legacy)* | A kernel function that encapsulates data movement behavior. |
+| *Compute kernel function (legacy)* | A kernel function that encapsulates compute behavior. |
 | *TT-NN tensor* | Tensor representation in TT-NN environment. Encapsulates key meta information such as shape, data type, layout, storage and memory configuration. |
 | *Node* | A minimal unit capable of executing a TT-Lang program. |
 | *Grid* | A multidimensional space of nodes. A single chip is represented by a 2D grid. A multichip system is represented by 3D and higher dimensional grids. |
 | *Node coordinates* | Coordinates of a given node within a grid. Each dimension is zero based and contiguous, which corresponds to logical indexing. |
-| *Dataflow buffer* | A communication primitive for synchronizing the passing of data between kernels on the same node. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
+| *Dataflow buffer* | A communication primitive for synchronizing the passing of data between threads on the same node. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
 | *Dataflow buffer’s shape* | A shape of a block of memory acquired from a dataflow buffer to be either written by the producer or read by the consumer. |
 | *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar element. |
 | *Dataflow buffer’s block count* | A block count determines how many blocks are allocated by the dataflow buffer. In the most common case it is 2 blocks to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
-| *Dataflow buffer’s acquisition function* | A blocking function that keeps a kernel waiting until a block becomes available in the dataflow buffer. |
-| *Dataflow buffer’s release function* | A non-blocking function that releases a block back to the dataflow buffer to make it available to other kernels. |
-| *Block* | A block of memory acquired from a dataflow buffer. In a compute kernel a block can participate in an expression as input, and also be used to store the expression's result. In a data movement kernel a block can participate in copy operation as a source or destination. |
+| *Dataflow buffer’s acquisition function* | A blocking function that keeps a thread waiting until a block becomes available in the dataflow buffer. |
+| *Dataflow buffer’s release function* | A non-blocking function that releases a block back to the dataflow buffer to make it available to other threads. |
+| *Block* | A block of memory acquired from a dataflow buffer. On a compute thread a block can participate in an expression as input, and also be used to store the expression's result. On a data movement thread a block can participate in copy operation as a source or destination. |
 | *Block expression* | A block expression is a Python expression using built-in Python operators as well as TT-Lang math functions where operands are either blocks or block expressions. |
-| *Pipe* | A pipe is a communication primitive for organizing the passing of data between data movement kernels on different nodes. |
+| *Pipe* | A pipe is a communication primitive for organizing the passing of data between data movement threads on different nodes. |
 | *Pipe net* | A pipe net is a communication primitive that groups pipes into a network. While a single pipe is capable of representing the passing of data from a single node, a network of pipes generalizes to a data passing pattern over the entire grid. A pipe net is constructed from the list of pipes, which is typically created by Python list comprehension over one or more aspects of a grid. |
 | *Pipe net’s condition body function* | A Python function passed to be executed conditionally if the current node is a source, a destination, or both in the given pipe net. A condition function can be called multiple times sequentially if the current node participates in multiple pipes. |
 | *Tensor slice* | A Python slice expression used with TT-NN tensor to specify a view to be used as a source or a destination in a copy operation. |
 | *Transfer handle* | A handle to an asynchronous copy operation. A transfer handle is used as a barrier to ensure that operation is finished and the corresponding source or destination block is safe to use. |
-| *Semaphore* | A communication primitive for general synchronization between data movement kernels on different nodes. |
-| *Semaphore value* | A 32-bit unsigned integer value associated with a semaphore on each node. This value can be set or incremented by a data movement kernel on the local or a remote node. |
+| *Semaphore* | A communication primitive for general synchronization between data movement threads on different nodes. |
+| *Semaphore value* | A 32-bit unsigned integer value associated with a semaphore on each node. This value can be set or incremented by a data movement thread on the local or a remote node. |
 
 
 ## Appendix B. Block operators and math functions
