@@ -202,8 +202,7 @@ buildCrossRegionStorePlan(Value value, SmallVector<StoreOp> stores) {
   plan.directStores = getDirectStores(value);
 
   FusionTraceResult backwardSlice;
-  if (getCloneableBackwardSlice(value, plan.crossRegionStores,
-                                backwardSlice)) {
+  if (getCloneableBackwardSlice(value, plan.crossRegionStores, backwardSlice)) {
     plan.action = CrossRegionStoreAction::CloneBackwardSlice;
     plan.backwardSlice = std::move(backwardSlice);
   }
@@ -394,7 +393,8 @@ diagnoseUnsupportedBlockArgStoreFanout(func::FuncOp funcOp) {
       }
       block->getParentOp()->emitOpError()
           << "carries a tensor block argument stored from multiple "
-             "control-flow blocks, which is not supported; store the value to a "
+             "control-flow blocks, which is not supported; store the value to "
+             "a "
              "user-declared DFB before the control-flow split";
       return WalkResult::interrupt();
     }
