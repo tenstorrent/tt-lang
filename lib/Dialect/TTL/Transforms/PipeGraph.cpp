@@ -65,6 +65,12 @@ void PipeGraph::assignGatherSlotIndices() {
     }
   };
   struct ReceiverKeyInfo {
+    static ReceiverKey getEmptyKey() {
+      return {INT64_MIN, INT64_MIN, INT64_MIN};
+    }
+    static ReceiverKey getTombstoneKey() {
+      return {INT64_MIN + 1, INT64_MIN + 1, INT64_MIN + 1};
+    }
     static unsigned getHashValue(const ReceiverKey &key) {
       return llvm::hash_combine(key.recvX, key.recvY, key.dfbIndex);
     }

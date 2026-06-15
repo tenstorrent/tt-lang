@@ -44,6 +44,16 @@ namespace llvm {
 template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
   using Key = mlir::tt::ttl::PipeKey;
+  static inline Key getEmptyKey() {
+    Key k;
+    k.srcX = INT64_MIN;
+    return k;
+  }
+  static inline Key getTombstoneKey() {
+    Key k;
+    k.srcX = INT64_MIN + 1;
+    return k;
+  }
   static unsigned getHashValue(const Key &k) {
     return hash_combine(k.srcX, k.srcY, k.dstStartX, k.dstStartY, k.dstEndX,
                         k.dstEndY, k.pipeNetId);
