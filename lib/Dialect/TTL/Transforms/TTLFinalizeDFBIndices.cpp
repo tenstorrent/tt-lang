@@ -6,11 +6,26 @@
 // TTL Finalize DFB Indices
 //===----------------------------------------------------------------------===//
 //
-// Module-level pass that runs after all DFB-creating passes. Reuses
-// compiler-allocated DFB indices when lifetimes do not overlap, then
-// computes the true DFB count, updates ttl.base_cta_index on every
-// function, and collects compiler-allocated DFBs into the
-// ttl.compiler_allocated_dfbs module attribute for the Python runtime.
+// Module-level pass that runs after all DFB-creating passes. Reuses DFB
+// indices when lifetimes do not overlap, then computes the true DFB count,
+// updates ttl.base_cta_index on every function, and publishes the final
+// index assignment for the Python runtime (ttl.dfb_index_map for
+// user-declared DFBs, ttl.compiler_allocated_dfbs for compiler-allocated
+// ones).
+//
+// A logical DFB is one cb_index, bound by one bind_cb per kernel thread that
+// touches it. The same physical CB index has shared pages_received /
+// pages_acked counters and per-RISC read/write pointers, so two logical DFBs
+// may share an index only when:
+//   - both have the same producer thread and the same consumer thread,
+//   - their per-thread lifetimes are disjoint in both threads' program order,
+//   - they have the same element type (uniform page size). Capacity is a
+//     >= check, not equality: the slot is sized to the member needing the
+//     most pages, and every reserve/wait carries its own block size.
+// With matching thread identity, per-thread program order plus reserve/wait
+// blocking make disjoint program-order lifetimes sound at runtime; sharing
+// across different producer or consumer threads is never sound without a
+// counter/pointer reset and is therefore not attempted.
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,7 +34,6 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -27,9 +41,6 @@
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
-
-#include <algorithm>
-#include <functional>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
@@ -40,190 +51,341 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Reuse compiler-allocated DFB indices within a function when their
-/// lifetimes do not overlap. Groups DFBs by CircularBufferType and runs
-/// linear scan allocation per group.
-static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
-  if (dfbOps.size() <= 1) {
-    return;
+/// Closed [start, end] lifetime of a logical DFB within one kernel thread,
+/// in that thread's top-level program order.
+struct ThreadInterval {
+  int64_t start;
+  int64_t end;
+};
+
+/// One logical DFB: a cb_index with one bind_cb per kernel thread.
+struct LogicalDFB {
+  int64_t origIndex = -1;
+  SmallVector<BindCBOp, 3> binds;
+  func::FuncOp producer;
+  func::FuncOp consumer;
+  llvm::SmallDenseMap<Operation *, ThreadInterval, 4> intervals;
+  llvm::SmallDenseMap<Operation *, int64_t, 4> firstAcquire;
+  Type elemType;
+  int64_t blockCount = 0;
+  int64_t elemsPerBlock = 0;
+  bool compilerAllocated = false;
+  bool eligible = true;
+  int64_t finalIndex = -1;
+
+  int64_t totalPages() const { return blockCount * elemsPerBlock; }
+};
+
+/// Position of an op in its kernel thread's top-level program order. Nested
+/// ops project onto their body-block ancestor: a buffer touched inside a
+/// loop is acquired and released every iteration, so across the back-edge it
+/// is live for the whole loop, not one static interval within the body.
+struct ThreadOrder {
+  DenseMap<Operation *, int64_t> topLevel;
+  int64_t lastIdx = 0;
+
+  explicit ThreadOrder(func::FuncOp func) {
+    int64_t idx = 0;
+    for (Operation &op : func.getBody().front()) {
+      topLevel[&op] = idx++;
+    }
+    lastIdx = idx == 0 ? 0 : idx - 1;
   }
 
-  Block &body = funcOp.getBody().front();
-
-  // Assign sequential indices to all operations in the body block.
-  DenseMap<Operation *, int64_t> opIndex;
-  int64_t idx = 0;
-  for (Operation &op : body) {
-    opIndex[&op] = idx++;
-  }
-  int64_t lastOpIdx = idx - 1;
-
-  // Project a nested operation to its ancestor in the body block.
-  // After LowerToLoops or SubblockComputeForDST, CBPopOps may end up
-  // inside loops or compute regions.
-  auto getBodyIndex = [&](Operation *op) -> int64_t {
+  int64_t index(Operation *op, func::FuncOp func) {
+    Block &body = func.getBody().front();
     if (op->getBlock() == &body) {
-      return opIndex[op];
+      return topLevel[op];
     }
     Operation *ancestor = body.findAncestorOpInBlock(*op);
     assert(ancestor && "operation must be reachable from function body");
-    return opIndex[ancestor];
-  };
-
-  // Build intervals grouped by CircularBufferType.
-  llvm::MapVector<Type, SmallVector<ValueLiveInterval>> typeToIntervals;
-  DenseMap<Value, BindCBOp> valueToBindOp;
-
-  for (BindCBOp bindOp : dfbOps) {
-    assert(bindOp->getBlock() == &body &&
-           "compiler-allocated BindCBOp must be in function body block");
-
-    Value cbVal = bindOp.getResult();
-    // Lifetime starts at the first acquire (reserve/wait) on this CB, not
-    // at the bind_cb itself: bind_cb is just a declaration, and hoisting
-    // it to the function body entry would otherwise collapse all compiler-
-    // allocated DFB starts together and defeat reuse. If there is no
-    // acquire (synthetic IR, pop-only), fall back to the bind_cb position.
-    int64_t start = lastOpIdx;
-    int64_t end = opIndex[bindOp];
-    bool sawAcquire = false;
-
-    for (OpOperand &use : cbVal.getUses()) {
-      Operation *user = use.getOwner();
-      int64_t useIdx = getBodyIndex(user);
-      if (isa<CBReserveOp, CBWaitOp>(user)) {
-        start = std::min(start, useIdx);
-        sawAcquire = true;
-      }
-      if (isa<CBPopOp>(user)) {
-        end = std::max(end, useIdx);
-      }
-    }
-
-    if (!sawAcquire) {
-      start = opIndex[bindOp];
-    }
-
-    // No cb_pop means the DFB's L1 is never explicitly released --
-    // conservatively treat it as live for the entire function.
-    if (end <= start) {
-      end = lastOpIdx;
-    }
-
-    SmallVector<ValueLiveInterval> &intervals =
-        typeToIntervals[cbVal.getType()];
-    int64_t ordinal = static_cast<int64_t>(intervals.size());
-    intervals.push_back({start, end, cbVal, ordinal});
-    valueToBindOp[cbVal] = bindOp;
+    return topLevel[ancestor];
   }
+};
 
-  // Find the base index (smallest compiler-allocated index).
-  int32_t baseIndex = INT32_MAX;
-  for (BindCBOp bindOp : dfbOps) {
-    int32_t cbIdx = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
-    baseIndex = std::min(baseIndex, cbIdx);
+/// Extend the per-thread interval of `dfb` to cover `op`.
+void extendInterval(LogicalDFB &dfb, Operation *op, func::FuncOp func,
+                    ThreadOrder &order) {
+  int64_t pos = order.index(op, func);
+  auto [it, inserted] =
+      dfb.intervals.try_emplace(func.getOperation(), ThreadInterval{pos, pos});
+  if (!inserted) {
+    it->second.start = std::min(it->second.start, pos);
+    it->second.end = std::max(it->second.end, pos);
   }
-
-  // Linear scan per type partition. Each partition gets a contiguous
-  // block of physical DFB indices starting at baseIndex + cumulative
-  // offset from prior partitions.
-  MLIRContext *ctx = funcOp.getContext();
-  int32_t nextSlotOffset = 0;
-
-  for (auto &entry : typeToIntervals) {
-    SmallVector<ValueLiveInterval> &intervals = entry.second;
-
-    SmallVector<SmallVector<ValueLiveInterval>> colorUsers =
-        assignGreedyIntervalColors<ValueLiveInterval>(
-            intervals, std::less<ValueLiveInterval>(),
-            [](const ValueLiveInterval &lhs, const ValueLiveInterval &rhs) {
-              return intervalsOverlap(lhs, rhs);
-            });
-
-    DenseMap<Value, int32_t> slotAssignment;
-    int32_t maxSlot = -1;
-
-    for (auto indexedColor : llvm::enumerate(colorUsers)) {
-      int32_t slotIndex = static_cast<int32_t>(indexedColor.index());
-      maxSlot = std::max(maxSlot, slotIndex);
-      for (const ValueLiveInterval &interval : indexedColor.value()) {
-        slotAssignment[interval.value] = slotIndex;
-
-        LLVM_DEBUG({
-          llvm::dbgs() << "DFB reuse: [" << interval.start << ", "
-                       << interval.end << "] -> slot " << slotIndex << "\n";
-        });
-      }
-    }
-
-    // Rewrite BindCBOp indices to the assigned physical slot.
-    for (auto &[value, slot] : slotAssignment) {
-      int32_t newIndex = baseIndex + nextSlotOffset + slot;
-      BindCBOp bindOp = valueToBindOp[value];
-      bindOp.setCbIndexAttr(IntegerAttr::get(IndexType::get(ctx), newIndex));
-    }
-
-    nextSlotOffset += maxSlot + 1;
-  }
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "DFB reuse: " << dfbOps.size()
-                 << " compiler-allocated DFBs -> " << nextSlotOffset
-                 << " physical slot(s)\n";
-  });
 }
+
+/// Record producer/consumer thread identity; multiple distinct threads in
+/// either role make the DFB ineligible (sharing its index would need a
+/// counter/pointer reset, which does not exist).
+void recordRole(func::FuncOp &role, func::FuncOp func, bool &eligible) {
+  if (!role) {
+    role = func;
+  } else if (role != func) {
+    eligible = false;
+  }
+}
+
+bool disjoint(const ThreadInterval &a, const ThreadInterval &b) {
+  return a.end < b.start || b.end < a.start;
+}
+
+/// Two logical DFBs of one reuse class conflict when their lifetimes overlap
+/// in the producer thread or in the consumer thread. Intervals are closed:
+/// sharing an endpoint means both are live at that op.
+bool conflicts(const LogicalDFB &a, const LogicalDFB &b) {
+  for (auto &[func, interval] : a.intervals) {
+    auto it = b.intervals.find(func);
+    if (it != b.intervals.end() && !disjoint(interval, it->second)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
 
 struct TTLFinalizeDFBIndicesPass
     : public impl::TTLFinalizeDFBIndicesBase<TTLFinalizeDFBIndicesPass> {
   void runOnOperation() override {
     auto moduleOp = getOperation();
-    OpBuilder builder(moduleOp.getContext());
+    MLIRContext *ctx = moduleOp.getContext();
+    OpBuilder builder(ctx);
 
-    // Collect compiler-allocated BindCBOps grouped by parent function.
-    llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> funcToDFBs;
+    // Collect logical DFBs by original index across kernel threads.
+    llvm::MapVector<int64_t, LogicalDFB> dfbs;
+    llvm::SmallDenseMap<Operation *, std::unique_ptr<ThreadOrder>> orders;
+    bool sawBind = false;
+
     moduleOp->walk([&](BindCBOp bindOp) {
-      if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-        auto funcOp = bindOp->getParentOfType<func::FuncOp>();
-        funcToDFBs[funcOp].push_back(bindOp);
+      sawBind = true;
+      func::FuncOp func = getEnclosingKernelThread(bindOp);
+      int64_t idx = bindOp.getCbIndex().getSExtValue();
+      LogicalDFB &dfb = dfbs[idx];
+      dfb.origIndex = idx;
+      dfb.binds.push_back(bindOp);
+      auto cbType =
+          mlir::cast<CircularBufferType>(bindOp.getResult().getType());
+      dfb.elemType = cbType.getElementType();
+      dfb.blockCount = cbType.getBlockCount();
+      dfb.elemsPerBlock =
+          std::max(dfb.elemsPerBlock, cbType.getElementsPerBlock());
+      dfb.compilerAllocated |= bindOp->hasAttr(kCompilerAllocatedAttrName);
+      if (!func) {
+        dfb.eligible = false;
+        return;
+      }
+
+      auto &order = orders[func.getOperation()];
+      if (!order) {
+        order = std::make_unique<ThreadOrder>(func);
+      }
+
+      // The bind anchors the interval; binds are hoisted to the function
+      // entry, so the start is refined to the first acquire below.
+      extendInterval(dfb, bindOp, func, *order);
+
+      // Pipe destinations are slot-addressed (block_count == sender count)
+      // and pipe sends read asynchronously, so pipe-attached DFBs keep
+      // dedicated indices.
+      // A DFB participates in a pipe through a ttl.copy whose other operand
+      // is a pipe, or through pipe_recv guards.
+      auto isPipeOp = [](Operation *op) {
+        if (op->getName().getStringRef().contains("pipe")) {
+          return true;
+        }
+        return llvm::any_of(op->getOperands(), [](Value operand) {
+          return mlir::isa<PipeType>(operand.getType());
+        });
+      };
+      // Pipe sends/receives reach a block through view chains (extract_slice,
+      // attach_cb, casts); walk a few hops of users.
+      auto markPipeUsers = [&](Value view) {
+        SmallVector<Value> worklist{view};
+        for (int depth = 0; depth < 3 && !worklist.empty(); ++depth) {
+          SmallVector<Value> next;
+          for (Value v : worklist) {
+            for (Operation *user : v.getUsers()) {
+              if (isPipeOp(user)) {
+                dfb.eligible = false;
+                return;
+              }
+              for (Value result : user->getResults()) {
+                next.push_back(result);
+              }
+            }
+          }
+          worklist = std::move(next);
+        }
+      };
+
+      for (Operation *user : bindOp.getResult().getUsers()) {
+        extendInterval(dfb, user, func, *order);
+        if (isPipeOp(user)) {
+          dfb.eligible = false;
+        }
+        if (auto reserveOp = dyn_cast<CBReserveOp>(user)) {
+          markPipeUsers(reserveOp.getResult());
+        }
+        if (isa<CBReserveOp, CBWaitOp>(user)) {
+          int64_t pos = order->index(user, func);
+          auto [it, inserted] =
+              dfb.firstAcquire.try_emplace(func.getOperation(), pos);
+          if (!inserted) {
+            it->second = std::min(it->second, pos);
+          }
+        }
+        if (isa<CBReserveOp, CBPushOp>(user)) {
+          recordRole(dfb.producer, func, dfb.eligible);
+        }
+        if (isa<CBWaitOp, CBPopOp>(user)) {
+          recordRole(dfb.consumer, func, dfb.eligible);
+        }
+        // A consumed block stays live until its last reader: follow
+        // wait -> readers -> attach_cb -> consumers one level deep.
+        if (auto waitOp = dyn_cast<CBWaitOp>(user)) {
+          markPipeUsers(waitOp.getResult());
+          for (Operation *reader : waitOp.getResult().getUsers()) {
+            extendInterval(dfb, reader, func, *order);
+            if (auto attachOp = dyn_cast<AttachCBOp>(reader)) {
+              markPipeUsers(attachOp.getResult());
+              for (Operation *consumer : attachOp.getResult().getUsers()) {
+                extendInterval(dfb, consumer, func, *order);
+              }
+            }
+          }
+        }
       }
     });
 
-    // Run DFB index reuse per function.
-    for (auto &[funcOp, dfbOps] : funcToDFBs) {
-      reuseDFBIndices(funcOp, dfbOps);
-    }
-
-    // Recompute DFB count after reuse may have changed indices.
-    int32_t numDFBs = getNextAvailableDFBIndex(moduleOp);
-    if (numDFBs <= 0) {
+    if (!sawBind) {
       return;
     }
 
+    // A DFB with no acquire and no release anywhere (declared but unused)
+    // keeps its index. One-sided DFBs reuse within the thread that touches
+    // them. Lifetime starts at the first acquire in each thread; without one
+    // the hoisted bind position stands, conservatively from function entry.
+    for (auto &[idx, dfb] : dfbs) {
+      if (!dfb.producer && !dfb.consumer) {
+        dfb.eligible = false;
+        continue;
+      }
+      if (!dfb.producer) {
+        dfb.producer = dfb.consumer;
+      }
+      if (!dfb.consumer) {
+        dfb.consumer = dfb.producer;
+      }
+      for (auto &[func, interval] : dfb.intervals) {
+        auto it = dfb.firstAcquire.find(func);
+        if (it != dfb.firstAcquire.end()) {
+          interval.start = it->second;
+        }
+      }
+    }
+
+    // Group eligible DFBs into reuse classes; keep deterministic order by
+    // original index. Class members may differ in block count and tiles per
+    // block: capacity is a >= constraint, the slot is sized to the member
+    // needing the most pages, and per-op tile counts come from each bind_cb's
+    // own type.
+    // User and compiler DFBs share slots freely; the runtime keeps the
+    // larger config when both describe one index.
+    using ClassKey = std::tuple<Type, Operation *, Operation *>;
+    llvm::MapVector<ClassKey, SmallVector<LogicalDFB *>> classes;
+    for (auto &[idx, dfb] : dfbs) {
+      if (dfb.eligible) {
+        classes[{dfb.elemType, dfb.producer.getOperation(),
+                 dfb.consumer.getOperation()}]
+            .push_back(&dfb);
+      } else {
+        dfb.finalIndex = dfb.origIndex;
+      }
+    }
+
+    // Greedy interval coloring per class: walk by ascending producer start
+    // and place on the first slot whose members are all disjoint in both
+    // threads. A slot takes the lowest original index of its members, so
+    // indices only ever decrease and never collide with ineligible DFBs.
+    SmallVector<SmallVector<LogicalDFB *>> slots;
+    for (auto &[key, members] : classes) {
+      llvm::sort(members, [](LogicalDFB *a, LogicalDFB *b) {
+        auto pa = a->intervals.find(a->producer.getOperation())->second;
+        auto pb = b->intervals.find(b->producer.getOperation())->second;
+        return std::tie(pa.start, pa.end, a->origIndex) <
+               std::tie(pb.start, pb.end, b->origIndex);
+      });
+      size_t classBase = slots.size();
+      for (LogicalDFB *dfb : members) {
+        size_t placed = slots.size();
+        for (size_t s = classBase; s < slots.size(); ++s) {
+          if (llvm::none_of(slots[s], [&](LogicalDFB *member) {
+                return conflicts(*member, *dfb);
+              })) {
+            placed = s;
+            break;
+          }
+        }
+        if (placed == slots.size()) {
+          slots.emplace_back();
+        }
+        slots[placed].push_back(dfb);
+      }
+    }
+
+    for (auto &slot : slots) {
+      int64_t slotIndex = slot.front()->origIndex;
+      for (LogicalDFB *dfb : slot) {
+        slotIndex = std::min(slotIndex, dfb->origIndex);
+      }
+      for (LogicalDFB *dfb : slot) {
+        dfb->finalIndex = slotIndex;
+      }
+    }
+
+    // Compact to a dense index space (the runtime builds one CB descriptor
+    // per index), preserving relative order.
+    SmallVector<int64_t> usedIndices;
+    for (auto &[idx, dfb] : dfbs) {
+      usedIndices.push_back(dfb.finalIndex);
+    }
+    llvm::sort(usedIndices);
+    usedIndices.erase(llvm::unique(usedIndices), usedIndices.end());
+    DenseMap<int64_t, int64_t> rank;
+    for (auto [i, index] : llvm::enumerate(usedIndices)) {
+      rank[index] = static_cast<int64_t>(i);
+    }
+    for (auto &[idx, dfb] : dfbs) {
+      dfb.finalIndex = rank[dfb.finalIndex];
+    }
+
+    // Rewrite bind_cb indices in every kernel thread.
+    for (auto &[idx, dfb] : dfbs) {
+      if (dfb.finalIndex == dfb.origIndex) {
+        continue;
+      }
+      for (BindCBOp bindOp : dfb.binds) {
+        bindOp.setCbIndexAttr(
+            IntegerAttr::get(IndexType::get(ctx), dfb.finalIndex));
+      }
+      LLVM_DEBUG(llvm::dbgs() << "DFB reuse: cb" << dfb.origIndex << " -> cb"
+                              << dfb.finalIndex << "\n");
+    }
+
+    int32_t numDFBs = getNextAvailableDFBIndex(moduleOp);
     LLVM_DEBUG(llvm::dbgs() << "Total DFB count: " << numDFBs << "\n");
 
-    // Verify the final DFB count does not exceed the hardware limit.
     if (numDFBs > kMaxCircularBuffers) {
-      // Count compiler-allocated physical slots (after reuse).
-      int32_t compilerSlots = 0;
-      for (auto &[funcOp, dfbOps] : funcToDFBs) {
-        llvm::SmallDenseSet<int32_t> uniqueIndices;
-        for (BindCBOp bindOp : dfbOps) {
-          uniqueIndices.insert(
-              static_cast<int32_t>(bindOp.getCbIndex().getSExtValue()));
-        }
-        compilerSlots += static_cast<int32_t>(uniqueIndices.size());
-      }
       moduleOp.emitError()
-          << "need " << numDFBs << " DFB indices but hardware supports "
-          << "at most " << kMaxCircularBuffers << " (" << compilerSlots
-          << " compiler-allocated after reuse); reduce the number of "
-          << "user-declared dataflow buffers or split the computation "
-          << "into multiple kernels";
+          << "need " << numDFBs << " DFB indices after reuse but hardware "
+          << "supports at most " << kMaxCircularBuffers
+          << "; reduce the number of dataflow buffers or split the "
+          << "computation into multiple kernels";
       signalPassFailure();
       return;
     }
 
-    // Update ttl.base_cta_index on every function that has it.
     moduleOp->walk([&](func::FuncOp funcOp) {
       if (funcOp->hasAttr(kBaseCTAIndexAttrName)) {
         funcOp->setAttr(kBaseCTAIndexAttrName,
@@ -231,63 +393,62 @@ struct TTLFinalizeDFBIndicesPass
       }
     });
 
-    // Re-collect compiler-allocated ops (indices may have changed).
-    SmallVector<BindCBOp> compilerAllocatedOps;
-    moduleOp->walk([&](BindCBOp bindOp) {
-      if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-        compilerAllocatedOps.push_back(bindOp);
+    // Publish remapped user DFB indices for the Python runtime.
+    SmallVector<Attribute> mapEntries;
+    for (auto &[idx, dfb] : dfbs) {
+      if (dfb.compilerAllocated || dfb.finalIndex == dfb.origIndex) {
+        continue;
       }
-    });
+      mapEntries.push_back(DictionaryAttr::get(
+          ctx,
+          {builder.getNamedAttr("old_index", builder.getI32IntegerAttr(
+                                                 static_cast<int32_t>(idx))),
+           builder.getNamedAttr("new_index",
+                                builder.getI32IntegerAttr(
+                                    static_cast<int32_t>(dfb.finalIndex)))}));
+    }
+    if (!mapEntries.empty()) {
+      moduleOp->setAttr(kDFBIndexMapAttrName, ArrayAttr::get(ctx, mapEntries));
+    }
 
-    if (compilerAllocatedOps.empty()) {
+    // Publish compiler-allocated DFBs, one entry per physical index sized to
+    // the member needing the most pages.
+    llvm::MapVector<int64_t, LogicalDFB *> compilerByIndex;
+    for (auto &[idx, dfb] : dfbs) {
+      if (!dfb.compilerAllocated) {
+        continue;
+      }
+      auto [it, inserted] = compilerByIndex.try_emplace(dfb.finalIndex, &dfb);
+      if (!inserted && dfb.totalPages() > it->second->totalPages()) {
+        it->second = &dfb;
+      }
+    }
+    if (compilerByIndex.empty()) {
       return;
     }
 
-    // Deduplicate entries by physical index. After reuse, multiple
-    // BindCBOps may share the same index. The module attribute needs
-    // one entry per unique physical DFB.
-    llvm::DenseMap<int32_t, BindCBOp> uniqueByIndex;
-    for (BindCBOp bindOp : compilerAllocatedOps) {
-      int32_t dfbIdx = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
-      auto [it, inserted] = uniqueByIndex.try_emplace(dfbIdx, bindOp);
-      if (!inserted) {
-        assert(it->second.getResult().getType() ==
-                   bindOp.getResult().getType() &&
-               "compiler-allocated DFBs sharing an index must have the "
-               "same CircularBufferType");
-      }
-    }
-
-    // Sort by index for deterministic output.
-    SmallVector<std::pair<int32_t, BindCBOp>> sorted(uniqueByIndex.begin(),
-                                                     uniqueByIndex.end());
+    SmallVector<std::pair<int64_t, LogicalDFB *>> sorted(
+        compilerByIndex.begin(), compilerByIndex.end());
     llvm::sort(sorted,
                [](auto &lhs, auto &rhs) { return lhs.first < rhs.first; });
 
-    MLIRContext *ctx = moduleOp.getContext();
     SmallVector<Attribute> entries;
-    for (auto &[dfbIdx, bindOp] : sorted) {
-      auto cbType =
-          mlir::cast<CircularBufferType>(bindOp.getResult().getType());
-      SmallVector<NamedAttribute> entryAttrs;
-      entryAttrs.push_back(
-          builder.getNamedAttr("dfb_index", builder.getI32IntegerAttr(dfbIdx)));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "num_tiles", builder.getI32IntegerAttr(static_cast<int32_t>(
-                           cbType.getElementsPerBlock()))));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "element_type", TypeAttr::get(cbType.getElementType())));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "block_count", builder.getI32IntegerAttr(
-                             static_cast<int32_t>(cbType.getBlockCount()))));
-      entries.push_back(DictionaryAttr::get(ctx, entryAttrs));
+    for (auto &[dfbIdx, dfb] : sorted) {
+      entries.push_back(DictionaryAttr::get(
+          ctx,
+          {builder.getNamedAttr("dfb_index", builder.getI32IntegerAttr(
+                                                 static_cast<int32_t>(dfbIdx))),
+           builder.getNamedAttr("num_tiles",
+                                builder.getI32IntegerAttr(
+                                    static_cast<int32_t>(dfb->elemsPerBlock))),
+           builder.getNamedAttr("element_type", TypeAttr::get(dfb->elemType)),
+           builder.getNamedAttr("block_count",
+                                builder.getI32IntegerAttr(
+                                    static_cast<int32_t>(dfb->blockCount)))}));
     }
-
     moduleOp->setAttr(kCompilerAllocatedDFBsAttrName,
                       ArrayAttr::get(ctx, entries));
   }
 };
-
-} // namespace
 
 } // namespace mlir::tt::ttl
