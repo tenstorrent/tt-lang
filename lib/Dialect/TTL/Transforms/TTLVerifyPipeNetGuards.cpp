@@ -171,11 +171,10 @@ struct ModuleState : LaunchNodeDomainState {
     PipeRole role =
         kind == PipeEventKind::Send ? PipeRole::Source : PipeRole::Destination;
     for (PipeRecordAttr record : records.getPipes()) {
-      PipeType pipeType =
-          PipeType::get(records.getContext(), record.getSrcX(),
-                        record.getSrcY(), record.getDstStartX(),
-                        record.getDstStartY(), record.getDstEndX(),
-                        record.getDstEndY(), records.getPipeNetId());
+      PipeType pipeType = PipeType::get(
+          records.getContext(), record.getSrcX(), record.getSrcY(),
+          record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
+          record.getDstEndY(), records.getPipeNetId());
       LaunchNodeDomain roleDomain =
           role == PipeRole::Source
               ? getPipeRecordSourceLaunchNodeDomain(record)
@@ -190,10 +189,9 @@ struct ModuleState : LaunchNodeDomainState {
     SmallVector<PipeEvent> events;
     Operation *op = copyOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
-      events.push_back(
-          PipeEvent{op, pipeType, PipeEventKind::Send,
-                    domain.intersectWith(
-                        getPipeSourceLaunchNodeDomain(pipeType))});
+      events.push_back(PipeEvent{
+          op, pipeType, PipeEventKind::Send,
+          domain.intersectWith(getPipeSourceLaunchNodeDomain(pipeType))});
       return events;
     }
     if (std::optional<PipeNetRecordsAttr> records =
@@ -204,9 +202,10 @@ struct ModuleState : LaunchNodeDomainState {
     }
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
       if (isPipeReceiveCopy(copyOp)) {
-        events.push_back(PipeEvent{
-            op, pipeType, PipeEventKind::ReceivePost,
-            domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType))});
+        events.push_back(
+            PipeEvent{op, pipeType, PipeEventKind::ReceivePost,
+                      domain.intersectWith(
+                          getPipeDestinationLaunchNodeDomain(pipeType))});
       }
       return events;
     }
@@ -252,10 +251,9 @@ struct ModuleState : LaunchNodeDomainState {
       if (sawError) {
         return;
       }
-      events.push_back(
-          PipeEvent{op, pipeType, PipeEventKind::ReceiveWait,
-                    domain.intersectWith(
-                        getPipeDestinationLaunchNodeDomain(pipeType))});
+      events.push_back(PipeEvent{
+          op, pipeType, PipeEventKind::ReceiveWait,
+          domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType))});
     } else if (std::optional<PipeNetRecordsAttr> records =
                    getSelectedDestinationRecords(copyOp->getSrc())) {
       int64_t netId = records->getPipeNetId();
@@ -267,11 +265,10 @@ struct ModuleState : LaunchNodeDomainState {
           << name << "; keep the wait under the same `if " << name
           << ".is_dst(): ...` or `" << name
           << ".if_dst(...)` guard as the receive copy";
-      checkKnownSubset(waitOp, domain,
-                       getPipeRecordsRoleLaunchNodeDomain(
-                           *records, PipeRole::Destination),
-                       unanalyzableOp, msg, {{netId, PipeRole::Destination}},
-                       *this);
+      checkKnownSubset(
+          waitOp, domain,
+          getPipeRecordsRoleLaunchNodeDomain(*records, PipeRole::Destination),
+          unanalyzableOp, msg, {{netId, PipeRole::Destination}}, *this);
       if (sawError) {
         return;
       }
