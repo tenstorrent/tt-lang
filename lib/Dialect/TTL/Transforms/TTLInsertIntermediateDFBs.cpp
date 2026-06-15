@@ -54,7 +54,8 @@ enum class CrossRegionStoreAction {
 
 struct CrossRegionStorePlan {
   Value value;
-  SmallVector<StoreOp> stores;
+  SmallVector<StoreOp> crossRegionStores;
+  SmallVector<StoreOp> directStores;
   CrossRegionStoreAction action = CrossRegionStoreAction::MaterializeToDFB;
   FusionTraceResult backwardSlice;
 };
@@ -76,6 +77,17 @@ groupStoresByBlock(ArrayRef<StoreOp> stores) {
   return groups;
 }
 
+static SmallVector<StoreOp> getDirectStores(Value value) {
+  SmallVector<StoreOp> stores;
+  for (OpOperand &use : value.getUses()) {
+    auto storeOp = dyn_cast<StoreOp>(use.getOwner());
+    if (storeOp && storeOp.getTensor() == value) {
+      stores.push_back(storeOp);
+    }
+  }
+  return stores;
+}
+
 // Returns `value`'s stores that live outside its defining block, but only when
 // its stores span at least two distinct blocks -- the condition under which
 // convert-ttl-to-compute orders stores across blocks and asserts. Returns {}
@@ -89,11 +101,7 @@ static SmallVector<StoreOp> getCrossRegionStores(Value value) {
   Block *definingBlock = definingOp->getBlock();
   SmallVector<StoreOp> crossRegionStores;
   llvm::SmallPtrSet<Block *, 2> storeBlocks;
-  for (OpOperand &use : value.getUses()) {
-    auto storeOp = dyn_cast<StoreOp>(use.getOwner());
-    if (!storeOp || storeOp.getTensor() != value) {
-      continue;
-    }
+  for (StoreOp storeOp : getDirectStores(value)) {
     storeBlocks.insert(storeOp->getBlock());
     if (storeOp->getBlock() != definingBlock) {
       crossRegionStores.push_back(storeOp);
@@ -103,6 +111,15 @@ static SmallVector<StoreOp> getCrossRegionStores(Value value) {
     return {};
   }
   return crossRegionStores;
+}
+
+// Distinct blocks that contain a direct `ttl.store` of `value`.
+static unsigned distinctStoreBlockCount(Value value) {
+  llvm::SmallPtrSet<Block *, 2> storeBlocks;
+  for (StoreOp storeOp : getDirectStores(value)) {
+    storeBlocks.insert(storeOp->getBlock());
+  }
+  return storeBlocks.size();
 }
 
 static bool hasLoopBetween(Operation *ancestor, Operation *descendant) {
@@ -181,19 +198,21 @@ static CrossRegionStorePlan
 buildCrossRegionStorePlan(Value value, SmallVector<StoreOp> stores) {
   CrossRegionStorePlan plan;
   plan.value = value;
-  plan.stores = std::move(stores);
+  plan.crossRegionStores = std::move(stores);
+  plan.directStores = getDirectStores(value);
 
   FusionTraceResult backwardSlice;
-  if (getCloneableBackwardSlice(value, plan.stores, backwardSlice)) {
+  if (getCloneableBackwardSlice(value, plan.crossRegionStores,
+                                backwardSlice)) {
     plan.action = CrossRegionStoreAction::CloneBackwardSlice;
     plan.backwardSlice = std::move(backwardSlice);
   }
   return plan;
 }
 
-static SmallVector<CrossRegionStorePlan>
+static SmallVector<CrossRegionStorePlan, 4>
 collectCrossRegionStorePlans(func::FuncOp funcOp) {
-  SmallVector<CrossRegionStorePlan> plans;
+  SmallVector<CrossRegionStorePlan, 4> plans;
   funcOp.walk([&](Operation *op) {
     for (Value result : op->getResults()) {
       if (!isa<RankedTensorType>(result.getType()) || getAttachedCB(result)) {
@@ -298,7 +317,8 @@ static LogicalResult applyCrossRegionStorePlans(
 
   for (const CrossRegionStorePlan &plan : plans) {
     if (plan.action == CrossRegionStoreAction::CloneBackwardSlice) {
-      cloneStores(plan.value, plan.stores, plan.backwardSlice, builder);
+      cloneStores(plan.value, plan.crossRegionStores, plan.backwardSlice,
+                  builder);
       continue;
     }
 
@@ -308,12 +328,14 @@ static LogicalResult applyCrossRegionStorePlans(
     // This follows the storage-boundary model used by upstream MLIR
     // bufferization (`mlir/docs/Bufferization.md` and SCF's
     // BufferizableOpInterfaceImpl): tensor SSA values crossing control-flow
-    // regions get concrete storage, and branch-local uses read that storage.
+    // regions get concrete storage, and store users read that storage.
     Value replacement =
         getOrCreateMaterializedDFB(plan.value, moduleOp, builder, materialized);
-    // Redirect only the cross-block stores to the DFB read-back; same-block and
-    // non-store users keep the original SSA value.
-    for (StoreOp storeOp : plan.stores) {
+    // Redirect all snapshotted direct stores to the DFB read-back. Leaving a
+    // defining-block store on the original value can make
+    // convert-ttl-to-compute schedule the producer compute after the DFB wait
+    // that reads this value.
+    for (StoreOp storeOp : plan.directStores) {
       storeOp->setOperand(0, replacement);
     }
   }
@@ -356,6 +378,31 @@ static Value getOrCreateMaterializedDFB(Value value, ModuleOp moduleOp,
   return replacement;
 }
 
+// A tensor block argument -- today only an `scf.for` iter_arg -- stored from
+// multiple blocks is cross-block store fanout with no producer slice to clone
+// and no defining op to materialize, so this pass cannot normalize it. The
+// frontend does not yet emit loop-carried tensor recurrence (#540); emit an
+// actionable error instead of leaving the stores for convert-ttl-to-compute to
+// drop silently.
+static LogicalResult
+diagnoseUnsupportedBlockArgStoreFanout(func::FuncOp funcOp) {
+  WalkResult walk = funcOp.walk([](Block *block) {
+    for (BlockArgument arg : block->getArguments()) {
+      if (!isa<RankedTensorType>(arg.getType()) || getAttachedCB(arg) ||
+          distinctStoreBlockCount(arg) < 2) {
+        continue;
+      }
+      block->getParentOp()->emitOpError()
+          << "carries a tensor block argument stored from multiple "
+             "control-flow blocks, which is not supported; store the value to a "
+             "user-declared DFB before the control-flow split";
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return failure(walk.wasInterrupted());
+}
+
 struct TTLInsertIntermediateDFBsPass
     : public impl::TTLInsertIntermediateDFBsBase<
           TTLInsertIntermediateDFBsPass> {
@@ -368,12 +415,17 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
+    if (failed(diagnoseUnsupportedBlockArgStoreFanout(funcOp))) {
+      signalPassFailure();
+      return;
+    }
+
     SmallVector<DFBInputOpInterface> candidates;
     funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
     // Snapshot all cross-region store decisions before rewriting. A
     // clone rewrite can erase the original backward slice and rewrite its uses;
     // eraseUnusedBackwardSliceOps only removes ops with no remaining users.
-    SmallVector<CrossRegionStorePlan> crossRegionStorePlans =
+    SmallVector<CrossRegionStorePlan, 4> crossRegionStorePlans =
         collectCrossRegionStorePlans(funcOp);
 
     OpBuilder builder(funcOp.getContext());

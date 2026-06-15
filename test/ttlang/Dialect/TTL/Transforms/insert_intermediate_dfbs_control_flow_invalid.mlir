@@ -183,3 +183,39 @@ func.func @store_fanout_defining_block_and_branch_disabled(%cond: i1)
 
   return
 }
+
+// -----
+
+// A loop-carried tensor (scf.for iter_arg) stored from mutually exclusive
+// branches has no producer slice to clone and no defining op to materialize, so
+// the pass diagnoses it instead of silently leaving the stores for
+// convert-ttl-to-compute to drop. The frontend does not emit this yet (#540).
+// The diagnostic is independent of the compiler-DFB flag.
+
+func.func @loop_carried_iter_arg_store_fanout(%cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %then_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %else_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %input_wait = ttl.cb_wait %input_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init = ttl.exp %input : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %lower = arith.constant 0 : index
+  %upper = arith.constant 2 : index
+  %step = arith.constant 1 : index
+
+  // expected-error @below {{'scf.for' op carries a tensor block argument stored from multiple control-flow blocks, which is not supported; store the value to a user-declared DFB before the control-flow split}}
+  %final = scf.for %iteration = %lower to %upper step %step iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    scf.if %cond {
+      %then_reserve = ttl.cb_reserve %then_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.store %acc, %then_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    } else {
+      %else_reserve = ttl.cb_reserve %else_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.store %acc, %else_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    scf.yield %acc : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+
+  return
+}

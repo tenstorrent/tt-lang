@@ -4,7 +4,7 @@ This document describes how the tt-lang compiler manages dataflow buffers (DFBs)
 
 ## Overview
 
-DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically at fusion split points where a tensor-level operation requires a CB-attached operand but receives the result of a fused expression chain.
+DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically when the compiler must provide concrete DFB storage for a tensor SSA value: either an operation requires a DFB-attached operand, or direct `ttl.store` users span multiple blocks and cannot be represented by branch-local cloning.
 
 The hardware supports at most 32 DFBs per node (indices 0--31). User and compiler-allocated DFBs share this index space. The compiler assigns indices sequentially during insertion (starting *after* the last user-declared DFB), then applies lifetime-based index reuse to reduce the physical DFB count.
 
@@ -157,6 +157,8 @@ users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
 ## Intermediate DFB Insertion
 
 `TTLInsertIntermediateDFBs` walks all operations implementing `DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that the interface marks as requiring a CB-attached value, the pass checks whether the operand traces to an existing CB via `getAttachedCB`. If not, the pass materializes the value through a fresh DFB: `bind_cb`, `cb_reserve`, `store`, `cb_wait`, `attach_cb`. The new DFB receives the `ttl.compiler_allocated` marker attribute.
+
+The pass also normalizes direct stores of a non-DFB-attached value when those stores occupy at least two blocks. If upstream `insideMutuallyExclusiveRegions` proves the store blocks are pairwise exclusive and the producer's backward slice has no remaining non-store uses, the slice is cloned into each store block and no compiler DFB is allocated. Otherwise, the value is materialized through a compiler-allocated DFB and every pre-existing direct store of that value is rewritten to consume the attached DFB value. Rewriting every direct store prevents a same-block store from causing `convert-ttl-to-compute` to place the producer compute after the DFB wait that reads the materialized value.
 
 When multiple `DFBInputOpInterface` operations consume the same non-CB-attached value, the materialization is shared -- only one DFB is created and the second consumer's operand is rewritten to the existing attached value.
 
@@ -548,11 +550,11 @@ Finally, the pass builds the `ttl.compiler_allocated_dfbs` module attribute with
 
 ## Limitations and Future Work
 
-The linear scan operates on a flat sequence of function-level operations. It cannot distinguish between branches of an `scf.if`, so DFBs used in mutually exclusive branches are treated as overlapping. The current pipeline does not produce conditional control flow around DFB lifecycle operations. The DSL evaluates Python `if` during tracing, so only the taken branch appears in the generated IR; runtime-conditional control flow (`scf.if` with conditions dependent on tensor values) is not supported by the frontend at this time.
+The linear scan operates on a flat sequence of function-level operations. It does not prove branch predicates, so DFBs used in mutually exclusive `scf.if` branches are treated as overlapping for index reuse. This is conservative for L1 reuse: it may keep more physical DFB indices live, but it does not merge lifetimes that could execute on the same node.
 
 Index reuse is restricted to compiler-allocated DFBs. User-declared DFBs retain their original indices because the same CB index is referenced by multiple threads (reader, compute, writer) to implement cross-thread data flow. Reusing a user index in one function would invalidate references in the others.
 
-Liveness is computed at function-level granularity. If a `CBPopOp` is inside a structured op (loop, compute region), it is projected to its enclosing operation at function-level. The infrastructure for this exists (`Block::findAncestorOpInBlock`) but is not currently exercised: all compiler-allocated DFB lifecycle ops remain at function-level because `InsertIntermediateDFBs` and `InsertCBSync` run before loop creation, and Python control flow unrolls at trace time.
+Liveness is computed at function-level granularity. If a `CBPopOp` is inside a structured op (loop, compute region, or conditional region), it is projected to its enclosing operation at function-level using `Block::findAncestorOpInBlock`.
 
 The type compatibility constraint prevents reuse across DFBs with different shapes or element types, even when L1 footprints happen to match. A size-based rather than type-based compatibility check could recover some reuse opportunities.
 

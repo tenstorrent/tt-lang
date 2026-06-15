@@ -213,12 +213,14 @@ def TTLInsertIntermediateDFBs
 
       bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
 
-    For the DFB fallback, cross-block stores are rewritten to consume the
-    attached value from that private DFB while same-block users keep the
-    original SSA value. This follows the storage materialization model used by
-    upstream MLIR bufferization: tensor SSA values crossing control-flow
-    regions receive concrete storage, and branch-local users read from that
-    storage.
+    For the DFB fallback, all direct stores of the value are rewritten to
+    consume the attached value from that private DFB while non-store users keep
+    the original SSA value. Rewriting every direct store prevents a later
+    same-block store from making `convert-ttl-to-compute` schedule the producer
+    compute after the DFB wait. This follows the storage materialization model
+    used by upstream MLIR bufferization: tensor SSA values crossing
+    control-flow regions receive concrete storage, and store users read from
+    that storage.
 
     `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
     based on transitive use analysis.
