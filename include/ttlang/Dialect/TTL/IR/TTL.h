@@ -144,6 +144,11 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral
     kPipeSramScratchBytesAttrName("ttl.pipe_sram_scratch_bytes");
 
+/// Function attribute listing receiver DFB indices whose L1 base addresses are
+/// passed after DFB-index compile-time args for computed pipe addressing.
+constexpr llvm::StringLiteral kPipeComputedAddressDFBIndicesAttrName(
+    "ttl.pipe_computed_address_dfb_indices");
+
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.
 constexpr llvm::StringLiteral

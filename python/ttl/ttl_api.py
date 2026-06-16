@@ -553,6 +553,7 @@ class CompiledTTNNKernel:
         num_pipe_sync_semaphores=0,
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
+        kernel_pipe_computed_address_dfb_indices=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -576,6 +577,8 @@ class CompiledTTNNKernel:
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet ready counters used by this kernel.
+            kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
+                L1 bases are supplied as compile-time args.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -592,6 +595,9 @@ class CompiledTTNNKernel:
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self.kernel_pipe_computed_address_dfb_indices = (
+            kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
+        )
         self._pipe_global_semaphore_lifetime = []
 
     def __call__(self, *args):
@@ -620,6 +626,9 @@ class CompiledTTNNKernel:
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=config,
+                pipe_computed_address_dfb_indices=self.kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
             )
             kernel_specs.append(spec)
 
@@ -825,6 +834,7 @@ def _compile_ttnn_kernel(
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
+    kernel_pipe_computed_address_dfb_indices = []
     noc_kernel_idx = 0
     kernel_config_attrs = {
         name: {
@@ -845,6 +855,11 @@ def _compile_ttnn_kernel(
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
+        kernel_pipe_computed_address_dfb_indices.append(
+            _get_kernel_i32_array_attr(
+                module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
+            )
+        )
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
@@ -899,6 +914,7 @@ def _compile_ttnn_kernel(
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
     )
 
     if verbose:
@@ -915,6 +931,9 @@ def _compile_ttnn_kernel(
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
+                pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
             )
             kernel_specs_for_emit.append(spec)
 

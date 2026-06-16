@@ -222,6 +222,36 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
         )
 
 
+def test_build_kernel_descriptors_orders_compile_time_args(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        pipe_computed_address_dfb_indices=[1, 3],
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[0x44, 0x55],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=2,
+        pipe_computed_address_base_addresses={1: 0x8000, 3: 0x9000},
+    )
+
+    dfb_indices = [0, 1]
+    pipe_dfb_bases = [0x8000, 0x9000]
+    tensor_accessor_args = [0x44, 0x55]
+    assert (
+        descriptors[0].compile_time_args
+        == dfb_indices + pipe_dfb_bases + tensor_accessor_args
+    )
+
+
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     tensor = _FakeTensorWithoutDevice()

@@ -13,6 +13,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
 
+#include <optional>
+
 namespace mlir::tt::ttl {
 
 /// Receiver-completion semaphores are indexed by PipeNet id.
@@ -27,6 +29,19 @@ struct PipeInfo {
 
 struct PipeSramAddressTableInfo {
   int64_t byteOffset;
+};
+
+struct PipeComputedAddressInfo {
+  int64_t receiverDFBIndex = 0;
+  int64_t baseCompileTimeArgIndex = 0;
+  int64_t slotSizeBytes = 0;
+  int64_t blockCount = 0;
+  Value transferCounter;
+};
+
+enum class PipeAddressMode {
+  ReceiverPublishedAddressTable,
+  ComputedReceiverDFB,
 };
 
 struct PipeResourcePlan;
@@ -97,7 +112,26 @@ struct PipeCompletionWaitInfo {
 /// publishes its DFB write address into the source core's SRAM table before
 /// incrementing the sender-ready counter.
 struct PipeAddressStorageInfo {
-  PipeSramAddressTableInfo sramAddressTable;
+  static PipeAddressStorageInfo
+  receiverPublishedAddressTable(PipeSramAddressTableInfo sramAddressTable) {
+    return PipeAddressStorageInfo{
+        PipeAddressMode::ReceiverPublishedAddressTable, sramAddressTable,
+        std::nullopt};
+  }
+
+  static PipeAddressStorageInfo
+  computedReceiverDFB(PipeComputedAddressInfo computedAddress) {
+    return PipeAddressStorageInfo{PipeAddressMode::ComputedReceiverDFB,
+                                  std::nullopt, computedAddress};
+  }
+
+  bool usesComputedReceiverDFB() const {
+    return mode == PipeAddressMode::ComputedReceiverDFB;
+  }
+
+  PipeAddressMode mode = PipeAddressMode::ReceiverPublishedAddressTable;
+  std::optional<PipeSramAddressTableInfo> sramAddressTable;
+  std::optional<PipeComputedAddressInfo> computedAddress;
 };
 
 /// Lowering information for a set of ttl.pipe_transfer.create ops sharing one
@@ -160,7 +194,8 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
-LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info);
+LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
+                                    PipeResourcePlan &info);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.

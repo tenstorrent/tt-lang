@@ -15,13 +15,11 @@
 
 namespace mlir::tt::ttl {
 
-LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
-                                        int64_t dstStartX, int64_t dstStartY,
-                                        int64_t dstEndX, int64_t dstEndY,
-                                        int64_t pipeNetId, int64_t dfbIndex,
-                                        CircularBufferType dfbType,
-                                        int64_t staticTileOffset,
-                                        int64_t blockCount, Location loc) {
+LogicalResult PipeGraph::addReceiverDFB(
+    int64_t srcX, int64_t srcY, int64_t dstStartX, int64_t dstStartY,
+    int64_t dstEndX, int64_t dstEndY, int64_t pipeNetId, int64_t dfbIndex,
+    CircularBufferType dfbType, bool hasStaticTileOffset,
+    int64_t staticTileOffset, int64_t blockCount, Location loc) {
   PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
   auto existing = receiverDFBs.find(key);
   bool hasMultipleReceivers = dstStartX != dstEndX || dstStartY != dstEndY;
@@ -29,6 +27,7 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
     if (hasMultipleReceivers &&
         (existing->second.dfbIndex != dfbIndex ||
          existing->second.dfbType != dfbType ||
+         !existing->second.hasStaticTileOffset ||
          existing->second.staticTileOffset != staticTileOffset)) {
       auto diag = emitError(loc)
                   << "collective pipe receive posts publish different "
@@ -48,10 +47,14 @@ LogicalResult PipeGraph::addReceiverDFB(int64_t srcX, int64_t srcY,
           << "previous receiver DFB for this pipe was here";
       return failure();
     }
+    existing->second.hasStaticTileOffset =
+        existing->second.hasStaticTileOffset && hasStaticTileOffset &&
+        existing->second.staticTileOffset == staticTileOffset;
     return success();
   }
-  receiverDFBs.insert(
-      {key, {dfbIndex, dfbType, staticTileOffset, 0, blockCount, loc}});
+  receiverDFBs.insert({key,
+                       {dfbIndex, dfbType, hasStaticTileOffset,
+                        staticTileOffset, 0, blockCount, loc}});
   return success();
 }
 
@@ -299,20 +302,23 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
     return op->emitError("could not trace pipe receiver to a DFB binding");
   }
 
+  bool hasStaticTileOffset = true;
   int64_t staticTileOffset = 0;
-  if (isCollectiveTransfer(transferContract)) {
-    FailureOr<int64_t> offset = getStaticDestinationTileOffset(dst);
-    if (failed(offset)) {
+  FailureOr<int64_t> offset = getStaticDestinationTileOffset(dst);
+  if (failed(offset)) {
+    if (isCollectiveTransfer(transferContract)) {
       return emitUntraceableCollectiveDestinationAddress(op);
     }
+    hasStaticTileOffset = false;
+  } else {
     staticTileOffset = *offset;
   }
 
   return graph.addReceiverDFB(
       pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
       pipeType.getDstStartY(), pipeType.getDstEndX(), pipeType.getDstEndY(),
-      pipeType.getPipeNetId(), *dfbIndex, dfbType, staticTileOffset,
-      dfbType.getBlockCount(), op->getLoc());
+      pipeType.getPipeNetId(), *dfbIndex, dfbType, hasStaticTileOffset,
+      staticTileOffset, dfbType.getBlockCount(), op->getLoc());
 }
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {

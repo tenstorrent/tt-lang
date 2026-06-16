@@ -13,7 +13,7 @@ This module provides a single reusable implementation of kernel argument
 building and execution.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -94,6 +94,7 @@ class KernelSpec:
     thread_type: str
     tensor_indices: List[int]
     config: Any
+    pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -102,6 +103,8 @@ class PipeRuntimeResources:
 
     scratch_tensors: List[Any]
     global_semaphores: List[Any]
+    computed_address_dfb_tensors: Dict[int, Any]
+    computed_address_base_addresses: Dict[int, int]
     extra_common_runtime_args: List[int]
     expected_extra_common_runtime_args: int
 
@@ -135,6 +138,7 @@ def build_kernel_descriptors(
     grid_cols: int,
     grid_rows: int,
     num_cbs: int,
+    pipe_computed_address_base_addresses: Optional[Dict[int, int]] = None,
     extra_common_runtime_args: Optional[List[int]] = None,
     expected_extra_common_runtime_args: Optional[int] = None,
 ) -> List[Any]:
@@ -151,6 +155,8 @@ def build_kernel_descriptors(
         grid_cols: Number of grid columns (x dimension).
         grid_rows: Number of grid rows (y dimension).
         num_cbs: Total number of circular buffers (including intermediate CBs).
+        pipe_computed_address_base_addresses: L1 base address by receiver DFB index for
+            compiler-selected computed pipe addressing.
         extra_common_runtime_args: Compiler-managed common runtime args appended
             after tensor buffer addresses.
         expected_extra_common_runtime_args: Expected number of compiler-managed
@@ -167,6 +173,7 @@ def build_kernel_descriptors(
 
     # CB indices are 0, 1, 2, ... for each CB (including intermediate CBs).
     cb_indices = list(range(num_cbs))
+    computed_address_base_addresses = pipe_computed_address_base_addresses or {}
     extra_args = list(extra_common_runtime_args or [])
     if (
         expected_extra_common_runtime_args is not None
@@ -186,12 +193,24 @@ def build_kernel_descriptors(
         ]
         common_runtime_args.extend(extra_args)
 
-        # Compute kernels only need CB indices.
-        # DM kernels need CB indices + TensorAccessorArgs config.
+        computed_address_base_args = []
+        for dfb_index in spec.pipe_computed_address_dfb_indices:
+            if dfb_index not in computed_address_base_addresses:
+                raise RuntimeError(
+                    f"missing computed-address receiver DFB base for DFB {dfb_index}"
+                )
+            computed_address_base_args.append(
+                computed_address_base_addresses[dfb_index]
+            )
+
+        # Compile-time args are DFB indices, then computed pipe base addresses.
+        # DM kernels then receive TensorAccessorArgs config.
         if spec.thread_type == "compute":
-            kernel_compile_time_args = cb_indices
+            kernel_compile_time_args = cb_indices + computed_address_base_args
         else:
-            kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
+            kernel_compile_time_args = (
+                cb_indices + computed_address_base_args + list(tensor_accessor_args)
+            )
 
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
@@ -216,6 +235,63 @@ def _first_device(tensors: List[Any]) -> Any:
             if device is not None:
                 return device
     raise ValueError("pipe runtime resource allocation requires a device tensor")
+
+
+def _get_cb_descriptor_rows(cb_configs: List[Any]) -> Tuple[List[Any], int]:
+    rows = []
+    total_cb_bytes = 0
+    for cb_index, cb in enumerate(cb_configs):
+        if cb is None:
+            raise ValueError(
+                f"Missing CB config for index {cb_index}. "
+                f"All DFB indices must have associated DataflowBuffer configurations."
+            )
+
+        if isinstance(cb, tuple) and len(cb) == 5:
+            shape, block_count, data_format, page_size, total_size = cb
+            rows.append(
+                (
+                    data_format,
+                    page_size,
+                    total_size,
+                    f"  CB[{cb_index}]: shape={shape} block_count={block_count} -> {total_size} bytes",
+                )
+            )
+        elif isinstance(cb, CompilerAllocatedDFBConfig):
+            data_format = format_name_to_ttnn_dtype(cb.data_format)
+            page_size = tile_bytes_from_dtype(data_format)
+            total_size = cb.num_tiles * cb.block_count * page_size
+            rows.append(
+                (
+                    data_format,
+                    page_size,
+                    total_size,
+                    f"  CB[{cb_index}]: compiler-allocated num_tiles={cb.num_tiles} "
+                    f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes",
+                )
+            )
+        else:
+            ref_tensor = cb.tensor
+            if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
+                data_format = ref_tensor.dtype
+            else:
+                data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
+
+            page_size = tile_bytes_from_dtype(data_format)
+            num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
+            total_size = num_tiles * page_size
+            rows.append(
+                (
+                    data_format,
+                    page_size,
+                    total_size,
+                    f"  CB[{cb_index}]: shape={cb.shape} block_count={cb.block_count} -> {total_size} bytes",
+                )
+            )
+
+        total_cb_bytes += total_size
+
+    return rows, total_cb_bytes
 
 
 def build_pipe_sram_scratch_tensors(
@@ -290,19 +366,87 @@ def build_pipe_global_semaphores(
     return semaphores, addresses
 
 
+def build_pipe_computed_address_dfb_tensors(
+    tensors: List[Any],
+    cb_configs: List[Any],
+    core_ranges: Any,
+    pipe_computed_address_dfb_indices: Optional[List[int]] = None,
+    device: Optional[Any] = None,
+) -> Dict[int, Any]:
+    """Allocate hidden L1 backing tensors for computed pipe receiver DFBs."""
+    dfb_indices = sorted(set(pipe_computed_address_dfb_indices or []))
+    if not dfb_indices:
+        return {}
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    rows, _ = _get_cb_descriptor_rows(cb_configs)
+    device = device if device is not None else _first_device(tensors)
+    grid_size = core_ranges.bounding_box().grid_size()
+    num_cores = grid_size.x * grid_size.y
+    backing_tensors = {}
+    for dfb_index in dfb_indices:
+        if dfb_index < 0 or dfb_index >= len(rows):
+            raise ValueError(
+                f"computed-address receiver DFB index {dfb_index} is invalid"
+            )
+        total_size = rows[dfb_index][2]
+        aligned_bytes = _align_up(total_size, 32)
+        elements_per_core = max(1, aligned_bytes // 4)
+        shard_spec = ttnn.ShardSpec(
+            core_ranges,
+            (1, elements_per_core),
+            ttnn.ShardOrientation.ROW_MAJOR,
+        )
+        memory_config = ttnn.MemoryConfig(
+            ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+            ttnn.BufferType.L1,
+            shard_spec,
+        )
+        backing_tensors[dfb_index] = ttnn.empty(
+            (num_cores, elements_per_core),
+            dtype=ttnn.float32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=device,
+            memory_config=memory_config,
+        )
+    return backing_tensors
+
+
 def build_pipe_runtime_resources(
     tensors: List[Any],
     core_ranges: Any,
+    cb_configs: Optional[List[Any]] = None,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    pipe_computed_address_dfb_indices: Optional[List[int]] = None,
     device: Optional[Any] = None,
 ) -> PipeRuntimeResources:
     """Allocate pipe resources and build their appended common runtime args."""
+    computed_address_dfb_indices = list(pipe_computed_address_dfb_indices or [])
     resource_device = device
     if resource_device is None and (
-        pipe_sram_scratch_bytes > 0 or num_pipe_global_semaphores > 0
+        pipe_sram_scratch_bytes > 0
+        or num_pipe_global_semaphores > 0
+        or computed_address_dfb_indices
     ):
         resource_device = _first_device(tensors)
+
+    computed_address_dfb_tensors = {}
+    if computed_address_dfb_indices:
+        if cb_configs is None:
+            raise ValueError(
+                "computed-address receiver DFB base allocation requires DFB configs"
+            )
+        computed_address_dfb_tensors = build_pipe_computed_address_dfb_tensors(
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
+            pipe_computed_address_dfb_indices=computed_address_dfb_indices,
+            device=resource_device,
+        )
 
     scratch_tensors = build_pipe_sram_scratch_tensors(
         tensors=tensors,
@@ -325,9 +469,15 @@ def build_pipe_runtime_resources(
     expected_extra_common_runtime_args = (
         len(scratch_tensors) + num_pipe_global_semaphores
     )
+    computed_address_base_addresses = {
+        dfb_index: int(tensor.buffer_address())
+        for dfb_index, tensor in computed_address_dfb_tensors.items()
+    }
     return PipeRuntimeResources(
         scratch_tensors=scratch_tensors,
         global_semaphores=global_semaphores,
+        computed_address_dfb_tensors=computed_address_dfb_tensors,
+        computed_address_base_addresses=computed_address_base_addresses,
         extra_common_runtime_args=extra_common_runtime_args,
         expected_extra_common_runtime_args=expected_extra_common_runtime_args,
     )
@@ -355,6 +505,7 @@ def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[Any],
     core_ranges: Any,
+    pipe_computed_address_backing_tensors: Optional[Dict[int, Any]] = None,
 ) -> List[Any]:
     """
     Build circular buffer descriptors for ttnn.generic_op.
@@ -366,6 +517,8 @@ def build_cb_descriptors(
         cb_configs: List of DataflowBuffer objects for each DFB, indexed by DFB index.
             Each DFB has shape, block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for DFB allocation.
+        pipe_computed_address_backing_tensors: Hidden L1 backing tensors for DFBs whose
+            receiver base is passed as a compile-time pipe arg.
 
     Returns:
         List of ttnn.CBDescriptor objects.
@@ -375,48 +528,8 @@ def build_cb_descriptors(
         raise RuntimeError("ttnn is not available")
 
     # Compute sizes first so we fail before allocating ttnn descriptors on overflow.
-    rows = []
-    total_cb_bytes = 0
-    for i, cb in enumerate(cb_configs):
-        if cb is None:
-            raise ValueError(
-                f"Missing CB config for index {i}. "
-                f"All DFB indices must have associated DataflowBuffer configurations."
-            )
-
-        if isinstance(cb, CompilerAllocatedDFBConfig):
-            data_format = format_name_to_ttnn_dtype(cb.data_format)
-            page_size = tile_bytes_from_dtype(data_format)
-            total_size = cb.num_tiles * cb.block_count * page_size
-            rows.append(
-                (
-                    data_format,
-                    page_size,
-                    total_size,
-                    f"  CB[{i}]: compiler-allocated num_tiles={cb.num_tiles} "
-                    f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes",
-                )
-            )
-        else:
-            ref_tensor = cb.tensor
-            if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-                data_format = ref_tensor.dtype
-            else:
-                data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
-
-            page_size = tile_bytes_from_dtype(data_format)
-            num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
-            total_size = num_tiles * page_size
-            rows.append(
-                (
-                    data_format,
-                    page_size,
-                    total_size,
-                    f"  CB[{i}]: shape={cb.shape} block_count={cb.block_count} -> {total_size} bytes",
-                )
-            )
-
-        total_cb_bytes += total_size
+    rows, _ = _get_cb_descriptor_rows(cb_configs)
+    backing_tensors = pipe_computed_address_backing_tensors or {}
 
     remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
     for tensor in tensors:
@@ -429,20 +542,25 @@ def build_cb_descriptors(
 
     # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
     # tile_bytes_from_dtype; see issue #511.
-    if total_cb_bytes > remaining_bytes:
+    anonymous_cb_bytes = sum(
+        total_size
+        for cb_index, (_, _, total_size, _) in enumerate(rows)
+        if cb_index not in backing_tensors
+    )
+    if anonymous_cb_bytes > remaining_bytes:
         breakdown = "\n".join(r[3] for r in rows)
         raise ValueError(
             "Total circular buffer allocation ("
-            f"{total_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
+            f"{anonymous_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
             "This checks static CB backing store only (not all L1 on core).\n"
             + breakdown
             + "\n  hint: reduce DFB shapes or block_count."
         )
 
     cb_descriptors = []
-    for i, (data_format, page_size, total_size, _) in enumerate(rows):
+    for cb_index, (data_format, page_size, total_size, _) in enumerate(rows):
         cb_format = ttnn.CBFormatDescriptor(
-            buffer_index=i,
+            buffer_index=cb_index,
             data_format=data_format,
             page_size=page_size,
         )
@@ -451,6 +569,14 @@ def build_cb_descriptors(
             core_ranges=core_ranges,
             format_descriptors=[cb_format],
         )
+        if cb_index in backing_tensors:
+            backing_desc = ttnn.cb_descriptor_from_sharded_tensor(
+                cb_index,
+                backing_tensors[cb_index],
+                total_size=total_size,
+                core_ranges=core_ranges,
+            )
+            cb_desc.set_buffer_from_cb(backing_desc)
         cb_descriptors.append(cb_desc)
 
     return cb_descriptors
@@ -459,9 +585,16 @@ def build_cb_descriptors(
 def build_generic_op_io_tensors(
     tensors: List[Any],
     pipe_sram_scratch_tensors: List[Any],
+    pipe_computed_address_dfb_tensors: Optional[Dict[int, Any]] = None,
 ) -> List[Any]:
     """Return io_tensors for ttnn.generic_op, including pipe SRAM scratch."""
-    io_tensors = list(tensors) + list(pipe_sram_scratch_tensors)
+    computed_address_dfb_tensors = [
+        pipe_computed_address_dfb_tensors[dfb_index]
+        for dfb_index in sorted(pipe_computed_address_dfb_tensors or {})
+    ]
+    io_tensors = (
+        list(tensors) + list(pipe_sram_scratch_tensors) + computed_address_dfb_tensors
+    )
     if not io_tensors:
         raise ValueError("kernel must have at least one output tensor")
     if len(io_tensors) < 2:
@@ -524,8 +657,16 @@ def run_kernel_on_device(
     pipe_runtime_resources = build_pipe_runtime_resources(
         tensors=tensors,
         core_ranges=core_ranges,
+        cb_configs=cb_configs,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        pipe_computed_address_dfb_indices=sorted(
+            {
+                dfb_index
+                for spec in kernel_specs
+                for dfb_index in spec.pipe_computed_address_dfb_indices
+            }
+        ),
     )
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
@@ -539,6 +680,9 @@ def run_kernel_on_device(
         grid_cols=grid_cols,
         grid_rows=grid_rows,
         num_cbs=len(cb_configs),
+        pipe_computed_address_base_addresses=(
+            pipe_runtime_resources.computed_address_base_addresses
+        ),
         extra_common_runtime_args=pipe_runtime_resources.extra_common_runtime_args,
         expected_extra_common_runtime_args=(
             pipe_runtime_resources.expected_extra_common_runtime_args
@@ -550,6 +694,9 @@ def run_kernel_on_device(
         tensors=tensors,
         cb_configs=cb_configs,
         core_ranges=core_ranges,
+        pipe_computed_address_backing_tensors=(
+            pipe_runtime_resources.computed_address_dfb_tensors
+        ),
     )
 
     semaphore_descriptors = build_pipe_sync_semaphore_descriptors(
@@ -578,6 +725,9 @@ def run_kernel_on_device(
     io_tensors = build_generic_op_io_tensors(
         tensors=tensors,
         pipe_sram_scratch_tensors=pipe_runtime_resources.scratch_tensors,
+        pipe_computed_address_dfb_tensors=(
+            pipe_runtime_resources.computed_address_dfb_tensors
+        ),
     )
 
     return ttnn.generic_op(io_tensors, program)
@@ -630,6 +780,7 @@ def emit_runner_source(
     lines.append("")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    KernelSpec,")
+    lines.append("    build_cb_descriptors,")
     lines.append("    build_generic_op_io_tensors,")
     lines.append("    build_kernel_descriptors,")
     lines.append("    build_pipe_runtime_resources,")
@@ -644,6 +795,16 @@ def emit_runner_source(
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
+    computed_address_dfb_indices = sorted(
+        {
+            dfb_index
+            for spec in kernel_specs
+            for dfb_index in spec.pipe_computed_address_dfb_indices
+        }
+    )
+    lines.append(
+        f"PIPE_COMPUTED_ADDRESS_DFB_INDICES = {computed_address_dfb_indices!r}"
+    )
     lines.append("")
 
     lines.append("KERNEL_PATHS = [")
@@ -655,6 +816,14 @@ def emit_runner_source(
     lines.append("KERNEL_TENSOR_INDICES = [")
     for spec in kernel_specs:
         lines.append(f"    {spec.tensor_indices!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
+    lines.append("KERNEL_PIPE_COMPUTED_ADDRESS_DFB_INDICES = [")
+    for spec in kernel_specs:
+        lines.append(
+            f"    {spec.pipe_computed_address_dfb_indices!r},  # {spec.thread_type}"
+        )
     lines.append("]")
     lines.append("")
 
@@ -699,27 +868,14 @@ def emit_runner_source(
     lines.append("    pipe_resources = build_pipe_runtime_resources(")
     lines.append("        tensors=tensors,")
     lines.append("        core_ranges=core_ranges,")
+    lines.append("        cb_configs=CB_CONFIGS,")
     lines.append("        pipe_sram_scratch_bytes=PIPE_SRAM_SCRATCH_BYTES,")
     lines.append("        num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES,")
+    lines.append(
+        "        pipe_computed_address_dfb_indices=PIPE_COMPUTED_ADDRESS_DFB_INDICES,"
+    )
     lines.append("        device=device,")
     lines.append("    )")
-    lines.append("")
-
-    lines.append("    cb_descriptors = []")
-    lines.append(
-        "    for i, (shape, block_count, dtype, page_size, total_size) in enumerate(CB_CONFIGS):"
-    )
-    lines.append("        cb_format = ttnn.CBFormatDescriptor(")
-    lines.append("            buffer_index=i,")
-    lines.append("            data_format=dtype,")
-    lines.append("            page_size=page_size,")
-    lines.append("        )")
-    lines.append("        cb_desc = ttnn.CBDescriptor(")
-    lines.append("            total_size=total_size,")
-    lines.append("            core_ranges=core_ranges,")
-    lines.append("            format_descriptors=[cb_format],")
-    lines.append("        )")
-    lines.append("        cb_descriptors.append(cb_desc)")
     lines.append("")
 
     lines.append("    kernel_specs = []")
@@ -743,6 +899,9 @@ def emit_runner_source(
     lines.append("                thread_type=thread_type,")
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
     lines.append("                config=config,")
+    lines.append(
+        "                pipe_computed_address_dfb_indices=KERNEL_PIPE_COMPUTED_ADDRESS_DFB_INDICES[kernel_idx],"
+    )
     lines.append("            )")
     lines.append("        )")
     lines.append("    kernel_descriptors = build_kernel_descriptors(")
@@ -754,11 +913,24 @@ def emit_runner_source(
     lines.append("        grid_rows=GRID_ROWS,")
     lines.append("        num_cbs=len(CB_CONFIGS),")
     lines.append(
+        "        pipe_computed_address_base_addresses=pipe_resources.computed_address_base_addresses,"
+    )
+    lines.append(
         "        extra_common_runtime_args=pipe_resources.extra_common_runtime_args,"
     )
     lines.append("        expected_extra_common_runtime_args=(")
     lines.append("            pipe_resources.expected_extra_common_runtime_args")
     lines.append("        ),")
+    lines.append("    )")
+    lines.append("")
+
+    lines.append("    cb_descriptors = build_cb_descriptors(")
+    lines.append("        tensors=tensors,")
+    lines.append("        cb_configs=CB_CONFIGS,")
+    lines.append("        core_ranges=core_ranges,")
+    lines.append(
+        "        pipe_computed_address_backing_tensors=pipe_resources.computed_address_dfb_tensors,"
+    )
     lines.append("    )")
     lines.append("")
 
@@ -777,6 +949,9 @@ def emit_runner_source(
     lines.append("    io_tensors = build_generic_op_io_tensors(")
     lines.append("        tensors=tensors,")
     lines.append("        pipe_sram_scratch_tensors=pipe_resources.scratch_tensors,")
+    lines.append(
+        "        pipe_computed_address_dfb_tensors=pipe_resources.computed_address_dfb_tensors,"
+    )
     lines.append("    )")
     lines.append("    result = ttnn.generic_op(io_tensors, program)")
     lines.append("    return result")
@@ -837,6 +1012,7 @@ __all__ = [
     "build_cb_descriptors",
     "build_pipe_sram_scratch_tensors",
     "build_pipe_global_semaphores",
+    "build_pipe_computed_address_dfb_tensors",
     "build_pipe_runtime_resources",
     "build_pipe_sync_semaphore_descriptors",
     "build_generic_op_io_tensors",

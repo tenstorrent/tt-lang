@@ -58,6 +58,7 @@ namespace mlir::tt::ttl {
 struct ReceiverDFBInfo {
   int64_t dfbIndex;           // DFB index (0-31) used by receiver
   CircularBufferType dfbType; // Receiver DFB type
+  bool hasStaticTileOffset;   // Whether staticTileOffset is known.
   int64_t staticTileOffset;   // Static destination tile offset within the DFB
   int64_t gatherSlotIdx;      // Slot index for overlap patterns (0 if none)
   int64_t blockCount;         // DFB block_count
@@ -110,6 +111,7 @@ public:
                                int64_t dstStartY, int64_t dstEndX,
                                int64_t dstEndY, int64_t pipeNetId,
                                int64_t dfbIndex, CircularBufferType dfbType,
+                               bool hasStaticTileOffset,
                                int64_t staticTileOffset, int64_t blockCount,
                                Location loc);
 
@@ -125,6 +127,10 @@ public:
   LogicalResult verifyReceiverDFBBlockCounts() const;
 
   const ReceiverDFBInfo *lookupReceiverDFB(const PipeKey &key) const;
+
+  const llvm::MapVector<PipeKey, ReceiverDFBInfo> &getReceiverDFBs() const {
+    return receiverDFBs;
+  }
 
 private:
   llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
