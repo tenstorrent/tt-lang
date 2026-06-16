@@ -94,13 +94,11 @@ struct PipeSourceKey {
 };
 
 struct PipeReceiverDFBKey {
-  int64_t recvX;
-  int64_t recvY;
+  PipeReceiverCoord receiver;
   int64_t dfbIndex;
 
   bool operator==(const PipeReceiverDFBKey &other) const {
-    return recvX == other.recvX && recvY == other.recvY &&
-           dfbIndex == other.dfbIndex;
+    return receiver == other.receiver && dfbIndex == other.dfbIndex;
   }
 };
 
@@ -120,7 +118,7 @@ template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeReceiverDFBKey> {
   using Key = mlir::tt::ttl::PipeReceiverDFBKey;
   static unsigned getHashValue(const Key &receiverKey) {
-    return hash_combine(receiverKey.recvX, receiverKey.recvY,
+    return hash_combine(receiverKey.receiver.x, receiverKey.receiver.y,
                         receiverKey.dfbIndex);
   }
   static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
@@ -1414,8 +1412,10 @@ static llvm::DenseMap<PipeReceiverDFBKey, int64_t>
 countReceiverDFBIncomingEdges(const PipeGraph &pipeGraph) {
   llvm::DenseMap<PipeReceiverDFBKey, int64_t> incomingCounts;
   for (const auto &[pipeKey, receiverInfo] : pipeGraph.getReceiverDFBs()) {
-    (void)pipeKey;
-    ++incomingCounts[PipeReceiverDFBKey{0, 0, receiverInfo.dfbIndex}];
+    int64_t receiverDFBIndex = receiverInfo.dfbIndex;
+    pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
+      ++incomingCounts[PipeReceiverDFBKey{receiver, receiverDFBIndex}];
+    });
   }
   return incomingCounts;
 }
@@ -1483,7 +1483,8 @@ static bool isComputedAddressCandidate(
   if (postCount != 1 || sendCount != 1) {
     return false;
   }
-  PipeReceiverDFBKey receiverKey{0, 0, receiverInfo.dfbIndex};
+  PipeReceiverDFBKey receiverKey{unit.pipe.getSingleReceiver(),
+                                 receiverInfo.dfbIndex};
   auto incomingIt = incomingCounts.find(receiverKey);
   return incomingIt != incomingCounts.end() && incomingIt->second == 1;
 }

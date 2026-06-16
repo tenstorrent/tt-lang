@@ -61,15 +61,15 @@ LogicalResult PipeGraph::addReceiverDFB(
 void PipeGraph::assignGatherSlotIndices() {
   // (receiver, DFB index) -> slots already taken at that receiver.
   struct ReceiverKey {
-    int64_t recvX, recvY, dfbIndex;
+    PipeReceiverCoord receiver;
+    int64_t dfbIndex;
     bool operator==(const ReceiverKey &other) const {
-      return recvX == other.recvX && recvY == other.recvY &&
-             dfbIndex == other.dfbIndex;
+      return receiver == other.receiver && dfbIndex == other.dfbIndex;
     }
   };
   struct ReceiverKeyInfo {
     static unsigned getHashValue(const ReceiverKey &key) {
-      return llvm::hash_combine(key.recvX, key.recvY, key.dfbIndex);
+      return llvm::hash_combine(key.receiver.x, key.receiver.y, key.dfbIndex);
     }
     static bool isEqual(const ReceiverKey &lhs, const ReceiverKey &rhs) {
       return lhs == rhs;
@@ -99,18 +99,15 @@ void PipeGraph::assignGatherSlotIndices() {
     // Slots taken by earlier pipes at any of this pipe's receivers
     // (destination range is inclusive on both ends).
     llvm::SmallSetVector<int64_t, 4> taken;
-    for (int64_t dstY = pk.dstStartY; dstY <= pk.dstEndY; ++dstY) {
-      for (int64_t dstX = pk.dstStartX; dstX <= pk.dstEndX; ++dstX) {
-        auto receiverIt =
-            usedAtReceiver.find(ReceiverKey{dstX, dstY, dfbIndex});
-        if (receiverIt == usedAtReceiver.end()) {
-          continue;
-        }
-        for (int64_t slotIndex : receiverIt->second) {
-          taken.insert(slotIndex);
-        }
+    pk.forEachReceiver([&](PipeReceiverCoord receiver) {
+      auto receiverIt = usedAtReceiver.find(ReceiverKey{receiver, dfbIndex});
+      if (receiverIt == usedAtReceiver.end()) {
+        return;
       }
-    }
+      for (int64_t slotIndex : receiverIt->second) {
+        taken.insert(slotIndex);
+      }
+    });
 
     // Lowest free slot.
     int64_t slot = 0;
@@ -120,11 +117,9 @@ void PipeGraph::assignGatherSlotIndices() {
     it->second.gatherSlotIdx = slot;
 
     // Reserve this slot at every receiver.
-    for (int64_t dstY = pk.dstStartY; dstY <= pk.dstEndY; ++dstY) {
-      for (int64_t dstX = pk.dstStartX; dstX <= pk.dstEndX; ++dstX) {
-        usedAtReceiver[ReceiverKey{dstX, dstY, dfbIndex}].insert(slot);
-      }
-    }
+    pk.forEachReceiver([&](PipeReceiverCoord receiver) {
+      usedAtReceiver[ReceiverKey{receiver, dfbIndex}].insert(slot);
+    });
   }
 }
 
@@ -132,10 +127,8 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
   for (auto &[pk, info] : receiverDFBs) {
     int64_t requiredBlocks = info.gatherSlotIdx + 1;
     if (info.blockCount < requiredBlocks) {
-      bool hasSingleReceiver =
-          pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
       return emitError(info.loc)
-             << (hasSingleReceiver ? "gather" : "collective overlap")
+             << (pk.hasSingleReceiver() ? "gather" : "collective overlap")
              << " pipe receiver DFB has block_count=" << info.blockCount
              << " but slot " << info.gatherSlotIdx
              << " is assigned to this pipe; "

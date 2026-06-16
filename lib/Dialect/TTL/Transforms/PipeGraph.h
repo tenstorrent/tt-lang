@@ -16,6 +16,8 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cassert>
+
 namespace mlir::tt::ttl {
 
 //===----------------------------------------------------------------------===//
@@ -23,6 +25,18 @@ namespace mlir::tt::ttl {
 // The graph validates that each logical pipe has a consistent destination DFB
 // and enough DFB slots for overlapping writes.
 //===----------------------------------------------------------------------===//
+
+/// Physical receiver identity for a pipe destination. The current pipe type
+/// stores local core coordinates; keeping that representation behind this type
+/// confines future mesh/device coordinate changes to the graph interface.
+struct PipeReceiverCoord {
+  int64_t x = 0;
+  int64_t y = 0;
+
+  bool operator==(const PipeReceiverCoord &other) const {
+    return x == other.x && y == other.y;
+  }
+};
 
 /// Key for identifying a pipe by its source, destination, and PipeNet ID.
 struct PipeKey {
@@ -36,11 +50,38 @@ struct PipeKey {
            dstEndX == other.dstEndX && dstEndY == other.dstEndY &&
            pipeNetId == other.pipeNetId;
   }
+
+  bool hasSingleReceiver() const {
+    return dstStartX == dstEndX && dstStartY == dstEndY;
+  }
+
+  PipeReceiverCoord getSingleReceiver() const {
+    assert(hasSingleReceiver() && "expected a single receiver");
+    return PipeReceiverCoord{dstStartX, dstStartY};
+  }
+
+  template <typename Fn>
+  void forEachReceiver(Fn &&callback) const {
+    for (int64_t receiverY = dstStartY; receiverY <= dstEndY; ++receiverY) {
+      for (int64_t receiverX = dstStartX; receiverX <= dstEndX; ++receiverX) {
+        callback(PipeReceiverCoord{receiverX, receiverY});
+      }
+    }
+  }
 };
 
 } // namespace mlir::tt::ttl
 
 namespace llvm {
+template <>
+struct DenseMapInfo<mlir::tt::ttl::PipeReceiverCoord> {
+  using Key = mlir::tt::ttl::PipeReceiverCoord;
+  static unsigned getHashValue(const Key &receiver) {
+    return hash_combine(receiver.x, receiver.y);
+  }
+  static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
+};
+
 template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
   using Key = mlir::tt::ttl::PipeKey;
