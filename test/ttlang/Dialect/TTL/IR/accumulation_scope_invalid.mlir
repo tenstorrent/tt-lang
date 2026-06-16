@@ -81,6 +81,84 @@ func.func @explicit_init_type_mismatch() {
 
 // -----
 
+// Stateful bodies require one block argument per output.
+func.func @stateful_block_arg_count_mismatch() {
+  %out0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out1 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init1 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op stateful body requires one block argument per output}}
+  ttl.accumulation_scope outs(%out0, %out1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                            tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      inits(%init0, %init1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                              tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%acc0: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    ttl.yield %acc0, %acc0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } {combiners = [0 : i32, 0 : i32], initial_modes = [2 : i32, 2 : i32]}
+  return
+}
+
+// -----
+
+// Stateful bodies require one yielded value per output.
+func.func @stateful_yield_count_mismatch() {
+  %out0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out1 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init1 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op stateful body must yield one value per output}}
+  ttl.accumulation_scope outs(%out0, %out1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                            tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      inits(%init0, %init1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                              tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%acc0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+       %acc1: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    ttl.yield %acc0 : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } {combiners = [0 : i32, 0 : i32], initial_modes = [2 : i32, 2 : i32]}
+  return
+}
+
+// -----
+
+// Stateful bodies require explicit initial values for all accumulators.
+func.func @stateful_non_explicit_initial_mode() {
+  %out0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out1 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op stateful body requires explicit initial mode for every output}}
+  ttl.accumulation_scope outs(%out0, %out1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                            tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      inits(%init0 : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%acc0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+       %acc1: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    ttl.yield %acc0, %acc1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } {combiners = [0 : i32, 0 : i32], initial_modes = [2 : i32, 0 : i32]}
+  return
+}
+
+// -----
+
+// Stateful yielded values must match their corresponding output types.
+func.func @stateful_yield_type_mismatch() {
+  %out0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out1 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init0 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init1 = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %bad = tensor.empty() : tensor<2x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op stateful yielded value 0 type}}
+  ttl.accumulation_scope outs(%out0, %out1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                            tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      inits(%init0, %init1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                              tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%acc0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+       %acc1: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    ttl.yield %bad, %acc1 : tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } {combiners = [0 : i32, 0 : i32], initial_modes = [2 : i32, 2 : i32]}
+  return
+}
+
+// -----
+
 // Nested accumulation scopes are rejected until nested policy composition is
 // specified.
 func.func @nested_accumulation_scope() {
