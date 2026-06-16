@@ -1017,6 +1017,21 @@ llvm::SmallVector<EnumT> getVerifiedEnumValues(mlir::ArrayAttr attrs) {
 } // namespace
 
 //===----------------------------------------------------------------------===//
+// YieldOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::YieldOp::verify() {
+  Operation *parent = getOperation()->getParentOp();
+  if (parent && mlir::isa<AccumulationScopeOp>(parent)) {
+    return mlir::success();
+  }
+  if (!getValues().empty()) {
+    return emitOpError("operands are only supported in ttl.accumulation_scope");
+  }
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // AccumulationScopeOp - AccumulationScopeOpInterface implementations
 //===----------------------------------------------------------------------===//
 
@@ -1126,14 +1141,53 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
   }
 
   mlir::Block &bodyBlock = getBody().front();
-  if (bodyBlock.getNumArguments() != 0) {
-    return emitOpError("body must not have block arguments");
-  }
   if (!bodyBlock.mightHaveTerminator()) {
     return emitOpError("body block must have a terminator");
   }
   if (!mlir::isa<YieldOp>(bodyBlock.getTerminator())) {
     return emitOpError("body block must be terminated with ttl.yield");
+  }
+  auto yield = mlir::cast<YieldOp>(bodyBlock.getTerminator());
+
+  size_t bodyArgCount = bodyBlock.getNumArguments();
+  size_t yieldedValueCount = yield.getValues().size();
+  if (bodyArgCount != 0 || yieldedValueCount != 0) {
+    if (bodyArgCount != outputCount) {
+      return emitOpError("stateful body requires one block argument per output, "
+                         "got ")
+             << bodyArgCount << " block arguments for " << outputCount
+             << " outputs";
+    }
+    if (yieldedValueCount != outputCount) {
+      return emitOpError("stateful body must yield one value per output, got ")
+             << yieldedValueCount << " yielded values for " << outputCount
+             << " outputs";
+    }
+
+    for (auto [outputIndex, mode] : llvm::enumerate(initialModes)) {
+      if (mode != AccumulationInitialMode::Explicit) {
+        return emitOpError("stateful body requires explicit initial mode for "
+                           "every output, but output ")
+               << outputIndex << " uses " << stringifyAccumulationInitialMode(mode);
+      }
+    }
+
+    for (auto [outputIndex, output] : llvm::enumerate(getOutputs())) {
+      mlir::Type expectedType = output.getType();
+      mlir::Type bodyArgType = bodyBlock.getArgument(outputIndex).getType();
+      if (bodyArgType != expectedType) {
+        return emitOpError("stateful body argument ")
+               << outputIndex << " type " << bodyArgType
+               << " must match output type " << expectedType;
+      }
+
+      mlir::Value yieldedValue = yield.getValues()[outputIndex];
+      if (yieldedValue.getType() != expectedType) {
+        return emitOpError("stateful yielded value ")
+               << outputIndex << " type " << yieldedValue.getType()
+               << " must match output type " << expectedType;
+      }
+    }
   }
 
   bool hasNestedAccumulationScope = false;
