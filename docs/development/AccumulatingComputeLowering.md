@@ -43,20 +43,19 @@ The compiler recognizes these accumulation forms and initial-state cases:
   accumulation onto an existing value.
 
 - Loop-carried additive recurrences inside an `scf.for` (`acc = acc +
-  x` or `acc = x + acc`, plain tensor target) use semantic accumulation
-  IR before general tensor state materialization. Strategy lowering keeps
-  them in DST when legal and otherwise uses L1 packer accumulation seeded
-  by a pre-loop store.
+  x` or `acc = x + acc`, plain tensor target) use accumulation-scope IR
+  before general tensor state materialization. Strategy lowering keeps them
+  in DST when legal and otherwise uses L1 packer accumulation seeded by a
+  pre-loop store.
 
 - General tensor recurrences that are not recognized as additive
   accumulation use explicit compiler-managed DFB state.
 
-The rest of this document details each piece: semantic accumulation
-scopes, loop-carried tensor state elimination
-(`ttl-materialize-loop-state`), `DstSectionOp` as the IR primitive that
-keeps DST live, the choice between DST, L1, and explicit DFB state
-materialization, the emitted loop structure, per-op init insertion, and L1
-accumulation reconfiguration placement.
+The rest of this document details each piece: accumulation scopes,
+loop-carried tensor state elimination (`ttl-materialize-loop-state`),
+`DstSectionOp` as the IR primitive that keeps DST live, the choice between
+DST, L1, and explicit DFB state materialization, the emitted loop structure,
+per-op init insertion, and L1 accumulation reconfiguration placement.
 
 ## Implemented Semantics and Deferred Features
 
@@ -84,8 +83,8 @@ Deferred features are tracked separately:
 
 The current design preserves these invariants:
 
-- `ttl.accumulation_scope` is semantic and storage-agnostic. It does not
-  encode DST, L1 packer, or explicit DFB state.
+- `ttl.accumulation_scope` declares accumulation outputs and policies. It
+  does not encode DST, L1 packer, or explicit DFB state.
 - Conditional rejection belongs in `ttl-insert-accumulation-scopes`, not in
   the `ttl.accumulation_scope` verifier. The verifier remains structural.
 - `ttl.l1_acc_loop` plus `ttl.l1_acc_initial` is static first-update
@@ -95,10 +94,12 @@ The current design preserves these invariants:
 - Future conditional support should add update-site metadata or explicit
   lowered state transitions before TTKernel L1 insertion.
 
-## Semantic Accumulation IR
+## Accumulation Scope IR
 
-`ttl.accumulation_scope` records accumulation semantics before storage
-selection. It has:
+`ttl.accumulation_scope` declares the accumulation contract for one or more
+destination tensor views. It records which outputs share a region, how each
+output is initialized, and which combiner updates each output. The op does not
+select the storage mechanism used for partial values. It has:
 
 - `outputs`: destination tensor views governed by the accumulation policy;
 - `explicit_inits`: initial tensors for outputs whose mode is `explicit`;
@@ -121,6 +122,9 @@ The verifier is structural:
 - initial-mode count equals output count;
 - explicit modes have matching explicit init operands;
 - explicit init types match their corresponding outputs;
+- stateful bodies have one block argument and one yielded value per output;
+- stateful body arguments and yielded values match their output types;
+- stateful bodies use explicit initial mode for every output;
 - nested `ttl.accumulation_scope` is rejected until #648 defines nesting
   semantics.
 
@@ -155,6 +159,25 @@ ttl.accumulation_scope
   ttl.yield
 }
 ```
+
+Stateful accumulation scope form:
+
+```mlir
+ttl.accumulation_scope
+    outs(%out0, %out1 : tensor<...>, tensor<...>)
+    inits(%init0, %init1 : tensor<...>, tensor<...>)
+    {combiners = [0 : i32, 0 : i32],
+     initial_modes = [2 : i32, 2 : i32]} {
+^bb0(%acc0: tensor<...>, %acc1: tensor<...>):
+  %next0 = ttl.add %acc0, %acc1 : tensor<...>, tensor<...> -> tensor<...>
+  %next1 = ttl.add %acc1, %next0 : tensor<...>, tensor<...> -> tensor<...>
+  ttl.yield %next0, %next1 : tensor<...>, tensor<...>
+}
+```
+
+This form exposes accumulator state as block arguments and returns the updated
+state through `ttl.yield`. Cross-output dependence is represented by ordinary
+SSA use-def edges between yielded values.
 
 Explicit DFB accumulation scope form:
 
