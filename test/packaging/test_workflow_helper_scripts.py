@@ -85,7 +85,14 @@ def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
     assert "build_manylinux_wheel_images" in build_docker_workflow
     assert "build-manylinux-wheel-images:" in build_docker_workflow
     assert "python_tag: [cp310, cp312]" in build_docker_workflow
-    assert "build-wheel-manylinux-images.sh --python-tags" in build_docker_workflow
+    assert "id: docker-tag" in build_docker_workflow
+    assert "registry-image=${registry_image}" in build_docker_workflow
+    assert r"Image: \`${registry_image}\`" in build_docker_workflow
+    assert (
+        "build-wheel-manylinux-images.sh --python-tags"
+        ' "${{ matrix.python_tag }}" --image-tag'
+    ) in build_docker_workflow
+    assert '"${{ steps.docker-tag.outputs.docker-tag }}"' in build_docker_workflow
     assert "--build-parallel-level 2" in build_docker_workflow
     assert "ARG TTLANG_BUILD_PARALLEL_LEVEL" in manylinux_dockerfile
     assert (
