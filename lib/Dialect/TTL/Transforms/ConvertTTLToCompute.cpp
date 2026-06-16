@@ -234,6 +234,26 @@ static void eraseAbsorbedOutputOps(PatternRewriter &rewriter,
 // Tile op emission for fusion
 //===----------------------------------------------------------------------===//
 
+static Value emitExpTileOp(OpBuilder &builder, Location loc, Type tileType,
+                           Value input, const ExpFlagsPlan &flags) {
+  FloatAttr scale = flags.scale;
+  if (scale && !flags.approx.getValue()) {
+    // The current accurate BF16 LLK path passes this runtime value to
+    // immediate-only SFPMULI. Keep accurate semantics by materializing the
+    // scale as a supported tile multiply before invoking unscaled exp.
+    input = createTileOpWithPlaceholderDstIndex<TileMulUnaryConstOp>(
+        builder, loc, tileType, input, scale);
+    scale = nullptr;
+  }
+
+  Value dstIndex = createPlaceholderDstIndex(builder, loc);
+  auto tileOp =
+      ExpTileOp::create(builder, loc, tileType, input, dstIndex, flags.approx,
+                        scale, flags.inputClamping, flags.iterations);
+  addPlaceholderDstIndexAttr(tileOp.getOperation());
+  return tileOp.getResult();
+}
+
 /// Creates the generic tile operation selected by a verified fused plan.
 static Value emitTileOpFor(OpBuilder &builder, Location loc,
                            const FusedOperationPlan &operationPlan,
@@ -252,6 +272,16 @@ static Value emitTileOpFor(OpBuilder &builder, Location loc,
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // ExpOp is excluded from TTLElementwiseOps.def because it carries hardware
+  // flags that must be forwarded to the tile operation.
+  if (isa<ExpOp>(sourceOp)) {
+    assert(tileOperands.size() == 1 && "exp fusion requires one tile operand");
+    assert(operationPlan.expFlags &&
+           "exp recipe must record its hardware flags");
+    return emitExpTileOp(builder, loc, tileType, tileOperands[0],
+                         *operationPlan.expFlags);
+  }
 
   if (isa<MulUnaryConstOp>(sourceOp)) {
     assert(tileOperands.size() == 1 &&
@@ -375,7 +405,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       return rewriter.notifyMatchFailure(
           sinkOp, "fused operation dependency is unavailable");
     }
-    if (operationPlan.recipe == FusedOperationRecipe::DeferredMatmul) {
+    if (operationPlan.recipe == FusedOperationRecipe::DeferredMatmul ||
+        operationPlan.recipe == FusedOperationRecipe::DeferredExpScale) {
       continue;
     }
     availableValues.insert(operationPlan.source->getResult(0));
@@ -496,6 +527,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     case FusedOperationRecipe::DeferredMatmul:
       assert(!instrumentationEmitter.hasAfter(op) &&
              "instrumented matmul must not be folded into its user");
+      continue;
+    case FusedOperationRecipe::DeferredExpScale:
+      instrumentationEmitter.emitAfter(op);
       continue;
     case FusedOperationRecipe::MatmulAccumulator: {
       assert(operationPlan.foldedMatmul && operationPlan.accumulator &&
@@ -756,6 +790,30 @@ struct LowerUnaryToCompute : PlannedComputeRewritePattern<TTLOp> {
                                 PatternRewriter &rewriter) const override {
     return buildUnaryCompute<TileOp>(op.getOperation(), rewriter, op.getInput(),
                                      this->kernelPlan);
+  }
+};
+
+/// Pattern for ttl.exp: TTL tensor op -> ttl.compute with ttl.tile_exp,
+/// forwarding the exp hardware flags. Dedicated (not the generic unary
+/// template) because exp carries extra attributes.
+struct LowerExpToCompute : PlannedComputeRewritePattern<ExpOp> {
+  using PlannedComputeRewritePattern<ExpOp>::PlannedComputeRewritePattern;
+
+  LogicalResult matchAndRewrite(ExpOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!getAttachedCB(op.getInput())) {
+      return tryFusion(op.getOperation(), rewriter, this->kernelPlan);
+    }
+
+    return buildComputeFromInputs(
+        op, rewriter, ComputeOpCreationRecipe::Elementwise, this->kernelPlan,
+        [](OpBuilder &builder, Location location, Type tileType, Block *body,
+           const ComputeOpCreationPlan &creation) {
+          assert(creation.expFlags &&
+                 "exp recipe must record its hardware flags");
+          return emitExpTileOp(builder, location, tileType,
+                               body->getArgument(0), *creation.expFlags);
+        });
   }
 };
 
@@ -1357,6 +1415,7 @@ static void populateTTLToComputePatternsForMode(
   patterns.add<Lower##TTL_OP>(ctx, kernelPlan);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  patterns.add<LowerExpToCompute>(ctx, kernelPlan);
   patterns.add<LowerBlockBroadcastToCompute>(ctx, kernelPlan);
   patterns.add<LowerMatmulToCompute>(ctx, kernelPlan);
   patterns.add<LowerReduceToCompute>(ctx, kernelPlan);

@@ -1101,8 +1101,6 @@ multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
   }
 }
 
-// Define all unary elementwise ops using the multiclass
-defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile">;
 defm TTL_Exp2 : TTL_UnaryElementwisePair<"exp2", "exp2_tile">;
 defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile">;
 defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile">;
@@ -1131,6 +1129,52 @@ defm TTL_Softsign : TTL_UnaryElementwisePair<"softsign", "softsign_tile">;
 defm TTL_Signbit : TTL_UnaryElementwisePair<"signbit", "signbit_tile">;
 defm TTL_Frac : TTL_UnaryElementwisePair<"frac", "frac_tile">;
 defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
+
+//===----------------------------------------------------------------------===//
+// Exp Operations (Tensor + Tile)
+//===----------------------------------------------------------------------===//
+//
+// `exp` is broken out of the generic unary multiclass because it carries
+// hardware SFPU flags that the generic ops do not. The flags are forwarded
+// unchanged from the tensor op to the tile op and then to the TTKernel
+// exp_tile / exp_tile_init ops during lowering. All flags are optional or
+// default-valued so that `ttl.exp %x` (and tile form) keep their plain
+// spelling when no flags are set.
+//
+// Flags (mirroring tt-metal ckernel::exp_tile / exp_tile_init):
+//   approx          - enable the fast approximate exp.
+//   scale           - optional scale factor `s`; when present the op computes
+//                     exp(s * x) (sets scale_en at the TTKernel level).
+//   input_clamping  - clamp behaviour for very negative inputs (only relevant
+//                     for approximate mode); defaults to ClampToNegative.
+//   iterations      - number of SFPU lane iterations (default 8).
+
+// Shared flag arguments for both the tensor and tile exp ops.
+defvar TTL_ExpFlags = (ins
+    DefaultValuedAttr<BoolAttr, "false">:$approx,
+    OptionalAttr<F32Attr>:$scale,
+    DefaultValuedAttr<TTL_InputClampingAttr,
+        "::mlir::tt::ttl::InputClamping::ClampToNegative">:$input_clamping,
+    DefaultValuedAttr<I32Attr, "8">:$iterations);
+
+def TTL_ExpOp : TTL_ElementWiseUnary<"exp"> {
+  let description = [{
+    Elementwise exp on tensors. Lowered to ttl.compute with ttl.tile_exp.
+    Carries optional hardware exp flags (approx / scale / input_clamping /
+    iterations) that are forwarded to the tile op during lowering.
+  }];
+  let arguments = !con((ins AnyType:$input), TTL_ExpFlags);
+}
+
+def TTL_ExpTileOp : TTL_TileUnaryOp<"tile_exp"> {
+  let description = [{
+    Tile-level exp. Maps to ttkernel.exp_tile. Carries the same hardware exp
+    flags as ttl.exp; they are forwarded to the TTKernel exp_tile / exp_tile_init
+    ops during conversion.
+  }];
+  let arguments = !con((ins TTL_TileType:$input, Index:$dst_index),
+                       TTL_ExpFlags);
+}
 
 //===----------------------------------------------------------------------===//
 // Typecast Operations (Tensor + Tile)
