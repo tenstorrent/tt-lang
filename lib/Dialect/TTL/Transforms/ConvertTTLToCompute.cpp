@@ -294,6 +294,9 @@ static bool replacementDominatesRemainingUses(Operation *replacementOp,
   return true;
 }
 
+// Replace `sourceOp` with the absorbing compute only if that preserves SSA
+// dominance; otherwise leave it in place -- it is re-fused into each consumer's
+// compute and erased once their stores lower (see mixed_store_users.mlir).
 static void replaceOpIfSafe(PatternRewriter &rewriter, Operation *sourceOp,
                             ValueRange replacements) {
   assert(!replacements.empty() &&

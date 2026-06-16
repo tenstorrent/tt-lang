@@ -219,13 +219,27 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
-  // A broadcast can either read a DFB root directly or consume a tile value
-  // produced earlier in the same fused compute body.
+  // A broadcast can read a DFB root directly, or consume a tile value produced
+  // earlier in the same fused compute body -- but only an inter-tile broadcast.
+  // An in-tile broadcast (touching a within-tile dim) lowers to ttl.tile_bcast,
+  // which reads its input from a CB (TTLCBInputTileOpTrait); a computed
+  // (non-CB) input cannot lower and must be materialized to a DFB first. This
+  // mirrors BlockBroadcastOp::getDFBInputOperandIndices, which forces
+  // materialization of that same case.
   if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
     mlir::Value bcastInput = bcastOp.getInput();
     if (getAttachedCB(bcastInput)) {
       result.rootInputs.insert(bcastInput);
       result.opsInOrder.insert(defOp);
+      return result;
+    }
+
+    auto inputType =
+        llvm::dyn_cast<mlir::RankedTensorType>(bcastInput.getType());
+    if (!inputType || blockBroadcastRequiresTileBcast(bcastOp.getDims(),
+                                                      inputType.getRank())) {
+      result.failureReason = TraceFailureReason::NotCBAttached;
+      result.failedValue = bcastInput;
       return result;
     }
 

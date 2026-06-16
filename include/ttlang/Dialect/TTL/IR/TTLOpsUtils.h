@@ -235,8 +235,9 @@ normalizeDimsToSet(mlir::ArrayRef<int64_t> dims, int64_t rank) {
   return result;
 }
 
-/// True when a block broadcast touches one of the two dimensions represented
-/// inside a tile and therefore lowers through TTKernel unary_bcast.
+/// True when a block broadcast touches the last or second-to-last dimension,
+/// which lowers through TTKernel unary_bcast (an in-tile broadcast) rather than
+/// pure inter-tile replication.
 inline bool blockBroadcastRequiresTileBcast(mlir::ArrayRef<int64_t> dims,
                                             int64_t rank) {
   llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);

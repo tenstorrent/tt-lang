@@ -414,6 +414,7 @@ def _make_block_subview(block, indices):
         raise ValueError(f"Expected RankedTensorType block, got {view_type}")
 
     offsets, sizes = _get_static_subview_offsets_and_sizes(indices, view_type)
+    # Subview inherits the parent block's layout encoding for the sub-shape.
     result_type = RankedTensorType.get(
         sizes, view_type.element_type, view_type.encoding
     )
