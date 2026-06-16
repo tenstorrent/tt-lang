@@ -13,6 +13,7 @@ from ttl.dialects import tensor as tensor_dialect
 from ttl.ir import (
     Context,
     F32Type,
+    BF16Type,
     FloatAttr,
     IndexType,
     IntegerAttr,
@@ -1076,6 +1077,8 @@ def raw_element_write(block, *args):
     is the value to write; all preceding arguments are coordinates.
 
     For tiled blocks, lowering decomposes them into tile + intra-tile offsets.
+    If the value is f32 and the block element type is bf16, the value is
+    implicitly truncated (precision loss is expected).
 
     Only supported in data movement (noc) threads.
 
@@ -1102,6 +1105,12 @@ def raw_element_write(block, *args):
             index_vals.append(c)
         else:
             index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
+
+    block_scalar_type = _get_block_scalar_type(block)
+    if hasattr(val, "type") and val.type != block_scalar_type:
+        if val.type == F32Type.get(ctx) and block_scalar_type == BF16Type.get(ctx):
+            val = arith.TruncFOp(block_scalar_type, val)
+
     ttl.raw_element_write(block, index_vals, val)
 
 
