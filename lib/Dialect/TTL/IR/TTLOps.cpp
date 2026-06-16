@@ -257,34 +257,76 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeRecvPostOp::verify() {
-  if (!findCBReserveForPipeReceive(getDst())) {
-    return emitOpError() << "requires a cb_reserve destination";
+mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
+  auto pipeType = mlir::cast<PipeType>(getPipe().getType());
+  int64_t expectedReceivers = static_cast<int64_t>(getExpectedReceivers());
+  if (expectedReceivers <= 0) {
+    return emitOpError() << "requires positive expectedReceivers";
+  }
+  if (expectedReceivers != pipeType.getNumDests()) {
+    return emitOpError()
+           << "expectedReceivers must match the pipe receiver count";
   }
 
-  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
-  if (!handleType) {
-    return emitOpError() << "requires a transfer handle result";
-  }
-  if (handleType.getKind()) {
-    return emitOpError() << "requires an untyped transfer handle result";
+  switch (getKind().getValue()) {
+  case PipeTransferKind::PointToPoint:
+    if (!pipeType.hasSingleReceiver()) {
+      return emitOpError() << "point_to_point transfer requires one receiver";
+    }
+    break;
+  case PipeTransferKind::Collective:
+    break;
   }
 
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeRecvWaitOp::verify() {
-  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
-  if (!handleType) {
-    return emitOpError() << "requires a transfer handle operand";
-  }
-  if (handleType.getKind()) {
-    return emitOpError() << "requires an untyped transfer handle operand";
-  }
+mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
   if (!findCBReserveForPipeReceive(getDst())) {
     return emitOpError() << "requires a cb_reserve destination";
   }
+  auto createOp = findPipeTransferCreateForTransfer(getTransfer());
+  if (!createOp) {
+    return emitOpError()
+           << "requires transfer derived from ttl.pipe_transfer.create";
+  }
+  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
+  auto tokenType = mlir::cast<PipeTokenType>(getToken().getType());
+  if (tokenType.getPipeNetId() != pipeType.getPipeNetId()) {
+    return emitOpError() << "token pipeNetId must match transfer pipeNetId";
+  }
 
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
+  if (!findPipeTransferCreateForTransfer(getTransfer())) {
+    return emitOpError()
+           << "requires transfer derived from ttl.pipe_transfer.create";
+  }
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType || handleType.getKind() != TransferKind::write) {
+    return emitOpError() << "requires a write transfer handle result";
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeTransferWaitOp::verify() {
+  mlir::tt::ttl::PipeTransferPostOp postOp =
+      mlir::tt::ttl::findPipeTransferPostForToken(getToken());
+  if (!postOp) {
+    return emitOpError()
+           << "requires token derived from ttl.pipe_transfer.post";
+  }
+  auto waitTokenType =
+      mlir::cast<mlir::tt::ttl::PipeTokenType>(getToken().getType());
+  auto postTokenType =
+      mlir::cast<mlir::tt::ttl::PipeTokenType>(postOp.getToken().getType());
+  if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
+    return emitOpError()
+           << "token pipeNetId must match pipe transfer post pipeNetId";
+  }
   return success();
 }
 
@@ -1512,15 +1554,20 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
 
 /// Shared verification for raw_element_read and raw_element_write. Checks:
 ///   1. Enclosing function is a data movement (noc) kernel thread.
-///   2. Block must trace to a circular buffer (cb_wait or cb_reserve).
+///   2. Block must trace to the expected CB acquire op (CBWaitOp for reads,
+///      CBReserveOp for writes).
 ///   3. Block must be at least rank 1 (rank-0 not supported).
 ///   4. Coordinate count matches block tensor rank.
 ///   5. Scalar type matches block's underlying element dtype.
-static mlir::LogicalResult verifyRawElementOp(mlir::Operation *op,
-                                              mlir::Value block,
-                                              mlir::RankedTensorType blockTy,
-                                              mlir::ValueRange coords,
-                                              mlir::Type scalarTy) {
+///
+/// `ExpectedAcquireOp` is the CB acquire op type that the block must trace
+/// to (CBWaitOp for reads, CBReserveOp for writes). `acquireName` is the
+/// human-readable op name used in the diagnostic (e.g. "ttl.cb_wait").
+template <typename ExpectedAcquireOp>
+static mlir::LogicalResult
+verifyRawElementOp(mlir::Operation *op, mlir::Value block,
+                   mlir::RankedTensorType blockTy, mlir::ValueRange coords,
+                   mlir::Type scalarTy, llvm::StringRef acquireName) {
   // 1. Must be inside a noc kernel thread function.
   auto func = mlir::tt::ttl::getEnclosingKernelThread(op);
   if (!func) {
@@ -1536,10 +1583,15 @@ static mlir::LogicalResult verifyRawElementOp(mlir::Operation *op,
            << "is only allowed in data movement (noc) threads";
   }
 
-  // 2. Block must originate directly from ttl.cb_wait or ttl.cb_reserve.
-  if (!mlir::tt::ttl::isCBAcquireView(block)) {
-    return op->emitOpError() << "block must be a tensor view acquired from "
-                                "ttl.cb_wait or ttl.cb_reserve";
+  // 2. Block must trace to the expected CB acquire op.
+  mlir::Operation *acquireOp = mlir::tt::ttl::findCBAcquireOp(block);
+  if (!acquireOp) {
+    return op->emitOpError()
+           << "block must be a tensor view acquired from " << acquireName;
+  }
+  if (!mlir::isa<ExpectedAcquireOp>(acquireOp)) {
+    return op->emitOpError() << "block must be acquired from " << acquireName
+                             << ", but traces to " << acquireOp->getName();
   }
 
   // 3. Block must have at least one dimension.
@@ -1577,14 +1629,16 @@ static mlir::LogicalResult verifyRawElementOp(mlir::Operation *op,
 
 mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
-  return verifyRawElementOp(getOperation(), getBlock(), blockTy, getCoords(),
-                            getResult().getType());
+  return verifyRawElementOp<mlir::tt::ttl::CBWaitOp>(
+      getOperation(), getBlock(), blockTy, getCoords(), getResult().getType(),
+      "ttl.cb_wait");
 }
 
 mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
-  return verifyRawElementOp(getOperation(), getBlock(), blockTy, getCoords(),
-                            getValue().getType());
+  return verifyRawElementOp<mlir::tt::ttl::CBReserveOp>(
+      getOperation(), getBlock(), blockTy, getCoords(), getValue().getType(),
+      "ttl.cb_reserve");
 }
 
 //===----------------------------------------------------------------------===//
