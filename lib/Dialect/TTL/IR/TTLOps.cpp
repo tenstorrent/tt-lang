@@ -1153,8 +1153,9 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
   size_t yieldedValueCount = yield.getValues().size();
   if (bodyArgCount != 0 || yieldedValueCount != 0) {
     if (bodyArgCount != outputCount) {
-      return emitOpError("stateful body requires one block argument per output, "
-                         "got ")
+      return emitOpError(
+                 "stateful body requires one block argument per output, "
+                 "got ")
              << bodyArgCount << " block arguments for " << outputCount
              << " outputs";
     }
@@ -1168,7 +1169,8 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
       if (mode != AccumulationInitialMode::Explicit) {
         return emitOpError("stateful body requires explicit initial mode for "
                            "every output, but output ")
-               << outputIndex << " uses " << stringifyAccumulationInitialMode(mode);
+               << outputIndex << " uses "
+               << stringifyAccumulationInitialMode(mode);
       }
     }
 

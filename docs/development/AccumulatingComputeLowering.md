@@ -33,20 +33,23 @@ The current compiler lowering recognizes these accumulation forms:
   prior-pack value rather than overwriting it. `precededByNonAccumulatingPack`
   detects the preceding non-accumulating pack.
 
-The accumulation-scope IR records semantic accumulation before storage
-selection. Later lowering can select DST, L1 packer accumulation, or
-explicit DFB state without reconstructing accumulation semantics from
-neighboring stores or DFB operations.
+The accumulation-scope IR declares which destination tensor views participate
+in an accumulation region, plus the combiner and initial-state policy for each
+output. Later lowering can select DST, L1 packer accumulation, or explicit DFB
+state without reconstructing that policy from neighboring stores or DFB
+operations.
 
-The rest of this document details each piece: semantic accumulation
-scopes, `DstSectionOp` as the IR primitive that keeps DST live, the
-choice between DST and L1 accumulation, the emitted loop structure,
-per-op init insertion, and the L1-acc guard placement.
+The rest of this document details each piece: accumulation scopes,
+`DstSectionOp` as the IR primitive that keeps DST live, the choice between DST
+and L1 accumulation, the emitted loop structure, per-op init insertion, and the
+L1-acc guard placement.
 
-## Semantic Accumulation IR
+## Accumulation Scope IR
 
-`ttl.accumulation_scope` records accumulation semantics before storage
-selection. It has:
+`ttl.accumulation_scope` declares the accumulation contract for one or more
+destination tensor views. It records which outputs share a region, how each
+output is initialized, and which combiner updates each output. The op does not
+select the storage mechanism used for partial values. It has:
 
 - `outputs`: destination tensor views governed by the accumulation policy;
 - `explicit_inits`: initial tensors for outputs whose mode is `explicit`;
@@ -68,6 +71,9 @@ The verifier is structural:
 - initial-mode count equals output count;
 - explicit modes have matching explicit init operands;
 - explicit init types match their corresponding outputs;
+- stateful bodies have one block argument and one yielded value per output;
+- stateful body arguments and yielded values match their output types;
+- stateful bodies use explicit initial mode for every output;
 - nested `ttl.accumulation_scope` is rejected until nested accumulation
   semantics are defined.
 
@@ -100,8 +106,26 @@ ttl.accumulation_scope
 }
 ```
 
-`AccumulationScopeOpInterface` gives consumers a common contract for ops
-that carry accumulation semantics. The initial implementation is
+Stateful accumulation scopes expose accumulator state as block arguments and
+return the updated state through `ttl.yield`. This form is used when multiple
+outputs must be analyzed or lowered as one group. Cross-output dependence is
+represented by ordinary SSA use-def edges between yielded values.
+
+```mlir
+ttl.accumulation_scope
+    outs(%out0, %out1 : tensor<...>, tensor<...>)
+    inits(%init0, %init1 : tensor<...>, tensor<...>)
+    {combiners = [0 : i32, 0 : i32],
+     initial_modes = [2 : i32, 2 : i32]} {
+^bb0(%acc0: tensor<...>, %acc1: tensor<...>):
+  %next0 = ttl.add %acc0, %acc1 : tensor<...>, tensor<...> -> tensor<...>
+  %next1 = ttl.add %acc1, %next0 : tensor<...>, tensor<...> -> tensor<...>
+  ttl.yield %next0, %next1 : tensor<...>, tensor<...>
+}
+```
+
+`AccumulationScopeOpInterface` gives consumers a common contract for ops that
+declare accumulation outputs and policies. The initial implementation is
 `ttl.accumulation_scope`; later PRs extend the same contract to structured
 reductions where the reduction body already represents accumulation.
 
