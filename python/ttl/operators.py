@@ -874,6 +874,65 @@ def typecast(input: TensorBlock, dtype) -> TensorBlock:
     return ttl.typecast(result_type, input)
 
 
+@syntax("exp")
+def exp(
+    input: TensorBlock,
+    *,
+    approx: bool = False,
+    scale: Optional[float] = None,
+    skip_clamp_check: bool = False,
+    iterations: int = 8,
+) -> TensorBlock:
+    """Element-wise exponential.
+
+    With default arguments this matches the plain hardware ``exp_tile`` (no
+    approximation, no scaling, clamped). Keyword flags expose the SFPU exp
+    template parameters:
+
+    Args:
+        input: Input tensor (CB-attached). Each element is a tile.
+        approx: Enable the fast approximate exp.
+        scale: Optional scale factor ``s``; when set the op computes
+            ``exp(s * x)``. ``None`` (default) disables scaling.
+        skip_clamp_check: When ``True``, disables clamping of very negative
+            inputs (``InputClamping::None``): faster, but inputs below ~-88.5
+            produce incorrect (guaranteed-negative) outputs. Only meaningful
+            with ``approx=True``. Defaults to ``False`` (``ClampToNegative``).
+        iterations: Number of SFPU lane iterations (default 8).
+
+    Returns:
+        Result tensor with the same shape and dtype as ``input``.
+    """
+    from ttl.ir import Attribute, BoolAttr, IntegerType
+
+    ctx = input.type.context
+    i32 = IntegerType.get_signless(32, ctx)
+
+    # Pass None for any flag left at its default so the op keeps its plain
+    # spelling (the ODS default applies). input_clamping is an EnumAttr; build
+    # it from its textual form, which is robust regardless of the generated
+    # Python attribute bindings.
+    approx_attr = BoolAttr.get(True) if approx else None
+    iterations_attr = (
+        IntegerAttr.get(i32, int(iterations)) if int(iterations) != 8 else None
+    )
+    clamping_attr = (
+        Attribute.parse("#ttl.input_clamping<none>", ctx) if skip_clamp_check else None
+    )
+    scale_attr = (
+        None if scale is None else FloatAttr.get(F32Type.get(ctx), float(scale))
+    )
+
+    return ttl.exp(
+        input.type,
+        input,
+        approx=approx_attr,
+        scale=scale_attr,
+        input_clamping=clamping_attr,
+        iterations=iterations_attr,
+    )
+
+
 def _get_block_scalar_type(block):
     """Extract the scalar MLIR type from a block's tensor element type.
 
@@ -989,6 +1048,7 @@ __all__ = [
     "signpost",
     "fill",
     "typecast",
+    "exp",
     "raw_element_read",
     "raw_element_write",
     *_generated_all,

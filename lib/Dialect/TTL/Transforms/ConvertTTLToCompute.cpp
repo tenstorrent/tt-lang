@@ -278,6 +278,23 @@ static Value emitTileOpFor(OpBuilder &builder, Location loc,
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  // ExpOp: unary, but forwards hardware exp flags to the tile op. Handled
+  // explicitly because it is excluded from TTLElementwiseOps.def. Flags are
+  // read via the value getters (which resolve defaults) so that exp ops
+  // written without flags forward well-formed attributes; the optional scale
+  // is forwarded as-is (null when unset).
+  if (auto expOp = dyn_cast<ExpOp>(sourceOp)) {
+    assert(tileOperands.size() == 1 && "exp fusion requires one tile operand");
+    Value dstIndex = createPlaceholderDstIndex(builder, loc);
+    auto tileOp = ExpTileOp::create(
+        builder, loc, tileType, tileOperands[0], dstIndex,
+        builder.getBoolAttr(expOp.getApprox()), expOp.getScaleAttr(),
+        InputClampingAttr::get(builder.getContext(), expOp.getInputClamping()),
+        builder.getI32IntegerAttr(expOp.getIterations()));
+    addPlaceholderDstIndexAttr(tileOp.getOperation());
+    return tileOp.getResult();
+  }
+
   if (auto mulUnaryConstOp = dyn_cast<MulUnaryConstOp>(sourceOp)) {
     assert(tileOperands.size() == 1 &&
            "mul_unary_const fusion requires one tile operand");
@@ -1066,6 +1083,36 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
       });
 }
 
+/// Build a single-op unary ttl.compute that forwards op-specific attributes
+/// (e.g. exp's hardware flags) by delegating tile-op creation to
+/// emitTileOpFor, which preserves those attributes. Behaves identically to
+/// buildUnaryCompute for ops without extra attributes.
+static LogicalResult buildUnaryComputeForwardingAttrs(Operation *op,
+                                                      PatternRewriter &rewriter,
+                                                      Value input) {
+  auto type = getTensorType(op->getResult(0));
+  if (!type) {
+    return failure();
+  }
+
+  if (!getAttachedCB(input)) {
+    return tryFusion(op, rewriter);
+  }
+
+  MLIRContext *ctx = rewriter.getContext();
+  AffineMap identityMap =
+      AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+  SmallVector<Attribute> inputMaps(1, AffineMapAttr::get(identityMap));
+  SmallVector<Attribute> iterTypes(type.getRank(),
+                                   rewriter.getStringAttr("parallel"));
+
+  return buildComputeFromInputs(
+      op, rewriter, ValueRange{input}, type, inputMaps, identityMap, iterTypes,
+      [&](OpBuilder &b, Location loc, Type /*tileType*/, Block *body) {
+        return emitTileOpFor(b, loc, op, {body->getArgument(0)});
+      });
+}
+
 namespace {
 //===----------------------------------------------------------------------===//
 // Templated Elementwise Lowering Patterns
@@ -1094,6 +1141,19 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
                                 PatternRewriter &rewriter) const override {
     return buildUnaryCompute<TileOp>(op.getOperation(), rewriter,
                                      op.getInput());
+  }
+};
+
+/// Pattern for ttl.exp: TTL tensor op -> ttl.compute with ttl.tile_exp,
+/// forwarding the exp hardware flags. Dedicated (not the generic unary
+/// template) because exp carries extra attributes.
+struct LowerExpToCompute : OpRewritePattern<ExpOp> {
+  using OpRewritePattern<ExpOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ExpOp op,
+                                PatternRewriter &rewriter) const override {
+    return buildUnaryComputeForwardingAttrs(op.getOperation(), rewriter,
+                                            op.getInput());
   }
 };
 
@@ -1827,6 +1887,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  patterns.add<LowerExpToCompute>(ctx);
   patterns.add<LowerBlockBroadcastToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);

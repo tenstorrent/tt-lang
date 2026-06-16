@@ -46,6 +46,24 @@ def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduction function type",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+//===----------------------------------------------------------------------===//
+// Exp input clamping
+//===----------------------------------------------------------------------===//
+
+// Controls whether the (approximate) exp clamps very negative inputs before
+// the SFPU evaluation. Underlying values match tt-metal's ckernel::InputClamping
+// and the TTKernel InputClamping enum so the lowering can forward by value:
+//   None (0): no clamp -- faster, but inputs below ~-88.5 produce incorrect
+//             outputs (guaranteed negative; consider packer ReLU).
+//   ClampToNegative (1): clamp very negative inputs -- safer, slightly slower.
+def TTL_InputClamping_None            : I32EnumAttrCase<"None",            0, "none">;
+def TTL_InputClamping_ClampToNegative : I32EnumAttrCase<"ClampToNegative", 1, "clamp_to_negative">;
+
+def TTL_InputClamping : I32EnumAttr<"InputClamping", "TTL exp input clamping mode",
+    [TTL_InputClamping_None, TTL_InputClamping_ClampToNegative]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 // Buffer type for tensor memory placement.
 // Values match TTNN BufferType enum for compatibility.
 def TTL_BufferType_DRAM       : I32EnumAttrCase<"DRAM",       0, "dram">;

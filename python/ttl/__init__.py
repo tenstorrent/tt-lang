@@ -44,7 +44,7 @@ else:
     from ttl._generated_elementwise import *  # noqa: F401,F403
     from ttl._generated_elementwise import __all__ as _elementwise_all
 
-    from ttl.operators import signpost
+    from ttl.operators import signpost, exp
     from ttl.compiler_options import CompilerOptions
     from ttl.ttl_api import (
         CircularBuffer,  # Deprecated, superseded by DataflowBuffer
@@ -75,5 +75,6 @@ else:
         "grid_size",
         "math",
         "signpost",
+        "exp",
         *_elementwise_all,
     ]
