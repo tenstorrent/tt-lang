@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
+#include "PipeCapacityAnalysis.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
@@ -315,8 +316,22 @@ using CBPushLowering =
     CBOpLowering<CBPushOp, ttk::CBPushBackOp, /*HasResult=*/false>;
 using CBWaitLowering =
     CBOpLowering<CBWaitOp, ttk::CBWaitFrontOp, /*HasResult=*/true>;
-using CBPopLowering =
-    CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
+
+struct CBPopLowering : OpConversionPattern<CBPopOp> {
+  CBPopLowering(const TypeConverter &typeConverter, MLIRContext *context,
+                const PipeCapacityPlan &pipeCapacityPlan)
+      : OpConversionPattern(typeConverter, context),
+        pipeCapacityPlan(pipeCapacityPlan) {}
+
+  LogicalResult
+  matchAndRewrite(CBPopOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerCBPop(op, adaptor.getCb(), &pipeCapacityPlan, rewriter);
+  }
+
+private:
+  const PipeCapacityPlan &pipeCapacityPlan;
+};
 
 /// Trace back from a view value to the underlying TTKernel CB.
 /// Traverses ViewLikeOpInterface ops (CBReserveOp, CBWaitOp) and casts.
@@ -958,9 +973,8 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
           ttk::NocAsyncReadTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
                                           accessor, cbAddr, Value{});
         } else {
-          ttk::NocAsyncWriteTileOp::create(loopBuilder, bodyLoc,
-                                           tensorTileIdx32, accessor, cbAddr,
-                                           Value{});
+          ttk::NocAsyncWriteTileOp::create(
+              loopBuilder, bodyLoc, tensorTileIdx32, accessor, cbAddr, Value{});
         }
       });
 
@@ -1057,9 +1071,11 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   PipeTransferPostLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
-                           const PipeResourcePlan &pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan,
+                           const PipeCapacityPlan &pipeCapacityPlan)
       : OpConversionPattern(typeConverter, context),
-        pipeResourcePlan(pipeResourcePlan) {}
+        pipeResourcePlan(pipeResourcePlan), pipeCapacityPlan(pipeCapacityPlan) {
+  }
 
   LogicalResult
   matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
@@ -1067,19 +1083,23 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
     // The receive destination is inspected for its TTL DFB provenance
     // (`ttl.cb_reserve`, `ttl.attach_cb`, and slice offset), so this lowering
     // must use the original SSA value rather than the converted adaptor value.
-    return lowerPipeTransferPost(op, op.getDst(), pipeResourcePlan, rewriter);
+    return lowerPipeTransferPost(op, op.getDst(), pipeResourcePlan,
+                                 &pipeCapacityPlan, rewriter);
   }
 
 private:
   const PipeResourcePlan &pipeResourcePlan;
+  const PipeCapacityPlan &pipeCapacityPlan;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
   PipeTransferSendLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
-                           const PipeResourcePlan &pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan,
+                           const PipeCapacityPlan &pipeCapacityPlan)
       : OpConversionPattern(typeConverter, context),
-        pipeResourcePlan(pipeResourcePlan) {}
+        pipeResourcePlan(pipeResourcePlan), pipeCapacityPlan(pipeCapacityPlan) {
+  }
 
   LogicalResult
   matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
@@ -1096,11 +1116,12 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
                  domInfo.dominates(user, op);
         });
     return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB,
-                                 pipeResourcePlan, rewriter);
+                                 pipeResourcePlan, &pipeCapacityPlan, rewriter);
   }
 
 private:
   const PipeResourcePlan &pipeResourcePlan;
+  const PipeCapacityPlan &pipeCapacityPlan;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
@@ -1556,9 +1577,15 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr, pipeResourcePlan))) {
     return failure();
   }
+  PipeCapacityPlan pipeCapacityPlan;
+  if (failed(buildPipeCapacityPlan(mod, *pipeGraphOrErr, pipeResourcePlan,
+                                   pipeCapacityPlan))) {
+    return failure();
+  }
   PipeResourceRequirements pipeResourceRequirements =
-      getPipeResourceRequirements(pipeResourcePlan);
+      getPipeResourceRequirements(pipeResourcePlan, &pipeCapacityPlan);
   if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan,
+                                                &pipeCapacityPlan,
                                                 pipeResourceRequirements))) {
     return failure();
   }
@@ -1581,18 +1608,20 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // are the current host/runtime ABI for pipe resource binding. Keep the
   // allocation decision in this compiler plan so future typed device APIs only
   // change runtime binding code.
+  initializePipeCapacitySemaphores(pipeCapacityPlan);
 
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
   patterns.add<PipeTransferPostLowering, PipeTransferSendLowering>(
-      typeConverter, &ctx, pipeResourcePlan);
+      typeConverter, &ctx, pipeResourcePlan, pipeCapacityPlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
                                          pipeResourcePlan);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
-               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
+               CBReserveLowering, CBPushLowering, CBWaitLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
                RawElementReadLowering, RawElementWriteLowering>(typeConverter,
                                                                 &ctx);
+  patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

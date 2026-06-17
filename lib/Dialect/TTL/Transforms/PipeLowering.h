@@ -34,8 +34,11 @@ struct PipeSramAddressTableInfo {
 struct PipeComputedAddressInfo {
   int64_t receiverDFBIndex = 0;
   int64_t baseCompileTimeArgIndex = 0;
-  int64_t slotSizeBytes = 0;
+  int64_t blockStrideBytes = 0;
   int64_t blockCount = 0;
+  int64_t staticByteOffset = 0;
+  int64_t receiverSlotIndex = 0;
+  int64_t receiverSlotPeriod = 1;
   Value transferCounter;
 };
 
@@ -45,6 +48,7 @@ enum class PipeAddressMode {
 };
 
 struct PipeResourcePlan;
+class PipeCapacityPlan;
 
 /// Resolved lowering-address form of a ready counter. A GlobalSemaphore counter
 /// resolves to a runtime-arg index because its address is bound at runtime.
@@ -95,6 +99,10 @@ public:
   /// Report this allocation to a pass-specific observer.
   void observe(PipeReadyCounterObserver &observer) const;
 
+  bool isLocalSemaphore() const;
+
+  int64_t getLocalSemaphoreIndex() const;
+
 private:
   PipeReadyCounterInfo(PipeReadyCounterStorage storage, int64_t index)
       : storage(storage), index(index) {}
@@ -108,9 +116,7 @@ struct PipeCompletionWaitInfo {
   int64_t receiverCompletionSemIdx;
 };
 
-/// Address storage used by one transfer-allocation unit. Each receiver
-/// publishes its DFB write address into the source core's SRAM table before
-/// incrementing the sender-ready counter.
+/// Address storage used by one transfer-allocation unit.
 struct PipeAddressStorageInfo {
   static PipeAddressStorageInfo
   receiverPublishedAddressTable(PipeSramAddressTableInfo sramAddressTable) {
@@ -178,12 +184,14 @@ struct PipeResourceRequirements {
 
 /// Return all pipe resource totals derived from the selected allocation plan.
 PipeResourceRequirements
-getPipeResourceRequirements(const PipeResourcePlan &info);
+getPipeResourceRequirements(const PipeResourcePlan &info,
+                            const PipeCapacityPlan *pipeCapacityPlan = nullptr);
 
 /// Diagnose layouts that exceed the hardware semaphore id limit before
 /// emitting ttkernel.get_semaphore ops with invalid ids.
 LogicalResult
 verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
+                                   const PipeCapacityPlan *pipeCapacityPlan,
                                    const PipeResourceRequirements &reqs);
 
 /// Walk `mod` once and group every pipe transfer by its net id.
@@ -197,21 +205,30 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info);
 
+/// Emit sender-side capacity semaphore initial values at kernel entry.
+void initializePipeCapacitySemaphores(const PipeCapacityPlan &pipeCapacityPlan);
+
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
-/// Lower the sender-side pipe transfer. Uses receiver-published destination
-/// addresses and signals receiver completion.
+/// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
                                     const PipeResourcePlan &pipeResourcePlan,
+                                    const PipeCapacityPlan *pipeCapacityPlan,
                                     ConversionPatternRewriter &rewriter);
 
-/// Lower the receiver-side pipe destination address publication.
+/// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     const PipeResourcePlan &pipeResourcePlan,
+                                    const PipeCapacityPlan *pipeCapacityPlan,
                                     ConversionPatternRewriter &rewriter);
+
+/// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
+LogicalResult lowerCBPop(CBPopOp op, Value cb,
+                         const PipeCapacityPlan *pipeCapacityPlan,
+                         ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
 LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,

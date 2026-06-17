@@ -51,7 +51,7 @@ func.func @sender_uses_published_unicast_address() attributes { "ttl.kernel_thre
 // CHECK: %[[DST_Y_END:.+]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[DST_WP:.+]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[DST_WP]]
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_WP]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_WP]], %[[NOC]])
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_WP]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_WP]], noc %[[NOC]])
 // CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc_multicast({{.*}}, {{.*}}, {{.*}}, %[[NOC]])
 // CHECK: ttkernel.noc_async_atomic_barrier(%[[NOC]])
