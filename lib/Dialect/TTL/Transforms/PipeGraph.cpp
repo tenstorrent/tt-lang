@@ -4,16 +4,137 @@
 
 #include "PipeGraph.h"
 
+#include "mlir/Analysis/DataFlow/Utils.h"
+#include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 
 namespace mlir::tt::ttl {
+
+static PipeKey getPipeKey(PipeType pipeType) {
+  return {pipeType.getSrcX(),      pipeType.getSrcY(),
+          pipeType.getDstStartX(), pipeType.getDstStartY(),
+          pipeType.getDstEndX(),   pipeType.getDstEndY(),
+          pipeType.getPipeNetId()};
+}
+
+namespace {
+
+struct PipeGraphAnalysisState : LaunchNodeDomainState {
+  llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
+};
+
+static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
+                                              PipeGraphAnalysisState &state) {
+  state.initialize(mod);
+  if (!state.hasLaunchGrid) {
+    return success();
+  }
+
+  DataFlowSolver solver;
+  dataflow::loadBaselineAnalyses(solver);
+  LaunchNodeDomainAnalysisOptions options;
+  options.narrowPipeNetScopes = true;
+  options.operationCallback = [&](Operation *op,
+                                  const LaunchNodeDomain &domain,
+                                  Operation * /*unanalyzableOp*/) {
+    state.operationLaunchDomains[op] = domain;
+  };
+  solver.load<LaunchNodeDomainAnalysis>(state, options);
+  return solver.initializeAndRun(mod);
+}
+
+static LaunchNodeDomain
+getOperationLaunchDomain(Operation *op, PipeGraphAnalysisState &state) {
+  if (!state.hasLaunchGrid) {
+    return LaunchNodeDomain::unknown();
+  }
+  auto it = state.operationLaunchDomains.find(op);
+  if (it == state.operationLaunchDomains.end()) {
+    return LaunchNodeDomain::unknown();
+  }
+  return it->second;
+}
+
+static bool domainContainsReceiver(const LaunchNodeDomain &domain,
+                                   PipeReceiverCoord receiver) {
+  if (!domain.known) {
+    return true;
+  }
+  return domain.nodes.find(LaunchNodeCoord{receiver.x, receiver.y}) !=
+         domain.nodes.end();
+}
+
+static std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp) {
+  auto cbType = mlir::dyn_cast<CircularBufferType>(popOp.getCb().getType());
+  if (!cbType) {
+    return std::nullopt;
+  }
+  int64_t elementsPerBlock = cbType.getElementsPerBlock();
+  int64_t releasedTiles = elementsPerBlock;
+  if (auto attr = popOp.getNumTilesAttr()) {
+    releasedTiles = attr.getInt();
+  }
+  if (releasedTiles <= 0 || releasedTiles % elementsPerBlock != 0) {
+    return std::nullopt;
+  }
+  return releasedTiles / elementsPerBlock;
+}
+
+template <typename Fn>
+static WalkResult walkNestedOpsInOrder(Operation *op, Fn &&callback) {
+  for (Region &region : op->getRegions()) {
+    for (Block &block : region) {
+      for (Operation &nestedOp : block) {
+        if (callback(&nestedOp).wasInterrupted()) {
+          return WalkResult::interrupt();
+        }
+        if (walkNestedOpsInOrder(&nestedOp, callback).wasInterrupted()) {
+          return WalkResult::interrupt();
+        }
+      }
+    }
+  }
+  return WalkResult::advance();
+}
+
+struct LiveReceiverSlot {
+  int64_t slot = 0;
+  int64_t span = 0;
+};
+
+struct ReceiverSlotState {
+  int64_t nextSlot = 0;
+  SmallVector<LiveReceiverSlot> liveSlots;
+};
+
+static bool slotRangesOverlap(int64_t lhsSlot, int64_t lhsSpan,
+                              int64_t rhsSlot, int64_t rhsSpan) {
+  return lhsSlot < rhsSlot + rhsSpan && rhsSlot < lhsSlot + lhsSpan;
+}
+
+static void releaseReceiverSlots(ReceiverSlotState &state,
+                                 int64_t releasedBlocks) {
+  while (releasedBlocks > 0 && !state.liveSlots.empty()) {
+    LiveReceiverSlot &slot = state.liveSlots.front();
+    int64_t releasedFromSlot = std::min(releasedBlocks, slot.span);
+    slot.slot += releasedFromSlot;
+    slot.span -= releasedFromSlot;
+    releasedBlocks -= releasedFromSlot;
+    if (slot.span == 0) {
+      state.liveSlots.erase(state.liveSlots.begin());
+    }
+  }
+}
+
+} // namespace
 
 LogicalResult PipeGraph::addReceiverDFB(
     int64_t srcX, int64_t srcY, int64_t dstStartX, int64_t dstStartY,
@@ -56,90 +177,156 @@ LogicalResult PipeGraph::addReceiverDFB(
   }
   receiverDFBs.insert({key,
                        {dfbIndex, dfbType, hasStaticTileOffset,
-                        staticTileOffset, 0, receiverSlotSpanBlocks, blockCount,
-                        loc, receiverReserveOp, transferContract,
+                        staticTileOffset, std::nullopt,
+                        receiverSlotSpanBlocks, blockCount, loc,
+                        receiverReserveOp, transferContract,
                         SmallVector<Operation *>(transferCreateOps.begin(),
                                                  transferCreateOps.end())}});
   return success();
 }
 
-void PipeGraph::assignReceiverSlotIndices() {
-  // (receiver, DFB index) -> next reserved slot at that receiver.
-  struct ReceiverKey {
-    PipeReceiverCoord receiver;
-    int64_t dfbIndex;
-    bool operator==(const ReceiverKey &other) const {
-      return receiver == other.receiver && dfbIndex == other.dfbIndex;
-    }
-  };
-  struct ReceiverKeyInfo {
-    static unsigned getHashValue(const ReceiverKey &key) {
-      return llvm::hash_combine(key.receiver.x, key.receiver.y, key.dfbIndex);
-    }
-    static bool isEqual(const ReceiverKey &lhs, const ReceiverKey &rhs) {
-      return lhs == rhs;
-    }
-  };
-  struct ReceiverReserveKey {
-    ReceiverKey receiverKey;
-    Operation *reserveOp;
-    bool operator==(const ReceiverReserveKey &other) const {
-      return receiverKey == other.receiverKey && reserveOp == other.reserveOp;
-    }
-  };
-  struct ReceiverReserveKeyInfo {
-    static unsigned getHashValue(const ReceiverReserveKey &key) {
-      return llvm::hash_combine(ReceiverKeyInfo::getHashValue(key.receiverKey),
-                                key.reserveOp);
-    }
-    static bool isEqual(const ReceiverReserveKey &lhs,
-                        const ReceiverReserveKey &rhs) {
-      return lhs == rhs;
-    }
-  };
-  llvm::DenseMap<ReceiverKey, int64_t, ReceiverKeyInfo> nextSlotAtReceiver;
-  llvm::DenseMap<ReceiverReserveKey, int64_t, ReceiverReserveKeyInfo>
-      slotByReserve;
-
-  for (auto &entry : receiverDFBs) {
-    const PipeKey &pipeKey = entry.first;
-    ReceiverDFBInfo &receiverInfo = entry.second;
-    const int64_t dfbIndex = receiverInfo.dfbIndex;
-    std::optional<int64_t> slotIndex;
-    bool hasNonUniformSlotIndex = false;
-    pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-      ReceiverKey receiverKey{receiver, dfbIndex};
-      ReceiverReserveKey reserveKey{receiverKey,
-                                    receiverInfo.receiverReserveOp};
-      auto reserveIt = slotByReserve.find(reserveKey);
-      int64_t receiverSlot = 0;
-      if (reserveIt == slotByReserve.end()) {
-        receiverSlot = nextSlotAtReceiver.lookup(receiverKey);
-        slotByReserve.insert({reserveKey, receiverSlot});
-        nextSlotAtReceiver[receiverKey] =
-            receiverSlot + receiverInfo.receiverSlotSpanBlocks;
-      } else {
-        receiverSlot = reserveIt->second;
-      }
-      if (!slotIndex.has_value()) {
-        slotIndex = receiverSlot;
-      } else if (*slotIndex != receiverSlot) {
-        hasNonUniformSlotIndex = true;
-      }
-    });
-
-    if (hasNonUniformSlotIndex || !slotIndex.has_value()) {
-      receiverInfo.receiverSlotIndex = std::nullopt;
-      continue;
-    }
-
-    receiverInfo.receiverSlotIndex = *slotIndex;
-    pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-      int64_t &nextSlot = nextSlotAtReceiver[ReceiverKey{receiver, dfbIndex}];
-      nextSlot =
-          std::max(nextSlot, *slotIndex + receiverInfo.receiverSlotSpanBlocks);
-    });
+static FailureOr<int64_t>
+assignReceiverPhysicalSlot(const PipeKey &pipeKey, ReceiverDFBInfo &receiverInfo,
+                           ReceiverSlotState &slotState) {
+  int64_t span = receiverInfo.receiverSlotSpanBlocks;
+  if (span <= 0 || span > receiverInfo.blockCount) {
+    return emitError(receiverInfo.loc)
+           << (pipeKey.hasSingleReceiver() ? "gather" : "collective overlap")
+           << " pipe receiver DFB reserves " << span
+           << " block(s) but block_count=" << receiverInfo.blockCount;
   }
+
+  int64_t slot = slotState.nextSlot;
+  if (slot + span > receiverInfo.blockCount) {
+    return emitError(receiverInfo.loc)
+           << (pipeKey.hasSingleReceiver() ? "gather" : "collective overlap")
+           << " pipe receiver DFB reserve at slot " << slot << " spans "
+           << span << " block(s), which would wrap block_count="
+           << receiverInfo.blockCount;
+  }
+
+  for (const LiveReceiverSlot &liveSlot : slotState.liveSlots) {
+    if (slotRangesOverlap(slot, span, liveSlot.slot, liveSlot.span)) {
+      return emitError(receiverInfo.loc)
+             << (pipeKey.hasSingleReceiver() ? "gather" : "collective overlap")
+             << " pipe receiver DFB reuses slot " << slot
+             << " before a receiver pop releases it; add a receiver pop before "
+                "reusing the DFB slot or increase block_count";
+    }
+  }
+
+  slotState.liveSlots.push_back(LiveReceiverSlot{slot, span});
+  slotState.nextSlot = (slot + span) % receiverInfo.blockCount;
+  return slot;
+}
+
+LogicalResult PipeGraph::assignReceiverSlotIndices(ModuleOp mod) {
+  PipeGraphAnalysisState analysisState;
+  if (failed(collectLaunchNodeDomains(mod, analysisState))) {
+    return failure();
+  }
+
+  llvm::DenseMap<PipeReceiverDFBKey, ReceiverSlotState> slotStateByReceiverDFB;
+  llvm::DenseMap<PipeReceiverDFBKey, llvm::DenseMap<Operation *, int64_t>>
+      slotByReceiverReserve;
+  auto processPost = [&](PipeTransferPostOp postOp) -> LogicalResult {
+    auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
+    if (!createOp) {
+      return success();
+    }
+    PipeKey pipeKey = getPipeKey(mlir::cast<PipeType>(
+        createOp.getPipe().getType()));
+    auto receiverIt = receiverDFBs.find(pipeKey);
+    if (receiverIt == receiverDFBs.end()) {
+      return success();
+    }
+
+    ReceiverDFBInfo &receiverInfo = receiverIt->second;
+    if (receiverInfo.receiverSlotIndex.has_value()) {
+      return success();
+    }
+
+    LaunchNodeDomain postDomain =
+        getOperationLaunchDomain(postOp.getOperation(), analysisState);
+    std::optional<int64_t> uniformSlot;
+    bool hasReceiver = false;
+    bool nonUniformSlot = false;
+    LogicalResult result = success();
+    pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
+      if (failed(result) || !domainContainsReceiver(postDomain, receiver)) {
+        return;
+      }
+      hasReceiver = true;
+      PipeReceiverDFBKey receiverDFB{receiver, receiverInfo.dfbIndex};
+      auto &slotByReserve = slotByReceiverReserve[receiverDFB];
+      auto reserveIt = slotByReserve.find(receiverInfo.receiverReserveOp);
+      int64_t slot = 0;
+      if (reserveIt == slotByReserve.end()) {
+        FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
+            pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
+        if (failed(assignedSlot)) {
+          result = failure();
+          return;
+        }
+        slot = *assignedSlot;
+        slotByReserve[receiverInfo.receiverReserveOp] = slot;
+      } else {
+        slot = reserveIt->second;
+      }
+      if (!uniformSlot) {
+        uniformSlot = slot;
+      } else if (*uniformSlot != slot) {
+        nonUniformSlot = true;
+      }
+    });
+    if (failed(result)) {
+      return failure();
+    }
+    if (!hasReceiver || nonUniformSlot) {
+      receiverInfo.receiverSlotIndex = std::nullopt;
+      return success();
+    }
+    receiverInfo.receiverSlotIndex = *uniformSlot;
+    return success();
+  };
+
+  auto processPop = [&](CBPopOp popOp) {
+    std::optional<int64_t> dfbIndex = getCBIndex(popOp.getCb());
+    if (!dfbIndex) {
+      return;
+    }
+    std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
+    if (!releasedBlocks) {
+      return;
+    }
+    LaunchNodeDomain popDomain =
+        getOperationLaunchDomain(popOp.getOperation(), analysisState);
+    if (!popDomain.known) {
+      return;
+    }
+    for (LaunchNodeCoord coord : popDomain.nodes) {
+      PipeReceiverDFBKey receiverDFB{
+          PipeReceiverCoord{coord.x, coord.y}, *dfbIndex};
+      auto stateIt = slotStateByReceiverDFB.find(receiverDFB);
+      if (stateIt == slotStateByReceiverDFB.end()) {
+        continue;
+      }
+      releaseReceiverSlots(stateIt->second, *releasedBlocks);
+    }
+  };
+
+  WalkResult walkResult =
+      walkNestedOpsInOrder(mod.getOperation(), [&](Operation *op) {
+        if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
+          return failed(processPost(postOp)) ? WalkResult::interrupt()
+                                             : WalkResult::advance();
+        }
+        if (auto popOp = dyn_cast<CBPopOp>(op)) {
+          processPop(popOp);
+        }
+        return WalkResult::advance();
+      });
+  return walkResult.wasInterrupted() ? failure() : success();
 }
 
 LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
@@ -217,13 +404,6 @@ void PipeGraph::rebuildEndpointGraph() {
                        receiverInfo.receiverSlotSpanBlocks);
     });
   }
-}
-
-static PipeKey getPipeKey(PipeType pipeType) {
-  return {pipeType.getSrcX(),      pipeType.getSrcY(),
-          pipeType.getDstStartX(), pipeType.getDstStartY(),
-          pipeType.getDstEndX(),   pipeType.getDstEndY(),
-          pipeType.getPipeNetId()};
 }
 
 struct PipeTransferInfo {
@@ -486,7 +666,9 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
     return failure();
   }
 
-  graph.assignReceiverSlotIndices();
+  if (failed(graph.assignReceiverSlotIndices(mod))) {
+    return failure();
+  }
 
   if (failed(graph.verifyReceiverDFBBlockCounts())) {
     return failure();

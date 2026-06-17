@@ -3,9 +3,8 @@
 // Summary: Negative tests for pipe receiver DFB validation and pipe synchronization
 // resource diagnostics in ttl-convert-ttl-to-ttkernel.
 
-// Two unicast pipes converging on node (1, 0) need distinct slots in the
-// receiver DFB. With block_count=1 the second pipe's assigned slot exceeds the
-// DFB capacity.
+// Two unicast pipes converging on node (1, 0) cannot reuse the same physical
+// receiver DFB slot until a receiver pop releases the previous receive.
 
 func.func @gather_block_count_too_small()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -26,7 +25,7 @@ func.func @gather_block_count_too_small()
   %recv2 = ttl.cb_reserve %cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{gather pipe receiver DFB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2}}
+  // expected-error @below {{gather pipe receiver DFB reuses slot 0 before a receiver pop releases it; add a receiver pop before reusing the DFB slot or increase block_count}}
   %xf2 = ttl.copy %p2, %recv2
       : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -363,9 +362,9 @@ module {
 
 // -----
 
-// Two collective pipes whose destinations overlap at node (1, 0) each need a
-// distinct slot in the receiver DFB. With block_count=1 the second pipe's
-// assigned slot (1) exceeds the DFB capacity.
+// Two collective pipes whose destinations overlap at node (1, 0) cannot reuse
+// the same physical receiver DFB slot until a receiver pop releases the
+// previous receive.
 
 func.func @collective_overlap_block_count_too_small()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -386,7 +385,7 @@ func.func @collective_overlap_block_count_too_small()
   %recv2 = ttl.cb_reserve %cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{collective overlap pipe receiver DFB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2}}
+  // expected-error @below {{collective overlap pipe receiver DFB reuses slot 0 before a receiver pop releases it; add a receiver pop before reusing the DFB slot or increase block_count}}
   %xf2 = ttl.copy %p2, %recv2
       : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)

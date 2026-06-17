@@ -93,8 +93,9 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
 
 // CHECK-LABEL: func.func @overlap_distinct_slots
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-// CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[OFFSET:.*]] = arith.constant 4096 : i32
+// CHECK-DAG: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
@@ -102,38 +103,26 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
 // CHECK: %[[DST_Y_START1:.*]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[DST_X_END1:.*]] = ttkernel.experimental::convert_logical_x_to_translated
 // CHECK: %[[DST_Y_END1:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[COUNT1:.*]] = memref.load
-// CHECK: %[[NEXT1:.*]] = arith.addi %[[COUNT1]]
-// CHECK: memref.store %[[NEXT1]]
-// CHECK: %[[BASE1:.*]] = ttkernel.get_compile_time_arg_val
-// CHECK: %[[SLOT1:.*]] = arith.muli %[[COUNT1]]
-// CHECK: %[[BLOCK1:.*]] = arith.remui %[[SLOT1]]
-// CHECK: %[[BYTE1:.*]] = arith.muli %[[BLOCK1]]
-// CHECK: %[[DST_ADDR1:.*]] = arith.addi %[[BASE1]], %[[BYTE1]]
+// CHECK: %[[BASE1:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK-NOT: arith.remui
 // CHECK-NOT: ttkernel.load_from_l1
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START1]], %[[DST_Y_START1]]], end_xy[%[[DST_X_END1]], %[[DST_Y_END1]]], %[[DST_ADDR1]]
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START1]], %[[DST_Y_START1]]], end_xy[%[[DST_X_END1]], %[[DST_Y_END1]]], %[[BASE1]]
 // CHECK: %[[SRC_ADDR2:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
 // CHECK: %[[DST_X_START2:.*]] = ttkernel.experimental::convert_logical_x_to_translated
 // CHECK: %[[DST_Y_START2:.*]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[DST_X_END2:.*]] = ttkernel.experimental::convert_logical_x_to_translated
 // CHECK: %[[DST_Y_END2:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[COUNT2:.*]] = memref.load
-// CHECK: %[[NEXT2:.*]] = arith.addi %[[COUNT2]]
-// CHECK: memref.store %[[NEXT2]]
-// CHECK: %[[BASE2:.*]] = ttkernel.get_compile_time_arg_val
-// CHECK: %[[SLOT2:.*]] = arith.muli %[[COUNT2]]
-// CHECK: %[[BLOCK2:.*]] = arith.remui %[[SLOT2]]
-// CHECK: %[[BYTE2:.*]] = arith.muli %[[BLOCK2]]
-// CHECK: %[[STATIC2:.*]] = arith.addi %[[BYTE2]]
-// CHECK: %[[DST_ADDR2:.*]] = arith.addi %[[BASE2]], %[[STATIC2]]
+// CHECK: %[[BASE2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: %[[DST_ADDR2:.*]] = arith.addi %[[BASE2]], %[[OFFSET]]
+// CHECK-NOT: arith.remui
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START2]], %[[DST_Y_START2]]], end_xy[%[[DST_X_END2]], %[[DST_Y_END2]]], %[[DST_ADDR2]]
 func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
-  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
-  %recv_group = ttl.cb_reserve %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  %recv_group = ttl.cb_reserve %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x2x!ttcore.tile<32x32, f32>>
   %recv1 = tensor.extract_slice %recv_group[0, 0] [1, 1] [1, 1] : tensor<1x2x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
   %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   %recv2 = tensor.extract_slice %recv_group[0, 1] [1, 1] [1, 1] : tensor<1x2x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -144,7 +133,7 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
   ttl.wait %send2 : !ttl.transfer_handle<write>
   ttl.wait %post1 : !ttl.transfer_handle
   ttl.wait %post2 : !ttl.transfer_handle
-  ttl.cb_push %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  ttl.cb_push %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
 
@@ -158,8 +147,9 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
 
 // CHECK-LABEL: func.func @overlap_distinct_slots_reversed_order
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-// CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[OFFSET:.*]] = arith.constant 4096 : i32
+// CHECK-DAG: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
@@ -167,13 +157,9 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
 // CHECK: %[[DST_Y_START1:.*]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[DST_X_END1:.*]] = ttkernel.experimental::convert_logical_x_to_translated
 // CHECK: %[[DST_Y_END1:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[COUNT1:.*]] = memref.load
-// CHECK: %[[BASE1:.*]] = ttkernel.get_compile_time_arg_val
-// CHECK: %[[SLOT1:.*]] = arith.muli %[[COUNT1]]
-// CHECK: %[[BLOCK1:.*]] = arith.remui %[[SLOT1]]
-// CHECK: %[[BYTE1:.*]] = arith.muli %[[BLOCK1]]
-// CHECK: %[[STATIC1:.*]] = arith.addi %[[BYTE1]]
-// CHECK: %[[DST_ADDR1:.*]] = arith.addi %[[BASE1]], %[[STATIC1]]
+// CHECK: %[[BASE1:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: %[[DST_ADDR1:.*]] = arith.addi %[[BASE1]], %[[OFFSET]]
+// CHECK-NOT: arith.remui
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START1]], %[[DST_Y_START1]]], end_xy[%[[DST_X_END1]], %[[DST_Y_END1]]], %[[DST_ADDR1]]
 // CHECK: %[[SRC_ADDR2:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
@@ -181,20 +167,16 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
 // CHECK: %[[DST_Y_START2:.*]] = ttkernel.experimental::convert_logical_y_to_translated
 // CHECK: %[[DST_X_END2:.*]] = ttkernel.experimental::convert_logical_x_to_translated
 // CHECK: %[[DST_Y_END2:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[COUNT2:.*]] = memref.load
-// CHECK: %[[BASE2:.*]] = ttkernel.get_compile_time_arg_val
-// CHECK: %[[SLOT2:.*]] = arith.muli %[[COUNT2]]
-// CHECK: %[[BLOCK2:.*]] = arith.remui %[[SLOT2]]
-// CHECK: %[[BYTE2:.*]] = arith.muli %[[BLOCK2]]
-// CHECK: %[[DST_ADDR2:.*]] = arith.addi %[[BASE2]], %[[BYTE2]]
+// CHECK: %[[BASE2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK-NOT: arith.remui
 // CHECK-NOT: ttkernel.load_from_l1
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START2]], %[[DST_Y_START2]]], end_xy[%[[DST_X_END2]], %[[DST_Y_END2]]], %[[DST_ADDR2]]
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START2]], %[[DST_Y_START2]]], end_xy[%[[DST_X_END2]], %[[DST_Y_END2]]], %[[BASE2]]
 func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
-  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
-  %recv_group = ttl.cb_reserve %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  %recv_group = ttl.cb_reserve %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x2x!ttcore.tile<32x32, f32>>
   %recv1 = tensor.extract_slice %recv_group[0, 0] [1, 1] [1, 1] : tensor<1x2x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
   %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   %recv2 = tensor.extract_slice %recv_group[0, 1] [1, 1] [1, 1] : tensor<1x2x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -206,7 +188,7 @@ func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thre
   ttl.wait %send1 : !ttl.transfer_handle<write>
   ttl.wait %post1 : !ttl.transfer_handle
   ttl.wait %post2 : !ttl.transfer_handle
-  ttl.cb_push %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  ttl.cb_push %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
 
@@ -220,14 +202,30 @@ func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thre
 
 // CHECK-LABEL: func.func @grouped_reserve_advances_following_slot
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-// CHECK-DAG: %[[PERIOD:.*]] = arith.constant 3 : i32
-// CHECK-DAG: %[[SLOT2:.*]] = arith.constant 2 : i32
-// CHECK: ttkernel.noc_async_write_multicast
-// CHECK: ttkernel.noc_async_write_multicast
-// CHECK: %[[COUNT:.*]] = memref.load
-// CHECK: %[[PERIOD_SLOT:.*]] = arith.muli %[[COUNT]], %[[PERIOD]]
-// CHECK: %[[RECEIVER_SLOT:.*]] = arith.addi %[[PERIOD_SLOT]], %[[SLOT2]]
-// CHECK: arith.remui %[[RECEIVER_SLOT]]
+// CHECK-DAG: %[[OFFSET1:.*]] = arith.constant 4096 : i32
+// CHECK-DAG: %[[OFFSET2:.*]] = arith.constant 8192 : i32
+// CHECK-DAG: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
+// CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
+// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK: %[[BASE1:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK-NOT: arith.remui
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], {{.*}}, {{.*}}, start_xy[{{.*}}], end_xy[{{.*}}], %[[BASE1]]
+// CHECK: %[[SRC_ADDR2:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK: %[[BASE2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: %[[DST_ADDR2:.*]] = arith.addi %[[BASE2]], %[[OFFSET1]]
+// CHECK-NOT: arith.remui
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], {{.*}}, {{.*}}, start_xy[{{.*}}], end_xy[{{.*}}], %[[DST_ADDR2]]
+// CHECK: %[[SRC_ADDR3:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK: %[[BASE3:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: %[[DST_ADDR3:.*]] = arith.addi %[[BASE3]], %[[OFFSET2]]
+// CHECK-NOT: arith.remui
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR3]], {{.*}}, {{.*}}, start_xy[{{.*}}], end_xy[{{.*}}], %[[DST_ADDR3]]
 func.func @grouped_reserve_advances_following_slot() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 3} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 3} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>

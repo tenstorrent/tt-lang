@@ -171,7 +171,12 @@ def TTLConvertTTLToTTKernel
 
   let options = [
     Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for reduce operations.">
+           "Enable FP32 accumulation for reduce operations.">,
+    Option<"pipeComputedAddresses", "pipe-computed-addresses",
+           "bool", "true",
+           "Use computed receiver DFB addresses for eligible pipe transfers. "
+           "When disabled, all pipe transfers use receiver-published "
+           "destination addresses.">
   ];
 
   let dependentDialects = [

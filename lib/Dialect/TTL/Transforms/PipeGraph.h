@@ -218,13 +218,8 @@ public:
       ArrayRef<Operation *> transferCreateOps, int64_t blockCount,
       Location loc);
 
-  /// Assign each pipe the DFB slot reserved by the corresponding receiver
-  /// post. Multicast pipes require the same receiver slot at every receiver
-  /// because TT-Metal NoC multicast carries one destination address.
-  void assignReceiverSlotIndices();
-
-  /// Each pipe needs enough receiver DFB blocks for its assigned base slot and
-  /// the number of blocks covered by its receiver reserve.
+  /// Verify that each receiver post was assigned a non-wrapping physical DFB
+  /// slot.
   LogicalResult verifyReceiverDFBBlockCounts() const;
 
   const ReceiverDFBInfo *lookupReceiverDFB(const PipeKey &key) const;
@@ -272,6 +267,11 @@ public:
   }
 
 private:
+  /// Assign each pipe the physical DFB slot reserved by the corresponding
+  /// receiver post. Multicast pipes require the same receiver slot at every
+  /// receiver because TT-Metal NoC multicast carries one destination address.
+  LogicalResult assignReceiverSlotIndices(ModuleOp mod);
+
   void rebuildEndpointGraph();
 
   llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;

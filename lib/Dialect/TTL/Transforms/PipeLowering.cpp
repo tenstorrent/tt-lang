@@ -331,71 +331,21 @@ buildAddressTableDestinationAddress(Location loc, const AddressTableInfo &info,
       .getResult();
 }
 
-/// Compute the next receiver DFB block address for a computed-address pipe.
+/// Compute the statically assigned receiver DFB address.
 static Value buildComputedReceiverDFBDestinationAddress(
     Location loc, const PipeComputedAddressInfo &info,
     ConversionPatternRewriter &rewriter) {
-  assert(info.transferCounter && "computed pipe missing sender counter");
   auto i32Ty = rewriter.getI32Type();
-  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  auto transferCount = memref::LoadOp::create(
-      rewriter, loc, info.transferCounter, ValueRange{zeroIdx});
-
-  auto oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                          rewriter.getI32IntegerAttr(1));
-  auto nextTransferCount =
-      arith::AddIOp::create(rewriter, loc, transferCount, oneI32);
-  memref::StoreOp::create(rewriter, loc, nextTransferCount,
-                          info.transferCounter, ValueRange{zeroIdx});
-
   auto baseAddress = ttk::GetCompileArgValOp::create(
       rewriter, loc, i32Ty, static_cast<int32_t>(info.baseCompileTimeArgIndex));
-
-  Value receiverSlot = transferCount;
-  if (info.receiverSlotPeriod != 1) {
-    auto slotPeriod = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(info.receiverSlotPeriod));
-    receiverSlot =
-        arith::MulIOp::create(rewriter, loc, receiverSlot, slotPeriod);
-  }
-  if (info.receiverSlotIndex != 0) {
-    auto slotIndex = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(info.receiverSlotIndex));
-    receiverSlot =
-        arith::AddIOp::create(rewriter, loc, receiverSlot, slotIndex);
-  }
-
-  Value blockIndex = receiverSlot;
-  if (info.blockCount > 1) {
-    auto blockCount = arith::ConstantOp::create(
-        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(info.blockCount));
-    blockIndex =
-        arith::RemUIOp::create(rewriter, loc, receiverSlot, blockCount);
-  }
-
-  Value byteOffset;
-  if (info.blockCount > 1) {
-    auto blockStride = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(info.blockStrideBytes));
-    byteOffset = arith::MulIOp::create(rewriter, loc, blockIndex, blockStride);
-  }
   if (info.staticByteOffset != 0) {
     auto staticByteOffset = arith::ConstantOp::create(
         rewriter, loc, i32Ty,
         rewriter.getI32IntegerAttr(info.staticByteOffset));
-    byteOffset = byteOffset ? Value(arith::AddIOp::create(
-                                  rewriter, loc, byteOffset, staticByteOffset))
-                            : Value(staticByteOffset);
+    return arith::AddIOp::create(rewriter, loc, baseAddress, staticByteOffset)
+        .getResult();
   }
-
-  if (!byteOffset) {
-    return baseAddress.getResult();
-  }
-  return arith::AddIOp::create(rewriter, loc, baseAddress, byteOffset)
-      .getResult();
+  return baseAddress.getResult();
 }
 
 struct ReceiverPublishedAddressInfo {
@@ -1613,11 +1563,22 @@ getUniformReceiverSlotPeriod(const PipeGraph &pipeGraph,
   return receiverSlotPeriod;
 }
 
+static std::optional<int64_t>
+getStaticReceiverByteOffset(const ReceiverDFBInfo &receiverInfo,
+                            int64_t receiverSlotPeriod) {
+  if (receiverInfo.blockCount != receiverSlotPeriod) {
+    return std::nullopt;
+  }
+  int64_t blockOffsetBytes =
+      *receiverInfo.receiverSlotIndex *
+      getReceiverDFBBlockStrideBytes(receiverInfo);
+  return blockOffsetBytes + getReceiverDFBStaticByteOffset(receiverInfo);
+}
+
 static bool isComputedAddressCandidate(const PipeTransferAllocationUnit &unit,
                                        const ReceiverDFBInfo &receiverInfo,
                                        const PipeGraph &pipeGraph,
-                                       const PipeEdge *&pipeEdge,
-                                       int64_t &receiverSlotPeriod) {
+                                       int64_t &staticByteOffset) {
   if (!receiverInfo.hasStaticTileOffset) {
     return false;
   }
@@ -1631,7 +1592,7 @@ static bool isComputedAddressCandidate(const PipeTransferAllocationUnit &unit,
   if (postCount != 1 || sendCount != 1) {
     return false;
   }
-  pipeEdge = lookupPipeEdge(pipeGraph, unit.pipe);
+  const PipeEdge *pipeEdge = lookupPipeEdge(pipeGraph, unit.pipe);
   if (!pipeEdge) {
     return false;
   }
@@ -1640,7 +1601,12 @@ static bool isComputedAddressCandidate(const PipeTransferAllocationUnit &unit,
   if (!period) {
     return false;
   }
-  receiverSlotPeriod = *period;
+  std::optional<int64_t> offset =
+      getStaticReceiverByteOffset(receiverInfo, *period);
+  if (!offset) {
+    return false;
+  }
+  staticByteOffset = *offset;
   return true;
 }
 
@@ -1658,7 +1624,7 @@ buildComputedAddressPlan(ModuleOp mod,
     unsigned unitIndex = 0;
     FuncOp senderFunc;
     const ReceiverDFBInfo *receiverInfo = nullptr;
-    int64_t receiverSlotPeriod = 1;
+    int64_t staticByteOffset = 0;
   };
   SmallVector<Candidate> candidates;
   llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesByFunc;
@@ -1667,11 +1633,10 @@ buildComputedAddressPlan(ModuleOp mod,
     PipeTransferAllocationUnit &unit = indexedUnit.value();
     const ReceiverDFBInfo *receiverInfo =
         pipeGraph.lookupReceiverDFB(unit.pipe);
-    const PipeEdge *pipeEdge = nullptr;
-    int64_t receiverSlotPeriod = 1;
+    int64_t staticByteOffset = 0;
     if (!receiverInfo ||
-        !isComputedAddressCandidate(unit, *receiverInfo, pipeGraph, pipeEdge,
-                                    receiverSlotPeriod)) {
+        !isComputedAddressCandidate(unit, *receiverInfo, pipeGraph,
+                                    staticByteOffset)) {
       continue;
     }
     std::optional<FuncOp> senderFunc = getSingleSenderFunc(unit);
@@ -1679,8 +1644,7 @@ buildComputedAddressPlan(ModuleOp mod,
       continue;
     }
     candidates.push_back(Candidate{static_cast<unsigned>(indexedUnit.index()),
-                                   *senderFunc, receiverInfo,
-                                   receiverSlotPeriod});
+                                   *senderFunc, receiverInfo, staticByteOffset});
     dfbIndicesByFunc[*senderFunc].insert(receiverInfo->dfbIndex);
   }
 
@@ -1716,18 +1680,6 @@ buildComputedAddressPlan(ModuleOp mod,
 
   for (const Candidate &candidate : candidates) {
     FuncOp senderFunc = candidate.senderFunc;
-    OpBuilder counterBuilder(senderFunc.getContext());
-    counterBuilder.setInsertionPointToStart(&senderFunc.getBody().front());
-    Location loc = senderFunc.getLoc();
-    auto memrefTy = MemRefType::get({1}, counterBuilder.getI32Type());
-    auto zeroIdx = arith::ConstantIndexOp::create(counterBuilder, loc, 0);
-    auto zeroI32 = arith::ConstantOp::create(
-        counterBuilder, loc, counterBuilder.getI32Type(),
-        counterBuilder.getI32IntegerAttr(0));
-    auto counter = memref::AllocaOp::create(counterBuilder, loc, memrefTy);
-    memref::StoreOp::create(counterBuilder, loc, zeroI32, counter,
-                            ValueRange{zeroIdx});
-
     const SmallVector<int64_t> &dfbIndices = sortedDFBIndicesByFunc[senderFunc];
     auto dfbIt = llvm::find(dfbIndices, candidate.receiverInfo->dfbIndex);
     assert(dfbIt != dfbIndices.end() && "candidate DFB missing from func list");
@@ -1737,19 +1689,15 @@ buildComputedAddressPlan(ModuleOp mod,
     plan.infoByUnitIndex[candidate.unitIndex] = PipeComputedAddressInfo{
         candidate.receiverInfo->dfbIndex,
         baseCompileTimeArgIndex,
-        getReceiverDFBBlockStrideBytes(*candidate.receiverInfo),
-        candidate.receiverInfo->blockCount,
-        getReceiverDFBStaticByteOffset(*candidate.receiverInfo),
-        *candidate.receiverInfo->receiverSlotIndex,
-        candidate.receiverSlotPeriod,
-        counter.getResult()};
+        candidate.staticByteOffset};
   }
 
   return plan;
 }
 
 LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
-                                    PipeResourcePlan &info) {
+                                    PipeResourcePlan &info,
+                                    bool enableComputedAddresses) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
@@ -1760,8 +1708,10 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
   SmallVector<PipeTransferAllocationUnit> &units = *maybeUnits;
   SourceColorMap colorUsersBySource =
       assignLiveIntervalColors(units, dominanceInfo);
-  ComputedAddressPlan computedAddressPlan =
-      buildComputedAddressPlan(mod, units, pipeGraph);
+  ComputedAddressPlan computedAddressPlan;
+  if (enableComputedAddresses) {
+    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph);
+  }
 
   llvm::SmallSetVector<int64_t, 4> activePipeNetIds;
   for (const PipeTransferAllocationUnit &unit : units) {

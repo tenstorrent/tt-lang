@@ -1627,9 +1627,10 @@ def _compile_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
+        pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
+            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} pipe-computed-addresses={pipe_computed_flag}}}",
             "ttl-lower-scalar-cmpf",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",

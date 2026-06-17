@@ -34,12 +34,7 @@ struct PipeSramAddressTableInfo {
 struct PipeComputedAddressInfo {
   int64_t receiverDFBIndex = 0;
   int64_t baseCompileTimeArgIndex = 0;
-  int64_t blockStrideBytes = 0;
-  int64_t blockCount = 0;
   int64_t staticByteOffset = 0;
-  int64_t receiverSlotIndex = 0;
-  int64_t receiverSlotPeriod = 1;
-  Value transferCounter;
 };
 
 enum class PipeAddressMode {
@@ -203,7 +198,8 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
 LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
-                                    PipeResourcePlan &info);
+                                    PipeResourcePlan &info,
+                                    bool enableComputedAddresses = true);
 
 /// Emit sender-side capacity semaphore initial values at kernel entry.
 void initializePipeCapacitySemaphores(const PipeCapacityPlan &pipeCapacityPlan);

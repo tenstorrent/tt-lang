@@ -54,6 +54,11 @@ struct TTLToTTKernelPipelineOptions
                      "computations. When disabled, emit an error if any "
                      "operation requires a compiler-allocated DFB."),
       llvm::cl::init(true)};
+  Option<bool> pipeComputedAddresses{
+      *this, "pipe-computed-addresses",
+      llvm::cl::desc("Use computed receiver DFB addresses for eligible pipe "
+                     "transfers."),
+      llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
