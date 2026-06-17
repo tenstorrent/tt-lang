@@ -10,8 +10,12 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <limits>
+
+#define DEBUG_TYPE "ttl-lower-accumulation-scopes"
 
 namespace mlir::tt::ttl {
 
@@ -154,6 +158,48 @@ getCostWeights(AccumulationTargetArch targetArch) {
     return {/*dfbHopFixedCost=*/210, /*dfbHopPerTileCost=*/67};
   }
   llvm_unreachable("unknown accumulation target architecture");
+}
+
+static StringRef stringifyTargetArch(AccumulationTargetArch targetArch) {
+  switch (targetArch) {
+  case AccumulationTargetArch::Blackhole:
+    return "blackhole";
+  case AccumulationTargetArch::WormholeB0:
+    return "wormhole_b0";
+  case AccumulationTargetArch::Unknown:
+    return "unknown";
+  }
+  llvm_unreachable("unknown accumulation target architecture");
+}
+
+static void printOptionalCost(llvm::raw_ostream &os,
+                              std::optional<int64_t> cost) {
+  if (cost) {
+    os << *cost;
+    return;
+  }
+  os << "unknown";
+}
+
+static void printCandidate(llvm::raw_ostream &os,
+                           const AccumulationStrategyCandidate &candidate) {
+  os << "  candidate strategy="
+     << stringifyAccumulationStrategy(candidate.strategy)
+     << " legal=" << (candidate.legal ? "true" : "false");
+  if (!candidate.legal) {
+    os << " reason=\"" << candidate.reason << "\"\n";
+    return;
+  }
+
+  const AccumulationCost &cost = candidate.cost;
+  os << " estimated_cost=";
+  printOptionalCost(os, cost.estimatedCost);
+  os << " one_time_dfb_hops=" << cost.oneTimeDfbHops
+     << " per_iteration_dfb_hops=" << cost.perIterationDfbHops
+     << " one_time_pack_unpack_tiles=" << cost.oneTimePackUnpackTiles
+     << " per_iteration_pack_unpack_tiles=" << cost.perIterationPackUnpackTiles
+     << " dst_live_tiles=" << cost.dstLiveTiles
+     << " pack_reconfigs=" << cost.packReconfigs << "\n";
 }
 
 static std::optional<int64_t>
@@ -404,6 +450,14 @@ planTensorAccumulationStrategy(AccumulationScopeOp scope,
     plan.candidates.push_back(buildL1PackCandidate(match, loop, costModel));
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "accumulation cost model target_arch="
+                 << stringifyTargetArch(costModel.getTargetArch()) << "\n";
+    for (const AccumulationStrategyCandidate &candidate : plan.candidates) {
+      printCandidate(llvm::dbgs(), candidate);
+    }
+  });
+
   AccumulationStrategyCandidate *selected = nullptr;
   for (AccumulationStrategyCandidate &candidate : plan.candidates) {
     if (!candidate.legal) {
@@ -419,6 +473,9 @@ planTensorAccumulationStrategy(AccumulationScopeOp scope,
 
   plan.strategy = selected->strategy;
   plan.cost = selected->cost;
+  LLVM_DEBUG(llvm::dbgs() << "  selected strategy="
+                          << stringifyAccumulationStrategy(plan.strategy)
+                          << "\n");
   return plan;
 }
 

@@ -1,0 +1,71 @@
+// Verifies tensor accumulation strategy planning reports architecture-specific
+// cost scores for legal DST and L1 packer candidates.
+//
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(ttl-lower-accumulation-scopes{kind=tensor strategy=auto}))' -debug-only=ttl-lower-accumulation-scopes 2>&1 | FileCheck %s
+
+// Purpose: Blackhole uses the initial Track A DFB cost weights.
+// CHECK: accumulation cost model target_arch=blackhole
+// CHECK-NEXT:   candidate strategy=dst legal=true estimated_cost=688 one_time_dfb_hops=2 per_iteration_dfb_hops=0 one_time_pack_unpack_tiles=4 per_iteration_pack_unpack_tiles=0 dst_live_tiles=1 pack_reconfigs=0
+// CHECK-NEXT:   candidate strategy=l1-pack legal=true estimated_cost=1939 one_time_dfb_hops=1 per_iteration_dfb_hops=2 one_time_pack_unpack_tiles=1 per_iteration_pack_unpack_tiles=2 dst_live_tiles=0 pack_reconfigs=2
+// CHECK-NEXT:   selected strategy=dst
+module attributes {ttl.target_arch = "blackhole"} {
+  func.func @cost_model_blackhole() {
+    %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb_delta = ttl.bind_cb {cb_index = 1, block_count = 3} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %cb_out = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %init_wait = ttl.cb_wait %cb_init : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %init = ttl.attach_cb %init_wait, %cb_init : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %reserve = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %c3 = arith.constant 3 : index
+    %c1 = arith.constant 1 : index
+    ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+      %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        %delta_wait = ttl.cb_wait %cb_delta : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %delta = ttl.attach_cb %delta_wait, %cb_delta : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %sum = ttl.add %acc, %delta : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_pop %cb_delta : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+        scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.yield
+    } {combiners = [0 : i32], initial_modes = [2 : i32]}
+    func.return
+  }
+}
+
+// -----
+
+// Purpose: Wormhole uses a higher per-tile score from the tt-llk nightly
+// performance data.
+// CHECK: accumulation cost model target_arch=wormhole_b0
+// CHECK-NEXT:   candidate strategy=dst legal=true estimated_cost=1080 one_time_dfb_hops=2 per_iteration_dfb_hops=0 one_time_pack_unpack_tiles=4 per_iteration_pack_unpack_tiles=0 dst_live_tiles=1 pack_reconfigs=0
+// CHECK-NEXT:   candidate strategy=l1-pack legal=true estimated_cost=2870 one_time_dfb_hops=1 per_iteration_dfb_hops=2 one_time_pack_unpack_tiles=1 per_iteration_pack_unpack_tiles=2 dst_live_tiles=0 pack_reconfigs=2
+// CHECK-NEXT:   selected strategy=dst
+module attributes {ttl.target_arch = "wormhole_b0"} {
+  func.func @cost_model_wormhole() {
+    %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb_delta = ttl.bind_cb {cb_index = 1, block_count = 3} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %cb_out = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %init_wait = ttl.cb_wait %cb_init : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %init = ttl.attach_cb %init_wait, %cb_init : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %reserve = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %c3 = arith.constant 3 : index
+    %c1 = arith.constant 1 : index
+    ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+      %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        %delta_wait = ttl.cb_wait %cb_delta : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %delta = ttl.attach_cb %delta_wait, %cb_delta : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %sum = ttl.add %acc, %delta : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_pop %cb_delta : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+        scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.yield
+    } {combiners = [0 : i32], initial_modes = [2 : i32]}
+    func.return
+  }
+}
