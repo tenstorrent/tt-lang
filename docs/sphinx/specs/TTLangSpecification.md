@@ -6,7 +6,7 @@
     * [Runtime and compile-time arguments](#runtime-and-compile-time-arguments)
     * [Thread assignment](#thread-assignment)
     * [Composing operations](#composing-operations)
-    * [Multi-kernel operation (legacy)](#multi-kernel-operation-legacy)
+    * [Multi-kernel operation](#multi-kernel-operation)
 * [Grid](#grid)
     * [Grid size function](#grid-size-function)
     * [Node function](#node-function)
@@ -52,7 +52,7 @@
 | 0.16 | 04/22/2026 | Add `ttl.block.squeeze` and `ttl.block.unsqueeze` |
 | 0.17 | 04/28/2026 | Move `broadcast`, `transpose`, `where`, `mask`, `mask_posinf`, `fill`, `squeeze`, `unsqueeze` to `ttl.block` |
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
-| 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; explicit form becomes multi-kernel operation (legacy) |
+| 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 
 
 ## Introduction
@@ -68,7 +68,7 @@ In addition to kernels, TT-Lang offers other abstractions familiar to [TT-Metali
 
 A *thread* is a unit of concurrent execution on a node. *Compute threads* evaluate block expressions, the math of the operation; *data movement threads* move data between dataflow buffers, tensor slices, and pipes. The number and kind of threads are fixed by the architecture, and the compiler assigns each statement of the operation body to the thread that executes it.
 
-The explicit form, in which the author writes the threads by hand as separate *kernel functions*, remains available as a *multi-kernel operation (legacy)* (described below) for cases that need precise control over the individual threads.
+An operation can also be written with explicit kernels, where the author writes the threads by hand as separate *kernel functions*. This *multi-kernel operation* (described below) is an alternative for cases that need precise control over the individual threads.
 
 #### Program example
 
@@ -80,23 +80,21 @@ def __add(
     out: ttnn.Tensor, # output tensor
 ) -> None:
     # Dataflow buffers shared by the threads.
-    a_buf = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
-    b_buf = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
-    out_buf = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     # One body: the compiler places the copies on the data movement threads
     # and the addition on the compute thread.
-    a_blk = a_buf.reserve()
-    ttl.copy(a[0:1, 0:1], a_blk)
-    b_blk = b_buf.reserve()
-    ttl.copy(b[0:1, 0:1], b_blk)
+    ttl.copy(a[0:1, 0:1], a_dfb.reserve())
+    ttl.copy(b[0:1, 0:1], b_dfb.reserve())
 
-    result = out_buf.reserve()
-    a_in = a_buf.wait()
-    b_in = b_buf.wait()
-    result.store(a_in + b_in)
+    out_blk = out_dfb.reserve()
+    a_blk = a_dfb.wait()
+    b_blk = b_dfb.wait()
+    out_blk.store(a_blk + b_blk)
 
-    ttl.copy(out_buf.wait(), out[0:1, 0:1])
+    ttl.copy(out_dfb.wait(), out[0:1, 0:1])
 
 # Simple wrapper to allow returning output tensor in TT-NN style
 def add(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
@@ -140,14 +138,14 @@ Data movement is distributed across the data movement threads: for a pipe, the s
 
 An operation can be built from other operations by calling them in its body. Such a call is expanded in place when the calling operation is defined, the way a template or macro is expanded, not invoked at runtime. The called operation's work becomes part of the caller's single body and is assigned to threads by the rules above.
 
-An operation written to be composed may declare its own dataflow buffers and pipe nets in its body, or take them as parameters for the caller to supply. Dataflow buffers and pipe nets are not runtime arguments (see [runtime and compile-time arguments](#runtime-and-compile-time-arguments)), so an operation that takes them as parameters has nothing to supply at a call site and is only ever used by being composed, never called directly from a TT-NN program.
+An operation written to be composed may declare its own dataflow buffers and pipe nets in its body, or take them as parameters for the caller to supply. An operation that takes dataflow buffers or pipe nets as parameters is an *expand-only operation*: because these are not runtime arguments (see [runtime and compile-time arguments](#runtime-and-compile-time-arguments)), there is nothing to supply at a TT-NN call site, and it can only be expanded into another operation, never called directly.
 
 A call to a composed operation is a statement, not an expression, and must supply every parameter. Default parameter values, argument unpacking, and reassigning a parameter inside the composed operation are not allowed. An operation cannot call itself, directly or through a cycle; composition is finite and fully resolved when the operation is defined.
 
 
-### Multi-kernel operation (legacy)
+### Multi-kernel operation
 
-The earlier *multi-kernel* form is still supported. Here the author writes the threads by hand as *kernel functions*: Python functions that take no arguments and return `None`, annotated with `ttl.compute` or `ttl.datamovement`. The operation function holds these kernel functions together with the objects shared by them. Prefer the unified body above; use this form only when an operation needs precise control over the individual threads.
+A *multi-kernel operation* is an alternative form in which the author writes the threads by hand as *kernel functions*: Python functions that take no arguments and return `None`, annotated with `ttl.compute` or `ttl.datamovement`. The operation function holds these kernel functions together with the objects shared by them. Use this form when an operation needs precise control over the individual threads. Multi-kernel operations do not compose: they cannot call one another.
 
 #### Program example
 
@@ -1364,14 +1362,15 @@ def matmul_read():
 | *Domain specific language (DSL)* | A language based on a constrained subset of the host language, Python in the case of TT-Lang. |
 | *Operation function* | A Python function, decorated with `ttl.operation`, that encapsulates an operation written in TT-Lang and can be used as a TT-NN operation. Its body describes the work of all the operation's threads and is split across them by the compiler. |
 | *Composed operation* | An operation called from the body of another operation. It is expanded in place when the calling operation is defined. |
+| *Expand-only operation* | An operation that takes dataflow buffers or pipe nets as parameters and can therefore only be expanded into another operation, never called directly. |
 | *Runtime argument* | A value supplied at each call of an operation. Runtime arguments are TT-NN tensors. |
 | *Compile-time argument* | A value fixed when an operation is defined, captured from the enclosing Python scope and substituted into the body before compilation. |
 | *Thread* | A unit of concurrent execution on a node. |
 | *Compute thread* | A thread that evaluates block expressions. |
 | *Data movement thread* | A thread that moves data between dataflow buffers, tensor slices, and pipes. |
-| *Kernel function (legacy)* | In a multi-kernel operation, a Python function defined inside the operation function that encapsulates the behavior of one thread, annotated with `ttl.compute` or `ttl.datamovement`. |
-| *Data movement kernel function (legacy)* | A kernel function that encapsulates data movement behavior. |
-| *Compute kernel function (legacy)* | A kernel function that encapsulates compute behavior. |
+| *Kernel function* | In a multi-kernel operation, a Python function defined inside the operation function that encapsulates the behavior of one thread, annotated with `ttl.compute` or `ttl.datamovement`. |
+| *Data movement kernel function* | A kernel function that encapsulates data movement behavior. |
+| *Compute kernel function* | A kernel function that encapsulates compute behavior. |
 | *TT-NN tensor* | Tensor representation in TT-NN environment. Encapsulates key meta information such as shape, data type, layout, storage and memory configuration. |
 | *Node* | A minimal unit capable of executing a TT-Lang program. |
 | *Grid* | A multidimensional space of nodes. A single chip is represented by a 2D grid. A multichip system is represented by 3D and higher dimensional grids. |
