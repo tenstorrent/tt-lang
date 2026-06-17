@@ -42,8 +42,7 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
   dataflow::loadBaselineAnalyses(solver);
   LaunchNodeDomainAnalysisOptions options;
   options.narrowPipeNetScopes = true;
-  options.operationCallback = [&](Operation *op,
-                                  const LaunchNodeDomain &domain,
+  options.operationCallback = [&](Operation *op, const LaunchNodeDomain &domain,
                                   Operation * /*unanalyzableOp*/) {
     state.operationLaunchDomains[op] = domain;
   };
@@ -115,8 +114,8 @@ struct ReceiverSlotState {
   SmallVector<LiveReceiverSlot> liveSlots;
 };
 
-static bool slotRangesOverlap(int64_t lhsSlot, int64_t lhsSpan,
-                              int64_t rhsSlot, int64_t rhsSpan) {
+static bool slotRangesOverlap(int64_t lhsSlot, int64_t lhsSpan, int64_t rhsSlot,
+                              int64_t rhsSpan) {
   return lhsSlot < rhsSlot + rhsSpan && rhsSlot < lhsSlot + lhsSpan;
 }
 
@@ -177,16 +176,16 @@ LogicalResult PipeGraph::addReceiverDFB(
   }
   receiverDFBs.insert({key,
                        {dfbIndex, dfbType, hasStaticTileOffset,
-                        staticTileOffset, std::nullopt,
-                        receiverSlotSpanBlocks, blockCount, loc,
-                        receiverReserveOp, transferContract,
+                        staticTileOffset, std::nullopt, receiverSlotSpanBlocks,
+                        blockCount, loc, receiverReserveOp, transferContract,
                         SmallVector<Operation *>(transferCreateOps.begin(),
                                                  transferCreateOps.end())}});
   return success();
 }
 
 static FailureOr<int64_t>
-assignReceiverPhysicalSlot(const PipeKey &pipeKey, ReceiverDFBInfo &receiverInfo,
+assignReceiverPhysicalSlot(const PipeKey &pipeKey,
+                           ReceiverDFBInfo &receiverInfo,
                            ReceiverSlotState &slotState) {
   int64_t span = receiverInfo.receiverSlotSpanBlocks;
   if (span <= 0 || span > receiverInfo.blockCount) {
@@ -200,8 +199,8 @@ assignReceiverPhysicalSlot(const PipeKey &pipeKey, ReceiverDFBInfo &receiverInfo
   if (slot + span > receiverInfo.blockCount) {
     return emitError(receiverInfo.loc)
            << (pipeKey.hasSingleReceiver() ? "gather" : "collective overlap")
-           << " pipe receiver DFB reserve at slot " << slot << " spans "
-           << span << " block(s), which would wrap block_count="
+           << " pipe receiver DFB reserve at slot " << slot << " spans " << span
+           << " block(s), which would wrap block_count="
            << receiverInfo.blockCount;
   }
 
@@ -234,8 +233,8 @@ LogicalResult PipeGraph::assignReceiverSlotIndices(ModuleOp mod) {
     if (!createOp) {
       return success();
     }
-    PipeKey pipeKey = getPipeKey(mlir::cast<PipeType>(
-        createOp.getPipe().getType()));
+    PipeKey pipeKey =
+        getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
     auto receiverIt = receiverDFBs.find(pipeKey);
     if (receiverIt == receiverDFBs.end()) {
       return success();
@@ -305,8 +304,8 @@ LogicalResult PipeGraph::assignReceiverSlotIndices(ModuleOp mod) {
       return;
     }
     for (LaunchNodeCoord coord : popDomain.nodes) {
-      PipeReceiverDFBKey receiverDFB{
-          PipeReceiverCoord{coord.x, coord.y}, *dfbIndex};
+      PipeReceiverDFBKey receiverDFB{PipeReceiverCoord{coord.x, coord.y},
+                                     *dfbIndex};
       auto stateIt = slotStateByReceiverDFB.find(receiverDFB);
       if (stateIt == slotStateByReceiverDFB.end()) {
         continue;
@@ -398,8 +397,8 @@ void PipeGraph::rebuildEndpointGraph() {
       PipeReceiverDFBNode &receiverDFBNode =
           receiverDFBNodes[receiverDFBNodeId];
       receiverDFBNode.writerEndpoints.push_back(endpointId);
-      receiverDFBNode.receiverSlotPeriod =
-          std::max(receiverDFBNode.receiverSlotPeriod,
+      receiverDFBNode.receiverBatchSize =
+          std::max(receiverDFBNode.receiverBatchSize,
                    *receiverInfo.receiverSlotIndex +
                        receiverInfo.receiverSlotSpanBlocks);
     });

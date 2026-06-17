@@ -173,7 +173,7 @@ struct PipeReceiverDFBNode {
   PipeReceiverDFBNodeId id = 0;
   PipeReceiverDFBKey receiverDFB;
   SmallVector<PipeReceiverEndpointId> writerEndpoints;
-  int64_t receiverSlotPeriod = 1;
+  int64_t receiverBatchSize = 1;
 };
 
 /// Return the semantic transfer contract used by pipe synchronization. The

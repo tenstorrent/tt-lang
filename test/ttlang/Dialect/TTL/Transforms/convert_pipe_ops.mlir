@@ -308,7 +308,7 @@ func.func @two_incoming_edges_one_dfb_compute_addresses() attributes { "ttl.kern
 // -----
 
 // Two collective senders into the same receiver DFB compute distinct multicast
-// receiver slots from the graph-owned receiver-slot period.
+// receiver slots from the graph-owned receiver batch size.
 // CHECK-LABEL: func.func @two_multicast_edges_one_dfb_compute_addresses
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 2>
 // CHECK-DAG: %[[SLOT1_OFFSET:.*]] = arith.constant 4096 : i32

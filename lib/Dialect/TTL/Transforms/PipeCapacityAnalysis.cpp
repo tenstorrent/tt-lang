@@ -60,7 +60,8 @@ void PipeCapacityPlan::addRelease(CBPopOp op, PipeCapacityReleaseInfo info) {
   releases[op.getOperation()].push_back(info);
 }
 
-void PipeCapacityPlan::addInitialization(FuncOp func, PipeCapacityInitInfo info) {
+void PipeCapacityPlan::addInitialization(FuncOp func,
+                                         PipeCapacityInitInfo info) {
   SmallVector<PipeCapacityInitInfo> &funcInitializations =
       initializations[func];
   for (const PipeCapacityInitInfo &existing : funcInitializations) {
@@ -126,8 +127,8 @@ static void printPipe(llvm::raw_ostream &os, const PipeKey &pipe) {
 
 static void printReceiverDFB(llvm::raw_ostream &os,
                              const PipeReceiverDFBKey &receiverDFB) {
-  os << "receiver(" << receiverDFB.receiver.x << ", "
-     << receiverDFB.receiver.y << ") DFB " << receiverDFB.dfbIndex;
+  os << "receiver(" << receiverDFB.receiver.x << ", " << receiverDFB.receiver.y
+     << ") DFB " << receiverDFB.dfbIndex;
 }
 
 static void printEndpoint(llvm::raw_ostream &os,
@@ -276,8 +277,8 @@ static std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp) {
   return releasedTiles / elementsPerBlock;
 }
 
-static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
-                                              PipeCapacityAnalysisState &state) {
+static LogicalResult
+collectLaunchNodeDomains(ModuleOp mod, PipeCapacityAnalysisState &state) {
   state.initialize(mod);
   if (!state.hasLaunchGrid) {
     return success();
@@ -287,8 +288,7 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
   dataflow::loadBaselineAnalyses(solver);
   LaunchNodeDomainAnalysisOptions options;
   options.narrowPipeNetScopes = true;
-  options.operationCallback = [&](Operation *op,
-                                  const LaunchNodeDomain &domain,
+  options.operationCallback = [&](Operation *op, const LaunchNodeDomain &domain,
                                   Operation *unanalyzableOp) {
     state.operationLaunchDomains[op] =
         OperationLaunchDomain{domain, unanalyzableOp};
@@ -333,8 +333,7 @@ static bool collectAndCheckPosts(ModuleOp mod,
       return;
     }
     if (!isReceiverDFBView(postOp.getDst(), endpoint.receiverDFB)) {
-      debugRejectEndpoint(endpoint,
-                          "post destination is not the receiver DFB");
+      debugRejectEndpoint(endpoint, "post destination is not the receiver DFB");
       valid = false;
       return;
     }
@@ -350,11 +349,10 @@ static bool collectAndCheckPosts(ModuleOp mod,
   return valid;
 }
 
-static bool checkPushStream(ModuleOp mod,
-                            const PipeCapacityEndpoint &endpoint,
-                            PipeCapacityAnalysisState &state,
-                            const llvm::SmallPtrSetImpl<Operation *>
-                                &postFuncs) {
+static bool
+checkPushStream(ModuleOp mod, const PipeCapacityEndpoint &endpoint,
+                PipeCapacityAnalysisState &state,
+                const llvm::SmallPtrSetImpl<Operation *> &postFuncs) {
   LaunchNodeDomain receiverDomain =
       getSingleNodeDomain(endpoint.receiverDFB.receiver);
   bool valid = true;
@@ -391,8 +389,7 @@ static bool collectAndCheckSends(ModuleOp mod,
     if (!isMatchingTransfer(endpoint, sendOp.getTransfer())) {
       return;
     }
-    if (!isExactlyDomain(sendOp, sourceDomain, state) ||
-        !isNocThread(sendOp)) {
+    if (!isExactlyDomain(sendOp, sourceDomain, state) || !isNocThread(sendOp)) {
       debugRejectEndpoint(endpoint, "send is not in the sender NOC domain");
       valid = false;
       return;
@@ -441,24 +438,21 @@ static bool collectAndCheckPops(ModuleOp mod,
   return valid;
 }
 
-static void recordEndpointCapacityFacts(
-    const PipeCapacityEndpointFacts &facts, int64_t capacitySemaphoreIndex,
-    PipeCapacityPlan &plan) {
+static void recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &facts,
+                                        int64_t capacitySemaphoreIndex,
+                                        PipeCapacityPlan &plan) {
   const PipeCapacityEndpoint &endpoint = facts.endpoint;
   for (PipeTransferSendOp sendOp : facts.sends) {
-    plan.addAcquire(sendOp,
-                    PipeCapacityAcquireInfo{capacitySemaphoreIndex, 1});
+    plan.addAcquire(sendOp, PipeCapacityAcquireInfo{capacitySemaphoreIndex, 1});
     plan.addInitialization(
         sendOp->getParentOfType<FuncOp>(),
-        PipeCapacityInitInfo{capacitySemaphoreIndex,
-                             endpoint.initialCapacity});
+        PipeCapacityInitInfo{capacitySemaphoreIndex, endpoint.initialCapacity});
   }
   for (CBPopOp popOp : facts.pops) {
-    plan.addRelease(
-        popOp,
-        PipeCapacityReleaseInfo{
-            PipeCapacitySenderCoord{endpoint.source.x, endpoint.source.y},
-            capacitySemaphoreIndex, 1});
+    plan.addRelease(popOp, PipeCapacityReleaseInfo{
+                               PipeCapacitySenderCoord{endpoint.source.x,
+                                                       endpoint.source.y},
+                               capacitySemaphoreIndex, 1});
   }
 }
 
@@ -529,8 +523,8 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
       LLVM_DEBUG({
         llvm::dbgs() << "PipeCapacity: reject ";
         printEndpoint(llvm::dbgs(), endpoint);
-        llvm::dbgs() << ": receiver DFB has "
-                     << writerEndpoints.size() << " writer endpoint(s)\n";
+        llvm::dbgs() << ": receiver DFB has " << writerEndpoints.size()
+                     << " writer endpoint(s)\n";
       });
       continue;
     }

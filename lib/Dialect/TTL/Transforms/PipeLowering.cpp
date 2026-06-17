@@ -1545,33 +1545,32 @@ static const PipeEdge *lookupPipeEdge(const PipeGraph &pipeGraph,
 }
 
 static std::optional<int64_t>
-getUniformReceiverSlotPeriod(const PipeGraph &pipeGraph,
-                             const PipeEdge &pipeEdge) {
-  std::optional<int64_t> receiverSlotPeriod;
+getUniformReceiverBatchSize(const PipeGraph &pipeGraph,
+                            const PipeEdge &pipeEdge) {
+  std::optional<int64_t> receiverBatchSize;
   for (PipeReceiverEndpointId endpointId :
        pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
     const PipeReceiverEndpoint &endpoint =
         pipeGraph.getPipeReceiverEndpoint(endpointId);
     const PipeReceiverDFBNode &receiverDFBNode =
         pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
-    if (receiverSlotPeriod &&
-        *receiverSlotPeriod != receiverDFBNode.receiverSlotPeriod) {
+    if (receiverBatchSize &&
+        *receiverBatchSize != receiverDFBNode.receiverBatchSize) {
       return std::nullopt;
     }
-    receiverSlotPeriod = receiverDFBNode.receiverSlotPeriod;
+    receiverBatchSize = receiverDFBNode.receiverBatchSize;
   }
-  return receiverSlotPeriod;
+  return receiverBatchSize;
 }
 
 static std::optional<int64_t>
 getStaticReceiverByteOffset(const ReceiverDFBInfo &receiverInfo,
-                            int64_t receiverSlotPeriod) {
-  if (receiverInfo.blockCount != receiverSlotPeriod) {
+                            int64_t receiverBatchSize) {
+  if (receiverInfo.blockCount != receiverBatchSize) {
     return std::nullopt;
   }
-  int64_t blockOffsetBytes =
-      *receiverInfo.receiverSlotIndex *
-      getReceiverDFBBlockStrideBytes(receiverInfo);
+  int64_t blockOffsetBytes = *receiverInfo.receiverSlotIndex *
+                             getReceiverDFBBlockStrideBytes(receiverInfo);
   return blockOffsetBytes + getReceiverDFBStaticByteOffset(receiverInfo);
 }
 
@@ -1596,13 +1595,13 @@ static bool isComputedAddressCandidate(const PipeTransferAllocationUnit &unit,
   if (!pipeEdge) {
     return false;
   }
-  std::optional<int64_t> period =
-      getUniformReceiverSlotPeriod(pipeGraph, *pipeEdge);
-  if (!period) {
+  std::optional<int64_t> receiverBatchSize =
+      getUniformReceiverBatchSize(pipeGraph, *pipeEdge);
+  if (!receiverBatchSize) {
     return false;
   }
   std::optional<int64_t> offset =
-      getStaticReceiverByteOffset(receiverInfo, *period);
+      getStaticReceiverByteOffset(receiverInfo, *receiverBatchSize);
   if (!offset) {
     return false;
   }
@@ -1644,7 +1643,8 @@ buildComputedAddressPlan(ModuleOp mod,
       continue;
     }
     candidates.push_back(Candidate{static_cast<unsigned>(indexedUnit.index()),
-                                   *senderFunc, receiverInfo, staticByteOffset});
+                                   *senderFunc, receiverInfo,
+                                   staticByteOffset});
     dfbIndicesByFunc[*senderFunc].insert(receiverInfo->dfbIndex);
   }
 
@@ -1687,8 +1687,7 @@ buildComputedAddressPlan(ModuleOp mod,
         baseCTAByFunc[senderFunc] + std::distance(dfbIndices.begin(), dfbIt);
 
     plan.infoByUnitIndex[candidate.unitIndex] = PipeComputedAddressInfo{
-        candidate.receiverInfo->dfbIndex,
-        baseCompileTimeArgIndex,
+        candidate.receiverInfo->dfbIndex, baseCompileTimeArgIndex,
         candidate.staticByteOffset};
   }
 
