@@ -1602,6 +1602,11 @@ struct LowerTypecastToCompute : OpRewritePattern<TypecastOp> {
       return failure();
     }
 
+    if (op.getInput().getType() == op.getResult().getType()) {
+      rewriter.replaceOp(op, op.getInput());
+      return success();
+    }
+
     if (!getAttachedCB(op.getInput())) {
       return tryFusion(op, rewriter);
     }
