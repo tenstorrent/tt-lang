@@ -34,10 +34,9 @@ The current compiler lowering recognizes these accumulation forms:
   detects the preceding non-accumulating pack.
 
 The accumulation-scope IR declares which destination tensor views participate
-in an accumulation region, plus the combiner and initial-state policy for each
-output. Later lowering can select DST, L1 packer accumulation, or explicit DFB
-state without reconstructing that policy from neighboring stores or DFB
-operations.
+in an accumulation region, plus the initial-state policy for each output. Later
+lowering can select DST, L1 packer accumulation, or explicit DFB state without
+reconstructing that policy from neighboring stores or DFB operations.
 
 The rest of this document details each piece: accumulation scopes,
 `DstSectionOp` as the IR primitive that keeps DST live, the choice between DST
@@ -48,18 +47,16 @@ L1-acc guard placement.
 
 `ttl.accumulation_scope` declares the accumulation contract for one or more
 destination tensor views. It records which outputs share a region, how each
-output is initialized, and which combiner updates each output. The op does not
-select the storage mechanism used for partial values. It has:
+output is initialized, and which value returned by the region updates each
+output. The op does not select the storage mechanism used for partial values.
+It has:
 
 - `outputs`: destination tensor views governed by the accumulation policy;
-- `explicit_inits`: initial tensors for outputs whose mode is `explicit`;
-- `combiners`: one accumulation combiner enum attribute per output
-  (`0 : i32` is add);
-- `initial_modes`: one accumulation initial-mode enum attribute per output
-  (`0 : i32` is overwrite, `1 : i32` is accumulate_existing, and
-  `2 : i32` is explicit);
-- `body`: a single-block region containing the loop or operations that
-  produce accumulated values.
+- `inits`: init operands for outputs whose initial mode is `init`;
+- `initial_modes`: one accumulation initial-mode per output (`overwrite`,
+  `accumulate_existing`, or `init`);
+- `body`: a single-block region with one block argument and one yielded value
+  per output.
 
 The op has `RecursiveMemoryEffects`; its effects are the effects of the body.
 It produces no tensor results. Tensor result support is deferred until the
@@ -67,13 +64,11 @@ compiler needs value-style accumulation scopes.
 
 The verifier is structural:
 
-- combiner count equals output count;
 - initial-mode count equals output count;
-- explicit modes have matching explicit init operands;
-- explicit init types match their corresponding outputs;
-- stateful bodies have one block argument and one yielded value per output;
-- stateful body arguments and yielded values match their output types;
-- stateful bodies use explicit initial mode for every output;
+- init modes have matching init operands;
+- init operand types match their corresponding outputs;
+- the body has one block argument and one yielded value per output;
+- body arguments and yielded values match their output types;
 - nested `ttl.accumulation_scope` is rejected until nested accumulation
   semantics are defined.
 
@@ -86,8 +81,8 @@ Initial modes have these meanings:
 - `overwrite`: the first executed contribution defines the accumulator value.
 - `accumulate_existing`: an existing value in the output location
   participates in the result.
-- `explicit`: an explicit init operand seeds the accumulator, independent of
-  the final output location.
+- `init`: an init operand seeds the accumulator, independent of the final
+  output location.
 
 Example:
 
@@ -95,33 +90,27 @@ Example:
 ttl.accumulation_scope
     outs(%out_view : tensor<...>)
     inits(%init : tensor<...>)
-    {combiners = [0 : i32],
-     initial_modes = [2 : i32]} {
-  %result = scf.for ... iter_args(%acc = %init) -> tensor<...> {
-    %next = ttl.add %acc, %contribution : tensor<...>
-    scf.yield %next : tensor<...>
-  }
-  ttl.store %result, %out_view : tensor<...>, tensor<...>
-  ttl.yield
-}
+{
+^bb0(%acc: tensor<...>):
+  %next = ttl.add %acc, %contribution : tensor<...>, tensor<...> -> tensor<...>
+  ttl.yield %next : tensor<...>
+} initial_modes([init])
 ```
 
-Stateful accumulation scopes expose accumulator state as block arguments and
-return the updated state through `ttl.yield`. This form is used when multiple
-outputs must be analyzed or lowered as one group. Cross-output dependence is
-represented by ordinary SSA use-def edges between yielded values.
+Accumulation scopes expose accumulator state as block arguments and return the
+updated state through `ttl.yield`. Cross-output dependence is represented by
+ordinary SSA use-def edges between yielded values.
 
 ```mlir
 ttl.accumulation_scope
     outs(%out0, %out1 : tensor<...>, tensor<...>)
     inits(%init0, %init1 : tensor<...>, tensor<...>)
-    {combiners = [0 : i32, 0 : i32],
-     initial_modes = [2 : i32, 2 : i32]} {
+{
 ^bb0(%acc0: tensor<...>, %acc1: tensor<...>):
   %next0 = ttl.add %acc0, %acc1 : tensor<...>, tensor<...> -> tensor<...>
   %next1 = ttl.add %acc1, %next0 : tensor<...>, tensor<...> -> tensor<...>
   ttl.yield %next0, %next1 : tensor<...>, tensor<...>
-}
+} initial_modes([init, init])
 ```
 
 `AccumulationScopeOpInterface` gives consumers a common contract for ops that

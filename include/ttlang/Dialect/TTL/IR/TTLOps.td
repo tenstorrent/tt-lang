@@ -331,9 +331,9 @@ def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
   let description = [{
     `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
     `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`, and
-    `ttl.accumulation_scope`. In `ttl.accumulation_scope`, it may carry the
-    final accumulator values for scopes whose body exposes explicit accumulator
-    state as block arguments. Other TTL regions use an operand-less terminator.
+    `ttl.accumulation_scope`. In `ttl.accumulation_scope`, it carries one
+    updated value per accumulation output. Other TTL regions use an
+    operand-less terminator.
   }];
   let arguments = (ins Variadic<AnyType>:$values);
   let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
@@ -358,31 +358,25 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
     accumulated value is stored in DST, a dataflow buffer, or another
     target-specific storage mechanism.
 
-    The `combiners` and `initial_modes` attributes contain one entry per
-    output. `explicit_inits` contains one operand for each output whose initial
-    mode is `explicit`, in output order.
+    The `initial_modes` attribute contains one entry per output. `inits`
+    contains one operand for each output whose initial mode is `init`, in output
+    order.
 
-    The body may use one block argument per output and yield one value per
-    output when all outputs use explicit initial values. This form makes
-    cross-accumulator dataflow an SSA property: if the yielded value for one
+    The body uses one block argument per output and yields one value per output.
+    This form makes
+    cross-output data dependence an SSA property: if the yielded value for one
     output uses another output's updated value, normal SSA use-def edges encode
-    that dependency. Scopes without body arguments and yielded values remain
-    policy-only wrappers for storage-strategy selection.
+    that dependency.
   }];
 
   let arguments = (ins
     Variadic<AnyRankedTensor>:$outputs,
-    Variadic<AnyRankedTensor>:$explicit_inits,
-    ArrayAttr:$combiners,
+    Variadic<AnyRankedTensor>:$inits,
     ArrayAttr:$initial_modes
   );
   let regions = (region SizedRegion<1>:$body);
 
-  let assemblyFormat = [{
-    `outs` `(` $outputs `:` type($outputs) `)`
-    (`inits` `(` $explicit_inits^ `:` type($explicit_inits) `)`)?
-    $body attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 
