@@ -18,14 +18,15 @@ func.func @dst_required_but_ineligible() {
   // expected-error @below {{cannot lower tensor accumulation scope to DST: expected a DST-compatible same-type additive recurrence with one loop-carried accumulator and one final store; select the automatic accumulation strategy or l1-pack}}
   ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-    %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%state: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %state) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
       %delta_wait = ttl.cb_wait %cb_delta : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       %delta = ttl.attach_cb %delta_wait, %cb_delta : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       %sum = ttl.add %acc, %delta : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
     ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.yield
-  } combiners([add]) initial_modes([explicit])
+    ttl.yield %loop : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } initial_modes([init])
   func.return
 }

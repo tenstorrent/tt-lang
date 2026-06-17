@@ -58,34 +58,17 @@ def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduction function type",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
-//===----------------------------------------------------------------------===//
-// Accumulation enums
-//===----------------------------------------------------------------------===//
-
-def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
-def TTL_AccumulationCombiner_Yielded
-    : I32EnumAttrCase<"Yielded", 1, "yielded">;
-
-// TODO(#646): Add max/min combiners after strategy legality is defined for
-// each storage mechanism.
-def TTL_AccumulationCombiner : I32EnumAttr<"AccumulationCombiner",
-    "TTL accumulation combiner",
-    [TTL_AccumulationCombiner_Add, TTL_AccumulationCombiner_Yielded]> {
-  let cppNamespace = "::mlir::tt::ttl";
-}
-
 def TTL_AccumulationInitialMode_Overwrite
     : I32EnumAttrCase<"Overwrite", 0, "overwrite">;
 def TTL_AccumulationInitialMode_AccumulateExisting
     : I32EnumAttrCase<"AccumulateExisting", 1, "accumulate_existing">;
-def TTL_AccumulationInitialMode_Explicit
-    : I32EnumAttrCase<"Explicit", 2, "explicit">;
+def TTL_AccumulationInitialMode_Init : I32EnumAttrCase<"Init", 2, "init">;
 
 def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
     "TTL accumulation initial-value mode",
     [TTL_AccumulationInitialMode_Overwrite,
      TTL_AccumulationInitialMode_AccumulateExisting,
-     TTL_AccumulationInitialMode_Explicit]> {
+     TTL_AccumulationInitialMode_Init]> {
   let cppNamespace = "::mlir::tt::ttl";
 }
 

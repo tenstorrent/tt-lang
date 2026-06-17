@@ -95,9 +95,6 @@ def TTL_DSTRegister : TTL_Type<"DSTRegister", "dst"> {
 
 def TTL_BcastTypeAttr : EnumAttr<TTL_Dialect, TTL_BcastType, "bcast_type">;
 def TTL_ReduceTypeAttr : EnumAttr<TTL_Dialect, TTL_ReduceType, "reduce_type">;
-def TTL_AccumulationCombinerAttr
-    : EnumAttr<TTL_Dialect, TTL_AccumulationCombiner,
-               "accumulation_combiner">;
 def TTL_AccumulationInitialModeAttr
     : EnumAttr<TTL_Dialect, TTL_AccumulationInitialMode,
                "accumulation_initial_mode">;

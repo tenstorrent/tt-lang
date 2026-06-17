@@ -106,13 +106,9 @@ static LogicalResult insertTensorAccumulationScope(scf::ForOp loop,
   }
 
   MLIRContext *context = loop.getContext();
-  // TODO(#646): Select the combiner from the matched recurrence instead of
-  // inserting only additive tensor accumulation scopes.
-  ArrayAttr combiners = rewriter.getArrayAttr(
-      {AccumulationCombinerAttr::get(context, AccumulationCombiner::Add)});
   ArrayAttr initialModes =
       rewriter.getArrayAttr({AccumulationInitialModeAttr::get(
-          context, AccumulationInitialMode::Explicit)});
+          context, AccumulationInitialMode::Init)});
 
   // The reserve defines the output view for the semantic scope. Moving it
   // before the loop represents the required single output slot that persists
@@ -127,15 +123,17 @@ static LogicalResult insertTensorAccumulationScope(scf::ForOp loop,
   rewriter.setInsertionPoint(loop);
   auto scope = AccumulationScopeOp::create(
       rewriter, loop.getLoc(), ValueRange{match->reserve.getResult()},
-      ValueRange{match->initialValue}, combiners, initialModes);
+      ValueRange{match->initialValue}, initialModes);
 
-  Block *body = rewriter.createBlock(&scope.getBody());
+  Block *body =
+      rewriter.createBlock(&scope.getBody(), {}, match->initialValue.getType(),
+                           SmallVector<Location>{match->initialValue.getLoc()});
+
+  rewriter.moveOpBefore(loop, body, body->end());
+  loop.getInitsMutable()[0].set(body->getArgument(0));
+  rewriter.moveOpBefore(match->finalStore, body, body->end());
   rewriter.setInsertionPointToEnd(body);
-  YieldOp::create(rewriter, loop.getLoc());
-
-  Operation *terminator = body->getTerminator();
-  rewriter.moveOpBefore(loop, terminator);
-  rewriter.moveOpBefore(match->finalStore, terminator);
+  YieldOp::create(rewriter, loop.getLoc(), loop->getResults());
   return success();
 }
 
@@ -270,7 +268,6 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
 
   MLIRContext *context = loop.getContext();
   SmallVector<Value, 2> outputs;
-  SmallVector<Attribute, 2> combiners;
   SmallVector<Attribute, 2> initialModes;
   llvm::DenseSet<Value> seenOutputs;
   std::optional<AccumulationInitialMode> loopMode;
@@ -319,24 +316,26 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
     }
 
     outputs.push_back(store.getView());
-    // TODO(#646): Carry the source combiner when DFB accumulations support
-    // non-additive update operations.
-    combiners.push_back(
-        AccumulationCombinerAttr::get(context, AccumulationCombiner::Add));
     initialModes.push_back(AccumulationInitialModeAttr::get(context, *mode));
   }
 
   rewriter.setInsertionPoint(loop);
   auto scope = AccumulationScopeOp::create(
       rewriter, loop.getLoc(), outputs, ValueRange{},
-      rewriter.getArrayAttr(combiners), rewriter.getArrayAttr(initialModes));
+      rewriter.getArrayAttr(initialModes));
 
-  Block *body = rewriter.createBlock(&scope.getBody());
+  SmallVector<Type, 2> outputTypes;
+  SmallVector<Location, 2> outputLocs;
+  for (Value output : outputs) {
+    outputTypes.push_back(output.getType());
+    outputLocs.push_back(output.getLoc());
+  }
+  Block *body =
+      rewriter.createBlock(&scope.getBody(), {}, outputTypes, outputLocs);
+
+  rewriter.moveOpBefore(loop, body, body->end());
   rewriter.setInsertionPointToEnd(body);
-  YieldOp::create(rewriter, loop.getLoc());
-
-  Operation *terminator = body->getTerminator();
-  rewriter.moveOpBefore(loop, terminator);
+  YieldOp::create(rewriter, loop.getLoc(), body->getArguments());
   return success();
 }
 

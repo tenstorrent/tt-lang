@@ -101,16 +101,6 @@ getL1AccumulationInitialMode(ComputeOp op) {
     return std::nullopt;
   }
 
-  SmallVector<AccumulationCombiner> combiners =
-      accumulation.getAccumulationCombiners();
-  // TODO(#646): Use the shared combiner/strategy legality table when
-  // non-additive reduction combiners implement AccumulationScopeOpInterface.
-  if (!llvm::all_of(combiners, [](AccumulationCombiner combiner) {
-        return combiner == AccumulationCombiner::Add;
-      })) {
-    return std::nullopt;
-  }
-
   SmallVector<AccumulationInitialMode> initialModes =
       accumulation.getAccumulationInitialModes();
   if (initialModes.size() != 1) {
@@ -125,8 +115,8 @@ static bool requiresDstAccumulation(ComputeOp op) {
   if (op.containsOp<TileAccumulateAddOp>()) {
     return true;
   }
-  // TODO(#646): Route non-additive combiners through the accumulation strategy
-  // interface once max/min storage contracts are defined.
+  // TODO(#646): Route non-additive reductions through the accumulation
+  // strategy interface once max/min storage contracts are defined.
   return op.getBody()
       .walk([](TileReduceOp reduce) {
         return reduce.getReduceType() == ReduceType::Max

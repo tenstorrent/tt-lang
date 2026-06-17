@@ -79,6 +79,9 @@ bool isTensorLoopState(scf::ForOp loop, unsigned resultIndex);
 /// This is required after scope insertion, where `ttl.accumulation_scope` owns
 /// the same reservation as an operand.
 ///
+/// `allowedLoopResultUsers` contains wrapper terminators that may consume the
+/// loop result without defining an externally visible destination.
+///
 /// Expected non-matches return failure without diagnostics; callers decide
 /// whether another strategy or the general loop-state lowering should handle
 /// the loop.
@@ -86,7 +89,8 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     scf::ForOp loop, unsigned resultIndex,
     TensorAccumulationReservePlacement reservePlacement =
         TensorAccumulationReservePlacement::SameBlock,
-    ArrayRef<Operation *> allowedReserveUsers = {});
+    ArrayRef<Operation *> allowedReserveUsers = {},
+    ArrayRef<Operation *> allowedLoopResultUsers = {});
 
 /// Return the static trip count, accepting constant bounds that have been cast
 /// to index. scf::ForOp::getStaticTripCount does not fold arith.index_cast.

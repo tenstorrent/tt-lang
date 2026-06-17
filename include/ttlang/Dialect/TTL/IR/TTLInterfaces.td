@@ -79,15 +79,10 @@ def TTL_AccumulationScopeOpInterface
       /*methodName=*/"getAccumulationOutputs",
       /*args=*/(ins)>,
     InterfaceMethod<
-      /*desc=*/"Return explicit initial values for outputs whose initial mode "
-               "requires one.",
+      /*desc=*/"Return init operands for outputs whose initial mode requires "
+               "one.",
       /*retTy=*/"::mlir::ValueRange",
-      /*methodName=*/"getExplicitInitialValues",
-      /*args=*/(ins)>,
-    InterfaceMethod<
-      /*desc=*/"Return one combiner per accumulation output.",
-      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::AccumulationCombiner>",
-      /*methodName=*/"getAccumulationCombiners",
+      /*methodName=*/"getAccumulationInits",
       /*args=*/(ins)>,
     InterfaceMethod<
       /*desc=*/"Return one initial-value mode per accumulation output.",

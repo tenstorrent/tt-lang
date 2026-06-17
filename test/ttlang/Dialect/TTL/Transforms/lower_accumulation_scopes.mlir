@@ -45,7 +45,8 @@ func.func @tensor_accumulation_scope() {
   %c1 = arith.constant 1 : index
   ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-    %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%state: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %state) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
       %delta_wait = ttl.cb_wait %cb_delta : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       %delta = ttl.attach_cb %delta_wait, %cb_delta : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       %sum = ttl.add %acc, %delta : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -53,8 +54,8 @@ func.func @tensor_accumulation_scope() {
       scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
     ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.yield
-  } combiners([add]) initial_modes([explicit])
+    ttl.yield %loop : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } initial_modes([init])
   func.return
 }
 
@@ -79,7 +80,8 @@ func.func @tensor_accumulation_scope_index_cast_bound() {
   %c1 = arith.constant 1 : index
   ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-    %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%state: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    %loop = scf.for %iter = %c0 to %c3 step %c1 iter_args(%acc = %state) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
       %delta_wait = ttl.cb_wait %cb_delta : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       %delta = ttl.attach_cb %delta_wait, %cb_delta : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       %sum = ttl.add %acc, %delta : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -87,7 +89,7 @@ func.func @tensor_accumulation_scope_index_cast_bound() {
       scf.yield %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
     ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.yield
-  } combiners([add]) initial_modes([explicit])
+    ttl.yield %loop : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } initial_modes([init])
   func.return
 }

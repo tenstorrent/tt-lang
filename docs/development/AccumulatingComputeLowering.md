@@ -51,6 +51,11 @@ The compiler recognizes these accumulation forms and initial-state cases:
 - General tensor recurrences that are not recognized as additive
   accumulation use explicit compiler-managed DFB state.
 
+The accumulation-scope IR declares which destination tensor views participate
+in an accumulation region, plus the initial-state policy for each output. Later
+lowering can select DST, L1 packer accumulation, or explicit DFB state without
+reconstructing that policy from neighboring stores or DFB operations.
+
 The rest of this document details each piece: accumulation scopes,
 loop-carried tensor state elimination (`ttl-materialize-loop-state`),
 `DstSectionOp` as the IR primitive that keeps DST live, the choice between
@@ -75,7 +80,7 @@ Deferred features are tracked separately:
 
 - #640: optimize additive tensor recurrences with post-loop pure users;
 - #645: add source-level accumulation strategy hints;
-- #646: support non-additive accumulation combiners;
+- #646: define non-additive accumulation update contracts;
 - #648: define nested and conditional accumulation scope semantics;
 - #649: replace `maximize-dst` with granular compiler options;
 - #650: synthesize explicit DFB state fallback for unsupported scopes.
@@ -98,16 +103,16 @@ The current design preserves these invariants:
 
 `ttl.accumulation_scope` declares the accumulation contract for one or more
 destination tensor views. It records which outputs share a region, how each
-output is initialized, and which combiner updates each output. The op does not
-select the storage mechanism used for partial values. It has:
+output is initialized, and which value returned by the region updates each
+output. The op does not select the storage mechanism used for partial values.
+It has:
 
 - `outputs`: destination tensor views governed by the accumulation policy;
-- `explicit_inits`: initial tensors for outputs whose mode is `explicit`;
-- `combiners`: one accumulation combiner per output (`add` or `yielded`);
+- `inits`: init operands for outputs whose initial mode is `init`;
 - `initial_modes`: one accumulation initial-mode per output (`overwrite`,
-  `accumulate_existing`, or `explicit`);
-- `body`: a single-block region containing the loop or operations that
-  produce accumulated values.
+  `accumulate_existing`, or `init`);
+- `body`: a single-block region with one block argument and one yielded value
+  per output.
 
 The op has `RecursiveMemoryEffects`; its effects are the effects of the
 body. It produces no tensor results. Tensor recurrence scopes are consumed
@@ -116,17 +121,13 @@ deferred feature rather than part of the current op contract.
 
 The verifier is structural:
 
-- combiner count equals output count;
-- yielded combiners require a stateful body;
-- stateful bodies require yielded combiners for every output;
 - initial-mode count equals output count;
-- explicit modes have matching explicit init operands;
-- explicit init types match their corresponding outputs;
-- stateful bodies have one block argument and one yielded value per output;
-- stateful body arguments and yielded values match their output types;
-- stateful bodies use explicit initial mode for every output;
-- nested `ttl.accumulation_scope` is rejected until #648 defines nesting
-  semantics.
+- init modes have matching init operands;
+- init operand types match their corresponding outputs;
+- the body has one block argument and one yielded value per output;
+- body arguments and yielded values match their output types;
+- nested `ttl.accumulation_scope` is rejected until nested accumulation
+  semantics are defined.
 
 The verifier does not prove that stores target the declared outputs or that
 control flow reaches an update. Those are nonlocal insertion and strategy
@@ -140,8 +141,8 @@ Initial modes have these meanings:
 - `accumulate_existing`: an existing value in the output location
   participates in the result. For L1 packer accumulation, iteration 0 must
   pack with L1 accumulation enabled.
-- `explicit`: an explicit init operand seeds the accumulator, independent of
-  the final output location. Tensor additive recurrences use this mode.
+- `init`: an init operand seeds the accumulator, independent of the final
+  output location.
 
 Tensor recurrence scope form:
 
@@ -150,16 +151,21 @@ ttl.accumulation_scope
     outs(%out_view : tensor<...>)
     inits(%init : tensor<...>)
 {
-  %result = scf.for ... iter_args(%acc = %init) -> tensor<...> {
+^bb0(%state: tensor<...>):
+  %result = scf.for ... iter_args(%acc = %state) -> tensor<...> {
     %next = ttl.add %acc, %contribution : tensor<...>
     scf.yield %next : tensor<...>
   }
   ttl.store %result, %out_view : tensor<...>, tensor<...>
-  ttl.yield
-} combiners([add]) initial_modes([explicit])
+  ttl.yield %result : tensor<...>
+} initial_modes([init])
 ```
 
-Stateful accumulation scope form:
+Accumulation scopes expose accumulator state as block arguments and return the
+updated state through `ttl.yield`. Cross-output dependence is represented by
+ordinary SSA use-def edges between yielded values.
+
+Multi-output stateful accumulation scope form:
 
 ```mlir
 ttl.accumulation_scope
@@ -170,14 +176,13 @@ ttl.accumulation_scope
   %next0 = ttl.add %acc0, %acc1 : tensor<...>, tensor<...> -> tensor<...>
   %next1 = ttl.add %acc1, %next0 : tensor<...>, tensor<...> -> tensor<...>
   ttl.yield %next0, %next1 : tensor<...>, tensor<...>
-} combiners([yielded, yielded]) initial_modes([explicit, explicit])
+} initial_modes([init, init])
 ```
 
 This form exposes accumulator state as block arguments and returns the updated
 state through `ttl.yield`. Cross-output dependence is represented by ordinary
-SSA use-def edges between yielded values. The `yielded` combiner records that
-the region defines the next state directly, which covers state updates such as
-max-plus-rescale recurrences that are not additive combiners.
+SSA use-def edges between yielded values. This covers state updates such as
+max-plus-rescale recurrences that are not additive recurrences.
 
 Explicit DFB accumulation scope form:
 
@@ -185,16 +190,17 @@ Explicit DFB accumulation scope form:
 ttl.accumulation_scope
     outs(%out_view : tensor<...>)
 {
+^bb0(%state: tensor<...>):
   scf.for ... {
     ttl.store %value, %out_view {accumulate} : ...
   }
-  ttl.yield
-} combiners([add]) initial_modes([overwrite])
+  ttl.yield %state : tensor<...>
+} initial_modes([overwrite])
 ```
 
 `AccumulationScopeOpInterface` is implemented by `ttl.accumulation_scope`
 and reduction-capable `ttl.compute`. Consumers call `isAccumulation()` before
-reading outputs, combiners, initial modes, and the accumulation body. This
+reading outputs, inits, initial modes, and the accumulation body. This
 keeps reduction L1 metadata and `ttl.accumulation_scope` L1 metadata on one
 contract without forcing reductions to be wrapped in `ttl.accumulation_scope`.
 
@@ -204,8 +210,7 @@ The TTL-to-TTKernel pipeline handles accumulation in this order:
 
 1. `ttl-insert-accumulation-scopes{kind=tensor}` runs before
    `ttl-materialize-loop-state`. It inserts semantic scopes around recognized
-   single-output additive tensor recurrences and records `explicit` initial
-   mode.
+   single-output additive tensor recurrences and records `init` initial mode.
 
 2. `ttl-lower-accumulation-scopes{kind=tensor}` consumes those scopes. It
    selects DST or L1 packer accumulation according to
@@ -265,7 +270,7 @@ rewrites. A dependent group is selected as one unit because lowering one
 accumulator independently can break SSA dependences between accumulator
 updates.
 
-`AccumulationGroupAnalysis` records output slots, explicit state values, and
+`AccumulationGroupAnalysis` records output slots, state values, and
 cross-output dependences. `planTensorAccumulationStrategy` enumerates legal
 strategy candidates for each group and scores them with
 `AccumulationCostModel`. The cost model selects architecture-specific weights
@@ -344,8 +349,8 @@ below.
 
 Tensor DST lowering requires the normalized additive recurrence form:
 
-- exactly one output and one explicit init;
-- add combiner and `explicit` initial mode;
+- exactly one output and one init operand;
+- `init` initial mode;
 - output from `ttl.cb_reserve`;
 - a top-level `scf.for` followed by the final non-accumulating `ttl.store`;
 - recurrence dataflow matching `acc = acc + contribution` or
@@ -353,16 +358,16 @@ Tensor DST lowering requires the normalized additive recurrence form:
 - no post-loop pure users between the loop and final store, except removable
   reserve/attach operations. #640 tracks fused epilogue-style support.
 
-Tensor L1 packer lowering creates a non-accumulating store of the explicit
-init before the loop and per-iteration accumulating stores into the same
+Tensor L1 packer lowering creates a non-accumulating store of the init
+operand before the loop and per-iteration accumulating stores into the same
 output reservation. The generated loop carries
 `ttl.l1_acc_initial = accumulate_existing` because the pre-loop store has
 already materialized the accumulator baseline in L1.
 
 Reduction L1 lowering is additive only. `reduce_max` and
 `ttl.tile_accumulate_add` have no L1 packer representation in this lowering,
-so they remain DST-resident. #646 tracks non-additive combiner support and
-the shared legality table for combiner and strategy pairs.
+so they remain DST-resident. #646 tracks non-additive update contracts and
+the shared legality table for recurrence classes and strategy pairs.
 
 Unsupported L1 output formats are diagnosed in
 `TTKernelInsertL1Accumulation`, where the final pack output type is visible.
@@ -471,7 +476,7 @@ if update_executes:
         has_value = true
 ```
 
-Initial modes define the initial `has_value` state: true for `explicit` and
+Initial modes define the initial `has_value` state: true for `init` and
 `accumulate_existing`, false for `overwrite`.
 
 Nested `ttl.accumulation_scope` is rejected by the op verifier until #648

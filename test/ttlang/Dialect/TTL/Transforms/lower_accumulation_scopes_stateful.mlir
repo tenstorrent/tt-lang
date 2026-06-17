@@ -54,6 +54,6 @@ func.func @stateful_dependent_accumulators() {
       scf.yield %next0, %next1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
     ttl.yield %loop#0, %loop#1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-  } combiners([yielded, yielded]) initial_modes([explicit, explicit])
+  } initial_modes([init, init])
   func.return
 }

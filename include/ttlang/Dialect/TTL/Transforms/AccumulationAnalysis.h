@@ -53,8 +53,7 @@ enum class AccumulationDependenceKind {
 struct AccumulationSlot {
   unsigned index;
   Value output;
-  Value explicitInit;
-  AccumulationCombiner combiner;
+  Value init;
   AccumulationInitialMode initialMode;
   BlockArgument stateArgument;
   Value yieldedValue;

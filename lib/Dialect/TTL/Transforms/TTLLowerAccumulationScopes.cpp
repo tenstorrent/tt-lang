@@ -30,34 +30,24 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Verify the scope policy for single-output tensor accumulation.
-static LogicalResult
-verifySingleAddExplicitTensorScope(AccumulationScopeOp scope) {
+/// Verify the scope policy for single-output additive tensor accumulation.
+static LogicalResult verifySingleAddInitTensorScope(AccumulationScopeOp scope) {
   if (scope.getOutputs().size() != 1) {
     return scope.emitOpError(
         "tensor accumulation lowering supports exactly one output; split "
         "multiple accumulators into separate scopes");
   }
-  if (scope.getExplicitInits().size() != 1) {
+  if (scope.getInits().size() != 1) {
     return scope.emitOpError(
-        "tensor accumulation lowering requires one explicit init; use DFB "
+        "tensor accumulation lowering requires one init; use DFB "
         "accumulation lowering for overwrite or accumulate_existing modes");
-  }
-
-  SmallVector<AccumulationCombiner> combiners =
-      scope.getAccumulationCombiners();
-  // TODO(#646): Replace add-only validation with a combiner/strategy legality
-  // table shared by all accumulation scope lowerings.
-  if (combiners.front() != AccumulationCombiner::Add) {
-    return scope.emitOpError(
-        "tensor accumulation lowering supports only the add combiner (#646)");
   }
 
   SmallVector<AccumulationInitialMode> initialModes =
       scope.getAccumulationInitialModes();
-  if (initialModes.front() != AccumulationInitialMode::Explicit) {
+  if (initialModes.front() != AccumulationInitialMode::Init) {
     return scope.emitOpError(
-        "tensor accumulation lowering requires explicit initial mode; use DFB "
+        "tensor accumulation lowering requires init initial mode; use DFB "
         "accumulation lowering for overwrite or accumulate_existing modes");
   }
 
@@ -105,7 +95,7 @@ getSingleTensorAccumulationLoop(AccumulationScopeOp scope,
 /// Return the additive recurrence represented by a normalized tensor scope.
 static FailureOr<TensorAccumulationMatch>
 matchTensorAccumulationScope(AccumulationScopeOp scope) {
-  if (failed(verifySingleAddExplicitTensorScope(scope))) {
+  if (failed(verifySingleAddInitTensorScope(scope))) {
     return failure();
   }
 
@@ -125,7 +115,8 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
   FailureOr<TensorAccumulationMatch> match = matchAdditiveTensorAccumulation(
       *loop, /*resultIndex=*/0,
       TensorAccumulationReservePlacement::ExternalAllowed,
-      ArrayRef<Operation *>{scope.getOperation()});
+      ArrayRef<Operation *>{scope.getOperation()},
+      ArrayRef<Operation *>{scope.getBody().front().getTerminator()});
   if (failed(match)) {
     (void)scope.emitOpError(
         "tensor accumulation lowering requires a loop-carried additive "
@@ -134,12 +125,13 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
   }
 
   if (match->finalStore != finalStore ||
-      match->initialValue != scope.getExplicitInits().front()) {
+      match->initialValue != scope.getBody().front().getArgument(0)) {
     (void)scope.emitOpError(
         "tensor accumulation scope policy must match the loop recurrence; "
         "rebuild the scope with ttl-insert-accumulation-scopes");
     return failure();
   }
+  match->initialValue = scope.getInits().front();
 
   return match;
 }
@@ -161,6 +153,34 @@ static bool hasStatefulBody(AccumulationScopeOp scope) {
   Block &body = scope.getBody().front();
   auto yield = cast<YieldOp>(body.getTerminator());
   return body.getNumArguments() != 0 || !yield.getValues().empty();
+}
+
+/// Return values used when removing the scope body block. Init-mode outputs use
+/// their init operands; other modes preserve the output view SSA value.
+static SmallVector<Value>
+getScopeBlockArgumentReplacements(AccumulationScopeOp scope) {
+  SmallVector<Value> replacements;
+  SmallVector<AccumulationInitialMode> initialModes =
+      scope.getAccumulationInitialModes();
+  unsigned initIndex = 0;
+  for (auto [outputIndex, output] : llvm::enumerate(scope.getOutputs())) {
+    if (initialModes[outputIndex] == AccumulationInitialMode::Init) {
+      replacements.push_back(scope.getInits()[initIndex++]);
+      continue;
+    }
+    replacements.push_back(output);
+  }
+  return replacements;
+}
+
+/// Make the scope terminator independent of values that strategy lowering may
+/// erase before the semantic wrapper itself is removed.
+static void replaceYieldOperandsWithStateArguments(AccumulationScopeOp scope) {
+  Block &body = scope.getBody().front();
+  auto yield = cast<YieldOp>(body.getTerminator());
+  for (auto [index, stateArgument] : llvm::enumerate(body.getArguments())) {
+    yield->setOperand(index, stateArgument);
+  }
 }
 
 /// Verify the policy required for tensor stateful scope fallback.
@@ -205,7 +225,8 @@ lowerStatefulTensorAccumulationScope(AccumulationScopeOp scope,
     StoreOp::create(rewriter, yield.getLoc(), yieldedValue, output,
                     /*accumulate=*/nullptr);
   }
-  eraseAccumulationScopeWrapper(scope, rewriter, scope.getExplicitInits());
+  eraseAccumulationScopeWrapper(scope, rewriter,
+                                getScopeBlockArgumentReplacements(scope));
   return success();
 }
 
@@ -215,19 +236,10 @@ static LogicalResult verifyAddDFBScope(AccumulationScopeOp scope) {
     return scope.emitOpError(
         "DFB accumulation lowering requires at least one output");
   }
-  if (!scope.getExplicitInits().empty()) {
+  if (!scope.getInits().empty()) {
     return scope.emitOpError(
-        "DFB accumulation lowering does not accept explicit inits; use "
+        "DFB accumulation lowering does not accept inits; use "
         "overwrite or accumulate_existing initial modes");
-  }
-
-  // TODO(#646): Replace add-only validation with a combiner/strategy legality
-  // table shared by all accumulation scope lowerings.
-  for (AccumulationCombiner combiner : scope.getAccumulationCombiners()) {
-    if (combiner != AccumulationCombiner::Add) {
-      return scope.emitOpError(
-          "DFB accumulation lowering supports only the add combiner (#646)");
-    }
   }
 
   for (AccumulationInitialMode mode : scope.getAccumulationInitialModes()) {
@@ -296,7 +308,8 @@ static LogicalResult lowerDFBAccumulationScope(AccumulationScopeOp scope,
   (*loop)->setAttr(kL1AccInitialAttrName, AccumulationInitialModeAttr::get(
                                               scope.getContext(), initialMode));
   (*loop)->setAttr(kL1AccScopeIdAttrName, rewriter.getI64IntegerAttr(scopeId));
-  eraseAccumulationScopeWrapper(scope, rewriter);
+  eraseAccumulationScopeWrapper(scope, rewriter,
+                                getScopeBlockArgumentReplacements(scope));
   return success();
 }
 
@@ -305,7 +318,7 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
                                                   AccumulationStrategy strategy,
                                                   int64_t scopeId,
                                                   RewriterBase &rewriter) {
-  if (hasStatefulBody(scope)) {
+  if (scope.getOutputs().size() != 1) {
     return lowerStatefulTensorAccumulationScope(scope, strategy, rewriter);
   }
 
@@ -343,8 +356,10 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
   }
 
   if (selectedStrategy == AccumulationStrategy::Dst) {
+    replaceYieldOperandsWithStateArguments(scope);
     if (succeeded(lowerTensorAccumulationToDst(*match, loop, rewriter))) {
-      eraseAccumulationScopeWrapper(scope, rewriter);
+      eraseAccumulationScopeWrapper(scope, rewriter,
+                                    getScopeBlockArgumentReplacements(scope));
       return success();
     }
     return scope.emitOpError("cannot lower tensor accumulation scope to DST "
@@ -383,6 +398,7 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
         "the loop, or split the loop");
   }
 
+  replaceYieldOperandsWithStateArguments(scope);
   if (failed(
           lowerTensorAccumulationToL1Pack(*match, loop, scopeId, rewriter))) {
     // TODO(#650): Use explicit DFB state as the correctness fallback for
@@ -392,7 +408,8 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
         "expected one same-type additive recurrence with one final store; "
         "select the automatic accumulation strategy or rewrite the loop");
   }
-  eraseAccumulationScopeWrapper(scope, rewriter);
+  eraseAccumulationScopeWrapper(scope, rewriter,
+                                getScopeBlockArgumentReplacements(scope));
   return success();
 }
 

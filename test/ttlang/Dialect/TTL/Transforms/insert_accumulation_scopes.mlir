@@ -4,7 +4,7 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-accumulation-scopes{kind=tensor}))' --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-accumulation-scopes{kind=tensor}), func.func(ttl-insert-accumulation-scopes{kind=tensor}))' --split-input-file | FileCheck %s
 
-// Tensor recurrence with a final store inserts one explicit-init accumulation
+// Tensor recurrence with a final store inserts one init accumulation
 // scope. The output reserve is moved before the loop so the output slot spans
 // all accumulation iterations.
 // CHECK-LABEL: func.func @tensor_recurrence_scope
@@ -27,13 +27,14 @@ func.func @tensor_recurrence_scope(
 }
 // CHECK: %[[RESERVE:.*]] = ttl.cb_reserve %{{.*}} :
 // CHECK-NEXT: ttl.accumulation_scope outs(%[[RESERVE]] : tensor<1x1x!ttcore.tile<32x32, bf16>>) inits(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-// CHECK-NEXT:   %[[LOOP:.*]] = scf.for
+// CHECK-NEXT: ^bb0(%[[STATE:.*]]: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+// CHECK-NEXT:   %[[LOOP:.*]] = scf.for {{.*}} iter_args(%{{.*}} = %[[STATE]])
 // CHECK:        ttl.add
 // CHECK:        scf.yield
 // CHECK-NEXT:   }
 // CHECK-NEXT:   ttl.store %[[LOOP]], %[[RESERVE]]
-// CHECK-NEXT:   ttl.yield
-// CHECK-NEXT: } combiners([add]) initial_modes([explicit])
+// CHECK-NEXT:   ttl.yield %[[LOOP]] : tensor<1x1x!ttcore.tile<32x32, bf16>>
+// CHECK-NEXT: } initial_modes([init])
 // CHECK-NEXT: return
 // CHECK-NOT: ttl.attach_cb
 

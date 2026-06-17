@@ -7,9 +7,11 @@
 
 // CHECK-LABEL: func.func @dfb_overwrite_scope
 // CHECK: ttl.accumulation_scope outs(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+// CHECK: ^bb0(%{{.*}}: tensor<1x1x!ttcore.tile<32x32, bf16>>):
 // CHECK:   scf.for
 // CHECK:     ttl.store
-// CHECK: } combiners([add]) initial_modes([overwrite])
+// CHECK:   ttl.yield %{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>
+// CHECK: } initial_modes([overwrite])
 func.func @dfb_overwrite_scope(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
   %c0 = arith.constant 0 : index
@@ -32,9 +34,11 @@ func.func @dfb_overwrite_scope(
 // CHECK-LABEL: func.func @dfb_accumulate_existing_scope
 // CHECK: ttl.store
 // CHECK: ttl.accumulation_scope outs(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+// CHECK: ^bb0(%{{.*}}: tensor<1x1x!ttcore.tile<32x32, bf16>>):
 // CHECK:   scf.for
 // CHECK:     ttl.store
-// CHECK: } combiners([add]) initial_modes([accumulate_existing])
+// CHECK:   ttl.yield %{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>
+// CHECK: } initial_modes([accumulate_existing])
 func.func @dfb_accumulate_existing_scope(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {

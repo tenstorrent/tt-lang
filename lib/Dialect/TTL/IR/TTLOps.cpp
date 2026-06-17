@@ -453,8 +453,8 @@ static bool hasReductionIterator(mlir::tt::ttl::ComputeOp op) {
 
 /// Return true when the compute body contains a top-level additive
 /// accumulation operation.
-// TODO(#646): Add a Max AccumulationCombiner and storage contract before
-// reporting reduce_max through AccumulationScopeOpInterface.
+// TODO(#646): Define max/min storage contracts before reporting reduce_max
+// through AccumulationScopeOpInterface.
 static bool hasAdditiveAccumulatorBody(mlir::tt::ttl::ComputeOp op) {
   for (mlir::Operation &operation : op.getBody().front().without_terminator()) {
     if (mlir::isa<mlir::tt::ttl::TileAccumulateAddOp>(operation)) {
@@ -469,12 +469,11 @@ static bool hasAdditiveAccumulatorBody(mlir::tt::ttl::ComputeOp op) {
   return false;
 }
 
-/// Return whether this `ttl.compute` instance carries accumulation semantics
-/// that are expressible through the current additive combiner interface.
+/// Return whether this `ttl.compute` instance carries additive accumulation
+/// semantics.
 bool mlir::tt::ttl::ComputeOp::isAccumulation() {
-  // The single-output restriction avoids assigning one combiner policy to
-  // unrelated outputs. Multi-output compute support requires output-specific
-  // store analysis before it can implement this interface precisely.
+  // Multi-output compute support requires output-specific store analysis before
+  // it can implement this interface precisely.
   return getOutputs().size() == 1 && hasReductionIterator(*this) &&
          hasAdditiveAccumulatorBody(*this);
 }
@@ -487,21 +486,10 @@ mlir::ValueRange mlir::tt::ttl::ComputeOp::getAccumulationOutputs() {
   return getOutputs();
 }
 
-/// Return explicit initial tensors. Structured reductions define their first
-/// iteration from the compute body, so they do not carry separate init
-/// operands.
-mlir::ValueRange mlir::tt::ttl::ComputeOp::getExplicitInitialValues() {
+/// Return init tensors. Structured reductions define their first iteration
+/// from the compute body, so they do not carry separate init operands.
+mlir::ValueRange mlir::tt::ttl::ComputeOp::getAccumulationInits() {
   return mlir::ValueRange();
-}
-
-/// Return the additive combiner for the single active accumulation output.
-llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>
-mlir::tt::ttl::ComputeOp::getAccumulationCombiners() {
-  if (!isAccumulation()) {
-    return {};
-  }
-  return llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>(
-      getOutputs().size(), mlir::tt::ttl::AccumulationCombiner::Add);
 }
 
 /// Return overwrite mode for the single active output. The first reduction
@@ -1136,36 +1124,6 @@ static mlir::ParseResult parseAccumulationScopeValueList(
   return mlir::success();
 }
 
-static mlir::ParseResult
-parseAccumulationCombinerList(mlir::OpAsmParser &parser,
-                              llvm::SmallVectorImpl<mlir::Attribute> &attrs) {
-  if (parser.parseKeyword("combiners") || parser.parseLParen()) {
-    return mlir::failure();
-  }
-  if (parser.parseCommaSeparatedList(
-          mlir::OpAsmParser::Delimiter::Square,
-          [&]() -> mlir::ParseResult {
-            llvm::StringRef keyword;
-            llvm::SMLoc loc = parser.getCurrentLocation();
-            if (parser.parseKeyword(&keyword)) {
-              return mlir::failure();
-            }
-            std::optional<mlir::tt::ttl::AccumulationCombiner> combiner =
-                mlir::tt::ttl::symbolizeAccumulationCombiner(keyword);
-            if (!combiner) {
-              return parser.emitError(loc)
-                     << "expected accumulation combiner `add` or `yielded`";
-            }
-            attrs.push_back(mlir::tt::ttl::AccumulationCombinerAttr::get(
-                parser.getContext(), *combiner));
-            return mlir::success();
-          }) ||
-      parser.parseRParen()) {
-    return mlir::failure();
-  }
-  return mlir::success();
-}
-
 static mlir::ParseResult parseAccumulationInitialModeList(
     mlir::OpAsmParser &parser, llvm::SmallVectorImpl<mlir::Attribute> &attrs) {
   if (parser.parseKeyword("initial_modes") || parser.parseLParen()) {
@@ -1184,7 +1142,7 @@ static mlir::ParseResult parseAccumulationInitialModeList(
             if (!mode) {
               return parser.emitError(loc)
                      << "expected accumulation initial mode `overwrite`, "
-                        "`accumulate_existing`, or `explicit`";
+                        "`accumulate_existing`, or `init`";
             }
             attrs.push_back(mlir::tt::ttl::AccumulationInitialModeAttr::get(
                 parser.getContext(), *mode));
@@ -1201,41 +1159,38 @@ mlir::tt::ttl::AccumulationScopeOp::parse(mlir::OpAsmParser &parser,
                                           mlir::OperationState &result) {
   llvm::SmallVector<mlir::OpAsmParser::UnresolvedOperand> outputs;
   llvm::SmallVector<mlir::Type> outputTypes;
-  llvm::SmallVector<mlir::OpAsmParser::UnresolvedOperand> explicitInits;
-  llvm::SmallVector<mlir::Type> explicitInitTypes;
+  llvm::SmallVector<mlir::OpAsmParser::UnresolvedOperand> inits;
+  llvm::SmallVector<mlir::Type> initTypes;
   if (parseAccumulationScopeValueList(parser, "outs", outputs, outputTypes)) {
     return mlir::failure();
   }
   if (mlir::succeeded(parser.parseOptionalKeyword("inits")) &&
-      (parser.parseLParen() || parser.parseOperandList(explicitInits) ||
-       parser.parseColon() || parser.parseTypeList(explicitInitTypes) ||
+      (parser.parseLParen() || parser.parseOperandList(inits) ||
+       parser.parseColon() || parser.parseTypeList(initTypes) ||
        parser.parseRParen())) {
     return mlir::failure();
   }
 
   if (parser.resolveOperands(outputs, outputTypes, parser.getNameLoc(),
                              result.operands) ||
-      parser.resolveOperands(explicitInits, explicitInitTypes,
-                             parser.getNameLoc(), result.operands)) {
+      parser.resolveOperands(inits, initTypes, parser.getNameLoc(),
+                             result.operands)) {
     return mlir::failure();
   }
   result.addAttribute("operandSegmentSizes",
                       parser.getBuilder().getDenseI32ArrayAttr(
                           {static_cast<int32_t>(outputs.size()),
-                           static_cast<int32_t>(explicitInits.size())}));
+                           static_cast<int32_t>(inits.size())}));
 
   mlir::Region *body = result.addRegion();
   if (parser.parseRegion(*body, /*arguments=*/{}, /*argTypes=*/{})) {
     return mlir::failure();
   }
 
-  llvm::SmallVector<mlir::Attribute> combiners;
   llvm::SmallVector<mlir::Attribute> initialModes;
-  if (parseAccumulationCombinerList(parser, combiners) ||
-      parseAccumulationInitialModeList(parser, initialModes)) {
+  if (parseAccumulationInitialModeList(parser, initialModes)) {
     return mlir::failure();
   }
-  result.addAttribute("combiners", parser.getBuilder().getArrayAttr(combiners));
   result.addAttribute("initial_modes",
                       parser.getBuilder().getArrayAttr(initialModes));
 
@@ -1249,11 +1204,11 @@ void mlir::tt::ttl::AccumulationScopeOp::print(mlir::OpAsmPrinter &p) {
   llvm::interleaveComma(getOutputs().getTypes(), p);
   p << ")";
 
-  if (!getExplicitInits().empty()) {
+  if (!getInits().empty()) {
     p << " inits(";
-    p.printOperands(getExplicitInits());
+    p.printOperands(getInits());
     p << " : ";
-    llvm::interleaveComma(getExplicitInits().getTypes(), p);
+    llvm::interleaveComma(getInits().getTypes(), p);
     p << ")";
   }
 
@@ -1261,13 +1216,7 @@ void mlir::tt::ttl::AccumulationScopeOp::print(mlir::OpAsmPrinter &p) {
   p.printRegion(getBody(), /*printEntryBlockArgs=*/true,
                 /*printBlockTerminators=*/true);
 
-  p << " combiners([";
-  llvm::interleaveComma(getAccumulationCombiners(), p,
-                        [&](mlir::tt::ttl::AccumulationCombiner combiner) {
-                          p << mlir::tt::ttl::stringifyAccumulationCombiner(
-                              combiner);
-                        });
-  p << "]) initial_modes([";
+  p << " initial_modes([";
   llvm::interleaveComma(getAccumulationInitialModes(), p,
                         [&](mlir::tt::ttl::AccumulationInitialMode mode) {
                           p << mlir::tt::ttl::stringifyAccumulationInitialMode(
@@ -1275,8 +1224,8 @@ void mlir::tt::ttl::AccumulationScopeOp::print(mlir::OpAsmPrinter &p) {
                         });
   p << "])";
 
-  llvm::SmallVector<llvm::StringRef> elidedAttrs = {
-      "operandSegmentSizes", "combiners", "initial_modes"};
+  llvm::SmallVector<llvm::StringRef> elidedAttrs = {"operandSegmentSizes",
+                                                    "initial_modes"};
   p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
 }
 
@@ -1288,17 +1237,9 @@ mlir::ValueRange mlir::tt::ttl::AccumulationScopeOp::getAccumulationOutputs() {
   return getOutputs();
 }
 
-/// Return explicit initial tensors, ordered by the explicit-mode outputs.
-mlir::ValueRange
-mlir::tt::ttl::AccumulationScopeOp::getExplicitInitialValues() {
-  return getExplicitInits();
-}
-
-/// Return one combiner per output tensor.
-llvm::SmallVector<mlir::tt::ttl::AccumulationCombiner>
-mlir::tt::ttl::AccumulationScopeOp::getAccumulationCombiners() {
-  return getVerifiedEnumValues<AccumulationCombinerAttr, AccumulationCombiner>(
-      getCombiners());
+/// Return init operands, ordered by the init-mode outputs.
+mlir::ValueRange mlir::tt::ttl::AccumulationScopeOp::getAccumulationInits() {
+  return getInits();
 }
 
 /// Return one initial-value mode per output tensor.
@@ -1313,18 +1254,12 @@ mlir::Region &mlir::tt::ttl::AccumulationScopeOp::getAccumulationBody() {
   return getBody();
 }
 
-/// Verify that `ttl.accumulation_scope` contains a complete, explicit
-/// accumulation policy without encoding a storage mechanism.
+/// Verify that `ttl.accumulation_scope` contains a complete accumulation
+/// policy without encoding a storage mechanism.
 mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
   size_t outputCount = getOutputs().size();
   if (outputCount == 0) {
     return emitOpError("requires at least one output");
-  }
-
-  if (getCombiners().size() != outputCount) {
-    return emitOpError("requires one combiner per output, got ")
-           << getCombiners().size() << " combiners for " << outputCount
-           << " outputs";
   }
 
   if (getInitialModes().size() != outputCount) {
@@ -1333,17 +1268,7 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
            << " outputs";
   }
 
-  llvm::SmallVector<AccumulationCombiner> combiners;
-  for (mlir::Attribute attr : getCombiners()) {
-    auto combinerAttr = mlir::dyn_cast<AccumulationCombinerAttr>(attr);
-    if (!combinerAttr) {
-      return emitOpError(
-          "combiners must contain accumulation combiner enum attributes");
-    }
-    combiners.push_back(combinerAttr.getValue());
-  }
-
-  size_t explicitModeCount = 0;
+  size_t initModeCount = 0;
   llvm::SmallVector<AccumulationInitialMode> initialModes;
   for (mlir::Attribute attr : getInitialModes()) {
     auto modeAttr = mlir::dyn_cast<AccumulationInitialModeAttr>(attr);
@@ -1354,31 +1279,30 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
     }
     AccumulationInitialMode mode = modeAttr.getValue();
     initialModes.push_back(mode);
-    if (mode == AccumulationInitialMode::Explicit) {
-      ++explicitModeCount;
+    if (mode == AccumulationInitialMode::Init) {
+      ++initModeCount;
     }
   }
 
-  if (getExplicitInits().size() != explicitModeCount) {
-    return emitOpError("requires one explicit init per explicit initial mode, "
-                       "got ")
-           << getExplicitInits().size() << " inits for " << explicitModeCount
-           << " explicit modes";
+  if (getInits().size() != initModeCount) {
+    return emitOpError("requires one init operand per init mode, got ")
+           << getInits().size() << " inits for " << initModeCount
+           << " init modes";
   }
 
-  // The operand segment contains only explicit initial values. This preserves
-  // the output-to-policy correspondence without unused operands for overwrite
-  // and accumulate-existing outputs.
-  size_t explicitInitIndex = 0;
+  // The operand segment contains only init operands. This preserves the
+  // output-to-policy correspondence without unused operands for overwrite and
+  // accumulate-existing outputs.
+  size_t initIndex = 0;
   for (auto [outputIndex, mode] : llvm::enumerate(initialModes)) {
-    if (mode != AccumulationInitialMode::Explicit) {
+    if (mode != AccumulationInitialMode::Init) {
       continue;
     }
     mlir::Value output = getOutputs()[outputIndex];
-    mlir::Value explicitInit = getExplicitInits()[explicitInitIndex++];
-    if (output.getType() != explicitInit.getType()) {
-      return emitOpError("explicit init ")
-             << (explicitInitIndex - 1) << " type " << explicitInit.getType()
+    mlir::Value init = getInits()[initIndex++];
+    if (output.getType() != init.getType()) {
+      return emitOpError("init operand ")
+             << (initIndex - 1) << " type " << init.getType()
              << " must match output " << outputIndex << " type "
              << output.getType();
     }
@@ -1399,63 +1323,31 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
 
   size_t bodyArgCount = bodyBlock.getNumArguments();
   size_t yieldedValueCount = yield.getValues().size();
-  bool hasStatefulBody = bodyArgCount != 0 || yieldedValueCount != 0;
-  if (hasStatefulBody) {
-    if (bodyArgCount != outputCount) {
-      return emitOpError(
-                 "stateful body requires one block argument per output, "
-                 "got ")
-             << bodyArgCount << " block arguments for " << outputCount
-             << " outputs";
-    }
-    if (yieldedValueCount != outputCount) {
-      return emitOpError("stateful body must yield one value per output, got ")
-             << yieldedValueCount << " yielded values for " << outputCount
-             << " outputs";
+  if (bodyArgCount != outputCount) {
+    return emitOpError("body requires one block argument per output, got ")
+           << bodyArgCount << " block arguments for " << outputCount
+           << " outputs";
+  }
+  if (yieldedValueCount != outputCount) {
+    return emitOpError("body must yield one value per output, got ")
+           << yieldedValueCount << " yielded values for " << outputCount
+           << " outputs";
+  }
+
+  for (auto [outputIndex, output] : llvm::enumerate(getOutputs())) {
+    mlir::Type expectedType = output.getType();
+    mlir::Type bodyArgType = bodyBlock.getArgument(outputIndex).getType();
+    if (bodyArgType != expectedType) {
+      return emitOpError("body argument ")
+             << outputIndex << " type " << bodyArgType
+             << " must match output type " << expectedType;
     }
 
-    for (auto [outputIndex, combiner] : llvm::enumerate(combiners)) {
-      if (combiner != AccumulationCombiner::Yielded) {
-        return emitOpError("stateful body requires yielded combiner for every "
-                           "output, but output ")
-               << outputIndex << " uses "
-               << stringifyAccumulationCombiner(combiner);
-      }
-    }
-
-    for (auto [outputIndex, mode] : llvm::enumerate(initialModes)) {
-      if (mode != AccumulationInitialMode::Explicit) {
-        return emitOpError("stateful body requires explicit initial mode for "
-                           "every output, but output ")
-               << outputIndex << " uses "
-               << stringifyAccumulationInitialMode(mode);
-      }
-    }
-
-    for (auto [outputIndex, output] : llvm::enumerate(getOutputs())) {
-      mlir::Type expectedType = output.getType();
-      mlir::Type bodyArgType = bodyBlock.getArgument(outputIndex).getType();
-      if (bodyArgType != expectedType) {
-        return emitOpError("stateful body argument ")
-               << outputIndex << " type " << bodyArgType
-               << " must match output type " << expectedType;
-      }
-
-      mlir::Value yieldedValue = yield.getValues()[outputIndex];
-      if (yieldedValue.getType() != expectedType) {
-        return emitOpError("stateful yielded value ")
-               << outputIndex << " type " << yieldedValue.getType()
-               << " must match output type " << expectedType;
-      }
-    }
-  } else {
-    for (auto [outputIndex, combiner] : llvm::enumerate(combiners)) {
-      if (combiner == AccumulationCombiner::Yielded) {
-        return emitOpError("yielded combiner for output ")
-               << outputIndex
-               << " requires a stateful body with block arguments and yielded "
-                  "values";
-      }
+    mlir::Value yieldedValue = yield.getValues()[outputIndex];
+    if (yieldedValue.getType() != expectedType) {
+      return emitOpError("yielded value ")
+             << outputIndex << " type " << yieldedValue.getType()
+             << " must match output type " << expectedType;
     }
   }
 

@@ -271,56 +271,46 @@ buildL1PackCandidate(TensorAccumulationMatch &match, scf::ForOp loop,
 
 AccumulationGroupAnalysis::AccumulationGroupAnalysis(AccumulationScopeOp scope)
     : scope(scope) {
-  SmallVector<AccumulationCombiner> combiners =
-      scope.getAccumulationCombiners();
   SmallVector<AccumulationInitialMode> initialModes =
       scope.getAccumulationInitialModes();
   Block &body = scope.getBody().front();
   auto yield = cast<YieldOp>(body.getTerminator());
 
-  unsigned explicitInitIndex = 0;
+  unsigned initIndex = 0;
   for (auto [outputIndex, output] : llvm::enumerate(scope.getOutputs())) {
-    Value explicitInit;
-    if (initialModes[outputIndex] == AccumulationInitialMode::Explicit) {
-      explicitInit = scope.getExplicitInits()[explicitInitIndex++];
+    Value init;
+    if (initialModes[outputIndex] == AccumulationInitialMode::Init) {
+      init = scope.getInits()[initIndex++];
     }
 
     BlockArgument stateArgument;
-    if (body.getNumArguments() != 0) {
-      stateArgument = body.getArgument(outputIndex);
-    }
+    stateArgument = body.getArgument(outputIndex);
 
     Value yieldedValue;
-    if (!yield.getValues().empty()) {
-      yieldedValue = yield.getValues()[outputIndex];
-    }
+    yieldedValue = yield.getValues()[outputIndex];
 
-    slots.push_back({static_cast<unsigned>(outputIndex), output, explicitInit,
-                     combiners[outputIndex], initialModes[outputIndex],
-                     stateArgument, yieldedValue});
+    slots.push_back({static_cast<unsigned>(outputIndex), output, init,
+                     initialModes[outputIndex], stateArgument, yieldedValue});
   }
 
-  if (!yield.getValues().empty()) {
-    for (const AccumulationSlot &targetSlot : slots) {
-      for (const AccumulationSlot &sourceSlot : slots) {
-        if (targetSlot.index == sourceSlot.index) {
-          continue;
-        }
-        bool yieldedValueIsUpdated =
-            sourceSlot.yieldedValue &&
-            sourceSlot.yieldedValue != sourceSlot.stateArgument;
-        if (yieldedValueIsUpdated &&
-            backwardSliceUses(targetSlot.yieldedValue, sourceSlot.yieldedValue,
-                              scope)) {
-          addDependence(dependences, sourceSlot.index, targetSlot.index,
-                        AccumulationDependenceKind::UpdatedState);
-          continue;
-        }
-        if (backwardSliceUses(targetSlot.yieldedValue, sourceSlot.stateArgument,
-                              scope)) {
-          addDependence(dependences, sourceSlot.index, targetSlot.index,
-                        AccumulationDependenceKind::PreviousState);
-        }
+  for (const AccumulationSlot &targetSlot : slots) {
+    for (const AccumulationSlot &sourceSlot : slots) {
+      if (targetSlot.index == sourceSlot.index) {
+        continue;
+      }
+      bool yieldedValueIsUpdated =
+          sourceSlot.yieldedValue != sourceSlot.stateArgument;
+      if (yieldedValueIsUpdated &&
+          backwardSliceUses(targetSlot.yieldedValue, sourceSlot.yieldedValue,
+                            scope)) {
+        addDependence(dependences, sourceSlot.index, targetSlot.index,
+                      AccumulationDependenceKind::UpdatedState);
+        continue;
+      }
+      if (backwardSliceUses(targetSlot.yieldedValue, sourceSlot.stateArgument,
+                            scope)) {
+        addDependence(dependences, sourceSlot.index, targetSlot.index,
+                      AccumulationDependenceKind::PreviousState);
       }
     }
   }

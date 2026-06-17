@@ -204,21 +204,33 @@ FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType) {
 FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     scf::ForOp loop, unsigned resultIndex,
     TensorAccumulationReservePlacement reservePlacement,
-    ArrayRef<Operation *> allowedReserveUsers) {
+    ArrayRef<Operation *> allowedReserveUsers,
+    ArrayRef<Operation *> allowedLoopResultUsers) {
   if (resultIndex >= loop.getNumResults()) {
     return failure();
   }
 
   auto loopResult = loop.getResult(resultIndex);
-  if (!loopResult.hasOneUse()) {
-    return failure();
+  llvm::SmallPtrSet<Operation *, 2> permittedLoopResultUsers;
+  for (Operation *operation : allowedLoopResultUsers) {
+    permittedLoopResultUsers.insert(operation);
   }
 
-  // The final non-accumulating store identifies the externally visible
-  // destination. Accumulating stores already represent user-written DFB += and
-  // are handled by a separate formation rule.
-  auto finalStore = dyn_cast<StoreOp>(*loopResult.getUsers().begin());
-  if (!finalStore || finalStore.getAccumulate()) {
+  StoreOp finalStore;
+  for (Operation *user : loopResult.getUsers()) {
+    if (permittedLoopResultUsers.contains(user)) {
+      continue;
+    }
+    auto store = dyn_cast<StoreOp>(user);
+    // The final non-accumulating store identifies the externally visible
+    // destination. Accumulating stores already represent user-written DFB +=
+    // and are handled by a separate formation rule.
+    if (!store || store.getAccumulate() || finalStore) {
+      return failure();
+    }
+    finalStore = store;
+  }
+  if (!finalStore) {
     return failure();
   }
 
