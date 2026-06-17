@@ -369,6 +369,87 @@ Unsupported L1 output formats are diagnosed in
 The supported formats are Float32, Float16, BFloat16, Int32, and UInt8,
 matching the current TTKernel lowering allowlist.
 
+### Matmul K-Accumulation (planned, #652)
+
+Matmul K-accumulation (`C[M,N] += A[M,K] @ B[K,N]` over `kt` contraction
+tiles) is the same DST-versus-L1 choice as a tensor additive recurrence; #652
+will select it with `matmul-k-accumulation=auto|dst|l1-pack`. The two candidates
+map to existing lowerings:
+
+- DST K-accumulation keeps the `M*N` output tiles resident in one
+  `ttl.dst_section` across all `kt` steps and packs once (the accumulating
+  `DstSectionOp` placement with `matmul_block`, `kt_dim > 1`).
+- L1 packer K-accumulation packs the `M*N` partial after each K step with
+  packer L1 accumulation enabled.
+
+At equal accumulation precision this choice is degenerate the same way the
+additive recurrence is. A single matmul instruction writes its `m_sb x n_sb`
+output partial into DST in both candidates (the matmul reads operands from the
+separate srcA/srcB banks, not DST), so both tile the output into the same
+`<= getDstCapacity` subblocks and re-read the `A` and `B` operands the same
+number of times. DST accumulation then packs each output tile once; L1 packer
+accumulation re-packs it every K step. So at equal precision DST has the same
+operand traffic and fewer packs and always wins, matching the handwritten-kernel
+result that one `matmul_block` accumulating in DST and packing once leaves the
+packer idle while a per-step L1 pack saturates it.
+
+The non-degenerate case is fp32 accumulation. A resident fp32 accumulator halves
+DST capacity (`getDstCapacity`: 16 bf16 tiles in full-sync, 8 by default; 8 / 4
+for fp32 -
+[matrix engine report](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tech_reports/matrix_engine/matrix_engine.md)),
+so DST K-accumulation in fp32 must use a smaller output subblock, which raises
+the operand re-read factor (`A` read `N / n_sb` times, `B` read `M / m_sb`
+times) and the subblock count. L1 packer accumulation avoids this: it keeps DST
+in bf16 - the larger subblock - and lets the packer add each bf16 partial into
+an fp32 L1 accumulator (same report: "accumulate in fp32, then final output as
+float16_b"). So the fp32 choice trades DST's extra operand re-reads against L1's
+per-K-step fp32 packs, at a precision between full fp32-DST and bf16-DST
+accumulation. This is the crossover the cost model must score; bf16 accumulation
+does not reach it.
+
+Candidate feature model in the fp32 crossover (output `P = M*N`, depth `kt`,
+operands `A = M*kt`, `B = kt*N`):
+
+| Candidate | Feature model |
+| --- | --- |
+| DST K-accumulation | Output packed once; operands read once times a re-read factor that grows as the fp32 subblock shrinks; live DST tiles equal one fp32 output subblock. |
+| L1 packer K-accumulation | DST stays bf16 (larger subblock, fewer operand re-reads); output packed every K step into an fp32 L1 accumulator; two packer reconfigurations. |
+
+The operand re-read is an explicit per-candidate feature, not a constant: each
+candidate carries `M*N*kt * (1/m_sb + 1/n_sb)` operand-unpack tiles for its own
+subblock `(m_sb, n_sb)`. It cancels when both candidates accumulate at the same
+precision (identical subblock) and differs only when fp32 halves the DST
+subblock, so it is exactly the term that decides the fp32 crossover. The score
+must take `(m_sb, n_sb)` from the subblocker rather than assume it.
+
+Scoring this requires splitting `dfbHopPerTileCost` into separate unpack, pack,
+and L1-accumulation-pack components, because DST's extra cost here is operand
+unpack and L1's is pack, and their Wormhole/Blackhole ratios differ. In the June
+16, 2026 tt-metal LLK run `27594326478`, matmul operand unpack is about equal on
+both parts (`UNPACK_ISOLATE` ~37.6 Blackhole, ~39.6 Wormhole, ~1.05x), a
+destination pack is far costlier on Wormhole (`pack_dest_bank` `PACK_ISOLATE`
+~36 versus ~86, ~2.40x), and an L1-accumulation pack adds ~30-35% over a plain
+pack on Blackhole but is near-free on Wormhole (`pack_dest_bank`
+`L1Accumulation` Yes versus No). A single per-tile cost cannot express a
+crossover that pits an unpack-dominated cost against a pack-dominated one with
+different per-engine ratios. Matmul MATH stays out: it is `kt * P` tile
+operations in both candidates and the matrix engine is identical across Wormhole
+and Blackhole (matrix engine report, above), so it cancels.
+
+Effects this data-movement model does not capture, each a reason to prefer L1
+that a per-tile-traffic score cannot see:
+
+- DST accumulation holds the output subblock in DST across the entire K loop. It
+  forces `dst_full_sync_en` for large subblocks (losing kernel-wide
+  packer/compute overlap) and starves DST for fused neighbors - a matmul between
+  softmax stages cannot keep its accumulator resident while the softmax needs
+  DST. This occupancy cost can favor L1 even at bf16.
+- Choosing `matmul_block` (one block instruction) over per-tile `matmul_tiles`
+  for the same DST pack-once work is a per-call init effect, not pack/unpack
+  traffic.
+- The subblock re-read factor depends on the subblocker's tiling shape, which
+  the score must read from the chosen subblocking rather than assume.
+
 ## Unsupported Structured Control Flow
 
 Conditional DFB `+=` is rejected in `ttl-insert-accumulation-scopes`. The
