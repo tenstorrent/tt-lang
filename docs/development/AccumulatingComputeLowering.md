@@ -292,6 +292,26 @@ does not compute `estimated_cost`. Candidate comparison then uses the feature
 counts directly in this order: DFB hops, pack/unpack tile traffic, packer
 reconfiguration count, then live DST tiles.
 
+Cost model decisions are printed by the `ttl-lower-accumulation-scopes` debug
+stream:
+
+```bash
+ttlang-opt input.mlir \
+  --pass-pipeline='builtin.module(func.func(ttl-lower-accumulation-scopes{kind=tensor strategy=auto}))' \
+  -debug-only=ttl-lower-accumulation-scopes 2>&1
+```
+
+The debug output lists the target architecture, every legal or rejected
+candidate, the estimated score when available, each feature count, and the
+selected strategy:
+
+```text
+accumulation cost model target_arch=wormhole_b0
+  candidate strategy=dst legal=true estimated_cost=1116 ...
+  candidate strategy=l1-pack legal=true estimated_cost=2954 ...
+  selected strategy=dst
+```
+
 The current tensor strategy candidates populate the features as follows:
 
 | Candidate | Feature model |
@@ -302,12 +322,24 @@ The current tensor strategy candidates populate the features as follows:
 The cost values are calibration inputs, not semantic requirements. They affect
 profitability only; legality is checked before a candidate is scored.
 
+Blackhole fixed and per-tile values come from direct flash MLA handoff
+ablation. Wormhole values are relative scores derived from the matched
+Wormhole and Blackhole LLK perf artifacts in the `tenstorrent/tt-metal`
+`LLK perf` scheduled workflow run `27594326478` (run number 63), created on
+June 16, 2026 UTC from `main` commit
+`393e4c9909abd8c589bb269e6a93571151bcf1c7`. The run's
+`perf-data-wormhole-*` and `perf-data-blackhole-*` artifacts contain
+postprocessed CSVs for the same LLK suites. Their `TILE_LOOP` medians give
+about `1.361x` for `L1_TO_L1` and `2.036x` for `UNPACK_ISOLATE`; applying
+those ratios to the Blackhole handoff fit gives the rounded Wormhole scores
+below.
+
 | Cost input | Current use | Source |
 | --- | --- | --- |
 | Blackhole DFB fixed handoff cost | `dfbHopFixedCost = 210` | Track A flash MLA shard ablation from Zoe Carver's June 2026 Slack benchmark notes in `#tt-lang`; measured about 0.21 us of fixed cost per DFB handoff. |
 | Blackhole DFB per-tile traffic cost | `dfbHopPerTileCost = 67` | Track A flash MLA shard ablation from Zoe Carver's June 2026 Slack benchmark notes in `#tt-lang`; fit DFB handoff time as about `0.21 us + 0.067 us * tile_count` for 32x32 tiles. |
-| Wormhole DFB fixed handoff score | `dfbHopFixedCost = 280` | Derived from the same DFB handoff model, with a higher architecture score until a Wormhole-specific DFB handoff fit is available. |
-| Wormhole DFB per-tile traffic score | `dfbHopPerTileCost = 130` | tt-llk `Nightly Performance Tests` scheduled workflow run `24171622916` from April 9, 2026, on `main` at commit `01dceeba5f16fdbb02a18ba88139913cee93764f`; the postprocessed performance CSVs show higher Wormhole pack/unpack component medians than Blackhole for the sampled LLK suites. |
+| Wormhole DFB fixed handoff score | `dfbHopFixedCost = 286` | `tenstorrent/tt-metal` `LLK perf` scheduled workflow run `27594326478` from June 16, 2026 UTC, on `main` at commit `393e4c9909abd8c589bb269e6a93571151bcf1c7`; the `TILE_LOOP` `L1_TO_L1` median ratio between `perf-data-wormhole-*` and `perf-data-blackhole-*` artifacts is about `1.361x`, so `210 * 1.361` rounds to `286`. |
+| Wormhole DFB per-tile traffic score | `dfbHopPerTileCost = 136` | Same tt-metal LLK perf run; the `TILE_LOOP` `UNPACK_ISOLATE` median ratio is about `2.036x`, so `67 * 2.036` rounds to `136`. |
 | DST-resident accumulation preference | Candidate scoring favors removing per-iteration DFB handoffs and pack/unpack traffic when DST legality holds. | Track C flashloop results from Zoe Carver's June 2026 Slack benchmark notes in `#tt-lang`; they show large wins from keeping dependent state in DST and removing repeated dataflow-buffer synchronization. |
 
 Tensor DST lowering requires the normalized additive recurrence form:

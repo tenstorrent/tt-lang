@@ -153,7 +153,7 @@ getCostWeights(AccumulationTargetArch targetArch) {
   case AccumulationTargetArch::Blackhole:
     return {/*dfbHopFixedCost=*/210, /*dfbHopPerTileCost=*/67};
   case AccumulationTargetArch::WormholeB0:
-    return {/*dfbHopFixedCost=*/280, /*dfbHopPerTileCost=*/130};
+    return {/*dfbHopFixedCost=*/286, /*dfbHopPerTileCost=*/136};
   case AccumulationTargetArch::Unknown:
     return {/*dfbHopFixedCost=*/210, /*dfbHopPerTileCost=*/67};
   }
