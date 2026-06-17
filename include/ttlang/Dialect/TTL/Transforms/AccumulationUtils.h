@@ -12,13 +12,14 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LLVM.h"
 
+#include <optional>
+
 namespace mlir::tt::ttl {
 
-/// Additive tensor recurrence matched before tensor loop-state materialization.
+/// Additive tensor recurrence over one loop-carried tensor value.
 ///
 /// The match records both the loop-carried SSA recurrence and the final store
-/// that gives the recurrence a dataflow buffer destination. Consumers may
-/// choose a concrete accumulation strategy without rediscovering those links.
+/// that gives the recurrence a dataflow buffer destination.
 struct TensorAccumulationMatch {
   unsigned resultIndex;
   RankedTensorType tensorType;
@@ -28,6 +29,30 @@ struct TensorAccumulationMatch {
   AddOp add;
   Value contribution;
   SmallVector<AttachCBOp> deadReserveAttachOps;
+};
+
+/// Recurrence properties required for DST-resident tensor accumulation.
+struct TensorDstAccumulationInfo {
+  /// Static trip count of the contributing loop.
+  int64_t tripCount;
+  /// Number of tiles in one contribution tensor.
+  int64_t unitTileCount;
+  /// Number of contribution tiles consumed across all loop iterations.
+  int64_t totalContributionTiles;
+  /// Dataflow-buffer wait that produces the per-iteration contribution.
+  CBWaitOp contributionWait;
+  /// Tensor view produced by `contributionWait`, if present.
+  AttachCBOp attachedContribution;
+  /// Ranked tensor type of one per-iteration contribution.
+  RankedTensorType contributionType;
+};
+
+/// Recurrence properties required for packer L1 tensor accumulation.
+struct TensorL1PackAccumulationInfo {
+  /// Static trip count of the contributing loop, when known.
+  std::optional<int64_t> tripCount;
+  /// Number of tiles in one contribution tensor, when statically known.
+  std::optional<int64_t> unitTileCount;
 };
 
 /// Placement constraint for the output reservation associated with a matched
@@ -62,6 +87,23 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     TensorAccumulationReservePlacement reservePlacement =
         TensorAccumulationReservePlacement::SameBlock,
     ArrayRef<Operation *> allowedReserveUsers = {});
+
+/// Return the static trip count, accepting constant bounds that have been cast
+/// to index. scf::ForOp::getStaticTripCount does not fold arith.index_cast.
+std::optional<int64_t> getStaticAccumulationTripCount(scf::ForOp loop);
+
+/// Return the number of tiles represented by a statically ranked tensor.
+FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType);
+
+/// Return DST-resident accumulation properties for `match` when legal.
+FailureOr<TensorDstAccumulationInfo>
+analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
+                                scf::ForOp loop);
+
+/// Return packer L1 accumulation properties for `match` when legal.
+FailureOr<TensorL1PackAccumulationInfo>
+analyzeTensorAccumulationForL1Pack(TensorAccumulationMatch &match,
+                                   scf::ForOp loop);
 
 /// Lower a matched additive tensor recurrence to one reduction compute whose
 /// DST acquisition spans all reduction iterations.

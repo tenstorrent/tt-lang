@@ -1,4 +1,5 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AccumulationAnalysis.cpp
   AccumulationUtils.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp

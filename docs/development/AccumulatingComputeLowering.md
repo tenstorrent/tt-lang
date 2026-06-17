@@ -255,6 +255,58 @@ DFB scopes because DFB state cannot reside in DST.
 | Explicit DFB `+=` | L1 packer accumulation | L1 packer accumulation | L1 packer accumulation |
 | Additive reductions in `ttl.compute` | Existing `maximize-dst` / `dst-accumulation` policy | Existing `maximize-dst` / `dst-accumulation` policy | Existing `maximize-dst` / `dst-accumulation` policy |
 
+For `accumulation-strategy=auto`, selection is per
+`ttl.accumulation_scope`. A scope with independent output groups may be
+planned per `AccumulationGroup` once grouped lowering supports partial scope
+rewrites. A dependent group is selected as one unit because lowering one
+accumulator independently can break SSA dependences between accumulator
+updates.
+
+`AccumulationGroupAnalysis` records output slots, explicit state values, and
+cross-output dependences. `planTensorAccumulationStrategy` enumerates legal
+strategy candidates for each group and scores them with
+`AccumulationCostModel`. The cost model selects architecture-specific weights
+from `ttl.target_arch` when present. It estimates:
+
+- one-time and per-iteration DFB hops;
+- one-time and per-iteration pack/unpack tile traffic;
+- live DST tiles required by the selected strategy;
+- packer reconfiguration count.
+
+When the loop trip count is statically known, the score is:
+
+```text
+total_dfb_hops = one_time_dfb_hops +
+                 iterations * per_iteration_dfb_hops
+total_pack_unpack_tiles = one_time_pack_unpack_tiles +
+                          iterations * per_iteration_pack_unpack_tiles
+estimated_cost = total_dfb_hops * dfb_hop_fixed_cost +
+                 total_pack_unpack_tiles * dfb_hop_per_tile_cost
+```
+
+If the trip count is not known, the model still records the feature counts but
+does not compute `estimated_cost`. Candidate comparison then uses the feature
+counts directly in this order: DFB hops, pack/unpack tile traffic, packer
+reconfiguration count, then live DST tiles.
+
+The current tensor strategy candidates populate the features as follows:
+
+| Candidate | Feature model |
+| --- | --- |
+| DST-resident tensor accumulation | One coalesced contribution wait and one final output materialization; pack/unpack tile traffic is the coalesced contribution tiles plus the initial accumulator tiles; live DST tiles equals one accumulator tensor. |
+| L1 packer tensor accumulation | One initial output materialization, two DFB handoffs per iteration for accumulator read/update through L1, per-iteration pack/unpack traffic for accumulator update, and two packer reconfigurations. |
+
+The cost values are calibration inputs, not semantic requirements. They affect
+profitability only; legality is checked before a candidate is scored.
+
+| Cost input | Current use | Source |
+| --- | --- | --- |
+| Blackhole DFB fixed handoff cost | `dfbHopFixedCost = 210` | Track A flash MLA shard ablation from Zoe Carver's June 2026 Slack benchmark notes in `#tt-lang`; measured about 0.21 us of fixed cost per DFB handoff. |
+| Blackhole DFB per-tile traffic cost | `dfbHopPerTileCost = 67` | Track A flash MLA shard ablation from Zoe Carver's June 2026 Slack benchmark notes in `#tt-lang`; fit DFB handoff time as about `0.21 us + 0.067 us * tile_count` for 32x32 tiles. |
+| Wormhole DFB fixed handoff score | `dfbHopFixedCost = 280` | Derived from the same DFB handoff model, with a higher architecture score until a Wormhole-specific DFB handoff fit is available. |
+| Wormhole DFB per-tile traffic score | `dfbHopPerTileCost = 130` | tt-llk `Nightly Performance Tests` scheduled workflow run `24171622916` from April 9, 2026, on `main` at commit `01dceeba5f16fdbb02a18ba88139913cee93764f`; the postprocessed performance CSVs show higher Wormhole pack/unpack component medians than Blackhole for the sampled LLK suites. |
+| DST-resident accumulation preference | Candidate scoring favors removing per-iteration DFB handoffs and pack/unpack traffic when DST legality holds. | Track C flashloop results from Zoe Carver's June 2026 Slack benchmark notes in `#tt-lang`; they show large wins from keeping dependent state in DST and removing repeated dataflow-buffer synchronization. |
+
 Tensor DST lowering requires the normalized additive recurrence form:
 
 - exactly one output and one explicit init;

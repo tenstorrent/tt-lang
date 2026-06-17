@@ -153,9 +153,7 @@ _DTYPE_TOL = {
 }
 
 
-def _run_io_kernel_results(
-    kernel, in_tensors, out_zeros, device, kernel_options=None
-):
+def _run_io_kernel_results(kernel, in_tensors, out_zeros, device, kernel_options=None):
     """Move inputs and outputs to device, invoke the kernel, and return each
     output as a float tensor."""
     in_devs = [to_dram(t, device) for t in in_tensors]

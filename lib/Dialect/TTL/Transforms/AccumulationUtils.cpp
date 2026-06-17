@@ -43,18 +43,8 @@ int64_t getNextL1AccScopeId(Operation *root) {
 
 namespace {
 
-/// Returns the number of tiles represented by a statically ranked tensor.
-static int64_t getTileCount(RankedTensorType tensorType) {
-  assert(tensorType.hasStaticShape() && "expected static tensor shape");
-  int64_t tileCount = 1;
-  for (int64_t dim : tensorType.getShape()) {
-    tileCount *= dim;
-  }
-  return tileCount;
-}
-
-/// Returns a constant integer after stripping arith.index_cast. The Python
-/// frontend emits range literals as integer constants cast to index.
+/// Accept frontend-emitted index casts around integer literals when computing
+/// static loop bounds before canonicalization.
 static std::optional<int64_t> getConstantIntThroughIndexCast(Value value) {
   if (auto constantValue = getConstantIntValue(value)) {
     return *constantValue;
@@ -65,10 +55,106 @@ static std::optional<int64_t> getConstantIntThroughIndexCast(Value value) {
   return std::nullopt;
 }
 
-/// Returns the static trip count, accepting constant bounds that have been cast
-/// to index. scf::ForOp::getStaticTripCount does not fold arith.index_cast, and
-/// this pass must be correct when it runs without canonicalize.
-static std::optional<int64_t> getStaticTripCount(scf::ForOp loop) {
+/// Require the contribution wait to be a direct loop body operation before it
+/// is coalesced into a pre-loop wait.
+static CBWaitOp getLoopLocalContributionWait(TensorAccumulationMatch &match,
+                                             scf::ForOp loop,
+                                             AttachCBOp &attachedContribution) {
+  Value contribution = match.contribution;
+  if (auto attach = contribution.getDefiningOp<AttachCBOp>()) {
+    if (attach->getParentOp() != loop) {
+      return {};
+    }
+    attachedContribution = attach;
+    contribution = attach.getTensor();
+  }
+
+  auto wait = contribution.getDefiningOp<CBWaitOp>();
+  if (!wait || wait->getParentOp() != loop) {
+    return {};
+  }
+  return wait;
+}
+
+/// Reject loop bodies whose unmatched operations would be lost when replacing
+/// the loop with one reduction compute.
+static bool onlyContainsDstReductionOps(scf::ForOp loop,
+                                        TensorAccumulationMatch &match,
+                                        CBWaitOp contributionWait,
+                                        AttachCBOp attachedContribution) {
+  DenseSet<Operation *> allowedOps;
+  allowedOps.insert(match.add.getOperation());
+  allowedOps.insert(contributionWait.getOperation());
+  if (attachedContribution) {
+    allowedOps.insert(attachedContribution.getOperation());
+  }
+
+  bool foundContributionPop = false;
+  for (Operation &bodyOp : loop.getBody()->without_terminator()) {
+    if (!allowedOps.contains(&bodyOp)) {
+      auto contributionPop = dyn_cast<CBPopOp>(&bodyOp);
+      if (!contributionPop ||
+          contributionPop.getCb() != contributionWait.getCb() ||
+          contributionPop.getNumTiles() || foundContributionPop ||
+          contributionPop->isBeforeInBlock(match.add)) {
+        return false;
+      }
+      foundContributionPop = true;
+    }
+  }
+  return true;
+}
+
+/// Return the contribution tensor type after the loop iteration space has been
+/// represented as a leading reduction dimension.
+static RankedTensorType
+buildCoalescedContributionType(RankedTensorType unitType, int64_t tripCount) {
+  SmallVector<int64_t> shape;
+  shape.push_back(tripCount);
+  llvm::append_range(shape, unitType.getShape());
+  return RankedTensorType::get(shape, unitType.getElementType());
+}
+
+/// Return indexing maps where the contribution operand reads the reduction
+/// dimension and accumulator/output operands project it out.
+static SmallVector<Attribute>
+buildDstReductionIndexingMaps(MLIRContext *ctx, int64_t outputRank) {
+  int64_t domainRank = outputRank + 1;
+  SmallVector<AffineExpr> parallelExprs;
+  for (int64_t dim = 0; dim < outputRank; ++dim) {
+    parallelExprs.push_back(getAffineDimExpr(dim, ctx));
+  }
+
+  SmallVector<AffineExpr> contributionExprs;
+  contributionExprs.push_back(getAffineDimExpr(outputRank, ctx));
+  llvm::append_range(contributionExprs, parallelExprs);
+
+  AffineMap outputMap = AffineMap::get(domainRank, 0, parallelExprs, ctx);
+  AffineMap contributionMap =
+      AffineMap::get(domainRank, 0, contributionExprs, ctx);
+  return {AffineMapAttr::get(outputMap), AffineMapAttr::get(contributionMap),
+          AffineMapAttr::get(outputMap)};
+}
+
+/// Return iterator types for output-parallel dimensions plus one reduction
+/// dimension used for repeated DST accumulation.
+static SmallVector<Attribute>
+buildDstReductionIteratorTypes(RewriterBase &rewriter, int64_t outputRank) {
+  SmallVector<Attribute> iteratorTypes;
+  for (int64_t dim = 0; dim < outputRank; ++dim) {
+    iteratorTypes.push_back(rewriter.getStringAttr("parallel"));
+  }
+  iteratorTypes.push_back(rewriter.getStringAttr("reduction"));
+  return iteratorTypes;
+}
+
+} // namespace
+
+bool isTensorLoopState(scf::ForOp loop, unsigned resultIndex) {
+  return isa<RankedTensorType>(loop.getInitArgs()[resultIndex].getType());
+}
+
+std::optional<int64_t> getStaticAccumulationTripCount(scf::ForOp loop) {
   if (std::optional<llvm::APInt> tripCount = loop.getStaticTripCount()) {
     if (tripCount->getActiveBits() > 63) {
       return std::nullopt;
@@ -99,105 +185,20 @@ static std::optional<int64_t> getStaticTripCount(scf::ForOp loop) {
   return static_cast<int64_t>(tripCount);
 }
 
-/// Finds the contribution wait only when it is immediately owned by the loop.
-/// Ancestor containment would admit nested-region effects that cannot be
-/// coalesced into one pre-loop wait without changing execution order.
-static CBWaitOp getLoopLocalContributionWait(TensorAccumulationMatch &match,
-                                             scf::ForOp loop,
-                                             AttachCBOp &attachedContribution) {
-  Value contribution = match.contribution;
-  if (auto attach = contribution.getDefiningOp<AttachCBOp>()) {
-    if (attach->getParentOp() != loop) {
-      return {};
+FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType) {
+  if (!tensorType.hasStaticShape()) {
+    return failure();
+  }
+
+  int64_t tileCount = 1;
+  for (int64_t dim : tensorType.getShape()) {
+    if (dim < 0 ||
+        (dim != 0 && tileCount > std::numeric_limits<int64_t>::max() / dim)) {
+      return failure();
     }
-    attachedContribution = attach;
-    contribution = attach.getTensor();
+    tileCount *= dim;
   }
-
-  auto wait = contribution.getDefiningOp<CBWaitOp>();
-  if (!wait || wait->getParentOp() != loop) {
-    return {};
-  }
-  return wait;
-}
-
-/// Ensures replacing the whole loop with one reduction compute does not
-/// discard side effects other than the matched wait/attach/add recurrence and
-/// its matching contribution release.
-static bool onlyContainsDstReductionOps(scf::ForOp loop,
-                                        TensorAccumulationMatch &match,
-                                        CBWaitOp contributionWait,
-                                        AttachCBOp attachedContribution) {
-  DenseSet<Operation *> allowedOps;
-  allowedOps.insert(match.add.getOperation());
-  allowedOps.insert(contributionWait.getOperation());
-  if (attachedContribution) {
-    allowedOps.insert(attachedContribution.getOperation());
-  }
-
-  bool foundContributionPop = false;
-  for (Operation &bodyOp : loop.getBody()->without_terminator()) {
-    if (!allowedOps.contains(&bodyOp)) {
-      auto contributionPop = dyn_cast<CBPopOp>(&bodyOp);
-      if (!contributionPop ||
-          contributionPop.getCb() != contributionWait.getCb() ||
-          contributionPop.getNumTiles() || foundContributionPop ||
-          contributionPop->isBeforeInBlock(match.add)) {
-        return false;
-      }
-      foundContributionPop = true;
-    }
-  }
-  return true;
-}
-
-/// Prepends the reduction dimension so the coalesced wait exposes every
-/// per-iteration contribution as one compute input tensor.
-static RankedTensorType
-buildCoalescedContributionType(RankedTensorType unitType, int64_t tripCount) {
-  SmallVector<int64_t> shape;
-  shape.push_back(tripCount);
-  llvm::append_range(shape, unitType.getShape());
-  return RankedTensorType::get(shape, unitType.getElementType());
-}
-
-/// Builds maps for a reduction domain whose final dimension indexes the
-/// coalesced contribution while the output and initial accumulator ignore it.
-static SmallVector<Attribute>
-buildDstReductionIndexingMaps(MLIRContext *ctx, int64_t outputRank) {
-  int64_t domainRank = outputRank + 1;
-  SmallVector<AffineExpr> parallelExprs;
-  for (int64_t dim = 0; dim < outputRank; ++dim) {
-    parallelExprs.push_back(getAffineDimExpr(dim, ctx));
-  }
-
-  SmallVector<AffineExpr> contributionExprs;
-  contributionExprs.push_back(getAffineDimExpr(outputRank, ctx));
-  llvm::append_range(contributionExprs, parallelExprs);
-
-  AffineMap outputMap = AffineMap::get(domainRank, 0, parallelExprs, ctx);
-  AffineMap contributionMap =
-      AffineMap::get(domainRank, 0, contributionExprs, ctx);
-  return {AffineMapAttr::get(outputMap), AffineMapAttr::get(contributionMap),
-          AffineMapAttr::get(outputMap)};
-}
-
-/// Marks output dimensions parallel and appends the single reduction dimension
-/// that drives repeated tile accumulation into DST.
-static SmallVector<Attribute>
-buildDstReductionIteratorTypes(RewriterBase &rewriter, int64_t outputRank) {
-  SmallVector<Attribute> iteratorTypes;
-  for (int64_t dim = 0; dim < outputRank; ++dim) {
-    iteratorTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
-  iteratorTypes.push_back(rewriter.getStringAttr("reduction"));
-  return iteratorTypes;
-}
-
-} // namespace
-
-bool isTensorLoopState(scf::ForOp loop, unsigned resultIndex) {
-  return isa<RankedTensorType>(loop.getInitArgs()[resultIndex].getType());
+  return tileCount;
 }
 
 FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
@@ -293,9 +294,9 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
       reserve,     add,        contribution, deadReserveAttachOps};
 }
 
-LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
-                                           scf::ForOp loop,
-                                           RewriterBase &rewriter) {
+FailureOr<TensorDstAccumulationInfo>
+analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
+                                scf::ForOp loop) {
   if (match.contribution.getType() != match.tensorType) {
     return failure();
   }
@@ -308,7 +309,7 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 
   // Coalescing replaces one wait per iteration with one pre-compute wait, so
   // the total tile count must be known at compile time.
-  std::optional<int64_t> tripCount = getStaticTripCount(loop);
+  std::optional<int64_t> tripCount = getStaticAccumulationTripCount(loop);
   if (!tripCount || *tripCount == 0) {
     return failure();
   }
@@ -339,15 +340,62 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 
   // The single coalesced wait must fit in the producer dataflow buffer. This is
   // a compile-time strategy selection, not a runtime capacity check.
-  int64_t unitTileCount = getTileCount(contributionType);
-  if (unitTileCount <= 0 ||
-      tripCountValue > std::numeric_limits<int64_t>::max() / unitTileCount) {
+  FailureOr<int64_t> unitTileCount = getStaticTensorTileCount(contributionType);
+  if (failed(unitTileCount) || *unitTileCount <= 0 ||
+      tripCountValue > std::numeric_limits<int64_t>::max() / *unitTileCount) {
     return failure();
   }
-  int64_t totalContributionTiles = tripCountValue * unitTileCount;
+  int64_t totalContributionTiles = tripCountValue * *unitTileCount;
   auto contributionCBType =
       cast<CircularBufferType>(contributionWait.getCb().getType());
   if (totalContributionTiles > contributionCBType.getTotalElements()) {
+    return failure();
+  }
+
+  return TensorDstAccumulationInfo{tripCountValue,         *unitTileCount,
+                                   totalContributionTiles, contributionWait,
+                                   attachedContribution,   contributionType};
+}
+
+FailureOr<TensorL1PackAccumulationInfo>
+analyzeTensorAccumulationForL1Pack(TensorAccumulationMatch &match,
+                                   scf::ForOp loop) {
+  if (match.contribution.getType() != match.tensorType ||
+      loop.getNumResults() != 1 || match.resultIndex != 0) {
+    return failure();
+  }
+
+  // The generated metadata configures packer L1 accumulation for every pack in
+  // the loop. Additional stores would produce packs that are not part of the
+  // additive recurrence.
+  bool hasLoopLocalStore = false;
+  loop->walk([&](StoreOp) {
+    hasLoopLocalStore = true;
+    return WalkResult::interrupt();
+  });
+  if (hasLoopLocalStore) {
+    return failure();
+  }
+
+  std::optional<int64_t> unitTileCount;
+  if (auto contributionType =
+          dyn_cast<RankedTensorType>(match.contribution.getType())) {
+    FailureOr<int64_t> tileCount = getStaticTensorTileCount(contributionType);
+    if (succeeded(tileCount)) {
+      unitTileCount = *tileCount;
+    }
+  }
+
+  return TensorL1PackAccumulationInfo{getStaticAccumulationTripCount(loop),
+                                      unitTileCount};
+}
+
+LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
+                                           scf::ForOp loop,
+                                           RewriterBase &rewriter) {
+  FailureOr<TensorDstAccumulationInfo> info =
+      analyzeTensorAccumulationForDst(match, loop);
+  if (failed(info)) {
     return failure();
   }
 
@@ -362,14 +410,15 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 
   rewriter.setInsertionPoint(loop);
   IntegerAttr totalTilesAttr =
-      rewriter.getI64IntegerAttr(totalContributionTiles);
+      rewriter.getI64IntegerAttr(info->totalContributionTiles);
   RankedTensorType coalescedType =
-      buildCoalescedContributionType(contributionType, tripCountValue);
-  CBWaitOp coalescedWait = CBWaitOp::create(
-      rewriter, loc, coalescedType, contributionWait.getCb(), totalTilesAttr);
-  AttachCBOp coalescedContribution =
-      AttachCBOp::create(rewriter, loc, coalescedType,
-                         coalescedWait.getResult(), contributionWait.getCb());
+      buildCoalescedContributionType(info->contributionType, info->tripCount);
+  CBWaitOp coalescedWait =
+      CBWaitOp::create(rewriter, loc, coalescedType,
+                       info->contributionWait.getCb(), totalTilesAttr);
+  AttachCBOp coalescedContribution = AttachCBOp::create(
+      rewriter, loc, coalescedType, coalescedWait.getResult(),
+      info->contributionWait.getCb());
 
   // The compute output operand is a tensor view of the reserved output
   // dataflow buffer. The placeholder tensor has no data dependence; it only
@@ -418,7 +467,8 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
   rewriter.setInsertionPointAfter(compute);
   // The original per-iteration pops disappear with the loop, so the coalesced
   // wait needs one matching pop after compute consumes all contribution tiles.
-  CBPopOp::create(rewriter, loc, contributionWait.getCb(), totalTilesAttr);
+  CBPopOp::create(rewriter, loc, info->contributionWait.getCb(),
+                  totalTilesAttr);
 
   // The new compute writes the original final store target, and the loop body
   // with its local wait/attach/add has been replaced completely.
@@ -433,19 +483,7 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
 LogicalResult lowerTensorAccumulationToL1Pack(TensorAccumulationMatch &match,
                                               scf::ForOp loop, int64_t scopeId,
                                               RewriterBase &rewriter) {
-  if (match.contribution.getType() != match.tensorType ||
-      loop.getNumResults() != 1 || match.resultIndex != 0) {
-    return failure();
-  }
-  // The generated metadata configures packer L1 accumulation for every pack in
-  // the loop. Additional stores would produce packs that are not part of the
-  // additive recurrence.
-  bool hasLoopLocalStore = false;
-  loop->walk([&](StoreOp) {
-    hasLoopLocalStore = true;
-    return WalkResult::interrupt();
-  });
-  if (hasLoopLocalStore) {
+  if (failed(analyzeTensorAccumulationForL1Pack(match, loop))) {
     return failure();
   }
 

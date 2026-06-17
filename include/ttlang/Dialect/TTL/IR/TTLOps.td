@@ -365,10 +365,10 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
 
     The body may use one block argument per output and yield one value per
     output when all outputs use explicit initial values. This form makes
-    cross-accumulator dataflow an SSA property: if the yielded value for one
+    cross-output data dependence an SSA property: if the yielded value for one
     output uses another output's updated value, normal SSA use-def edges encode
-    that dependency. Scopes without body arguments and yielded values remain
-    policy-only wrappers for storage-strategy selection.
+    that dependency. Scopes without body arguments and yielded values declare
+    output policy without explicit state values.
   }];
 
   let arguments = (ins

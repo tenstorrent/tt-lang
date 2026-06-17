@@ -60,8 +60,7 @@ def TTL_AccumulationScopeOpInterface
     : OpInterface<"AccumulationScopeOpInterface"> {
   let description = [{
     Region-like operations that explicitly describe accumulation semantics.
-    The interface separates the accumulation policy from the storage mechanism,
-    so consumers can reason about the declared policy directly.
+    The interface separates the accumulation policy from the storage mechanism.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
