@@ -1,0 +1,2 @@
+# Benchmark result CSVs are kept locally, not committed.
+*.csv
