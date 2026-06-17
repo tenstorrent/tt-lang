@@ -32,7 +32,8 @@ func.func @tensor_recurrence_scope(
 // CHECK:        scf.yield
 // CHECK-NEXT:   }
 // CHECK-NEXT:   ttl.store %[[LOOP]], %[[RESERVE]]
-// CHECK-NEXT: } {combiners = [0 : i32], initial_modes = [2 : i32]}
+// CHECK-NEXT:   ttl.yield
+// CHECK-NEXT: } combiners([add]) initial_modes([explicit])
 // CHECK-NEXT: return
 // CHECK-NOT: ttl.attach_cb
 

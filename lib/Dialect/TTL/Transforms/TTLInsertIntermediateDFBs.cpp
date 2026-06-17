@@ -96,7 +96,7 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        Value replacement = materializeToDFB(operand, moduleOp, builder);
+        Value replacement = materializeToDFB(operand, op, moduleOp, builder);
 
         // Replace only this specific operand. Elementwise consumers of
         // the same value retain the original SSA value and fuse with

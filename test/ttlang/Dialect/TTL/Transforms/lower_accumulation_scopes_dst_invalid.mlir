@@ -26,6 +26,6 @@ func.func @dst_required_but_ineligible() {
     }
     ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
-  } {combiners = [0 : i32], initial_modes = [2 : i32]}
+  } combiners([add]) initial_modes([explicit])
   func.return
 }

@@ -146,12 +146,67 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
 
 /// Remove the semantic wrapper after storage strategy lowering has made the
 /// accumulation state explicit.
-static void eraseAccumulationScopeWrapper(AccumulationScopeOp scope,
-                                          RewriterBase &rewriter) {
+static void
+eraseAccumulationScopeWrapper(AccumulationScopeOp scope, RewriterBase &rewriter,
+                              ValueRange blockArgReplacements = ValueRange()) {
   Block &body = scope.getBody().front();
   rewriter.eraseOp(body.getTerminator());
-  rewriter.inlineBlockBefore(&body, scope, ValueRange{});
+  rewriter.inlineBlockBefore(&body, scope, blockArgReplacements);
   rewriter.eraseOp(scope);
+}
+
+/// Return true when a scope body carries explicit state through region
+/// arguments and ttl.yield values.
+static bool hasStatefulBody(AccumulationScopeOp scope) {
+  Block &body = scope.getBody().front();
+  auto yield = cast<YieldOp>(body.getTerminator());
+  return body.getNumArguments() != 0 || !yield.getValues().empty();
+}
+
+/// Verify the policy required for tensor stateful scope fallback.
+static LogicalResult verifyStatefulTensorScope(AccumulationScopeOp scope) {
+  assert(hasStatefulBody(scope) && "expected stateful accumulation scope");
+  for (auto [outputIndex, output] : llvm::enumerate(scope.getOutputs())) {
+    if (!output.getDefiningOp<CBReserveOp>()) {
+      return scope.emitOpError(
+                 "stateful tensor accumulation lowering requires output ")
+             << outputIndex << " from ttl.cb_reserve";
+    }
+  }
+  return success();
+}
+
+/// Lower a stateful tensor scope to ordinary stores and tensor loop-carried
+/// state. ttl-materialize-loop-state later assigns compiler-allocated DFB
+/// storage to the remaining tensor iter_args.
+static LogicalResult
+lowerStatefulTensorAccumulationScope(AccumulationScopeOp scope,
+                                     AccumulationStrategy strategy,
+                                     RewriterBase &rewriter) {
+  if (strategy == AccumulationStrategy::Dst) {
+    return scope.emitOpError(
+        "cannot lower stateful tensor accumulation scope to DST: grouped DST "
+        "lowering is not implemented");
+  }
+  if (strategy == AccumulationStrategy::L1Pack) {
+    return scope.emitOpError(
+        "cannot lower stateful tensor accumulation scope to L1 packer "
+        "accumulation: grouped L1 packer lowering is not implemented");
+  }
+
+  if (failed(verifyStatefulTensorScope(scope))) {
+    return failure();
+  }
+
+  auto yield = cast<YieldOp>(scope.getBody().front().getTerminator());
+  rewriter.setInsertionPoint(yield);
+  for (auto [output, yieldedValue] :
+       llvm::zip_equal(scope.getOutputs(), yield.getValues())) {
+    StoreOp::create(rewriter, yield.getLoc(), yieldedValue, output,
+                    /*accumulate=*/nullptr);
+  }
+  eraseAccumulationScopeWrapper(scope, rewriter, scope.getExplicitInits());
+  return success();
 }
 
 /// Verify the scope policy for user-written dataflow-buffer accumulation.
@@ -250,6 +305,10 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
                                                   AccumulationStrategy strategy,
                                                   int64_t scopeId,
                                                   RewriterBase &rewriter) {
+  if (hasStatefulBody(scope)) {
+    return lowerStatefulTensorAccumulationScope(scope, strategy, rewriter);
+  }
+
   FailureOr<TensorAccumulationMatch> match =
       matchTensorAccumulationScope(scope);
   if (failed(match)) {

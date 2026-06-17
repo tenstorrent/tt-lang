@@ -63,11 +63,14 @@ def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduction function type",
 //===----------------------------------------------------------------------===//
 
 def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
+def TTL_AccumulationCombiner_Yielded
+    : I32EnumAttrCase<"Yielded", 1, "yielded">;
 
 // TODO(#646): Add max/min combiners after strategy legality is defined for
 // each storage mechanism.
 def TTL_AccumulationCombiner : I32EnumAttr<"AccumulationCombiner",
-    "TTL accumulation combiner", [TTL_AccumulationCombiner_Add]> {
+    "TTL accumulation combiner",
+    [TTL_AccumulationCombiner_Add, TTL_AccumulationCombiner_Yielded]> {
   let cppNamespace = "::mlir::tt::ttl";
 }
 

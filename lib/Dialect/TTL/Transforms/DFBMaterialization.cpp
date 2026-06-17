@@ -21,10 +21,8 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
 
-  // BindCBOp lives at function entry: cb_index is function-scoped and
-  // finalize-dfb-indices requires that placement. Reserve/store/wait/attach
-  // stay at the def site to preserve per-invocation accounting inside
-  // loops and conditional branches.
+  // BindCBOp lives at function entry because cb_index is function-scoped and
+  // finalize-dfb-indices requires that placement.
   Block &body = funcOp.getBody().front();
   Operation *insertAfter = nullptr;
   for (Operation &op : body) {
@@ -63,21 +61,23 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                       OpBuilder &builder) {
+Value materializeToDFB(Value intermediate, Operation *insertBefore,
+                       ModuleOp moduleOp, OpBuilder &builder) {
   auto tensorType = cast<RankedTensorType>(intermediate.getType());
   Location loc = intermediate.getLoc();
 
   Operation *defOp = intermediate.getDefiningOp();
   assert(defOp && "intermediate must have a defining op");
+  assert(insertBefore && "materialization requires an insertion point");
 
   auto funcOp = defOp->getParentOfType<func::FuncOp>();
   assert(funcOp && "intermediate must be inside a func::FuncOp");
 
+  OpBuilder::InsertionGuard guard(builder);
   BindCBOp bindDFB =
       createCompilerAllocatedDFB(tensorType, loc, funcOp, moduleOp, builder);
 
-  builder.setInsertionPointAfter(defOp);
+  builder.setInsertionPoint(insertBefore);
   createDFBStore(intermediate, bindDFB.getResult(), builder);
 
   auto attach =

@@ -360,8 +360,11 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
     mechanism.
 
     The `combiners` and `initial_modes` attributes contain one entry per
-    output. `explicit_inits` contains one operand for each output whose initial
-    mode is `explicit`, in output order.
+    output. `add` combines a contribution with the current state through the
+    named combiner. `yielded` means the next state is defined directly by the
+    corresponding `ttl.yield` operand in a stateful body. `explicit_inits`
+    contains one operand for each output whose initial mode is `explicit`, in
+    output order.
 
     The body may use one block argument per output and yield one value per
     output when all outputs use explicit initial values. This form makes
@@ -379,11 +382,7 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
   );
   let regions = (region SizedRegion<1>:$body);
 
-  let assemblyFormat = [{
-    `outs` `(` $outputs `:` type($outputs) `)`
-    (`inits` `(` $explicit_inits^ `:` type($explicit_inits) `)`)?
-    $body attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 

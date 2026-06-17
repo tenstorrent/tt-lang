@@ -11,7 +11,7 @@ func.func @combiner_count_mismatch() {
   ttl.accumulation_scope outs(%out0, %out1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                     tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     ttl.yield
-  } {combiners = [0 : i32], initial_modes = [0 : i32, 0 : i32]}
+  } combiners([add]) initial_modes([overwrite, overwrite])
   return
 }
 
@@ -25,31 +25,31 @@ func.func @initial_mode_count_mismatch() {
   ttl.accumulation_scope outs(%out0, %out1 : tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                     tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     ttl.yield
-  } {combiners = [0 : i32, 0 : i32], initial_modes = [0 : i32]}
+  } combiners([add, add]) initial_modes([overwrite])
   return
 }
 
 // -----
 
-// Combiner attributes must be generated enum attributes, not arbitrary attrs.
+// Combiner policy entries must be known symbolic names.
 func.func @malformed_combiner_attr() {
   %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  // expected-error @below {{'ttl.accumulation_scope' op combiners must contain accumulation combiner enum attributes}}
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     ttl.yield
-  } {combiners = [99 : i32], initial_modes = [0 : i32]}
+  // expected-error @below {{expected accumulation combiner `add` or `yielded`}}
+  } combiners([not_a_combiner]) initial_modes([overwrite])
   return
 }
 
 // -----
 
-// Initial-mode attributes must be generated enum attributes, not arbitrary attrs.
+// Initial-mode policy entries must be known symbolic names.
 func.func @malformed_initial_mode_attr() {
   %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  // expected-error @below {{'ttl.accumulation_scope' op initial_modes must contain accumulation initial-mode enum attributes}}
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     ttl.yield
-  } {combiners = [0 : i32], initial_modes = [99 : i32]}
+  // expected-error @below {{expected accumulation initial mode `overwrite`, `accumulate_existing`, or `explicit`}}
+  } combiners([add]) initial_modes([not_a_mode])
   return
 }
 
@@ -61,7 +61,20 @@ func.func @missing_explicit_init() {
   // expected-error @below {{'ttl.accumulation_scope' op requires one explicit init per explicit initial mode}}
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     ttl.yield
-  } {combiners = [0 : i32], initial_modes = [2 : i32]}
+  } combiners([add]) initial_modes([explicit])
+  return
+}
+
+// -----
+
+// The yielded combiner is meaningful only when the body carries explicit
+// accumulator state through region arguments and ttl.yield.
+func.func @yielded_combiner_without_stateful_body() {
+  %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op yielded combiner for output 0 requires a stateful body with block arguments and yielded values}}
+  ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ttl.yield
+  } combiners([yielded]) initial_modes([overwrite])
   return
 }
 
@@ -75,7 +88,7 @@ func.func @explicit_init_type_mismatch() {
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<2x1x!ttcore.tile<32x32, bf16>>) {
     ttl.yield
-  } {combiners = [0 : i32], initial_modes = [2 : i32]}
+  } combiners([add]) initial_modes([explicit])
   return
 }
 
@@ -94,7 +107,7 @@ func.func @stateful_block_arg_count_mismatch() {
                               tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   ^bb0(%acc0: tensor<1x1x!ttcore.tile<32x32, bf16>>):
     ttl.yield %acc0, %acc0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-  } {combiners = [0 : i32, 0 : i32], initial_modes = [2 : i32, 2 : i32]}
+  } combiners([yielded, yielded]) initial_modes([explicit, explicit])
   return
 }
 
@@ -114,7 +127,22 @@ func.func @stateful_yield_count_mismatch() {
   ^bb0(%acc0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
        %acc1: tensor<1x1x!ttcore.tile<32x32, bf16>>):
     ttl.yield %acc0 : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  } {combiners = [0 : i32, 0 : i32], initial_modes = [2 : i32, 2 : i32]}
+  } combiners([yielded, yielded]) initial_modes([explicit, explicit])
+  return
+}
+
+// -----
+
+// Stateful bodies use yielded values as the authoritative next state.
+func.func @stateful_add_combiner() {
+  %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.accumulation_scope' op stateful body requires yielded combiner for every output, but output 0 uses add}}
+  ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%acc: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    ttl.yield %acc : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } combiners([add]) initial_modes([explicit])
   return
 }
 
@@ -132,7 +160,7 @@ func.func @stateful_non_explicit_initial_mode() {
   ^bb0(%acc0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
        %acc1: tensor<1x1x!ttcore.tile<32x32, bf16>>):
     ttl.yield %acc0, %acc1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-  } {combiners = [0 : i32, 0 : i32], initial_modes = [2 : i32, 0 : i32]}
+  } combiners([yielded, yielded]) initial_modes([explicit, overwrite])
   return
 }
 
@@ -153,7 +181,7 @@ func.func @stateful_yield_type_mismatch() {
   ^bb0(%acc0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
        %acc1: tensor<1x1x!ttcore.tile<32x32, bf16>>):
     ttl.yield %bad, %acc1 : tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-  } {combiners = [0 : i32, 0 : i32], initial_modes = [2 : i32, 2 : i32]}
+  } combiners([yielded, yielded]) initial_modes([explicit, explicit])
   return
 }
 
@@ -167,8 +195,8 @@ func.func @nested_accumulation_scope() {
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
     ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
       ttl.yield
-    } {combiners = [0 : i32], initial_modes = [0 : i32]}
+    } combiners([add]) initial_modes([overwrite])
     ttl.yield
-  } {combiners = [0 : i32], initial_modes = [0 : i32]}
+  } combiners([add]) initial_modes([overwrite])
   return
 }

@@ -46,9 +46,9 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
 /// Routes `intermediate` through a fresh compiler-allocated DFB and returns a
 /// tensor SSA value backed by it. The new `bind_cb` is placed at function entry
 /// (see `createCompilerAllocatedDFB`); the store, wait, and attach are emitted
-/// at `intermediate.getDefiningOp()`.
-Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                       OpBuilder &builder);
+/// immediately before `insertBefore`.
+Value materializeToDFB(Value intermediate, Operation *insertBefore,
+                       ModuleOp moduleOp, OpBuilder &builder);
 
 } // namespace mlir::tt::ttl
 

@@ -103,11 +103,9 @@ select the storage mechanism used for partial values. It has:
 
 - `outputs`: destination tensor views governed by the accumulation policy;
 - `explicit_inits`: initial tensors for outputs whose mode is `explicit`;
-- `combiners`: one accumulation combiner enum attribute per output
-  (`0 : i32` is add);
-- `initial_modes`: one accumulation initial-mode enum attribute per output
-  (`0 : i32` is overwrite, `1 : i32` is accumulate_existing, and
-  `2 : i32` is explicit);
+- `combiners`: one accumulation combiner per output (`add` or `yielded`);
+- `initial_modes`: one accumulation initial-mode per output (`overwrite`,
+  `accumulate_existing`, or `explicit`);
 - `body`: a single-block region containing the loop or operations that
   produce accumulated values.
 
@@ -119,6 +117,8 @@ deferred feature rather than part of the current op contract.
 The verifier is structural:
 
 - combiner count equals output count;
+- yielded combiners require a stateful body;
+- stateful bodies require yielded combiners for every output;
 - initial-mode count equals output count;
 - explicit modes have matching explicit init operands;
 - explicit init types match their corresponding outputs;
@@ -149,15 +149,14 @@ Tensor recurrence scope form:
 ttl.accumulation_scope
     outs(%out_view : tensor<...>)
     inits(%init : tensor<...>)
-    {combiners = [0 : i32],
-     initial_modes = [2 : i32]} {
+{
   %result = scf.for ... iter_args(%acc = %init) -> tensor<...> {
     %next = ttl.add %acc, %contribution : tensor<...>
     scf.yield %next : tensor<...>
   }
   ttl.store %result, %out_view : tensor<...>, tensor<...>
   ttl.yield
-}
+} combiners([add]) initial_modes([explicit])
 ```
 
 Stateful accumulation scope form:
@@ -166,31 +165,31 @@ Stateful accumulation scope form:
 ttl.accumulation_scope
     outs(%out0, %out1 : tensor<...>, tensor<...>)
     inits(%init0, %init1 : tensor<...>, tensor<...>)
-    {combiners = [0 : i32, 0 : i32],
-     initial_modes = [2 : i32, 2 : i32]} {
+{
 ^bb0(%acc0: tensor<...>, %acc1: tensor<...>):
   %next0 = ttl.add %acc0, %acc1 : tensor<...>, tensor<...> -> tensor<...>
   %next1 = ttl.add %acc1, %next0 : tensor<...>, tensor<...> -> tensor<...>
   ttl.yield %next0, %next1 : tensor<...>, tensor<...>
-}
+} combiners([yielded, yielded]) initial_modes([explicit, explicit])
 ```
 
 This form exposes accumulator state as block arguments and returns the updated
 state through `ttl.yield`. Cross-output dependence is represented by ordinary
-SSA use-def edges between yielded values.
+SSA use-def edges between yielded values. The `yielded` combiner records that
+the region defines the next state directly, which covers state updates such as
+max-plus-rescale recurrences that are not additive combiners.
 
 Explicit DFB accumulation scope form:
 
 ```mlir
 ttl.accumulation_scope
     outs(%out_view : tensor<...>)
-    {combiners = [0 : i32],
-     initial_modes = [0 : i32]} {
+{
   scf.for ... {
     ttl.store %value, %out_view {accumulate} : ...
   }
   ttl.yield
-}
+} combiners([add]) initial_modes([overwrite])
 ```
 
 `AccumulationScopeOpInterface` is implemented by `ttl.accumulation_scope`
@@ -210,8 +209,12 @@ The TTL-to-TTKernel pipeline handles accumulation in this order:
 
 2. `ttl-lower-accumulation-scopes{kind=tensor}` consumes those scopes. It
    selects DST or L1 packer accumulation according to
-   `accumulation-strategy`. It removes the semantic wrapper before general
-   loop-state materialization.
+   `accumulation-strategy`. Stateful scopes with yielded state lower in
+   `auto` mode by emitting one final `ttl.store` per yielded value and leaving
+   tensor loop-carried state for explicit DFB materialization. Required `dst`
+   or `l1-pack` strategy reports an error for stateful scopes until grouped
+   lowering is implemented. The pass removes the semantic wrapper before
+   general loop-state materialization.
 
 3. `ttl-materialize-loop-state` handles remaining tensor `scf.for`
    iter_args through compiler-allocated DFB state. Additive recurrences

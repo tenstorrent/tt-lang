@@ -30,7 +30,7 @@ module attributes {ttl.target_arch = "blackhole"} {
       }
       ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
-    } {combiners = [0 : i32], initial_modes = [2 : i32]}
+    } combiners([add]) initial_modes([explicit])
     func.return
   }
 }
@@ -65,7 +65,7 @@ module attributes {ttl.target_arch = "wormhole_b0"} {
       }
       ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
-    } {combiners = [0 : i32], initial_modes = [2 : i32]}
+    } combiners([add]) initial_modes([explicit])
     func.return
   }
 }
