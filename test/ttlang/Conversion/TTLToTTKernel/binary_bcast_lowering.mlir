@@ -1,22 +1,23 @@
-// Verify ttl.tile_binary_bcast lowers to ttkernel.binary_bcast (the FPU
-// broadcast-binary op that reads BOTH operands from CBs and writes DST) and
-// that ttkernel-insert-inits emits the matching, hoisted binary_bcast_init.
+// Verify ttl.tile_binary_bcast lowers to a unary broadcast into DST followed by
+// binary_dest_reuse_tiles, which combines the broadcast value in DST with the
+// lhs tile read from its CB.
 //
 // RUN: ttlang-opt %s --split-input-file \
 // RUN:   -pass-pipeline='builtin.module(convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 // mul + column broadcast (the OPT8 rewrite): C[i,j] = data[i,j] * bcast_col(alpha[i,0]).
-// in0 = data (full tile, index linearized [row, col]); in1 = alpha (broadcast
-// source, index = %row). The per-op binary_bcast_init sits inside the loop
-// directly before the op, matching every other per-op init; only the common
-// init is hoisted above the loops.
+// The broadcast init uses the output CB for pack configuration. The
+// binary_dest_reuse op then uses DestToSrcB so the CB data tile is srcA and the
+// broadcast value in DST is srcB.
 //
 // CHECK-LABEL: func.func @binary_bcast_mul_col
 // CHECK: scf.for %[[ROW:.*]] = %{{.*}} to %{{.*}}
 // CHECK:   scf.for %[[COL:.*]] = %{{.*}} to %{{.*}}
-// CHECK:     ttkernel.binary_bcast_init(%{{.*}}, %{{.*}}, %{{.*}}, <mul>, <col>)
-// CHECK:     ttkernel.binary_bcast(%{{.*}}, %{{.*}}, %{{.*}}, %[[ROW]], %{{.*}}, <mul>, <col>)
+// CHECK:     ttkernel.unary_bcast_init(%{{.*}}, %{{.*}}, <col>)
+// CHECK:     ttkernel.unary_bcast(%{{.*}}, %[[ROW]], %{{.*}}, <col>)
+// CHECK:     ttkernel.binary_dest_reuse_tiles_init(%{{.*}}, <mul>, <dest_to_srcb>)
+// CHECK:     ttkernel.binary_dest_reuse_tiles(%{{.*}}, %{{.*}}, %{{.*}}, <mul>, <dest_to_srcb>)
 func.func @binary_bcast_mul_col()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb_data = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>

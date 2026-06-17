@@ -176,9 +176,8 @@ func.func @fuse_bcast_add_then_typecast(
   // CHECK-SAME:   ins(%{{.*}}, %{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>)
   // CHECK-SAME:   outs(%{{.*}} : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK:      ^bb0(%[[A:.*]]: !ttcore.tile<32x32, bf16>, %[[B:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK:        %[[BC:.*]] = ttl.tile_bcast %[[A]], %[[OUT]]{{.*}}-> !ttcore.tile<32x32, bf16>
-  // CHECK:        %[[ADD:.*]] = ttl.tile_add %[[BC]], %[[B]]{{.*}}: !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-  // CHECK:        %[[C:.*]] = ttl.tile_typecast %[[ADD]]{{.*}}: !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, f32>
+  // CHECK:        %[[FUSED:.*]] = ttl.tile_binary_bcast %[[B]], %[[A]], %[[OUT]] <add>{{.*}}-> !ttcore.tile<32x32, bf16>
+  // CHECK:        %[[C:.*]] = ttl.tile_typecast %[[FUSED]]{{.*}}: !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, f32>
   // CHECK:        ttl.tile_store %[[C]], %{{.*}}
   %bc = ttl.block.broadcast %a_cb dims = [-2, -1], shape = [2, 2]
        : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>

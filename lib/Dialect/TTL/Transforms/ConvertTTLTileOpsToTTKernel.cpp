@@ -757,8 +757,9 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
 // Binary Broadcast Tile Lowering
 //===----------------------------------------------------------------------===//
 
-/// Lower ttl.tile_binary_bcast to ttkernel.binary_bcast. lhs and rhs are read
-/// from CBs (FPU path); rhs is the single tile broadcast along bcast_type.
+/// Lower ttl.tile_binary_bcast to ttkernel.unary_bcast followed by
+/// ttkernel.binary_dest_reuse_tiles. The broadcast source is written to DST,
+/// then lhs is read from its CB and combined with the broadcast value in DST.
 struct TTLTileBinaryBcastToTTKernel : OpConversionPattern<TileBinaryBcastOp> {
   using OpConversionPattern<TileBinaryBcastOp>::OpConversionPattern;
 
@@ -784,17 +785,22 @@ struct TTLTileBinaryBcastToTTKernel : OpConversionPattern<TileBinaryBcastOp> {
           op, "cannot compute rhs CB tile index from tensor.extract");
     }
 
-    auto binaryBcastOp = ttk::BinaryBcastTileOp::create(
-        rewriter, op.getLoc(), setup->inCB, *rhsCB, setup->inCBIdx, *rhsIdx,
-        setup->dstIdx, op.getEltwiseBinaryTypeAttr(),
+    auto bcastOp = ttk::UnaryBcastTileOp::create(
+        rewriter, op.getLoc(), *rhsCB, *rhsIdx, setup->dstIdx,
         ttk::BcastTypeAttr::get(op.getContext(),
                                 convertBcastType(op.getBcastType())));
 
     // Propagate output CB index for per-op init insertion.
     if (auto cbIdxAttr =
             op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
-      binaryBcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdxAttr);
+      bcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdxAttr);
     }
+
+    ttk::BinaryDestReuseTilesOp::create(
+        rewriter, op.getLoc(), setup->inCB, setup->inCBIdx, setup->dstIdx,
+        op.getEltwiseBinaryTypeAttr(),
+        ttk::BinaryDestReuseTypeAttr::get(
+            op.getContext(), ttk::BinaryDestReuseType::DestToSrcB));
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();

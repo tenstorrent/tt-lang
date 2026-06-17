@@ -133,16 +133,18 @@ def dprint_f32_kernel(inp_f32, out_f32):
 # Use CHECK-DAG where ordering is non-deterministic.
 # =============================================================================
 
-# Scalar prints and thread conditioning run outside the fused compute
-# body and may appear in any order relative to each other and DM output.
-# CHECK-DAG: bf16 compute start
-# CHECK-DAG: answer: 42
-# CHECK-DAG: pi: 3.14
-# CHECK-DAG: cb_id
-# CHECK-DAG: bf16 dm hello
-# CHECK-DAG: core:
-# CHECK-DAG: math thread
-# CHECK-DAG: unpack thread
+# Scalar prints and thread conditioning run outside the fused compute body and
+# may appear in any order relative to each other and DM output. Match runtime
+# thread prefixes so generated C++ DPRINT statements do not satisfy the checks.
+# CHECK-DAG: TR1: bf16 compute start
+# CHECK-DAG: TR1: answer: 42
+# CHECK-DAG: TR1: pi: 3.14
+# CHECK-DAG: {{TR[0-2]: cb_id}}
+# CHECK-DAG: NC: bf16 dm hello
+# CHECK-DAG: NC: core:
+# CHECK-DAG: TR2: pack thread
+# CHECK-DAG: TR1: math thread
+# CHECK-DAG: TR0: unpack thread
 
 # DST and tile dprints are inside the fused compute body (pack thread).
 # They appear after the scalar/thread output since the fused compute
@@ -155,11 +157,9 @@ def dprint_f32_kernel(inp_f32, out_f32):
 # XXX: === after add ===
 # XXX: DST[0] (ttl.tile_add)
 # XXX: DST[1] (ttl.tile_exp)
-# CHECK: pack thread
-
 # Tensor pages print in dm_write (bf16 page from L1 CB)
 # The page output starts with page number followed by BF16 values.
-# CHECK: 0:
+# CHECK-DAG: BR: 0:
 
 # =============================================================================
 # FileCheck patterns -- f32 kernel (runs after bf16 kernel)

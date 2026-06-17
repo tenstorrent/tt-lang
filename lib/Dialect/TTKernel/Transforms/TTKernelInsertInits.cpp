@@ -137,16 +137,13 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                       bcastOp.getBcastTypeAttr());
       }};
 
-  map[mlir::TypeID::get<ttk::BinaryBcastTileOp>()] = {[](OpBuilder &b,
-                                                         Location l,
-                                                         Operation *computeOp) {
-    auto bcastOp = cast<ttk::BinaryBcastTileOp>(computeOp);
-    Value outputCB = resolveOutputCB(computeOp, kBcastOutputCBIndexAttrName);
-    assert(outputCB && "output CB required for binary_bcast_init");
-    ttk::BinaryBcastInitOp::create(b, l, bcastOp.getIn0Cb(), bcastOp.getIn1Cb(),
-                                   outputCB, bcastOp.getEltwiseBinaryTypeAttr(),
-                                   bcastOp.getBcastTypeAttr());
-  }};
+  map[mlir::TypeID::get<ttk::BinaryDestReuseTilesOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto binaryOp = cast<ttk::BinaryDestReuseTilesOp>(computeOp);
+        ttk::BinaryDestReuseTilesInitOp::create(
+            b, l, binaryOp.getInCb(), binaryOp.getEltwiseBinaryTypeAttr(),
+            binaryOp.getReuseTypeAttr());
+      }};
 
   map[mlir::TypeID::get<ttk::ReduceTileOp>()] = {[](OpBuilder &b, Location l,
                                                     Operation *computeOp) {
@@ -226,12 +223,13 @@ static InitKey computeInitKey(Operation *op) {
         typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
   }
 
-  // Distinct eltwise op / broadcast dim combinations configure the FPU
+  // Distinct eltwise op / reuse direction combinations configure the FPU
   // differently and must not share an init.
-  if (auto bbcast = dyn_cast<ttk::BinaryBcastTileOp>(op)) {
-    int64_t disc = (static_cast<int64_t>(bbcast.getEltwiseBinaryType()) << 8) |
-                   static_cast<int64_t>(bbcast.getBcastType());
-    return {typeId, {bbcast.getIn0Cb(), bbcast.getIn1Cb()}, disc};
+  if (auto binaryReuse = dyn_cast<ttk::BinaryDestReuseTilesOp>(op)) {
+    int64_t disc =
+        (static_cast<int64_t>(binaryReuse.getEltwiseBinaryType()) << 8) |
+        static_cast<int64_t>(binaryReuse.getReuseType());
+    return {typeId, {binaryReuse.getInCb()}, disc};
   }
 
   // Different full_fp32 modes select a different LLK kernel branch and must

@@ -1119,8 +1119,8 @@ def TTL_TileBinaryBcastOp : TTL_TileOp<"tile_binary_bcast", [TTL_CBInputTileOpTr
     is a single row/col/scalar tile broadcast along `bcast_type` and `op` is
     selected by `eltwise_binary_type` (add/sub/mul). Both inputs are read from
     CBs and the result is written to DST (the FPU broadcast path). The output
-    operand carries the output CB for init-time configuration only. Maps to
-    ttkernel.binary_bcast_init + ttkernel.binary_bcast.
+    operand carries the output CB for init-time configuration only. Lowers to
+    ttkernel.unary_bcast followed by ttkernel.binary_dest_reuse_tiles.
 
     This is the fused form of a ttl.tile_bcast feeding a ttl.tile_{add,sub,mul}:
     it keeps the broadcast on the FPU instead of materializing it into DST for an
