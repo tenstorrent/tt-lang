@@ -26,7 +26,9 @@ JIT-compiles the handwritten kernels at run time.
   comparing DST-K against L1-K. The output is subblocked as the compiler would
   (`harness.dst_subblock`), covering MB3.A (output fits DST, reuse=1) and MB3.B
   (output exceeds DST, reuse>1).
-- MB4 compute-op math probes: not implemented yet.
+- MB4 compute-op (`compute_sweep.py`): per-op SFPU math-engine tile cost
+  (copy/exp/gelu/recip/sqrt/rsqrt) on the math thread (what tt-lang emits).
+  A pack-thread activation arm and reduce/binary ops are planned.
 
 ## Requirements
 
