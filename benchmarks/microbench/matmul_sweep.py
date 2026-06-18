@@ -52,7 +52,7 @@ class MatmulK(MicroBenchmark):
     DEFAULT_CSV = "benchmarks/microbench/results/matmul_k.csv"
     STRATEGIES = ("dst", "l1")
     PER_UNIT = "kt"
-    CSV_TAG = ("dtype", "fidelity", "fuse")
+    CSV_TAG = ("dtype", "fidelity", "fuse", "full_sync")
     EXTRA_COLUMNS = ("sub_mt", "sub_nt", "reuse")
     PARAMS = (
         Param("mt", "1", sweep=True, help="output rows (tiles)"),
