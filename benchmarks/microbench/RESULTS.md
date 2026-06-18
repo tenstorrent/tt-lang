@@ -685,6 +685,63 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `matmul_k_{blackhole,wormhole_b0}_fp32_hifi4_none_*.csv` -- fp32 dest (cap halved)
 - `matmul_k_{blackhole,wormhole_b0}_bf16_hifi4_none_True_*.csv` -- full-sync (cap doubled; `full_sync` now in the CSV tag)
 
+## Verification
+
+Three references check these benchmarks, each validating a different scope:
+
+1. **Per-op LLK measurements** -- the `*BH` sheets in the SDPA optimization workbook:
+   UNPACK/MATH/PACK_ISOLATE, L1_TO_L1, and l1_acc for individual stock LLK ops on
+   Blackhole. These validate the per-tile weights.
+2. **The optimized SDPA kernel** -- the deepseek_v3_b1 SDPA micro-op study (its op
+   set and dates match the workbook). It is built from custom LLK ops: a custom
+   matmul (`sdpa_custom_mm`), custom SFPU reduce/exp, and a block pack -- none of
+   which tt-lang emits. It bounds the achievable kernel but is not a clean
+   cross-check of the stock-op strategy choice.
+3. **MB1's internal fit** -- per-tile time linear in tile count, steady past
+   iters ~ 128, high r^2.
+
+Absolute per-tile CLK is not portable across the per-op measurement sheets: a plain
+bf16 pack reads ~138 CLK in the FastPack sheet but ~10 CLK in the Copy sheet (different
+normalization conventions). Only within-sheet ratios and structure are compared
+below.
+
+### Agrees
+
+- **L1-accumulation pack surcharge.** FastPack BH, steady state: plain pack ~138
+  CLK vs l1_acc pack ~193 CLK -- a +40% surcharge, the per-iteration cost L1-pack
+  pays in MB2 and DST-resident avoids. Confirms the surcharge is real and positive
+  on Blackhole.
+- **Fidelity scaling.** Binary FPU BH: HiFi2 math per tile is ~2x LoFi (34.7 vs
+  16.9 CLK), and add and mul are equal at a given fidelity; Matmul BH HiFi2 math is
+  ~34 CLK/tile. Consistent with MB3's fidelity sweep and the small math share of
+  the per-iteration cost.
+
+### Disagrees
+
+- **Serial composition predicts the opposite additive ranking.** Composing the
+  per-engine measurements serially -- and the serial cost model -- makes
+  DST-resident lower-cost for the additive recurrence (DST packs once; L1-pack pays
+  N packs, each +40%). MB2 measures L1-pack lower-cost. The cause is pipelining:
+  L1-pack's per-iteration pack overlaps the next iteration's unpack/math across
+  RISCs, which a serial per-engine sum cannot represent. The per-engine
+  measurements parameterize the model; the composed benchmark gives the ranking --
+  the calibration gap it exists to reveal.
+- **The optimized SDPA keeps the matmul output DST-resident; MB3 ranks L1-K lower
+  for stock matmul_block.** The SDPA kernel acquires DST once across all chunks and
+  packs the output once -- no `pack_reconfig_l1_acc` anywhere -- through its custom
+  matmul: the DST-K strategy MB3 found costlier for stock `matmul_block` at
+  kt >= 2. These do not contradict. SDPA's custom matmul and pack change the per-op
+  costs, so DST-residency wins there; within the stock ops tt-lang emits, MB3's
+  L1-K ranking holds. The SDPA result bounds how far a custom matmul could change
+  the choice -- it does not validate the stock-op ranking.
+- **Surcharge magnitude.** FastPack's +40% exceeds the +30-35% prior estimate --
+  within run-to-run and normalization variance, but the directly measured value
+  should be used.
+- **No Wormhole cross-check.** The workbook is Blackhole-only. The Wormhole results
+  -- where full-sync makes DST-resident the lower-cost additive strategy and the
+  ~2.4x costlier pack sets the gelu margins -- have no per-engine reference; they rest
+  on the MB measurements plus the extrapolated Wormhole/Blackhole ratios.
+
 ## Open / next
 
 MB1, MB2 (including the `--expr` pointwise expressions), and MB3 are complete on
@@ -700,6 +757,6 @@ both architectures (see their sections). Remaining:
   softmax-like code -- max/sum reductions, broadcasted scalar or row-vector
   updates, and fused pointwise transforms. New MB2 CSVs include the expression
   tag after the source tag.
-- Validation -- LLK composition cross-check: a tt-llk per-engine perf run supplies
-  unpack / pack / l1-acc-surcharge / matmul-math for both architectures; compose
-  those unit-free against MB1's measured round-trip rather than re-running the suite.
+- Validation -- LLK composition cross-check: done for Blackhole against the SDPA
+  optimization workbook's per-engine measurements (see Verification). Remaining: the
+  same per-engine measurements for Wormhole, which the workbook does not cover.
