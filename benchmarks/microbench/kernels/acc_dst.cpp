@@ -41,6 +41,7 @@ void kernel_main() {
   copy_tile_init(dfb_init);
 
   tile_regs_acquire();
+  cb_reserve_back(dfb_out, acc_tiles);
   {
     DeviceZoneScopedN("acc_loop");
     cb_wait_front(dfb_init, acc_tiles);
@@ -65,12 +66,12 @@ void kernel_main() {
     if (reuse) {
       cb_pop_front(dfb_delta, acc_tiles);
     }
-  }
-  tile_regs_commit();
-  tile_regs_wait();
-  cb_reserve_back(dfb_out, acc_tiles);
-  for (uint32_t u = 0; u < acc_tiles; ++u) {
-    pack_tile<true>(u, dfb_out, u);
+    // Single pack is inside the timed zone, matching L1-pack's per-step packs.
+    tile_regs_commit();
+    tile_regs_wait();
+    for (uint32_t u = 0; u < acc_tiles; ++u) {
+      pack_tile<true>(u, dfb_out, u);
+    }
   }
   cb_push_back(dfb_out, acc_tiles);
   tile_regs_release();

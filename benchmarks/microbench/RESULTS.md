@@ -59,13 +59,17 @@ measured zone; PCC ≈ 1.0 unless noted.
 
 ## Hardware / environment
 
-| architecture | host | freq (profiler) | notes |
-|---|---|---|---|
-| Blackhole | container `bnorris-ird-v1.1.3` | 1350 MHz | `source build-docker/env/activate` |
-| Wormhole b0 | `aus-wh-01:49551`, `/localdev/bnorris/tt-lang` | 1000 MHz | env via `/localdev/bnorris/wh_env.sh`; toolchain built into `/opt/ttlang-toolchain`; `ttnn` works. tt-lang compiler build failed (`getTombstoneKey`) — not needed (benchmark uses `ttnn`/`generic_op`). |
+Profiler clock (used for the cycles → µs conversion):
 
-Run BH: `sudo docker exec -w /home/bnorris/tt/tt-lang-cursor bnorris-ird-v1.1.3 bash -c "source build-docker/env/activate && TT_METAL_DEVICE_PROFILER=1 TT_METAL_PROFILER_MID_RUN_DUMP=1 python -m benchmarks.microbench.sweep ..."`
-Run WH: `ssh -p 49551 aus-wh-01 'cd /localdev/bnorris/tt-lang && source /localdev/bnorris/wh_env.sh && python -m benchmarks.microbench.sweep ...'`
+| architecture | freq (profiler) |
+|---|---|
+| Blackhole | 1350 MHz |
+| Wormhole b0 | 1000 MHz |
+
+Runs use a tt-metal environment with `ttnn` available, with the device profiler
+enabled: `TT_METAL_DEVICE_PROFILER=1 TT_METAL_PROFILER_MID_RUN_DUMP=1 python -m
+benchmarks.microbench.<sweep> ...`. No tt-lang compiler build is needed — the
+benchmarks dispatch handwritten kernels via `ttnn`/`generic_op`.
 
 ## MB1 — pack/unpack probe
 
@@ -134,7 +138,7 @@ Seed (dfb_init) and contributions (dfb_delta) use separate DFBs.
 # Each contribution is added in place with binary_dest_reuse_tiles<ELWADD,
 # DEST_TO_SRCA> — the op tt-lang's tile_accumulate_add lowers to.
 binary_op_init_common(dfb_delta, dfb_delta, dfb_out); copy_tile_init(dfb_init)
-acquire_dst                                                # held across whole loop
+acquire_dst; cb_reserve_back(dfb_out, U)                    # acquire held across whole loop
 zone "acc_loop":
   cb_wait_front(dfb_init, U); copy U tiles dfb_init->DST; cb_pop_front(dfb_init, U)  # seed
   binary_dest_reuse_tiles_init<ELWADD, DEST_TO_SRCA>(dfb_delta)
@@ -142,7 +146,8 @@ zone "acc_loop":
     cb_wait_front(dfb_delta, U)
     for u in range(U): binary_dest_reuse_tiles(dfb_delta, u, u)  # DST[u] += dfb_delta[u]
     cb_pop_front(dfb_delta, U)
-commit; wait; pack U tiles DST->dfb_out once; release_dst   # single pack
+  commit; wait; pack U tiles DST->dfb_out once             # single pack, timed in the zone
+cb_push_back(dfb_out, U); release_dst
 
 # L1-pack (acc_l1.cpp): accumulator lives in L1, re-packed every step.
 cb_reserve_back(dfb_out, U); pack_reconfig_l1_acc(0)
@@ -185,10 +190,14 @@ dram-streamed (one contribution block per iteration from DRAM):
 | 4 | 1.37/1.16 (L1) | 1.89/1.69 (L1) | 3.00/2.73 (L1) | 5.16/4.94 (L1) | 9.53/9.37 (L1) |
 
 - **Strategy ranking:** L1-pack is lower than DST-resident in nearly every config,
-  by a small margin (~0.1–0.3 µs, up to 0.68 at l1-resident acc_tiles=4 iters=16).
-  Three dram cells (acc_tiles=1, iters 1/4/8) are within ±0.03 µs — effectively
-  tied. The two strategies are close; L1-pack is marginally ahead. (With the
-  earlier SFPU add the DST kernel looked far worse — that was a kernel artifact.)
+  by a small margin (~0.1–0.6 µs, largest at l1-resident acc_tiles=4 iters=16:
+  3.86 vs 3.24). The acc_tiles=1 cells are near-ties — a few favor DST-resident by
+  ≤0.03 µs. The two strategies are close; L1-pack is marginally ahead.
+- **Timed consistently with MB3:** both kernels time the pack inside the zone —
+  L1-pack its per-step packs, DST-resident its single final pack. The single DST
+  pack is small next to the accumulate loop (unlike MB3's matmul, where the
+  pack-once is a heavy serial tail), so MB2's numbers and the L1-pack-ahead
+  ranking are unchanged by timing it.
 - **Residency effect (orthogonal):** streaming from DRAM adds a per-iteration DRAM
   read, so absolute cost grows steeply with iters (acc_tiles=1 iters=16: ~7.4 µs
   streamed vs ~1.4 µs resident, ~5×). This is larger than the strategy difference
@@ -497,12 +506,13 @@ trisc_max µs **DST-K / L1-K (faster)**:
   DST-favorable band to higher kt; a cheaper one (bias add) narrows it. So the
   selector's epilogue handling should weigh the L1-K reload against the activation
   cost, not assume a fixed crossover.
-- **Activation runs on the math thread** (`gelu_tile`), matching tt-lang codegen:
-  the TTKernel dialect has only `gelu_tile`/`gelu_tile_init` (SFPU, math thread),
-  no pack-thread variant. Hand kernels can run the activation on the packer
-  (`gelu_tile_pack`) to keep the math thread pure matmul, which tt-lang does not
-  emit; that would make DST-K cheaper still, strengthening — not reversing — the
-  result below. So this is the faithful tt-lang picture.
+- **Activation runs on the math thread** (`gelu_tile`), matching tt-lang's current
+  codegen: its SFPU lowering emits `gelu_tile` (math thread). A pack-thread
+  activation (`gelu_tile_pack`, as in tt-metal's fused matmul) keeps the math
+  thread pure matmul and would make DST-K cheaper still — strengthening, not
+  reversing, the result below. tt-lang does not emit that today, but it is not a
+  hardware limit: it needs a pack-thread TTKernel op + lowering (or direct EmitC).
+  MB4 measures the pack-thread variant to quantify that headroom.
 - **Consequence for the #652 selector:** with a fused epilogue the resident-output
   advantage holds and DST-K is the lower-cost strategy for shallow-K matmuls;
   the plain-matmul preference for L1-K (overlap) only holds at larger kt. The
@@ -555,13 +565,12 @@ without one it is not.
 
 ## MB4 — compute-op (math) microbenchmarks — planned
 
-The data-movement benchmarks (MB1–MB3) have no compute-engine term. Per
-`~/tt/perf/SDPA_Optimizations.xlsx`, SDPA/flash is compute/SFPU-bound, and that
-sheet already measures each math op as INIT / KERNEL / TILE_LOOP with per-RISC
-measurements. MB4 measures per-op compute-engine tile costs to feed a compute-aware
-model (also what the nonadditive work needs).
+The data-movement benchmarks (MB1–MB3) have no compute-engine term. SDPA/flash is
+compute/SFPU-bound, where each math op is best characterized as INIT / KERNEL /
+TILE_LOOP with a per-RISC split. MB4 measures per-op compute-engine tile costs to
+feed a compute-aware model (also what the nonadditive work needs).
 
-Ops to cover (from the xlsx per-op sheets):
+Ops to cover:
 
 | engine | ops |
 |---|---|
@@ -596,7 +605,7 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `accumulation_{blackhole,wormhole_b0}_fp32_{l1,dram}_*.csv` — MB2 fp32 dest
 - `accumulation_{blackhole,wormhole_b0}_bf16_{l1,dram}_True_*.csv` — MB2 full-sync (`full_sync` in the tag)
 - `matmul_k_blackhole_bf16_hifi4_*.csv` — MB3 DST-K vs L1-K, P and kt sweep (MB3.A reuse=1 + MB3.B reuse>1)
-- `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole (on `aus-wh-01:/localdev/bnorris/tt-lang`)
+- `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole
 - `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` — MB3.C DST-K vs L1-K with a fused GELU epilogue
 - `matmul_k_wormhole_b0_bf16_hifi4_gelu_*.csv` — MB3.C fused GELU on Wormhole
 - `matmul_k_blackhole_bf16_{lofi,hifi2}_none_*.csv` — fidelity for plain matmul (MB3.A/B); HiFi4 in the hifi4 CSV
@@ -607,16 +616,12 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 
 ## Open / next
 
-- MB3 — complete on Blackhole and Wormhole: MB3.A reuse=1, MB3.B reuse>1, MB3.C
-  fused GELU, each over fidelity (LoFi/HiFi2/HiFi4), plus fp32 dest and full-sync.
-  The DST-vs-L1 ranking holds across all of these (L1-K for kt ≥ 2; DST-K only with
-  an epilogue at low kt); for plain matmul, fp32, full-sync, and fidelity change
-  how much faster L1-K is, not which strategy is faster.
-- Per-engine weights: the June-16 LLK run
-  (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
-  pack / l1-acc-surcharge / matmul-math (cycles, both architectures); use it rather than
-  re-running the suite.
-- MB2 — complete on Blackhole and Wormhole: l1 + dram, block_count, fp32 dest, and
-  full-sync. Full-sync flips the choice to DST-resident on Wormhole (not Blackhole).
-- distinct-DFB superlinearity for MB1.
-- MB4 — compute-op (math) microbenchmarks.
+MB1, MB2, and MB3 are complete on both architectures (see their sections). Remaining:
+
+- MB4 — compute-op (math) microbenchmarks: per-op SFPU/FPU tile costs, math-thread
+  (what tt-lang emits today) and a pack-thread activation arm (achievable headroom).
+- MB1 — distinct-DFB superlinearity: sweep the number of live DFBs to check whether
+  the per-handoff cost stays constant or grows under L1 / semaphore pressure.
+- Validation — LLK composition cross-check: a tt-llk per-engine perf run supplies
+  unpack / pack / l1-acc-surcharge / matmul-math for both architectures; compose
+  those unit-free against MB1's measured round-trip rather than re-running the suite.
