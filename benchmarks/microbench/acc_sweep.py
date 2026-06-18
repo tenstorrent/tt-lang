@@ -42,7 +42,7 @@ class Accumulation(MicroBenchmark):
     DEFAULT_CSV = "benchmarks/microbench/results/accumulation.csv"
     STRATEGIES = ("dst", "l1")
     PER_UNIT = "iters"
-    CSV_TAG = ("dtype", "source")
+    CSV_TAG = ("dtype", "source", "full_sync")
     PARAMS = (
         Param("acc_tiles", "1,2,4", sweep=True, help="accumulator tiles"),
         Param("iters", "1,2,4,8,16", sweep=True, help="contribution count"),
