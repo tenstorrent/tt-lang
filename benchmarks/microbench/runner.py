@@ -9,11 +9,15 @@ dispatch, the result row, the per-config print line, and CSV writing — none of
 which a subclass touches.
 
 Declared per benchmark (uppercase class constants):
-  NAME, ZONE, CSV_COLUMNS, DEFAULT_CSV, PARAMS, INPUTS, OUTPUTS, DFBS, STRATEGIES,
-  PER_UNIT (cfg key to normalize times by), CSV_TAG, WARMUP.
+  NAME, ZONE, DEFAULT_CSV, PARAMS, INPUTS, OUTPUTS, DFBS, STRATEGIES,
+  PER_UNIT (cfg key to normalize times by), CSV_TAG, WARMUP, EXTRA_COLUMNS.
+The CSV columns are derived: the swept parameters, then EXTRA_COLUMNS
+(benchmark-specific derived fields), then strategy and the common profiler
+metrics — a subclass never restates arch/freq/timing columns.
 Implemented per benchmark:
   build(ctx) -> (kernels, ref)   # ctx.tensors are materialized; ctx.torch holds
                                  # the input torch tensors for the reference.
+  extra_columns(cfg, strategy)   # optional: values for EXTRA_COLUMNS.
 """
 
 from dataclasses import dataclass
@@ -66,7 +70,6 @@ class Ctx:
 class MicroBenchmark:
     NAME = ""
     ZONE = ""
-    CSV_COLUMNS = ()
     DEFAULT_CSV = ""
     PARAMS = ()
     INPUTS = ()
@@ -77,6 +80,17 @@ class MicroBenchmark:
     CSV_TAG = ()
     WARMUP = 1
     SEED = 2026
+    EXTRA_COLUMNS = ()
+
+    # Common profiler metrics produced by harness.zone_fields for every benchmark.
+    _METRIC_COLUMNS = (
+        "arch",
+        "freq_mhz",
+        "trisc_max_us",
+        "unpack_us",
+        "math_us",
+        "pack_us",
+    )
 
     def build(self, ctx):
         """Return (kernels, ref) for this config/strategy."""
@@ -85,6 +99,24 @@ class MicroBenchmark:
     def legal(self, cfg, strategy):
         """Whether (cfg, strategy) is runnable (e.g. output fits DST). Default: yes."""
         return True
+
+    def extra_columns(self, cfg, strategy):
+        """Values for the benchmark-specific EXTRA_COLUMNS. Default: none."""
+        return {}
+
+    def csv_columns(self):
+        cols = [param.name for param in self.PARAMS]
+        cols += list(self.EXTRA_COLUMNS)
+        if any(self.STRATEGIES):
+            cols.append("strategy")
+        cols += list(self._METRIC_COLUMNS)
+        if self.PER_UNIT:
+            cols += [
+                f"{metric}_us_per_{self.PER_UNIT}"
+                for metric in ("trisc_max", "unpack", "math", "pack")
+            ]
+        cols += ["noc_active_in_zone", "pcc"]
+        return cols
 
     def _materialize(self, cfg, device):
         ttnn_dtype, torch_dtype, _ = DTYPES[cfg["dtype"]]
@@ -121,6 +153,7 @@ class MicroBenchmark:
     def _row(self, cfg, strategy, zone, pcc):
         row = dict(cfg)
         row["strategy"] = strategy
+        row.update(self.extra_columns(cfg, strategy))
         zone_summary = harness.zone_fields(zone, pcc)
         row.update(zone_summary)
         if self.PER_UNIT:
@@ -227,5 +260,5 @@ class MicroBenchmark:
         if not args.no_csv and rows:
             arch = rows[0].get("arch", "dev")
             tag = [scalar[key] for key in self.CSV_TAG]
-            out_csv = harness.write_csv(rows, args.csv, self.CSV_COLUMNS, arch, *tag)
+            out_csv = harness.write_csv(rows, args.csv, self.csv_columns(), arch, *tag)
             print(f"wrote {len(rows)} rows to {out_csv}", flush=True)

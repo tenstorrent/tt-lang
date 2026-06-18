@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 //
-// MB3, DST-K matmul accumulation (production-representative): C[mt,nt] = sum_k
-// A[k] @ B[k] over `kt` K-tiles. The mt*nt output subblock is held in DST
-// across the whole K loop (one acquire) and packed once with pack_tile_block.
-// Each K step is one matmul_block over the mt*nt subblock (rt_dim=mt,
-// ct_dim=nt, kt_dim=1), accumulating into DST. A and B are prefetched a block
-// at a time. Legal only while mt*nt <= getDstCapacity (the P > capacity case is
-// the spill/reload variant).
+// MB3, DST-K matmul accumulation: C[mt,nt] = sum_k A[k] @ B[k] over `kt`
+// K-tiles. The output is tiled into sub_mt*sub_nt subblocks; each subblock
+// stays resident in DST across the whole K loop (one acquire, matmul_block
+// accumulating, pack once). When the full mt*nt output fits DST (sub == mt,nt;
+// MB3.A) there is one subblock and operands are unpacked once. When it does not
+// (MB3.B), each subblock re-unpacks its A rows and B cols from the resident
+// operand DFBs, so total operand unpack scales by the subblock count (reuse).
 //
-// Compile-time args: 0 = mt (output rows, tiles), 1 = nt (output cols, tiles),
-// 2 = kt (K-depth, tiles).
+// A is resident as `kt` column-blocks of mt tiles (A tile (m,k) at k*mt+m); B
+// as `kt` row-blocks of nt tiles (B tile (k,n) at k*nt+n).
+//
+// Compile-time args: 0 = mt, 1 = nt, 2 = kt, 3 = sub_mt, 4 = sub_nt.
 
 #include <cstdint>
 
@@ -30,25 +32,40 @@ void kernel_main() {
   const uint32_t mt = get_compile_time_arg_val(0);
   const uint32_t nt = get_compile_time_arg_val(1);
   const uint32_t kt = get_compile_time_arg_val(2);
+  const uint32_t sub_mt = get_compile_time_arg_val(3);
+  const uint32_t sub_nt = get_compile_time_arg_val(4);
   const uint32_t out_tiles = mt * nt;
 
-  mm_block_init(dfb_in0, dfb_in1, dfb_out, 0, nt, mt, 1);
+  mm_block_init(dfb_in0, dfb_in1, dfb_out, 0, sub_nt, sub_mt, 1);
 
-  tile_regs_acquire();
+  cb_reserve_back(dfb_out, out_tiles);
   {
     DeviceZoneScopedN("matmul_k_loop");
-    for (uint32_t k = 0; k < kt; ++k) {
-      cb_wait_front(dfb_in0, mt);
-      cb_wait_front(dfb_in1, nt);
-      matmul_block(dfb_in0, dfb_in1, 0, 0, 0, 0, nt, mt, 1);
-      cb_pop_front(dfb_in0, mt);
-      cb_pop_front(dfb_in1, nt);
+    // Operands prefetched once and reused across all subblocks; handoff is in
+    // the zone to match L1-K's per-K-step waits.
+    cb_wait_front(dfb_in0, kt * mt);
+    cb_wait_front(dfb_in1, kt * nt);
+    for (uint32_t om = 0; om < mt; om += sub_mt) {
+      for (uint32_t on = 0; on < nt; on += sub_nt) {
+        tile_regs_acquire();
+        for (uint32_t k = 0; k < kt; ++k) {
+          matmul_block(dfb_in0, dfb_in1, k * mt + om, k * nt + on, 0, 0, sub_nt,
+                       sub_mt, 1);
+        }
+        tile_regs_commit();
+        tile_regs_wait();
+        for (uint32_t i = 0; i < sub_mt; ++i) {
+          for (uint32_t j = 0; j < sub_nt; ++j) {
+            // Out-of-order: place each subblock tile at its row-major C
+            // position.
+            pack_tile<true>(i * sub_nt + j, dfb_out, (om + i) * nt + (on + j));
+          }
+        }
+        tile_regs_release();
+      }
     }
+    cb_pop_front(dfb_in0, kt * mt);
+    cb_pop_front(dfb_in1, kt * nt);
   }
-  tile_regs_commit();
-  tile_regs_wait();
-  cb_reserve_back(dfb_out, out_tiles);
-  pack_tile_block(0, dfb_out, out_tiles);
   cb_push_back(dfb_out, out_tiles);
-  tile_regs_release();
 }

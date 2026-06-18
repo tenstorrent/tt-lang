@@ -1,14 +1,18 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 //
-// MB3, L1-K matmul accumulation (production-representative): C[mt,nt] = sum_k
-// A[k] @ B[k] over `kt` K-tiles, with each K step's mt*nt subblock matmul'd
-// into a fresh DST and packed to L1 with packer L1-accumulation. K=0 overwrites
-// (pack_reconfig_l1_acc(0)), later steps accumulate (pack_reconfig_l1_acc(1)).
-// This is the strategy when the output does not fit DST across the K loop.
+// MB3, L1-K matmul accumulation: C[mt,nt] = sum_k A[k] @ B[k] over `kt`
+// K-tiles, with the mt*nt accumulator living in L1. Each K step matmuls every
+// sub_mt*sub_nt output subblock into a fresh DST and packs it to L1 with packer
+// L1-accumulation. K=0 overwrites (pack_reconfig_l1_acc(0)); later K steps
+// accumulate (pack_reconfig_l1_acc(1)). With sub == mt,nt this is the single-
+// block L1-pack form (MB3.A); subblocking (MB3.B) lets it run when the output
+// exceeds DST. The output is repacked to L1 `kt` times -- the cost L1-K trades
+// against DST-K's resident-output pack-once.
 //
-// Compile-time args: 0 = mt (output rows, tiles), 1 = nt (output cols, tiles),
-// 2 = kt (K-depth, tiles).
+// A column k (mt tiles) and B row k (nt tiles) are streamed per K step.
+//
+// Compile-time args: 0 = mt, 1 = nt, 2 = kt, 3 = sub_mt, 4 = sub_nt.
 
 #include <cstdint>
 
@@ -28,9 +32,11 @@ void kernel_main() {
   const uint32_t mt = get_compile_time_arg_val(0);
   const uint32_t nt = get_compile_time_arg_val(1);
   const uint32_t kt = get_compile_time_arg_val(2);
+  const uint32_t sub_mt = get_compile_time_arg_val(3);
+  const uint32_t sub_nt = get_compile_time_arg_val(4);
   const uint32_t out_tiles = mt * nt;
 
-  mm_block_init(dfb_in0, dfb_in1, dfb_out, 0, nt, mt, 1);
+  mm_block_init(dfb_in0, dfb_in1, dfb_out, 0, sub_nt, sub_mt, 1);
 
   cb_reserve_back(dfb_out, out_tiles);
   pack_reconfig_l1_acc(0); // K=0 overwrites the L1 accumulator
@@ -39,14 +45,21 @@ void kernel_main() {
     for (uint32_t k = 0; k < kt; ++k) {
       cb_wait_front(dfb_in0, mt);
       cb_wait_front(dfb_in1, nt);
-      tile_regs_acquire();
-      matmul_block(dfb_in0, dfb_in1, 0, 0, 0, 0, nt, mt, 1);
-      tile_regs_commit();
-      tile_regs_wait();
-      for (uint32_t i = 0; i < out_tiles; ++i) {
-        pack_tile<true>(i, dfb_out, i); // packer adds into L1 after K=0
+      for (uint32_t om = 0; om < mt; om += sub_mt) {
+        for (uint32_t on = 0; on < nt; on += sub_nt) {
+          tile_regs_acquire();
+          matmul_block(dfb_in0, dfb_in1, om, on, 0, 0, sub_nt, sub_mt, 1);
+          tile_regs_commit();
+          tile_regs_wait();
+          for (uint32_t i = 0; i < sub_mt; ++i) {
+            for (uint32_t j = 0; j < sub_nt; ++j) {
+              pack_tile<true>(i * sub_nt + j, dfb_out,
+                              (om + i) * nt + (on + j));
+            }
+          }
+          tile_regs_release();
+        }
       }
-      tile_regs_release();
       cb_pop_front(dfb_in0, mt);
       cb_pop_front(dfb_in1, nt);
       if (k == 0) {

@@ -44,6 +44,33 @@ def dst_capacity(dtype, full_sync, fp32_dest_acc):
     return 16 if full_sync else 8
 
 
+def dst_subblock(rows, cols, capacity):
+    """Largest (sub_rows, sub_cols) dividing (rows, cols) with product <= capacity.
+
+    Mirrors the compiler's computeMultiDimSubblockSizes for matmul parallel
+    dims: maximize the subblock tile product, breaking ties toward the larger
+    inner (cols) dimension. K accumulates in-place, so the budget is the full
+    DST capacity. Returns the subblock the compiler would pick for an
+    `rows x cols` matmul output, so the benchmark's reuse factor matches.
+    """
+
+    def divisors(value):
+        return [d for d in range(value, 0, -1) if value % d == 0]
+
+    best, best_product = (1, 1), 1
+    for sub_rows in divisors(rows):
+        for sub_cols in divisors(cols):
+            product = sub_rows * sub_cols
+            if product > capacity:
+                continue
+            prefers_inner = product == best_product and (
+                sub_cols > best[1] or (sub_cols == best[1] and sub_rows > best[0])
+            )
+            if product > best_product or prefers_inner:
+                best, best_product = (sub_rows, sub_cols), product
+    return best
+
+
 def single_core():
     core = ttnn.CoreCoord(0, 0)
     return core, ttnn.CoreRangeSet([ttnn.CoreRange(core, core)])

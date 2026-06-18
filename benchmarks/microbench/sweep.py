@@ -51,21 +51,6 @@ class PackUnpackProbe(MicroBenchmark):
         DFB(1, lambda cfg: BLOCK_COUNT * cfg["tiles"]),  # dfb_loop
         DFB(16, lambda cfg: BLOCK_COUNT * cfg["tiles"]),  # dfb_out
     )
-    CSV_COLUMNS = (
-        "arch",
-        "dtype",
-        "full_sync",
-        "fp32_dest_acc",
-        "tiles",
-        "iters",
-        "freq_mhz",
-        "unpack_us_per_iters",
-        "math_us_per_iters",
-        "pack_us_per_iters",
-        "trisc_max_us_per_iters",
-        "noc_active_in_zone",
-        "pcc",
-    )
 
     def build(self, ctx):
         cfg = ctx.cfg

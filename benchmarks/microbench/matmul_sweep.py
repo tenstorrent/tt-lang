@@ -3,12 +3,21 @@
 
 """MB3 — matmul K-accumulation: DST-K vs L1-K (production-representative).
 
-C[mt,nt] = sum_k A[k] @ B[k] over kt K-tiles. DST-K holds the mt*nt output
-subblock in DST across the K loop (matmul_block, pack once); L1-K packs the
-subblock to L1 each K step (pack_reconfig_l1_acc). Declared on the MicroBenchmark
-runner (see runner.py); DST-K is legal only while mt*nt <= getDstCapacity.
+C[mt,nt] = sum_k A[k] @ B[k] over kt K-tiles, two strategies for where the
+running partial lives. The output is tiled into sub_mt*sub_nt subblocks chosen
+exactly as the compiler would (harness.dst_subblock), giving the production
+reuse factor.
+
+  MB3.A (mt*nt <= DST capacity): one subblock. DST-K holds the whole output in
+    DST across the K loop and packs once; L1-K repacks it to L1 every K step.
+    Operands are unpacked once. Weight-independent: DST-K wins.
+  MB3.B (mt*nt > DST capacity): reuse > 1 subblocks. DST-K re-unpacks each
+    subblock's operands from L1 across the K loop (unpack-dominated); L1-K still
+    repacks every subblock every K step (pack-dominated). The first regime where
+    the per-engine weights decide the winner.
 
     python -m benchmarks.microbench.matmul_sweep --mt 1,2 --nt 1,2 --kt 1,2,4,8,16
+    python -m benchmarks.microbench.matmul_sweep --mt 4 --nt 4 --kt 4,8 --dtype bf16
 """
 
 import os
@@ -38,12 +47,14 @@ class MatmulK(MicroBenchmark):
     STRATEGIES = ("dst", "l1")
     PER_UNIT = "kt"
     CSV_TAG = ("dtype", "fidelity")
+    EXTRA_COLUMNS = ("sub_mt", "sub_nt", "reuse")
     PARAMS = (
         Param("mt", "1", sweep=True, help="output rows (tiles)"),
         Param("nt", "1", sweep=True, help="output cols (tiles)"),
         Param("kt", "1,2,4,8,16", sweep=True, help="K-depth (tiles)"),
         Param("dtype", "bf16", choices=("bf16", "fp32")),
         Param("fidelity", "hifi4", choices=("lofi", "hifi2", "hifi4")),
+        Param("full_sync", False),
     )
     INPUTS = (
         Tensor("a", lambda cfg: (cfg["mt"] * TILE, cfg["kt"] * TILE)),
@@ -52,35 +63,34 @@ class MatmulK(MicroBenchmark):
     OUTPUTS = (
         Tensor("c", lambda cfg: (cfg["mt"] * TILE, cfg["nt"] * TILE), init="empty"),
     )
+    # DST-K keeps all operands resident to re-unpack them per output subblock;
+    # L1-K streams per K step but tolerates the larger DFBs.
     DFBS = (
-        DFB(0, lambda cfg: BLOCK_COUNT * cfg["mt"]),
-        DFB(1, lambda cfg: BLOCK_COUNT * cfg["nt"]),
+        DFB(0, lambda cfg: cfg["kt"] * cfg["mt"]),
+        DFB(1, lambda cfg: cfg["kt"] * cfg["nt"]),
         DFB(16, lambda cfg: BLOCK_COUNT * cfg["mt"] * cfg["nt"]),
     )
-    CSV_COLUMNS = (
-        "arch",
-        "dtype",
-        "fidelity",
-        "strategy",
-        "mt",
-        "nt",
-        "kt",
-        "freq_mhz",
-        "trisc_max_us",
-        "trisc_max_us_per_kt",
-        "unpack_us",
-        "math_us",
-        "pack_us",
-        "noc_active_in_zone",
-        "pcc",
-    )
+
+    def _subblock(self, cfg):
+        cap = harness.dst_capacity(
+            cfg["dtype"], cfg["full_sync"], cfg["dtype"] == "fp32"
+        )
+        return harness.dst_subblock(cfg["mt"], cfg["nt"], cap)
+
+    def extra_columns(self, cfg, strategy):
+        sub_mt, sub_nt = self._subblock(cfg)
+        reuse = (cfg["mt"] // sub_mt) * (cfg["nt"] // sub_nt)
+        return {"sub_mt": sub_mt, "sub_nt": sub_nt, "reuse": reuse}
 
     def build(self, ctx):
         cfg = ctx.cfg
         mt, nt, kt = cfg["mt"], cfg["nt"], cfg["kt"]
+        sub_mt, sub_nt = self._subblock(cfg)
         tensors = ctx.tensors
         compute = harness.compute_config(
-            cfg["fidelity"], fp32_dest_acc=cfg["dtype"] == "fp32"
+            cfg["fidelity"],
+            fp32_dest_acc=cfg["dtype"] == "fp32",
+            full_sync=cfg["full_sync"],
         )
         kernels = [
             harness.file_kernel(
@@ -111,7 +121,7 @@ class MatmulK(MicroBenchmark):
             harness.file_kernel(
                 DST_KERNEL if ctx.strategy == "dst" else L1_KERNEL,
                 ctx.grid,
-                [mt, nt, kt],
+                [mt, nt, kt, sub_mt, sub_nt],
                 [],
                 compute,
             ),

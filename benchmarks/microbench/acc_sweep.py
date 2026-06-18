@@ -62,24 +62,6 @@ class Accumulation(MicroBenchmark):
         DFB(1, lambda cfg: BLOCK_COUNT * cfg["acc_tiles"]),  # dfb_delta
         DFB(16, lambda cfg: BLOCK_COUNT * cfg["acc_tiles"]),  # dfb_out
     )
-    CSV_COLUMNS = (
-        "arch",
-        "dtype",
-        "full_sync",
-        "fp32_dest_acc",
-        "source",
-        "strategy",
-        "acc_tiles",
-        "iters",
-        "freq_mhz",
-        "trisc_max_us",
-        "trisc_max_us_per_iters",
-        "unpack_us",
-        "math_us",
-        "pack_us",
-        "noc_active_in_zone",
-        "pcc",
-    )
 
     def legal(self, cfg, strategy):
         if strategy == "dst":
