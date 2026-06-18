@@ -81,6 +81,7 @@ class MicroBenchmark:
     WARMUP = 1
     SEED = 2026
     EXTRA_COLUMNS = ()
+    MIN_PCC = 0.999
 
     # Common profiler metrics produced by harness.zone_fields for every benchmark.
     _METRIC_COLUMNS = (
@@ -99,6 +100,10 @@ class MicroBenchmark:
     def legal(self, cfg, strategy):
         """Whether (cfg, strategy) is runnable (e.g. output fits DST). Default: yes."""
         return True
+
+    def min_pcc(self, cfg, strategy):
+        """Minimum acceptable PCC for this config; below it the run is flagged."""
+        return self.MIN_PCC
 
     def extra_columns(self, cfg, strategy):
         """Values for the benchmark-specific EXTRA_COLUMNS. Default: none."""
@@ -201,6 +206,9 @@ class MicroBenchmark:
         pcc = measure_pcc(ref.float(), ttnn.to_torch(output).float())
         for tensor in io_tensors:
             ttnn.deallocate(tensor)
+        threshold = self.min_pcc(cfg, strategy)
+        if pcc < threshold:
+            print(f"  WARN: pcc {pcc:.4f} < {threshold} ({strategy} {cfg})", flush=True)
         return self._row(cfg, strategy, zone, pcc)
 
     def main(self):

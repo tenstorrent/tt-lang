@@ -178,7 +178,7 @@ dram-streamed (one contribution block per iteration from DRAM):
 | 2 | 1.10/0.97 (L1) | 1.59/1.46 (L1) | 2.54/2.31 (L1) | 4.51/4.28 (L1) | 8.21/7.98 (L1) |
 | 4 | 1.37/1.16 (L1) | 1.89/1.69 (L1) | 3.00/2.73 (L1) | 5.16/4.94 (L1) | 9.53/9.37 (L1) |
 
-- **Strategy verdict:** L1-pack is lower than DST-resident in nearly every config,
+- **Strategy ranking:** L1-pack is lower than DST-resident in nearly every config,
   by a small margin (~0.1–0.3 µs, up to 0.68 at l1-resident acc_tiles=4 iters=16).
   Three dram cells (acc_tiles=1, iters 1/4/8) are within ±0.03 µs — effectively
   tied. The two strategies are close; L1-pack is marginally ahead. (With the
@@ -291,7 +291,76 @@ every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max µs
   pushes further toward L1-K (a resident DST output starves fused neighbors). It
   also omits `matmul_block` granularity effects. Remaining sweeps: fidelity
   (LoFi/HiFi2/HiFi4 — lower fidelity cuts math, which may narrow the gap),
-  fp32 dest, full-sync, and Wormhole.
+  fp32 dest, and full-sync (Wormhole measured below).
+
+### Wormhole b0 (1000 MHz)
+
+Same sweep, bf16 HiFi4, DST capacity 8, trisc_max µs **DST-K / L1-K (faster)**,
+all PCC ≈ 1.0.
+
+MB3.A (P ≤ capacity, reuse = 1):
+
+| P (mt×nt) \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| 1 (1×1) | 1.15/1.13 (L1) | 2.09/1.84 (L1) | 3.93/3.81 (L1) | 8.27/7.59 (L1) |
+| 2 (1×2) | 1.11/1.26 (DST) | 2.26/2.03 (L1) | 4.82/4.11 (L1) | 9.08/8.43 (L1) |
+| 4 (2×2) | 1.39/1.40 (DST) | 2.84/2.64 (L1) | 5.63/4.80 (L1) | 11.32/9.35 (L1) |
+| 8 (2×4) | 1.97/2.08 (DST) | 3.81/3.29 (L1) | 7.47/5.63 (L1) | 14.47/10.56 (L1) |
+
+MB3.B (P > capacity, reuse > 1):
+
+| P (mt×nt) reuse \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| 16 (4×4) reuse 2 | 2.73/2.66 (L1) | 5.24/4.15 (L1) | 10.16/6.98 (L1) | 19.77/12.51 (L1) |
+| 32 (4×8) reuse 4 | 3.93/3.93 (=) | 7.75/6.12 (L1) | 15.14/10.60 (L1) | 30.21/19.31 (L1) |
+
+- **Blackhole vs Wormhole:** the ranking is identical — tied at kt=1, L1-K
+  lower for kt ≥ 2, margin growing with kt and reuse. Wormhole absolute times are
+  ~1.1–1.4× Blackhole (slower clock; costlier pack). The per-engine pack ratio
+  (Wormhole pack ≈ 2.4× Blackhole, which loads L1-K's extra packs more heavily)
+  does not change the lower-cost strategy: the matmul/pack overlap dominates on
+  both arches, so the #652 decision for matmul K-accumulation is arch-independent
+  in the isolated case.
+
+### MB3.C — fused GELU epilogue (`--fuse gelu`)
+
+A GELU activation is applied to the matmul output. DST-K applies it in place on
+the resident DST subblock before its single pack (no reload). L1-K must reload
+its L1 accumulator into DST, apply GELU, and pack again — the round trip the
+resident output lets DST-K skip. Fast (tanh) GELU is used, the production default
+for matmul fusion; its approximation lowers PCC to ~0.985 (accepted for fused
+matmul+activation), versus ~1.0 for plain matmul. Blackhole bf16 HiFi4,
+trisc_max µs **DST-K / L1-K (faster)**:
+
+| P (mt×nt) \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| 1 (1×1) | 1.29/1.43 (DST) | 2.09/2.23 (DST) | 3.90/3.92 (DST) | 7.95/7.66 (L1) |
+| 4 (1×4) | 1.99/2.35 (DST) | 3.10/3.25 (DST) | 5.46/5.13 (L1) | 10.33/9.20 (L1) |
+| 8 (2×4) | 2.80/3.31 (DST) | 4.26/4.35 (DST) | 6.99/6.35 (L1) | 12.96/10.68 (L1) |
+| 16 (4×4) reuse 2 | 4.53/5.15 (DST) | 6.62/6.34 (L1) | 10.26/8.43 (L1) | 18.51/13.58 (L1) |
+
+- **The epilogue makes DST-K the lower-cost strategy at low kt.** Without it,
+  L1-K is faster for every kt ≥ 2 (MB3.A/B). With it, DST-K is faster at kt = 1
+  (all P) and at kt = 2 for P ≤ 8. L1-K's matmul/pack overlap advantage over
+  DST-K grows with kt (the same effect that wins MB3.A/B). The epilogue adds to
+  L1-K a one-time reload + repack of the output (~2P tile movements, independent
+  of kt) that DST-K avoids by applying GELU in place. At small kt that fixed
+  reload cost exceeds the overlap advantage, so DST-K is cheaper; as kt grows the
+  overlap advantage exceeds it and L1-K is cheaper.
+- **The crossover kt shrinks as P grows** (DST-K leads through kt=4 at P=1, kt=2 at
+  P≤8, only kt=1 at P=16): the reload cost includes a fixed per-phase overhead
+  (the extra DFB handoff and copy/GELU init) on top of the ~2P movements; at
+  larger P that overhead amortizes, so L1-K's per-kt overlap advantage overtakes
+  the reload cost at a smaller kt.
+- **Epilogue cost moves the crossover.** This is fast GELU (~0.4 µs/tile here). A
+  costlier activation (erf-precise GELU measured ~10× heavier) widens the
+  DST-favorable band to higher kt; a cheaper one (bias add) narrows it. So the
+  selector's epilogue handling should weigh the L1-K reload against the activation
+  cost, not assume a fixed crossover.
+- **Consequence for the #652 selector:** with a fused epilogue the resident-output
+  advantage is real and DST-K is the lower-cost strategy for shallow-K matmuls;
+  the plain-matmul preference for L1-K (overlap) only returns at larger kt. The
+  decision is epilogue-aware, not just kt/reuse-based.
 
 ## MB4 — compute-op (math) microbenchmarks — planned
 
@@ -334,16 +403,18 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `accumulation_blackhole_bf16_l1_*.csv` — MB2 DST vs L1-pack, l1-resident, acc_tiles×iters
 - `accumulation_blackhole_bf16_dram_*.csv` — MB2 DST vs L1-pack, dram-streamed, acc_tiles×iters
 - `matmul_k_blackhole_bf16_hifi4_*.csv` — MB3 DST-K vs L1-K, P and kt sweep (MB3.A reuse=1 + MB3.B reuse>1)
+- `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole (on `aus-wh-01:/localdev/bnorris/tt-lang`)
+- `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` — MB3.C DST-K vs L1-K with a fused GELU epilogue
 
 ## Open / next
 
-- MB3 — P sweep done for both regimes (MB3.A reuse=1, MB3.B reuse>1, bf16 HiFi4).
-  Remaining: fidelity (LoFi/HiFi2/HiFi4), fp32 dest, full-sync; an epilogue-fusion
-  variant (output stays in DST → may favor DST-K).
+- MB3 — P sweep done for both regimes (MB3.A reuse=1, MB3.B reuse>1, bf16 HiFi4)
+  on Blackhole and Wormhole; MB3.C fused GELU epilogue done on Blackhole.
+  Remaining: MB3.C on Wormhole; fidelity (LoFi/HiFi2/HiFi4), fp32 dest, full-sync.
 - Per-engine weights: the June-16 LLK run
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
   re-running the suite.
-- Wormhole runs of MB2 / MB3.
+- Wormhole run of MB2.
 - fp32 + sync extensions for MB2; distinct-DFB superlinearity for MB1.
 - MB4 — compute-op (math) microbenchmarks.
