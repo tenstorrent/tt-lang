@@ -167,8 +167,9 @@ Two independent axes:
   registers (DST-resident) vs an L1 buffer (L1-pack).
 - **Contribution residency** (`--source l1|dram`, orthogonal): contributions
   re-read from one L1 block (`l1`, isolates compute-thread cost) vs one block
-  streamed per iteration from DRAM (`dram`, end-to-end). This sets the absolute
-  cost; it does not change the strategy ranking.
+  streamed per iteration from DRAM (`dram`, which adds the per-iteration DRAM read
+  into the compute-thread zone — still TRISC zone time, not full dispatch time).
+  This sets the absolute cost; it does not change the strategy ranking.
 
 Blackhole bf16, full sweep, all PCC ≈ 1.0. trisc_max µs as **DST / L1-pack
 (faster)**:
@@ -366,7 +367,7 @@ every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max µs
   (≤~3%); DST-K is marginally ahead because L1-K pays the `pack_reconfig_l1_acc`
   setup for a single pack.
 - **For any K-accumulation (kt ≥ 2) L1-K is faster, and the margin grows with
-  both kt and P (reuse)** — from ~6% (P=1, kt=2) to ~39% (P=32, kt=8). This holds
+  both kt and P (reuse)** — from ~2% (P=1, kt=2) to ~39% (P=32, kt=8). This holds
   in both regimes; reuse > 1 widens the gap but does not change the direction.
 - **Why, despite L1-K moving far more tiles** (e.g. P=16, kt=8: L1-K packs 128
   tiles to DST-K's 16): DST-K cannot pack until all `kt` matmuls finish, so its
@@ -377,10 +378,11 @@ every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max µs
   per-tile cost) ranks DST-K cheaper in every cell, the opposite of measured
   wall-clock. Ranking matmul K-accumulation needs a model term for the pack/math
   overlap L1-K gets and DST-K cannot — not just the per-engine tile weights.
-- **Scope:** isolated single kernel. It omits DST occupancy / fusion, which only
-  pushes further toward L1-K (a resident DST output starves fused neighbors). It
-  also omits `matmul_block` granularity effects. Remaining sweeps: fp32 dest and
-  full-sync.
+- **Scope:** isolated single kernel. It omits cross-op DST occupancy — a matmul
+  that holds its output resident in DST starves fused neighbors (e.g. a softmax
+  sharing DST), which pushes toward L1-K. That is distinct from the in-kernel
+  epilogue fusion measured in MB3.C, which favors DST-K at low kt; the two
+  fusion effects point opposite ways. It also omits `matmul_block` granularity.
 
 **Fidelity (LoFi / HiFi2 / HiFi4).** Math fidelity is a parameter (1 / 2 / 4 math
 passes per matmul); the tables above are HiFi4. P = 16 (4×4, reuse 2), trisc_max
@@ -512,7 +514,8 @@ trisc_max µs **DST-K / L1-K (faster)**:
   thread pure matmul and would make DST-K cheaper still — strengthening, not
   reversing, the result below. tt-lang does not emit that today, but it is not a
   hardware limit: it needs a pack-thread TTKernel op + lowering (or direct EmitC).
-  MB4 measures the pack-thread variant to quantify that headroom.
+  MB4 currently measures the math-thread SFPU ops; a pack-thread arm to quantify
+  this headroom is planned.
 - **Consequence for the #652 selector:** with a fused epilogue the resident-output
   advantage holds and DST-K is the lower-cost strategy for shallow-K matmuls;
   the plain-matmul preference for L1-K (overlap) only holds at larger kt. The
@@ -563,14 +566,27 @@ kt = 2 even at HiFi4 — one step further than Blackhole — because its costlie
 makes L1-K's repack dearer. With an epilogue, fidelity is part of the decision;
 without one it is not.
 
-## MB4 — compute-op (math) microbenchmarks — planned
+## MB4 — compute-op (math) microbenchmarks
 
 The data-movement benchmarks (MB1–MB3) have no compute-engine term. SDPA/flash is
 compute/SFPU-bound, where each math op is best characterized as INIT / KERNEL /
 TILE_LOOP with a per-RISC split. MB4 measures per-op compute-engine tile costs to
 feed a compute-aware model (also what the nonadditive work needs).
 
-Ops to cover:
+**Implemented (`compute_sweep.py`): math-thread SFPU unary.** A selected op is
+applied to `tiles` tiles `iters` times; `op=copy` is the baseline (subtract it for
+the SFPU op's marginal math cost). Preliminary, Blackhole bf16, tiles=4, math
+thread, marginal µs/tile (over the copy baseline ~0.03):
+
+| op | exp | gelu (fast) | recip | sqrt | rsqrt |
+|---|---|---|---|---|---|
+| µs/tile | 0.42 | 0.14 | 0.88 | 0.64 | 0.73 |
+
+PCC is the real SFPU approximation accuracy (sqrt/rsqrt ~0.9994, gelu ~0.9997).
+Pending: full sweep (tiles × bf16/fp32 × init-hoist, both architectures), a
+pack-thread activation arm (the MB3.C headroom), and reduce/binary/bcast ops.
+
+Planned coverage:
 
 | engine | ops |
 |---|---|
