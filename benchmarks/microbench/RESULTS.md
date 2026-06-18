@@ -295,6 +295,55 @@ and DST-resident takes the lead at iters >= 4 for acc_tiles >= 4. So for the
 additive recurrence, full-sync is a strategy-selection input on Wormhole -- it
 makes DST-resident lower-cost -- but not on Blackhole.
 
+### Per-iteration expression (--expr add / mul / gelu)
+
+`--expr` sets the per-iteration contribution applied before accumulation:
+
+- `add`: contribution = delta. DST-resident accumulates in place with
+  binary_dest_reuse_tiles<ELWADD, DEST_TO_SRCA>; L1-pack packs with
+  pack_reconfig_l1_acc. This is the additive recurrence the rest of MB2 measures.
+- `mul`: contribution = delta*delta (FPU). L1-pack only -- a product cannot
+  accumulate in DST in place (mul_tiles overwrites the dest tile and no FPU op
+  adds two DST tiles), so there is no DST-resident candidate.
+- `gelu`: contribution = gelu(delta) (SFPU, tanh approximation). DST-resident
+  computes gelu in a temporary DST slot and adds it into the accumulator with
+  add_binary_tile (one extra SFPU add per iteration); L1-pack computes gelu, then
+  the packer accumulates.
+
+source=l1, bf16, acc_tiles=4 (the largest output legal for gelu DST-resident).
+trisc_max µs for the whole loop, DST / L1-pack (faster):
+
+add:
+| arch \ iters | 1 | 4 | 16 |
+|---|---|---|---|
+| Blackhole | 1.47/1.11 (L1) | 1.90/1.49 (L1) | 3.89/3.10 (L1) |
+| Wormhole  | 1.89/1.53 (L1) | 2.49/2.29 (L1) | 4.78/4.78 (tie) |
+
+gelu:
+| arch \ iters | 1 | 4 | 16 |
+|---|---|---|---|
+| Blackhole | 2.47/1.93 (L1) | 6.14/3.95 (L1) | 20.85/12.23 (L1) |
+| Wormhole  | 3.71/2.77 (L1) | 9.63/6.27 (L1) | 33.49/20.28 (L1) |
+
+mul (L1-pack only), trisc_max µs: Blackhole 1.25 (iters=1) -> 5.00 (iters=16);
+Wormhole 1.84 -> 7.07.
+
+For the additive contribution the two strategies are close: L1-pack is ~25-33%
+ahead on Blackhole across iters, and on Wormhole the gap closes as iters grows --
+DST-resident packs once while L1-pack pays Wormhole's ~2.4x costlier per-iteration
+pack -- reaching a tie at acc_tiles=4 iters=16 and a small DST-resident lead at
+acc_tiles=1 iters=16 (2.14 vs 2.32). For gelu, L1-pack is decisively lower-cost on
+both architectures and the margin widens with iters (Blackhole 1.28x at iters=1 to
+1.71x at iters=16; Wormhole 1.34x to 1.65x), because DST-resident accumulation of a
+non-additive contribution pays an explicit per-iteration add_binary_tile on top of
+the gelu, while L1-pack folds the accumulation into the packer. PCC ~ 1.0 for
+add/mul; ~0.99 for gelu (tanh approximation).
+
+The trend: the more compute-bearing or non-additive the per-iteration
+contribution, the more L1-pack is favored. DST-resident is competitive only for the
+bare additive recurrence, and even there only on Blackhole (cheap pack) and at low
+iteration counts on Wormhole.
+
 ## MB3 -- matmul K-accumulation (DST-K vs L1-K)
 
 Summary: C[mt,nt] = sum_k A[k] @ B[k] over `kt` K-tiles, output P = mt*nt tiles,
@@ -638,22 +687,19 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 
 ## Open / next
 
-MB1, MB2 `--expr add`, and MB3 are complete on both architectures (see their sections).
-Remaining:
+MB1, MB2 (including the `--expr` pointwise expressions), and MB3 are complete on
+both architectures (see their sections). Remaining:
 
 - MB4 -- compute-op (math) microbenchmarks: per-op SFPU/FPU tile costs, math-thread
   (what tt-lang emits today) and a pack-thread activation arm (achievable headroom).
 - MB1 -- distinct-DFB superlinearity: sweep the number of live DFBs to check whether
   the per-handoff cost stays constant or grows under L1 / semaphore pressure.
-- MB2 -- measure compute-bearing recurrence on both architectures and update
-  the tables. The pointwise expressions are implemented and spot-checked on
-  Blackhole (PCC >= 0.99): `gelu` runs DST-resident (temp DST slot +
-  add_binary_tile) and L1-pack; `mul` is L1-pack only -- a product cannot
-  accumulate in DST in place (no FPU op adds two DST tiles). The full
-  both-architecture sweep is pending. Then add reduction/broadcast sequences
-  representative of softmax-like code: max/sum reductions, broadcasted scalar or
-  row-vector updates, and fused pointwise transforms. New MB2 CSVs include the
-  expression tag after the source tag.
+- MB2 -- compute-bearing recurrence beyond pointwise: the `--expr mul|gelu` sweep
+  is complete on both architectures (see the per-iteration expression results
+  under MB2). Remaining: reduction/broadcast sequences representative of
+  softmax-like code -- max/sum reductions, broadcasted scalar or row-vector
+  updates, and fused pointwise transforms. New MB2 CSVs include the expression
+  tag after the source tag.
 - Validation -- LLK composition cross-check: a tt-llk per-engine perf run supplies
   unpack / pack / l1-acc-surcharge / matmul-math for both architectures; compose
   those unit-free against MB1's measured round-trip rather than re-running the suite.
