@@ -497,6 +497,12 @@ trisc_max µs **DST-K / L1-K (faster)**:
   DST-favorable band to higher kt; a cheaper one (bias add) narrows it. So the
   selector's epilogue handling should weigh the L1-K reload against the activation
   cost, not assume a fixed crossover.
+- **Activation runs on the math thread** (`gelu_tile`), matching tt-lang codegen:
+  the TTKernel dialect has only `gelu_tile`/`gelu_tile_init` (SFPU, math thread),
+  no pack-thread variant. Hand kernels can run the activation on the packer
+  (`gelu_tile_pack`) to keep the math thread pure matmul, which tt-lang does not
+  emit; that would make DST-K cheaper still, strengthening — not reversing — the
+  result below. So this is the faithful tt-lang picture.
 - **Consequence for the #652 selector:** with a fused epilogue the resident-output
   advantage holds and DST-K is the lower-cost strategy for shallow-K matmuls;
   the plain-matmul preference for L1-K (overlap) only holds at larger kt. The
