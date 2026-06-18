@@ -59,7 +59,7 @@ measured zone; PCC ≈ 1.0 unless noted.
 
 ## Hardware / environment
 
-| arch | host | freq (profiler) | notes |
+| architecture | host | freq (profiler) | notes |
 |---|---|---|---|
 | Blackhole | container `bnorris-ird-v1.1.3` | 1350 MHz | `source build-docker/env/activate` |
 | Wormhole b0 | `aus-wh-01:49551`, `/localdev/bnorris/tt-lang` | 1000 MHz | env via `/localdev/bnorris/wh_env.sh`; toolchain built into `/opt/ttlang-toolchain`; `ttnn` works. tt-lang compiler build failed (`getTombstoneKey`) — not needed (benchmark uses `ttnn`/`generic_op`). |
@@ -101,7 +101,7 @@ compute:
 
 ### bf16 linear fit (`us_per_iter = fixed + per_tile·tiles`, trisc_max)
 
-| arch | fixed µs | per_tile µs | r² |
+| architecture | fixed µs | per_tile µs | r² |
 |---|---|---|---|
 | Blackhole | 0.089 | 0.039 | 0.99 |
 | Wormhole | 0.160 | 0.065 | 0.98 |
@@ -228,7 +228,7 @@ dram-streamed:
 Matches Blackhole: L1-pack is marginally ahead in nearly every config, with the
 acc_tiles=1 row holding the only near-ties (a few favor DST by ≤0.15 µs), and the
 dram absolute cost growing steeply with iters. The DST-vs-L1-pack ranking is
-arch-independent.
+architecture-independent.
 
 ### Block count (DFB depth)
 
@@ -236,7 +236,7 @@ arch-independent.
 many blocks the reader can prefetch. dram-streamed, acc_tiles=2, L1-pack
 trisc_max µs:
 
-| arch, iters \ block_count | 1 | 2 | 4 | 8 |
+| architecture, iters \ block_count | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
 | Blackhole, iters=8  | 4.86 | 4.27 | 4.19 | 4.18 |
 | Blackhole, iters=16 | 9.32 | 7.95 | 8.24 | 7.99 |
@@ -256,7 +256,7 @@ depend on it.
 
 **fp32 dest (dtype = fp32).** Halves DST capacity (4 vs 8), so the DST-resident
 strategy is legal only for acc_tiles ≤ 4, and roughly doubles pack cost. On both
-arches the ranking matches bf16: L1-pack lower in nearly every config, near-ties
+architectures the ranking matches bf16: L1-pack lower in nearly every config, near-ties
 only at acc_tiles=1; the costlier pack does not shift it to DST-resident (BH/WH
 l1-resident, acc_tiles=4 iters=16: L1 ahead by ~18%/~1%). Exact (PCC ≈ 1.0).
 
@@ -266,7 +266,7 @@ can no longer overlap the previous iteration's pack — it loses its pipelining.
 DST-resident accumulates in place and packs once, so full-sync does not touch it.
 l1-resident, trisc_max µs **DST / L1-pack (faster)**:
 
-| arch, acc_tiles \ iters | 1 | 4 | 16 |
+| architecture, acc_tiles \ iters | 1 | 4 | 16 |
 |---|---|---|---|
 | Blackhole, 4 | 1.41/1.15 (L1) | 1.95/1.54 (L1) | 3.85/3.33 (L1) |
 | Blackhole, 8 | 1.79/1.65 (L1) | 2.75/2.54 (L1) | 6.85/6.12 (L1) |
@@ -393,7 +393,7 @@ Wormhole b0:
 | HiFi2 | 2.42/2.43 (DST) | 4.21/3.69 (L1) | 8.24/6.61 (L1) | 16.27/12.50 (L1) |
 | HiFi4 | 2.73/2.66 (L1) | 5.24/4.15 (L1) | 10.16/6.98 (L1) | 19.77/12.51 (L1) |
 
-On both arches L1-K is nearly fidelity-insensitive (kt=8: BH 9.89 → 10.12 → 10.22,
+On both architectures L1-K is nearly fidelity-insensitive (kt=8: BH 9.89 → 10.12 → 10.22,
 WH 12.31 → 12.50 → 12.51 — flat) because it is pack-bound; its per-K-step packs
 hide the math. DST-K serializes math then one pack, so it scales with fidelity
 (BH 11.11 → 12.83 → 15.81, WH 14.86 → 16.27 → 19.77). The L1-K margin grows with
@@ -407,12 +407,12 @@ reuse > 1 is reached at smaller outputs, and roughly doubles pack cost (2× tile
 bytes). P = 16 (4×4) is reuse 4 here (vs reuse 2 at bf16). trisc_max µs **DST-K /
 L1-K (faster)**, all PCC = 1.0:
 
-| arch \ kt | 1 | 2 | 4 | 8 |
+| architecture \ kt | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
 | Blackhole | 2.00/2.00 (=) | 4.05/3.27 (L1) | 8.29/6.02 (L1) | 18.27/12.94 (L1) |
 | Wormhole  | 3.62/3.57 (L1) | 6.67/5.69 (L1) | 13.21/10.03 (L1) | 26.17/18.26 (L1) |
 
-Ranking unchanged: L1-K lower for kt ≥ 2 on both arches, exact (PCC 1.0). The
+Ranking unchanged: L1-K lower for kt ≥ 2 on both architectures, exact (PCC 1.0). The
 margin is slightly narrower than bf16 (BH P=16 kt=8: 29% vs 35%) — fp32's costlier
 pack loads L1-K's extra packs more heavily, partly offsetting its overlap
 advantage. The halved capacity raises reuse at a given P but does not change the
@@ -422,7 +422,7 @@ winner.
 so P = 16 (4×4) becomes reuse 1 (vs reuse 2 at the default capacity). trisc_max µs
 **DST-K / L1-K (faster)**, all PCC ≈ 1.0:
 
-| arch \ kt | 1 | 2 | 4 | 8 |
+| architecture \ kt | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
 | Blackhole | 2.11/2.14 (DST) | 3.92/3.23 (L1) | 7.70/5.41 (L1) | 15.79/10.41 (L1) |
 | Wormhole  | 2.96/3.02 (DST) | 5.44/4.82 (L1) | 10.36/8.47 (L1) | 19.93/15.59 (L1) |
@@ -459,7 +459,7 @@ MB3.B (P > capacity, reuse > 1):
   ~1.1–1.4× Blackhole (slower clock; costlier pack). The per-engine pack ratio
   (Wormhole pack ≈ 2.4× Blackhole, which loads L1-K's extra packs more heavily)
   does not change the lower-cost strategy: the matmul/pack overlap dominates on
-  both arches, so the #652 decision for matmul K-accumulation is arch-independent
+  both architectures, so the #652 decision for matmul K-accumulation is architecture-independent
   in the isolated case.
 
 ### MB3.C — fused GELU epilogue (`--fuse gelu`)
@@ -515,7 +515,7 @@ Wormhole b0 (1000 MHz), fused GELU, trisc_max µs **DST-K / L1-K (faster)**:
   vs only P≤8 on Blackhole). Wormhole's costlier pack (≈2.4× Blackhole) makes
   L1-K's reload + repack more expensive, extending DST-K's region. The kt≥4 L1-K
   preference is unchanged. So an epilogue tilts the decision toward DST-K more on
-  Wormhole than on Blackhole — the one place so far where the arch matters to the
+  Wormhole than on Blackhole — the one place so far where the architecture matters to the
   ranking.
 
 **Fidelity (fused).** For plain matmul fidelity changes only the size of L1-K's
@@ -608,7 +608,7 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
   how much faster L1-K is, not which strategy is faster.
 - Per-engine weights: the June-16 LLK run
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
-  pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
+  pack / l1-acc-surcharge / matmul-math (cycles, both architectures); use it rather than
   re-running the suite.
 - MB2 — complete on Blackhole and Wormhole: l1 + dram, block_count, fp32 dest, and
   full-sync. Full-sync flips the choice to DST-resident on Wormhole (not Blackhole).
