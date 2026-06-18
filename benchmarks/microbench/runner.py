@@ -185,9 +185,9 @@ class MicroBenchmark:
             pccs = " ".join(
                 f"{name}_pcc={by_strategy[name]['pcc']}" for name in present
             )
-            return f"{head} | {shown} us | faster={faster} | {pccs}"
+            return f"{head} | {shown} µs | faster={faster} | {pccs}"
         row = by_strategy[present[0]]
-        return f"{head} | trisc_max={row['trisc_max_us']} us | pcc={row['pcc']}"
+        return f"{head} | trisc_max={row['trisc_max_us']} µs | pcc={row['pcc']}"
 
     def _run(self, device, cfg, strategy):
         ttnn_dtype, _, dtype_bytes = DTYPES[cfg["dtype"]]
