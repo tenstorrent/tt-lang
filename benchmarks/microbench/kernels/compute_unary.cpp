@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 //
-// MB4 unary compute-op probe. Applies a selected SFPU unary op (math thread, the
-// thread tt-lang targets) to `tiles` tiles, `iters` times, on a single compute
-// core, to isolate the per-tile math-engine cost the data-movement benchmarks
-// omit. The input is re-read from a resident DFB each iteration and the result
-// overwrites the output, so the final output is op(input) (a valid PCC check)
-// while the measured loop exercises the op `iters` times. op = 0 (copy) is the
-// baseline: subtract it to get the SFPU op's marginal math cost.
+// MB4 unary compute-op probe. Applies a selected SFPU unary op (math thread,
+// the thread tt-lang targets) to `tiles` tiles, `iters` times, on a single
+// compute core, to isolate the per-tile math-engine cost the data-movement
+// benchmarks omit. The input is re-read from a resident DFB each iteration and
+// the result overwrites the output, so the final output is op(input) (a valid
+// PCC check) while the measured loop exercises the op `iters` times. op = 0
+// (copy) is the baseline: subtract it to get the SFPU op's marginal math cost.
 //
 // init_hoist selects whether the op init is hoisted out of the loop (steady
 // per-tile cost) or re-issued every sub-block (init + op cost) — both occur in
@@ -77,8 +77,8 @@ void kernel_main() {
     op_init(op);
   }
 
-  cb_wait_front(dfb_in, tiles);     // resident input, re-read each iteration
-  cb_reserve_back(dfb_out, tiles);  // output region, overwritten each iteration
+  cb_wait_front(dfb_in, tiles);    // resident input, re-read each iteration
+  cb_reserve_back(dfb_out, tiles); // output region, overwritten each iteration
   {
     DeviceZoneScopedN("compute_op_loop");
     for (uint32_t it = 0; it < iters; ++it) {

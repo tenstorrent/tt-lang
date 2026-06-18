@@ -49,15 +49,23 @@ class ComputeOp(MicroBenchmark):
     PER_UNIT = "iters"
     CSV_TAG = ("dtype",)
     PARAMS = (
-        Param("op", "copy,exp,gelu,recip,sqrt,rsqrt", sweep=True, help="SFPU unary ops"),
+        Param(
+            "op", "copy,exp,gelu,recip,sqrt,rsqrt", sweep=True, help="SFPU unary ops"
+        ),
         Param("tiles", "1,2,4,8", sweep=True, help="tiles per iteration"),
         Param("iters", "64", help="measured iterations"),
         Param("dtype", "bf16", sweep=True, help="bf16 and/or fp32"),
-        Param("init_hoist", "1", sweep=True, help="hoist op init out of the loop (0/1)"),
-        Param("block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="DFB block count"),
+        Param(
+            "init_hoist", "1", sweep=True, help="hoist op init out of the loop (0/1)"
+        ),
+        Param(
+            "block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="DFB block count"
+        ),
     )
     # Positive input keeps recip/sqrt/rsqrt well-defined.
-    INPUTS = (Tensor("x", lambda cfg: (TILE, cfg["tiles"] * TILE), scale=0.1, offset=1.0),)
+    INPUTS = (
+        Tensor("x", lambda cfg: (TILE, cfg["tiles"] * TILE), scale=0.1, offset=1.0),
+    )
     OUTPUTS = (Tensor("out", lambda cfg: (TILE, cfg["tiles"] * TILE), init="empty"),)
     DFBS = (
         DFB(0, lambda cfg: cfg["block_count"] * cfg["tiles"]),

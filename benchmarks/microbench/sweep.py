@@ -43,7 +43,9 @@ class PackUnpackProbe(MicroBenchmark):
         Param("dtype", "bf16", sweep=True, help="bf16 and/or fp32"),
         Param("full_sync", "0", sweep=True, help="dst_full_sync_en (0/1)"),
         Param("fp32_dest_acc", "0", sweep=True, help="fp32_dest_acc_en (0/1)"),
-        Param("block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="DFB block count"),
+        Param(
+            "block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="DFB block count"
+        ),
     )
     INPUTS = (Tensor("src", lambda cfg: (TILE, cfg["tiles"] * TILE)),)
     OUTPUTS = (Tensor("out", lambda cfg: (TILE, cfg["tiles"] * TILE), init="empty"),)
