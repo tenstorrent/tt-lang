@@ -378,6 +378,31 @@ Wormhole b0 (1000 MHz), fused GELU, trisc_max µs **DST-K / L1-K (faster)**:
   Wormhole than on Blackhole — the one place so far where the arch matters to the
   ranking.
 
+### MB3.D — math fidelity (LoFi / HiFi2 / HiFi4)
+
+Plain matmul (no epilogue) at three math fidelities (1 / 2 / 4 math passes per
+matmul). Blackhole bf16, P = 16 (4×4, reuse 2), trisc_max µs **DST-K / L1-K
+(faster)**, all PCC ≈ 1.0:
+
+| fidelity \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| LoFi  | 1.40/1.37 (L1) | 2.64/2.50 (L1) | 5.33/4.73 (L1) | 11.11/9.89 (L1) |
+| HiFi2 | 1.58/1.61 (DST) | 3.21/2.63 (L1) | 6.07/4.78 (L1) | 12.83/10.12 (L1) |
+| HiFi4 | 1.94/1.97 (DST) | 3.81/3.02 (L1) | 7.60/5.21 (L1) | 15.81/10.22 (L1) |
+
+- **L1-K is nearly fidelity-insensitive; DST-K scales with fidelity.** Read the
+  L1-K column at kt=8: 9.89 → 10.12 → 10.22 (essentially flat). The DST-K column:
+  11.11 → 12.83 → 15.81. L1-K is pack-bound — its per-K-step packs hide the math,
+  so extra math passes barely change its time. DST-K serializes math then a single
+  pack, so each added pass lands directly on the total.
+- **So L1-K's advantage grows with fidelity** — ~5–11% at LoFi to ~21–35% at
+  HiFi4 — but the ranking does not change: L1-K is lower-cost for every kt ≥ 2 at
+  all three fidelities. At kt = 1 the two are tied within variation.
+- **For the #652 selector:** plain matmul prefers L1-K independent of fidelity;
+  fidelity only sets the margin. Accuracy-sensitive matmuls (HiFi4) make the L1-K
+  preference strongest. This is the plain-matmul picture; the MB3.C epilogue
+  result (DST-K at low kt) still governs fused cases.
+
 ## MB4 — compute-op (math) microbenchmarks — planned
 
 The data-movement benchmarks (MB1–MB3) have no compute-engine term. Per
@@ -422,12 +447,13 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole (on `aus-wh-01:/localdev/bnorris/tt-lang`)
 - `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` — MB3.C DST-K vs L1-K with a fused GELU epilogue
 - `matmul_k_wormhole_b0_bf16_hifi4_gelu_*.csv` — MB3.C fused GELU on Wormhole
+- `matmul_k_blackhole_bf16_{lofi,hifi2}_none_*.csv` — MB3.D fidelity sweep (HiFi4 in the hifi4 CSV)
 
 ## Open / next
 
-- MB3 — P sweep done for both regimes (MB3.A reuse=1, MB3.B reuse>1) and MB3.C
-  fused GELU, all on Blackhole and Wormhole, bf16 HiFi4. Remaining: fidelity
-  (LoFi/HiFi2/HiFi4), fp32 dest, full-sync.
+- MB3 — done on Blackhole and Wormhole: MB3.A reuse=1, MB3.B reuse>1, MB3.C fused
+  GELU, MB3.D fidelity (LoFi/HiFi2/HiFi4 on Blackhole). Remaining: fp32 dest,
+  full-sync; MB3.D fidelity on Wormhole.
 - Per-engine weights: the June-16 LLK run
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
