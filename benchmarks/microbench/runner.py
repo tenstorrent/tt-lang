@@ -47,6 +47,7 @@ class Tensor:
     shape: Callable  # cfg -> (rows, cols) in elements
     init: str = "randn"  # randn | zeros | ones | empty (outputs use empty)
     scale: float = 0.1
+    offset: float = 0.0  # added after scaling (e.g. positive inputs for recip/sqrt)
 
 
 @dataclass(frozen=True)
