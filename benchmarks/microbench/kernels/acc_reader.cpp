@@ -26,7 +26,6 @@ void kernel_main() {
 
   uint32_t tile = 0;
 
-  // Initial block -> dfb_init.
   cb_reserve_back(dfb_init, acc_tiles);
   uint32_t addr = get_write_ptr(dfb_init);
   for (uint32_t u = 0; u < acc_tiles; ++u) {
@@ -36,7 +35,6 @@ void kernel_main() {
   noc_async_read_barrier();
   cb_push_back(dfb_init, acc_tiles);
 
-  // Contribution blocks -> dfb_delta.
   for (uint32_t g = 0; g < groups; ++g) {
     cb_reserve_back(dfb_delta, acc_tiles);
     addr = get_write_ptr(dfb_delta);

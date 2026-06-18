@@ -27,9 +27,9 @@
 #include "api/dataflow/circular_buffer.h"
 #include "tools/profiler/kernel_profiler.hpp"
 
-constexpr uint32_t dfb_init = 0;  // reader -> compute (initial value)
-constexpr uint32_t dfb_delta = 1; // reader -> compute (contributions)
-constexpr uint32_t dfb_out = 16;  // compute -> writer (result)
+constexpr uint32_t dfb_init = 0;
+constexpr uint32_t dfb_delta = 1;
+constexpr uint32_t dfb_out = 16;
 
 void kernel_main() {
   const uint32_t acc_tiles = get_compile_time_arg_val(0);
@@ -37,19 +37,17 @@ void kernel_main() {
   const uint32_t reuse = get_compile_time_arg_val(2);
 
   binary_op_init_common(dfb_delta, dfb_delta,
-                        dfb_out); // set up the binary datapath
+                        dfb_out); // required before binary_dest_reuse_tiles
   copy_tile_init(dfb_init);
 
-  tile_regs_acquire(); // accumulator persists in DST across the whole loop
+  tile_regs_acquire();
   {
     DeviceZoneScopedN("acc_loop");
-    // Seed the accumulator from the initial value.
     cb_wait_front(dfb_init, acc_tiles);
     for (uint32_t u = 0; u < acc_tiles; ++u) {
       copy_tile(dfb_init, u, u);
     }
     cb_pop_front(dfb_init, acc_tiles);
-    // Add each contribution in place.
     binary_dest_reuse_tiles_init<EltwiseBinaryType::ELWADD,
                                  EltwiseBinaryReuseDestType::DEST_TO_SRCA>(
         dfb_delta);
