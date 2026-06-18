@@ -1126,8 +1126,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     if (useTridBarriers) {
       auto allocResult = tridAllocator->allocateTrid(direction);
       if (allocResult.evictDirection) {
-        Value evictTrid = arith::ConstantIntOp::create(
-            rewriter, op.getLoc(), allocResult.trid, 32);
+        Value evictTrid = arith::ConstantIntOp::create(rewriter, op.getLoc(),
+                                                       allocResult.trid, 32);
         if (failed(emitNocBarrier(rewriter, op.getLoc(),
                                   *allocResult.evictDirection,
                                   std::optional<Value>(evictTrid),
@@ -1135,9 +1135,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
           return rewriter.notifyMatchFailure(op, "unsupported evict direction");
         }
       }
-      tridVal =
-          arith::ConstantIntOp::create(rewriter, op.getLoc(), allocResult.trid,
-                                       32);
+      tridVal = arith::ConstantIntOp::create(rewriter, op.getLoc(),
+                                             allocResult.trid, 32);
     } else {
       tridVal = arith::ConstantIntOp::create(rewriter, op.getLoc(), 0, 32);
     }
@@ -1705,8 +1704,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       typeConverter, &ctx, pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
                                          pipeResourcePlan);
-  patterns.add<BindCBLowering, TensorSliceLowering>(
-      typeConverter, &ctx);
+  patterns.add<BindCBLowering, TensorSliceLowering>(typeConverter, &ctx);
   patterns.add<WaitLowering>(typeConverter, &ctx, useTridBarriers);
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
