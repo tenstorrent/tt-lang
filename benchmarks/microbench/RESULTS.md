@@ -47,6 +47,12 @@ calibrated.
 - Single compute core; inputs L1-resident where possible.
 - Timing: `DeviceZoneScopedN` per RISC; cycles ÷ profiler `CHIP_FREQ[MHz]` = µs.
 - Correctness: PCC vs a torch reference.
+- DFB block count (multi-buffering depth, tt-lang's term) is held at the default
+  (`block_count = 2`) in the headline comparisons. It is exposed as `--block-count`
+  and swept once (the MB2 block-count block): it changes only absolute streamed
+  cost via reader prefetch, not the strategy ranking, so the other tables fix it to
+  isolate the strategy comparison. A block count of 1 would understate steady-state
+  throughput; above 2 adds nothing here (compute-bound).
 
 Times are compute-thread (TRISC) µs. Probe runs have NCRISC/BRISC idle in the
 measured zone; PCC ≈ 1.0 unless noted.
@@ -224,25 +230,26 @@ acc_tiles=1 row holding the only near-ties (a few favor DST by ≤0.15 µs), and
 dram absolute cost growing steeply with iters. The DST-vs-L1-pack ranking is
 arch-independent.
 
-### Buffer factor (DFB depth)
+### Block count (DFB depth)
 
-`--buffers` (default 2) sets the contribution/output DFB depth — how far the
-reader can prefetch. dram-streamed, acc_tiles=2, L1-pack trisc_max µs:
+`--block-count` (default 2) sets the contribution/output DFB block count — how
+many blocks the reader can prefetch. dram-streamed, acc_tiles=2, L1-pack
+trisc_max µs:
 
-| arch, iters \ buffers | 1 | 2 | 4 | 8 |
+| arch, iters \ block_count | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
 | Blackhole, iters=8  | 4.86 | 4.27 | 4.19 | 4.18 |
 | Blackhole, iters=16 | 9.32 | 7.95 | 8.24 | 7.99 |
 | Wormhole, iters=8   | 6.13 | 4.93 | 4.89 | 4.91 |
 | Wormhole, iters=16  | 11.65 | 9.28 | 9.31 | 9.37 |
 
-Single-buffering (1) serializes each DRAM read against compute; double-buffering
-(2) lets the reader prefetch the next contribution, cutting ~15–20%; beyond 2 it
-is flat (compute-bound). l1-resident is buffer-insensitive — one re-read block, no
-streaming (BH iters=16 ~2.1 µs, WH ~3.1 µs across buffers 1–8). Buffer depth
+Block count 1 serializes each DRAM read against compute; block count 2 lets the
+reader prefetch the next contribution, cutting ~15–20%; beyond 2 it is flat
+(compute-bound). l1-resident is block-count-insensitive — one re-read block, no
+streaming (BH iters=16 ~2.1 µs, WH ~3.1 µs across block counts 1–8). Block count
 changes the dram-streamed absolute cost, not the DST-vs-L1 ranking, since both
 strategies share the contribution buffer. The cost model's DFB term should
-distinguish single- from multi-buffered streaming; the strategy choice does not
+distinguish single- from multi-block streaming; the strategy choice does not
 depend on it.
 
 ## MB3 — matmul K-accumulation (DST-K vs L1-K)
@@ -550,8 +557,8 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `pack_unpack_blackhole_bf16_*.csv` — MB1 bf16 tiles=1..16
 - `pack_unpack_blackhole_matrix_*.csv` — MB1 config matrix
 - `pack_unpack_wormhole_b0_bf16_*.csv` — MB1 bf16 tiles=1..16
-- `accumulation_blackhole_bf16_{l1,dram}_*.csv` — MB2 DST vs L1-pack, acc_tiles×iters (× buffers)
-- `accumulation_wormhole_b0_bf16_{l1,dram}_*.csv` — MB2 on Wormhole (× buffers)
+- `accumulation_blackhole_bf16_{l1,dram}_*.csv` — MB2 DST vs L1-pack, acc_tiles×iters (× block_count)
+- `accumulation_wormhole_b0_bf16_{l1,dram}_*.csv` — MB2 on Wormhole (× block_count)
 - `matmul_k_blackhole_bf16_hifi4_*.csv` — MB3 DST-K vs L1-K, P and kt sweep (MB3.A reuse=1 + MB3.B reuse>1)
 - `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole (on `aus-wh-01:/localdev/bnorris/tt-lang`)
 - `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` — MB3.C DST-K vs L1-K with a fused GELU epilogue
@@ -573,7 +580,7 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
   re-running the suite.
-- MB2 — done on Blackhole and Wormhole (l1 + dram, plus a `buffers` DFB-depth
+- MB2 — done on Blackhole and Wormhole (l1 + dram, plus a `block_count` DFB-depth
   sweep). fp32 + sync extensions for MB2 remain.
 - distinct-DFB superlinearity for MB1.
 - MB4 — compute-op (math) microbenchmarks.

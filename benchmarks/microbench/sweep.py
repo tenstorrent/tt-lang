@@ -22,7 +22,7 @@ from pathlib import Path
 import ttnn
 
 from benchmarks.microbench import harness
-from benchmarks.microbench.harness import TILE
+from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
@@ -43,14 +43,14 @@ class PackUnpackProbe(MicroBenchmark):
         Param("dtype", "bf16", sweep=True, help="bf16 and/or fp32"),
         Param("full_sync", "0", sweep=True, help="dst_full_sync_en (0/1)"),
         Param("fp32_dest_acc", "0", sweep=True, help="fp32_dest_acc_en (0/1)"),
-        Param("buffers", "2", sweep=True, help="DFB depth factor"),
+        Param("block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="DFB block count"),
     )
     INPUTS = (Tensor("src", lambda cfg: (TILE, cfg["tiles"] * TILE)),)
     OUTPUTS = (Tensor("out", lambda cfg: (TILE, cfg["tiles"] * TILE), init="empty"),)
     DFBS = (
-        DFB(0, lambda cfg: cfg["buffers"] * cfg["tiles"]),  # dfb_in
-        DFB(1, lambda cfg: cfg["buffers"] * cfg["tiles"]),  # dfb_loop
-        DFB(16, lambda cfg: cfg["buffers"] * cfg["tiles"]),  # dfb_out
+        DFB(0, lambda cfg: cfg["block_count"] * cfg["tiles"]),  # dfb_in
+        DFB(1, lambda cfg: cfg["block_count"] * cfg["tiles"]),  # dfb_loop
+        DFB(16, lambda cfg: cfg["block_count"] * cfg["tiles"]),  # dfb_out
     )
 
     def build(self, ctx):

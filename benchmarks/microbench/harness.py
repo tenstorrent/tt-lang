@@ -22,6 +22,7 @@ import ttnn
 from benchmarks.microbench import profiler
 
 TILE = 32
+DEFAULT_BLOCK_COUNT = 2  # DFB multi-buffering depth (blocks per dataflow buffer)
 
 # name -> (ttnn dtype, torch dtype, bytes/datum)
 DTYPES = {
