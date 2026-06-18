@@ -5,10 +5,10 @@
 
 Reads tt-metal's ``profile_log_device.csv``, pairs ``ZONE_START``/``ZONE_END``
 for a named zone per RISC thread, and converts cycles to microseconds using
-``CHIP_FREQ[MHz]`` from the CSV header. The conversion ``us = cycles / freq_mhz``
+``CHIP_FREQ[MHz]`` from the CSV header. The conversion ``µs = cycles / freq_mhz``
 is the repo's canonical one (see ``ttl._src.perf_summary``); reporting absolute
 microseconds is required because the cost-model weights are absolute (the LLK
-profiler counts are not us-convertible, only their ratios are).
+profiler counts are not µs-convertible, only their ratios are).
 
 A ``DeviceZoneScopedN`` placed in a compute kernel records on each compute RISC,
 so one zone yields the unpack (``TRISC_0``), math (``TRISC_1``), and pack
@@ -122,7 +122,7 @@ def zone_durations_us(csv_path, zone_name, freq_mhz=None):
 
 
 def summarize_zone(csv_path, zone_name, reduce=statistics.median):
-    """Summarize one named zone: per-RISC us, TRISC-max, and the isolation gate.
+    """Summarize one named zone: per-RISC µs, TRISC-max, and the isolation gate.
 
     ``reduce`` collapses the per-invocation samples (median by default -- on-device
     zone cycles are stable run-to-run, so warmup invocations do not skew it).

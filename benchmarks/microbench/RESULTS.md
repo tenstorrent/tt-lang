@@ -13,9 +13,9 @@ microbenchmarks cannot give:
 - **Composition.** The generated kernel runs unpack/math/pack pipelined across
   three RISCs; the LLK microbenchmarks time each engine alone, so adding them up
   does not reproduce the composed cost. Blackhole bf16, per tile:
-  - LLK unpack ~ 0.030 + LLK pack ~ 0.026 = **0.056 us** (serial sum)
-  - slowest single engine = **0.030 us** (perfect-overlap lower bound)
-  - MB1 measured, over DFBs = **0.039 us**
+  - LLK unpack ~ 0.030 + LLK pack ~ 0.026 = **0.056 µs** (serial sum)
+  - slowest single engine = **0.030 µs** (perfect-overlap lower bound)
+  - MB1 measured, over DFBs = **0.039 µs**
 
   The measured value sits between the two -- the kernel pipelines unpack and pack
   across RISCs, recovering ~30% the serial sum can't see. So summing overshoots by
@@ -23,7 +23,7 @@ microbenchmarks cannot give:
   count).
 - **Dataflow-buffer handoff.** The LLK harness has no dataflow buffers, so it never
   measures the DFB reserve/wait/push/pop + cross-thread sync the dispatched kernels pay
-  (MB1's fixed term, ~0.09 us/iter on Blackhole) -- the cost model's
+  (MB1's fixed term, ~0.09 µs/iter on Blackhole) -- the cost model's
   `dfbHopFixedCost`.
 - **The strategy decision, not just its inputs.** The model chooses DST-resident vs
   L1-pack. The LLK microbenchmarks can only feed the model's serial formula; the benchmarks
@@ -45,7 +45,7 @@ calibrated.
 - **No tt-lang compiler involved:** kernels are handwritten and JIT-compiled by
   tt-metal at run time; the sequences are matched by hand to what tt-lang emits.
 - Single compute core; inputs L1-resident where possible.
-- Timing: `DeviceZoneScopedN` per RISC; cycles / profiler `CHIP_FREQ[MHz]` = us.
+- Timing: `DeviceZoneScopedN` per RISC; cycles / profiler `CHIP_FREQ[MHz]` = µs.
 - Correctness: PCC vs a torch reference.
 - DFB block count (multi-buffering depth, tt-lang's term) is held at the default
   (`block_count = 2`) in the headline comparisons. It is exposed as `--block-count`
@@ -54,7 +54,7 @@ calibrated.
   isolate the strategy comparison. A block count of 1 would understate steady-state
   throughput; above 2 adds nothing here (compute-bound).
 
-Times are compute-thread (TRISC) us. Inputs preloaded to L1 keep NCRISC/BRISC out
+Times are compute-thread (TRISC) µs. Inputs preloaded to L1 keep NCRISC/BRISC out
 of the measured zone (MB1, and the l1-resident MB2/MB3 runs); the dram-streamed
 MB2 runs intentionally overlap reader (NCRISC) activity with the compute wait, so
 the zone is not DM-idle there. `noc_active_in_zone` only flags a data-movement
@@ -63,7 +63,7 @@ idleness. PCC ~ 1.0 unless noted.
 
 ## Hardware / environment
 
-Profiler clock (used for the cycles -> us conversion):
+Profiler clock (used for the cycles -> µs conversion):
 
 | architecture | freq (profiler) |
 |---|---|
@@ -97,7 +97,7 @@ compute:
   # per-iter time = fixed (DFB reserve/wait/push/pop + sync) + per_tile * T
 ```
 
-### bf16 trisc_max us/iter (raw)
+### bf16 trisc_max µs/iter (raw)
 
 | tiles | Blackhole | Wormhole |
 |---|---|---|
@@ -109,7 +109,7 @@ compute:
 
 ### bf16 linear fit (`us_per_iter = fixed + per_tile*tiles`, trisc_max)
 
-| architecture | fixed us | per_tile us | r^2 |
+| architecture | fixed µs | per_tile µs | r^2 |
 |---|---|---|---|
 | Blackhole | 0.089 | 0.039 | 0.99 |
 | Wormhole | 0.160 | 0.065 | 0.98 |
@@ -118,7 +118,7 @@ compute:
   zone spans the same pipelined window, so this gives the *combined* per-tile
   cost, not the separate unpack/pack engine costs (those need the per-engine LLK microbenchmarks).
 
-### Blackhole config matrix -- trisc_max us/iter
+### Blackhole config matrix -- trisc_max µs/iter
 
 | dtype | full_sync | fp32_acc | T=1 | T=2 | T=4 | T=8 |
 |---|---|---|---|---|---|---|
@@ -163,7 +163,7 @@ zone "acc_loop":
     copy U tiles dfb_delta->DST; pack U tiles DST->dfb_out   # packer L1-accumulate
     cb_pop_front(dfb_delta, U)
 pack_reconfig_l1_acc(0); cb_push_back(dfb_out, U)
-# out = initial + sum of `iters` contributions; report dst/l1-pack us + PCC vs torch
+# out = initial + sum of `iters` contributions; report dst/l1-pack µs + PCC vs torch
 ```
 
 Two independent axes:
@@ -175,7 +175,7 @@ Two independent axes:
   into the compute-thread zone -- still TRISC zone time, not full dispatch time).
   This sets the absolute cost; it does not change the strategy ranking.
 
-Blackhole bf16, full sweep, all PCC ~ 1.0. trisc_max us as **DST / L1-pack
+Blackhole bf16, full sweep, all PCC ~ 1.0. trisc_max µs as **DST / L1-pack
 (faster)**:
 
 l1-resident (contributions re-read from L1):
@@ -195,17 +195,17 @@ dram-streamed (one contribution block per iteration from DRAM):
 | 4 | 1.37/1.08 (L1) | 2.00/1.70 (L1) | 3.10/2.77 (L1) | 5.25/4.95 (L1) | 9.58/9.25 (L1) |
 
 - **Strategy ranking:** L1-pack is lower than DST-resident in nearly every config,
-  by a small margin (~0.1-0.6 us, largest at l1-resident acc_tiles=4 iters=16:
+  by a small margin (~0.1-0.6 µs, largest at l1-resident acc_tiles=4 iters=16:
   3.86 vs 3.24). The acc_tiles=1 cells are near-ties -- a few favor DST-resident by
-  <=0.03 us. The two strategies are close; L1-pack is marginally ahead.
+  <=0.03 µs. The two strategies are close; L1-pack is marginally ahead.
 - **Timed consistently with MB3:** both kernels time the pack inside the zone --
   L1-pack its per-step packs, DST-resident its single final pack. The single DST
   pack is small next to the accumulate loop (unlike MB3's matmul, where the
   pack-once is a heavy serial tail), so MB2's numbers and the L1-pack-ahead
   ranking are unchanged by timing it.
 - **Residency effect (orthogonal):** streaming from DRAM adds a per-iteration DRAM
-  read, so absolute cost grows steeply with iters (acc_tiles=1 iters=16: ~7.4 us
-  streamed vs ~1.4 us resident, ~5x). This is larger than the strategy difference
+  read, so absolute cost grows steeply with iters (acc_tiles=1 iters=16: ~7.4 µs
+  streamed vs ~1.4 µs resident, ~5x). This is larger than the strategy difference
   and independent of it -- the DST-vs-L1-pack ranking holds under both residencies.
 - **Notes:**
   1. The DST kernel uses `binary_dest_reuse_tiles<ELWADD, DEST_TO_SRCA>` with a
@@ -221,7 +221,7 @@ dram-streamed (one contribution block per iteration from DRAM):
 
 ### Wormhole b0 (1000 MHz)
 
-Same sweep, bf16, all PCC ~ 1.0. trisc_max us **DST / L1-pack (faster)**.
+Same sweep, bf16, all PCC ~ 1.0. trisc_max µs **DST / L1-pack (faster)**.
 
 l1-resident:
 
@@ -249,7 +249,7 @@ strategies converge on Wormhole. The ranking is otherwise architecture-independe
 
 `--block-count` (default 2) sets the contribution/output DFB block count -- how
 many blocks the reader can prefetch. dram-streamed, acc_tiles=2, L1-pack
-trisc_max us:
+trisc_max µs:
 
 | architecture, iters \ block_count | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
@@ -261,7 +261,7 @@ trisc_max us:
 Block count 1 serializes each DRAM read against compute; block count 2 lets the
 reader prefetch the next contribution, cutting ~15-20%; beyond 2 it is flat
 (compute-bound). l1-resident is block-count-insensitive -- one re-read block, no
-streaming (BH iters=16 ~2.1 us, WH ~3.1 us across block counts 1-8). Block count
+streaming (BH iters=16 ~2.1 µs, WH ~3.1 µs across block counts 1-8). Block count
 changes the dram-streamed absolute cost, not the DST-vs-L1 ranking, since both
 strategies share the contribution buffer. The cost model's DFB term should
 distinguish single- from multi-block streaming; the strategy choice does not
@@ -279,7 +279,7 @@ L1 ahead ~16%; Wormhole near-tied at high iters, as in bf16). Exact (PCC ~ 1.0).
 DST a single bank (no math/pack double-buffer), so L1-pack's per-iteration copy
 can no longer overlap the previous iteration's pack -- it loses its pipelining.
 DST-resident accumulates in place and packs once, so full-sync does not touch it.
-l1-resident, trisc_max us **DST / L1-pack (faster)**:
+l1-resident, trisc_max µs **DST / L1-pack (faster)**:
 
 | architecture, acc_tiles \ iters | 1 | 4 | 16 |
 |---|---|---|---|
@@ -343,7 +343,7 @@ which made DST-K look ~math-bound and always cheaper; corrected below).
 One subblock = the whole output. DST-K accumulates all `kt` matmuls in DST and
 packs P tiles once; L1-K repacks the P-tile output to L1 every K step (kt*P
 packs). DST-K prefetches operands once (its best case; a streaming reuse-1 kernel
-would pay slightly more handoff). Blackhole bf16 HiFi4, trisc_max us **DST-K /
+would pay slightly more handoff). Blackhole bf16 HiFi4, trisc_max µs **DST-K /
 L1-K (faster)**, all PCC ~ 1.0:
 
 | P (mtxnt) \ kt | 1 | 2 | 4 | 8 |
@@ -358,7 +358,7 @@ L1-K (faster)**, all PCC ~ 1.0:
 The output no longer fits DST, so it is subblocked. DST-K processes one subblock
 at a time across the whole K loop, re-unpacking that subblock's A rows and B cols
 from the resident operands -- operand unpack scales by reuse. L1-K still repacks
-every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max us
+every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max µs
 **DST-K / L1-K (faster)**, all PCC ~ 1.0:
 
 | P (mtxnt) reuse \ kt | 1 | 2 | 4 | 8 |
@@ -391,7 +391,7 @@ every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max us
 
 **Fidelity (LoFi / HiFi2 / HiFi4).** Math fidelity is a parameter (1 / 2 / 4 math
 passes per matmul); the tables above are HiFi4. P = 16 (4x4, reuse 2), trisc_max
-us **DST-K / L1-K (faster)**, all PCC ~ 1.0.
+µs **DST-K / L1-K (faster)**, all PCC ~ 1.0.
 
 Blackhole bf16:
 
@@ -420,7 +420,7 @@ lower-cost.
 
 **fp32 dest (dtype = fp32).** fp32 accumulation halves DST capacity (4 vs 8), so
 reuse > 1 is reached at smaller outputs, and roughly doubles pack cost (2x tile
-bytes). P = 16 (4x4) is reuse 4 here (vs reuse 2 at bf16). trisc_max us **DST-K /
+bytes). P = 16 (4x4) is reuse 4 here (vs reuse 2 at bf16). trisc_max µs **DST-K /
 L1-K (faster)**, all PCC = 1.0:
 
 | architecture \ kt | 1 | 2 | 4 | 8 |
@@ -435,7 +435,7 @@ advantage. The halved capacity raises reuse at a given P but does not change the
 winner.
 
 **Full-sync (dst_full_sync_en).** Full-sync doubles DST capacity (16 vs 8 bf16),
-so P = 16 (4x4) becomes reuse 1 (vs reuse 2 at the default capacity). trisc_max us
+so P = 16 (4x4) becomes reuse 1 (vs reuse 2 at the default capacity). trisc_max µs
 **DST-K / L1-K (faster)**, all PCC ~ 1.0:
 
 | architecture \ kt | 1 | 2 | 4 | 8 |
@@ -451,7 +451,7 @@ the DST bank mode, so full-sync does not recover it for DST-K.
 
 ### Wormhole b0 (1000 MHz)
 
-Same sweep, bf16 HiFi4, DST capacity 8, trisc_max us **DST-K / L1-K (faster)**,
+Same sweep, bf16 HiFi4, DST capacity 8, trisc_max µs **DST-K / L1-K (faster)**,
 all PCC ~ 1.0.
 
 MB3.A (P <= capacity, reuse = 1):
@@ -486,7 +486,7 @@ its L1 accumulator into DST, apply GELU, and pack again -- the round trip the
 resident output lets DST-K skip. Fast (tanh) GELU is used, the production default
 for matmul fusion; its approximation lowers PCC to ~0.985 (accepted for fused
 matmul+activation), versus ~1.0 for plain matmul. Blackhole bf16 HiFi4,
-trisc_max us **DST-K / L1-K (faster)**:
+trisc_max µs **DST-K / L1-K (faster)**:
 
 | P (mtxnt) \ kt | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
@@ -508,7 +508,7 @@ trisc_max us **DST-K / L1-K (faster)**:
   (the extra DFB handoff and copy/GELU init) on top of the ~2P movements; at
   larger P that overhead amortizes, so L1-K's per-kt overlap advantage overtakes
   the reload cost at a smaller kt.
-- **Epilogue cost moves the crossover.** This is fast GELU (~0.4 us/tile here). A
+- **Epilogue cost moves the crossover.** This is fast GELU (~0.4 µs/tile here). A
   costlier activation (erf-precise GELU measured ~10x heavier) widens the
   DST-favorable band to higher kt; a cheaper one (bias add) narrows it. So the
   selector's epilogue handling should weigh the L1-K reload against the activation
@@ -526,7 +526,7 @@ trisc_max us **DST-K / L1-K (faster)**:
   the plain-matmul preference for L1-K (overlap) only holds at larger kt. The
   decision is epilogue-aware, not just kt/reuse-based.
 
-Wormhole b0 (1000 MHz), fused GELU, trisc_max us **DST-K / L1-K (faster)**:
+Wormhole b0 (1000 MHz), fused GELU, trisc_max µs **DST-K / L1-K (faster)**:
 
 | P (mtxnt) \ kt | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
@@ -544,7 +544,7 @@ Wormhole b0 (1000 MHz), fused GELU, trisc_max us **DST-K / L1-K (faster)**:
 
 **Fidelity (fused).** For plain matmul fidelity changes only the size of L1-K's
 lead, not which strategy wins; with the epilogue it changes which strategy wins --
-it moves the crossover kt. P = 16 (4x4, reuse 2), fused GELU, trisc_max us **DST-K
+it moves the crossover kt. P = 16 (4x4, reuse 2), fused GELU, trisc_max µs **DST-K
 / L1-K (faster)**.
 
 Blackhole bf16:
@@ -581,11 +581,11 @@ feed a compute-aware model (also what the nonadditive work needs).
 **Implemented (`compute_sweep.py`): math-thread SFPU unary.** A selected op is
 applied to `tiles` tiles `iters` times; `op=copy` is the baseline (subtract it for
 the SFPU op's marginal math cost). Preliminary, Blackhole bf16, tiles=4, math
-thread, marginal us/tile (over the copy baseline ~0.03):
+thread, marginal µs/tile (over the copy baseline ~0.03):
 
 | op | exp | gelu (fast) | recip | sqrt | rsqrt |
 |---|---|---|---|---|---|
-| us/tile | 0.42 | 0.14 | 0.88 | 0.64 | 0.73 |
+| µs/tile | 0.42 | 0.14 | 0.88 | 0.64 | 0.73 |
 
 PCC is the real SFPU approximation accuracy (sqrt/rsqrt ~0.9994, gelu ~0.9997).
 Pending: full sweep (tiles x bf16/fp32 x init-hoist, both architectures), a
@@ -612,8 +612,8 @@ Options not yet covered:
 - TRISC cross-op overlap (the xlsx "overlapped" rows).
 
 Method: same harness (handwritten compute kernel via `generic_op`,
-`DeviceZoneScopedN` per op-loop, per-RISC us), sweep `tile_cnt` + the parameters;
-report per-op TILE-LOOP us/tile and init us, mirroring the xlsx's
+`DeviceZoneScopedN` per op-loop, per-RISC µs), sweep `tile_cnt` + the parameters;
+report per-op TILE-LOOP µs/tile and init µs, mirroring the xlsx's
 INIT/KERNEL/TILE_LOOP + per-RISC columns.
 
 ## Result CSVs (local only, git-ignored; under `benchmarks/microbench/results/`)
