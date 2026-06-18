@@ -289,9 +289,25 @@ every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max µs
   overlap L1-K gets and DST-K cannot — not just the per-engine tile weights.
 - **Scope:** isolated single kernel. It omits DST occupancy / fusion, which only
   pushes further toward L1-K (a resident DST output starves fused neighbors). It
-  also omits `matmul_block` granularity effects. Remaining sweeps: fidelity
-  (LoFi/HiFi2/HiFi4 — lower fidelity cuts math, which may narrow the gap),
-  fp32 dest, and full-sync (Wormhole measured below).
+  also omits `matmul_block` granularity effects. Remaining sweeps: fp32 dest and
+  full-sync.
+
+**Fidelity (LoFi / HiFi2 / HiFi4).** Math fidelity is a parameter (1 / 2 / 4 math
+passes per matmul); the tables above are HiFi4. Blackhole bf16, P = 16 (4×4,
+reuse 2), trisc_max µs **DST-K / L1-K (faster)**, all PCC ≈ 1.0:
+
+| fidelity \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| LoFi  | 1.40/1.37 (L1) | 2.64/2.50 (L1) | 5.33/4.73 (L1) | 11.11/9.89 (L1) |
+| HiFi2 | 1.58/1.61 (DST) | 3.21/2.63 (L1) | 6.07/4.78 (L1) | 12.83/10.12 (L1) |
+| HiFi4 | 1.94/1.97 (DST) | 3.81/3.02 (L1) | 7.60/5.21 (L1) | 15.81/10.22 (L1) |
+
+L1-K is nearly fidelity-insensitive (kt=8 column: 9.89 → 10.12 → 10.22) because it
+is pack-bound — its per-K-step packs hide the math. DST-K serializes math then one
+pack, so each fidelity pass lands on its total (11.11 → 12.83 → 15.81). So the
+L1-K margin grows with fidelity (~5–11% LoFi to ~21–35% HiFi4) but the ranking is
+unchanged: L1-K is lower for kt ≥ 2 at every fidelity, in both MB3.A (reuse=1) and
+MB3.B. For plain matmul, fidelity sets the margin, not the strategy.
 
 ### Wormhole b0 (1000 MHz)
 
@@ -378,30 +394,20 @@ Wormhole b0 (1000 MHz), fused GELU, trisc_max µs **DST-K / L1-K (faster)**:
   Wormhole than on Blackhole — the one place so far where the arch matters to the
   ranking.
 
-### MB3.D — math fidelity (LoFi / HiFi2 / HiFi4)
-
-Plain matmul (no epilogue) at three math fidelities (1 / 2 / 4 math passes per
-matmul). Blackhole bf16, P = 16 (4×4, reuse 2), trisc_max µs **DST-K / L1-K
-(faster)**, all PCC ≈ 1.0:
+**Fidelity (fused).** Unlike plain matmul — where fidelity only sets the margin —
+with the epilogue fidelity moves the crossover. Blackhole bf16, P = 16 (4×4,
+reuse 2), fused GELU, trisc_max µs **DST-K / L1-K (faster)**:
 
 | fidelity \ kt | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
-| LoFi  | 1.40/1.37 (L1) | 2.64/2.50 (L1) | 5.33/4.73 (L1) | 11.11/9.89 (L1) |
-| HiFi2 | 1.58/1.61 (DST) | 3.21/2.63 (L1) | 6.07/4.78 (L1) | 12.83/10.12 (L1) |
-| HiFi4 | 1.94/1.97 (DST) | 3.81/3.02 (L1) | 7.60/5.21 (L1) | 15.81/10.22 (L1) |
+| LoFi  | 3.95/4.65 (DST) | 5.29/5.69 (DST) | 7.82/7.87 (DST) | 13.78/12.94 (L1) |
+| HiFi2 | 4.16/4.96 (DST) | 5.71/5.85 (DST) | 8.65/8.04 (L1) | 15.45/13.09 (L1) |
+| HiFi4 | 4.53/5.15 (DST) | 6.62/6.34 (L1) | 10.26/8.43 (L1) | 18.51/13.58 (L1) |
 
-- **L1-K is nearly fidelity-insensitive; DST-K scales with fidelity.** Read the
-  L1-K column at kt=8: 9.89 → 10.12 → 10.22 (essentially flat). The DST-K column:
-  11.11 → 12.83 → 15.81. L1-K is pack-bound — its per-K-step packs hide the math,
-  so extra math passes barely change its time. DST-K serializes math then a single
-  pack, so each added pass lands directly on the total.
-- **So L1-K's advantage grows with fidelity** — ~5–11% at LoFi to ~21–35% at
-  HiFi4 — but the ranking does not change: L1-K is lower-cost for every kt ≥ 2 at
-  all three fidelities. At kt = 1 the two are tied within variation.
-- **For the #652 selector:** plain matmul prefers L1-K independent of fidelity;
-  fidelity only sets the margin. Accuracy-sensitive matmuls (HiFi4) make the L1-K
-  preference strongest. This is the plain-matmul picture; the MB3.C epilogue
-  result (DST-K at low kt) still governs fused cases.
+DST-K's favorable kt range extends as fidelity drops: through kt = 4 at LoFi, kt = 2
+at HiFi2, only kt = 1 at HiFi4. Lower fidelity gives L1-K less math to hide its
+reload + repack behind, so the epilogue penalty dominates over more kt. With an
+epilogue, fidelity is part of the decision; without one it is not.
 
 ## MB4 — compute-op (math) microbenchmarks — planned
 
@@ -447,13 +453,14 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole (on `aus-wh-01:/localdev/bnorris/tt-lang`)
 - `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` — MB3.C DST-K vs L1-K with a fused GELU epilogue
 - `matmul_k_wormhole_b0_bf16_hifi4_gelu_*.csv` — MB3.C fused GELU on Wormhole
-- `matmul_k_blackhole_bf16_{lofi,hifi2}_none_*.csv` — MB3.D fidelity sweep (HiFi4 in the hifi4 CSV)
+- `matmul_k_blackhole_bf16_{lofi,hifi2}_none_*.csv` — fidelity for plain matmul (MB3.A/B); HiFi4 in the hifi4 CSV
+- `matmul_k_blackhole_bf16_{lofi,hifi2}_gelu_*.csv` — fidelity for fused GELU (MB3.C)
 
 ## Open / next
 
 - MB3 — done on Blackhole and Wormhole: MB3.A reuse=1, MB3.B reuse>1, MB3.C fused
-  GELU, MB3.D fidelity (LoFi/HiFi2/HiFi4 on Blackhole). Remaining: fp32 dest,
-  full-sync; MB3.D fidelity on Wormhole.
+  GELU, each swept over fidelity (LoFi/HiFi2/HiFi4) on Blackhole. Remaining: fp32
+  dest, full-sync; fidelity on Wormhole.
 - Per-engine weights: the June-16 LLK run
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
