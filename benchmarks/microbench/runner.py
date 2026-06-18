@@ -32,7 +32,7 @@ from benchmarks.microbench.harness import TILE, DTYPES
 class Param:
     name: str
     default: object
-    sweep: bool = False        # True -> comma-list, product-swept
+    sweep: bool = False  # True -> comma-list, product-swept
     choices: tuple = None
     help: str = ""
 
@@ -40,15 +40,15 @@ class Param:
 @dataclass(frozen=True)
 class Tensor:
     name: str
-    shape: Callable            # cfg -> (rows, cols) in elements
-    init: str = "randn"        # randn | zeros | ones | empty (outputs use empty)
+    shape: Callable  # cfg -> (rows, cols) in elements
+    init: str = "randn"  # randn | zeros | ones | empty (outputs use empty)
     scale: float = 0.1
 
 
 @dataclass(frozen=True)
 class DFB:
     index: int
-    pages: Callable            # cfg -> tile count
+    pages: Callable  # cfg -> tile count
 
 
 class Ctx:
@@ -59,8 +59,8 @@ class Ctx:
         self.strategy = strategy
         self.core = core
         self.grid = grid
-        self.tensors = tensors          # name -> device tensor
-        self.torch = torch_inputs       # name -> input torch tensor
+        self.tensors = tensors  # name -> device tensor
+        self.torch = torch_inputs  # name -> input torch tensor
 
 
 class MicroBenchmark:
@@ -102,13 +102,19 @@ class MicroBenchmark:
                 raise ValueError(f"input {spec.name} has init {spec.init!r}")
             torch_inputs[spec.name] = tensor
             dev_tensors[spec.name] = ttnn.from_torch(
-                tensor, dtype=ttnn_dtype, layout=ttnn.TILE_LAYOUT, device=device,
+                tensor,
+                dtype=ttnn_dtype,
+                layout=ttnn.TILE_LAYOUT,
+                device=device,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
         for spec in self.OUTPUTS:
             dev_tensors[spec.name] = ttnn.empty(
-                spec.shape(cfg), dtype=ttnn_dtype, layout=ttnn.TILE_LAYOUT,
-                device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                spec.shape(cfg),
+                dtype=ttnn_dtype,
+                layout=ttnn.TILE_LAYOUT,
+                device=device,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
         return torch_inputs, dev_tensors
 
@@ -121,7 +127,9 @@ class MicroBenchmark:
             unit = cfg[self.PER_UNIT]
             for key in ("trisc_max_us", "unpack_us", "math_us", "pack_us"):
                 value = zone_summary[key]
-                row[f"{key}_per_{self.PER_UNIT}"] = None if value is None else value / unit
+                row[f"{key}_per_{self.PER_UNIT}"] = (
+                    None if value is None else value / unit
+                )
         return row
 
     def summary(self, cfg, by_strategy):
@@ -129,9 +137,13 @@ class MicroBenchmark:
         present = [strategy for strategy in self.STRATEGIES if strategy in by_strategy]
         if len(present) > 1:
             times = {name: by_strategy[name]["trisc_max_us"] for name in present}
-            faster = sorted(present, key=lambda name: (times[name] is None, times[name]))[0]
+            faster = sorted(
+                present, key=lambda name: (times[name] is None, times[name])
+            )[0]
             shown = " ".join(f"{name}={times[name]}" for name in present)
-            pccs = " ".join(f"{name}_pcc={by_strategy[name]['pcc']}" for name in present)
+            pccs = " ".join(
+                f"{name}_pcc={by_strategy[name]['pcc']}" for name in present
+            )
             return f"{head} | {shown} us | faster={faster} | {pccs}"
         row = by_strategy[present[0]]
         return f"{head} | trisc_max={row['trisc_max_us']} us | pcc={row['pcc']}"
@@ -145,10 +157,14 @@ class MicroBenchmark:
             harness.dfb(spec.index, ttnn_dtype, page_size, grid, spec.pages(cfg))
             for spec in self.DFBS
         ]
-        kernels, ref = self.build(Ctx(cfg, strategy, core, grid, dev_tensors, torch_inputs))
+        kernels, ref = self.build(
+            Ctx(cfg, strategy, core, grid, dev_tensors, torch_inputs)
+        )
         io_tensors = [dev_tensors[spec.name] for spec in self.INPUTS]
         io_tensors += [dev_tensors[spec.name] for spec in self.OUTPUTS]
-        output, zone = harness.dispatch(device, io_tensors, kernels, dfbs, self.ZONE, self.WARMUP)
+        output, zone = harness.dispatch(
+            device, io_tensors, kernels, dfbs, self.ZONE, self.WARMUP
+        )
         pcc = measure_pcc(ref.float(), ttnn.to_torch(output).float())
         for tensor in io_tensors:
             ttnn.deallocate(tensor)
@@ -162,7 +178,10 @@ class MicroBenchmark:
                 parser.add_argument(flag, action="store_true")
             elif param.choices:
                 parser.add_argument(
-                    flag, default=param.default, choices=list(param.choices), help=param.help
+                    flag,
+                    default=param.default,
+                    choices=list(param.choices),
+                    help=param.help,
                 )
             else:
                 parser.add_argument(flag, default=param.default, help=param.help)

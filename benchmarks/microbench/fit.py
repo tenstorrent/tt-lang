@@ -3,15 +3,18 @@
 
 """Fit the pack/unpack probe sweep to fixed + per-tile cost terms.
 
+Standalone results-processing utility, not imported by the runner: run by hand
+on saved MB1 CSVs to derive the cost-model weights for RESULTS.md.
+
 Reads one or more probe CSVs (benchmarks.microbench.sweep output), groups by
 (arch, dtype, dst_full_sync_en, fp32_dest_acc_en), and least-squares fits each
 per-RISC and the TRISC-max per-iteration time against tiles:
 
     us_per_iter(tiles) = fixed_us + per_tile_us * tiles
 
-The TRISC-max fit is the pack+unpack round-trip cost (pipelined throughput
-basis). The per-RISC engine split (unpack vs pack per tile) comes from the LLK
-isolate suite, not this round-trip; see CALIBRATION.md.
+The TRISC-max fit is the round-trip per-tile cost (pipelined throughput basis).
+The probe's per-RISC unpack/pack times are pipelined too, not clean engine
+isolates — the per-engine split comes from the LLK microbenchmarks (RESULTS.md).
 
     python -m benchmarks.microbench.fit "benchmarks/microbench/results/pack_unpack_*.csv"
 """
@@ -62,17 +65,19 @@ def load_rows(paths):
 def fit(rows):
     groups = defaultdict(lambda: defaultdict(list))
     for row in rows:
+        if "full_sync" not in row or "fp32_dest_acc" not in row:
+            continue  # pre-refactor CSV schema; skip
         key = (
             row["arch"],
             row["dtype"],
-            row["dst_full_sync_en"],
-            row["fp32_dest_acc_en"],
+            row["full_sync"],
+            row["fp32_dest_acc"],
         )
         tiles = _to_float(row.get("tiles"))
         for column in (
-            "unpack_us_per_iter",
-            "pack_us_per_iter",
-            "trisc_max_us_per_iter",
+            "unpack_us_per_iters",
+            "pack_us_per_iters",
+            "trisc_max_us_per_iters",
         ):
             value = _to_float(row.get(column))
             if tiles is not None and value is not None:

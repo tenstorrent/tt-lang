@@ -40,8 +40,7 @@ void kernel_main() {
       cb_wait_front(dfb_in0, mt);
       cb_wait_front(dfb_in1, nt);
       tile_regs_acquire();
-      matmul_block(dfb_in0, dfb_in1, 0, 0, 0, 0, nt, mt,
-                   1);
+      matmul_block(dfb_in0, dfb_in1, 0, 0, 0, 0, nt, mt, 1);
       tile_regs_commit();
       tile_regs_wait();
       for (uint32_t i = 0; i < out_tiles; ++i) {

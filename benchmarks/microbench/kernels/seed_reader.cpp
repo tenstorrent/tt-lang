@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Seed reader for the pack/unpack probe: read `tiles` tiles from DRAM into
-// dfb_in once, before the measured zone. Idle during the zone. Runtime args: 0 =
-// source DRAM address, 1 = tiles.
+// dfb_in once, before the measured zone. Idle during the zone. Runtime args: 0
+// = source DRAM address, 1 = tiles.
 
 #include "api/dataflow/dataflow_api.h"
 #include <stdint.h>
