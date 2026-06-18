@@ -16,8 +16,10 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <cstdint>
 #include <optional>
@@ -51,13 +53,119 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
+/// Trace a transfer handle through tensor containers and loop-carried values
+/// to the first value accepted by `match`.
+template <typename ResultT, typename MatchFn>
+inline ResultT
+traceTransferHandleSource(mlir::Value value, MatchFn match,
+                          llvm::SmallPtrSetImpl<mlir::Value> &seen) {
+  value = traceUnrealizedCasts(value);
+  if (!seen.insert(value).second) {
+    return ResultT();
+  }
+
+  if (ResultT result = match(value)) {
+    return result;
+  }
+  if (auto extractOp = value.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    return traceTransferHandleSource<ResultT>(extractOp.getTensor(), match,
+                                              seen);
+  }
+  if (auto insertOp = value.getDefiningOp<mlir::tensor::InsertOp>()) {
+    return traceTransferHandleSource<ResultT>(insertOp.getScalar(), match,
+                                              seen);
+  }
+  if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
+    if (auto loop =
+            mlir::dyn_cast<mlir::LoopLikeOpInterface>(result.getOwner())) {
+      auto yieldedOpt = loop.getYieldedValuesMutable();
+      auto resultsOpt = loop.getLoopResults();
+      if (yieldedOpt && resultsOpt) {
+        auto yielded = *yieldedOpt;
+        auto results = *resultsOpt;
+        for (unsigned idx = 0; idx < results.size(); ++idx) {
+          if (results[idx] == result) {
+            return traceTransferHandleSource<ResultT>(yielded[idx].get(), match,
+                                                      seen);
+          }
+        }
+      }
+    }
+  }
+  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Operation *parent = blockArg.getOwner()->getParentOp();
+    if (auto loop = mlir::dyn_cast_or_null<mlir::LoopLikeOpInterface>(parent)) {
+      auto iterArgs = loop.getRegionIterArgs();
+      auto inits = loop.getInitsMutable();
+      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
+        if (iterArgs[idx] == blockArg) {
+          return traceTransferHandleSource<ResultT>(inits[idx].get(), match,
+                                                    seen);
+        }
+      }
+    }
+  }
+
+  return ResultT();
+}
+
+/// Trace a tensor value back to its originating CB acquire operation
+/// (CBWaitOp or CBReserveOp). Traces through unrealized_conversion_cast,
+/// AttachCBOp, and tensor.extract_slice. Returns the acquire Operation*,
+/// or null if the chain does not end at one.
+inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
+  tensor = traceUnrealizedCasts(tensor);
+  if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+    tensor = attach.getTensor();
+    tensor = traceUnrealizedCasts(tensor);
+  }
+  while (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
+    tensor = traceUnrealizedCasts(tensor);
+  }
+  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+    mlir::Value source = viewLike.getViewSource();
+    if (mlir::isa<CircularBufferType>(source.getType())) {
+      return viewLike.getOperation();
+    }
+  }
+  return nullptr;
+}
+
+/// Trace a pipe transfer value through casts, tensor containers, and
+/// loop-carried values to the transfer creation op.
+inline PipeTransferCreateOp
+findPipeTransferCreateForTransfer(mlir::Value transfer) {
+  llvm::SmallPtrSet<mlir::Value, 16> seen;
+  return traceTransferHandleSource<PipeTransferCreateOp>(
+      transfer,
+      [](mlir::Value source) {
+        return source.getDefiningOp<PipeTransferCreateOp>();
+      },
+      seen);
+}
+
+/// Trace a pipe token through casts, tensor containers, and loop-carried values
+/// to the receive post that created it.
+inline PipeTransferPostOp findPipeTransferPostForToken(mlir::Value token) {
+  llvm::SmallPtrSet<mlir::Value, 16> seen;
+  return traceTransferHandleSource<PipeTransferPostOp>(
+      token,
+      [](mlir::Value source) {
+        return source.getDefiningOp<PipeTransferPostOp>();
+      },
+      seen);
+}
+
 /// Walk through `tensor.extract_slice` ops and return the underlying
 /// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
-  while (auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-    view = slice.getSource();
-  }
-  return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view));
+}
+
+/// Return the user reserve that produced a pipe receive destination block.
+inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst));
 }
 
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion
@@ -79,6 +187,14 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
     return tileType.getElementType();
   }
   return std::nullopt;
+}
+
+/// Return true when `tensor` was acquired from a CB via ttl.cb_wait or
+/// ttl.cb_reserve (the only two ViewLikeOpInterface implementations whose
+/// view source is a CircularBufferType). Traces through
+/// unrealized_conversion_cast, ttl.attach_cb, and tensor.extract_slice.
+inline bool isCBAcquireView(mlir::Value tensor) {
+  return findCBAcquireOp(tensor) != nullptr;
 }
 
 /// Return the circular buffer attached to `tensor`, or null if none.
@@ -105,6 +221,25 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   }
 
   return mlir::Value();
+}
+
+/// Normalize a Python-style dim (allowing negative indices) against `rank`
+/// into a non-negative index. Negative dims wrap from the end (-1 is the
+/// last dim). Does not bounds-check; callers should validate the result is
+/// in `[0, rank)`.
+inline int64_t normalizeDim(int64_t dim, int64_t rank) {
+  return dim < 0 ? dim + rank : dim;
+}
+
+/// Normalize a list of Python-style dims into a set of non-negative indices
+/// against `rank`. Duplicates after normalization collapse.
+inline llvm::SmallDenseSet<int64_t>
+normalizeDimsToSet(mlir::ArrayRef<int64_t> dims, int64_t rank) {
+  llvm::SmallDenseSet<int64_t> result;
+  for (int64_t d : dims) {
+    result.insert(normalizeDim(d, rank));
+  }
+  return result;
 }
 
 /// True for arithmetic/math tile ops (add, mul, exp, ...); false for data
@@ -279,6 +414,7 @@ enum class TileOpCategory : uint8_t {
   SFPUUnary = 4,  // DST -> DST in-place (MATH-only init)
   SFPUBinary = 5, // DST -> DST binary (MATH-only init)
   CopyDst = 6,    // DST -> DST copy
+  DstIndex = 7,   // Zero-cost SSA name for one existing DST slot
   Unknown = 255
 };
 
@@ -419,17 +555,6 @@ inline void mapComputeBodyArgs(IRMapping &mapping, ComputeOp op,
 }
 
 //===----------------------------------------------------------------------===//
-// Live interval for register/resource allocation
-//===----------------------------------------------------------------------===//
-
-/// A live interval representing the lifetime of a value or resource.
-struct Interval {
-  int64_t start; // Operation index where value becomes live
-  int64_t end;   // Operation index of last use
-  Value value;   // SSA value this interval represents
-};
-
-//===----------------------------------------------------------------------===//
 // DST capacity computation
 //===----------------------------------------------------------------------===//
 
@@ -446,6 +571,22 @@ inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
     capacity /= 2; // f32 tiles occupy 2x the space.
   }
   return capacity;
+}
+
+inline bool isConsumedByTileTypecast(Value value) {
+  for (Operation *user : value.getUsers()) {
+    if (isa<TileTypecastOp>(user)) {
+      return true;
+    }
+    if (auto copy = dyn_cast<CopyTileOp>(user)) {
+      for (Operation *copyUser : copy.getDstTile().getUsers()) {
+        if (isa<TileTypecastOp>(copyUser)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /// Compute DST capacity for a compute op. Fails for mixed f32/non-f32 args.
@@ -472,10 +613,19 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (sawF32 && sawNonF32) {
-    return computeOp.emitOpError(
-        "mixed f32 and non-f32 tile arguments; "
-        "DST capacity uses f32 limits (4 tiles) which may produce "
-        "incorrect results");
+    for (BlockArgument arg : body.getArguments()) {
+      if (arg.getArgNumber() >= computeOp.getNumInputs()) {
+        continue;
+      }
+      if (!getTileElementType(arg.getType())) {
+        continue;
+      }
+      if (!isConsumedByTileTypecast(arg)) {
+        return computeOp.emitOpError(
+            "mixed f32 and non-f32 tile arguments; DST capacity uses f32 "
+            "limits (4 tiles) which may produce incorrect results");
+      }
+    }
   }
 
   bool isFloat32 = sawF32 || fp32DestAccEn;
@@ -515,6 +665,21 @@ inline std::optional<Value> getTileOpDstIndex(Operation *op) {
   }
   return std::nullopt;
 }
+
+/// Return the DST footprint denoted by a tile SSA value.
+FailureOr<DstFootprint> getDstFootprint(Value value);
+
+/// Return the single constant DST index denoted by a tile SSA value.
+FailureOr<int64_t> getSingleConstantDstIndex(Value value);
+
+/// Expand a footprint with constant base into concrete DST indices.
+FailureOr<SmallVector<int64_t>> getConstantDstIndices(DstFootprint footprint);
+
+/// Return concrete DST read indices for an interface-bearing operation.
+FailureOr<SmallVector<int64_t>> getConstantDstReadIndices(Operation *op);
+
+/// Return concrete DST write indices for an interface-bearing operation.
+FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op);
 
 /// Set the dst_index Value on a tile op with TTLDstResultOpTrait.
 inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {

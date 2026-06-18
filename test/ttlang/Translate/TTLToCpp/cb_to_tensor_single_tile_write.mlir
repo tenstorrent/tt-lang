@@ -1,37 +1,26 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --allow-unregistered-dialect --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
-// RUN: FileCheck %s --check-prefix=CHECK --input-file=%t.cpp
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.trid.ttkernel.mlir
-// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.trid.ttkernel.mlir -o %t.trid.emitc.mlir
-// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.trid.cpp %t.trid.emitc.mlir
-// RUN: FileCheck %s --check-prefix=TRID --input-file=%t.trid.cpp
+// RUN: FileCheck %s --input-file=%t.cpp
 
-// Test: Single DMA write operation (CB -> tensor)
-// Default RUN verifies global barrier lowering; TRID RUN verifies TRID-scoped barriers.
+// Test: Single DMA write operation (CB → tensor)
+// Validates write barrier placement and ensures no read barrier
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CHECK: // cb_to_tensor
 // CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
+// CHECK:   CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
 // CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[RT_ARG_IDX:v[0-9]+]]);
-// CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
+// CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
-// CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_read_ptr(get_compile_time_arg_val(0));
-// CHECK:   noc_async_write_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR]]);
-// CHECK:   noc_async_write_barrier();
+// CHECK-NEXT:   noc_async_write_tile([[ZERO]], [[ACCESSOR]], [[CB]].get_read_ptr());
+// CHECK:   noc.async_write_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   return;
 // CHECK-NEXT: }
-// CHECK-NOT: set_trid
-// CHECK-NOT: barrier_with_trid
-
-// TRID:   noc_async_write_set_trid({{.*}}, {{.*}});
-// TRID:   noc_async_write_tile(
-// TRID:   noc_async_write_barrier_with_trid({{.*}}, {{.*}});
-
 module {
   func.func @cb_to_tensor(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index

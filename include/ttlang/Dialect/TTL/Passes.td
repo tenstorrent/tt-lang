@@ -454,7 +454,7 @@ def TTLScheduleOperations
     one init per consecutive group of same-type ops.
 
     Ops are sorted by (dependency depth, category, TypeID, init affinity,
-    dst_index). Dependency depth considers RAW (SSA def-use), WAW (same DST
+    dst_index). Dependency depth considers SSA RAW, DST RAW, WAW (same DST
     write index), and WAR (write after prior read of same DST index) hazards.
     Ops at the same depth are independent and can be reordered.
 
@@ -462,7 +462,8 @@ def TTLScheduleOperations
     scheduled. Store ops (after the commit/wait boundary) are not reordered.
 
     Category ordering:
-      CopyTile < Bcast < FPUBinary < SFPUUnary < SFPUBinary < CopyDst
+      Bcast < Transpose < CopyTile < FPUBinary < SFPUUnary < SFPUBinary <
+      CopyDst < DstIndex
 
     Example:
     ```mlir
@@ -533,6 +534,10 @@ def TTLVerifyPipeNetGuards
     Each diagnostic carries an example offending coordinate, the contributing
     PipeNet(s), and a suggested guard.
 
+    Same-thread pipe schedule diagnostics are emitted only when role and DFB
+    domain checks have succeeded, so schedule-cycle reports are not mixed with
+    earlier guard failures.
+
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
     `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
@@ -549,30 +554,30 @@ def TTLVerifyPipeNetGuards
 
 def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
-  let summary = "Reject DFBs whose producer or consumer set spans more than one kernel thread";
+  let summary = "Reject DFBs with overlapping producer or consumer launch domains";
   let description = [{
     Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by `cb_index`
     (resolved via `getCBIndex`) and enclosing `ttl.kernel_thread`-tagged
-    `func.func`, and emits an error for any DFB whose producer thread set or
-    consumer thread set has size greater than one. The diagnostic attaches a
-    note for each additional thread site and one note at the originating
-    `ttl.bind_cb`.
+    `func.func`, and tracks the launch-node domain for each producer or
+    consumer participant. A DFB is valid when, for each launched node, at most
+    one producer thread reserves it and at most one consumer thread waits on it.
+    Disjoint domains across different kernel-thread functions are accepted.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
-    structural single-producer single-consumer property is required for
+    per-launched-node single-producer single-consumer property is required for
     correctness; see `docs/development/DFBManagement.md` for the runtime
-    contract.
+    contract. The pass emits an error for overlapping producer or consumer
+    domains, and for unknown domains when multiple threads participate and SPSC
+    cannot be proven statically.
 
     Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
-    `bind_cb` carries a concrete `cb_index`. The pass asserts on
+    `bind_cb` carries a concrete `cb_index`, and modules with DFB acquire ops
+    must carry a valid `ttl.launch_grid` attribute. The pass asserts on
     unresolvable indices.
   }];
 
-  let dependentDialects = [
-    "::mlir::func::FuncDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
+  let dependentDialects = [];
 }
 
 def TTLErasePipeNetScopes
@@ -631,6 +636,42 @@ def TTLFinalizeDFBIndices
   }];
 }
 
+def TTLValidateCBBudget
+    : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
+  let summary = "Validate total CB allocation fits within per-core L1 budget";
+  let description = [{
+    Module-level pass that runs after `ttl-finalize-dfb-indices`, before
+    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every
+    circular buffer declared in the module and compares against a per-core
+    L1 budget.
+
+    For each `BindCBOp`, the pass computes:
+      cb_bytes = total_elements * tile_size_bytes
+
+    When the same `cb_index` appears in multiple functions (e.g. compute
+    and data-movement kernels sharing a CB slot), only the largest
+    allocation for that index is counted.
+
+    On overflow the pass emits an error with a per-CB breakdown and a
+    hint to reduce block shapes or block counts.
+
+    L1 budget is taken from the module's TTCore system descriptor and
+    default device when present (`ChipDescAttr::getUsableL1Size()` for the
+    selected chip). When the module has no system descriptor, the pass uses
+    the same static per-core CB region limit as Wormhole and Blackhole
+    (total L1 minus reserved kernel space).
+
+    This is a static "CB region vs budget" check. It does not model
+    other L1 consumers (kernel binaries, stack, runtime buffers).
+  }];
+
+  let options = [
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override L1 CB budget (bytes). 0 means auto-detect from "
+           "device attributes or use architecture default.">
+  ];
+}
+
 def TTLDumpCBFlowGraph
     : Pass<"ttl-dump-cb-flow-graph", "::mlir::ModuleOp"> {
   let summary = "Analyze and dump CB producer/consumer flow graph";
@@ -661,6 +702,43 @@ def TTLDumpCBFlowGraph
   let options = [
     Option<"outputPath", "output", "std::string", "\"\"",
            "Path to write JSON output (empty for stderr debug only)">
+  ];
+}
+
+def TTLLowerScalarCmpF
+    : Pass<"ttl-lower-scalar-cmpf", "::mlir::ModuleOp"> {
+  let summary = "Lower arith.cmpf on scalar floats to TTKernel soft-float ops";
+  let description = [{
+    Converts `arith.cmpf` operations on scalar floats (from `raw_element_read`
+    lowering) to TTKernel soft-float comparison ops. After
+    `convert-ttl-to-ttkernel`, float values from L1 loads are represented as
+    integer bit patterns with `unrealized_conversion_cast` bridging to float
+    types. This pass resolves those casts and emits the appropriate TTKernel
+    comparison op.
+
+    Supported predicates:
+    - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
+    - `olt` -> same ops with swapped operands
+
+    All other predicates (`oeq`, `one`, `oge`, `ole`, and all unordered
+    predicates `uno`, `ueq`, `ugt`, `uge`, `ult`, `ule`, `une`) emit an
+    error diagnostic and signal pass failure.
+
+    Operand requirements: each `arith.cmpf` operand must resolve to an
+    integer bit pattern via one of two sources:
+    1. `unrealized_conversion_cast(iN -> fN)` from a prior
+       `RawElementReadLowering` (unwraps to the integer directly).
+    2. `arith.constant <float>` (materializes the IEEE-754 bit pattern
+       as an integer constant).
+
+    Operands from other sources (e.g., `arith.addf` results) cannot be
+    resolved and cause a diagnostic: "could not resolve float operand to
+    integer bit pattern".
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 

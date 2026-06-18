@@ -35,6 +35,7 @@ from .thread_builder import generate_layout_attrs
 from .dm_builder import DMThreadBuilder
 from .compute_builder import ComputeThreadBuilder
 from .dtype_utils import torch_dtype_to_mlir_str, torch_dtype_to_ttcore_datatype
+from ..utils import get_launch_grid_attr_str, set_launch_grid_attr
 
 
 def _get_tile_type(ctx: Context, dtype: torch.dtype):
@@ -84,6 +85,7 @@ def build_ttl_module(
 
     with ctx, loc:
         module = Module.create(loc)
+        set_launch_grid_attr(module, ctx, config)
         tile_tensor_type = _get_tile_tensor_type(ctx, config)
 
         with InsertionPoint(module.body):
@@ -241,7 +243,7 @@ def build_e2e_module_mlir(
 
 {layout_attrs}
 
-module {{
+module {get_launch_grid_attr_str(config)} {{
 {reader_mlir}
 {compute_mlir}
 {writer_mlir}
@@ -317,7 +319,7 @@ def build_e2e_module_mlir_custom(
 
 {layout_attrs}
 
-module {{
+module {get_launch_grid_attr_str(config)} {{
 {reader_mlir}
 {compute_mlir}
 {writer_mlir}

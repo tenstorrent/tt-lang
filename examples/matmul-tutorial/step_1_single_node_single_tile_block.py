@@ -12,7 +12,7 @@
 #   - ttl.make_dataflow_buffer_like — creates an in-L1 dataflow buffer (DFB)
 #     that synchronizes data passing between kernels
 #   - ttl.copy / tx.wait — initiates and awaits a transfer
-#   - ttl.math.fill    — fills a block with a scalar value (used to zero the
+#   - ttl.block.fill    — creates a block of a given shape filled with a scalar value (used to zero the
 #     accumulator before the k-reduction loop)
 #
 # The operation fuses a @ b + c followed by relu into a single kernel,
@@ -130,11 +130,11 @@ def __tutorial_operation(
             for _ in range(n_tiles):
 
                 # Initialize the accumulator to zero before the k loop.
-                # ttl.math.fill produces a block expression; store() materializes
+                # ttl.block.fill produces a block expression; store() materializes
                 # it into acc_blk and pushes it so the k loop can consume it.
 
                 with acc_dfb.reserve() as acc_blk:
-                    acc_blk.store(ttl.math.fill(acc_blk, 0))
+                    acc_blk.store(ttl.block.fill(0, shape=acc_blk.shape))
 
                 for _ in range(k_tiles):
 

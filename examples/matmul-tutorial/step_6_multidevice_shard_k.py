@@ -49,7 +49,7 @@ K_GRANULARITY = 4
 # sum partial outputs across devices before activating.
 
 
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def tutorial_operation(
     a: ttnn.Tensor,
     b: ttnn.Tensor,
@@ -148,7 +148,7 @@ def tutorial_operation(
                     n_block = node_n * n_blocks_per_node + local_n_block
                     if n_block < n_blocks:
                         with acc_dfb.reserve() as acc_blk:
-                            acc_blk.store(ttl.math.fill(acc_blk, 0))
+                            acc_blk.store(ttl.block.fill(0, shape=acc_blk.shape))
 
                         for _ in range(k_blocks):
                             with (

@@ -108,6 +108,49 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
   return cast.getResult(0);
 }
 
+/// Materialize an integer value representing the bit pattern of a float-typed
+/// SSA value. Handles three cases (checked in order):
+///   1. arith.truncf (e.g. f32 -> bf16) -- recursively materialize the wider
+///      source bits, then extract the upper target-width bits via shift+trunc.
+///      bf16 is the upper 16 bits of the f32 IEEE-754 encoding.
+///   2. unrealized_conversion_cast(iN -> fN) from a prior
+///   RawElementReadLowering
+///      -- unwrap to get the integer directly.
+///   3. arith.constant float -- create the integer bit pattern.
+inline FailureOr<Value> materializeIntBits(Value floatVal, Type intTy,
+                                           OpBuilder &builder, Location loc) {
+  if (auto truncOp = floatVal.getDefiningOp<arith::TruncFOp>()) {
+    Value src = truncOp.getOperand();
+    unsigned srcWidth = src.getType().getIntOrFloatBitWidth();
+    unsigned dstWidth = floatVal.getType().getIntOrFloatBitWidth();
+    auto srcIntTy = IntegerType::get(builder.getContext(), srcWidth);
+    auto srcBits = materializeIntBits(src, srcIntTy, builder, loc);
+    if (failed(srcBits)) {
+      return failure();
+    }
+    Value shift = arith::ConstantIntOp::create(builder, loc,
+                                               srcWidth - dstWidth, srcWidth);
+    Value shifted = arith::ShRUIOp::create(builder, loc, *srcBits, shift);
+    Value truncated = arith::TruncIOp::create(builder, loc, intTy, shifted);
+    return truncated;
+  }
+  if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1 &&
+        cast.getInputs()[0].getType() == intTy) {
+      return cast.getInputs()[0];
+    }
+  }
+  if (auto constOp = floatVal.getDefiningOp<arith::ConstantOp>()) {
+    if (auto floatAttr = mlir::dyn_cast<FloatAttr>(constOp.getValue())) {
+      APInt bits = floatAttr.getValue().bitcastToAPInt();
+      Value intConst = arith::ConstantIntOp::create(
+          builder, loc, bits.getZExtValue(), bits.getBitWidth());
+      return intConst;
+    }
+  }
+  return failure();
+}
+
 /// Run applyPartialConversion, capturing the first diagnostic on failure.
 inline bool
 applyPartialConversionWithDiag(Operation *root, ConversionTarget &target,

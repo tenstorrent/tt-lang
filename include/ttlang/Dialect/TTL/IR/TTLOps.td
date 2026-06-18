@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPS_TD
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
+include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
 include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
@@ -88,6 +89,13 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     tensor with shape [64, 64] and tile size 32x32, valid indices are
     [0,0], [0,1], [1,0], and [1,1]. For an ND tensor, indices cover all
     dimensions of the tile grid.
+
+    The result rank may be less than the tensor rank (a rank-reducing slice):
+    the leading (tensor_rank - result_rank) dims are squeezed by scalar
+    subscripts and the trailing dims map to the CB shape. Each squeezed scalar
+    index feeds the full-rank tile-coordinate linearization, so a nonzero slot
+    in a leading dim addresses the right sub-block. A range subscript in a
+    squeezed position is rejected, since a range does not reduce rank.
 
     The result tensor has a reduced shape matching the CB dimensions but
     retains the original tensor's layout encoding. The lowering traces back
@@ -318,16 +326,58 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
-                 "PipeNetScopeOp"]>]> {
+                 "PipeNetScopeOp", "AccumulationScopeOp"]>]> {
   let summary = "Terminate a TTL region body";
   let description = [{
     `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
-    `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. It carries no
-    operands and produces no results; the trait
-    `SingleBlockImplicitTerminator` auto-inserts it.
+    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`, and
+    `ttl.accumulation_scope`. In `ttl.accumulation_scope`, it carries one
+    updated value per accumulation output. Other TTL regions use an
+    operand-less terminator.
   }];
-  let assemblyFormat = "attr-dict";
+  let arguments = (ins Variadic<AnyType>:$values);
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+  let hasVerifier = 1;
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+}
+
+//===----------------------------------------------------------------------===//
+// Accumulation scope
+//===----------------------------------------------------------------------===//
+
+def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
+    AttrSizedOperandSegments,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    RecursiveMemoryEffects,
+    DeclareOpInterfaceMethods<TTL_AccumulationScopeOpInterface>
+  ]> {
+  let summary = "Structured accumulation scope";
+  let description = [{
+    `ttl.accumulation_scope` records an accumulation policy for one or more
+    destination tensors. The operation does not prescribe whether the
+    accumulated value is stored in DST, a dataflow buffer, or another
+    target-specific storage mechanism.
+
+    The `initial_modes` attribute contains one entry per output. `inits`
+    contains one operand for each output whose initial mode is `init`, in output
+    order.
+
+    The body uses one block argument per output and yields one value per output.
+    This form makes
+    cross-output data dependence an SSA property: if the yielded value for one
+    output uses another output's updated value, normal SSA use-def edges encode
+    that dependency.
+  }];
+
+  let arguments = (ins
+    Variadic<AnyRankedTensor>:$outputs,
+    Variadic<AnyRankedTensor>:$inits,
+    ArrayAttr:$initial_modes
+  );
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -481,18 +531,21 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let summary = "Create a pipe for core-to-core communication";
   let description = [{
-    Creates a pipe that defines a communication channel from a source core to
-    one or more destination cores.
+    Creates a pipe that defines a transfer relation from a source core to
+    one or more receiver cores.
 
-    For unicast (single destination), only specify `dst(x, y)`.
-    For multicast (rectangular grid), specify `dst(x1, y1) to (x2, y2)`.
+    A point-to-point pipe has one receiver. A collective pipe has a receiver
+    set. The receiver-set syntax records the collective transfer contract; it
+    does not determine which TTKernel NOC operation is emitted later.
+    `isCollective = true` records a collective transfer contract when the
+    receiver set contains a single point.
 
     Example:
     ```mlir
-    // Unicast: (0,0) -> (1,0)
+    // Point-to-point: (0,0) -> (1,0)
     %p = ttl.create_pipe src(0, 0) dst(1, 0) : !ttl.pipe
 
-    // Multicast: (0,0) -> rectangular region (1,0)-(1,3)
+    // Collective: (0,0) -> receiver set (1,0)-(1,3)
     %p = ttl.create_pipe src(0, 0) dst(1, 0) to (1, 3) : !ttl.pipe
     ```
   }];
@@ -506,9 +559,10 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$pipeNetId,
     // Optional user-facing name for the owning PipeNet, used only to
     // render diagnostics in source-level terms (e.g.
-    // `mcast_a_net.is_active()` instead of `net_<id>.is_active()`).
+    // `a_pipe_net.is_active()` instead of `net_<id>.is_active()`).
     // No effect on op semantics.
-    OptionalAttr<StrAttr>:$pipeNetName
+    OptionalAttr<StrAttr>:$pipeNetName,
+    OptionalAttr<BoolAttr>:$isCollective
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
@@ -517,7 +571,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let hasVerifier = 1;
 
   let builders = [
-    // Builder for unicast pipe (single destination, pipeNetId = 0)
+    // Builder for a single-receiver pipe with pipeNetId = 0.
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstX, "int64_t":$dstY), [{
       build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);
@@ -538,7 +592,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
             $_builder.getI64IntegerAttr(dstEndX),
             $_builder.getI64IntegerAttr(dstEndY),
             $_builder.getI64IntegerAttr(pipeNetId),
-            /*pipeNetName=*/StringAttr());
+            /*pipeNetName=*/StringAttr(),
+            /*isCollective=*/BoolAttr());
     }]>
   ];
 }
@@ -597,6 +652,74 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
   let assemblyFormat = [{
     $pipe `:` type($pipe) $body attr-dict
   }];
+}
+
+def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
+  let summary = "Create an internal pipe transfer";
+  let description = [{
+    Creates the internal transfer object for one logical pipe. The transfer
+    records the receiver-posted contract before synchronization resources are
+    assigned. A point-to-point transfer has one receiver; a collective transfer
+    has a receiver set participating in one transfer contract.
+  }];
+  let arguments = (ins
+    TTL_Pipe:$pipe,
+    TTL_PipeTransferKindAttr:$kind,
+    I64Attr:$expectedReceivers
+  );
+  let results = (outs TTL_PipeTransfer:$transfer);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Publish a pipe receive destination";
+  let description = [{
+    Publishes the receiver-owned destination DFB slot address for a pipe
+    transfer. The operation contributes to the transfer's receiver-ready count
+    and returns the token that represents receiver-side completion.
+  }];
+  let arguments = (ins
+    TTL_PipeTransfer:$transfer,
+    AnyType:$dst
+  );
+  let results = (outs TTL_PipeToken:$token);
+  let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Send a pipe transfer payload";
+  let description = [{
+    Waits until the receiver-publication condition is satisfied, then writes the
+    source DFB payload to the receiver-owned destination storage and signals
+    receiver completion. The returned write handle preserves the existing
+    `ttl.wait` ordering contract for send-side code.
+  }];
+  let arguments = (ins
+    TTL_PipeTransfer:$transfer,
+    TTL_CircularBuffer:$src
+  );
+  let results = (outs TTL_TransferHandle:$xf);
+  let assemblyFormat = "$transfer `,` $src attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Wait for pipe receive completion";
+  let description = [{
+    Blocks until the posted receive represented by the pipe token has completed.
+    The receiver-owned destination DFB slot is safe to consume after this
+    operation completes.
+  }];
+  let arguments = (ins
+    TTL_PipeToken:$token
+  );
+  let assemblyFormat = "$token attr-dict `:` type($token)";
+  let hasVerifier = 1;
 }
 
 def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
@@ -717,7 +840,8 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
 // Base class for tile operations
 // Note: These ops are NOT Pure because they write to DST registers.
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait])>;
+    : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait,
+                                             TTL_DstAccessOpInterface])>;
 
 def TTL_TileType : Type<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
@@ -770,7 +894,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
                             [MemoryEffects<[MemRead, MemWrite]>,
                              TTL_CBInputTileOpTrait,
                              TTL_DataMovementOpTrait,
-                             TTL_DstResultOpTrait]> {
+                             TTL_DstResultOpTrait,
+                             TTL_DstAccessOpInterface]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -814,7 +939,8 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
                             AllTypesMatch<["src_tile", "result"]>,
                             MemoryEffects<[MemRead, MemWrite]>,
                             TTL_DSTInputsTrait,
-                            TTL_DataMovementOpTrait]> {
+                            TTL_DataMovementOpTrait,
+                            TTL_DstAccessOpInterface]> {
   let summary = "Copy a tile from one DST register to another";
   let description = [{
     Performs DST -> DST copy for multi-consumer value preservation. Used when
@@ -839,6 +965,21 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
   let arguments = (ins TTL_TileType:$src_tile, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
   let assemblyFormat = "$src_tile `into` `dst` `[` $dst_index `]` attr-dict `:` type($src_tile) `->` type($result)";
+}
+
+def TTL_DstIndexOp : TTL_Op<"dst_index",
+    [Pure, TTL_DstAccessOpInterface, AllTypesMatch<["source", "result"]>]> {
+  let summary = "Index a tile value resident in a specific DST slot";
+  let description = [{
+    `ttl.dst_index` names an existing DST-resident tile at `dst_index` while
+    preserving SSA dependence on `source`. It has no hardware side effect and
+    does not change the tile value.
+  }];
+  let arguments = (ins TTL_TileType:$source, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat =
+      "$source `[` $dst_index `]` attr-dict `:` "
+      "type($source) `->` type($result)";
 }
 
 // Common base for tile binary ops. Carries traits that hold unconditionally
@@ -886,8 +1027,9 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Used by add/sub/mul, where the tile op may lower to either an FPU or
 // SFPU TTKernel form depending on operand provenance.
 multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
-                                                string kernelOp> {
-  def Op : TTL_ElementWiseBinary<mnemonic> {
+                                                string kernelOp,
+                                                list<Trait> opTraits = []> {
+  def Op : TTL_ElementWiseBinary<mnemonic, opTraits> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
   def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic> {
@@ -910,12 +1052,19 @@ multiclass TTL_BinarySfpuElementwisePair<string mnemonic, string kernelOp,
 // Define all binary elementwise ops using the multiclasses
 defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles">;
 defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles">;
+defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles",
+    [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]>;
 defm TTL_Div : TTL_BinarySfpuElementwisePair<"div", "div_binary_tile">;
 defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
                                              [TTL_InPlaceOpTrait]>;
 defm TTL_Min : TTL_BinarySfpuElementwisePair<"min", "binary_min_tile",
                                              [TTL_InPlaceOpTrait]>;
+
+// Elementwise compare: maps to TTKernel's native SFPU comparison ops.
+defm TTL_Eq : TTL_BinarySfpuElementwisePair<"eq", "eq_binary_tile">;
+defm TTL_Ne : TTL_BinarySfpuElementwisePair<"ne", "ne_binary_tile">;
+defm TTL_Gt : TTL_BinarySfpuElementwisePair<"gt", "gt_binary_tile">;
+defm TTL_Lt : TTL_BinarySfpuElementwisePair<"lt", "lt_binary_tile">;
 
 
 //===----------------------------------------------------------------------===//
@@ -966,25 +1115,84 @@ defm TTL_Frac : TTL_UnaryElementwisePair<"frac", "frac_tile">;
 defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 
 //===----------------------------------------------------------------------===//
+// Typecast Operations (Tensor + Tile)
+//===----------------------------------------------------------------------===//
+//
+// `ttl.typecast` is a unary elementwise op that converts the data type of
+// every element. The tile-level form `ttl.tile_typecast` carries the
+// destination dtype implicitly via its result tile element type. Because
+// input and result element types can differ, typecast does not use the standard
+// unary elementwise multiclass (which constrains all operand and result
+// element types to match).
+
+def TTL_TypecastOp : TTL_Op<"typecast",
+    [Pure, TTL_UnaryElementwiseOpTrait]> {
+  let summary = "Elementwise typecast on tensors";
+  let description = [{
+    Convert each element of `input` to the result element type. The result
+    tensor has the same shape as the input. Identity typecasts fold to the
+    input.
+    Lowered to `ttl.compute` containing a `ttl.tile_typecast` operation.
+  }];
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$result);
+  let assemblyFormat =
+      "$input attr-dict `:` functional-type(operands, results)";
+  let hasFolder = 1;
+}
+
+def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
+    [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_DstResultOpTrait]> {
+  let summary = "Tile-level typecast operation";
+  let description = [{
+    Convert the data type of a tile in DST. Maps to ttkernel.typecast_tile.
+    Operates in-place on the DST register at `dst_index`; the destination
+    dtype is encoded in the result tile element type.
+  }];
+  let arguments = (ins TTL_TileType:$input, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat =
+      "$input `into` `dst` `[` $dst_index `]` attr-dict `:` "
+      "type($input) `->` type($result)";
+  let hasVerifier = 1;
+  let hasFolder = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_BcastOp : TTL_Op<"bcast", [
+def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
-  let summary = "Broadcast a row/column/scalar tensor to full tiles";
+  let summary = "Broadcast a block over specified dimensions to a target shape";
   let description = [{
-    Broadcasts the input tensor to full tiles based on bcast_type.
-    Reads from CB, writes result to DST then packs to output CB.
-    Both input and output must be CB-attached tensors.
+    Broadcasts `$input` over each dimension listed in `$dims` to produce a
+    result of shape `$shape`. For every dimension `d` in `$dims` the
+    corresponding `input.shape[d]` must equal 1; for every dimension not in
+    `$dims` the input dimension must equal `shape[d]`.
 
-    bcast_type specifies the broadcast dimension:
-    - Row: broadcast first row to all rows
-    - Col: broadcast first column to all columns
-    - Scalar: broadcast single value to all elements
+    For tiled blocks broadcast happens in two steps: intra-tile scalar
+    broadcast for any innermost dimension listed in `$dims`, and inter-tile
+    broadcast for every other dimension where the target shape is greater
+    than 1. Row-major blocks are not supported.
+
+    Example:
+    ```mlir
+    %r = ttl.block.broadcast %a dims = [1], shape = [4, 8]
+           : tensor<4x1x!ttcore.tile<32x32, f32>>
+          -> tensor<4x8x!ttcore.tile<32x32, f32>>
+    ```
   }];
-  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
-  let results = (outs AnyType:$result);
-  let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+  let arguments = (ins AnyRankedTensor:$input,
+                       DenseI64ArrayAttr:$dims,
+                       DenseI64ArrayAttr:$shape);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = [{
+    $input `dims` `=` $dims `,` `shape` `=` $shape attr-dict `:`
+    type($input) `->` type($result)
+  }];
+  let hasVerifier = 1;
 }
 
 def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
@@ -1093,8 +1301,9 @@ def TTL_FillOp : TTL_Op<"fill", [Pure]> {
     The output CB is determined by the ttl.store on this op's result.
   }];
   let arguments = (ins F32Attr:$value);
-  let results = (outs AnyType:$result);
+  let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$value attr-dict `:` type($result)";
+  let hasVerifier = 1;
 }
 
 def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
@@ -1106,6 +1315,37 @@ def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
   let arguments = (ins F32Attr:$value, Index:$dst_index);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$value `into` `dst` `[` $dst_index `]` attr-dict `:` type($result)";
+}
+
+def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
+    [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_DstResultOpTrait, AllTypesMatch<["input", "result"]>]> {
+  let summary = "Tile-level multiply by a compile-time scalar constant";
+  let description = [{
+    Multiplies every element of a DST register tile by a compile-time
+    scalar constant. Operates in-place at `dst_index`; the result has the
+    same type as the input tile.
+  }];
+  let arguments = (ins TTL_TileType:$input, F32Attr:$value, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat =
+      "$input `,` $value `into` `dst` `[` $dst_index `]` attr-dict `:` "
+      "type($input) `->` type($result)";
+}
+
+def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
+    [Pure, TTL_UnaryElementwiseOpTrait,
+     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>,
+     AllTypesMatch<["input", "result"]>]> {
+  let summary = "Multiply a tensor of tiles by a compile-time scalar constant";
+  let description = [{
+    Element-wise multiply of an input tensor of tiles by a compile-time
+    scalar constant. The result has the same type as the input.
+  }];
+  let arguments = (ins AnyRankedTensor:$input, F32Attr:$value);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat =
+      "$input `,` $value attr-dict `:` type($input) `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -1303,7 +1543,77 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
-def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait]> {
+//===----------------------------------------------------------------------===//
+// Raw element access operations (data movement threads only)
+//===----------------------------------------------------------------------===//
+
+def TTL_RawElementReadOp : TTL_Op<"raw_element_read",
+    [MemoryEffects<[MemRead]>, TTL_DataMovementOpTrait]> {
+  let summary = "Read a scalar element from a block at flat coordinates";
+  let description = [{
+    `ttl.raw_element_read` extracts a single scalar element from a block
+    (a tensor view acquired from `ttl.cb_wait` or `ttl.cb_reserve`) at
+    the given coordinates. Coordinates are flat scalar-element positions
+    regardless of layout: for tiled blocks, lowering decomposes them into
+    tile + intra-tile offsets; for row-major blocks, they index directly.
+
+    The result type must match the block's underlying scalar element type
+    (f32 for Float32, bf16 for BFloat16). Only f32 and bf16 are currently
+    supported.
+
+    This operation is restricted to data movement (noc) threads.
+
+    Example:
+    ```mlir
+    %val = ttl.raw_element_read %block[%i, %j]
+           : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$block,
+    Variadic<Index>:$coords
+  );
+  let results = (outs AnyTypeOf<[F32, BF16]>:$result);
+  let assemblyFormat =
+      "$block `[` $coords `]` attr-dict `:` type($block) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
+    [MemoryEffects<[MemRead, MemWrite]>, TTL_DataMovementOpTrait]> {
+  let summary = "Write a scalar value to a block at flat coordinates";
+  let description = [{
+    `ttl.raw_element_write` stores a single scalar value into a block
+    (a tensor view acquired from `ttl.cb_wait` or `ttl.cb_reserve`) at
+    the given coordinates. Coordinates are flat scalar-element positions
+    regardless of layout: for tiled blocks, lowering decomposes them into
+    tile + intra-tile offsets; for row-major blocks, they index directly.
+
+    The value type must match the block's underlying scalar element type
+    (f32 for Float32, bf16 for BFloat16). Only f32 and bf16 are currently
+    supported.
+
+    This operation is restricted to data movement (noc) threads.
+
+    Example:
+    ```mlir
+    ttl.raw_element_write %block[%i, %j], %val
+           : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$block,
+    Variadic<Index>:$coords,
+    AnyTypeOf<[F32, BF16]>:$value
+  );
+  let assemblyFormat =
+      "$block `[` $coords `]` `,` $value attr-dict `:` type($block) `,` type($value)";
+  let hasVerifier = 1;
+}
+
+def TTL_TileStoreOp : TTL_Op<"tile_store",
+    [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
+     TTL_DstAccessOpInterface]> {
   let summary = "Store a tile into a circular buffer view";
   let description = [{
     `ttl.tile_store` packs a single tile from the DST register into a circular

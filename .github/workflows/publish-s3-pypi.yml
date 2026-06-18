@@ -1,0 +1,216 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish S3 PyPI Wheels
+
+on:
+  push:
+    tags:
+      # Publish clean-version internal bundled/light wheels for stable releases.
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  schedule:
+    # Nightly S3-only internal wheel publish. GitHub cron uses UTC.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      docker_tag:
+        description: "Docker image tag for the ird container. Leave empty to build and push one first."
+        type: string
+        default: ""
+        required: false
+      version_override:
+        description: "PEP 440 version for the internal wheel. Leave empty to compute a nightly dev version."
+        type: string
+        default: ""
+        required: false
+      wheel_variant:
+        description: "Wheel variant set to publish to S3 PyPI."
+        type: choice
+        options:
+          - bundled
+          - light
+          - bundled-and-light
+          - pypi
+        default: bundled
+        required: true
+      overwrite_releases:
+        description: "Overwrite an existing wheel/version in the S3 PyPI index."
+        type: boolean
+        default: false
+        required: true
+      dry_run:
+        description: "Build and verify wheels without publishing to S3."
+        type: boolean
+        default: true
+        required: true
+
+concurrency:
+  group: publish-s3-pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  preflight:
+    name: "Resolve S3 publish inputs"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docker_tag: ${{ steps.resolve.outputs.docker_tag }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      overwrite_releases: ${{ steps.resolve.outputs.overwrite_releases }}
+      version_override: ${{ steps.resolve.outputs.version_override }}
+      wheel_variant: ${{ steps.resolve.outputs.wheel_variant }}
+      wheel_variants: ${{ steps.resolve.outputs.wheel_variants }}
+      wheel_matrix: ${{ steps.resolve.outputs.wheel_matrix }}
+      allow_final_internal_version: ${{ steps.resolve.outputs.allow_final_internal_version }}
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve publish inputs
+        id: resolve
+        env:
+          DISPATCH_DOCKER_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.docker_tag || '' }}
+          DISPATCH_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.dry_run) || 'false' }}
+          DISPATCH_OVERWRITE_RELEASES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.overwrite_releases) || 'false' }}
+          DISPATCH_VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version_override || '' }}
+          DISPATCH_WHEEL_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.wheel_variant || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: .github/scripts/resolve-s3-publish-inputs.sh
+
+  build-docker:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.docker_tag == '' }}
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+    with:
+      push: true
+
+  build-wheels:
+    needs: [preflight, build-docker]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    name: "Build ${{ matrix.wheel_variant }} wheels"
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.wheel_matrix) }}
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/call-build-wheels.yml
+    with:
+      docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
+      ttnn_dep_mode: ${{ matrix.ttnn_dep_mode }}
+      version_override: ${{ needs.preflight.outputs.version_override }}
+      external_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/tt-metal' || '' }}
+      external_python_venv: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
+      bundled_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
+      build_sim_wheel: ${{ !(needs.preflight.outputs.wheel_variant == 'bundled-and-light' && matrix.wheel_variant == 'light') }}
+      allow_final_internal_version: ${{ needs.preflight.outputs.allow_final_internal_version == 'true' }}
+      artifact_name: tt-lang-wheels-${{ matrix.wheel_variant }}
+
+  publish:
+    name: "Publish wheels to S3 PyPI"
+    needs: [preflight, build-wheels]
+    if: ${{ always() && needs.preflight.result == 'success' && needs.build-wheels.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Download bundled wheels
+        if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') }}
+        uses: actions/download-artifact@v8
+        with:
+          name: tt-lang-wheels-bundled
+          path: wheel-artifacts/bundled
+
+      - name: Download light wheels
+        if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
+        uses: actions/download-artifact@v8
+        with:
+          name: tt-lang-wheels-light
+          path: wheel-artifacts/light
+
+      - name: Download pypi wheels
+        if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'pypi') }}
+        uses: actions/download-artifact@v8
+        with:
+          name: tt-lang-wheels-pypi
+          path: wheel-artifacts/pypi
+
+      - name: Prepare publish dist
+        run: |
+          set -euo pipefail
+          prepare_args=()
+          if [ -d wheel-artifacts/bundled ]; then
+            prepare_args+=(bundled=wheel-artifacts/bundled)
+          fi
+          if [ -d wheel-artifacts/light ]; then
+            if [ -d wheel-artifacts/bundled ]; then
+              prepare_args+=(light:no-sim=wheel-artifacts/light)
+            else
+              prepare_args+=(light=wheel-artifacts/light)
+            fi
+          fi
+          if [ -d wheel-artifacts/pypi ]; then
+            prepare_args+=(pypi=wheel-artifacts/pypi)
+          fi
+          .github/scripts/prepare-s3-publish-dist.sh \
+            "${{ needs.preflight.outputs.version_override }}" \
+            dist \
+            "${prepare_args[@]}"
+
+      - name: Configure AWS Credentials
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::767397912691:role/GitHubActionsS3AccessRole
+          aws-region: us-east-2
+
+      - name: Install s3pypi
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
+        run: python3 -m pip install s3pypi
+
+      - name: Publish wheels
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.preflight.outputs.overwrite_releases }}" = "true" ]; then
+            .github/scripts/publish-s3-wheels.sh --overwrite dist
+          else
+            .github/scripts/publish-s3-wheels.sh dist
+          fi
+
+      - name: Report install command
+        run: |
+          set -euo pipefail
+          summary_args=()
+          if [ "${{ needs.preflight.outputs.dry_run }}" = "true" ]; then
+            summary_args+=(--dry-run)
+          fi
+          .github/scripts/publish-s3-summary.sh \
+            "${summary_args[@]}" \
+            "${{ needs.preflight.outputs.wheel_variant }}" \
+            "${{ needs.preflight.outputs.version_override }}"

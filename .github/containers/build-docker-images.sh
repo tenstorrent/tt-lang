@@ -89,18 +89,18 @@ DOCKER_TAG=$("${SCRIPT_DIR}/get-version-tag.sh")
 echo "Docker tag: $DOCKER_TAG"
 echo ""
 
-echo "Note: tt-lang builds LLVM, tt-metal, and tt-mlir from submodules"
+echo "Note: LLVM and tt-metal are pre-built into the image; tt-mlir and tt-lang are built fresh against them by call-build.yml."
 echo ""
 
 # Compute image names up front (used by both build and check-only paths).
 if [ "$NO_PUSH" = false ]; then
-    BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-    IRD_IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+    BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
+    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-24-04:$DOCKER_TAG"
+    IRD_IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-24-04:$DOCKER_TAG"
 else
-    BASE_IMAGE="tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-    IRD_IMAGE="tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+    BASE_IMAGE="tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
+    DIST_IMAGE="tt-lang-dist-ubuntu-24-04:$DOCKER_TAG"
+    IRD_IMAGE="tt-lang-ird-ubuntu-24-04:$DOCKER_TAG"
 fi
 
 # Write image names to files for workflow consumption (avoids fragile log parsing).
@@ -108,18 +108,13 @@ echo "$BASE_IMAGE" > .docker-image-base
 echo "$DIST_IMAGE" > .docker-image-name
 echo "$IRD_IMAGE"  > .docker-image-ird
 
-# Read the canonical tt-metal tag from third-party/tt-metal-version and pass
-# it to the Dockerfile.base build via --build-arg. Single source of truth:
-# every tt-metal-derived value (submodule SHA, ttnn version,
-# install_dependencies.sh URL) comes from this tag and is verified by
+# Source third-party/tt-metal-version (a sourceable shell snippet) to get
+# TT_METAL_TAG; pass it to Dockerfile.base via --build-arg. The same file
+# also defines TTNN_PYPI for setup.py. Both are verified by
 # check-tt-metal-version.sh.
-TT_METAL_VERSION_FILE="$(git rev-parse --show-toplevel)/third-party/tt-metal-version"
-if [[ ! -f "$TT_METAL_VERSION_FILE" ]]; then
-    echo "ERROR: missing $TT_METAL_VERSION_FILE" >&2
-    exit 1
-fi
-TT_METAL_TAG=$(tr -d '[:space:]' < "$TT_METAL_VERSION_FILE")
-[[ -n "$TT_METAL_TAG" ]] || { echo "ERROR: $TT_METAL_VERSION_FILE is empty" >&2; exit 1; }
+# shellcheck source=../../third-party/tt-metal-version
+. "$(git rev-parse --show-toplevel)/third-party/tt-metal-version"
+: "${TT_METAL_TAG:?third-party/tt-metal-version: TT_METAL_TAG not set}"
 
 # Build function
 build_image() {
@@ -176,11 +171,11 @@ build_image() {
     # registry image if no local build exists.
     local base_image_arg=""
     if [ "$NO_PUSH" = false ]; then
-        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    elif docker image inspect "tt-lang-base-ubuntu-22-04:$DOCKER_TAG" > /dev/null 2>&1; then
-        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
+    elif docker image inspect "tt-lang-base-ubuntu-24-04:$DOCKER_TAG" > /dev/null 2>&1; then
+        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
     else
-        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
     fi
 
     docker build \
@@ -216,13 +211,13 @@ DOCKERFILE=".github/containers/Dockerfile"
 
 # Build images -- filtered by --image-type if specified, otherwise build all three
 if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "base" ]]; then
-    build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
+    build_image "tt-lang-base-ubuntu-24-04" .github/containers/Dockerfile.base ""
 fi
 if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "dist" ]]; then
-    build_image "tt-lang-dist-ubuntu-22-04" "$DOCKERFILE" dist
+    build_image "tt-lang-dist-ubuntu-24-04" "$DOCKERFILE" dist
 fi
 if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "ird" ]]; then
-    build_image "tt-lang-ird-ubuntu-22-04"  "$DOCKERFILE" ird
+    build_image "tt-lang-ird-ubuntu-24-04"  "$DOCKERFILE" ird
 fi
 
 

@@ -64,11 +64,11 @@ def test_issue_536_followup_case_a_three_waits_no_loop(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 11.0))
+                v.store(ttl.block.fill(11.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 22.0))
+                v.store(ttl.block.fill(22.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 33.0))
+                v.store(ttl.block.fill(33.0, shape=v.shape))
 
             t1 = cb.wait()
             t2 = cb.wait()
@@ -115,29 +115,29 @@ def test_issue_536_followup_case_b_four_waits_in_loop(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 1.0))
+                v.store(ttl.block.fill(1.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 2.0))
+                v.store(ttl.block.fill(2.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 3.0))
+                v.store(ttl.block.fill(3.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 4.0))
+                v.store(ttl.block.fill(4.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 5.0))
+                v.store(ttl.block.fill(5.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 6.0))
+                v.store(ttl.block.fill(6.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 7.0))
+                v.store(ttl.block.fill(7.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 8.0))
+                v.store(ttl.block.fill(8.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 9.0))
+                v.store(ttl.block.fill(9.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 10.0))
+                v.store(ttl.block.fill(10.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 11.0))
+                v.store(ttl.block.fill(11.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 12.0))
+                v.store(ttl.block.fill(12.0, shape=v.shape))
 
             for _ in range(N_ITERS):
                 t1 = cb.wait()
@@ -180,13 +180,13 @@ def test_interleaved_wait_consume_pop_baseline(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 1.0))
+                v.store(ttl.block.fill(1.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 2.0))
+                v.store(ttl.block.fill(2.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 3.0))
+                v.store(ttl.block.fill(3.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 4.0))
+                v.store(ttl.block.fill(4.0, shape=v.shape))
 
             with cb.wait() as src, out_cb.reserve() as dst:
                 dst.store(src)
@@ -231,9 +231,9 @@ def test_python_name_reuse_does_not_alias_ssa(device):
         @ttl.compute()
         def compute():
             with out_cb.reserve() as v:
-                v.store(ttl.math.fill(v, 5.0))
+                v.store(ttl.block.fill(5.0, shape=v.shape))
             with out_cb.reserve() as v:
-                v.store(ttl.math.fill(v, 6.0))
+                v.store(ttl.block.fill(6.0, shape=v.shape))
 
         @ttl.datamovement()
         def dm_read():
@@ -273,17 +273,17 @@ def test_nested_for_independent_acquires_per_loop(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 1.0))
+                v.store(ttl.block.fill(1.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 2.0))
+                v.store(ttl.block.fill(2.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 3.0))
+                v.store(ttl.block.fill(3.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 4.0))
+                v.store(ttl.block.fill(4.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 5.0))
+                v.store(ttl.block.fill(5.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 6.0))
+                v.store(ttl.block.fill(6.0, shape=v.shape))
 
             for _outer in range(OUTER):
                 for _inner in range(INNER):
@@ -320,13 +320,13 @@ def test_mixed_immediate_and_deferred_consumes(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 100.0))
+                v.store(ttl.block.fill(100.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 200.0))
+                v.store(ttl.block.fill(200.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 300.0))
+                v.store(ttl.block.fill(300.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 400.0))
+                v.store(ttl.block.fill(400.0, shape=v.shape))
 
             # First wait + immediate consume.
             with cb.wait() as src, out_cb.reserve() as dst:
@@ -378,21 +378,21 @@ def test_eight_consecutive_waits_deferred_consumes(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 1.0))
+                v.store(ttl.block.fill(1.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 2.0))
+                v.store(ttl.block.fill(2.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 3.0))
+                v.store(ttl.block.fill(3.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 4.0))
+                v.store(ttl.block.fill(4.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 5.0))
+                v.store(ttl.block.fill(5.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 6.0))
+                v.store(ttl.block.fill(6.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 7.0))
+                v.store(ttl.block.fill(7.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 8.0))
+                v.store(ttl.block.fill(8.0, shape=v.shape))
 
             t1 = cb.wait()
             t2 = cb.wait()
@@ -462,13 +462,13 @@ def test_two_cbs_interleaved_deferred_consumes(device):
         @ttl.compute()
         def compute():
             with cb_a.reserve() as v:
-                v.store(ttl.math.fill(v, 10.0))
+                v.store(ttl.block.fill(10.0, shape=v.shape))
             with cb_a.reserve() as v:
-                v.store(ttl.math.fill(v, 20.0))
+                v.store(ttl.block.fill(20.0, shape=v.shape))
             with cb_b.reserve() as v:
-                v.store(ttl.math.fill(v, 30.0))
+                v.store(ttl.block.fill(30.0, shape=v.shape))
             with cb_b.reserve() as v:
-                v.store(ttl.math.fill(v, 40.0))
+                v.store(ttl.block.fill(40.0, shape=v.shape))
 
             # Interleave waits across two CBs; defer consumes for all four.
             a1 = cb_a.wait()
@@ -522,9 +522,9 @@ def test_three_consecutive_reserves_deferred_stores(device):
             r1 = cb.reserve()
             r2 = cb.reserve()
             r3 = cb.reserve()
-            r1.store(ttl.math.fill(r1, 7.0))
-            r2.store(ttl.math.fill(r2, 8.0))
-            r3.store(ttl.math.fill(r3, 9.0))
+            r1.store(ttl.block.fill(7.0, shape=r1.shape))
+            r2.store(ttl.block.fill(8.0, shape=r2.shape))
+            r3.store(ttl.block.fill(9.0, shape=r3.shape))
 
             with cb.wait() as src, out_cb.reserve() as dst:
                 dst.store(src)
@@ -567,7 +567,7 @@ def test_wait_result_fanout_multiple_consumers(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 42.0))
+                v.store(ttl.block.fill(42.0, shape=v.shape))
 
             t = cb.wait()
             with out_cb.reserve() as o1:
@@ -680,11 +680,11 @@ def test_dm_write_three_consecutive_waits_deferred_copies(device):
         @ttl.compute()
         def compute():
             with out_cb.reserve() as v:
-                v.store(ttl.math.fill(v, 50.0))
+                v.store(ttl.block.fill(50.0, shape=v.shape))
             with out_cb.reserve() as v:
-                v.store(ttl.math.fill(v, 60.0))
+                v.store(ttl.block.fill(60.0, shape=v.shape))
             with out_cb.reserve() as v:
-                v.store(ttl.math.fill(v, 70.0))
+                v.store(ttl.block.fill(70.0, shape=v.shape))
 
         @ttl.datamovement()
         def dm_read():
@@ -813,9 +813,9 @@ def test_reordered_consumes_decoupled_from_fifo(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 1.0))
+                v.store(ttl.block.fill(1.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 2.0))
+                v.store(ttl.block.fill(2.0, shape=v.shape))
 
             t1 = cb.wait()
             t2 = cb.wait()
@@ -912,13 +912,13 @@ def test_tight_block_count_four_consecutive_waits(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 1.0))
+                v.store(ttl.block.fill(1.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 2.0))
+                v.store(ttl.block.fill(2.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 3.0))
+                v.store(ttl.block.fill(3.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 4.0))
+                v.store(ttl.block.fill(4.0, shape=v.shape))
 
             t1 = cb.wait()
             t2 = cb.wait()
@@ -964,12 +964,12 @@ def test_producer_mixed_immediate_and_deferred_stores(device):
         def compute():
             # Immediate reserve + store (the with-block form).
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 11.0))
+                v.store(ttl.block.fill(11.0, shape=v.shape))
             # Two deferred reserves with stores after both reserves.
             r2 = cb.reserve()
             r3 = cb.reserve()
-            r2.store(ttl.math.fill(r2, 22.0))
-            r3.store(ttl.math.fill(r3, 33.0))
+            r2.store(ttl.block.fill(22.0, shape=r2.shape))
+            r3.store(ttl.block.fill(33.0, shape=r3.shape))
 
             with cb.wait() as src, out_cb.reserve() as dst:
                 dst.store(src)
@@ -1011,11 +1011,11 @@ def test_single_slot_cb_serialized(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 99.0))
+                v.store(ttl.block.fill(99.0, shape=v.shape))
             with cb.wait() as src, out_cb.reserve() as dst:
                 dst.store(src)
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 88.0))
+                v.store(ttl.block.fill(88.0, shape=v.shape))
             with cb.wait() as src, out_cb.reserve() as dst:
                 dst.store(src)
 
@@ -1051,7 +1051,7 @@ def test_long_dm_thread_loop_64_iterations(device):
         def compute():
             for _ in range(N):
                 with cb.reserve() as v:
-                    v.store(ttl.math.fill(v, 17.0))
+                    v.store(ttl.block.fill(17.0, shape=v.shape))
 
         @ttl.datamovement()
         def dm_read():
@@ -1086,7 +1086,7 @@ def test_dm_write_two_copies_same_acquire(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 5.0))
+                v.store(ttl.block.fill(5.0, shape=v.shape))
 
         @ttl.datamovement()
         def dm_read():
@@ -1131,9 +1131,9 @@ def test_producer_three_reserves_deferred_stores_in_loop(device):
                 r1 = cb.reserve()
                 r2 = cb.reserve()
                 r3 = cb.reserve()
-                r1.store(ttl.math.fill(r1, 1.0))
-                r2.store(ttl.math.fill(r2, 2.0))
-                r3.store(ttl.math.fill(r3, 3.0))
+                r1.store(ttl.block.fill(1.0, shape=r1.shape))
+                r2.store(ttl.block.fill(2.0, shape=r2.shape))
+                r3.store(ttl.block.fill(3.0, shape=r3.shape))
 
             for _ in range(TOTAL):
                 with cb.wait() as src, out_cb.reserve() as dst:
@@ -1180,7 +1180,7 @@ def test_wait_result_through_for_iter_args(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 1.0))
+                v.store(ttl.block.fill(1.0, shape=v.shape))
             acc = cb.wait()
             for _ in range(N):
                 acc = acc + acc
@@ -1219,11 +1219,11 @@ def test_third_acquire_interposed_between_coalesced_pops(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 1.0))
+                v.store(ttl.block.fill(1.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 2.0))
+                v.store(ttl.block.fill(2.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 3.0))
+                v.store(ttl.block.fill(3.0, shape=v.shape))
 
             t1 = cb.wait()
             t2 = cb.wait()
@@ -1319,9 +1319,9 @@ def test_deferred_waits_with_t1_fanout(device):
         @ttl.compute()
         def compute():
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 5.0))
+                v.store(ttl.block.fill(5.0, shape=v.shape))
             with cb.reserve() as v:
-                v.store(ttl.math.fill(v, 7.0))
+                v.store(ttl.block.fill(7.0, shape=v.shape))
 
             t1 = cb.wait()
             t2 = cb.wait()
@@ -1367,13 +1367,13 @@ def test_matmul_style_two_cb_interleaved_deferred_acquires(device):
         @ttl.compute()
         def compute():
             with cb_a.reserve() as v:
-                v.store(ttl.math.fill(v, 11.0))
+                v.store(ttl.block.fill(11.0, shape=v.shape))
             with cb_a.reserve() as v:
-                v.store(ttl.math.fill(v, 22.0))
+                v.store(ttl.block.fill(22.0, shape=v.shape))
             with cb_b.reserve() as v:
-                v.store(ttl.math.fill(v, 33.0))
+                v.store(ttl.block.fill(33.0, shape=v.shape))
             with cb_b.reserve() as v:
-                v.store(ttl.math.fill(v, 44.0))
+                v.store(ttl.block.fill(44.0, shape=v.shape))
 
             a1 = cb_a.wait()
             b1 = cb_b.wait()

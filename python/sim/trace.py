@@ -82,7 +82,7 @@ def trace(event: str, **data: Any) -> None:
         TraceEvent(
             event=event,
             tick=scheduler.tick,
-            kernel=scheduler.get_current_thread_name(),
+            kernel=scheduler.get_current_kernel_name(),
             data=data,
         )
     )

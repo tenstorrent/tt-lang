@@ -30,7 +30,7 @@ if [ -z "$DOCKER_TAG" ]; then
     echo "ERROR: Could not determine Docker tag from git tags and no tag argument provided."
     exit 1
 fi
-DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+DIST_IMAGE="tt-lang-dist-ubuntu-24-04:$DOCKER_TAG"
 
 echo "=== tt-lang Docker Smoke Test ==="
 echo "Image: $DIST_IMAGE"
@@ -59,7 +59,7 @@ if [ -e /dev/tenstorrent/0 ]; then
             --device=/dev/tenstorrent/0 \
             -v /dev/hugepages:/dev/hugepages \
             -v /dev/hugepages-1G:/dev/hugepages-1G \
-            $DIST_IMAGE python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+            $DIST_IMAGE python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_full.py
 else
     echo "Test 3: SKIPPED (no hardware)"
 fi
@@ -74,7 +74,7 @@ echo ""
 # Test 5: Examples in /root
 echo "Test 5: Examples in /root"
 run_test "Examples in /root" "Examples missing" \
-    sudo docker run --rm $DIST_IMAGE ls /root/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+    sudo docker run --rm $DIST_IMAGE ls /root/examples/elementwise-tutorial/step_4_multinode_grid_full.py
 echo ""
 
 echo "=== Smoke Test Complete ==="

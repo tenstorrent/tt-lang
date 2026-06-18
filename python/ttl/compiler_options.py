@@ -90,6 +90,14 @@ def _make_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
     )
+    p.add_argument(
+        "--ttl-l1-budget",
+        default=None,
+        dest="l1_budget",
+        type=int,
+        help="Override L1 CB budget in bytes (default: auto-detect from device, "
+        "or architecture default when no device is available).",
+    )
     return p
 
 
@@ -137,6 +145,7 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are

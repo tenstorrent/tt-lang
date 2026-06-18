@@ -16,6 +16,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/DstSubblockUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/LowerMatmulCompute.h"
 
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
@@ -38,65 +40,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Find subblock sizes [t0, t1, ...] such that each ti divides dimSizes[i],
-/// product(ti) <= unrollFactor, and the product is maximized.
-/// Ties are broken by preferring larger inner (higher-index) dimensions.
-static SmallVector<int64_t>
-computeMultiDimSubblockSizes(ArrayRef<int64_t> dimSizes, int64_t unrollFactor) {
-  int64_t rank = dimSizes.size();
-
-  // Collect divisors per dimension (sorted descending for early pruning).
-  SmallVector<SmallVector<int64_t>> allDivisors(rank);
-  for (int64_t d = 0; d < rank; ++d) {
-    for (int64_t i = dimSizes[d]; i >= 1; --i) {
-      if (dimSizes[d] % i == 0) {
-        allDivisors[d].push_back(i);
-      }
-    }
-  }
-
-  SmallVector<int64_t> bestSizes(rank, 1);
-  int64_t bestProduct = 1;
-  SmallVector<int64_t> current(rank, 1);
-
-  // Return true if `a` should be preferred over `b` when products are equal.
-  // Prefers larger inner (higher-index) dimensions to minimize outer loops.
-  auto prefersInner = [&](ArrayRef<int64_t> a, ArrayRef<int64_t> b) {
-    for (int64_t d = rank - 1; d >= 0; --d) {
-      if (a[d] != b[d]) {
-        return a[d] > b[d];
-      }
-    }
-    return false;
-  };
-
-  // Recursive brute-force search with pruning.
-  std::function<void(int64_t, int64_t)> search;
-  search = [&](int64_t dim, int64_t currentProduct) {
-    if (dim == rank) {
-      // All dimensions have been assigned. Update best if this candidate
-      // has a larger product, or the same product but larger inner dimensions.
-      if (currentProduct > bestProduct ||
-          (currentProduct == bestProduct && prefersInner(current, bestSizes))) {
-        bestProduct = currentProduct;
-        bestSizes = current;
-      }
-      return;
-    }
-    for (int64_t divisor : allDivisors[dim]) {
-      int64_t newProduct = currentProduct * divisor;
-      if (newProduct > unrollFactor) {
-        continue;
-      }
-      current[dim] = divisor;
-      search(dim + 1, newProduct);
-    }
-  };
-
-  search(0, 1);
-  return bestSizes;
-}
-
 struct TTLSubblockComputeForDSTPass
     : public impl::TTLSubblockComputeForDSTBase<TTLSubblockComputeForDSTPass> {
   using Base::Base;
@@ -114,22 +57,23 @@ struct TTLSubblockComputeForDSTPass
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
-      if (unrollAttr && unrollAttr.getInt() > 1) {
-        bool hasAccumulating = false;
-        bool hasMatmulBlock = false;
-        computeOp.getBody().walk([&](Operation *op) {
-          if (op->hasTrait<TTLAccumulatingOpTrait>()) {
-            hasAccumulating = true;
-          }
-          if (isa<TileMatmulBlockOp>(op)) {
-            hasMatmulBlock = true;
-          }
-          return (hasAccumulating && hasMatmulBlock) ? WalkResult::interrupt()
-                                                     : WalkResult::advance();
-        });
-        if (hasAccumulating && !hasMatmulBlock) {
-          return;
+      bool hasAccumulating = false;
+      bool hasMatmulBlock = false;
+      computeOp.getBody().walk([&](Operation *op) {
+        if (op->hasTrait<TTLAccumulatingOpTrait>()) {
+          hasAccumulating = true;
         }
+        if (isa<TileMatmulBlockOp>(op)) {
+          hasMatmulBlock = true;
+        }
+        return (hasAccumulating && hasMatmulBlock) ? WalkResult::interrupt()
+                                                   : WalkResult::advance();
+      });
+      if (hasAccumulating && !hasMatmulBlock) {
+        return;
+      }
+
+      if (hasMatmulBlock || (unrollAttr && unrollAttr.getInt() > 1)) {
         opsToSubblock.push_back(computeOp);
       }
     });
@@ -146,7 +90,6 @@ private:
   LogicalResult subblockComputeOp(ComputeOp computeOp) {
     auto unrollAttr =
         computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
-    int64_t unrollFactor = unrollAttr.getInt();
     Location loc = computeOp.getLoc();
     OpBuilder b(computeOp);
 
@@ -163,6 +106,36 @@ private:
       hasMatmulBlock = true;
       return WalkResult::interrupt();
     });
+    if (!hasMatmulBlock && !unrollAttr) {
+      return success();
+    }
+
+    int64_t unrollFactor = unrollAttr ? unrollAttr.getInt() : 0;
+    int64_t matmulParallelBudget = 0;
+    if (hasMatmulBlock) {
+      FailureOr<int64_t> dstSlotsPerOutputTile =
+          getMatmulComputeDstSlotsPerOutputTile(computeOp);
+      if (failed(dstSlotsPerOutputTile)) {
+        return computeOp.emitOpError()
+               << "invalid block matmul compute; expected one "
+                  "ttl.tile_matmul_block with compute-input matmul operands, "
+                  "constant DST indices, and a valid accumulator";
+      }
+
+      FailureOr<std::uint32_t> capacityOrErr = computeDSTCapacity(computeOp);
+      if (failed(capacityOrErr)) {
+        return failure();
+      }
+
+      int64_t dstCapacity = static_cast<int64_t>(*capacityOrErr);
+      if (*dstSlotsPerOutputTile > dstCapacity) {
+        return computeOp.emitOpError()
+               << "single block matmul output tile requires "
+               << *dstSlotsPerOutputTile << " DST slots but DST capacity is "
+               << dstCapacity;
+      }
+      matmulParallelBudget = dstCapacity / *dstSlotsPerOutputTile;
+    }
 
     // Compute row-major strides over the CB block iteration domain for tile
     // offset computation. Used for loop annotation, CB linearization strides
@@ -181,11 +154,13 @@ private:
       }
     }
 
-    // When unroll_factor >= effective tiles, no outer loop is needed -- the
-    // compute op already fits in one DST sync region. Set strides so
-    // lower-to-loops can annotate tile loops with correct CB linearization
+    // When the per-sync budget covers the effective tiles, no outer loop is
+    // needed -- the compute op already fits in one DST sync region. Set strides
+    // so lower-to-loops can annotate tile loops with correct CB linearization
     // strides.
-    if (unrollFactor >= effectiveTiles) {
+    int64_t effectiveBudget =
+        hasMatmulBlock ? matmulParallelBudget : unrollFactor;
+    if (effectiveBudget >= effectiveTiles) {
       computeOp->setAttr(kFullLinStridesAttrName,
                          b.getDenseI64ArrayAttr(blockStrides));
       return success();
@@ -238,7 +213,7 @@ private:
 
     // If reduction dims alone exceed the DST capacity, no subblocking is
     // possible with this pass.
-    if (reductionProduct > unrollFactor) {
+    if (!hasMatmulBlock && reductionProduct > unrollFactor) {
       return computeOp.emitOpError()
              << "reduction dimensions require " << reductionProduct
              << " DST tiles per iteration but only " << unrollFactor
@@ -246,7 +221,8 @@ private:
     }
 
     // Budget remaining for parallel dimensions after accounting for reductions.
-    int64_t parallelBudget = unrollFactor / reductionProduct;
+    int64_t parallelBudget =
+        hasMatmulBlock ? matmulParallelBudget : unrollFactor / reductionProduct;
 
     // Compute subblock sizes for parallel dimensions only.
     SmallVector<int64_t> parallelSubblockSizes =
@@ -270,7 +246,9 @@ private:
         std::accumulate(subblockSizes.begin(), subblockSizes.end(), int64_t{1},
                         std::multiplies<>());
 
-    // If subblock product is 1, no subblocking benefit -- skip.
+    // If a non-matmul subblock product is 1, no subblocking benefit -- skip.
+    // Block matmul may still need a one-output-tile subblock because each
+    // output tile can consume multiple DST slots.
     // TODO: consider supporting peeling/remainder loops for dimensions whose
     // only divisor <= unrollFactor is 1 (e.g. primes larger than unrollFactor).
     // Currently these fall back to processing one tile at a time, wasting DST
@@ -279,7 +257,7 @@ private:
     // a 5x3 block with unrollFactor=8 has no exact 2D subblock and also
     // falls back to single-tile. In practice, users can avoid this by choosing
     // block sizes with non-prime dimensions (e.g. 8x1 instead of 7x1).
-    if (subblockProduct <= 1) {
+    if (subblockProduct <= 1 && !hasMatmulBlock) {
       return success();
     }
 

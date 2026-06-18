@@ -37,38 +37,46 @@ def broadcast_2d_kernel(inp, out):
         ]
     )
 
-    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
-        with inp_cb.wait() as tile_in, out_cb.reserve() as tile_out:
+        with recv_cb.wait() as tile_in, out_cb.reserve() as tile_out:
             tile_out.store(ttl.math.abs(tile_in))
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as blk:
+        x, y = ttl.node(dims=2)
+        if x == 0 and y == 0:
+            with send_cb.reserve() as send_src_blk, recv_cb.reserve() as recv_dst_blk:
+                ttl.copy(inp[0, 0], send_src_blk).wait()
 
-            def read_and_send(pipe):
-                tx = ttl.copy(inp[0, 0], blk)
-                tx.wait()
-                xf = ttl.copy(blk, pipe)
-                xf.wait()
+                def recv(pipe):
+                    recv_tx = ttl.copy(pipe, recv_dst_blk)
 
-            net.if_src(read_and_send)
+                    def read_and_send(pipe):
+                        ttl.copy(send_src_blk, pipe).wait()
 
-            def recv(pipe):
-                xf = ttl.copy(pipe, blk)
-                xf.wait()
+                    net.if_src(read_and_send)
+                    recv_tx.wait()
 
-            net.if_dst(recv)
+                net.if_dst(recv)
+        else:
+            with recv_cb.reserve() as recv_dst_blk:
+
+                def recv(pipe):
+                    ttl.copy(pipe, recv_dst_blk).wait()
+
+                net.if_dst(recv)
 
     @ttl.datamovement()
     def dm_write():
         x, y = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            tx = ttl.copy(blk, out[y, x])
-            tx.wait()
+        with out_cb.wait() as out_blk:
+            write_tx = ttl.copy(out_blk, out[y, x])
+            write_tx.wait()
 
 
 def test_broadcast_2d(device):

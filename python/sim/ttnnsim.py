@@ -813,39 +813,90 @@ class TensorSpec:
         )
 
 
-# Dtype aliases
-bfloat16: torch.dtype = torch.bfloat16
+# Save the native dtypes before any rebinding.  These are the "declared"
+# hardware dtypes — they carry the correct element_size (e.g. 2 for bfloat16)
+# and are stored in Tensor._dtype for hardware-accurate L1 accounting.
+# Maps torch attribute name -> original (pre-rebinding) dtype for every
+# narrow floating-point type that has a native torch representation and should
+# be promoted to float32 by default.  To add a new promotable type, add it
+# here; the rebinding loop, set_disable_float32_promotion, and _promote_dtype
+# all derive from this single definition.
+#
+# bfloat8_b is not in this dict because PyTorch has no native bfloat8_b dtype
+# and no torch.bfloat8_b attribute to rebind.  _promote_dtype handles it
+# directly by mapping it to bfloat16 and then applying the normal logic.
+_PROMOTABLE_FLOAT_DTYPES: dict[str, torch.dtype] = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+}
+
+# Rebind every promotable dtype to float32 so that all native PyTorch code
+# (e.g. torch.randn(dtype=torch.bfloat16)) transparently uses float32.
+# This keeps host operations fast on platforms like Apple Silicon that lack
+# hardware bfloat16/float16 support.
+for _attr in _PROMOTABLE_FLOAT_DTYPES:
+    setattr(torch, _attr, torch.float32)  # type: ignore[assignment]
+del _attr  # avoid leaking the loop variable into the module namespace
+
+# ttnn dtype aliases preserve the original (pre-rebinding) torch dtypes so
+# that element_size returns the correct hardware byte count and _promote_dtype
+# can compare against them.
+bfloat16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["bfloat16"]
+float16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["float16"]
 float32: torch.dtype = torch.float32
 
-# Original value saved so set_matmul_promote_bf16 can restore it.
-_original_bfloat16: torch.dtype = torch.bfloat16
+# When True (the default), tensor creation functions promote bfloat16 and
+# float16 backing to float32 for accurate computation on all host architectures.
+# The declared dtype is always preserved in Tensor._dtype for L1 accounting.
+# Toggle with set_disable_float32_promotion().
+_float32_promotion_enabled: bool = True
 
 
-def set_matmul_promote_bf16(value: bool) -> None:
-    """Redirect bfloat16 to float32 for the entire process when the flag is active.
+def _promote_dtype(dtype: "DType") -> torch.dtype:
+    """Return the backing torch dtype to use when creating a tensor.
 
-    When enabled, both ``torch.bfloat16`` and the module-level ``bfloat16``
-    alias are rebound to ``torch.float32``.  Any subsequent use of
-    ``dtype=torch.bfloat16`` or ``dtype=ttnn.bfloat16`` in the user script
-    therefore creates float32 tensors natively, with no dispatch overhead or
-    casting.  Note: this doubles tensor memory usage; avoid for very large
-    examples on memory-constrained machines.  When disabled the originals are
-    restored.
+    All narrow floating-point types are promoted to float32 when promotion is
+    active (the default), so the simulator runs at full precision on every host.
+
+    Custom types (e.g. bfloat8_b) that have no native PyTorch representation are
+    resolved to their native equivalent via _CUSTOM_DTYPE_BACKING, then the same
+    promotion logic applies as for native narrow floats.
+
+    The declared dtype is always preserved separately in Tensor._dtype.
     """
-    global bfloat16
-    if value:
-        torch.bfloat16 = torch.float32
-        bfloat16 = torch.float32
-    else:
-        torch.bfloat16 = _original_bfloat16
-        bfloat16 = _original_bfloat16
+    native: torch.dtype = _CUSTOM_DTYPE_BACKING.get(type(dtype), dtype)  # type: ignore[arg-type]
+    if _float32_promotion_enabled and native in _PROMOTABLE_FLOAT_DTYPES.values():
+        return torch.float32
+    return native
+
+
+def set_disable_float32_promotion(value: bool) -> None:
+    """Disable or re-enable the default float32 promotion of floating-point dtypes.
+
+    When promotion is active (the default), all narrow floating-point types are
+    backed by float32 for accurate computation on all host architectures:
+
+    - bfloat16 and float16: the corresponding torch.* attributes are rebound to
+      float32 so that native PyTorch code also uses float32.
+    - bfloat8_b: _promote_dtype maps it to bfloat16 and then promotes that to
+      float32; no torch attribute rebinding is needed.
+
+    Passing True restores native dtypes throughout (bfloat16/float16 tensors use
+    their declared dtype as backing, bfloat8_b is backed by bfloat16).
+    Passing False re-enables the default float32 promotion.
+    """
+    global _float32_promotion_enabled
+    _float32_promotion_enabled = not value
+    for attr, original in _PROMOTABLE_FLOAT_DTYPES.items():
+        setattr(torch, attr, original if value else torch.float32)  # type: ignore[assignment]
 
 
 class _BFloat8BDtype:
     """Sentinel class for the bfloat8_b block-floating-point dtype.
 
     PyTorch has no native bfloat8_b type.  The simulator backs bfloat8_b
-    tensors with bfloat16 for computation.
+    tensors with float32 (when float32 promotion is active, the default) or
+    bfloat16 (when promotion is disabled) for computation.
 
     BFP8B encoding: each element is stored as a 1-byte mantissa; every group
     of 16 elements shares a 1-byte exponent.  Storage cost is therefore
@@ -886,6 +937,19 @@ class _BFloat8BDtype:
 
 bfloat8_b: _BFloat8BDtype = _BFloat8BDtype()
 
+# Type alias for any value that can be passed as a dtype to ttnn tensor
+# creation functions: either a standard torch dtype or the bfloat8_b sentinel.
+DType = Union[torch.dtype, _BFloat8BDtype]
+
+# Maps custom dtype classes (those with no native torch representation) to the
+# torch.dtype that serves as their native backing before promotion is applied.
+# _promote_dtype looks up a dtype's class here so that custom types are handled
+# with the same logic as native narrow floats, without requiring a match branch
+# for each one.  To add a new custom dtype, add it here.
+_CUSTOM_DTYPE_BACKING: dict[type, torch.dtype] = {
+    _BFloat8BDtype: _PROMOTABLE_FLOAT_DTYPES["bfloat16"],
+}
+
 
 class Device:
     """Simple device handle.
@@ -903,7 +967,7 @@ class Device:
         """Return the compute grid size for the device.
 
         In the simulator, returns a fixed 8x8 grid to match the default
-        'auto' grid size used by kernels.
+        'full' grid size used by kernels.
 
         Returns:
             CoreCoord: Grid size (x=8, y=8)
@@ -995,16 +1059,48 @@ def close_mesh_device(mesh: MeshDevice) -> None:
 
 @dataclass
 class MeshShardInfo:
-    """Mesh-level partition metadata attached to a Tensor by ShardTensorToMesh.
+    """Mesh-level partition metadata attached to a Tensor by a mesh mapper.
 
-    Records which axis of the full tensor is partitioned across devices and
-    how many device partitions exist.  Kept separate from MemoryConfig to
-    avoid conflating inter-device distribution with intra-device sharding
-    strategies (HEIGHT_SHARDED, WIDTH_SHARDED, etc.).
+    Stores the logical shape of the mesh device grid and which tensor dimension
+    each mesh axis partitions.  ``None`` in ``dims`` means the corresponding
+    mesh axis does not partition the tensor; a non-negative integer means it
+    partitions that tensor dimension (already normalized by ``from_torch``).
+
+    For a 1D mesh (MeshShape(1, n)) sharding along tensor dim d:
+        mesh_shape=(1, n), dims=(None, d)
+    For a 2D mesh (MeshShape(rows, cols)) sharding along dims (d0, d1):
+        mesh_shape=(rows, cols), dims=(d0, d1)
+
+    Kept separate from MemoryConfig to avoid conflating inter-device
+    distribution with intra-device sharding strategies (HEIGHT_SHARDED, etc.).
     """
 
-    dim: int
-    num_devices: int
+    mesh_shape: tuple[int, int]
+    dims: tuple[Optional[int], Optional[int]]
+
+    @property
+    def num_devices(self) -> int:
+        """Total number of devices across all mesh axes."""
+        return self.mesh_shape[0] * self.mesh_shape[1]
+
+    @property
+    def dim(self) -> int:
+        """Single partition dim for 1D meshes.
+
+        Returns the one active (non-``None``) entry in ``dims``.  Raises
+        ValueError when no axis or more than one axis actively shards the
+        tensor; callers should use ``dims`` directly in those cases.
+        """
+        active = [d for d in self.dims if d is not None]
+        if len(active) == 1:
+            return active[0]
+        if len(active) == 0:
+            raise ValueError(
+                "MeshShardInfo.dim is undefined: no mesh axis is actively sharding this tensor"
+            )
+        raise ValueError(
+            "MeshShardInfo.dim is ambiguous for 2D-sharded meshes; use .dims directly"
+        )
 
 
 class TensorToMesh:
@@ -1012,17 +1108,52 @@ class TensorToMesh:
 
 
 class ShardTensorToMesh(TensorToMesh):
-    """Mapper for from_torch: shards a tensor across mesh devices along ``dim``.
+    """Mapper for from_torch: shards a tensor across a 1D mesh along ``dim``.
 
     When passed to :func:`from_torch`, the resulting :class:`Tensor` carries a
-    :class:`MeshShardInfo` recording the partition axis and device count.
-    :func:`all_reduce` reads this metadata to perform the reduction without
-    consulting global device-count state or intra-device sharding strategies.
+    :class:`MeshShardInfo` recording the partition axis and mesh shape.
+    Collective operations (:func:`all_reduce`, :func:`all_gather`) read this
+    metadata to determine the partition structure without consulting global
+    device-count state or intra-device sharding strategies.
     """
 
     def __init__(self, mesh: MeshDevice, dim: int) -> None:
         self.mesh = mesh
         self.dim = dim
+
+
+class ShardTensor2dMesh(TensorToMesh):
+    """Mapper for from_torch: shards a tensor across a 2D mesh device grid.
+
+    Each mesh axis independently partitions a different tensor dimension.
+    Pass ``None`` in ``dims`` when a mesh axis should not shard the tensor;
+    negative integers are interpreted as Python-style dim indices and normalized.
+
+    Args:
+        mesh: 2D mesh device (e.g. from :func:`open_mesh_device`).
+        mesh_shape: ``(rows, cols)`` grid shape for the mesh.
+        dims: ``(dim_for_row_axis, dim_for_col_axis)`` — which tensor dim
+            each mesh axis partitions.  Use ``None`` to leave that axis
+            unsharded.
+
+    Example::
+
+        mesh = ttnnsim.open_mesh_device(ttnnsim.MeshShape(2, 4))
+        t = ttnnsim.from_torch(
+            data,
+            mesh_mapper=ttnnsim.ShardTensor2dMesh(mesh, mesh_shape=(2, 4), dims=(0, 1)),
+        )
+    """
+
+    def __init__(
+        self,
+        mesh: MeshDevice,
+        mesh_shape: tuple[int, int],
+        dims: tuple[Optional[int], Optional[int]],
+    ) -> None:
+        self.mesh = mesh
+        self.mesh_shape = mesh_shape
+        self.dims = dims
 
 
 class ReplicateTensorToMesh(TensorToMesh):
@@ -1144,6 +1275,11 @@ def _maybe_resolve_nd_shard_spec_for_tensor(
     )
 
 
+def _dtype_element_size(dtype: torch.dtype) -> int:
+    """Return the element size in bytes for a torch dtype."""
+    return torch.tensor([], dtype=dtype).element_size()
+
+
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 
@@ -1183,8 +1319,10 @@ class Tensor:
     def underlying_dtype(self) -> torch.dtype:
         """PyTorch dtype used for storage and computation.
 
-        For standard types this equals dtype.  For custom types such as bfloat8_b
-        this is the native torch dtype that backs the tensor (e.g. torch.bfloat16).
+        May differ from dtype when float32 promotion is active: bfloat16 and
+        float16 tensors are backed by float32, so underlying_dtype returns
+        torch.float32 while dtype returns the declared type.  For bfloat8_b
+        this is torch.float32 (promotion on) or torch.bfloat16 (off).
         """
         return self._tensor.dtype
 
@@ -1196,28 +1334,33 @@ class Tensor:
     def element_size(self) -> int:
         """Number of bytes per element for this tensor's declared dtype.
 
-        For dtypes with a shared exponent (e.g. bfloat8_b) this returns only
-        the mantissa byte and does not include exponent overhead.  Use
-        size_in_bytes(n) for accurate multi-element capacity accounting.
+        Always reflects the declared (hardware) dtype, not the backing
+        storage dtype.  For example, a bfloat16 tensor promoted to float32
+        backing still returns 2 here.  For dtypes with a shared exponent
+        (e.g. bfloat8_b) this returns only the mantissa byte and does not
+        include exponent overhead.  Use size_in_bytes(n) for accurate
+        multi-element capacity accounting.
         """
         match self._dtype:
             case _BFloat8BDtype():
                 return 1
             case _:
-                return self._tensor.element_size()
+                return _dtype_element_size(self._dtype)
 
     def size_in_bytes(self, n_elements: int) -> int:
-        """Total bytes required to store n_elements of this tensor's dtype.
+        """Total bytes required to store n_elements of this tensor's declared dtype.
 
-        For standard torch dtypes this is n_elements * element_size.
-        For dtypes with shared exponents (e.g. bfloat8_b) this includes the
-        exponent overhead; use this method for correct capacity accounting.
+        Always uses the declared (hardware) dtype for byte accounting so that
+        L1 capacity checks reflect on-hardware footprint regardless of whether
+        float32 promotion is active.  For standard torch dtypes this is
+        n_elements * element_size.  For dtypes with shared exponents
+        (e.g. bfloat8_b) this includes the exponent overhead.
         """
         match self._dtype:
             case _BFloat8BDtype():
                 return self._dtype.size_in_bytes(n_elements)
             case _:
-                return n_elements * self._tensor.element_size()
+                return n_elements * _dtype_element_size(self._dtype)
 
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
@@ -1403,7 +1546,14 @@ class Tensor:
         return f"Tensor(shape={tuple(self._tensor.shape)}{layout_str}, data={repr(self._tensor)})"
 
     def to_torch(self) -> torch.Tensor:
-        """Public accessor for the underlying torch tensor."""
+        """Return the raw backing torch tensor.
+
+        Returns the underlying storage tensor directly so that callers can
+        perform in-place operations.  The backing dtype may differ from the
+        declared dtype when float32 promotion is active.  Use the module-level
+        ttnn.to_torch() function when the result needs to match the declared
+        dtype (e.g. for comparison with native torch tensors).
+        """
         return self._tensor
 
     # ---- Binary operations (element-wise) ----
@@ -1553,42 +1703,60 @@ class Tensor:
                 return NotImplemented
 
 
+def _pad_to_tile_alignment(tensor: torch.Tensor, layout: IndexType) -> torch.Tensor:
+    """Pad a user tensor's last two dims to ``TILE_SHAPE`` multiples.
+
+    Per the TT-Lang specification every tile is exactly ``TILE_SHAPE``
+    (32x32) scalar elements (see TTLangSpecification.md, tiled-block
+    section).  Logical shapes that are not already tile-aligned have
+    their data placed in the top-left of each output tile by spec
+    convention - ``(N, 1)`` column vectors live in column 0, ``(1, M)``
+    row vectors live in row 0, ``(1, 1)`` scalars at position
+    ``(0, 0)`` - and the remainder of the tile is padding.  The
+    two-step ``block.broadcast`` and ``math.reduce_*`` ops then
+    overwrite that padding when needed.  ``ROW_MAJOR_LAYOUT`` tensors
+    are returned untouched.
+    """
+    if layout != TILE_LAYOUT:
+        return tensor
+    if tensor.ndim < 2:
+        raise ValueError(
+            f"TILE_LAYOUT tensors must have at least 2 dimensions, got shape "
+            f"{tuple(tensor.shape)}"
+        )
+    h, w = tensor.shape[-2], tensor.shape[-1]
+    pad_h = (-h) % TILE_SHAPE[0]
+    pad_w = (-w) % TILE_SHAPE[1]
+    if pad_h == 0 and pad_w == 0:
+        return tensor
+    # torch.nn.functional.pad takes (left, right, top, bottom, ...) starting
+    # from the last dim; we pad zero on the right of the innermost dim and
+    # the bottom of the next-to-innermost dim.
+    return torch.nn.functional.pad(tensor, (0, pad_w, 0, pad_h), value=0.0)
+
+
 def rand(
     shape: Shape,
-    dtype: Any = bfloat16,
+    dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
     memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
-    match dtype:
-        case _BFloat8BDtype():
-            return Tensor(
-                torch.rand(shape, dtype=torch.float32).to(torch.bfloat16),
-                layout,
-                dtype=bfloat8_b,
-            )
-        case _:
-            t = torch.rand(shape, dtype=torch.float32)
-            t = t.to(dtype)
-            return Tensor(t, layout)
+    raw = torch.rand(shape, dtype=_promote_dtype(dtype))
+    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
 
 
 def empty(
     shape: Shape,
-    dtype: Any = bfloat16,
+    dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
     memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
-    match dtype:
-        case _BFloat8BDtype():
-            return Tensor(
-                torch.empty(shape, dtype=torch.bfloat16), layout, dtype=bfloat8_b
-            )
-        case _:
-            return Tensor(torch.empty(shape, dtype=dtype), layout)
+    raw = torch.empty(shape, dtype=_promote_dtype(dtype))
+    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
 
 
 def to_torch(
@@ -1597,12 +1765,18 @@ def to_torch(
 ) -> torch.Tensor:
     """Convert a simulator Tensor or torch.Tensor to torch.Tensor.
 
+    Returns the raw backing tensor.  When float32 promotion is active the
+    backing dtype is float32 regardless of the declared dtype; external torch
+    code also uses float32 (torch.bfloat16 is rebound to torch.float32 at
+    module load time), so comparison with natively created tensors works
+    without an additional cast.
+
     Args:
         t: Tensor to convert.
         mesh_composer: Ignored in the simulator; accepted for API compatibility.
 
     Returns:
-        Plain torch.Tensor.
+        Plain torch.Tensor (backing dtype, not necessarily the declared dtype).
     """
     match t:
         case Tensor() as tw:
@@ -1615,7 +1789,7 @@ def to_torch(
 
 def from_torch(
     tensor: torch.Tensor,
-    dtype: Optional[torch.dtype] = None,
+    dtype: Optional[DType] = None,
     layout: IndexType = TILE_LAYOUT,
     device: Optional[Union[Device, MeshDevice]] = None,
     memory_config: Optional[MemoryConfig] = None,
@@ -1655,27 +1829,31 @@ def from_torch(
         eff_mc = (
             spec.memory_config if spec.memory_config is not None else DRAM_MEMORY_CONFIG
         )
-    elif isinstance(mesh_mapper, ShardTensorToMesh):
-        eff_dtype = dtype
-        eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
     else:
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
 
+    tensor = _pad_to_tile_alignment(tensor, layout)
+
     match eff_dtype:
-        case _BFloat8BDtype():
-            result = Tensor(
-                tensor.to(torch.bfloat16), layout, memory_config=eff_mc, dtype=bfloat8_b
-            )
-        case _ if eff_dtype is not None and tensor.dtype != eff_dtype:
-            result = Tensor(tensor.to(eff_dtype), layout, memory_config=eff_mc)
+        case _ if eff_dtype is not None:
+            backing = _promote_dtype(eff_dtype)
+            converted = tensor if tensor.dtype == backing else tensor.to(backing)
+            result = Tensor(converted, layout, memory_config=eff_mc, dtype=eff_dtype)
         case _:
             result = Tensor(tensor, layout, memory_config=eff_mc)
 
     if isinstance(mesh_mapper, ShardTensorToMesh):
+        n = mesh_mapper.mesh.num_devices
+        d = mesh_mapper.dim % tensor.ndim
+        result.mesh_shard_info = MeshShardInfo(mesh_shape=(1, n), dims=(None, d))
+    elif isinstance(mesh_mapper, ShardTensor2dMesh):
+        rows, cols = mesh_mapper.mesh_shape
+        d0, d1 = mesh_mapper.dims
+        norm_d0 = None if d0 is None else d0 % tensor.ndim
+        norm_d1 = None if d1 is None else d1 % tensor.ndim
         result.mesh_shard_info = MeshShardInfo(
-            dim=mesh_mapper.dim % tensor.ndim,
-            num_devices=mesh_mapper.mesh.num_devices,
+            mesh_shape=(rows, cols), dims=(norm_d0, norm_d1)
         )
     return result
 
@@ -1990,46 +2168,60 @@ def all_reduce(
     dtype: Optional[torch.dtype] = None,
     **kwargs: Any,
 ) -> Tensor:
-    """Sum-reduce across all simulated devices.
+    """Sum-reduce across simulated devices.
 
     The partition structure is read from the tensor's :attr:`~Tensor.mesh_shard_info`
     attribute, which is set by :func:`from_torch` when a :class:`ShardTensorToMesh`
-    mapper is provided.  This attribute records the partition axis (``dim``) and
-    device count directly, keeping inter-device distribution separate from
-    intra-device sharding strategies stored in :class:`MemoryConfig`.
+    or :class:`ShardTensor2dMesh` mapper is provided.
 
     The correct output for the all-reduce collective is: sum each group of
     corresponding slices element-wise across all partitions, then give every
     partition that same sum.
 
+    For 2D meshes, ``cluster_axis`` selects which mesh axis to reduce across:
+
+    * ``cluster_axis=0`` — reduce across the row axis (``msi.mesh_shape[0]``
+      devices, partitioned along ``msi.dims[0]``).
+    * ``cluster_axis=1`` — reduce across the column axis (``msi.mesh_shape[1]``
+      devices, partitioned along ``msi.dims[1]``).
+    * ``cluster_axis=None`` — reduce across all active mesh axes sequentially.
+
     Args:
-        input_tensor: Input tensor (must have been created with ShardTensorToMesh).
-        cluster_axis: Ignored (accepted for API compatibility).
+        input_tensor: Input tensor (must have been created with a mesh mapper).
+        cluster_axis: Which mesh axis to reduce across (0 or 1).  ``None``
+            reduces across all active axes.
         mesh_device: Ignored (accepted for API compatibility).
         memory_config: Optional output memory config.
         dtype: Optional output dtype.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Returns:
-        Tensor where every partition contains the element-wise sum of all
-        partitions.
+        Tensor where every partition contains the element-wise sum across the
+        selected devices.
     """
     msi = input_tensor.mesh_shard_info
     if msi is None:
         raise ValueError("Mesh device is required for all_reduce operation")
 
     t = input_tensor.to_torch()
-    d = msi.dim % t.ndim
-    n = msi.num_devices
-    shard = t.shape[d] // n
 
-    if t.shape[d] != n * shard:
-        return input_tensor
+    axes = [cluster_axis] if cluster_axis is not None else range(2)
+    active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
-    # Sum corresponding slices across all n partitions.
-    reduced = sum(t.narrow(d, i * shard, shard) for i in range(n))
-    # Every partition gets the same reduced result.
-    result = torch.cat([reduced] * n, dim=d).contiguous()  # type: ignore[arg-type]
+    result = t
+    for k in active_axes:
+        d = cast(int, msi.dims[k]) % result.ndim
+        n = msi.mesh_shape[k]
+        if result.shape[d] % n != 0:
+            raise ValueError(
+                f"Tensor size {result.shape[d]} along dim {d} is not divisible "
+                f"by {n} devices on mesh axis {k}"
+            )
+        shard = result.shape[d] // n
+        # Sum corresponding slices across all n partitions along this mesh axis.
+        reduced = sum(result.narrow(d, i * shard, shard) for i in range(n))
+        # Every partition gets the same reduced result.
+        result = torch.cat([reduced] * n, dim=d).contiguous()  # type: ignore[arg-type]
 
     if dtype is not None and result.dtype != dtype:
         result = result.to(dtype)
@@ -2052,58 +2244,75 @@ def all_gather(
     memory_config: Optional[MemoryConfig] = None,
     **kwargs: Any,
 ) -> Tensor:
-    """Gather shards from all simulated devices along ``dim``.
+    """Gather shards from simulated devices along ``dim``.
 
     The partition structure is read from the tensor's :attr:`~Tensor.mesh_shard_info`
     attribute, which is set by :func:`from_torch` when a :class:`ShardTensorToMesh`
-    mapper is provided.
+    or :class:`ShardTensor2dMesh` mapper is provided.
 
-    Each device contributes its local shard (partitioned along ``msi.dim``).
-    After the gather every device holds an identical result: all shards
-    concatenated along ``dim``.  The simulator represents n identical copies
-    by stacking them along ``msi.dim``, matching the output of
-    ``ttnn.to_torch(..., mesh_composer=ConcatMeshToTensor(mesh, msi.dim))``.
+    Each device contributes its local shard.  After the gather every device holds
+    an identical result: all shards concatenated along ``dim``.  The simulator
+    represents n identical copies by stacking them along the shard dimension,
+    matching what ``ttnn.to_torch(..., mesh_composer=ConcatMeshToTensor(...))``
+    would produce.
+
+    For 2D meshes, ``cluster_axis`` selects which mesh axis to gather across:
+
+    * ``cluster_axis=0`` — gather across the row axis (``msi.mesh_shape[0]``
+      devices, partitioned along ``msi.dims[0]``).
+    * ``cluster_axis=1`` — gather across the column axis (``msi.mesh_shape[1]``
+      devices, partitioned along ``msi.dims[1]``).
+    * ``cluster_axis=None`` — gather across all active mesh axes sequentially,
+      applying the same ``dim`` for each.
 
     Args:
-        input_tensor: Input tensor (must have been created with ShardTensorToMesh).
+        input_tensor: Input tensor (must have been created with a mesh mapper).
         dim: Dimension along which to concatenate the gathered shards.
-        cluster_axis: Ignored (accepted for API compatibility).
+        cluster_axis: Which mesh axis to gather across (0 or 1).  ``None``
+            gathers across all active axes.
         mesh_device: Ignored (accepted for API compatibility).
         memory_config: Optional output memory config.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Returns:
         Tensor where every partition contains all shards concatenated along
-        ``dim``.  Output shape equals input shape on all dimensions except
-        ``dim``, which grows by a factor of ``num_devices``.
+        ``dim``.
     """
     msi = input_tensor.mesh_shard_info
     if msi is None:
         raise ValueError("Mesh device is required for all_gather operation")
 
     t = input_tensor.to_torch()
-    shard_dim = msi.dim % t.ndim
-    n = msi.num_devices
-    shard_size = t.shape[shard_dim] // n
 
-    if t.shape[shard_dim] != n * shard_size:
-        return input_tensor
+    axes = [cluster_axis] if cluster_axis is not None else range(2)
+    active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
+    result = t
     gather_dim = dim % t.ndim
-
-    # Each device's shard, sliced along shard_dim.
-    shards = [t.narrow(shard_dim, i * shard_size, shard_size) for i in range(n)]
-    # All n devices get the same result: every shard concatenated along gather_dim.
-    gathered = torch.cat(shards, dim=gather_dim)
-    # Stack n identical copies along shard_dim to match the simulator's
-    # multi-device representation (same as ConcatMeshToTensor would produce).
-    result = torch.cat([gathered] * n, dim=shard_dim).contiguous()
+    for k in active_axes:
+        shard_dim = cast(int, msi.dims[k]) % result.ndim
+        n = msi.mesh_shape[k]
+        if result.shape[shard_dim] % n != 0:
+            raise ValueError(
+                f"Tensor size {result.shape[shard_dim]} along dim {shard_dim} is not divisible "
+                f"by {n} devices on mesh axis {k}"
+            )
+        shard_size = result.shape[shard_dim] // n
+        # Each device's shard, sliced along shard_dim.
+        shards = [
+            result.narrow(shard_dim, i * shard_size, shard_size) for i in range(n)
+        ]
+        # All n devices get the same result: every shard concatenated along gather_dim.
+        gathered = torch.cat(shards, dim=gather_dim)
+        # Stack n identical copies along shard_dim so the simulator tensor
+        # represents all devices holding the gathered result.
+        result = torch.cat([gathered] * n, dim=shard_dim).contiguous()
 
     out_memory_config = (
         memory_config if memory_config is not None else input_tensor.memory_config
     )
     result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
-    result_tensor.mesh_shard_info = MeshShardInfo(dim=msi.dim, num_devices=n)
+    result_tensor.mesh_shard_info = msi
     if hasattr(input_tensor, "_name"):
         result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
     return result_tensor

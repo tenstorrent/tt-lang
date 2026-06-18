@@ -11,11 +11,11 @@
 </picture>
 
 </div>
-<br>
+pl<br>
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 ![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
-![Build Status](https://github.com/tenstorrent/tt-lang/actions/workflows/on-push.yml/badge.svg)
+![Build Status](https://github.com/tenstorrent/tt-lang/actions/workflows/ci.yml/badge.svg)
 
 A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current simulator and compiler support.
 
@@ -68,13 +68,13 @@ It does two things, both inside the venv (no sudo):
 - Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts it under `<venv>/.../ttnn/runtime/sfpi/` (for `tt-lang` installation only).
 - Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to `./tutorials/`.
 
-For finer control: `tt-lang-setup-host` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
+For finer control: `tt-lang-setup-sfpi` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 
 Run a tutorial example:
 
 ```bash
-ttlang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulated (no compilation, runs on CPU)
-python tutorials/elementwise/step_4_multinode_grid_auto.py        # compiles and runs on hardware
+tt-lang-sim tutorials/elementwise/step_4_multinode_grid_full.py    # simulated (no compilation, runs on CPU)
+python tutorials/elementwise/step_4_multinode_grid_full.py        # compiles and runs on hardware
 ```
 
 To develop tt-lang itself or debug the compiler, use the Docker images below or [build from source](#25-building-without-docker).
@@ -84,16 +84,16 @@ To develop tt-lang itself or debug the compiler, use the Docker images below or 
 TT-Lang is also usable through Docker images for both users and developers.
 Two images are available:
 
-| Image                                                                                           | Purpose                                                            | Preinstalled tt-lang<br />(including ttlang-sim) | Can clone/build tt-lang? |
+| Image                                                                                           | Purpose                                                            | Preinstalled tt-lang<br />(including tt-lang-sim) | Can clone/build tt-lang? |
 | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | :----------------------------------------------: | :----------------------: |
-| ![dist](https://img.shields.io/badge/dist-tt--lang--dist--ubuntu--22--04-brightgreen)<br />"dist" | Run tt-lang programs using<br />ttlang-sim or Tenstorrent hardware |                       Yes                       |            No            |
-| ![ird](https://img.shields.io/badge/ird-tt--lang--ird--ubuntu--22--04-blueviolet)<br />"ird"      | Develop and build tt-lang from source                              |                        No                        |           Yes           |
+| ![dist](https://img.shields.io/badge/dist-tt--lang--dist--ubuntu--24--04-brightgreen)<br />"dist" | Run tt-lang programs using<br />tt-lang-sim or Tenstorrent hardware |                       Yes                       |            No            |
+| ![ird](https://img.shields.io/badge/ird-tt--lang--ird--ubuntu--24--04-blueviolet)<br />"ird"      | Develop and build tt-lang from source                              |                        No                        |           Yes           |
 
 Both images can be used with `ird reserve` (see [container build docs](.github/containers/README.md) for details).
 
 ### 2.3 ![dist](https://img.shields.io/badge/dist-brightgreen) Pre-built tt-lang (for users)
 
-Image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-dist-ubuntu-22-04))
+Image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-dist-ubuntu-24-04))
 
 The **dist** image contains a single, fully built tt-lang installation in `/opt/ttlang-toolchain`. Use it to compile and run any tt-lang program without building any of the prerequisites.
 
@@ -107,7 +107,7 @@ docker run -d --name $USER-dist \
   -v /dev/hugepages:/dev/hugepages \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:latest \
   sleep infinity
 ```
 
@@ -120,14 +120,14 @@ docker exec -it $USER-dist /bin/bash
 The environment activates automatically on login. Run an example immediately:
 
 ```bash
-python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_full.py
 ```
 
 To learn more, take a [tour](docs/sphinx/tour/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
 
 ### 2.4 ![ird](https://img.shields.io/badge/ird-blueviolet) Development image (for building tt-lang)
 
-Image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-ird-ubuntu-22-04))
+Image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-ird-ubuntu-24-04))
 
 The **ird** image has the pre-built toolchain (LLVM, tt-metal, Python venv) but does not include tt-lang itself. Clone the repository and build against the toolchain. You can maintain multiple clones or branches side by side, each with its own build directory.
 
@@ -140,7 +140,8 @@ docker run -d --name $USER-ird \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
   -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
+  -v $HOME/.ssh/known_hosts:/root/.ssh/known_hosts:ro \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:latest \
   sleep infinity
 ```
 
@@ -169,7 +170,7 @@ ninja -C build check-ttlang-all
 Run an example:
 
 ```bash
-python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
+python examples/elementwise-tutorial/step_4_multinode_grid_full.py
 ```
 
 The `-DTTLANG_USE_TOOLCHAIN=ON` flag tells CMake to use the pre-built LLVM and tt-metal from `/opt/ttlang-toolchain` instead of building them from source, which saves significant build time.
@@ -189,7 +190,7 @@ To map a different TT device, change the `--device` argument (e.g., `--device=/d
 tt-lang includes a functional simulator that runs kernels as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
 
 ```bash
-ttlang-sim examples/eltwise_add.py
+tt-lang-sim examples/eltwise_add.py
 ```
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/simulator.md) for debugger setup and details.

@@ -3,17 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Verify (or update) that everything tied to tt-metal points at the same
-# release tag. The single source of truth is third-party/tt-metal-version.
+# release tag. The single source of truth is third-party/tt-metal-version,
+# a sourceable shell snippet defining TTNN_PYPI, TTNN_PYPI_TT_METAL_TAG, and
+# TT_METAL_TAG. See that file's header for variable semantics.
 #
 # Checks:
-#   - third-party/tt-metal-version is well-formed and points at a real
-#     tt-metal release tag
+#   - TT_METAL_TAG points at a real tt-metal release tag
+#   - TTNN_PYPI_TT_METAL_TAG is recorded for public PyPI publish alignment
 #   - third-party/tt-metal submodule HEAD == commit pointed to by the tag
 #   - Dockerfile.base does not hard-code a tt-metal SHA
-#
-# The ttnn version in the wheel's install_requires is derived dynamically
-# from this same file by setup.py:_ttnn_requirement(); no separate
-# verification is needed.
 #
 # Usage:
 #   .github/scripts/check-tt-metal-version.sh           # verify only (CI mode)
@@ -21,6 +19,10 @@
 #                                                       # at the tag's commit
 
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/tt-metal-version-utils.sh
+. "$script_dir/lib/tt-metal-version-utils.sh"
 
 ROOT=$(git rev-parse --show-toplevel)
 VERSION_FILE="$ROOT/third-party/tt-metal-version"
@@ -31,12 +33,17 @@ TT_METAL_REMOTE="https://github.com/tenstorrent/tt-metal"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 
-[[ -f "$VERSION_FILE" ]] || { echo "missing $VERSION_FILE" >&2; exit 1; }
-TAG=$(tr -d '[:space:]' < "$VERSION_FILE")
-[[ -n "$TAG" ]] || { echo "$VERSION_FILE is empty" >&2; exit 1; }
-[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] \
-  || { echo "$VERSION_FILE: '$TAG' does not look like vX.Y.Z" >&2; exit 1; }
-VERSION=${TAG#v}
+load_tt_metal_version "$VERSION_FILE"
+TAG="$TT_METAL_TAG"
+PYPI="$TTNN_PYPI"
+PYPI_TAG="$TTNN_PYPI_TT_METAL_TAG"
+require_semver_tag() {
+  local name=$1 value=$2
+  [[ "$value" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] \
+    || { echo "$VERSION_FILE: $name '$value' does not look like vX.Y.Z" >&2; exit 1; }
+}
+require_semver_tag TT_METAL_TAG "$TAG"
+require_semver_tag TTNN_PYPI_TT_METAL_TAG "$PYPI_TAG"
 
 # Resolve tag -> commit via ls-remote. Annotated tags get a `^{}` deref line.
 RESOLVED=$(git ls-remote --tags "$TT_METAL_REMOTE" \
@@ -60,9 +67,22 @@ GITLINK_SHA=$(git -C "$ROOT" ls-tree HEAD third-party/tt-metal | awk '{print $3}
 
 if [[ "$GITLINK_SHA" != "$RESOLVED" ]]; then
   if (( UPDATE )); then
+    # Nuke and re-init. The simpler in-place sequence (fetch + checkout +
+    # recursive submodule update) leaves stale state behind when bumping
+    # tt-metal across versions: shallow clones drop files, nested
+    # submodules stay at the previous tt-metal's SHAs, and untracked
+    # artifacts mirrored into the source tree (e.g. _ttnn.so from a prior
+    # build) survive. Removing the directory and re-cloning is slower
+    # (~30s + CPM cache re-population) but guarantees a clean state
+    # matching the new tag exactly. Anything saved under
+    # third-party/tt-metal that you want to keep should live elsewhere.
+    echo "Removing third-party/tt-metal for a clean re-clone..."
+    git -C "$ROOT" submodule deinit -f "$SUBMODULE" 2>/dev/null || true
+    rm -rf "$SUBMODULE"
     git -C "$ROOT" submodule update --init "$SUBMODULE"
     git -C "$SUBMODULE" fetch --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG"
     git -C "$SUBMODULE" checkout --detach "$RESOLVED"
+    git -C "$SUBMODULE" submodule update --init --recursive --depth 1
     echo "updated: third-party/tt-metal gitlink ${GITLINK_SHA:0:12} -> ${RESOLVED:0:12} ($TAG)"
   else
     echo "drift: third-party/tt-metal gitlink is ${GITLINK_SHA:0:12}, expected ${RESOLVED:0:12} ($TAG); run: $0 --update" >&2
@@ -71,7 +91,7 @@ if [[ "$GITLINK_SHA" != "$RESOLVED" ]]; then
 fi
 
 if (( UPDATE )); then
-  echo "ok: submodule checked out at $TAG ($(echo "$RESOLVED" | cut -c1-12))"
+  echo "ok: submodule re-cloned at $TAG ($(echo "$RESOLVED" | cut -c1-12)) with nested submodules"
 else
-  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule (ttnn version derived dynamically by setup.py)"
+  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule; setup.py requires ttnn==$PYPI from $PYPI_TAG"
 fi

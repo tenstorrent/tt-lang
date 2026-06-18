@@ -1,0 +1,27 @@
+diff --git a/tt_metal/tools/precompile_fw/CMakeLists.txt b/tt_metal/tools/precompile_fw/CMakeLists.txt
+index 5611f6c0a7..1d39f4b00f 100644
+--- a/tt_metal/tools/precompile_fw/CMakeLists.txt
++++ b/tt_metal/tools/precompile_fw/CMakeLists.txt
+@@ -24,7 +24,12 @@ add_custom_command(
+     OUTPUT
+         ${PROJECT_BINARY_DIR}/tt_metal/pre-compiled/.stamp
+     COMMAND
+-        ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_odr_violation=0 $<TARGET_FILE:precompile_fw>
++        ${CMAKE_COMMAND} -E env
++            ASAN_OPTIONS=detect_odr_violation=0
++            TT_METAL_RUNTIME_ROOT=${PROJECT_SOURCE_DIR}
++            TT_METAL_HOME=${PROJECT_SOURCE_DIR}
++            TT_METAL_CACHE=${PROJECT_BINARY_DIR}/tt-metal-cache
++            $<TARGET_FILE:precompile_fw>
+     COMMAND
+         ${CMAKE_COMMAND} -E touch ${PROJECT_BINARY_DIR}/tt_metal/pre-compiled/.stamp
+     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+@@ -33,7 +38,7 @@ add_custom_command(
+     COMMENT "Pre-compiling firmware binaries"
+ )
+
+-add_custom_target(precompile-fw ALL DEPENDS ${PROJECT_BINARY_DIR}/tt_metal/pre-compiled/.stamp)
++add_custom_target(precompile-fw DEPENDS ${PROJECT_BINARY_DIR}/tt_metal/pre-compiled/.stamp)
+
+ if(TT_INSTALL)
+     install(

@@ -173,7 +173,7 @@ def fused_bcast_two_outputs_kernel(a, b, out1, out2):
     def compute():
         with a_dfb.wait() as av, b_dfb.wait() as bv:
             with out1_dfb.reserve() as o1, out2_dfb.reserve() as o2:
-                b_bcast = ttl.math.broadcast(bv, o1, dims=[0])
+                b_bcast = ttl.block.broadcast(bv, dims=[0], shape=(4, 1))
                 result = av + b_bcast
                 o1.store(result)
                 o2.store(result)

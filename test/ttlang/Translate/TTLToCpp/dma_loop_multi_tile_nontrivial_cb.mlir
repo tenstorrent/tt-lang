@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
@@ -41,8 +41,8 @@
 // CHECK-DAG:   size_t [[USER_UB:v[0-9]+]] = 4;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
 // CB wrappers declared at top of kernel
-// CHECK:   experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-// CHECK:   experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+// CHECK:   CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+// CHECK:   CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[TILE_LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[TILE_STEP]]) {
 // First copy: arg0 (64x64) → CB0, accessor with runtime arg index 0
 // CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
@@ -51,7 +51,6 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:     ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0]].get_write_ptr();
 // CHECK:     size_t [[CB_PTR1_IDX:v[0-9]+]] = (size_t) [[CB_PTR1_PTRDIFF]];
-// CHECK:     noc_async_read_set_trid({{.*}}, {{.*}});
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_2]]; [[TILE1_Y]] += [[TILE_STEP]]) {
 // CHECK:       for (size_t [[TILE1_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_X]] < [[TILES_2]]; [[TILE1_X]] += [[TILE_STEP]]) {
 // CHECK:         size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_2]];
@@ -67,7 +66,7 @@
 // CHECK:         noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_ADDR1]]);
 // CHECK:       }
 // CHECK:     }
-// CHECK:     noc_async_read_barrier_with_trid({{.*}}, {{.*}});
+// CHECK:     noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // Second copy: arg1 (96x64) → CB1, accessor with runtime arg index 1
 // CHECK:     int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
 // CHECK:     auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
@@ -75,7 +74,6 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:     ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1]].get_write_ptr();
 // CHECK:     size_t [[CB_PTR2_IDX:v[0-9]+]] = (size_t) [[CB_PTR2_PTRDIFF]];
-// CHECK:     noc_async_read_set_trid({{.*}}, {{.*}});
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_Y]] < [[TILES_3]]; [[TILE2_Y]] += [[TILE_STEP]]) {
 // CHECK:       for (size_t [[TILE2_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_X]] < [[TILES_2]]; [[TILE2_X]] += [[TILE_STEP]]) {
 // CHECK:         size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_2]];
@@ -91,7 +89,7 @@
 // CHECK:         noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_ADDR2]]);
 // CHECK:       }
 // CHECK:     }
-// CHECK:     noc_async_read_barrier_with_trid({{.*}}, {{.*}});
+// CHECK:     noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   }
 // CHECK:   return;
 // CHECK-NEXT: }

@@ -212,20 +212,20 @@ simply processes all blocks that the DM kernels deliver to it.
 This version requires the tensor dimensions to be evenly divisible by the grid.
 See Step 4 for a version that handles arbitrary sizes.
 
-## Step 4 — Multi-Node, Auto Grid
+## Step 4 — Multi-Node, Full Grid
 
-**Script**: [`examples/elementwise-tutorial/step_4_multinode_grid_auto.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/elementwise-tutorial/step_4_multinode_grid_auto.py)
+**Script**: [`examples/elementwise-tutorial/step_4_multinode_grid_full.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/elementwise-tutorial/step_4_multinode_grid_full.py)
 
 This step removes two constraints from Step 3: the hard-coded grid size and
 the requirement for even divisibility.
 
-### Auto grid
+### Full grid
 
 ```python
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 ```
 
-`grid="auto"` lets the compiler select the largest grid that fits available
+`grid="full"` lets the compiler select the largest grid that fits available
 hardware resources. The operation must work correctly for any grid the compiler may
 choose as elaborated next.
 

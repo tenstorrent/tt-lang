@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# tt-lang base image: Ubuntu 22.04 with Python 3.12, Clang 18, and system
+# tt-lang base image: Ubuntu 24.04 with Python 3.12, Clang 18, and system
 # libraries required by tt-lang and tt-metal.
 #
 # Aligned with tt-mlir's Dockerfile.base to maintain compatibility.
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -32,8 +32,10 @@ set -e
 apt-get update -qq
 apt-get install -y -qq software-properties-common
 add-apt-repository ppa:git-core/ppa -y
-echo "deb http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu jammy main" > /etc/apt/sources.list.d/toolchain-test.list
-apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 1E9377A2BA9EF27F 2C277A0A352154E5
+# add-apt-repository imports the PPA signing key into a dedicated keyring;
+# apt-key was removed in Ubuntu 24.04, so the manual echo+apt-key form no
+# longer works.
+add-apt-repository ppa:ubuntu-toolchain-r/test -y
 apt-get update -qq
 apt-get install -y -qq \
     build-essential \
@@ -63,10 +65,9 @@ apt-get install -y -qq \
     gnupg \
     libstdc++6
 
-# Install Python 3.12 (matches tt-mlir)
-add-apt-repository ppa:deadsnakes/ppa -y
-apt-get update -qq
-apt-get install -y -qq python3.12 python3.12-dev python3.12-venv
+# Install Python 3.12 from Ubuntu 24.04's native packages. python3-pip
+# provides pip for the system python3.12; ensurepip is disabled on Ubuntu.
+apt-get install -y -qq python3.12 python3.12-dev python3.12-venv python3-pip
 
 # Install tt-metal runtime dependencies (firmware, SFPI, etc.) at the
 # canonical release tag (passed via --build-arg TT_METAL_TAG).
@@ -90,10 +91,10 @@ RUN wget --tries=5 --timeout=120 --waitretry=10 https://apt.llvm.org/llvm.sh && 
 # so the sibling file must be present alongside it.
 COPY requirements.txt requirements-runtime.txt /tmp/
 
-# Bootstrap pip for Python 3.12 via ensurepip (not the system python3-pip which
-# conflicts with 3.12's removal of distutils), then install dependencies.
-RUN python3.12 -m ensurepip --upgrade && \
-    python3.12 -m pip install --upgrade pip --no-cache-dir && \
+# Install Python dependencies with the apt-provided pip (python3-pip above).
+# Ubuntu 24.04 marks system Python as externally managed, and Debian-owned pip
+# cannot be upgraded in place. Use system pip with the explicit install opt-in.
+RUN export PIP_BREAK_SYSTEM_PACKAGES=1 && \
     python3.12 -m pip install cmake==3.28.4 --no-cache-dir && \
     python3.12 -m pip install --index-url https://download.pytorch.org/whl/cpu \
         torch --no-cache-dir && \

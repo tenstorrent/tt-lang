@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
@@ -19,14 +19,13 @@
 // CHECK-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
-// CHECK:   experimental::CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
+// CHECK:   CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
 // CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
 // CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:   ptrdiff_t [[CB_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR_IDX:v[0-9]+]] = (size_t) [[CB_PTR_PTRDIFF]];
-// CHECK:   noc_async_read_set_trid({{.*}}, {{.*}});
 // CHECK:   for (size_t [[TILE_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[TILE_STEP]]) {
 // CHECK:     for (size_t [[TILE_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[TILE_STEP]]) {
 // CHECK:       size_t [[TILE_OFFSET_Y:v[0-9]+]] = [[TILE_Y]] * [[TILES_BOUND]];
@@ -42,7 +41,7 @@
 // CHECK:       noc_async_read_tile([[TILE_OFFSET]], [[ACCESSOR]], [[CB_ADDR]]);
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc_async_read_barrier_with_trid({{.*}}, {{.*}});
+// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

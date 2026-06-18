@@ -9,32 +9,35 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 1: Block arg with 3 consumers - 2 unary, 1 binary
+// Test 1: Block arg with multiple consumers split across FPU and SFPU paths
 // =============================================================================
-// Purpose: Verify copy insertion handles more than 2 consumers correctly.
+// Purpose: Verify copy insertion handles more than 2 SFPU consumers correctly
+// when the same source tensor also feeds an FPU binary op. Because the
+// SetComputeKernelConfig pass rejects an f32 CB consumed by both FPU and SFPU
+// strategies, the input `a` is attached to two CBs: CB0 for the FPU consumer
+// and CB2 for the SFPU consumers. The SFPU view (`a_sfpu`) still has 2
+// consumers in the body, so DST allocation must give each its own copy_tile.
 // Pattern:
-//   sigmoid(a)  - unary consumer #1
-//   exp(a)      - unary consumer #2
-//   add(a, b)   - binary consumer #3
-//
-// Expected: Each unary consumer gets its own copy_tile, binary gets a copy too.
+//   sigmoid(a_sfpu)  - SFPU unary consumer #1
+//   exp(a_sfpu)      - SFPU unary consumer #2
+//   add(a_fpu, b)    - FPU binary consumer (reads from CB, no copy)
 
 // CHECK-LABEL: func.func @block_arg_three_consumers
 // CHECK-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG:       %[[C2:.*]] = arith.constant 2 : index
 // CHECK:           ttl.compute
-// CHECK-NEXT:      ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>,
+// CHECK-NEXT:      ^bb0(%[[A_FPU:[^:]*]]: !ttcore.tile<32x32, f32>, %[[A_SFPU:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>,
 // iter_index ops provide iteration coordinates for CB indexing.
 // CHECK:           %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
-// Copy A for sigmoid (unary consumer needs DST). Exp also gets its own copy.
-// Add is FPU binary (both block args, no copies).
-// CHECK:           %{{.*}}, %[[ACOPY1:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+// Copy a_sfpu for sigmoid (SFPU unary needs DST). Exp also gets its own copy.
+// Add is FPU binary (a_fpu and b are block args read from CB, no copies).
+// CHECK:           %{{.*}}, %[[ACOPY1:.*]] = ttl.copy_tile %[[A_SFPU]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[SIG:.*]] = ttl.tile_sigmoid %[[ACOPY1]] into dst[%[[C0]]]
-// CHECK:           %{{.*}}, %[[ACOPY2:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
+// CHECK:           %{{.*}}, %[[ACOPY2:.*]] = ttl.copy_tile %[[A_SFPU]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[ACOPY2]] into dst[%[[C1]]]
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C2]]]
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A_FPU]], %[[B]] into dst[%[[C2]]]
 // CHECK:           ttl.tile_store %[[SIG]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
@@ -47,13 +50,17 @@ func.func @block_arg_three_consumers(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %init1 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
   %init2 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  // CB0 feeds the FPU consumer; CB2 mirrors `a` for the SFPU consumers so the
+  // f32 unpack mode never has to satisfy both strategies on the same CB.
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb_a_sfpu = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb2 = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb3 = ttl.bind_cb {cb_index = 17, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb4 = ttl.bind_cb {cb_index = 18, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
-  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_cb_fpu = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_cb_sfpu = ttl.attach_cb %a, %cb_a_sfpu : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init0_cb = ttl.attach_cb %init0, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init1_cb = ttl.attach_cb %init1, %cb3 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -63,25 +70,28 @@ func.func @block_arg_three_consumers(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %out_view_1 = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %out_view_2 = ttl.cb_reserve %cb4 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result:3 = ttl.compute
-      ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
-                         tensor<2x2x!ttcore.tile<32x32, f32>>)
+      ins(%a_cb_fpu, %a_cb_sfpu, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                         tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                         tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init0_cb, %init1_cb, %init2_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                                              tensor<2x2x!ttcore.tile<32x32, f32>>,
                                              tensor<2x2x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [#map, #map, #map, #map, #map],
+      {indexing_maps = [#map, #map, #map, #map, #map, #map],
        iterator_types = ["parallel", "parallel"]} {
-  ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+  ^bb0(%a_fpu_tile: !ttcore.tile<32x32, f32>,
+       %a_sfpu_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out0_tile: !ttcore.tile<32x32, f32>,
        %out1_tile: !ttcore.tile<32x32, f32>,
        %out2_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    // Block arg 'a' has 3 consumers: sigmoid, exp, add
+    // %a_sfpu_tile has two SFPU consumers (sigmoid, exp); each needs its own
+    // copy_tile. %a_fpu_tile feeds the FPU add directly from CB0.
     %c0 = arith.constant 0 : index
-    %sig = ttl.tile_sigmoid %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    %add = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %sig = ttl.tile_sigmoid %a_sfpu_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %exp = ttl.tile_exp %a_sfpu_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %add = ttl.tile_add %a_fpu_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     ttl.tile_store %sig, %out_view_0[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %exp, %out_view_1[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %add, %out_view_2[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -488,33 +498,35 @@ func.func @intermediate_reuse_late(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 8: Block arg used by one unary op and two binary ops
+// Test 8: Tensor used by one unary op and two binary ops via split CBs
 // =============================================================================
 // Pattern:
-//   %abs = tile_abs %x    // Unary - overwrites x in-place
-//   %add = tile_add %x, %y // Binary uses same x
-//   %mul = tile_mul %x, %y // Binary uses same x
+//   %abs = tile_abs %x_sfpu      // SFPU unary, reads from the SFPU-side CB
+//   %add = tile_add %x_fpu, %y   // FPU binary, reads from the FPU-side CB
+//   %mul = tile_mul %x_fpu, %y   // FPU binary, reads from the FPU-side CB
 //
-// The unary op (abs) would clobber x before the binary ops can use it.
-// Phase 1 inserts copy_tile for abs (unary consumer needs DST).
-// The binary consumers (add, mul) are FPU binary (both operands are block
-// args), so they read from CB and need no copy_tile.
-// Result: 1 copy of x total (for abs only).
+// The same source tensor %i0 feeds both an SFPU unary and two FPU binaries.
+// SetComputeKernelConfig forbids an f32 CB from being consumed by both
+// strategies, so %i0 is attached to two CBs: CB0 for the FPU consumers and
+// CB2 for the SFPU consumer. Phase 1 still inserts copy_tile for abs because
+// the unary op overwrites its DST register, while add and mul stay FPU
+// binary (both operands are block args) and read directly from their CBs.
+// Result: 1 copy of x_sfpu total (for abs only).
 
 // CHECK-LABEL: func.func @unary_and_binary_consumers
 // CHECK-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG:       %[[C2:.*]] = arith.constant 2 : index
 // CHECK: ttl.compute
-// CHECK-NEXT: ^bb0(%[[X:[^:]*]]: !ttcore.tile<32x32, f32>, %[[Y:[^:]*]]: !ttcore.tile<32x32, f32>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT: ^bb0(%[[X_FPU:[^:]*]]: !ttcore.tile<32x32, f32>, %[[X_SFPU:[^:]*]]: !ttcore.tile<32x32, f32>, %[[Y:[^:]*]]: !ttcore.tile<32x32, f32>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:      %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
-// Copy X for abs (unary consumer needs DST)
-// CHECK:           %{{.*}}, %[[XCOPY_ABS:.*]] = ttl.copy_tile %[[X]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+// Copy x_sfpu for abs (SFPU unary consumer needs DST)
+// CHECK:           %{{.*}}, %[[XCOPY_ABS:.*]] = ttl.copy_tile %[[X_SFPU]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[ABS:.*]] = ttl.tile_abs %[[XCOPY_ABS]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// Both add and mul are FPU binary (both operands are block args)
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[X]], %[[Y]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[X]], %[[Y]] into dst[%[[C2]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// Both add and mul are FPU binary on x_fpu/y (both block args)
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[X_FPU]], %[[Y]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[X_FPU]], %[[Y]] into dst[%[[C2]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // Combine results (SFPU, operands from DST)
 // CHECK:      %[[TMP:.*]] = ttl.tile_add %[[ABS]], %[[ADD]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:      %[[RESULT:.*]] = ttl.tile_add %[[TMP]], %[[MUL]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
@@ -525,30 +537,33 @@ func.func @unary_and_binary_consumers(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>,
                                        %i1: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x1x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
 
+  // CB0 feeds the FPU consumers; CB2 mirrors %i0 for the SFPU consumer.
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb_x_sfpu = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cb_out = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
 
-  %t0 = ttl.attach_cb %i0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %t0_fpu = ttl.attach_cb %i0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %t0_sfpu = ttl.attach_cb %i0, %cb_x_sfpu : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %t1 = ttl.attach_cb %i1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %t_init = ttl.attach_cb %init, %cb_out : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
   %out_view_6 = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %res = ttl.compute
-    ins(%t0, %t1 : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>)
+    ins(%t0_fpu, %t0_sfpu, %t1 : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>)
     outs(%t_init : tensor<1x1x!ttcore.tile<32x32, f32>>)
-    {indexing_maps = [#map, #map, #map],
+    {indexing_maps = [#map, #map, #map, #map],
      iterator_types = ["parallel", "parallel"]} {
-  ^bb0(%x: !ttcore.tile<32x32, f32>, %y: !ttcore.tile<32x32, f32>,
-       %out: !ttcore.tile<32x32, f32>):
+  ^bb0(%x_fpu: !ttcore.tile<32x32, f32>, %x_sfpu: !ttcore.tile<32x32, f32>,
+       %y: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    // x is used by abs (unary), add (binary), and mul (binary)
-    // Phase 1 inserts copy_tile for abs; add and mul are FPU binary (no copy)
+    // x_sfpu feeds abs (SFPU), x_fpu feeds add and mul (FPU). Phase 1 inserts
+    // copy_tile only for abs; add and mul read from CB.
     %c0 = arith.constant 0 : index
-    %abs = ttl.tile_abs %x into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    %add = ttl.tile_add %x, %y into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    %mul = ttl.tile_mul %x, %y into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %abs = ttl.tile_abs %x_sfpu into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %add = ttl.tile_add %x_fpu, %y into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %mul = ttl.tile_mul %x_fpu, %y into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     // Combine results
     %tmp = ttl.tile_add %abs, %add into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %result = ttl.tile_add %tmp, %mul into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>

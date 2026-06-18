@@ -10,6 +10,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
 
@@ -21,6 +23,9 @@ namespace mlir::tt::ttl {
 inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
 inline constexpr int32_t kMaxCircularBuffers = 32;
+/// TT kernel hardware semaphore id capacity. Mirrored by
+/// python/ttl/constants.py for simulator-side resource checks.
+inline constexpr int64_t kMaxHardwareSemaphoreIds = 16;
 
 /// Tag for tile-level operations to enable identity checks without type
 /// inspection.
@@ -35,6 +40,8 @@ constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
+constexpr llvm::StringLiteral
+    kUnpackToDestFp32AttrName("ttl.unpack_to_dest_fp32");
 
 /// Canonical target_arch values. Mirrored in python/ttl/ttl_api.py.
 constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
@@ -65,6 +72,19 @@ enum class PipeRole : int64_t {
   Destination = 1,
   Active = 2,
 };
+
+/// A contiguous set of DST slots starting at `baseIndex`.
+struct DstFootprint {
+  mlir::Value baseIndex;
+  int64_t tileCount = 1;
+};
+
+llvm::SmallVector<DstFootprint, 2>
+getDefaultDstReadFootprints(mlir::Operation *op);
+llvm::SmallVector<DstFootprint, 2>
+getDefaultDstWriteFootprints(mlir::Operation *op);
+mlir::FailureOr<DstFootprint> getDefaultResultDstFootprint(mlir::Operation *op,
+                                                           mlir::Value result);
 
 /// Func-level: enable FPU lowering for eligible tile add/sub/mul.
 /// Set by TTLSetComputeKernelConfig, read via getKernelBoolAttr.
@@ -115,6 +135,14 @@ constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 /// Module attribute carrying compiler-allocated DFB metadata.
 constexpr llvm::StringLiteral
     kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
+
+/// Module attributes carrying compiler-owned pipe resource allocation.
+constexpr llvm::StringLiteral
+    kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");
+constexpr llvm::StringLiteral
+    kPipeGlobalSemaphoreCountAttrName("ttl.pipe_global_semaphore_count");
+constexpr llvm::StringLiteral
+    kPipeSramScratchBytesAttrName("ttl.pipe_sram_scratch_bytes");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.

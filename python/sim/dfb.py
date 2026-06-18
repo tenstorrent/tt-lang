@@ -34,11 +34,11 @@ from .blockstate import (
     BlockAcquisition,
     BlockStateMachine,
     ExpectedOp,
-    ThreadType,
+    KernelType,
     format_cannot_read_block,
     format_cannot_write_block,
 )
-from .context import get_current_thread_type
+from .context import get_current_kernel_type
 from .diagnostics import find_user_code_location
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
@@ -69,7 +69,7 @@ class Block:
     State Machine:
     The block maintains a state machine that validates correct usage patterns:
     - Tracks acquisition method (reserve vs wait)
-    - Tracks current thread type (DM vs Compute)
+    - Tracks current kernel role (DM vs Compute)
     - Tracks access state (RO/WO/RW/NA)
     - Tracks expected next operation
     - Transitions to DONE state after final operation (push/pop)
@@ -78,7 +78,6 @@ class Block:
     __slots__ = (
         "_buf",
         "_shape",
-        "_element_shape",  # Element-level shape (for broadcast semantics)
         "_sm",  # BlockStateMachine: owns all access-state logic
         "_is_temporary",
         "_store_confirmation_pending",  # Set by assign_src; cleared by mark_store_read_complete
@@ -102,23 +101,18 @@ class Block:
         tensor: Tensor,
         shape: Shape,
         acquisition: BlockAcquisition,
-        thread_type: ThreadType,
+        kernel_type: KernelType,
         is_temporary: bool = False,
         dfb: Optional["DataflowBuffer"] = None,
         name: Optional[str] = None,
     ):
         self._buf = tensor
         self._shape = shape
-        # Element shape is always derived from the tensor's actual shape
-        self._element_shape = tuple(tensor.shape)
         self._is_temporary = is_temporary
         self._store_confirmation_pending: bool = (
             False  # Set by assign_src; cleared by mark_store_read_complete
         )
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
-        self._broadcast_dims: Optional[tuple[int, ...]] = (
-            None  # Pending broadcast metadata
-        )
         self.dfb = dfb  # Reference to DataflowBuffer for context manager support
         self.dfb_state: Optional[DFBState] = None
         self.dfb_slot_idx: int = -1
@@ -127,7 +121,7 @@ class Block:
         self._pending_copy_src_location: Optional[Tuple[str, int]] = None
 
         # Delegate all access-state logic to BlockStateMachine
-        self._sm: BlockStateMachine = BlockStateMachine(acquisition, thread_type)
+        self._sm: BlockStateMachine = BlockStateMachine(acquisition, kernel_type)
         if not is_temporary:
             self._sm.initialize()
         else:
@@ -143,8 +137,8 @@ class Block:
         return self._sm.acquisition
 
     @property
-    def _thread_type(self) -> ThreadType:
-        return self._sm.thread_type
+    def _kernel_type(self) -> KernelType:
+        return self._sm.kernel_type
 
     @property
     def _access_state(self) -> AccessState:
@@ -188,7 +182,7 @@ class Block:
             f"shape={self._shape}, "
             f"data={repr(self._buf.to_torch())}, "
             f"acq={acq}, "
-            f"kernel={self._thread_type.name}, "
+            f"kernel={self._kernel_type.name}, "
             f"access={self._access_state.name}, "
             f"expected={expected})"
         )
@@ -500,7 +494,7 @@ class Block:
                 tensor=Tensor(elem_tensor, ROW_MAJOR_LAYOUT),
                 shape=shape,
                 acquisition=BlockAcquisition.RESERVE,
-                thread_type=ThreadType.COMPUTE,
+                kernel_type=KernelType.COMPUTE,
                 is_temporary=True,
             )
             return block
@@ -528,7 +522,7 @@ class Block:
             tensor=Tensor(elem_tensor),
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=ThreadType.COMPUTE,
+            kernel_type=KernelType.COMPUTE,
             is_temporary=True,
         )
         return block
@@ -558,26 +552,24 @@ class Block:
                 tensor=t,
                 shape=t.shape,
                 acquisition=BlockAcquisition.RESERVE,
-                thread_type=ThreadType.COMPUTE,
+                kernel_type=KernelType.COMPUTE,
                 is_temporary=True,
             )
 
         elem_shape = t.shape
         if len(elem_shape) == 1:
             w = elem_shape[0]
-            if w != 1 and w % TILE_SHAPE[0] != 0:
+            if w % TILE_SHAPE[0] != 0:
                 raise ValueError(
                     f"1-D tensor dimension ({w},) must be a multiple of "
-                    f"TILE_SHAPE[0]={TILE_SHAPE[0]}, or exactly 1"
+                    f"TILE_SHAPE[0]={TILE_SHAPE[0]}"
                 )
         else:
             h, w = elem_shape[-2], elem_shape[-1]
-            if (h != 1 and h % TILE_SHAPE[0] != 0) or (
-                w != 1 and w % TILE_SHAPE[1] != 0
-            ):
+            if h % TILE_SHAPE[0] != 0 or w % TILE_SHAPE[1] != 0:
                 raise ValueError(
                     f"Last two tensor dimensions ({h}, {w}) must be multiples of "
-                    f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
+                    f"TILE_SHAPE {TILE_SHAPE}"
                 )
         tile_shape: Shape = tile_shape_from_tensor(t)
 
@@ -585,7 +577,7 @@ class Block:
             tensor=t,
             shape=tile_shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=ThreadType.COMPUTE,
+            kernel_type=KernelType.COMPUTE,
             is_temporary=True,
         )
 
@@ -633,68 +625,6 @@ class Block:
             if self.dfb_state is not None:
                 self.dfb_state.buf[self.dfb_slot_idx] = tensor
 
-    @staticmethod
-    def _infer_broadcast_shape(left_shape: Shape, right_shape: Shape) -> Shape:
-        """Infer the result shape from broadcasting two shapes.
-
-        Uses standard broadcasting rules: dimensions must match or one must be 1.
-        """
-        if len(left_shape) != len(right_shape):
-            # For now, require same number of dimensions
-            raise ValueError(f"Shape dimension mismatch: {left_shape} vs {right_shape}")
-
-        # Check compatibility using pattern matching
-        for l, r in zip(left_shape, right_shape):
-            match (l, r):
-                case (1, _) | (_, 1):
-                    # One dimension is 1: broadcasting compatible
-                    pass
-                case (x, y) if x == y:
-                    # Both dimensions equal: compatible
-                    pass
-                case _:
-                    # Incompatible dimensions
-                    raise ValueError(
-                        f"Incompatible shapes for broadcasting: {left_shape} and {right_shape}"
-                    )
-
-        # Now construct result_shape knowing all dimensions are compatible
-        result_shape: Shape = tuple(max(l, r) for l, r in zip(left_shape, right_shape))
-
-        return result_shape
-
-    @staticmethod
-    def _expand_broadcast_dims(
-        block: "Block",
-        target_shape: Shape,
-        target_element_shape: Shape,
-        broadcast_dims: tuple[int, ...],
-    ) -> Tensor:
-        """Expand a block along broadcast dimensions to match target shape.
-
-        Uses PyTorch broadcasting to expand the block's tensor from its current
-        element shape to the target element shape. All validation is performed
-        by broadcast() before setting _broadcast_dims metadata.
-
-        Uses innermost-first convention: dims=[0] = last dimension in shape.
-
-        Args:
-            block: Source block with broadcast metadata
-            target_shape: Target tile shape to expand to
-            target_element_shape: Target element shape to expand to
-            broadcast_dims: Dimensions to expand (innermost-first indexing)
-
-        Returns:
-            Tensor with expanded element shape
-        """
-
-        # Use PyTorch broadcasting to expand the tensor
-        src_tensor = block._buf.to_torch()
-        expanded_tensor = src_tensor.expand(*target_element_shape)
-
-        # Return tensor directly
-        return Tensor(expanded_tensor.contiguous())
-
     def store(self, items: "Block") -> None:
         """Store data into this block.
 
@@ -713,7 +643,7 @@ class Block:
         # Track wait() Compute source blocks for state machine
         if (
             items._acquisition == BlockAcquisition.WAIT
-            and items._thread_type == ThreadType.COMPUTE
+            and items._kernel_type == KernelType.COMPUTE
             and ExpectedOp.STORE_SRC in items._expected_ops
         ):
             source_blocks_to_mark.append(items)
@@ -725,26 +655,18 @@ class Block:
                 or blk._store_confirmation_pending
             )
 
-        # Check if source has broadcast metadata - if so, expand it
+        # Validate that tile counts match (allows different dimensionality)
         src_shape = items._shape
         dst_shape = self._shape
-
-        if hasattr(items, "_broadcast_dims") and items._broadcast_dims is not None:
-            # Source came from broadcast() - expand using metadata
-            src_tensor = self._expand_broadcast_dims(
-                items, dst_shape, self._element_shape, items._broadcast_dims
+        src_tiles = math.prod(src_shape)
+        dst_tiles = math.prod(dst_shape)
+        if src_tiles != dst_tiles:
+            raise ValueError(
+                f"Shape mismatch in store(): "
+                f"source shape {src_shape} ({src_tiles} tiles) does not match "
+                f"destination shape {dst_shape} ({dst_tiles} tiles). "
+                f"Use broadcast() to expand the source before store()."
             )
-        else:
-            # No broadcast metadata - validate tile counts match (allows different dimensionality)
-            src_tiles = math.prod(src_shape)
-            dst_tiles = math.prod(dst_shape)
-            if src_tiles != dst_tiles:
-                raise ValueError(
-                    f"Shape mismatch in store(): "
-                    f"source shape {src_shape} ({src_tiles} tiles) does not match "
-                    f"destination shape {dst_shape} ({dst_tiles} tiles). "
-                    f"Use broadcast() to expand the source if needed."
-                )
 
         # Mark source wait() blocks as consumed
         for source_block in source_blocks_to_mark:
@@ -779,7 +701,7 @@ class Block:
             if (
                 not source._is_temporary
                 and source._acquisition == BlockAcquisition.WAIT
-                and source._thread_type == ThreadType.COMPUTE
+                and source._kernel_type == KernelType.COMPUTE
             ):
                 result_block._source_blocks.append(source)
                 # Fire assign_src so pop() is allowed when the 'with' context exits,
@@ -808,7 +730,7 @@ class Block:
             tensor=result_tensor,
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=ThreadType.COMPUTE,
+            kernel_type=KernelType.COMPUTE,
             is_temporary=True,
         )
         # Track all source blocks (self + any additional)
@@ -822,57 +744,29 @@ class Block:
     ) -> "Block":
         """Element-wise binary op: self (op) other.
 
-        Applies op on the underlying Tensors (PyTorch broadcasting applies).
-        Validates that tile-grid shapes are broadcast-compatible.
+        Applies op on the underlying Tensors. Both operands must have matching
+        grid shapes; use broadcast() to expand operands before combining them.
 
         Tracks wait() Compute blocks that contribute to the result.
         """
+        # Layout consistency is checked before shape so a mismatched-layout
+        # error wins over a shape error: pairing the underlying buffers is
+        # only meaningful when both operands agree on layout, regardless of
+        # whether their declared shapes happen to match.
+        check_same_layout(self, other)
+
         left_shape = self._shape
         right_shape = other._shape
 
-        # Check if either operand has broadcast metadata
-        left_has_broadcast = (
-            hasattr(self, "_broadcast_dims") and self._broadcast_dims is not None
-        )
-        right_has_broadcast = (
-            hasattr(other, "_broadcast_dims") and other._broadcast_dims is not None
-        )
-
-        if left_has_broadcast and right_has_broadcast:
-            raise ValueError(
-                f"Cannot perform binary operation: both operands have pending broadcast. "
-                f"Materialize one operand first by storing it."
-            )
-
-        # Expand operand with broadcast metadata to match the other
-        left_buf = self._buf
-        right_buf = other._buf
-        result_shape = left_shape
-
-        if left_has_broadcast:
-            # Expand left to match right shape
-            assert self._broadcast_dims is not None  # Checked by left_has_broadcast
-            left_buf = self._expand_broadcast_dims(
-                self, right_shape, other._element_shape, self._broadcast_dims
-            )
-            result_shape = right_shape
-        elif right_has_broadcast:
-            # Expand right to match left shape
-            assert other._broadcast_dims is not None  # Checked by right_has_broadcast
-            right_buf = self._expand_broadcast_dims(
-                other, left_shape, self._element_shape, other._broadcast_dims
-            )
-            result_shape = left_shape
-        elif left_shape != right_shape:
-            # No broadcast metadata and shapes don't match - error
+        if left_shape != right_shape:
             raise ValueError(
                 f"Shape mismatch in binary operation: left shape {left_shape} does not match "
-                f"right shape {right_shape}. Use broadcast() to expand operands."
+                f"right shape {right_shape}. Use broadcast() to expand operands first."
             )
 
         # Perform operation
         return self._create_temporary_result(
-            op(left_buf, right_buf), result_shape, other
+            op(self._buf, other._buf), left_shape, other
         )
 
     # ---- forward operators ----
@@ -926,7 +820,7 @@ class Block:
         """In-place add for temporary accumulator blocks.
 
         Allows the pattern:
-            y = ttl.math.fill(0)
+            y = ttl.math.fill(0, shape=(...))
             y += a_blk @ b_blk   # repeated accumulation
             dst_blk.store(y)
 
@@ -956,9 +850,9 @@ class Block:
         return self._acquisition
 
     @property
-    def thread_type(self) -> ThreadType:
+    def kernel_type(self) -> KernelType:
         """Get the kernel role (DM or Compute) that acquired this block."""
-        return self._thread_type
+        return self._kernel_type
 
     @property
     def access_state(self) -> AccessState:
@@ -1077,15 +971,9 @@ class DataflowBuffer:
             TILE_SIZE = TILE_SHAPE[0]  # 32
             ndims = len(shape)
             for i, (edim, tdim) in enumerate(zip(likeness_tensor.shape, shape)):
-                if edim == 1:
-                    # Degenerate dimension: tile dimension must also be 1
-                    if tdim != 1:
-                        raise ValueError(
-                            f"Element shape dimension {i} is degenerate (size 1), but tile dimension is {tdim} (expected 1). "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
-                        )
-                elif i == ndims - 1 or i == ndims - 2:
-                    # Last two dimensions are tile dimensions
+                if i == ndims - 1 or i == ndims - 2:
+                    # Last two dimensions are tile dimensions: must be a
+                    # multiple of TILE_SIZE per spec (every tile is 32x32).
                     if edim % TILE_SIZE != 0:
                         raise ValueError(
                             f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
@@ -1097,7 +985,6 @@ class DataflowBuffer:
                             f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
                         )
                 else:
-                    # Batch/other dimensions
                     if edim < tdim:
                         raise ValueError(
                             f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
@@ -1105,13 +992,17 @@ class DataflowBuffer:
                         )
 
             self._element_shape = tuple(
-                1 if edim == 1 else tdim * TILE_SIZE
-                for edim, tdim in zip(likeness_tensor.shape, shape)
+                tdim * TILE_SIZE if i >= ndims - 2 else tdim
+                for i, tdim in enumerate(shape)
             )
 
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
         self._pending_confirmations: set[Block] = set()
+        # Greenlet that owns the current pending reserved/waited block.
+        # Prevents a different kernel function's cleanup from touching this block.
+        self._pending_reserved_greenlet: object = None
+        self._pending_waited_greenlet: object = None
 
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
@@ -1146,11 +1037,7 @@ class DataflowBuffer:
             RuntimeError: If called again before pop()
         """
         if self._pending_waited_block is not None:
-            raise RuntimeError(
-                "Cannot call wait() again before pop(): "
-                "DataflowBuffer already has a pending waited block. "
-                "You must call pop() before calling wait() again."
-            )
+            self.auto_pop_block()
 
         from .greenlet_scheduler import block_if_needed
 
@@ -1164,16 +1051,19 @@ class DataflowBuffer:
         )
         slot = state.buf[state.head]
         assert slot is not None, "Visible slot has no data — internal inconsistency."
-        thread_type = get_current_thread_type()
+        kernel_type = get_current_kernel_type()
         block = Block(
             tensor=slot,
             shape=state.shape,
             acquisition=BlockAcquisition.WAIT,
-            thread_type=thread_type,
+            kernel_type=kernel_type,
             name=name,
         )
         block.dfb = self
         self._pending_waited_block = block
+        from greenlet import getcurrent
+
+        self._pending_waited_greenlet = getcurrent()
 
         tiles = math.prod(state.shape)
         trace(
@@ -1220,11 +1110,7 @@ class DataflowBuffer:
             RuntimeError: If called again before push()
         """
         if self._pending_reserved_block is not None:
-            raise RuntimeError(
-                "Cannot call reserve() again before push(): "
-                "DataflowBuffer already has a pending reserved block. "
-                "You must call push() before calling reserve() again."
-            )
+            self.auto_push_block()
 
         from .greenlet_scheduler import block_if_needed
 
@@ -1237,20 +1123,27 @@ class DataflowBuffer:
             "block_if_needed() should have been called first."
         )
         slot_idx = state.back_slot()
-        # Create tensor with the DFB's element shape and layout
+        # Create a slot tensor that mirrors the likeness tensor's dtype properties:
+        # - backing storage uses underlying_dtype (e.g. float32 when promoted) so
+        #   copy and comparison operations stay type-consistent with other tensors;
+        # - declared _dtype is propagated so element_size and size_in_bytes report
+        #   the correct hardware byte count for L1 accounting.
         slot = Tensor(
-            torch.zeros(self._element_shape, dtype=self.likeness_tensor.dtype),
+            torch.zeros(
+                self._element_shape, dtype=self.likeness_tensor.underlying_dtype
+            ),
             self.likeness_tensor.layout,
+            dtype=self.likeness_tensor.dtype,
         )
         state.buf[slot_idx] = slot
         state.reserved += 1
 
-        thread_type = get_current_thread_type()
+        kernel_type = get_current_kernel_type()
         block = Block(
             tensor=slot,
             shape=state.shape,
             acquisition=BlockAcquisition.RESERVE,
-            thread_type=thread_type,
+            kernel_type=kernel_type,
             name=name,
         )
         block.dfb = self
@@ -1258,6 +1151,9 @@ class DataflowBuffer:
         block.dfb_slot_idx = slot_idx
 
         self._pending_reserved_block = block
+        from greenlet import getcurrent
+
+        self._pending_reserved_greenlet = getcurrent()
 
         tiles = math.prod(state.shape)
         trace(
@@ -1288,6 +1184,7 @@ class DataflowBuffer:
         if self._pending_reserved_block is not None:
             self._pending_reserved_block.mark_push_complete()
             self._pending_reserved_block = None
+            self._pending_reserved_greenlet = None
 
         state = self._state
         if state.reserved < 1:
@@ -1308,6 +1205,7 @@ class DataflowBuffer:
         if self._pending_waited_block is not None:
             self._pending_waited_block.mark_pop_complete()
             self._pending_waited_block = None
+            self._pending_waited_greenlet = None
 
         state = self._state
         if state.visible < 1:
@@ -1317,6 +1215,34 @@ class DataflowBuffer:
         state.visible -= 1
 
         trace("dfb_pop", dfb=get_dfb_name(self), occupied=state.visible)
+
+    def auto_push_block(self) -> None:
+        """Push the reserved block if one is pending for the current greenlet.
+
+        No-op when no block is pending or when the pending block belongs to
+        a different greenlet (i.e., a different kernel function).
+        """
+        if self._pending_reserved_block is None:
+            return
+        from greenlet import getcurrent
+
+        if self._pending_reserved_greenlet is not getcurrent():
+            return
+        self.push_block()
+
+    def auto_pop_block(self) -> None:
+        """Pop the waited block if one is pending for the current greenlet.
+
+        No-op when no block is pending or when the pending block belongs to
+        a different greenlet (i.e., a different kernel function).
+        """
+        if self._pending_waited_block is None:
+            return
+        from greenlet import getcurrent
+
+        if self._pending_waited_greenlet is not getcurrent():
+            return
+        self.pop_block()
 
     @property
     def shape(self) -> Shape:
@@ -1394,8 +1320,10 @@ class DataflowBuffer:
             nxt = [op.name for op in block.expected_ops]
             nm = _name_phrase_for_error(block)
             errors.append(
-                f"Block{nm} is reserve() acquired at kernel exit; producer kernel needs to push() before exit.\n\n"
-                f"Details: block_name={block.name!r}, acquisition=RESERVE, kernel={block.thread_type.name}, "
+                f"Block{nm} from reserve() was not pushed before kernel exit. "
+                f"This is a simulator bug — auto-push injection should have fired. "
+                f"Please file a bug report with a reproducer.\n\n"
+                f"Details: block_name={block.name!r}, acquisition=RESERVE, kernel={block.kernel_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
 
@@ -1404,8 +1332,10 @@ class DataflowBuffer:
             nxt = [op.name for op in block.expected_ops]
             nm = _name_phrase_for_error(block)
             errors.append(
-                f"Block{nm} is wait() acquired at kernel exit; consumer kernel needs to pop() before exit.\n\n"
-                f"Details: block_name={block.name!r}, acquisition=WAIT, kernel={block.thread_type.name}, "
+                f"Block{nm} from wait() was not popped before kernel exit. "
+                f"This is a simulator bug — auto-pop injection should have fired. "
+                f"Please file a bug report with a reproducer.\n\n"
+                f"Details: block_name={block.name!r}, acquisition=WAIT, kernel={block.kernel_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
 
@@ -1503,7 +1433,7 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
         if (
             not is_temporary
             and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
-            and getattr(block, "thread_type", None) == ThreadType.COMPUTE
+            and getattr(block, "kernel_type", None) == KernelType.COMPUTE
         ):
             source_blocks = getattr(result_block, "_source_blocks", None)
             if source_blocks is not None:
@@ -1519,6 +1449,26 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
             result_source = getattr(result_block, "_source_blocks", None)
             if actual_source is not None and result_source is not None:
                 result_source.extend(actual_source)
+
+
+def check_same_layout(*blocks: Block) -> None:
+    """Raise ``ValueError`` if not all input blocks share the same layout.
+
+    Multi-operand operations (binary / ternary / matmul) require all operands
+    to share a layout because ``TILE_LAYOUT`` and ``ROW_MAJOR_LAYOUT`` blocks
+    have different stride / padding semantics in their underlying buffers, so
+    elementwise pairing tile-by-tile is only well-defined when both sides
+    agree.  The compiler enforces the same precondition; this helper makes the
+    simulator fail fast with the same error class.
+    """
+    if len(blocks) < 2:
+        return
+    first = blocks[0].layout
+    if any(b.layout != first for b in blocks[1:]):
+        raise ValueError(
+            f"all operand blocks must share the same layout; got "
+            f"{[b.layout for b in blocks]}"
+        )
 
 
 def _matmul_tile_shape(a_shape: Shape, b_shape: Shape) -> Shape:
@@ -1568,13 +1518,14 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     Returns:
         Block whose tile shape corresponds to the matmul output shape.
     """
+    check_same_layout(a, b)
     result_tensor = a.to_tensor() @ b.to_tensor()
     result_shape = _matmul_tile_shape(a.shape, b.shape)
     result_block = Block(
         tensor=result_tensor,
         shape=result_shape,
         acquisition=BlockAcquisition.RESERVE,
-        thread_type=ThreadType.COMPUTE,
+        kernel_type=KernelType.COMPUTE,
         is_temporary=True,
     )
     track_source_blocks(result_block, a, b)

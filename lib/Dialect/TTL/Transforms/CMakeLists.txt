@@ -1,10 +1,14 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
+  DFBMaterialization.cpp
+  PipeGraph.cpp
   PipeLowering.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
   LowerDPrintToEmitC.cpp
+  LaunchNodeDomainAnalysis.cpp
+  LowerScalarCmpFToTTKernel.cpp
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
@@ -12,6 +16,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
   TTLFinalizeDFBIndices.cpp
+  TTLValidateCBBudget.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
@@ -21,6 +26,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
+  DstSubblockUtils.cpp
   TTLSubblockComputeForDST.cpp
 
   DEPENDS
@@ -28,6 +34,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
 
   LINK_LIBS PUBLIC
   MLIRAnalysis
+  MLIRAffineTransforms
   MLIRArithDialect
   MLIREmitCDialect
   MLIRFuncDialect

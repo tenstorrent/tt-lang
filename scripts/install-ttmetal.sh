@@ -27,6 +27,15 @@ echo "  Source:  $SRC"
 echo "  Build:   $BUILD"
 echo "  Install: $INSTALL"
 
+if [ ! -d "$SRC" ]; then
+    echo "ERROR: source directory '$SRC' does not exist." >&2
+    exit 1
+fi
+if [ ! -d "$BUILD" ]; then
+    echo "ERROR: build directory '$BUILD' does not exist; tt-metal build did not run." >&2
+    exit 1
+fi
+
 # --- Shared libraries ---
 # Flatten all .so files from the build tree into lib/.  This covers libraries
 # from subdirectories like tt_stl/, _deps/fmt-build/, tt_metal/third_party/umd/,
@@ -50,10 +59,28 @@ fi
 # Preserve the two-level ttnn/ttnn/ layout from the source tree so that
 # PYTHONPATH points to the outer ttnn/ directory.  This avoids ttnn's
 # types.py shadowing the stdlib types module.
+#
+# Python sources (.py and friends) come from $SRC; compiled extensions
+# (_ttnn.so, _ttnncpp.so) come from $BUILD/ttnn/. We never copy .so files
+# from the source tree because BuildTTMetal.cmake mirrors fresh
+# extensions into $SRC/ttnn/ttnn after each successful build, but those
+# files persist across builds and would silently install stale binaries
+# from a previous tt-metal version if the current build did not produce
+# new ones.
 if [ -d "$SRC/ttnn/ttnn" ]; then
     rm -rf "$INSTALL/python_packages/ttnn"
     mkdir -p "$INSTALL/python_packages/ttnn/ttnn"
     cp -prL "$SRC/ttnn/ttnn/"* "$INSTALL/python_packages/ttnn/ttnn/" 2>/dev/null || true
+    find "$INSTALL/python_packages/ttnn/ttnn" -name "*.so" -delete
+    for _so in _ttnn.so _ttnncpp.so; do
+        _src="$BUILD/ttnn/$_so"
+        if [ ! -f "$_src" ]; then
+            echo "ERROR: $_src not found; tt-metal build did not produce ttnn extensions." >&2
+            echo "Make sure the tt-metal build completed before running install-ttmetal.sh." >&2
+            exit 1
+        fi
+        cp -pL "$_src" "$INSTALL/python_packages/ttnn/ttnn/"
+    done
     echo "Installed ttnn Python package"
 fi
 
@@ -88,8 +115,17 @@ fi
 # The toolchain must contain the full tt_metal/ and ttnn/cpp/ subtrees (~99 MB).
 if [ -d "$SRC/tt_metal" ]; then
     echo "Installing tt-metal JIT source tree..."
-    cp -a "$SRC/tt_metal" "$INSTALL/"
+    rm -rf "$INSTALL/tt_metal"
+    mkdir -p "$INSTALL/tt_metal"
+    _tar_args=()
+    if [ ! -f "$BUILD/tt_metal/pre-compiled/.stamp" ]; then
+        _tar_args+=(--exclude='./pre-compiled')
+        echo "Skipping pre-compiled firmware: $BUILD/tt_metal/pre-compiled/.stamp not found"
+    fi
+    (cd "$SRC/tt_metal" && tar "${_tar_args[@]}" -cf - .) | \
+        (cd "$INSTALL/tt_metal" && tar -xf -)
     mkdir -p "$INSTALL/ttnn"
+    rm -rf "$INSTALL/ttnn/cpp"
     cp -a "$SRC/ttnn/cpp" "$INSTALL/ttnn/"
     echo "Installed JIT source tree"
 fi

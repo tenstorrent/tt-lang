@@ -48,7 +48,7 @@ def _torch_layernorm(x, weight, bias, eps=1e-6):
 # ---------------------------------------------------------------------------
 
 
-def _alloc_dfbs(x, weight, ln_bias, scaler, mean_scale, out, *, full):
+def _alloc_dfbs(x, weight, ln_bias, mean_scale, out, *, full):
     """Allocate the layernorm DFB set.
 
     `full=True` includes the intermediate `red`/`acc`/`bcast`/`sq` DFBs used
@@ -58,7 +58,6 @@ def _alloc_dfbs(x, weight, ln_bias, scaler, mean_scale, out, *, full):
     """
     dfbs = {
         "x": ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2),
-        "sc": ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1),
         "ms": ttl.make_dataflow_buffer_like(mean_scale, shape=(1, 1), block_count=1),
         "w": ttl.make_dataflow_buffer_like(weight, shape=(1, 1), block_count=2),
         "b": ttl.make_dataflow_buffer_like(ln_bias, shape=(1, 1), block_count=2),
@@ -70,10 +69,10 @@ def _alloc_dfbs(x, weight, ln_bias, scaler, mean_scale, out, *, full):
         dfbs.update(
             {
                 "red": ttl.make_dataflow_buffer_like(
-                    scaler, shape=(1, 1), block_count=2
+                    mean_scale, shape=(1, 1), block_count=2
                 ),
                 "acc": ttl.make_dataflow_buffer_like(
-                    scaler, shape=(1, 1), block_count=2
+                    mean_scale, shape=(1, 1), block_count=2
                 ),
                 "bcast": ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2),
                 "sq": ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2),
@@ -86,7 +85,6 @@ def _define_dm(
     x,
     weight,
     ln_bias,
-    scaler,
     mean_scale,
     out,
     dfbs,
@@ -98,12 +96,11 @@ def _define_dm(
 ):
     """Register the `dm_read` and `dm_write` threads.
 
-    Both variants load scaler + mean_scale once, read x three times (one
-    pass per layernorm stage) plus weight / bias once, and write one
-    output tile per input tile. `use_with=True` wraps every
-    reserve/wait in a `with:` block; `use_with=False` uses bare
-    `.reserve()` / `.wait()` calls."""
-    x_dfb, sc_dfb, ms_dfb = dfbs["x"], dfbs["sc"], dfbs["ms"]
+    Both variants load mean_scale once, read x three times (one pass per
+    layernorm stage) plus weight / bias once, and write one output tile
+    per input tile. `use_with=True` wraps every reserve/wait in a `with:`
+    block; `use_with=False` uses bare `.reserve()` / `.wait()` calls."""
+    x_dfb, ms_dfb = dfbs["x"], dfbs["ms"]
     w_dfb, b_dfb, out_dfb = dfbs["w"], dfbs["b"], dfbs["out"]
 
     if use_with:
@@ -111,8 +108,6 @@ def _define_dm(
         @ttl.datamovement()
         def dm_read():
             core_x, _ = ttl.node(dims=2)
-            with sc_dfb.reserve() as blk:
-                ttl.copy(scaler[0, 0], blk).wait()
             with ms_dfb.reserve() as blk:
                 ttl.copy(mean_scale[0, 0], blk).wait()
             for local_t in range(tiles_per_core):
@@ -143,7 +138,6 @@ def _define_dm(
     @ttl.datamovement()
     def dm_read():
         core_x, _ = ttl.node(dims=2)
-        ttl.copy(scaler[0, 0], sc_dfb.reserve()).wait()
         ttl.copy(mean_scale[0, 0], ms_dfb.reserve()).wait()
         for local_t in range(tiles_per_core):
             tile_idx = core_x * tiles_per_core + local_t
@@ -174,13 +168,13 @@ def make_layernorm_kernel(dim_tiles):
     """Assignment-style layernorm — no `with:`, no explicit push/pop.
     The sync pass places every `cb_push` / `cb_pop`."""
 
-    @ttl.operation(grid="auto")
-    def layernorm_kernel(x, weight, ln_bias, scaler, mean_scale, out):
+    @ttl.operation(grid="full")
+    def layernorm_kernel(x, weight, ln_bias, mean_scale, out):
         grid_cols, _ = ttl.grid_size(dims=2)
         seq_tiles = x.shape[0] // TILE
         tiles_per_core = -(-seq_tiles // grid_cols)
-        dfbs = _alloc_dfbs(x, weight, ln_bias, scaler, mean_scale, out, full=True)
-        x_dfb, sc_dfb, ms_dfb = dfbs["x"], dfbs["sc"], dfbs["ms"]
+        dfbs = _alloc_dfbs(x, weight, ln_bias, mean_scale, out, full=True)
+        x_dfb, ms_dfb = dfbs["x"], dfbs["ms"]
         w_dfb, b_dfb, out_dfb = dfbs["w"], dfbs["b"], dfbs["out"]
         mean_dfb, istd_dfb = dfbs["mean"], dfbs["istd"]
         red_dfb, acc_dfb = dfbs["red"], dfbs["acc"]
@@ -189,7 +183,6 @@ def make_layernorm_kernel(dim_tiles):
         @ttl.compute()
         def compute():
             core_x, _ = ttl.node(dims=2)
-            sc = sc_dfb.wait()
             ms = ms_dfb.wait()
             for local_t in range(tiles_per_core):
                 tile_idx = core_x * tiles_per_core + local_t
@@ -197,21 +190,21 @@ def make_layernorm_kernel(dim_tiles):
                     # Pass 1: mean
                     x0 = x_dfb.wait()
                     r = red_dfb.reserve()
-                    r.store(ttl.math.reduce_sum(x0, sc, dims=[1]))
+                    r.store(ttl.math.reduce_sum(x0, dims=[1]))
                     rv = red_dfb.wait()
                     acc = acc_dfb.reserve()
                     acc.store(rv)
                     for _ in range(dim_tiles - 1):
                         xj = x_dfb.wait()
                         r = red_dfb.reserve()
-                        r.store(ttl.math.reduce_sum(xj, sc, dims=[1]))
+                        r.store(ttl.math.reduce_sum(xj, dims=[1]))
                         rv = red_dfb.wait()
                         av = acc_dfb.wait()
                         acc = acc_dfb.reserve()
                         acc.store(av + rv)
                     sum_x = acc_dfb.wait()
                     bc = bcast_dfb.reserve()
-                    bc.store(ttl.math.broadcast(sum_x, bc, dims=[1]))
+                    bc.store(ttl.block.broadcast(sum_x, dims=[1], shape=(1, 1)))
                     sum_x_bc = bcast_dfb.wait()
                     mean_out = mean_dfb.reserve()
                     mean_out.store(sum_x_bc * ms)
@@ -223,7 +216,7 @@ def make_layernorm_kernel(dim_tiles):
                     sq.store(diff * diff)
                     sqv = sq_dfb.wait()
                     r = red_dfb.reserve()
-                    r.store(ttl.math.reduce_sum(sqv, sc, dims=[1]))
+                    r.store(ttl.math.reduce_sum(sqv, dims=[1]))
                     rv = red_dfb.wait()
                     acc = acc_dfb.reserve()
                     acc.store(rv)
@@ -234,18 +227,20 @@ def make_layernorm_kernel(dim_tiles):
                         sq.store(diff * diff)
                         sqv = sq_dfb.wait()
                         r = red_dfb.reserve()
-                        r.store(ttl.math.reduce_sum(sqv, sc, dims=[1]))
+                        r.store(ttl.math.reduce_sum(sqv, dims=[1]))
                         rv = red_dfb.wait()
                         av = acc_dfb.wait()
                         acc = acc_dfb.reserve()
                         acc.store(av + rv)
                     sum_sq = acc_dfb.wait()
                     bc = bcast_dfb.reserve()
-                    bc.store(ttl.math.broadcast(sum_sq, bc, dims=[1]))
+                    bc.store(ttl.block.broadcast(sum_sq, dims=[1], shape=(1, 1)))
                     var_bc = bcast_dfb.wait()
                     istd = istd_dfb.reserve()
                     istd.store(
-                        ttl.math.rsqrt(var_bc * ms + ttl.math.fill(var_bc, 1e-6))
+                        ttl.math.rsqrt(
+                            var_bc * ms + ttl.block.fill(1e-6, shape=var_bc.shape)
+                        )
                     )
                     # Pass 3: normalize + affine
                     inv_std = istd_dfb.wait()
@@ -260,7 +255,6 @@ def make_layernorm_kernel(dim_tiles):
             x,
             weight,
             ln_bias,
-            scaler,
             mean_scale,
             out,
             dfbs,
@@ -278,13 +272,13 @@ def make_layernorm_kernel_explicit(dim_tiles):
     `.push()` / `.pop()` after every reserve/wait. Bypasses the sync
     pass and serves as a hand-synced reference."""
 
-    @ttl.operation(grid="auto")
-    def layernorm_kernel(x, weight, ln_bias, scaler, mean_scale, out):
+    @ttl.operation(grid="full")
+    def layernorm_kernel(x, weight, ln_bias, mean_scale, out):
         grid_cols, _ = ttl.grid_size(dims=2)
         seq_tiles = x.shape[0] // TILE
         tiles_per_core = -(-seq_tiles // grid_cols)
-        dfbs = _alloc_dfbs(x, weight, ln_bias, scaler, mean_scale, out, full=True)
-        x_dfb, sc_dfb, ms_dfb = dfbs["x"], dfbs["sc"], dfbs["ms"]
+        dfbs = _alloc_dfbs(x, weight, ln_bias, mean_scale, out, full=True)
+        x_dfb, ms_dfb = dfbs["x"], dfbs["ms"]
         w_dfb, b_dfb, out_dfb = dfbs["w"], dfbs["b"], dfbs["out"]
         mean_dfb, istd_dfb = dfbs["mean"], dfbs["istd"]
         red_dfb, acc_dfb = dfbs["red"], dfbs["acc"]
@@ -293,7 +287,6 @@ def make_layernorm_kernel_explicit(dim_tiles):
         @ttl.compute()
         def compute():
             core_x, _ = ttl.node(dims=2)
-            sc = sc_dfb.wait()
             ms = ms_dfb.wait()
             for local_t in range(tiles_per_core):
                 tile_idx = core_x * tiles_per_core + local_t
@@ -301,7 +294,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
                     # Pass 1: mean
                     x0 = x_dfb.wait()
                     r = red_dfb.reserve()
-                    r.store(ttl.math.reduce_sum(x0, sc, dims=[1]))
+                    r.store(ttl.math.reduce_sum(x0, dims=[1]))
                     r.push()
                     x0.pop()
                     rv = red_dfb.wait()
@@ -312,7 +305,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
                     for _ in range(dim_tiles - 1):
                         xj = x_dfb.wait()
                         r = red_dfb.reserve()
-                        r.store(ttl.math.reduce_sum(xj, sc, dims=[1]))
+                        r.store(ttl.math.reduce_sum(xj, dims=[1]))
                         r.push()
                         xj.pop()
                         rv = red_dfb.wait()
@@ -324,7 +317,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
                         av.pop()
                     sum_x = acc_dfb.wait()
                     bc = bcast_dfb.reserve()
-                    bc.store(ttl.math.broadcast(sum_x, bc, dims=[1]))
+                    bc.store(ttl.block.broadcast(sum_x, dims=[1], shape=(1, 1)))
                     bc.push()
                     sum_x.pop()
                     sum_x_bc = bcast_dfb.wait()
@@ -342,7 +335,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
                     x0.pop()
                     sqv = sq_dfb.wait()
                     r = red_dfb.reserve()
-                    r.store(ttl.math.reduce_sum(sqv, sc, dims=[1]))
+                    r.store(ttl.math.reduce_sum(sqv, dims=[1]))
                     r.push()
                     sqv.pop()
                     rv = red_dfb.wait()
@@ -359,7 +352,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
                         xj.pop()
                         sqv = sq_dfb.wait()
                         r = red_dfb.reserve()
-                        r.store(ttl.math.reduce_sum(sqv, sc, dims=[1]))
+                        r.store(ttl.math.reduce_sum(sqv, dims=[1]))
                         r.push()
                         sqv.pop()
                         rv = red_dfb.wait()
@@ -371,13 +364,15 @@ def make_layernorm_kernel_explicit(dim_tiles):
                         av.pop()
                     sum_sq = acc_dfb.wait()
                     bc = bcast_dfb.reserve()
-                    bc.store(ttl.math.broadcast(sum_sq, bc, dims=[1]))
+                    bc.store(ttl.block.broadcast(sum_sq, dims=[1], shape=(1, 1)))
                     bc.push()
                     sum_sq.pop()
                     var_bc = bcast_dfb.wait()
                     istd = istd_dfb.reserve()
                     istd.store(
-                        ttl.math.rsqrt(var_bc * ms + ttl.math.fill(var_bc, 1e-6))
+                        ttl.math.rsqrt(
+                            var_bc * ms + ttl.block.fill(1e-6, shape=var_bc.shape)
+                        )
                     )
                     istd.push()
                     var_bc.pop()
@@ -400,7 +395,6 @@ def make_layernorm_kernel_explicit(dim_tiles):
             x,
             weight,
             ln_bias,
-            scaler,
             mean_scale,
             out,
             dfbs,
@@ -418,39 +412,40 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
     carry. Intermediates are SSA or compiler-allocated. Uses `with:`
     context managers and `+=` L1 accumulation."""
 
-    @ttl.operation(grid="auto")
-    def layernorm_kernel(x, weight, ln_bias, scaler, mean_scale, out):
+    @ttl.operation(grid="full")
+    def layernorm_kernel(x, weight, ln_bias, mean_scale, out):
         grid_cols, _ = ttl.grid_size(dims=2)
         seq_tiles = x.shape[0] // TILE
         tiles_per_core = -(-seq_tiles // grid_cols)
-        dfbs = _alloc_dfbs(x, weight, ln_bias, scaler, mean_scale, out, full=False)
-        x_dfb, sc_dfb, ms_dfb = dfbs["x"], dfbs["sc"], dfbs["ms"]
+        dfbs = _alloc_dfbs(x, weight, ln_bias, mean_scale, out, full=False)
+        x_dfb, ms_dfb = dfbs["x"], dfbs["ms"]
         w_dfb, b_dfb, out_dfb = dfbs["w"], dfbs["b"], dfbs["out"]
         mean_dfb, istd_dfb = dfbs["mean"], dfbs["istd"]
 
         @ttl.compute()
         def compute():
             core_x, _ = ttl.node(dims=2)
-            with sc_dfb.wait() as sc, ms_dfb.wait() as ms:
+            with ms_dfb.wait() as ms:
                 for local_t in range(tiles_per_core):
                     tile_idx = core_x * tiles_per_core + local_t
                     if tile_idx < seq_tiles:
                         # Pass 1: mean via += L1 accumulation, then
                         # broadcast * ms.
                         with mean_dfb.reserve() as mean_blk:
-                            mean_blk.store(ttl.math.fill(mean_blk, 0))
+                            mean_blk.store(ttl.block.fill(0, shape=mean_blk.shape))
                             for _ in range(dim_tiles):
                                 with x_dfb.wait() as xj:
-                                    mean_blk += ttl.math.reduce_sum(xj, sc, dims=[1])
+                                    mean_blk += ttl.math.reduce_sum(xj, dims=[1])
                             mean_blk.store(
-                                ttl.math.broadcast(mean_blk, mean_blk, dims=[1]) * ms
+                                ttl.block.broadcast(mean_blk, dims=[1], shape=(1, 1))
+                                * ms
                             )
 
                         # Pass 2 + Pass 3 share one mean wait scope.
                         with mean_dfb.wait() as mean_val:
                             # Pass 2: variance into istd_dfb, then rsqrt.
                             with istd_dfb.reserve() as var_blk:
-                                var_blk.store(ttl.math.fill(var_blk, 0))
+                                var_blk.store(ttl.block.fill(0, shape=var_blk.shape))
                                 for _ in range(dim_tiles):
                                     with x_dfb.wait() as xj:
                                         diff = xj - mean_val
@@ -459,9 +454,11 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                         )
                                 var_blk.store(
                                     ttl.math.rsqrt(
-                                        ttl.math.broadcast(var_blk, var_blk, dims=[1])
+                                        ttl.block.broadcast(
+                                            var_blk, dims=[1], shape=(1, 1)
+                                        )
                                         * ms
-                                        + ttl.math.fill(var_blk, 1e-6)
+                                        + ttl.block.fill(1e-6, shape=var_blk.shape)
                                     )
                                 )
 
@@ -480,7 +477,6 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
             x,
             weight,
             ln_bias,
-            scaler,
             mean_scale,
             out,
             dfbs,
@@ -504,7 +500,6 @@ def _run_layernorm(kernel_factory, seq_tiles, dim_tiles, device):
     x = torch.randn(M, N, dtype=torch.bfloat16)
     weight = torch.randn(M, N, dtype=torch.bfloat16)
     bias = torch.randn(M, N, dtype=torch.bfloat16)
-    scaler = torch.ones(TILE, TILE, dtype=torch.bfloat16)
     mean_scale = torch.full((TILE, TILE), 1.0 / N, dtype=torch.bfloat16)
 
     golden = _torch_layernorm(x, weight, bias)
@@ -512,12 +507,11 @@ def _run_layernorm(kernel_factory, seq_tiles, dim_tiles, device):
     x_dev = to_dram(x, device)
     weight_dev = to_dram(weight, device)
     bias_dev = to_dram(bias, device)
-    scaler_dev = to_dram(scaler, device)
     mean_scale_dev = to_dram(mean_scale, device)
     out_dev = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
 
     kernel = kernel_factory(dim_tiles)
-    kernel(x_dev, weight_dev, bias_dev, scaler_dev, mean_scale_dev, out_dev)
+    kernel(x_dev, weight_dev, bias_dev, mean_scale_dev, out_dev)
 
     result = ttnn.to_torch(out_dev).float()
     assert_pcc(golden, result, threshold=0.99)

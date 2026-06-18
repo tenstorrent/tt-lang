@@ -73,7 +73,7 @@ def bcast_row_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[0])
+            result = ttl.block.broadcast(i, dims=[0], shape=(1, 1))
             o.store(result)
 
     @ttl.datamovement()
@@ -100,7 +100,7 @@ def bcast_col_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[1])
+            result = ttl.block.broadcast(i, dims=[1], shape=(1, 1))
             o.store(result)
 
     @ttl.datamovement()
@@ -127,7 +127,7 @@ def bcast_scalar_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[0, 1])
+            result = ttl.block.broadcast(i, dims=[0, 1], shape=(1, 1))
             o.store(result)
 
     @ttl.datamovement()
@@ -147,20 +147,20 @@ def bcast_scalar_kernel(inp, out):
 
 @ttl.operation(grid=(1, 1))
 def bcast_row_neg_dim_kernel(inp, out):
-    """Row broadcast, ``dims=[-2]``, 2x2 tile grid (same as multitile row + ``[0]``)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    """Row broadcast with ``dims=[-2]``: single source row replicated to a 2x2 grid."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[-2])
+            result = ttl.block.broadcast(i, dims=[-2], shape=(2, 2))
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_dfb.reserve()
-        tx = ttl.copy(inp[0:2, 0:2], inp_blk)
+        tx = ttl.copy(inp[0:1, 0:2], inp_blk)
         tx.wait()
         inp_blk.push()
 
@@ -174,41 +174,14 @@ def bcast_row_neg_dim_kernel(inp, out):
 
 @ttl.operation(grid=(1, 1))
 def bcast_col_neg_dim_kernel(inp, out):
-    """Column broadcast, ``dims=[-1]``, 1x2 tile grid (32x64)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 2), block_count=2)
-
-    @ttl.compute()
-    def compute_fn():
-        with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[-1])
-            o.store(result)
-
-    @ttl.datamovement()
-    def dm_read():
-        inp_blk = inp_dfb.reserve()
-        tx = ttl.copy(inp[0:1, 0:2], inp_blk)
-        tx.wait()
-        inp_blk.push()
-
-    @ttl.datamovement()
-    def dm_write():
-        out_blk = out_dfb.wait()
-        tx = ttl.copy(out_blk, out[0:1, 0:2])
-        tx.wait()
-        out_blk.pop()
-
-
-@ttl.operation(grid=(1, 1))
-def bcast_scalar_neg_dim_kernel(inp, out):
-    """Scalar broadcast, ``dims=[-2, -1]``, 2x1 tile grid (64x32)."""
+    """Column broadcast with ``dims=[-1]``: single source column replicated to a 2x2 grid."""
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 1), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[-2, -1])
+            result = ttl.block.broadcast(i, dims=[-1], shape=(2, 2))
             o.store(result)
 
     @ttl.datamovement()
@@ -221,7 +194,34 @@ def bcast_scalar_neg_dim_kernel(inp, out):
     @ttl.datamovement()
     def dm_write():
         out_blk = out_dfb.wait()
-        tx = ttl.copy(out_blk, out[0:2, 0:1])
+        tx = ttl.copy(out_blk, out[0:2, 0:2])
+        tx.wait()
+        out_blk.pop()
+
+
+@ttl.operation(grid=(1, 1))
+def bcast_scalar_neg_dim_kernel(inp, out):
+    """Scalar broadcast with ``dims=[-2, -1]``: single source tile replicated to a 2x2 grid."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
+            result = ttl.block.broadcast(i, dims=[-2, -1], shape=(2, 2))
+            o.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        inp_blk = inp_dfb.reserve()
+        tx = ttl.copy(inp[0:1, 0:1], inp_blk)
+        tx.wait()
+        inp_blk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_dfb.wait()
+        tx = ttl.copy(out_blk, out[0:2, 0:2])
         tx.wait()
         out_blk.pop()
 
@@ -253,7 +253,7 @@ def mul_add_bcast_kernel(a, b, c, out):
     def compute_fn():
         # Stage 1: Bcast c and store to intermediate DFB
         with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
-            c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[0])
+            c_bcast = ttl.block.broadcast(c_tile, dims=[0], shape=(1, 1))
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast
@@ -379,20 +379,20 @@ def expected_2x1_full_tile(values, dtype=torch.bfloat16):
 
 @ttl.operation(grid=(1, 1))
 def bcast_row_multitile_kernel(inp, out):
-    """Broadcast row tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    """Row broadcast: source row of tiles (1x2) replicated to a 2x2 grid."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[0])
+            result = ttl.block.broadcast(i, dims=[0], shape=(2, 2))
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_dfb.reserve()
-        tx = ttl.copy(inp[0:2, 0:2], inp_blk)
+        tx = ttl.copy(inp[0:1, 0:2], inp_blk)
         tx.wait()
         inp_blk.push()
 
@@ -406,20 +406,20 @@ def bcast_row_multitile_kernel(inp, out):
 
 @ttl.operation(grid=(1, 1))
 def bcast_col_multitile_kernel(inp, out):
-    """Broadcast col tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    """Column broadcast: source column of tiles (2x1) replicated to a 2x2 grid."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[1])
+            result = ttl.block.broadcast(i, dims=[1], shape=(2, 2))
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_dfb.reserve()
-        tx = ttl.copy(inp[0:2, 0:2], inp_blk)
+        tx = ttl.copy(inp[0:2, 0:1], inp_blk)
         tx.wait()
         inp_blk.push()
 
@@ -433,20 +433,20 @@ def bcast_col_multitile_kernel(inp, out):
 
 @ttl.operation(grid=(1, 1))
 def bcast_scalar_multitile_kernel(inp, out):
-    """Broadcast scalar tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    """Scalar broadcast: single source tile replicated to a 2x2 grid."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[0, 1])
+            result = ttl.block.broadcast(i, dims=[0, 1], shape=(2, 2))
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_dfb.reserve()
-        tx = ttl.copy(inp[0:2, 0:2], inp_blk)
+        tx = ttl.copy(inp[0:1, 0:1], inp_blk)
         tx.wait()
         inp_blk.push()
 
@@ -511,11 +511,17 @@ class TestBcastRow:
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
     def test_bcast_row_negative_dim_index(self, device):
-        """Row broadcast with ``dims=[-2]`` on a 2x2 tile CB (64x64)."""
-        values = [1.0, 2.0, 3.0, 4.0]
-        inp_torch = create_multitile_row_bcast_input(values)
+        """Row broadcast with ``dims=[-2]``: 1x2 source row replicated to 2x2."""
+        # Source: 32x64 with row 0 of each tile filled.
+        values = [1.0, 2.0]
+        inp_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
+        inp_torch[0, 0:32] = values[0]
+        inp_torch[0, 32:64] = values[1]
         out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
-        expected = expected_multitile_bcast_result(values)
+        # Expected: each output tile (i, j) uniformly filled with values[j].
+        expected = torch.zeros((64, 64), dtype=torch.bfloat16)
+        expected[:, 0:32] = values[0]
+        expected[:, 32:64] = values[1]
 
         inp = to_l1(inp_torch, device)
         out = to_l1(out_torch, device)
@@ -575,11 +581,17 @@ class TestBcastCol:
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
     def test_bcast_col_negative_dim_index(self, device):
-        """Column broadcast with ``dims=[-1]`` on a 1x2 tile CB (32x64)."""
+        """Column broadcast with ``dims=[-1]``: 2x1 source column replicated to 2x2."""
+        # Source: 64x32 with col 0 of each tile filled.
         values = [5.0, 6.0]
-        inp_torch = create_1x2_col_bcast_input(values)
-        out_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
-        expected = expected_1x2_full_tile(values)
+        inp_torch = torch.zeros((64, 32), dtype=torch.bfloat16)
+        inp_torch[0:32, 0] = values[0]
+        inp_torch[32:64, 0] = values[1]
+        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        # Expected: each output tile (i, j) uniformly filled with values[i].
+        expected = torch.zeros((64, 64), dtype=torch.bfloat16)
+        expected[0:32, :] = values[0]
+        expected[32:64, :] = values[1]
 
         inp = to_l1(inp_torch, device)
         out = to_l1(out_torch, device)
@@ -624,11 +636,14 @@ class TestBcastScalar:
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
     def test_bcast_scalar_negative_dim_indices(self, device):
-        """Scalar broadcast with ``dims=[-2, -1]`` on a 2x1 tile CB (64x32)."""
-        values = [4.0, 9.0]
-        inp_torch = create_2x1_scalar_bcast_input(values)
-        out_torch = torch.zeros((64, 32), dtype=torch.bfloat16)
-        expected = expected_2x1_full_tile(values)
+        """Scalar broadcast with ``dims=[-2, -1]``: 1x1 source tile replicated to 2x2."""
+        # Source: 32x32 with [0, 0] filled.
+        value = 4.0
+        inp_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+        inp_torch[0, 0] = value
+        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        # Expected: every output tile uniformly filled with value.
+        expected = torch.full((64, 64), value, dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         out = to_l1(out_torch, device)
@@ -673,15 +688,16 @@ class TestBcastMultitile:
     """Test bcast with multi-tile CBs (2x2 tile grid = 4 tiles)."""
 
     def test_bcast_row_multitile(self, device):
-        """Test row broadcast on 2x2 tile grid with different values per tile."""
-        values = [1.0, 2.0, 3.0, 4.0]
-        inp_torch = create_multitile_row_bcast_input(values)
+        """Row broadcast: 1x2 source row replicated to 2x2 output."""
+        values = [1.0, 2.0]
+        inp_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
+        inp_torch[0, 0:32] = values[0]
+        inp_torch[0, 32:64] = values[1]
         out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
-        expected = expected_multitile_bcast_result(values)
-
-        print("\n=== Row Broadcast Multitile Test ===")
-        print("Input:")
-        print(inp_torch)
+        # Each output tile (i, j) uniformly filled with values[j].
+        expected = torch.zeros((64, 64), dtype=torch.bfloat16)
+        expected[:, 0:32] = values[0]
+        expected[:, 32:64] = values[1]
 
         inp = to_l1(inp_torch, device)
         out = to_l1(out_torch, device)
@@ -689,21 +705,19 @@ class TestBcastMultitile:
         bcast_row_multitile_kernel(inp, out)
         result = ttnn.to_torch(out)
 
-        print("Output:")
-        print(result)
-
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
     def test_bcast_col_multitile(self, device):
-        """Test col broadcast on 2x2 tile grid with different values per tile."""
-        values = [5.0, 6.0, 7.0, 8.0]
-        inp_torch = create_multitile_col_bcast_input(values)
+        """Column broadcast: 2x1 source column replicated to 2x2 output."""
+        values = [5.0, 6.0]
+        inp_torch = torch.zeros((64, 32), dtype=torch.bfloat16)
+        inp_torch[0:32, 0] = values[0]
+        inp_torch[32:64, 0] = values[1]
         out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
-        expected = expected_multitile_bcast_result(values)
-
-        print("\n=== Col Broadcast Multitile Test ===")
-        print("Input:")
-        print(inp_torch)
+        # Each output tile (i, j) uniformly filled with values[i].
+        expected = torch.zeros((64, 64), dtype=torch.bfloat16)
+        expected[0:32, :] = values[0]
+        expected[32:64, :] = values[1]
 
         inp = to_l1(inp_torch, device)
         out = to_l1(out_torch, device)
@@ -711,30 +725,21 @@ class TestBcastMultitile:
         bcast_col_multitile_kernel(inp, out)
         result = ttnn.to_torch(out)
 
-        print("Output:")
-        print(result)
-
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
     def test_bcast_scalar_multitile(self, device):
-        """Test scalar broadcast on 2x2 tile grid with different values per tile."""
-        values = [0.5, 1.5, 2.5, 3.5]
-        inp_torch = create_multitile_scalar_bcast_input(values)
+        """Scalar broadcast: single source tile replicated to 2x2 output."""
+        value = 0.5
+        inp_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+        inp_torch[0, 0] = value
         out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
-        expected = expected_multitile_bcast_result(values)
-
-        print("\n=== Scalar Broadcast Multitile Test ===")
-        print("Input:")
-        print(inp_torch)
+        expected = torch.full((64, 64), value, dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         out = to_l1(out_torch, device)
 
         bcast_scalar_multitile_kernel(inp, out)
         result = ttnn.to_torch(out)
-
-        print("Output:")
-        print(result)
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
@@ -780,12 +785,12 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
     """Compute (a * b) + bcast(c) on 2x2 tile grid.
 
     Uses two-stage pattern:
-    - Stage 1: bcast c to intermediate DFB
+    - Stage 1: bcast c (1x2 source row) to a 2x2 intermediate DFB
     - Stage 2: compute (a * b) + c_bcast
     """
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), block_count=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 2), block_count=2)
     c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
@@ -793,7 +798,7 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
     def compute_fn():
         # Stage 1: Bcast c and store to intermediate DFB
         with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
-            c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[0])
+            c_bcast = ttl.block.broadcast(c_tile, dims=[0], shape=(2, 2))
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast
@@ -818,7 +823,7 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
             tx_b.wait()
 
         with c_dfb.reserve() as c_blk:
-            tx_c = ttl.copy(c[0:2, 0:2], c_blk)
+            tx_c = ttl.copy(c[0:1, 0:2], c_blk)
             tx_c.wait()
 
     @ttl.datamovement()
@@ -837,13 +842,14 @@ class TestBcastCompositionMultitile:
         Per-tile values:
           a: tile(i,j) = i*2 + j + 1  (1, 2, 3, 4)
           b: all tiles = 2.0
-          c: row bcast with tile(i,j) = (i*2 + j + 1) * 0.5  (0.5, 1.0, 1.5, 2.0)
+          c: row of 2 source tiles (col 0: 0.5, col 1: 1.0); broadcast replicates
+             the source row down so output tile(i, j) sees c_src(0, j).
 
-        Expected per tile: (a * b) + c = (a * 2) + c
+        Expected per tile: (a * b) + c_bcast
           tile(0,0): (1 * 2) + 0.5 = 2.5
           tile(0,1): (2 * 2) + 1.0 = 5.0
-          tile(1,0): (3 * 2) + 1.5 = 7.5
-          tile(1,1): (4 * 2) + 2.0 = 10.0
+          tile(1,0): (3 * 2) + 0.5 = 6.5
+          tile(1,1): (4 * 2) + 1.0 = 9.0
         """
         # Create 64x64 tensors (2x2 tiles)
         a_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
@@ -854,16 +860,18 @@ class TestBcastCompositionMultitile:
 
         b_torch = torch.full((64, 64), 2.0, dtype=torch.bfloat16)
 
-        c_torch = create_multitile_row_bcast_input([0.5, 1.0, 1.5, 2.0])
+        # c: 32x64 source row of 2 tiles with row 0 filled (intra-tile row
+        # broadcast replicates that row across each output tile).
+        c_torch = create_multitile_row_bcast_input([0.5, 1.0, 0.0, 0.0])
 
         out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
 
-        # Expected: (a * 2) + c
+        # Expected: (a * 2) + bcast(c source row)
         expected = torch.zeros((64, 64), dtype=torch.bfloat16)
         expected[0:32, 0:32] = 2.5  # (1 * 2) + 0.5
         expected[0:32, 32:64] = 5.0  # (2 * 2) + 1.0
-        expected[32:64, 0:32] = 7.5  # (3 * 2) + 1.5
-        expected[32:64, 32:64] = 10.0  # (4 * 2) + 2.0
+        expected[32:64, 0:32] = 6.5  # (3 * 2) + 0.5
+        expected[32:64, 32:64] = 9.0  # (4 * 2) + 1.0
 
         a = ttnn.from_torch(
             a_torch,
@@ -913,22 +921,16 @@ class TestBcastCompositionMultitile:
     def test_mul_add_bcast_row_multitile_constant(self, device):
         """Test (a * b) + bcast(c) with CONSTANT values across all tiles.
 
-        All tiles use the same values:
-          a: all 2.0
-          b: all 3.0
-          c: row bcast with 1.0 in row 0 of each tile
-
-        Expected: (2 * 3) + 1 = 7.0 for ALL tiles
+        a: all 2.0; b: all 3.0; c: 1x2 source row with 1.0 in row 0 of each tile.
+        Expected: (2 * 3) + 1 = 7.0 for ALL tiles.
         """
         a_torch = torch.full((64, 64), 2.0, dtype=torch.bfloat16)
         b_torch = torch.full((64, 64), 3.0, dtype=torch.bfloat16)
 
-        # c: row 0 of each tile has 1.0
-        c_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
-        c_torch[0, 0:32] = 1.0  # Tile (0,0) row 0
-        c_torch[0, 32:64] = 1.0  # Tile (0,1) row 0
-        c_torch[32, 0:32] = 1.0  # Tile (1,0) row 0
-        c_torch[32, 32:64] = 1.0  # Tile (1,1) row 0
+        # c: 32x64 source row, row 0 of each tile = 1.0.
+        c_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
+        c_torch[0, 0:32] = 1.0
+        c_torch[0, 32:64] = 1.0
 
         out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
         expected = torch.full((64, 64), 7.0, dtype=torch.bfloat16)
@@ -996,7 +998,7 @@ def kern(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims={dims_literal!r})
+            result = ttl.block.broadcast(i, dims={dims_literal!r}, shape=(1, 1))
             o.store(result)
     @ttl.datamovement()
     def dm_read():

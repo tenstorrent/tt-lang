@@ -76,6 +76,36 @@ Set `TTLANG_TOOLCHAIN_DIR` to change the install location (default:
 `/opt/ttlang-toolchain`). Once installed, use `-DTTLANG_USE_TOOLCHAIN=ON` for
 fast rebuilds of tt-lang itself.
 
+### Install an LLVM-only toolchain with external tt-metal
+
+When a developer already has a local tt-metal build, TT-Lang can install only
+LLVM/MLIR and the toolchain Python venv. tt-metal stays external and is passed
+to CMake at configure time:
+
+```bash
+TTLANG_TOOLCHAIN_DIR=/opt/ttlang-llvm-toolchain \
+  scripts/build-and-install.sh \
+    --llvm-toolchain-only \
+    --force-rebuild \
+    --external-tt-metal-dir /path/to/tt-metal \
+    --external-tt-metal-build-dir /path/to/tt-metal/build \
+    --python-venv /path/to/tt-metal/python_env
+```
+
+The resulting prefix contains LLVM/MLIR and the venv. It is not a complete
+TT-Lang distribution and does not install tt-metal under the prefix. Use it
+by combining the LLVM toolchain with the same external tt-metal selection:
+
+```bash
+cmake -G Ninja -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTTLANG_USE_TOOLCHAIN=ON \
+  -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-llvm-toolchain \
+  -DTTLANG_EXTERNAL_TT_METAL_DIR=/path/to/tt-metal \
+  -DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR=/path/to/tt-metal/build \
+  -DTTLANG_PYTHON_VENV=/path/to/tt-metal/python_env
+```
+
 ### Use a pre-built toolchain
 
 ```bash
@@ -202,28 +232,38 @@ recorded commits are not derived from one another.
   `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` and `-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON`
   to cmake. `scripts/build-and-install.sh` accepts the equivalent
   `--accept-ttmetal-mismatch` flag.
-- The tt-metal version is recorded in `third-party/tt-metal-version`, a
-  one-line file holding a tt-metal release tag. See
+- The tt-metal and public `ttnn` provenance versions are recorded in
+  `third-party/tt-metal-version`. See
   [Updating tt-metal](#updating-tt-metal).
 
 ### Updating tt-metal
 
 Edit the canonical version file and run the verifier in update mode. The
-verifier checks out `third-party/tt-metal` at the tag's commit; the ttnn
-version that `setup.py` writes into the wheel's `install_requires` is
-computed dynamically from the same file, so no rewrite is needed:
+verifier checks out `third-party/tt-metal` at `TT_METAL_TAG`; the `ttnn`
+version that `setup.py` writes into the wheel's `install_requires` is read
+from `TTNN_PYPI`, so no rewrite is needed:
+
+```text
+TTNN_PYPI="<ttnn-pypi-version>"
+TTNN_PYPI_TT_METAL_TAG="<ttnn-pypi-tt-metal-tag>"
+TT_METAL_TAG="<tt-metal-tag>"
+```
 
 ```bash
-echo v0.69.0 > third-party/tt-metal-version
 .github/scripts/check-tt-metal-version.sh --update
 ```
 
-Background: `third-party/tt-metal-version` is the single source of truth
-for the tt-metal version (one tt-metal release tag, e.g. `v0.69.0`). The
-submodule SHA, the `ttnn` version that `setup.py` writes into the
-wheel's `install_requires`, and the `--build-arg TT_METAL_TAG` passed to
-`Dockerfile.base` are all derived from it. CI runs
-`.github/scripts/check-tt-metal-version.sh` on every PR to catch drift.
+`TTNN_PYPI_TT_METAL_TAG` records the tt-metal tag used to build the public
+`ttnn` wheel. `TT_METAL_TAG` records the tt-metal tag used to build TT-Lang.
+Public PyPI publishing requires these tags to have the same `vX.Y.Z` component;
+internal S3 bundled wheels can use a newer `TT_METAL_TAG` before a compatible
+public `ttnn` wheel is available.
+
+Background: `third-party/tt-metal-version` is the single source of truth for
+the `ttnn` dependency version, the public `ttnn` provenance tag, and the
+tt-metal tag passed to `Dockerfile.base`. CI runs
+`.github/scripts/check-tt-metal-version.sh` on every PR to catch submodule
+drift.
 
 ### Updating LLVM
 
@@ -286,7 +326,16 @@ pointer changes together:
 git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
         third-party/tt-metal-version pyproject.toml
 git commit -m "Uplift submodules"
+git push
 ```
+
+On push, `resolve-docker-tag` (see [Auto-resolved tag in PR /
+push workflows](#auto-resolved-tag-in-pr--push-workflows)) sees the
+uplift-relevant paths changed since the nearest version tag and emits
+`vX.Y.Z-uplift-<hash>`; if the corresponding image is missing in GHCR,
+the `build-docker` job builds and pushes it before any other downstream
+job consumes it. Subsequent pushes of the same submodule SHA set reuse
+the cached image.
 
 ### CI: toolchain cache and Docker images
 
@@ -299,87 +348,135 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    `call-build-toolchain.yml` workflow automatically builds and caches a new
    toolchain.
 
-2. **Docker images** -- `ird` and `dist` container images tagged by the nearest
-   git version tag (see `.github/containers/get-version-tag.sh`). Rebuilds
-   overwrite the same tag. A `latest` tag is also pushed alongside each
-   versioned tag. After building, `call-build-docker.yml` runs the tutorial
-   examples in the dist container to verify the image works.
+2. **Docker images** -- `ird` and `dist` container images at GHCR, tagged by
+   `.github/containers/get-version-tag.sh` (see [Docker tag scheme](#docker-tag-scheme)).
+   Uplift-hashed tags (`vX.Y.Z-uplift-<hash>`) include a hash of the content
+   installed into the image (tt-metal submodule + version pin, LLVM submodule,
+   `Dockerfile.base`, `requirements-runtime.txt`), so the same toolchain
+   state always resolves to the same tag. The bare release tag (`vX.Y.Z`) is
+   only pushed by `publish-pypi.yml` on a release tag push, and `:latest` is
+   only updated from `ci.yml` on push to `main`, and only when `build-docker`
+   actually runs there (i.e. an uplift commit whose image is not already in
+   GHCR). `call-build-docker.yml` takes
+   a `push` input (default `false`); it builds the image, smoke-tests it
+   inside `docker run`, and pushes to GHCR only when `push: true`.
+   Tutorial verification in the dist container runs separately as a
+   pre-publish check; see [Publishing to PyPI](#publishing-to-pypi).
 
-   Tags may carry SemVer build metadata after `+` to mark uplift rebuilds of
-   an existing release. Because Docker tags forbid `+`, `get-version-tag.sh`
-   translates `+` to `-` when forming the image tag (e.g. git tag
-   `<TAG>+<local>` produces Docker tag `<TAG>-<local>`). Use the sanitized
-   form anywhere a `docker_tag` parameter is passed to a workflow.
+(docker-tag-scheme)=
+#### Docker tag scheme
 
-#### Triggering a toolchain cache rebuild on PRs
+`get-version-tag.sh` returns one of two forms, derived deterministically from
+the current checkout:
 
-By default, PR and push workflows use a pre-built Docker container and skip
-building the toolchain from source. For uplift PRs where the recorded
-submodule commits have changed, pass `build_toolchain: true` to force a
-from-source build:
+- **Clean release state** (`vX.Y.Z`): the files in
+  `.github/scripts/uplift-paths.sh` match the nearest version tag commit.
+  The script returns the tag name itself, with `+` translated to `-` because
+  Docker tags allow only `[A-Za-z0-9_.-]`.
+- **Uplift state** (`vX.Y.Z-uplift-<8char>`): one or more of those files
+  differ from the nearest version tag. The hash is
+  `git ls-tree HEAD -- <uplift-files> | sha256sum | cut -c1-8`, so two
+  branches with identical submodule SHAs and Dockerfile/requirements content
+  resolve to the same tag and share the rebuilt image. "Uplift" here means
+  the dist/ird image content changed — tt-mlir and tt-lang itself are built
+  fresh by `call-build.yml` against the pre-built LLVM inside the container,
+  so they are not uplift files.
 
-```yaml
-# In on-pr.yml or on-push.yml, pass build_toolchain to call-build.yml:
-build:
-  uses: ./.github/workflows/call-build.yml
-  secrets: inherit
-  with:
-    build_toolchain: true
-    docker_tag: "<DOCKER_TAG>"
-```
+#### Auto-resolved tag in `ci.yml`
 
-When `build_toolchain` is true, the workflow:
+`ci.yml` (one workflow triggered by pull_request, push to main, scheduled
+runs, and workflow_dispatch) starts with a `resolve-docker-tag` job that
+runs `get-version-tag.sh` and then calls `.github/scripts/probe-docker-image.sh`
+to query GHCR. If the image is present, `build-docker` is skipped and
+downstream jobs proceed immediately. If the image is missing and the
+resolved tag is the uplift form, `build-docker` runs `call-build-docker.yml`
+with `push: true` and uploads the rebuilt image so downstream jobs
+(`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) can pull
+it. If the image is missing and the resolved tag is the bare release form
+(e.g. `vX.Y.Z`), the probe step fails the job with an error directing the
+maintainer to re-publish the release via `publish-pypi.yml`; rebuilding the
+release tag from a PR or main commit would push newer content under the
+release tag and overwrite the released image.
 
-1. Runs `call-build-toolchain.yml`, which checks for a cached toolchain
-   matching the current submodule SHAs. On cache miss, it builds LLVM + tt-metal
-   from source and saves the result.
-2. Runs the build job on a bare `ubuntu-22.04` runner (instead of inside the
-   Docker container), restoring the cached toolchain and building tt-lang
-   against it.
+`ci.yml` also has a `dryrun-docker` job that runs only on
+pull_request events when the PR touches container-relevant files
+(Dockerfile, `bin/`, `packaging/`, `CMakeLists.txt`, `examples/`,
+`pyproject.toml`, etc.) but the uplift `build-docker` is not already
+running. It calls `call-build-docker.yml` with `push: false`: the dist and
+ird images are built locally on the runner and the in-container smoke
+tests run, but nothing is uploaded to GHCR. This catches container-build
+regressions at PR time without uploading a separate container image for
+every PR. The path-change detection is in
+`.github/scripts/wheel-or-container-changed.sh` (path list in
+`wheel-or-container-paths.sh`).
 
-When `build_toolchain` is false (the default), the build job runs inside the
-pre-built `ird` Docker container, which already contains the toolchain.
+`call-build.yml` retains its `build_toolchain` input for manual
+`workflow_dispatch` runs, but the automated workflows no longer set it:
+the correct toolchain is always available inside the container at the
+resolved tag.
+
+#### Hardware test timeouts
+
+`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
+`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
+test exits within ~60 seconds instead of holding the single `n150` runner
+until the 90-minute job timeout. Tests that legitimately need longer should
+set their own `@pytest.mark.timeout(...)` override.
 
 #### Rebuilding Docker images
 
-Docker images are built by `call-build-docker.yml`, which is invoked either by
-manual `workflow_dispatch` or as a reusable sub-workflow of `publish-pypi.yml`
-(see [Publishing to PyPI](#publishing-to-pypi) below). The workflow:
+Docker images are built by `call-build-docker.yml`. The workflow takes a
+`push` input (default `false`); the image is tagged with whatever
+`get-version-tag.sh` returns and smoke-tested with `docker run` before any
+push step. A failing smoke test aborts before any tag would be published.
 
-1. Generates a deterministic tag from submodule SHAs and Dockerfile content
-   hashes.
-2. Checks whether images with that tag already exist in the registry.
-3. On cache miss, builds the toolchain (or restores from GitHub Actions cache),
-   then packages `base`, `ird`, and `dist` images.
+Push policy across events:
 
-Pushing a release tag triggers `publish-pypi.yml`, which calls
-`call-build-docker.yml` as its first step — so the same `git push <tag>` that
-publishes a release also rebuilds the Docker images. For uplifts that rebuild
-against a prior release (rather than advancing MAJOR/MINOR/PATCH), append
-`+uplift` (or another `+<local>` identifier) so the tag preserves SemVer
-ordering with the original release:
+| Event                                  | Pushes `vX.Y.Z`?     | Pushes `vX.Y.Z-uplift-<hash>`? | Updates `:latest`?           |
+|----------------------------------------|----------------------|--------------------------------|------------------------------|
+| PR (uplift)                            | refused by probe     | yes                            | no                           |
+| PR (non-uplift, container content)     | no (dryrun)          | n/a                            | no                           |
+| Main push (uplift)                     | refused by probe     | yes                            | yes                          |
+| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | no (`build-docker` skipped)  |
+| Tag push (release, via publish-pypi)   | yes                  | n/a                            | no                           |
+| `workflow_dispatch`                    | only if `push: true` | only if `push: true`           | only if `push: true` on main |
+
+For a final release:
 
 ```bash
-# Standard release bump:
-git tag <TAG>
-git push origin <TAG>
-
-# Uplift of an existing release (new submodule SHAs on top of an existing tag):
-git tag <TAG>+<local>
-git push origin <TAG>+<local>
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-Once the new images are published, update the `docker_tag` parameter in
-`on-pr.yml` and `on-push.yml` to reference the new tag. For `+`-suffixed
-tags, use the Docker-sanitized form: git tag `<TAG>+<local>` -> docker_tag
-`<TAG>-<local>`.
+For a dated dev release (preview of an in-flight version, typically used
+after a toolchain uplift lands on `main` and before the next final tag),
+follow the tt-metal convention: SemVer pre-release identifier of the form
+`-dev<YYYYMMDD>`:
+
+```bash
+git tag v<MAJOR.MINOR.PATCH>-dev<YYYYMMDD>
+git push origin v<MAJOR.MINOR.PATCH>-dev<YYYYMMDD>
+```
+
+SemVer orders `vX.Y.Z-dev<date>` strictly below `vX.Y.Z` (final), so users
+who pin to `vX.Y.Z` are unaffected by dev releases. Within a single
+`vX.Y.Z` line, dev tags order monotonically by date. The form is
+Docker-tag-safe directly (no `+` translation needed). `-rc<N>` works the
+same way (a release candidate of `vX.Y.Z` is tagged `vX.Y.Z-rc<N>`).
+
+Legacy `<TAG>+<local>` build-metadata tags are still translated to
+`<TAG>-<local>` by `get-version-tag.sh` for image-tag compatibility, but
+SemVer treats `+`-suffixed tags as equal in precedence to the base tag, so
+they cannot be distinguished by `pip install`. Prefer `-dev<YYYYMMDD>` or
+`-rc<N>` for new tags.
 
 (publishing-to-pypi)=
 #### Publishing to PyPI
 
 `publish-pypi.yml` is the orchestrator that turns a release tag into a wheel
-on PyPI. It triggers automatically on push of `v*.*.*` or `v*.*.*+<local>`
-tags, and can also be dispatched manually for re-runs and dry-runs.
+on PyPI. It triggers automatically on push of `v*.*.*`, `v*.*.*-rc*`,
+`v*.*.*-dev*`, or `v*.*.*+*` tags, and can also be dispatched manually for
+re-runs and dry-runs.
 
 ```text
    push release tag
@@ -390,21 +487,23 @@ tags, and can also be dispatched manually for re-runs and dry-runs.
    |  preflight   |   verify GITHUB_REF is a v* tag
    +--------------+   (skipped if dry_run=true)
           |
-          +-----------------------+
-          |                       |
-          v                       |
-   +--------------+               |
+          v
+   +--------------+
    | build-docker |   call-build-docker.yml
-   +--------------+   (skipped if docker_tag input is set)
-          |                       |
-          +-----------------------+
-          |
+   +--------------+   (skipped if docker_tag input is set;
+          |            smoke-tests image before push to GHCR)
           v
    +--------------+
    | build-wheels |   call-build-wheels.yml
-   +--------------+   (builds wheel inside ird container,
+   +--------------+   (builds + smoke-tests wheel inside ird container,
           |            uploads tt-lang-wheels artifact)
           |
+          +-----------------------+
+          v                       |
+   +---------------------+        |
+   | test-dist-tutorials |        |  (skipped under dry_run=true)
+   +---------------------+        |
+          |                       |
           +-----------------------+
           v                       v
    +--------------+        +------------------+
@@ -418,22 +517,30 @@ tags, and can also be dispatched manually for re-runs and dry-runs.
 Job-by-job:
 
 1. **`preflight`** — runs `require-release-tag.sh`, which fails unless
-   `GITHUB_REF` looks like `refs/tags/v[0-9]...`. Skipped under
-   `dry_run: true`. Exposes `tag_version` (tag with leading `v` stripped) for
-   the wheel-version check.
+   `GITHUB_REF` looks like `refs/tags/v[0-9]...`, then runs
+   `require-pypi-ttnn-alignment.sh`, which fails when the public `ttnn` wheel
+   recorded in `third-party/tt-metal-version` was built from a different
+   tt-metal `vX.Y.Z` component than TT-Lang. Skipped under `dry_run: true`. Exposes
+   `tag_version` (tag with leading `v` stripped) for the wheel-version check.
 2. **`build-docker`** — calls `call-build-docker.yml` on tag push (where no
    `docker_tag` input is supplied). Skipped on `workflow_dispatch`, which
    requires `docker_tag`. Outputs the freshly built ird tag.
 3. **`build-wheels`** — calls `call-build-wheels.yml` against either the
    `docker_tag` input (manual dispatch) or the `build-docker` output (tag
-   push). Builds the wheel inside the ird container and uploads it as the
-   `tt-lang-wheels` artifact.
-4. **`publish`** — runs on tag push or when `dry_run` is false. Downloads the
-   artifact, verifies every wheel filename's version field matches
-   `preflight.outputs.tag_version`, and uploads via
-   `pypa/gh-action-pypi-publish` using OIDC trusted publishing
-   (`environment: pypi`, `id-token: write`).
-5. **`dry-run-summary`** — runs only on `workflow_dispatch` with
+   push). Builds the wheel inside the ird container, runs
+   `smoke-test-wheel.py` in an isolated venv (imports + `tt-lang-sim --help`
+   + `tt-lang-sim-stats --help`), and runs the CMake-install regression test
+   (`cmake --install` + `bin/tt-lang-sim --help` against the parallel-install
+   layout). Uploads the result as the `tt-lang-wheels` artifact.
+4. **`test-dist-tutorials`**: calls `call-test-dist-tutorials.yml` against
+   the dist image at the resolved tag, running the tutorial suite on the
+   `n150` hardware runner. Gates `publish`. Skipped under `dry_run: true`.
+5. **`publish`**: runs on tag push or when `dry_run` is false **and**
+   `test-dist-tutorials` succeeded. Downloads the artifact, verifies every
+   wheel filename's version field matches `preflight.outputs.tag_version`,
+   and uploads via `pypa/gh-action-pypi-publish` using OIDC trusted
+   publishing (`environment: pypi`, `id-token: write`).
+6. **`dry-run-summary`**: runs only on `workflow_dispatch` with
    `dry_run: true`. Downloads the artifact and lists what would have been
    uploaded. No `environment`, no PyPI credentials.
 
@@ -449,6 +556,180 @@ ird image tag):
 | Dispatch from a non-tag ref with `dry_run: true`              | required         | Build wheel against the supplied tag, skip PyPI upload              |
 | Dispatch from a non-tag ref with `dry_run: false`             | required         | Fails at `preflight` because `GITHUB_REF` is not a release tag      |
 
+(publishing-to-s3-pypi)=
+#### Publishing to S3 PyPI
+
+`publish-s3-pypi.yml` publishes internal wheels to the Tenstorrent S3 PyPI
+index at `https://pypi.eng.aws.tenstorrent.com/`. It runs on stable release tag
+pushes, runs nightly on a GitHub schedule, and can also be dispatched manually.
+It uses GitHub OIDC for AWS access, then uploads with
+`s3pypi upload --put-root-index --bucket tenstorrent-pypi`.
+
+The workflow prevents publishing a bundled internal `tt-lang` wheel with the
+same package name and version as the public PyPI wheel when public PyPI
+publishing is already valid for that tt-metal tag. This avoids having two
+indexes expose `tt-lang==X.Y.Z` artifacts with different dependency metadata.
+
+Automatic S3 publishing should use this policy:
+
+- Stable release tags (`vX.Y.Z`) publish clean-version bundled and light wheels
+  to S3 only when public PyPI publishing is blocked because
+  `TTNN_PYPI_TT_METAL_TAG` and `TT_METAL_TAG` have different `vX.Y.Z`
+  components.
+- Stable release tags publish only light wheels to S3 when public PyPI
+  publishing is aligned. In that case public PyPI owns `tt-lang==X.Y.Z`, and S3
+  owns `tt-lang==X.Y.Z+light` plus `tt-lang-light==X.Y.Z`.
+- Manual stable-version S3 publishes that include the bundled variant are
+  rejected when public PyPI publishing is aligned for the same tt-metal tag.
+- The S3 resolver passes `TTLANG_ALLOW_FINAL_INTERNAL_VERSION=true` to the wheel
+  builder only after this conflict check has passed, so final-version internal
+  wheels cannot bypass the release guard.
+- Do not mix public PyPI and S3 indexes for a `tt-lang` version whose artifacts
+  have different dependency semantics. Use the S3 install command emitted by the
+  workflow summary for internal release wheels.
+- Nightly builds do not create Git tags. The scheduled workflow computes a
+  PEP 440 development version of the form `<MAJOR.MINOR.PATCH>.dev<YYYYMMDD>`,
+  where the base version matches the latest stable tag reachable from `HEAD`,
+  and the numeric suffix is a UTC date.
+- Scheduled reruns overwrite the same date-based version in the S3 index. This
+  keeps nightly versions readable, but existing local pip caches may still hold
+  the older wheel for that version.
+
+Stable tag pushes derive `version_override` from the tag (`v1.1.2` -> `1.1.2`),
+build and push the matching IRD image, build the selected wheel variants from
+that image, verify the wheel versions, and publish the result to S3 PyPI. The
+selected variant set is `bundled-and-light` when public PyPI publishing is
+blocked, and `light` when public PyPI publishing is aligned.
+
+The scheduled workflow also defaults to `wheel_variant: bundled-and-light`,
+builds and pushes the matching IRD image, builds bundled and light wheels from
+that image, verifies the wheel versions, and publishes the result to S3 PyPI.
+
+For a manual bundled internal wheel with an existing IRD image, dispatch the
+workflow with:
+
+```text
+docker_tag: <existing-ird-tag>
+wheel_variant: bundled
+version_override: <internal-version>
+```
+
+The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=bundled`,
+`TTLANG_VERSION_OVERRIDE=<version_override>`, and
+`TTLANG_BUNDLED_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal`. The resulting
+`tt-lang` wheel includes the `ttnn` Python package, its native extensions, the
+needed shared libraries, and the runtime/header payload copied from the
+toolchain's tt-metal install.
+
+For light wheels that must use a user-provided tt-metal build instead of a
+bundled or public `ttnn` wheel, dispatch the workflow with:
+
+```text
+wheel_variant: light
+version_override: <internal-version>
+```
+
+The workflow maps this publish selection to the reusable wheel builder's
+`TTLANG_TTNN_DEP_MODE=external` build mode and sets
+`TTLANG_VERSION_OVERRIDE=<version_override>+light`. The resulting `tt-lang` wheel
+omits `Requires-Dist: ttnn`; the normal PyPI build keeps that requirement. The
+same build also emits `tt-lang-light==<version_override>`, a metapackage that
+depends on `tt-lang==<version_override>+light`.
+
+To publish bundled and light wheels from the same workflow run, dispatch with:
+
+```text
+wheel_variant: bundled-and-light
+version_override: <internal-version>
+```
+
+The workflow builds the bundled and light wheel sets separately, uploads
+mode-specific artifacts, verifies each artifact with the expected version rules,
+then publishes a single combined directory. The light build skips
+`tt-lang-sim` in this mode because the bundled build already provides the same
+`tt-lang-sim==<version_override>` package/version for the S3 index.
+
+#### Local internal wheel testing
+
+Use the same environment variables as the reusable workflow when validating the
+wheel build locally.
+
+Bundled wheel:
+
+```bash
+source /opt/ttlang-toolchain/venv/bin/activate
+TTLANG_VERSION=<internal-version>
+
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
+cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DTTLANG_USE_TOOLCHAIN=ON
+
+TTLANG_TTNN_DEP_MODE=bundled \
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
+TTLANG_BUNDLED_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
+pip wheel . --wheel-dir=/tmp/ttlang-wheels/bundled/raw --no-deps --no-build-isolation
+
+auditwheel repair /tmp/ttlang-wheels/bundled/raw/tt_lang-*.whl \
+  --wheel-dir=/tmp/ttlang-wheels/bundled/dist
+```
+
+Light wheel:
+
+```bash
+source /opt/ttlang-toolchain/venv/bin/activate
+TTLANG_VERSION=<internal-version>
+
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION+light" \
+cmake -G Ninja -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTTLANG_USE_TOOLCHAIN=ON \
+  -DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
+  -DTTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv
+
+TTLANG_TTNN_DEP_MODE=external \
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION+light" \
+TTLANG_EXTERNAL_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
+TTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv \
+pip wheel . --wheel-dir=/tmp/ttlang-wheels/light/raw --no-deps --no-build-isolation
+
+auditwheel repair /tmp/ttlang-wheels/light/raw/tt_lang-*.whl \
+  --wheel-dir=/tmp/ttlang-wheels/light/dist
+
+TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
+TTLANG_LIGHT_TTLANG_VERSION="$TTLANG_VERSION+light" \
+pip wheel packaging/light --wheel-dir=/tmp/ttlang-wheels/light/dist \
+  --no-deps --no-build-isolation
+```
+
+Install-test the light package from the local wheel directory. The setup command
+copies tutorials into `./tutorials/` and skips sfpi installation for light
+installs because the external tt-metal tree provides sfpi:
+
+```bash
+python3.12 -m venv /tmp/ttlang-light-test
+source /tmp/ttlang-light-test/bin/activate
+pip install --find-links=/tmp/ttlang-wheels/light/dist \
+  "tt-lang-light==$TTLANG_VERSION"
+tt-lang-setup
+```
+
+Configure the external tt-metal environment and validate imports:
+
+```bash
+external_tt_metal_env="$(
+  tt-lang-setup-external-tt-metal \
+    --tt-metal-dir /opt/ttlang-toolchain/tt-metal \
+    --check
+)" && eval "$external_tt_metal_env"
+python -c 'import ttl, ttnn; print(ttl.__version__, ttnn.__file__)'
+```
+
+The TT-Lang tutorial can then run from the local directory copied by
+`tt-lang-setup`:
+
+```bash
+python tutorials/elementwise/step_4_multinode_grid_full.py
+```
+
 ## CMake Options
 
 | Option                             | Default     | Description                                                                          |
@@ -456,8 +737,12 @@ ird image tag):
 | `CMAKE_BUILD_TYPE`               | `Release` | Build type (Debug, Release, RelWithDebInfo)                                          |
 | `LLVM_BUILD_TYPE`                | `Release` | LLVM build type (independent of project build type)                                  |
 | `TTLANG_TOOLCHAIN_DIR`           | —          | Toolchain prefix for LLVM, tt-metal, and venv                                        |
+| `TTLANG_PYTHON_VENV`            | —          | Existing Python virtual environment used by configure/build                          |
 | `TTLANG_USE_TOOLCHAIN`           | `OFF`     | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR`                                  |
+| `TTLANG_USE_TOOLCHAIN_TTMETAL`   | follows `TTLANG_USE_TOOLCHAIN` | Reuse tt-metal from the toolchain. Set `OFF` (e.g. via `scripts/build-and-install.sh --rebuild-ttmetal`) to keep LLVM from the toolchain but rebuild tt-metal from the submodule. |
 | `TTLANG_BUILD_TOOLCHAIN`         | `OFF`     | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
+| `TTLANG_EXTERNAL_TT_METAL_DIR`    | —          | Existing tt-metal source or install directory                                        |
+| `TTLANG_EXTERNAL_TT_METAL_BUILD_DIR` | —       | Existing native tt-metal build directory                                             |
 | `MLIR_PREFIX`                    | —          | Path to pre-built LLVM/MLIR install                                                  |
 | `TTLANG_ACCEPT_LLVM_MISMATCH`    | `OFF`     | Allow LLVM SHA mismatch with pre-built installs                                      |
 | `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF`     | Allow tt-metal SHA mismatch with pre-built installs                                  |

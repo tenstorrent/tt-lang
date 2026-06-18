@@ -130,11 +130,9 @@ endif()
 # ---------------------------------------------------------------------------
 # Python venv setup.
 #
-# Both pre-built toolchain and submodule-build modes need a working Python
-# venv.  The venv may not exist yet (first configure), or it may have been
-# stripped from the toolchain cache because venvs are not portable across
-# machines.  In either case, create a fresh venv using the system Python and
-# install tt-lang's runtime requirements.
+# Both pre-built toolchain and submodule-build modes need the Python venv
+# selected by TTLangPython.cmake. Recreate it here if it was removed during
+# configure, then install tt-lang's runtime requirements.
 # ---------------------------------------------------------------------------
 _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
 

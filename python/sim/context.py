@@ -15,7 +15,7 @@ from typing import Optional
 from greenlet import getcurrent
 
 from .context_types import SimulatorContext
-from .blockstate import ThreadType
+from .blockstate import KernelType
 
 
 def get_context() -> SimulatorContext:
@@ -64,38 +64,69 @@ def reset_context() -> None:
     """Reset context for current greenlet to defaults.
 
     Creates a fresh context, discarding any previous state.
+    Also frees the sys.monitoring tool slot used for copy-wait injection so
+    the next simulation run can re-register its callbacks from a clean state.
     Primarily useful for test cleanup.
     """
+    import sys
+
+    if sys.monitoring.get_tool(sys.monitoring.OPTIMIZER_ID) is not None:
+        sys.monitoring.free_tool_id(sys.monitoring.OPTIMIZER_ID)
     getcurrent()._sim_context = SimulatorContext()  # type: ignore
 
 
-def get_current_thread_type() -> ThreadType:
+def cleanup_run_context() -> None:
+    """Clean up execution-specific state after a single Program run.
+
+    Clears scheduler, monitoring hooks, and per-run caches so that a
+    subsequent operation starts cleanly.  Unlike ``reset_context()``, this
+    preserves persistent session state such as ``trace_events`` and ``config``
+    so that callers can read trace output after the run completes.
+
+    Called by the ``@ttl.operation`` wrapper after each ``Program`` run.
+    """
+    import sys
+
+    ctx = get_context()
+    ctx.scheduler = None
+    ctx.current_kernel_type = None
+    ctx.kernel_registry.clear()
+    ctx.kernel_dfb_count = 0
+    ctx.kernel_l1_bytes = 0
+    ctx.active_hooks.clear()
+    ctx.injection_points_cache.clear()
+    ctx.auto_wait_copy_lines.clear()
+    if sys.monitoring.get_tool(sys.monitoring.OPTIMIZER_ID) is not None:
+        sys.monitoring.free_tool_id(sys.monitoring.OPTIMIZER_ID)
+
+
+def get_current_kernel_type() -> KernelType:
     """Get the current kernel role (compute vs datamovement).
 
     Returns:
-        ThreadType
+        KernelType
 
     Raises:
         RuntimeError: If kernel role is not set (not within a running compute/DM kernel)
     """
-    current_thread_type = get_context().current_thread_type
-    if current_thread_type is None:
+    current_kernel_type = get_context().current_kernel_type
+    if current_kernel_type is None:
         raise RuntimeError(
             "Compute/DM kernel context is not set. Use this only while a compute or "
-            "datamovement kernel is running, or after calling set_current_thread_type()."
+            "datamovement kernel is running, or after calling set_current_kernel_type()."
         )
-    return current_thread_type
+    return current_kernel_type
 
 
-def set_current_thread_type(thread_type: Optional[ThreadType]) -> None:
-    """Set the current thread type.
+def set_current_kernel_type(kernel_type: Optional[KernelType]) -> None:
+    """Set the current kernel role (compute vs datamovement).
 
     Args:
-        thread_type: The thread type to set, or None to clear the context
+        kernel_type: The kernel role to set, or None to clear the context
     """
-    get_context().current_thread_type = thread_type
+    get_context().current_kernel_type = kernel_type
 
 
-def clear_current_thread_type() -> None:
-    """Clear the current thread type."""
-    get_context().current_thread_type = None
+def clear_current_kernel_type() -> None:
+    """Clear the current kernel role."""
+    get_context().current_kernel_type = None

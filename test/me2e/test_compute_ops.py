@@ -7,6 +7,9 @@ Minimal declarative test for all compute operations.
 
 Uses pytest parametrize to test all operations with all configurations and dtypes.
 Single function covers everything - operations, configs, and dtypes are declared as data.
+
+Elementwise compare ops use the same harness but are collected in
+test_compare_ops.py so it can be run and reviewed on its own.
 """
 
 from dataclasses import replace
@@ -17,6 +20,11 @@ from .config import get_dtype_ids, get_test_dtypes
 from .config_specs import CONFIGS, XFAILS
 from .op_specs import COMPUTE_OPS
 from .runner import run_compute_test
+
+# Exclude compare ops; they are covered in test_compare_ops.py (avoid duplicate runs).
+_COMPUTE_OPS_NO_COMPARE = tuple(
+    op for op in COMPUTE_OPS if op.name not in ("eq", "ne", "gt", "lt")
+)
 
 
 def _check_xfail(config_str: str, dtype_str: str, op_name: str):
@@ -29,7 +37,7 @@ def _check_xfail(config_str: str, dtype_str: str, op_name: str):
             pytest.xfail(reason)
 
 
-@pytest.mark.parametrize("op", COMPUTE_OPS, ids=lambda o: o.name)
+@pytest.mark.parametrize("op", _COMPUTE_OPS_NO_COMPARE, ids=lambda o: o.name)
 @pytest.mark.parametrize(
     "config",
     CONFIGS,

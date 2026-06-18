@@ -1,11 +1,19 @@
 [build-system]
-requires = ["setuptools>=61.0", "cmake", "nanobind", "wheel", "pip", "ninja"]
+requires = [
+  "setuptools>=61.0",
+  "cmake",
+  "nanobind",
+  "wheel",
+  "pip",
+  "ninja",
+  "packaging",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tt-lang"
 description = "Python Bindings and Package for TT-Lang Compiler Project"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]
 license = "Apache-2.0"
 license-files = ["LICENSE*"]
@@ -23,7 +31,7 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Programming Language :: C++",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Compilers",
@@ -38,14 +46,18 @@ dynamic = ["version", "readme", "dependencies"]
 # place. ttnn installs automatically on Linux x86_64 / aarch64 (where ttnn
 # publishes wheels); on macOS / Windows the marker skips it and users
 # wanting a sim-only install should `pip install tt-lang-sim` instead (that
-# wheel bundles `ttlang-sim` and `ttlang-sim-stats`; there is no separate stats
-# package).
+# wheel bundles `tt-lang-sim` and `tt-lang-sim-stats`; there is no separate stats
+# package). The version file also records the tt-metal tag used to build that
+# ttnn wheel so public PyPI publishing can reject mismatched releases. Internal
+# wheels can set TTLANG_TTNN_DEP_MODE=external at build time to omit the ttnn
+# dependency and use an existing tt-metal/ttnn install.
 
 [project.scripts]
-ttlang-sim = "ttl.sim.ttlang_sim:main"
-ttlang-sim-stats = "sim_stats.__main__:main"
+tt-lang-sim = "ttl.sim.ttlang_sim:main"
+tt-lang-sim-stats = "sim_stats.__main__:main"
 tt-lang-setup = "ttl._setup.cli:main"
-tt-lang-setup-host = "ttl._setup.host:main"
+tt-lang-setup-external-tt-metal = "ttl._setup.external_tt_metal:main"
+tt-lang-setup-sfpi = "ttl._setup.sfpi:main"
 tt-lang-setup-tutorials = "ttl._setup.tutorials:main"
 
 [project.urls]
@@ -68,6 +80,7 @@ reportImportCycles = "error"
 reportUnnecessaryIsInstance = "warning"
 
 [tool.pytest.ini_options]
+pythonpath = [".", "python"]
 markers = [
     "requires_ttnn: marks simulator tests that compare against real ttnn goldens or otherwise require ttnn",
     "matmul_tutorial_ttnn: marks matmul-tutorial tests requiring real ttnn, steps 0 and 7 (deselected by default; enable with --run-matmul-tutorial-ttnn)",
