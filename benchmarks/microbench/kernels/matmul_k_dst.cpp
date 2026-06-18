@@ -9,15 +9,20 @@
 // (MB3.B), each subblock re-unpacks its A rows and B cols from the resident
 // operand DFBs, so total operand unpack scales by the subblock count (reuse).
 //
+// With fuse != 0 a GELU epilogue is applied in place on the DST subblock before
+// the single pack -- no reload, because the output is already resident. The
+// fast (tanh) GELU is used, the production default for fused matmul epilogues.
+//
 // A is resident as `kt` column-blocks of mt tiles (A tile (m,k) at k*mt+m); B
 // as `kt` row-blocks of nt tiles (B tile (k,n) at k*nt+n).
 //
-// Compile-time args: 0 = mt, 1 = nt, 2 = kt, 3 = sub_mt, 4 = sub_nt.
+// Compile-time args: 0 = mt, 1 = nt, 2 = kt, 3 = sub_mt, 4 = sub_nt, 5 = fuse.
 
 #include <cstdint>
 
 #include "api/compute/common.h"
 #include "api/compute/compute_kernel_api.h"
+#include "api/compute/eltwise_unary/gelu.h"
 #include "api/compute/matmul.h"
 #include "api/compute/pack.h"
 #include "api/compute/reg_api.h"
@@ -34,7 +39,9 @@ void kernel_main() {
   const uint32_t kt = get_compile_time_arg_val(2);
   const uint32_t sub_mt = get_compile_time_arg_val(3);
   const uint32_t sub_nt = get_compile_time_arg_val(4);
+  const uint32_t fuse = get_compile_time_arg_val(5);
   const uint32_t out_tiles = mt * nt;
+  const uint32_t sub_tiles = sub_mt * sub_nt;
 
   mm_block_init(dfb_in0, dfb_in1, dfb_out, 0, sub_nt, sub_mt, 1);
 
@@ -51,6 +58,12 @@ void kernel_main() {
         for (uint32_t k = 0; k < kt; ++k) {
           matmul_block(dfb_in0, dfb_in1, k * mt + om, k * nt + on, 0, 0, sub_nt,
                        sub_mt, 1);
+        }
+        if (fuse) {
+          gelu_tile_init();
+          for (uint32_t t = 0; t < sub_tiles; ++t) {
+            gelu_tile(t);
+          }
         }
         tile_regs_commit();
         tile_regs_wait();
