@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Runs a benchmark's handwritten kernels through real tt-metal dispatch and
-returns warm, per-RISC device-profiler microseconds — the composed,
+returns warm, per-RISC device-profiler microseconds -- the composed,
 dataflow-buffer-inclusive cost these microbenchmarks exist to measure, as opposed
 to isolated LLK primitives. runner.py layers the declarative sweep on top.
 """
@@ -114,7 +114,7 @@ def compute_config(fidelity="hifi4", fp32_dest_acc=False, full_sync=False):
 
 
 def _mean_zone(zones):
-    """Average the per-RISC µs across measured runs; keep arch/freq, OR the noc flag."""
+    """Average the per-RISC us across measured runs; keep arch/freq, OR the noc flag."""
     if len(zones) == 1:
         return zones[0]
     out = dict(zones[0])
@@ -130,7 +130,7 @@ def dispatch(device, io_tensors, kernels, dfbs, zone_name, warmup=1, runs=1):
 
     `warmup` dispatches run first to warm the kernel-binary / instruction / data
     caches; their profiler zones are flushed and discarded. The zone is then
-    measured over `runs` warm dispatches and the per-RISC µs are averaged.
+    measured over `runs` warm dispatches and the per-RISC us are averaged.
     """
     program = ttnn.ProgramDescriptor(kernels=kernels, semaphores=[], cbs=dfbs)
     csv_path = profiler.find_profiler_csv()

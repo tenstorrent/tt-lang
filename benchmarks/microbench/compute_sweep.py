@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MB4 — compute-op (math) probe: per-tile SFPU math-engine cost.
+"""MB4 -- compute-op (math) probe: per-tile SFPU math-engine cost.
 
 Applies a selected SFPU unary op to `tiles` tiles, `iters` times, on the math
 thread (what tt-lang emits), and reports the per-RISC zone times. op=copy is the

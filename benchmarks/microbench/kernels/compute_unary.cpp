@@ -10,7 +10,7 @@
 // (copy) is the baseline: subtract it to get the SFPU op's marginal math cost.
 //
 // init_hoist selects whether the op init is hoisted out of the loop (steady
-// per-tile cost) or re-issued every sub-block (init + op cost) — both occur in
+// per-tile cost) or re-issued every sub-block (init + op cost) -- both occur in
 // production kernels.
 //
 // Compile-time args: 0 = op, 1 = tiles, 2 = iters, 3 = DST capacity,

@@ -59,19 +59,34 @@ def to_device(
 
 def measure_pcc(golden, actual):
     """Return PCC for reporting; use `assert_pcc` for correctness checks."""
-    golden_flat = torch.nan_to_num(golden.float().flatten())
-    actual_flat = torch.nan_to_num(actual.float().flatten())
+    golden_flat = golden.float().flatten()
+    actual_flat = actual.float().flatten()
 
-    if torch.any(golden_flat.bool()).item() != torch.any(actual_flat.bool()).item():
+    if golden_flat.shape != actual_flat.shape:
+        return 0.0
+
+    if not torch.all(torch.isfinite(golden_flat)).item():
+        return 0.0
+    if not torch.all(torch.isfinite(actual_flat)).item():
         return 0.0
 
     if torch.equal(golden_flat, actual_flat):
         return 1.0
 
+    if torch.any(golden_flat.bool()).item() != torch.any(actual_flat.bool()).item():
+        return 0.0
+
+    golden_centered = golden_flat - golden_flat.mean()
+    actual_centered = actual_flat - actual_flat.mean()
+    if torch.count_nonzero(golden_centered).item() == 0:
+        return 0.0
+    if torch.count_nonzero(actual_centered).item() == 0:
+        return 0.0
+
     value = torch.corrcoef(torch.stack([golden_flat, actual_flat]))[0, 1].item()
-    if not math.isfinite(value):
-        return 1.0
-    return value
+    if math.isfinite(value):
+        return value
+    return 0.0
 
 
 def time_runs(thunk, device, *, warmup=3, runs=10, cleanup=lambda result: None):

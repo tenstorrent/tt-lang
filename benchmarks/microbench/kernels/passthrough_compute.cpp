@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Zero-compute pack/unpack probe (MB1). Measures the cost of moving a
-// tile block out to L1 and back — pack DST->L1, unpack L1->DST, and the
-// dataflow-buffer reserve/wait/push/pop + cross-thread semaphore sync — with no
+// tile block out to L1 and back -- pack DST->L1, unpack L1->DST, and the
+// dataflow-buffer reserve/wait/push/pop + cross-thread semaphore sync -- with no
 // arithmetic, on a single compute core. The measured loop self-cycles `tiles`
 // tiles through a compute-private buffer (dfb_loop): the pack thread (TRISC2)
 // produces and the unpack thread (TRISC0) consumes, so the per-RISC zone split

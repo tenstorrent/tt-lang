@@ -4,7 +4,7 @@
 // MB2, DST-resident accumulation: out = initial + sum of `iters` contributions.
 // The accumulator lives in DST across the loop (one acquire). It is seeded from
 // the initial DFB with copy_tile, then each contribution is added in place with
-// binary_dest_reuse_tiles<ELWADD, DEST_TO_SRCA> — one in-place op that unpacks
+// binary_dest_reuse_tiles<ELWADD, DEST_TO_SRCA> -- one in-place op that unpacks
 // the contribution straight from the contribution DFB. The seed and the
 // contributions use SEPARATE DFBs, matching tt-lang's tile_accumulate_add
 // lowering (initial_dfb + delta_dfb); optimized production kernels likewise use

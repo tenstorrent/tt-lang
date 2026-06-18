@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MB3 — matmul K-accumulation: DST-K vs L1-K (production-representative).
+"""MB3 -- matmul K-accumulation: DST-K vs L1-K (production-representative).
 
 C[mt,nt] = sum_k A[k] @ B[k] over kt K-tiles, two strategies for where the
 running partial lives. The output is tiled into sub_mt*sub_nt subblocks chosen

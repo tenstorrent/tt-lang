@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MB2 — accumulation: DST-resident vs L1-pack (declared on the MicroBenchmark runner).
+"""MB2 -- accumulation: DST-resident vs L1-pack (declared on the MicroBenchmark runner).
 
 out = initial + sum of `iters` contributions on an acc_tiles-wide accumulator,
 two strategies: DST-resident (binary_dest_reuse, pack once) and L1-pack (per-step

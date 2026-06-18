@@ -14,7 +14,7 @@ per-RISC and the TRISC-max per-iteration time against tiles:
 
 The TRISC-max fit is the round-trip per-tile cost (pipelined throughput basis).
 The probe's per-RISC unpack/pack times are pipelined too, not clean engine
-isolates — the per-engine split comes from the LLK microbenchmarks (RESULTS.md).
+isolates -- the per-engine split comes from the LLK microbenchmarks (RESULTS.md).
 
     python -m benchmarks.microbench.fit "benchmarks/microbench/results/pack_unpack_*.csv"
 """
