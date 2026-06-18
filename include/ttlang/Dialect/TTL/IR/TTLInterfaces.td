@@ -56,6 +56,48 @@ def TTL_PipeNetPredicateOpInterface
   ];
 }
 
+def TTL_AccumulationScopeOpInterface
+    : OpInterface<"AccumulationScopeOpInterface"> {
+  let description = [{
+    Region-like operations that explicitly describe accumulation semantics.
+    The interface separates the accumulation policy from the storage mechanism,
+    so consumers can reason about the declared policy directly.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return true when this operation instance carries active "
+               "accumulation semantics.",
+      /*retTy=*/"bool",
+      /*methodName=*/"isAccumulation",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return the destination tensor operands governed by the "
+               "accumulation policy.",
+      /*retTy=*/"::mlir::ValueRange",
+      /*methodName=*/"getAccumulationOutputs",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return init operands for outputs whose initial mode requires "
+               "one.",
+      /*retTy=*/"::mlir::ValueRange",
+      /*methodName=*/"getAccumulationInits",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return one initial-value mode per accumulation output.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::AccumulationInitialMode>",
+      /*methodName=*/"getAccumulationInitialModes",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return the region containing the accumulation body.",
+      /*retTy=*/"::mlir::Region &",
+      /*methodName=*/"getAccumulationBody",
+      /*args=*/(ins)>,
+  ];
+}
+
 def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
   let description = [{
     Tile-level operations that expose concrete DST register reads, writes, and

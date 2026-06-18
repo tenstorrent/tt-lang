@@ -26,6 +26,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
+  DstSubblockUtils.cpp
   TTLSubblockComputeForDST.cpp
 
   DEPENDS
