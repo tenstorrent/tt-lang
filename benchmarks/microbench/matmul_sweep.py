@@ -62,7 +62,12 @@ class MatmulK(MicroBenchmark):
         Param("fidelity", "hifi4", choices=("lofi", "hifi2", "hifi4")),
         Param("full_sync", False),
         Param("fuse", "none", choices=("none", "gelu"), help="epilogue activation"),
-        Param("block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="output DFB block count"),
+        Param(
+            "block_count",
+            str(DEFAULT_BLOCK_COUNT),
+            sweep=True,
+            help="output DFB block count",
+        ),
     )
     INPUTS = (
         Tensor("a", lambda cfg: (cfg["mt"] * TILE, cfg["kt"] * TILE)),

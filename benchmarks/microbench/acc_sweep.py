@@ -48,7 +48,12 @@ class Accumulation(MicroBenchmark):
         Param("iters", "1,2,4,8,16", sweep=True, help="contribution count"),
         Param("dtype", "bf16", choices=("bf16", "fp32")),
         Param("source", "l1", choices=("l1", "dram")),
-        Param("block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="contribution/output DFB block count"),
+        Param(
+            "block_count",
+            str(DEFAULT_BLOCK_COUNT),
+            sweep=True,
+            help="contribution/output DFB block count",
+        ),
         Param("full_sync", False),
         Param("fp32_dest_acc", False),
     )

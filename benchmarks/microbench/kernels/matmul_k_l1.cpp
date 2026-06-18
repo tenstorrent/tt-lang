@@ -99,7 +99,8 @@ void kernel_main() {
           tile_regs_wait();
           for (uint32_t i = 0; i < sub_mt; ++i) {
             for (uint32_t j = 0; j < sub_nt; ++j) {
-              pack_tile<true>(i * sub_nt + j, dfb_out, (om + i) * nt + (on + j));
+              pack_tile<true>(i * sub_nt + j, dfb_out,
+                              (om + i) * nt + (on + j));
             }
           }
           tile_regs_release();
