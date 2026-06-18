@@ -21,7 +21,7 @@ from pathlib import Path
 import ttnn
 
 from benchmarks.microbench import harness
-from benchmarks.microbench.harness import BLOCK_COUNT, TILE
+from benchmarks.microbench.harness import TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
@@ -48,6 +48,7 @@ class Accumulation(MicroBenchmark):
         Param("iters", "1,2,4,8,16", sweep=True, help="contribution count"),
         Param("dtype", "bf16", choices=("bf16", "fp32")),
         Param("source", "l1", choices=("l1", "dram")),
+        Param("buffers", "2", sweep=True, help="contribution/output DFB depth factor"),
         Param("full_sync", False),
         Param("fp32_dest_acc", False),
     )
@@ -57,10 +58,12 @@ class Accumulation(MicroBenchmark):
     OUTPUTS = (
         Tensor("out", lambda cfg: (TILE, cfg["acc_tiles"] * TILE), init="empty"),
     )
+    # dfb_init holds the seed (read once); dfb_delta/dfb_out depth = `buffers`, so
+    # the reader can prefetch `buffers` contribution blocks ahead.
     DFBS = (
         DFB(0, lambda cfg: cfg["acc_tiles"]),  # dfb_init
-        DFB(1, lambda cfg: BLOCK_COUNT * cfg["acc_tiles"]),  # dfb_delta
-        DFB(16, lambda cfg: BLOCK_COUNT * cfg["acc_tiles"]),  # dfb_out
+        DFB(1, lambda cfg: cfg["buffers"] * cfg["acc_tiles"]),  # dfb_delta
+        DFB(16, lambda cfg: cfg["buffers"] * cfg["acc_tiles"]),  # dfb_out
     )
 
     def legal(self, cfg, strategy):

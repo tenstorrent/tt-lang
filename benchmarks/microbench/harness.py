@@ -22,7 +22,6 @@ import ttnn
 from benchmarks.microbench import profiler
 
 TILE = 32
-BLOCK_COUNT = 2
 
 # name -> (ttnn dtype, torch dtype, bytes/datum)
 DTYPES = {
