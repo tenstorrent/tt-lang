@@ -21,7 +21,8 @@ JIT-compiles the handwritten kernels at run time.
   fit fixed plus per-tile DFB handoff cost.
 - MB2 accumulation (`acc_sweep.py`): `initial + sum(contributions)`, comparing
   DST-resident accumulation against L1-pack accumulation. `--source l1|dram`
-  selects contribution residency.
+  selects contribution residency; `--expr add|mul|gelu` selects the
+  per-iteration contribution expression (`mul` is L1-pack only).
 - MB3 matmul K-accumulation (`matmul_sweep.py`): `C[mt,nt] = sum_k A[k] @ B[k]`,
   comparing DST-K against L1-K. The output is subblocked as the compiler would
   (`harness.dst_subblock`), covering MB3.A (output fits DST, reuse=1) and MB3.B
@@ -54,7 +55,8 @@ python -m benchmarks.microbench.sweep \
 python -m benchmarks.microbench.acc_sweep \
   --acc-tiles 1,2,4 \
   --iters 1,2,4,8,16 \
-  --source l1
+  --source l1 \
+  --expr add
 
 python -m benchmarks.microbench.matmul_sweep \
   --mt 1,2,4 \

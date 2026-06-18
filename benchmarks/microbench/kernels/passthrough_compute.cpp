@@ -3,12 +3,12 @@
 //
 // Zero-compute pack/unpack probe (MB1). Measures the cost of moving a
 // tile block out to L1 and back -- pack DST->L1, unpack L1->DST, and the
-// dataflow-buffer reserve/wait/push/pop + cross-thread semaphore sync -- with no
-// arithmetic, on a single compute core. The measured loop self-cycles `tiles`
-// tiles through a compute-private buffer (dfb_loop): the pack thread (TRISC2)
-// produces and the unpack thread (TRISC0) consumes, so the per-RISC zone split
-// gives the pack and unpack times directly. No NoC/DRAM traffic occurs inside
-// the zone (NCRISC/BRISC idle).
+// dataflow-buffer reserve/wait/push/pop + cross-thread semaphore sync -- with
+// no arithmetic, on a single compute core. The measured loop self-cycles
+// `tiles` tiles through a compute-private buffer (dfb_loop): the pack thread
+// (TRISC2) produces and the unpack thread (TRISC0) consumes, so the per-RISC
+// zone split gives the pack and unpack times directly. No NoC/DRAM traffic
+// occurs inside the zone (NCRISC/BRISC idle).
 //
 // Compile-time args: 0 = tiles per iteration, 1 = measured iterations,
 // 2 = DST sub-block capacity. See benchmarks/microbench/RESULTS.md.

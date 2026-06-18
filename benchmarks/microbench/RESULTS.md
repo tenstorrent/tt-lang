@@ -621,10 +621,10 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `pack_unpack_blackhole_bf16_*.csv` -- MB1 bf16 tiles=1..16
 - `pack_unpack_blackhole_matrix_*.csv` -- MB1 config matrix
 - `pack_unpack_wormhole_b0_bf16_*.csv` -- MB1 bf16 tiles=1..16
-- `accumulation_blackhole_bf16_{l1,dram}_*.csv` -- MB2 DST vs L1-pack, acc_tilesxiters (x block_count)
-- `accumulation_wormhole_b0_bf16_{l1,dram}_*.csv` -- MB2 on Wormhole (x block_count)
-- `accumulation_{blackhole,wormhole_b0}_fp32_{l1,dram}_*.csv` -- MB2 fp32 dest
-- `accumulation_{blackhole,wormhole_b0}_bf16_{l1,dram}_True_*.csv` -- MB2 full-sync (`full_sync` in the tag)
+- `accumulation_blackhole_bf16_{l1,dram}_*.csv` -- MB2 add recurrence, DST vs L1-pack, acc_tiles x iters (x block_count)
+- `accumulation_wormhole_b0_bf16_{l1,dram}_*.csv` -- MB2 add recurrence on Wormhole (x block_count)
+- `accumulation_{blackhole,wormhole_b0}_fp32_{l1,dram}_*.csv` -- MB2 add recurrence, fp32 dest
+- `accumulation_{blackhole,wormhole_b0}_bf16_{l1,dram}_True_*.csv` -- MB2 add recurrence, full-sync (`full_sync` in the tag)
 - `matmul_k_blackhole_bf16_hifi4_*.csv` -- MB3 DST-K vs L1-K, P and kt sweep (MB3.A reuse=1 + MB3.B reuse>1)
 - `matmul_k_wormhole_b0_bf16_hifi4_*.csv` -- MB3 same sweep on Wormhole
 - `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` -- MB3.C DST-K vs L1-K with a fused GELU epilogue
@@ -638,18 +638,22 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 
 ## Open / next
 
-MB1, MB2, and MB3 are complete on both architectures (see their sections). Remaining:
+MB1, MB2 `--expr add`, and MB3 are complete on both architectures (see their sections).
+Remaining:
 
 - MB4 -- compute-op (math) microbenchmarks: per-op SFPU/FPU tile costs, math-thread
   (what tt-lang emits today) and a pack-thread activation arm (achievable headroom).
 - MB1 -- distinct-DFB superlinearity: sweep the number of live DFBs to check whether
   the per-handoff cost stays constant or grows under L1 / semaphore pressure.
-- MB2 -- compute-bearing recurrence (`--expr`): instead of `acc += delta`, add an
-  expression each iteration -- an FPU one (`acc += delta*delta` via `mul_tiles`
-  acc_to_dest, in place) and an SFPU one (`acc += gelu(delta)` via copy + gelu +
-  in-DST add). Tests whether per-iteration compute shifts the DST-vs-L1 choice.
-  Note: DST-resident SFPU needs a temp DST tile per accumulator tile, halving its
-  legal acc_tiles.
+- MB2 -- measure compute-bearing recurrence on both architectures and update
+  the tables. The pointwise expressions are implemented and spot-checked on
+  Blackhole (PCC >= 0.99): `gelu` runs DST-resident (temp DST slot +
+  add_binary_tile) and L1-pack; `mul` is L1-pack only -- a product cannot
+  accumulate in DST in place (no FPU op adds two DST tiles). The full
+  both-architecture sweep is pending. Then add reduction/broadcast sequences
+  representative of softmax-like code: max/sum reductions, broadcasted scalar or
+  row-vector updates, and fused pointwise transforms. New MB2 CSVs include the
+  expression tag after the source tag.
 - Validation -- LLK composition cross-check: a tt-llk per-engine perf run supplies
   unpack / pack / l1-acc-surcharge / matmul-math for both architectures; compose
   those unit-free against MB1's measured round-trip rather than re-running the suite.

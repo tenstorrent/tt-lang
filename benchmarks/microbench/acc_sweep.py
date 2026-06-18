@@ -6,9 +6,11 @@
 out = initial + sum of `iters` contributions on an acc_tiles-wide accumulator,
 two strategies: DST-resident (binary_dest_reuse, pack once) and L1-pack (per-step
 pack_reconfig_l1_acc). `--source l1|dram` selects contribution residency
-(re-read one L1 block vs stream one block per iteration). See runner.py.
+(re-read one L1 block vs stream one block per iteration). `--expr add|mul|gelu`
+selects the per-iteration contribution expression. See runner.py.
 
     python -m benchmarks.microbench.acc_sweep --acc-tiles 1,2,4 --iters 1,2,4,8,16 --source l1
+    python -m benchmarks.microbench.acc_sweep --expr mul --source dram
 """
 
 import os
@@ -18,6 +20,7 @@ os.environ.setdefault("TT_METAL_PROFILER_MID_RUN_DUMP", "1")
 
 from pathlib import Path
 
+import torch
 import ttnn
 
 from benchmarks.microbench import harness
@@ -29,6 +32,9 @@ DST_KERNEL = str(KERNELS / "acc_dst.cpp")
 L1_KERNEL = str(KERNELS / "acc_l1.cpp")
 READER_KERNEL = str(KERNELS / "acc_reader.cpp")
 WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+
+EXPR_CHOICES = ("add", "mul", "gelu")
+EXPR_IDS = {expr: expr_id for expr_id, expr in enumerate(EXPR_CHOICES)}
 
 
 def _src_blocks(cfg):
@@ -42,12 +48,18 @@ class Accumulation(MicroBenchmark):
     DEFAULT_CSV = "benchmarks/microbench/results/accumulation.csv"
     STRATEGIES = ("dst", "l1")
     PER_UNIT = "iters"
-    CSV_TAG = ("dtype", "source", "full_sync")
+    CSV_TAG = ("dtype", "source", "expr", "full_sync")
     PARAMS = (
         Param("acc_tiles", "1,2,4", sweep=True, help="accumulator tiles"),
         Param("iters", "1,2,4,8,16", sweep=True, help="contribution count"),
         Param("dtype", "bf16", choices=("bf16", "fp32")),
         Param("source", "l1", choices=("l1", "dram")),
+        Param(
+            "expr",
+            "add",
+            choices=EXPR_CHOICES,
+            help="per-iteration contribution: add, mul, or gelu",
+        ),
         Param(
             "block_count",
             str(DEFAULT_BLOCK_COUNT),
@@ -73,11 +85,25 @@ class Accumulation(MicroBenchmark):
 
     def legal(self, cfg, strategy):
         if strategy == "dst":
+            # expr=mul has no DST-resident form: mul_tiles overwrites the dest
+            # tile (no accumulation) and no FPU op adds two DST tiles, so a
+            # product cannot accumulate in DST in place. L1-pack handles it via
+            # packer accumulation. See acc_dst.cpp for the tt-metal reference.
+            if cfg["expr"] == "mul":
+                return False
             cap = harness.dst_capacity(
                 cfg["dtype"], cfg["full_sync"], cfg["fp32_dest_acc"]
             )
+            # gelu computes each contribution in a temporary DST slot before
+            # adding it into the accumulator, so it needs two slots per tile.
+            if cfg["expr"] == "gelu":
+                return 2 * cfg["acc_tiles"] <= cap
             return cfg["acc_tiles"] <= cap
         return True
+
+    def min_pcc(self, cfg, strategy):
+        # Fast SFPU GELU is the tanh approximation; match MB3's tolerance.
+        return 0.98 if cfg["expr"] == "gelu" else self.MIN_PCC
 
     def build(self, ctx):
         cfg = ctx.cfg
@@ -85,26 +111,34 @@ class Accumulation(MicroBenchmark):
         cap = harness.dst_capacity(cfg["dtype"], cfg["full_sync"], cfg["fp32_dest_acc"])
         groups = iters if cfg["source"] == "dram" else 1
         reuse = 0 if cfg["source"] == "dram" else 1
+        expr_id = EXPR_IDS[cfg["expr"]]
         tensors = ctx.tensors
 
-        # out = initial + sum of `iters` deltas, sliced from the concatenated src.
+        # Slice the concatenated source into the seed and contribution tiles.
         src = ctx.torch["src"].float()
         cols = acc_tiles * TILE
         initial, deltas = src[:, :cols], src[:, cols:]
         if cfg["source"] == "dram":
-            ref = initial + deltas.reshape(TILE, iters, acc_tiles, TILE).sum(
-                dim=1
-            ).reshape(TILE, cols)
+            deltas_by_iter = deltas.reshape(TILE, iters, acc_tiles, TILE)
         else:
-            ref = initial + iters * deltas
+            deltas_by_iter = deltas.reshape(TILE, 1, acc_tiles, TILE).expand(
+                -1, iters, -1, -1
+            )
+        if cfg["expr"] == "add":
+            contributions = deltas_by_iter
+        elif cfg["expr"] == "mul":
+            contributions = deltas_by_iter * deltas_by_iter
+        else:
+            contributions = torch.nn.functional.gelu(deltas_by_iter, approximate="tanh")
+        ref = initial + contributions.sum(dim=1).reshape(TILE, cols)
 
         compute = harness.compute_config(
             fp32_dest_acc=cfg["fp32_dest_acc"], full_sync=cfg["full_sync"]
         )
         compute_cta = (
-            [acc_tiles, iters, reuse]
+            [acc_tiles, iters, reuse, expr_id]
             if ctx.strategy == "dst"
-            else [acc_tiles, iters, cap, reuse]
+            else [acc_tiles, iters, cap, reuse, expr_id]
         )
         kernels = [
             harness.file_kernel(
