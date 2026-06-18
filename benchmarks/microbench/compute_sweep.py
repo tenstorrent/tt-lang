@@ -47,7 +47,7 @@ class ComputeOp(MicroBenchmark):
     ZONE = "compute_op_loop"
     DEFAULT_CSV = "benchmarks/microbench/results/compute_op.csv"
     PER_UNIT = "iters"
-    CSV_TAG = ("dtype",)
+    CSV_TAG = ()  # dtype is swept (in the row), so it can't tag the filename
     PARAMS = (
         Param(
             "op", "copy,exp,gelu,recip,sqrt,rsqrt", sweep=True, help="SFPU unary ops"

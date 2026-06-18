@@ -58,7 +58,9 @@ class PackUnpackProbe(MicroBenchmark):
     def build(self, ctx):
         cfg = ctx.cfg
         tiles, iters = cfg["tiles"], cfg["iters"]
-        full_sync, fp32 = bool(cfg["full_sync"]), bool(cfg["fp32_dest_acc"])
+        # 0/1 flags; int() so a stray non-numeric string fails loudly instead of
+        # silently becoming True (bool("false") is True).
+        full_sync, fp32 = bool(int(cfg["full_sync"])), bool(int(cfg["fp32_dest_acc"]))
         cap = harness.dst_capacity(cfg["dtype"], full_sync, fp32)
         tensors = ctx.tensors
         compute = harness.compute_config(fp32_dest_acc=fp32, full_sync=full_sync)

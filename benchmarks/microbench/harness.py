@@ -113,12 +113,24 @@ def compute_config(fidelity="hifi4", fp32_dest_acc=False, full_sync=False):
     return cfg
 
 
-def dispatch(device, io_tensors, kernels, dfbs, zone_name, warmup=1):
+def _mean_zone(zones):
+    """Average the per-RISC µs across measured runs; keep arch/freq, OR the noc flag."""
+    if len(zones) == 1:
+        return zones[0]
+    out = dict(zones[0])
+    for key in ("trisc_max_us", "unpack_us", "math_us", "pack_us"):
+        vals = [z[key] for z in zones if z.get(key) is not None]
+        out[key] = sum(vals) / len(vals) if vals else None
+    out["noc_active_in_zone"] = any(z.get("noc_active_in_zone") for z in zones)
+    return out
+
+
+def dispatch(device, io_tensors, kernels, dfbs, zone_name, warmup=1, runs=1):
     """Run a generic_op program and return (output_tensor, profiler zone summary).
 
     `warmup` dispatches run first to warm the kernel-binary / instruction / data
-    caches; their profiler zones are flushed and discarded so the returned zone
-    reflects only the measured (warm) run.
+    caches; their profiler zones are flushed and discarded. The zone is then
+    measured over `runs` warm dispatches and the per-RISC µs are averaged.
     """
     program = ttnn.ProgramDescriptor(kernels=kernels, semaphores=[], cbs=dfbs)
     csv_path = profiler.find_profiler_csv()
@@ -128,10 +140,15 @@ def dispatch(device, io_tensors, kernels, dfbs, zone_name, warmup=1):
     ttnn.ReadDeviceProfiler(device)  # flush warmup zones...
     if csv_path.exists():
         csv_path.unlink()  # ...and discard them
-    output = ttnn.generic_op(io_tensors, program)
-    ttnn.synchronize_device(device)
-    ttnn.ReadDeviceProfiler(device)
-    return output, profiler.summarize_zone(csv_path, zone_name)
+    output, zones = None, []
+    for _ in range(runs):
+        output = ttnn.generic_op(io_tensors, program)
+        ttnn.synchronize_device(device)
+        ttnn.ReadDeviceProfiler(device)
+        zones.append(profiler.summarize_zone(csv_path, zone_name))
+        if csv_path.exists():
+            csv_path.unlink()
+    return output, _mean_zone(zones)
 
 
 def write_csv(rows, base_csv, fields, *tag_parts):
