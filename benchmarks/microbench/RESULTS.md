@@ -359,8 +359,24 @@ trisc_max µs **DST-K / L1-K (faster)**:
   cost, not assume a fixed crossover.
 - **Consequence for the #652 selector:** with a fused epilogue the resident-output
   advantage is real and DST-K is the lower-cost strategy for shallow-K matmuls;
-  the plain-matmul preference for L1-K (overlap) only returns at larger kt. The
+  the plain-matmul preference for L1-K (overlap) only holds at larger kt. The
   decision is epilogue-aware, not just kt/reuse-based.
+
+Wormhole b0 (1000 MHz), fused GELU, trisc_max µs **DST-K / L1-K (faster)**:
+
+| P (mt×nt) \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| 1 (1×1) | 1.89/2.02 (DST) | 2.63/2.79 (DST) | 5.07/4.78 (L1) | 8.89/8.67 (L1) |
+| 4 (1×4) | 2.90/3.42 (DST) | 4.51/4.46 (L1) | 7.42/6.92 (L1) | 13.13/11.78 (L1) |
+| 8 (2×4) | 4.24/5.23 (DST) | 6.15/6.46 (DST) | 9.67/8.84 (L1) | 16.89/14.03 (L1) |
+| 16 (4×4) reuse 2 | 7.18/8.34 (DST) | 9.50/9.60 (DST) | 15.13/12.64 (L1) | 24.24/17.94 (L1) |
+
+- **Wormhole is slightly more DST-favorable at kt=2** (DST-K wins kt=2 up to P=16,
+  vs only P≤8 on Blackhole). Wormhole's costlier pack (≈2.4× Blackhole) makes
+  L1-K's reload + repack more expensive, extending DST-K's region. The kt≥4 L1-K
+  preference is unchanged. So an epilogue tilts the decision toward DST-K more on
+  Wormhole than on Blackhole — the one place so far where the arch matters to the
+  ranking.
 
 ## MB4 — compute-op (math) microbenchmarks — planned
 
@@ -405,12 +421,13 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `matmul_k_blackhole_bf16_hifi4_*.csv` — MB3 DST-K vs L1-K, P and kt sweep (MB3.A reuse=1 + MB3.B reuse>1)
 - `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole (on `aus-wh-01:/localdev/bnorris/tt-lang`)
 - `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` — MB3.C DST-K vs L1-K with a fused GELU epilogue
+- `matmul_k_wormhole_b0_bf16_hifi4_gelu_*.csv` — MB3.C fused GELU on Wormhole
 
 ## Open / next
 
-- MB3 — P sweep done for both regimes (MB3.A reuse=1, MB3.B reuse>1, bf16 HiFi4)
-  on Blackhole and Wormhole; MB3.C fused GELU epilogue done on Blackhole.
-  Remaining: MB3.C on Wormhole; fidelity (LoFi/HiFi2/HiFi4), fp32 dest, full-sync.
+- MB3 — P sweep done for both regimes (MB3.A reuse=1, MB3.B reuse>1) and MB3.C
+  fused GELU, all on Blackhole and Wormhole, bf16 HiFi4. Remaining: fidelity
+  (LoFi/HiFi2/HiFi4), fp32 dest, full-sync.
 - Per-engine weights: the June-16 LLK run
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
