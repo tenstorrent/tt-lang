@@ -199,6 +199,52 @@ dram-streamed (one contribution block per iteration from DRAM):
      until the final pack; L1-pack pipelines unpack + pack per iteration across
      two threads — a real strategy difference.
 
+### Wormhole b0 (1000 MHz)
+
+Same sweep, bf16, all PCC ≈ 1.0. trisc_max µs **DST / L1-pack (faster)**.
+
+l1-resident:
+
+| acc_tiles \ iters | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| 1 | 0.99/0.97 (L1) | 1.31/1.02 (L1) | 1.43/1.28 (L1) | 1.64/1.59 (L1) | 2.11/2.33 (DST) |
+| 2 | 1.65/1.33 (L1) | 1.62/1.41 (L1) | 1.93/1.59 (L1) | 2.33/2.21 (L1) | 3.14/3.08 (L1) |
+| 4 | 1.98/1.48 (L1) | 2.03/1.80 (L1) | 2.56/2.25 (L1) | 3.20/3.15 (L1) | 4.77/4.76 (L1) |
+
+dram-streamed:
+
+| acc_tiles \ iters | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| 1 | 0.98/0.97 (L1) | 1.42/1.57 (DST) | 2.29/2.28 (L1) | 4.30/4.44 (DST) | 8.22/8.26 (DST) |
+| 2 | 1.55/1.18 (L1) | 2.26/1.94 (L1) | 3.30/2.78 (L1) | 5.28/4.94 (L1) | 9.82/9.71 (L1) |
+| 4 | 1.84/1.48 (L1) | 2.59/2.16 (L1) | 3.93/3.68 (L1) | 6.57/6.31 (L1) | 12.15/11.84 (L1) |
+
+Matches Blackhole: L1-pack is marginally ahead in nearly every config, with the
+acc_tiles=1 row holding the only near-ties (a few favor DST by ≤0.15 µs), and the
+dram absolute cost growing steeply with iters. The DST-vs-L1-pack ranking is
+arch-independent.
+
+### Buffer factor (DFB depth)
+
+`--buffers` (default 2) sets the contribution/output DFB depth — how far the
+reader can prefetch. dram-streamed, acc_tiles=2, L1-pack trisc_max µs:
+
+| arch, iters \ buffers | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| Blackhole, iters=8  | 4.86 | 4.27 | 4.19 | 4.18 |
+| Blackhole, iters=16 | 9.32 | 7.95 | 8.24 | 7.99 |
+| Wormhole, iters=8   | 6.13 | 4.93 | 4.89 | 4.91 |
+| Wormhole, iters=16  | 11.65 | 9.28 | 9.31 | 9.37 |
+
+Single-buffering (1) serializes each DRAM read against compute; double-buffering
+(2) lets the reader prefetch the next contribution, cutting ~15–20%; beyond 2 it
+is flat (compute-bound). l1-resident is buffer-insensitive — one re-read block, no
+streaming (BH iters=16 ~2.1 µs, WH ~3.1 µs across buffers 1–8). Buffer depth
+changes the dram-streamed absolute cost, not the DST-vs-L1 ranking, since both
+strategies share the contribution buffer. The cost model's DFB term should
+distinguish single- from multi-buffered streaming; the strategy choice does not
+depend on it.
+
 ## MB3 — matmul K-accumulation (DST-K vs L1-K)
 
 Summary: C[mt,nt] = sum_k A[k] @ B[k] over `kt` K-tiles, output P = mt*nt tiles,
@@ -504,8 +550,8 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `pack_unpack_blackhole_bf16_*.csv` — MB1 bf16 tiles=1..16
 - `pack_unpack_blackhole_matrix_*.csv` — MB1 config matrix
 - `pack_unpack_wormhole_b0_bf16_*.csv` — MB1 bf16 tiles=1..16
-- `accumulation_blackhole_bf16_l1_*.csv` — MB2 DST vs L1-pack, l1-resident, acc_tiles×iters
-- `accumulation_blackhole_bf16_dram_*.csv` — MB2 DST vs L1-pack, dram-streamed, acc_tiles×iters
+- `accumulation_blackhole_bf16_{l1,dram}_*.csv` — MB2 DST vs L1-pack, acc_tiles×iters (× buffers)
+- `accumulation_wormhole_b0_bf16_{l1,dram}_*.csv` — MB2 on Wormhole (× buffers)
 - `matmul_k_blackhole_bf16_hifi4_*.csv` — MB3 DST-K vs L1-K, P and kt sweep (MB3.A reuse=1 + MB3.B reuse>1)
 - `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole (on `aus-wh-01:/localdev/bnorris/tt-lang`)
 - `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` — MB3.C DST-K vs L1-K with a fused GELU epilogue
@@ -527,6 +573,7 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
   re-running the suite.
-- Wormhole run of MB2.
-- fp32 + sync extensions for MB2; distinct-DFB superlinearity for MB1.
+- MB2 — done on Blackhole and Wormhole (l1 + dram, plus a `buffers` DFB-depth
+  sweep). fp32 + sync extensions for MB2 remain.
+- distinct-DFB superlinearity for MB1.
 - MB4 — compute-op (math) microbenchmarks.
