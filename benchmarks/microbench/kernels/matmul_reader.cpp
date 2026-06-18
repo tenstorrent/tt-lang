@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Reader for MB3. A is (mt*32, kt*32) — tile (m,k) at index m*kt+k; B is
-// (kt*32, nt*32) — tile (k,n) at index k*nt+n. Per K step, pushes A's column k
+// Reader for MB3. A is (mt*32, kt*32) -- tile (m,k) at index m*kt+k; B is
+// (kt*32, nt*32) -- tile (k,n) at index k*nt+n. Per K step, pushes A's column k
 // (mt tiles) to dfb_in0 and B's row k (nt tiles) to dfb_in1, so the compute
 // kernel matmul_blocks the mt*nt subblock each iteration.
 //

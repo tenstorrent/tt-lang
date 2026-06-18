@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MB1 — pack/unpack probe (declared on the MicroBenchmark runner).
+"""MB1 -- pack/unpack probe (declared on the MicroBenchmark runner).
 
 Zero-compute DFB->DFB round-trip on one compute core: per iteration, pack `tiles`
 tiles to L1 and unpack them back, isolating the per-tile pack/unpack + DFB-sync

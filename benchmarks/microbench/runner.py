@@ -5,7 +5,7 @@
 
 A `MicroBenchmark` subclass is class-level constants plus a single `build()` hook.
 The base owns argparse, the sweep product, I/O tensor materialization, warmup +
-dispatch, the result row, the per-config print line, and CSV writing — none of
+dispatch, the result row, the per-config print line, and CSV writing -- none of
 which a subclass touches.
 
 Declared per benchmark (uppercase class constants):
@@ -13,7 +13,7 @@ Declared per benchmark (uppercase class constants):
   PER_UNIT (cfg key to normalize times by), CSV_TAG, WARMUP, EXTRA_COLUMNS.
 The CSV columns are derived: the swept parameters, then EXTRA_COLUMNS
 (benchmark-specific derived fields), then strategy and the common profiler
-metrics — a subclass never restates arch/freq/timing columns.
+metrics -- a subclass never restates arch/freq/timing columns.
 Implemented per benchmark:
   build(ctx) -> (kernels, ref)   # ctx.tensors are materialized; ctx.torch holds
                                  # the input torch tensors for the reference.

@@ -94,10 +94,11 @@ python -m benchmarks.microbench.fit "benchmarks/microbench/results/pack_unpack_*
 - `kernels/`: handwritten compute, reader, and writer kernels.
 - `harness.py`: `ttnn.generic_op` dispatch, DFB descriptors, compute config, and
   CSV writing.
-- `runner.py`: declarative benchmark runner shared by MB1, MB2, and MB3.
+- `runner.py`: declarative benchmark runner shared by MB1-MB4.
 - `profiler.py`: device-profiler CSV parsing and per-RISC zone summaries.
 - `sweep.py`: MB1 pack/unpack probe.
 - `acc_sweep.py`: MB2 accumulation strategy comparison.
 - `matmul_sweep.py`: MB3 matmul K-accumulation strategy comparison.
+- `compute_sweep.py`: MB4 compute-op (SFPU math) probe.
 - `fit.py`: MB1 fixed plus per-tile regression.
 - `RESULTS.md`: measurement notes and current hardware results.
