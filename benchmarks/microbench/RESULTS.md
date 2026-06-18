@@ -15,14 +15,14 @@ microbenchmarks cannot give:
   does not reproduce the composed cost. Blackhole bf16, per tile:
   - LLK unpack ≈ 0.030 + LLK pack ≈ 0.026 = **0.056 µs** (serial sum)
   - slowest single engine = **0.030 µs** (perfect-overlap lower bound)
-  - MB1 measured, real DFBs = **0.039 µs**
+  - MB1 measured, over DFBs = **0.039 µs**
 
   The measured value sits between the two — the kernel pipelines unpack and pack
   across RISCs, recovering ~30% the serial sum can't see. So summing overshoots by
   ~1.4×, with no constant overlap factor across configs (it varies by op and tile
   count).
 - **Dataflow-buffer handoff.** The LLK harness has no dataflow buffers, so it never
-  measures the DFB reserve/wait/push/pop + cross-thread sync the real kernels pay
+  measures the DFB reserve/wait/push/pop + cross-thread sync the dispatched kernels pay
   (MB1's fixed term, ~0.09 µs/iter on Blackhole) — the cost model's
   `dfbHopFixedCost`.
 - **The strategy decision, not just its inputs.** The model chooses DST-resident vs
@@ -38,8 +38,8 @@ calibrated.
 ## Methodology (brief)
 
 - Handwritten C++ kernels (compute + reader/writer), modeled on the tt-metal
-  tt-llk perf benchmarks, but run through **real tt-metal dispatch**
-  (`ttnn.generic_op`) over real dataflow buffers — so DFB reserve/wait/push/pop +
+  tt-llk perf benchmarks, but run through **tt-metal dispatch**
+  (`ttnn.generic_op`) over dataflow buffers — so DFB reserve/wait/push/pop +
   cross-thread sync are part of the measurement (the bare-metal LLK harness omits
   them).
 - **No tt-lang compiler involved:** kernels are handwritten and JIT-compiled by
@@ -203,7 +203,7 @@ dram-streamed (one contribution block per iteration from DRAM):
      (refactor branch `tensor_recurrence_dst_acc.py`, PASS).
   3. Thread overlap: DST-resident holds one acquire with the pack thread idle
      until the final pack; L1-pack pipelines unpack + pack per iteration across
-     two threads — a real strategy difference.
+     two threads — a structural difference between the strategies.
 
 ### Wormhole b0 (1000 MHz)
 
@@ -251,6 +251,34 @@ changes the dram-streamed absolute cost, not the DST-vs-L1 ranking, since both
 strategies share the contribution buffer. The cost model's DFB term should
 distinguish single- from multi-block streaming; the strategy choice does not
 depend on it.
+
+### fp32 dest and full-sync
+
+**fp32 dest (dtype = fp32).** Halves DST capacity (4 vs 8), so the DST-resident
+strategy is legal only for acc_tiles ≤ 4, and roughly doubles pack cost. On both
+arches the ranking matches bf16: L1-pack lower in nearly every config, near-ties
+only at acc_tiles=1; the costlier pack does not shift it to DST-resident (BH/WH
+l1-resident, acc_tiles=4 iters=16: L1 ahead by ~18%/~1%). Exact (PCC ≈ 1.0).
+
+**Full-sync (dst_full_sync_en) — flips the choice on Wormhole.** Full-sync makes
+DST a single bank (no math/pack double-buffer), so L1-pack's per-iteration copy
+can no longer overlap the previous iteration's pack — it loses its pipelining.
+DST-resident accumulates in place and packs once, so full-sync does not touch it.
+l1-resident, trisc_max µs **DST / L1-pack (faster)**:
+
+| arch, acc_tiles \ iters | 1 | 4 | 16 |
+|---|---|---|---|
+| Blackhole, 4 | 1.41/1.15 (L1) | 1.95/1.54 (L1) | 3.85/3.33 (L1) |
+| Blackhole, 8 | 1.79/1.65 (L1) | 2.75/2.54 (L1) | 6.85/6.12 (L1) |
+| Wormhole, 4  | 1.83/1.48 (L1) | 2.41/2.52 (DST) | 4.78/6.63 (DST) |
+| Wormhole, 8  | 2.54/2.46 (L1) | 3.75/4.35 (DST) | 8.37/12.78 (DST) |
+
+On Blackhole full-sync leaves L1-pack ahead (its cheap pack barely suffers from
+losing the overlap: l1 acc_tiles=4 iters=16 rises only ~5% vs default). On
+Wormhole the un-hidden pack is ~2.4× costlier, so L1-pack rises ~39% (4.76 → 6.63)
+and DST-resident takes the lead at iters ≥ 4 for acc_tiles ≥ 4. So for the
+additive recurrence, full-sync is a strategy-selection input on Wormhole — it
+makes DST-resident lower-cost — but not on Blackhole.
 
 ## MB3 — matmul K-accumulation (DST-K vs L1-K)
 
@@ -328,7 +356,7 @@ every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max µs
 - **At kt = 1** (no K-accumulation) the two are tied within run-to-run variation
   (≤~3%); DST-K is marginally ahead because L1-K pays the `pack_reconfig_l1_acc`
   setup for a single pack.
-- **For any real K-accumulation (kt ≥ 2) L1-K is faster, and the margin grows with
+- **For any K-accumulation (kt ≥ 2) L1-K is faster, and the margin grows with
   both kt and P (reuse)** — from ~6% (P=1, kt=2) to ~39% (P=32, kt=8). This holds
   in both regimes; reuse > 1 widens the gap but does not change the direction.
 - **Why, despite L1-K moving far more tiles** (e.g. P=16, kt=8: L1-K packs 128
@@ -470,7 +498,7 @@ trisc_max µs **DST-K / L1-K (faster)**:
   selector's epilogue handling should weigh the L1-K reload against the activation
   cost, not assume a fixed crossover.
 - **Consequence for the #652 selector:** with a fused epilogue the resident-output
-  advantage is real and DST-K is the lower-cost strategy for shallow-K matmuls;
+  advantage holds and DST-K is the lower-cost strategy for shallow-K matmuls;
   the plain-matmul preference for L1-K (overlap) only holds at larger kt. The
   decision is epilogue-aware, not just kt/reuse-based.
 
@@ -559,6 +587,8 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `pack_unpack_wormhole_b0_bf16_*.csv` — MB1 bf16 tiles=1..16
 - `accumulation_blackhole_bf16_{l1,dram}_*.csv` — MB2 DST vs L1-pack, acc_tiles×iters (× block_count)
 - `accumulation_wormhole_b0_bf16_{l1,dram}_*.csv` — MB2 on Wormhole (× block_count)
+- `accumulation_{blackhole,wormhole_b0}_fp32_{l1,dram}_*.csv` — MB2 fp32 dest
+- `accumulation_{blackhole,wormhole_b0}_bf16_{l1,dram}_True_*.csv` — MB2 full-sync (`full_sync` in the tag)
 - `matmul_k_blackhole_bf16_hifi4_*.csv` — MB3 DST-K vs L1-K, P and kt sweep (MB3.A reuse=1 + MB3.B reuse>1)
 - `matmul_k_wormhole_b0_bf16_hifi4_*.csv` — MB3 same sweep on Wormhole (on `aus-wh-01:/localdev/bnorris/tt-lang`)
 - `matmul_k_blackhole_bf16_hifi4_gelu_*.csv` — MB3.C DST-K vs L1-K with a fused GELU epilogue
@@ -580,7 +610,7 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
   re-running the suite.
-- MB2 — done on Blackhole and Wormhole (l1 + dram, plus a `block_count` DFB-depth
-  sweep). fp32 + sync extensions for MB2 remain.
+- MB2 — complete on Blackhole and Wormhole: l1 + dram, block_count, fp32 dest, and
+  full-sync. Full-sync flips the choice to DST-resident on Wormhole (not Blackhole).
 - distinct-DFB superlinearity for MB1.
 - MB4 — compute-op (math) microbenchmarks.
