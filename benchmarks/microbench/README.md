@@ -23,7 +23,9 @@ JIT-compiles the handwritten kernels at run time.
   DST-resident accumulation against L1-pack accumulation. `--source l1|dram`
   selects contribution residency.
 - MB3 matmul K-accumulation (`matmul_sweep.py`): `C[mt,nt] = sum_k A[k] @ B[k]`,
-  comparing DST-K against L1-K.
+  comparing DST-K against L1-K. The output is subblocked as the compiler would
+  (`harness.dst_subblock`), covering MB3.A (output fits DST, reuse=1) and MB3.B
+  (output exceeds DST, reuse>1).
 - MB4 compute-op math probes: not implemented yet.
 
 ## Requirements

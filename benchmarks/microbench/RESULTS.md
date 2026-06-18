@@ -202,56 +202,96 @@ dram-streamed (one contribution block per iteration from DRAM):
 ## MB3 — matmul K-accumulation (DST-K vs L1-K)
 
 Summary: C[mt,nt] = sum_k A[k] @ B[k] over `kt` K-tiles, output P = mt*nt tiles,
-run two ways. Production-representative: `matmul_block` over the mt*nt subblock,
-`mm_block_init`, block-prefetched A/B.
+run two ways. The output is tiled into sub_mt*sub_nt subblocks chosen exactly as
+the compiler would (`harness.dst_subblock`, mirroring `computeMultiDimSubblockSizes`),
+so reuse = (mt/sub_mt)·(nt/sub_nt) matches what tt-lang will emit. `matmul_block`
+over each subblock, `mm_block_init`, A/B prefetched.
 
 ```
-# DST-K (matmul_k_dst.cpp): mt*nt subblock held in DST across K, packed once
-mm_block_init(dfb_in0, dfb_in1, dfb_out, 0, nt, mt, 1)
-acquire_dst                                          # legal only if mt*nt <= getDstCapacity
+# DST-K (matmul_k_dst.cpp): each subblock held in DST across K, packed once.
+# Operands prefetched once; re-unpacked per subblock when reuse > 1.
+mm_block_init(dfb_in0, dfb_in1, dfb_out, 0, sub_nt, sub_mt, 1)
+cb_reserve_back(dfb_out, mt*nt)
 zone "matmul_k_loop":
-  for k in range(kt):
-    cb_wait_front(dfb_in0, mt); cb_wait_front(dfb_in1, nt)   # A col k, B row k
-    matmul_block(dfb_in0, dfb_in1, 0,0,0, 0, nt, mt, 1)      # DST[mt*nt] += A_col @ B_row
-    pop mt, nt
-commit; wait; pack_tile_block(0, dfb_out, mt*nt) once; release_dst
+  cb_wait_front(dfb_in0, kt*mt); cb_wait_front(dfb_in1, kt*nt)   # operands resident
+  for (om, on) in subblocks:
+    acquire_dst
+    for k in range(kt):
+      matmul_block(dfb_in0, dfb_in1, k*mt+om, k*nt+on, 0, 0, sub_nt, sub_mt, 1)
+    commit; wait
+    pack_tile<true> sub_mt*sub_nt tiles -> row-major C positions  # one pack/subblock
+    release_dst
+  pop kt*mt, kt*nt
 
-# L1-K (matmul_k_l1.cpp): pack the subblock to L1 every K step
-pack_reconfig_l1_acc(0)
+# L1-K (matmul_k_l1.cpp): mt*nt accumulator in L1; each K step matmuls every
+# subblock into fresh DST and packs to L1 with packer L1-accumulate.
+mm_block_init(...); cb_reserve_back(dfb_out, mt*nt); pack_reconfig_l1_acc(0)
 zone "matmul_k_loop":
   for k in range(kt):
-    cb_wait_front(...); acquire_dst; matmul_block(... fresh DST); commit; wait
-    for i in range(mt*nt): pack_tile<true>(i, dfb_out, i)   # packer L1-accumulate
-    release_dst; pop
+    cb_wait_front(dfb_in0, mt); cb_wait_front(dfb_in1, nt)        # A col k, B row k
+    for (om, on) in subblocks:
+      acquire_dst; matmul_block(dfb_in0, dfb_in1, om, on, 0,0, sub_nt, sub_mt, 1); commit; wait
+      pack_tile<true> sub tiles -> L1 (packer accumulate)
+      release_dst
+    pop mt, nt
     if k == 0: pack_reconfig_l1_acc(1)
 pack_reconfig_l1_acc(0)
-# P>cap: DST-K subblocks the output + reloads partials (Phase B, not yet built)
 ```
 
-Blackhole bf16 HiFi4, P ≤ DST capacity (8), trisc_max µs **DST-K / L1-K
-(faster)**, all PCC ≈ 1.0:
+Both strategies measure operand handoff + math + pack inside the zone (the prior
+table here measured DST-K with its single pack *outside* the zone — math only —
+which made DST-K look ~math-bound and always cheaper; corrected below).
 
-| P (mt×nt) \ kt | 1 | 2 | 4 | 8 | 16 |
-|---|---|---|---|---|---|
-| 1 (1×1) | 0.86/0.85 (L1) | 1.60/1.56 (L1) | 3.38/3.33 (L1) | 7.07/7.15 (DST) | 14.04/14.03 (L1) |
-| 2 (1×2) | 0.87/0.92 (DST) | 1.71/1.77 (DST) | 3.53/3.53 (DST) | 7.31/7.20 (L1) | 14.79/14.74 (L1) |
-| 4 (2×2) | 0.85/1.06 (DST) | 1.84/2.06 (DST) | 3.86/4.09 (DST) | 7.80/7.97 (DST) | 15.76/15.90 (DST) |
-| 8 (4×2) | 1.04/1.39 (DST) | 1.97/2.38 (DST) | 4.06/4.52 (DST) | 8.96/9.62 (DST) | 17.55/18.18 (DST) |
+### MB3.A — output fits DST (P ≤ capacity, reuse = 1)
 
-- Within capacity, DST-K is preferred and the margin grows with P: L1-K packs the
-  P-tile output every K step (kt·P packs) vs DST-K's single P-tile pack. At P=1 the
-  two strategies differ by less than the run-to-run measurement variation (≤~1%) —
-  the matmul math dominates and the per-step pack-count difference is immaterial at
-  one output tile; by P=8 DST-K is lower by up to ~21% (kt=2). For P ≤ capacity the
-  #652 selector should select DST-K, with margin increasing in P. (At P≤2 with high
-  kt, a few cells favor L1-K by <1%, below the measurement variation.)
-- L1-K packs per step with `pack_tile<true>` + `pack_reconfig_l1_acc`; the
-  `pack_tile_block` batch pack does **not** honor L1-accumulation (it overwrites),
-  so DST-K uses `pack_tile_block` (single pack) and L1-K uses the `pack_tile` loop.
-- **Phase B (next):** P > capacity — DST-K must subblock the output and re-read A/B
-  operands (the weight-dependent regime where L1-K can be lower-cost); then the `fuse`
-  param (bias/activation epilogue keeps the output in DST → favors DST-K) and
-  fidelity/fp32/sync sweeps.
+One subblock = the whole output. DST-K accumulates all `kt` matmuls in DST and
+packs P tiles once; L1-K repacks the P-tile output to L1 every K step (kt·P
+packs). DST-K prefetches operands once (its best case; a streaming reuse-1 kernel
+would pay slightly more handoff). Blackhole bf16 HiFi4, trisc_max µs **DST-K /
+L1-K (faster)**, all PCC ≈ 1.0:
+
+| P (mt×nt) \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| 1 (1×1) | 0.85/0.87 (DST) | 1.62/1.59 (L1) | 3.59/3.30 (L1) | 7.08/6.87 (L1) |
+| 2 (1×2) | 0.84/0.85 (DST) | 1.77/1.67 (L1) | 3.62/3.53 (L1) | 7.64/7.29 (L1) |
+| 4 (2×2) | 1.03/1.18 (DST) | 2.31/2.08 (L1) | 4.67/3.95 (L1) | 9.31/7.91 (L1) |
+| 8 (2×4) | 1.44/1.48 (DST) | 2.88/2.47 (L1) | 5.77/4.47 (L1) | 11.61/8.75 (L1) |
+
+### MB3.B — output exceeds DST (P > capacity, reuse > 1)
+
+The output no longer fits DST, so it is subblocked. DST-K processes one subblock
+at a time across the whole K loop, re-unpacking that subblock's A rows and B cols
+from the resident operands — operand unpack scales by reuse. L1-K still repacks
+every subblock every K step. Blackhole bf16 HiFi4, DST capacity 8, trisc_max µs
+**DST-K / L1-K (faster)**, all PCC ≈ 1.0:
+
+| P (mt×nt) reuse \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| 16 (4×4) reuse 2 | 1.94/1.97 (DST) | 3.81/3.02 (L1) | 7.60/5.21 (L1) | 15.81/10.22 (L1) |
+| 32 (4×8) reuse 4 | 2.83/2.87 (DST) | 5.77/4.62 (L1) | 11.28/7.66 (L1) | 23.12/14.19 (L1) |
+
+### Interpretation
+
+- **At kt = 1** (no K-accumulation) the two are tied within run-to-run variation
+  (≤~3%); DST-K is marginally ahead because L1-K pays the `pack_reconfig_l1_acc`
+  setup for a single pack.
+- **For any real K-accumulation (kt ≥ 2) L1-K is faster, and the margin grows with
+  both kt and P (reuse)** — from ~6% (P=1, kt=2) to ~39% (P=32, kt=8). This holds
+  in both regimes; reuse > 1 widens the gap but does not change the direction.
+- **Why, despite L1-K moving far more tiles** (e.g. P=16, kt=8: L1-K packs 128
+  tiles to DST-K's 16): DST-K cannot pack until all `kt` matmuls finish, so its
+  pack engine is idle through the K loop and the pack runs as a serial tail after
+  the math. L1-K interleaves matmul and pack per K step, overlapping them across
+  the unpack/math/pack RISCs. The overlap recovered outweighs the extra packs.
+- **Consequence for the #652 selector:** a data-movement score (tiles packed ·
+  per-tile cost) ranks DST-K cheaper in every cell, the opposite of measured
+  wall-clock. Ranking matmul K-accumulation needs a model term for the pack/math
+  overlap L1-K gets and DST-K cannot — not just the per-engine tile weights.
+- **Scope:** isolated single kernel. It omits DST occupancy / fusion, which only
+  pushes further toward L1-K (a resident DST output starves fused neighbors). It
+  also omits `matmul_block` granularity effects. Remaining sweeps: fidelity
+  (LoFi/HiFi2/HiFi4 — lower fidelity cuts math, which may narrow the gap),
+  fp32 dest, full-sync, and Wormhole.
 
 ## MB4 — compute-op (math) microbenchmarks — planned
 
@@ -293,13 +333,13 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `pack_unpack_wormhole_b0_bf16_*.csv` — MB1 bf16 tiles=1..16
 - `accumulation_blackhole_bf16_l1_*.csv` — MB2 DST vs L1-pack, l1-resident, acc_tiles×iters
 - `accumulation_blackhole_bf16_dram_*.csv` — MB2 DST vs L1-pack, dram-streamed, acc_tiles×iters
-- `matmul_k_blackhole_bf16_hifi4_*.csv` — MB3 DST-K vs L1-K, P=1, kt sweep
+- `matmul_k_blackhole_bf16_hifi4_*.csv` — MB3 DST-K vs L1-K, P and kt sweep (MB3.A reuse=1 + MB3.B reuse>1)
 
 ## Open / next
 
-- MB3 — extend to P > 1 output tiles, including P > DST capacity (the
-  weight-dependent crossover where DST-K must subblock + re-read A/B operands);
-  sweep fidelity (LoFi/HiFi2/HiFi4) and fp32 dest.
+- MB3 — P sweep done for both regimes (MB3.A reuse=1, MB3.B reuse>1, bf16 HiFi4).
+  Remaining: fidelity (LoFi/HiFi2/HiFi4), fp32 dest, full-sync; an epilogue-fusion
+  variant (output stays in DST → may favor DST-K).
 - Per-engine weights: the June-16 LLK run
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
