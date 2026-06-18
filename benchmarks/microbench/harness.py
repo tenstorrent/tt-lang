@@ -100,7 +100,7 @@ def dispatch(device, io_tensors, kernels, dfbs, zone_name, warmup=1):
         ttnn.synchronize_device(device)
     ttnn.ReadDeviceProfiler(device)  # flush warmup zones...
     if csv_path.exists():
-        csv_path.unlink()            # ...and discard them
+        csv_path.unlink()  # ...and discard them
     output = ttnn.generic_op(io_tensors, program)
     ttnn.synchronize_device(device)
     ttnn.ReadDeviceProfiler(device)

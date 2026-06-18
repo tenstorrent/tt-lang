@@ -40,8 +40,7 @@ void kernel_main() {
     for (uint32_t k = 0; k < kt; ++k) {
       cb_wait_front(dfb_in0, mt);
       cb_wait_front(dfb_in1, nt);
-      matmul_block(dfb_in0, dfb_in1, 0, 0, 0, 0, nt, mt,
-                   1);
+      matmul_block(dfb_in0, dfb_in1, 0, 0, 0, 0, nt, mt, 1);
       cb_pop_front(dfb_in0, mt);
       cb_pop_front(dfb_in1, nt);
     }
