@@ -36,7 +36,7 @@ import torch
 import ttnn
 
 from benchmarks.microbench import harness
-from benchmarks.microbench.harness import TILE
+from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
@@ -62,7 +62,7 @@ class MatmulK(MicroBenchmark):
         Param("fidelity", "hifi4", choices=("lofi", "hifi2", "hifi4")),
         Param("full_sync", False),
         Param("fuse", "none", choices=("none", "gelu"), help="epilogue activation"),
-        Param("buffers", "2", sweep=True, help="output DFB depth factor"),
+        Param("block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="output DFB block count"),
     )
     INPUTS = (
         Tensor("a", lambda cfg: (cfg["mt"] * TILE, cfg["kt"] * TILE)),
@@ -78,7 +78,7 @@ class MatmulK(MicroBenchmark):
         DFB(0, lambda cfg: cfg["kt"] * cfg["mt"]),
         DFB(1, lambda cfg: cfg["kt"] * cfg["nt"]),
         DFB(2, lambda cfg: cfg["mt"] * cfg["nt"]),
-        DFB(16, lambda cfg: cfg["buffers"] * cfg["mt"] * cfg["nt"]),
+        DFB(16, lambda cfg: cfg["block_count"] * cfg["mt"] * cfg["nt"]),
     )
 
     def min_pcc(self, cfg, strategy):
