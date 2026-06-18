@@ -318,7 +318,39 @@ hide the math. DST-K serializes math then one pack, so it scales with fidelity
 (BH 11.11 → 12.83 → 15.81, WH 14.86 → 16.27 → 19.77). The L1-K margin grows with
 fidelity (~5–11% LoFi to ~21–35% HiFi4) but the ranking is unchanged: L1-K is
 lower for kt ≥ 2 at every fidelity, in both MB3.A (reuse=1) and MB3.B. For plain
-matmul, fidelity sets the margin, not the strategy.
+matmul, fidelity changes the size of L1-K's lead but not which strategy is
+lower-cost.
+
+**fp32 dest (dtype = fp32).** fp32 accumulation halves DST capacity (4 vs 8), so
+reuse > 1 is reached at smaller outputs, and roughly doubles pack cost (2× tile
+bytes). P = 16 (4×4) is reuse 4 here (vs reuse 2 at bf16). trisc_max µs **DST-K /
+L1-K (faster)**, all PCC = 1.0:
+
+| arch \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| Blackhole | 2.00/2.00 (=) | 4.05/3.27 (L1) | 8.29/6.02 (L1) | 18.27/12.94 (L1) |
+| Wormhole  | 3.62/3.57 (L1) | 6.67/5.69 (L1) | 13.21/10.03 (L1) | 26.17/18.26 (L1) |
+
+Ranking unchanged: L1-K lower for kt ≥ 2 on both arches, exact (PCC 1.0). The
+margin is slightly narrower than bf16 (BH P=16 kt=8: 29% vs 35%) — fp32's costlier
+pack loads L1-K's extra packs more heavily, partly offsetting its overlap
+advantage. The halved capacity raises reuse at a given P but does not change the
+winner.
+
+**Full-sync (dst_full_sync_en).** Full-sync doubles DST capacity (16 vs 8 bf16),
+so P = 16 (4×4) becomes reuse 1 (vs reuse 2 at the default capacity). trisc_max µs
+**DST-K / L1-K (faster)**, all PCC ≈ 1.0:
+
+| arch \ kt | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| Blackhole | 2.11/2.14 (DST) | 3.92/3.23 (L1) | 7.70/5.41 (L1) | 15.79/10.41 (L1) |
+| Wormhole  | 2.96/3.02 (DST) | 5.44/4.82 (L1) | 10.36/8.47 (L1) | 19.93/15.59 (L1) |
+
+Full-sync extends the reuse-1 range to larger P but does not change the ranking or
+the margin (BH P=16 kt=8: 34% with full-sync at reuse 1 vs 35% at default reuse 2)
+— L1-K is lower for kt ≥ 2. L1-K's advantage comes from pipelining pack against
+the next K step's matmul across the unpack/math/pack RISCs, which is independent of
+the DST bank mode, so full-sync does not recover it for DST-K.
 
 ### Wormhole b0 (1000 MHz)
 
@@ -405,9 +437,10 @@ Wormhole b0 (1000 MHz), fused GELU, trisc_max µs **DST-K / L1-K (faster)**:
   Wormhole than on Blackhole — the one place so far where the arch matters to the
   ranking.
 
-**Fidelity (fused).** Unlike plain matmul — where fidelity only sets the margin —
-with the epilogue fidelity moves the crossover. P = 16 (4×4, reuse 2), fused GELU,
-trisc_max µs **DST-K / L1-K (faster)**.
+**Fidelity (fused).** For plain matmul fidelity changes only the size of L1-K's
+lead, not which strategy wins; with the epilogue it changes which strategy wins —
+it moves the crossover kt. P = 16 (4×4, reuse 2), fused GELU, trisc_max µs **DST-K
+/ L1-K (faster)**.
 
 Blackhole bf16:
 
@@ -480,12 +513,16 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - `matmul_k_blackhole_bf16_{lofi,hifi2}_none_*.csv` — fidelity for plain matmul (MB3.A/B); HiFi4 in the hifi4 CSV
 - `matmul_k_blackhole_bf16_{lofi,hifi2}_gelu_*.csv` — fidelity for fused GELU (MB3.C)
 - `matmul_k_wormhole_b0_bf16_{lofi,hifi2}_{none,gelu}_*.csv` — Wormhole fidelity, P=16 (plain + fused)
+- `matmul_k_{blackhole,wormhole_b0}_fp32_hifi4_none_*.csv` — fp32 dest (cap halved)
+- `matmul_k_{blackhole,wormhole_b0}_bf16_hifi4_none_True_*.csv` — full-sync (cap doubled; `full_sync` now in the CSV tag)
 
 ## Open / next
 
-- MB3 — done on Blackhole and Wormhole: MB3.A reuse=1, MB3.B reuse>1, MB3.C fused
-  GELU, each swept over fidelity (LoFi/HiFi2/HiFi4) on both arches. Remaining:
-  fp32 dest, full-sync.
+- MB3 — complete on Blackhole and Wormhole: MB3.A reuse=1, MB3.B reuse>1, MB3.C
+  fused GELU, each over fidelity (LoFi/HiFi2/HiFi4), plus fp32 dest and full-sync.
+  The DST-vs-L1 ranking holds across all of these (L1-K for kt ≥ 2; DST-K only with
+  an epilogue at low kt); fp32/full-sync/fidelity move the margin, not the winner,
+  for plain matmul.
 - Per-engine weights: the June-16 LLK run
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
