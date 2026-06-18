@@ -126,7 +126,7 @@ class MicroBenchmark:
 
     def _materialize(self, cfg, device):
         ttnn_dtype, torch_dtype, _ = DTYPES[cfg["dtype"]]
-        torch.manual_seed(self.SEED)
+        torch.manual_seed(getattr(self, "_seed", self.SEED))
         torch_inputs, dev_tensors = {}, {}
         for spec in self.INPUTS:
             shape = spec.shape(cfg)
@@ -138,6 +138,8 @@ class MicroBenchmark:
                 tensor = torch.ones(*shape, dtype=torch_dtype)
             else:
                 raise ValueError(f"input {spec.name} has init {spec.init!r}")
+            if spec.offset:
+                tensor = tensor + spec.offset
             torch_inputs[spec.name] = tensor
             dev_tensors[spec.name] = ttnn.from_torch(
                 tensor,
@@ -202,7 +204,13 @@ class MicroBenchmark:
         io_tensors = [dev_tensors[spec.name] for spec in self.INPUTS]
         io_tensors += [dev_tensors[spec.name] for spec in self.OUTPUTS]
         output, zone = harness.dispatch(
-            device, io_tensors, kernels, dfbs, self.ZONE, self.WARMUP
+            device,
+            io_tensors,
+            kernels,
+            dfbs,
+            self.ZONE,
+            getattr(self, "_warmup", self.WARMUP),
+            getattr(self, "_runs", 1),
         )
         pcc = measure_pcc(ref.float(), ttnn.to_torch(output).float())
         for tensor in io_tensors:
@@ -213,7 +221,13 @@ class MicroBenchmark:
         return self._row(cfg, strategy, zone, pcc)
 
     def main(self):
-        parser = create_benchmark_arg_parser(self.NAME, default_csv=self.DEFAULT_CSV)
+        parser = create_benchmark_arg_parser(
+            self.NAME,
+            default_csv=self.DEFAULT_CSV,
+            default_warmup=self.WARMUP,
+            default_runs=1,
+            default_seed=self.SEED,
+        )
         for param in self.PARAMS:
             flag = f"--{param.name.replace('_', '-')}"
             if isinstance(param.default, bool):
@@ -231,6 +245,9 @@ class MicroBenchmark:
         if args.compile_only:
             print("compile-only: nothing to execute without a device.")
             return
+        self._warmup = args.warmup
+        self._runs = args.runs
+        self._seed = args.seed
 
         def coerce(value):
             try:
@@ -268,6 +285,8 @@ class MicroBenchmark:
 
         if not args.no_csv and rows:
             arch = rows[0].get("arch", "dev")
-            tag = [scalar[key] for key in self.CSV_TAG]
+            # Only scalar (non-swept) params can tag the filename; swept keys are
+            # distinguished by their column instead.
+            tag = [scalar.get(key, "") for key in self.CSV_TAG]
             out_csv = harness.write_csv(rows, args.csv, self.csv_columns(), arch, *tag)
             print(f"wrote {len(rows)} rows to {out_csv}", flush=True)
