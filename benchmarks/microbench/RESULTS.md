@@ -178,17 +178,17 @@ l1-resident (contributions re-read from L1):
 
 | acc_tiles \ iters | 1 | 2 | 4 | 8 | 16 |
 |---|---|---|---|---|---|
-| 1 | 0.77/0.77 (L1) | 1.00/0.84 (L1) | 1.09/0.97 (L1) | 1.28/1.14 (L1) | 1.60/1.41 (L1) |
-| 2 | 1.15/0.93 (L1) | 1.26/0.98 (L1) | 1.40/1.19 (L1) | 1.74/1.54 (L1) | 2.41/2.12 (L1) |
-| 4 | 1.36/1.26 (L1) | 1.53/1.25 (L1) | 1.88/1.52 (L1) | 2.53/2.06 (L1) | 3.85/3.17 (L1) |
+| 1 | 0.76/0.78 (DST) | 1.04/0.79 (L1) | 1.15/0.94 (L1) | 1.26/1.10 (L1) | 1.64/1.40 (L1) |
+| 2 | 1.15/0.95 (L1) | 1.26/1.02 (L1) | 1.41/1.26 (L1) | 1.77/1.46 (L1) | 2.48/2.08 (L1) |
+| 4 | 1.42/1.11 (L1) | 1.61/1.31 (L1) | 1.88/1.51 (L1) | 2.60/2.06 (L1) | 3.86/3.24 (L1) |
 
 dram-streamed (one contribution block per iteration from DRAM):
 
 | acc_tiles \ iters | 1 | 2 | 4 | 8 | 16 |
 |---|---|---|---|---|---|
-| 1 | 0.77/0.78 (DST) | 1.28/1.18 (L1) | 2.06/2.07 (DST) | 3.83/3.86 (DST) | 7.49/7.42 (L1) |
-| 2 | 1.10/0.97 (L1) | 1.59/1.46 (L1) | 2.54/2.31 (L1) | 4.51/4.28 (L1) | 8.21/7.98 (L1) |
-| 4 | 1.37/1.16 (L1) | 1.89/1.69 (L1) | 3.00/2.73 (L1) | 5.16/4.94 (L1) | 9.53/9.37 (L1) |
+| 1 | 0.79/0.79 (DST) | 1.20/1.20 (DST) | 2.06/2.08 (DST) | 3.80/3.83 (DST) | 7.60/7.59 (L1) |
+| 2 | 1.16/0.90 (L1) | 1.62/1.40 (L1) | 2.56/2.38 (L1) | 4.45/4.18 (L1) | 8.57/7.96 (L1) |
+| 4 | 1.37/1.08 (L1) | 2.00/1.70 (L1) | 3.10/2.77 (L1) | 5.25/4.95 (L1) | 9.58/9.25 (L1) |
 
 - **Strategy ranking:** L1-pack is lower than DST-resident in nearly every config,
   by a small margin (~0.1–0.6 µs, largest at l1-resident acc_tiles=4 iters=16:
@@ -223,22 +223,23 @@ l1-resident:
 
 | acc_tiles \ iters | 1 | 2 | 4 | 8 | 16 |
 |---|---|---|---|---|---|
-| 1 | 0.99/0.97 (L1) | 1.31/1.02 (L1) | 1.43/1.28 (L1) | 1.64/1.59 (L1) | 2.11/2.33 (DST) |
-| 2 | 1.65/1.33 (L1) | 1.62/1.41 (L1) | 1.93/1.59 (L1) | 2.33/2.21 (L1) | 3.14/3.08 (L1) |
-| 4 | 1.98/1.48 (L1) | 2.03/1.80 (L1) | 2.56/2.25 (L1) | 3.20/3.15 (L1) | 4.77/4.76 (L1) |
+| 1 | 1.28/1.03 (L1) | 1.33/1.01 (L1) | 1.56/1.30 (L1) | 1.64/1.59 (L1) | 2.03/2.17 (DST) |
+| 2 | 1.51/1.18 (L1) | 1.81/1.39 (L1) | 1.91/1.77 (L1) | 2.21/2.11 (L1) | 2.99/3.11 (DST) |
+| 4 | 1.86/1.49 (L1) | 2.04/1.79 (L1) | 2.51/2.28 (L1) | 3.21/3.14 (L1) | 4.79/5.10 (DST) |
 
 dram-streamed:
 
 | acc_tiles \ iters | 1 | 2 | 4 | 8 | 16 |
 |---|---|---|---|---|---|
-| 1 | 0.98/0.97 (L1) | 1.42/1.57 (DST) | 2.29/2.28 (L1) | 4.30/4.44 (DST) | 8.22/8.26 (DST) |
-| 2 | 1.55/1.18 (L1) | 2.26/1.94 (L1) | 3.30/2.78 (L1) | 5.28/4.94 (L1) | 9.82/9.71 (L1) |
-| 4 | 1.84/1.48 (L1) | 2.59/2.16 (L1) | 3.93/3.68 (L1) | 6.57/6.31 (L1) | 12.15/11.84 (L1) |
+| 1 | 1.28/0.96 (L1) | 1.74/1.58 (L1) | 2.60/2.31 (L1) | 4.87/4.29 (L1) | 8.51/8.19 (L1) |
+| 2 | 1.52/1.19 (L1) | 2.05/1.65 (L1) | 3.16/2.99 (L1) | 5.28/4.98 (L1) | 9.93/9.66 (L1) |
+| 4 | 1.92/1.47 (L1) | 2.55/2.19 (L1) | 3.83/3.50 (L1) | 6.57/6.24 (L1) | 12.02/11.77 (L1) |
 
-Matches Blackhole: L1-pack is marginally ahead in nearly every config, with the
-acc_tiles=1 row holding the only near-ties (a few favor DST by ≤0.15 µs), and the
-dram absolute cost growing steeply with iters. The DST-vs-L1-pack ranking is
-architecture-independent.
+Matches Blackhole: L1-pack is marginally ahead in nearly every config; the
+dram absolute cost grows steeply with iters. The one difference is that
+l1-resident at iters=16 is a near-tie that flips to DST-resident within
+run-to-run variance (DST/L1 within ~5%) — at the highest iter count the two
+strategies converge on Wormhole. The ranking is otherwise architecture-independent.
 
 ### Block count (DFB depth)
 
@@ -265,10 +266,10 @@ depend on it.
 ### fp32 dest and full-sync
 
 **fp32 dest (dtype = fp32).** Halves DST capacity (4 vs 8), so the DST-resident
-strategy is legal only for acc_tiles ≤ 4, and roughly doubles pack cost. On both
-architectures the ranking matches bf16: L1-pack lower in nearly every config, near-ties
-only at acc_tiles=1; the costlier pack does not shift it to DST-resident (BH/WH
-l1-resident, acc_tiles=4 iters=16: L1 ahead by ~18%/~1%). Exact (PCC ≈ 1.0).
+strategy is legal only for acc_tiles ≤ 4, and roughly doubles pack cost. The
+ranking matches bf16 — L1-pack lower in nearly every config; the costlier pack
+does not shift it to DST-resident (Blackhole l1-resident acc_tiles=4 iters=16:
+L1 ahead ~16%; Wormhole near-tied at high iters, as in bf16). Exact (PCC ≈ 1.0).
 
 **Full-sync (dst_full_sync_en) — flips the choice on Wormhole.** Full-sync makes
 DST a single bank (no math/pack double-buffer), so L1-pack's per-iteration copy
