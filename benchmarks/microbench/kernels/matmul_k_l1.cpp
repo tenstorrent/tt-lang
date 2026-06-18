@@ -20,9 +20,9 @@
 #include "api/dataflow/circular_buffer.h"
 #include "tools/profiler/kernel_profiler.hpp"
 
-constexpr uint32_t dfb_in0 = 0;  // reader -> compute (A tiles)
-constexpr uint32_t dfb_in1 = 1;  // reader -> compute (B tiles)
-constexpr uint32_t dfb_out = 16; // compute -> writer (C subblock in L1)
+constexpr uint32_t dfb_in0 = 0;
+constexpr uint32_t dfb_in1 = 1;
+constexpr uint32_t dfb_out = 16;
 
 void kernel_main() {
   const uint32_t mt = get_compile_time_arg_val(0);
@@ -41,7 +41,7 @@ void kernel_main() {
       cb_wait_front(dfb_in1, nt);
       tile_regs_acquire();
       matmul_block(dfb_in0, dfb_in1, 0, 0, 0, 0, nt, mt,
-                   1); // fresh DST = A_col @ B_row
+                   1);
       tile_regs_commit();
       tile_regs_wait();
       for (uint32_t i = 0; i < out_tiles; ++i) {

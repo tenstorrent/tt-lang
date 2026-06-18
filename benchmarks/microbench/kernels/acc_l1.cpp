@@ -24,9 +24,9 @@
 #include "api/dataflow/circular_buffer.h"
 #include "tools/profiler/kernel_profiler.hpp"
 
-constexpr uint32_t dfb_init = 0;  // reader -> compute (initial value)
-constexpr uint32_t dfb_delta = 1; // reader -> compute (contributions)
-constexpr uint32_t dfb_out = 16;  // compute -> writer (accumulator in L1)
+constexpr uint32_t dfb_init = 0;
+constexpr uint32_t dfb_delta = 1;
+constexpr uint32_t dfb_out = 16;
 
 // Copy acc_tiles tiles from src_cb into DST in DST-capacity sub-blocks and pack
 // them to dfb_out (packer L1-accumulation governed by the caller's reconfig).

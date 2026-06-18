@@ -42,7 +42,7 @@ class Tensor:
     name: str
     shape: Callable            # cfg -> (rows, cols) in elements
     init: str = "randn"        # randn | zeros | ones | empty (outputs use empty)
-    scale: float = 0.1         # randn amplitude
+    scale: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,6 @@ class MicroBenchmark:
     WARMUP = 1
     SEED = 2026
 
-    # ---- the single per-benchmark hook ----
     def build(self, ctx):
         """Return (kernels, ref) for this config/strategy."""
         raise NotImplementedError
@@ -87,7 +86,6 @@ class MicroBenchmark:
         """Whether (cfg, strategy) is runnable (e.g. output fits DST). Default: yes."""
         return True
 
-    # ---- generic machinery ----
     def _materialize(self, cfg, device):
         ttnn_dtype, torch_dtype, _ = DTYPES[cfg["dtype"]]
         torch.manual_seed(self.SEED)

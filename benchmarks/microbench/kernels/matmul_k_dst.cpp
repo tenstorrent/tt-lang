@@ -22,9 +22,9 @@
 #include "api/dataflow/circular_buffer.h"
 #include "tools/profiler/kernel_profiler.hpp"
 
-constexpr uint32_t dfb_in0 = 0;  // reader -> compute (A tiles)
-constexpr uint32_t dfb_in1 = 1;  // reader -> compute (B tiles)
-constexpr uint32_t dfb_out = 16; // compute -> writer (C subblock)
+constexpr uint32_t dfb_in0 = 0;
+constexpr uint32_t dfb_in1 = 1;
+constexpr uint32_t dfb_out = 16;
 
 void kernel_main() {
   const uint32_t mt = get_compile_time_arg_val(0);
@@ -34,14 +34,14 @@ void kernel_main() {
 
   mm_block_init(dfb_in0, dfb_in1, dfb_out, 0, nt, mt, 1);
 
-  tile_regs_acquire(); // mt*nt output subblock held in DST across the K loop
+  tile_regs_acquire();
   {
     DeviceZoneScopedN("matmul_k_loop");
     for (uint32_t k = 0; k < kt; ++k) {
-      cb_wait_front(dfb_in0, mt); // A column k (mt tiles)
-      cb_wait_front(dfb_in1, nt); // B row k (nt tiles)
+      cb_wait_front(dfb_in0, mt);
+      cb_wait_front(dfb_in1, nt);
       matmul_block(dfb_in0, dfb_in1, 0, 0, 0, 0, nt, mt,
-                   1); // DST += A_col @ B_row
+                   1);
       cb_pop_front(dfb_in0, mt);
       cb_pop_front(dfb_in1, nt);
     }

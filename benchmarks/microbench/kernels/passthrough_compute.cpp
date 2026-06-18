@@ -24,9 +24,9 @@
 #include "api/dataflow/circular_buffer.h"
 #include "tools/profiler/kernel_profiler.hpp"
 
-constexpr uint32_t dfb_in = 0;   // reader -> compute (seed)
-constexpr uint32_t dfb_loop = 1; // compute -> compute (probe)
-constexpr uint32_t dfb_out = 16; // compute -> writer (drain)
+constexpr uint32_t dfb_in = 0;
+constexpr uint32_t dfb_loop = 1;
+constexpr uint32_t dfb_out = 16;
 
 // Move `tiles` tiles from src_cb to dst_cb through DST, in DST-capacity
 // sub-blocks. With src_cb == dst_cb this packs and unpacks the block once
