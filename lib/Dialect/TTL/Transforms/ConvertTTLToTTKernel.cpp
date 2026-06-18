@@ -477,10 +477,6 @@ static CopyOperandKind classifyOperand(Value v) {
   return CopyOperandKind::Unknown;
 }
 
-static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
-  return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-}
-
 static Value makeZeroI8(Location loc, ConversionPatternRewriter &rewriter) {
   return arith::ConstantIntOp::create(rewriter, loc, 0, 8);
 }
