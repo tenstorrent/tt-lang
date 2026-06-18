@@ -521,8 +521,8 @@ INIT/KERNEL/TILE_LOOP + per-RISC columns.
 - MB3 — complete on Blackhole and Wormhole: MB3.A reuse=1, MB3.B reuse>1, MB3.C
   fused GELU, each over fidelity (LoFi/HiFi2/HiFi4), plus fp32 dest and full-sync.
   The DST-vs-L1 ranking holds across all of these (L1-K for kt ≥ 2; DST-K only with
-  an epilogue at low kt); fp32/full-sync/fidelity move the margin, not the winner,
-  for plain matmul.
+  an epilogue at low kt); for plain matmul, fp32, full-sync, and fidelity change
+  how much faster L1-K is, not which strategy is faster.
 - Per-engine weights: the June-16 LLK run
   (`~/tt/perf/tt_metal_llk_perf_2026-06-16_27594326478`) already supplies unpack /
   pack / l1-acc-surcharge / matmul-math (cycles, both arches); use it rather than
