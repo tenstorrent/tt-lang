@@ -10,7 +10,8 @@ which a subclass touches.
 
 Declared per benchmark (uppercase class constants):
   NAME, ZONE, DEFAULT_CSV, PARAMS, INPUTS, OUTPUTS, DFBS, STRATEGIES,
-  PER_UNIT (cfg key to normalize times by), CSV_TAG, WARMUP, EXTRA_COLUMNS.
+  PER_UNIT (cfg key to normalize times by), CSV_TAG, WARMUP, EXTRA_COLUMNS,
+  POST_COLUMNS.
 The CSV columns are derived: the swept parameters, then EXTRA_COLUMNS
 (benchmark-specific derived fields), then strategy and the common profiler
 metrics -- a subclass never restates arch/freq/timing columns.
@@ -18,6 +19,8 @@ Implemented per benchmark:
   build(ctx) -> (kernels, ref)   # ctx.tensors are materialized; ctx.torch holds
                                  # the input torch tensors for the reference.
   extra_columns(cfg, strategy)   # optional: values for EXTRA_COLUMNS.
+  post_columns(cfg, strategy, zone_summary, row)
+                                # optional: values derived after profiling.
 """
 
 from dataclasses import dataclass
@@ -82,6 +85,7 @@ class MicroBenchmark:
     WARMUP = 1
     SEED = 2026
     EXTRA_COLUMNS = ()
+    POST_COLUMNS = ()
     MIN_PCC = 0.999
 
     # Common profiler metrics produced by harness.zone_fields for every benchmark.
@@ -110,6 +114,10 @@ class MicroBenchmark:
         """Values for the benchmark-specific EXTRA_COLUMNS. Default: none."""
         return {}
 
+    def post_columns(self, cfg, strategy, zone_summary, row):
+        """Values derived from profiler metrics after the common columns exist."""
+        return {}
+
     def csv_columns(self):
         cols = [param.name for param in self.PARAMS]
         cols += list(self.EXTRA_COLUMNS)
@@ -121,6 +129,7 @@ class MicroBenchmark:
                 f"{metric}_us_per_{self.PER_UNIT}"
                 for metric in ("trisc_max", "unpack", "math", "pack")
             ]
+        cols += list(self.POST_COLUMNS)
         cols += ["noc_active_in_zone", "pcc"]
         return cols
 
@@ -171,6 +180,7 @@ class MicroBenchmark:
                 row[f"{key}_per_{self.PER_UNIT}"] = (
                     None if value is None else value / unit
                 )
+        row.update(self.post_columns(cfg, strategy, zone_summary, row))
         return row
 
     def summary(self, cfg, by_strategy):
