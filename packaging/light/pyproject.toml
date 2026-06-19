@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tt-lang-light"
 description = "Internal TT-Lang metapackage for an external-tt-metal tt-lang wheel"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 keywords = ["tt-lang", "tenstorrent", "ttnn", "metapackage"]
 license = "Apache-2.0"
 authors = [{name = "Tenstorrent AI ULC"}]
@@ -16,6 +16,7 @@ classifiers = [
   "Intended Audience :: Developers",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.12",
 ]
 

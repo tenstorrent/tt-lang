@@ -456,39 +456,38 @@ def elwise_write():
 # ---------------------
 # Batched matrix multiplication with bias:
 #
-# y[i, m, n] = ∑(a[i, m, k] * b[k, n]) + c[m, n]
+# y[l, m, n] = ∑(a[l, m, k] * b[k, n]) + c[m, n]
 #              k
 #
 # Tensor   Torch shape   Note
-# a        I, M, K       Batched a matrix (e.g. input activations)
+# a        L, M, K       Batched a matrix (e.g. input activations)
 # b        K, N          Non-batched b matrix (e.g. weights)
 # c        M, N          Non-batched bias matrix c (e.g. weights)
-# y        I, M, N       Batched y matrix (e.g. output activations)
+# y        L, M, N       Batched y matrix (e.g. output activations)
 #
 # All tensors have tiled layout
 
-# Shape in tiles (I, M, N and K are evenly divisible by TILE_SIZE)
-I_TILES = I // TILE_SIZE
+# Shape in tiles (M, N and K are evenly divisible by TILE_SIZE)
 M_TILES = M // TILE_SIZE
 N_TILES = N // TILE_SIZE
 K_TILES = K // TILE_SIZE
 
-# Shape in blocks (I_TILES, M_TILES, N_TILES and K_TILES are evenly
-# divisible by I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE and K_BLOCK_SIZE)
-I_BLOCKS = I_TILES // I_BLOCK_SIZE
+# Shape in blocks (L, M_TILES, N_TILES and K_TILES are evenly
+# divisible by L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE and K_BLOCK_SIZE)
+L_BLOCKS = L // L_BLOCK_SIZE
 M_BLOCKS = M_TILES // M_BLOCK_SIZE
 N_BLOCKS = N_TILES // N_BLOCK_SIZE
 K_BLOCKS = K_TILES // K_BLOCK_SIZE
 
-a_dfb = ttl.make_dataflow_buffer_like(a, shape = (I_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE))
+a_dfb = ttl.make_dataflow_buffer_like(a, shape = (L_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE))
 b_dfb = ttl.make_dataflow_buffer_like(b, shape = (K_BLOCK_SIZE, N_BLOCK_SIZE))
 c_dfb = ttl.make_dataflow_buffer_like(c, shape = (M_BLOCK_SIZE, N_BLOCK_SIZE))
-y_dfb = ttl.make_dataflow_buffer_like(y, shape = (I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+y_dfb = ttl.make_dataflow_buffer_like(y, shape = (L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
 @ttl.datamovement()
 def matmul_read():
-    for i_block in range(I_BLOCKS):
-        i_slice = slice(i_block * I_BLOCK_SIZE, (i_block + 1) * I_BLOCK_SIZE)
+    for l_block in range(L_BLOCKS):
+        l_slice = slice(l_block * L_BLOCK_SIZE, (l_block + 1) * L_BLOCK_SIZE)
 
         for m_block in range(M_BLOCKS):
             m_slice = slice(m_block * M_BLOCK_SIZE, (m_block + 1) * M_BLOCK_SIZE)
@@ -515,9 +514,9 @@ def matmul_read():
                         a_dfb.reserve() as a_blk,
                         b_dfb.reserve() as b_blk,
                     ):
-                        # Load I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a into a_blk
+                        # Load L_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a into a_blk
                         # and K_BLOCK_SIZE×N_BLOCK_SIZE of b into b_blk
-                        a_xf = ttl.copy(a[i_slice, m_slice, k_slice], a_blk)
+                        a_xf = ttl.copy(a[l_slice, m_slice, k_slice], a_blk)
                         b_xf = ttl.copy(b[k_slice, n_slice], b_blk)
 
                         a_xf.wait()
@@ -528,7 +527,7 @@ def matmul_read():
 
 @ttl.compute()
 def matmul_compute():
-    for _ in range(I_BLOCKS):
+    for _ in range(L_BLOCKS):
         for _ in range(M_BLOCKS):
             for _ in range(N_BLOCKS):
 
@@ -536,7 +535,7 @@ def matmul_compute():
                 with y_dfb.reserve() as y_blk:
 
                     # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
-                    y_final = ttl.block.fill(0, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                    y_final = ttl.block.fill(0, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                     # Repeat for each K block
                     for _ in range(K_BLOCKS):
@@ -548,11 +547,11 @@ def matmul_compute():
                         ):
                             # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
                             # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
-                            # broadcast it over dim 0 to I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b_bcast = ttl.block.broadcast(ttl.block.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
+                            # broadcast it over dim 0 to L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
+                            b_bcast = ttl.block.broadcast(ttl.block.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(L_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
 
-                            # Accumulate dot product between I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
-                            # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
+                            # Accumulate dot product between L_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
+                            # L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
                             y_final += a_blk @ b_bcast
 
                             # End of "with" scope:
@@ -563,8 +562,8 @@ def matmul_compute():
 
                         # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
                         # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
-                        # broadcast it over dim 0 to I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
-                        c_bcast = ttl.block.broadcast(ttl.block.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                        # broadcast it over dim 0 to L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
+                        c_bcast = ttl.block.broadcast(ttl.block.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                         y_final = y_final + c_bcast
 
@@ -578,16 +577,16 @@ def matmul_compute():
 
 @ttl.datamovement()
 def matmul_write():
-    for i_block in range(I_BLOCKS):
+    for l_block in range(L_BLOCKS):
         for m_block in range(M_BLOCKS):
             for n_block in range(N_BLOCKS):
 
                 # Wait for matmul_compute to store and push y_blk
                 with y_dfb.wait() as y_blk:
 
-                    # Store I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE y_blk block into y
+                    # Store L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE y_blk block into y
                     y_xf = ttl.copy(y_blk, y[
-                        i_block * I_BLOCK_SIZE : (i_block + 1) * I_BLOCK_SIZE,
+                        l_block * L_BLOCK_SIZE : (l_block + 1) * L_BLOCK_SIZE,
                         m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE,
                         n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE])
                     y_xf.wait()

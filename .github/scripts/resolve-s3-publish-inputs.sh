@@ -20,7 +20,8 @@
 #
 # Outputs (written to $GITHUB_OUTPUT):
 #   docker_tag, dry_run, overwrite_releases, version_override, wheel_variant,
-#   wheel_variants, wheel_matrix, allow_final_internal_version
+#   wheel_variants, wheel_matrix, standard_wheel_matrix,
+#   allow_final_internal_version
 
 set -euo pipefail
 
@@ -93,18 +94,22 @@ case "$wheel_variant" in
     bundled)
         wheel_variants='["bundled"]'
         wheel_matrix='{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
+        standard_wheel_matrix='{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
         ;;
     light)
         wheel_variants='["light"]'
         wheel_matrix='{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+        standard_wheel_matrix='{"include":[]}'
         ;;
     bundled-and-light)
         wheel_variants='["bundled","light"]'
         wheel_matrix='{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"},{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+        standard_wheel_matrix='{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
         ;;
     pypi)
         wheel_variants='["pypi"]'
         wheel_matrix='{"include":[{"wheel_variant":"pypi","ttnn_dep_mode":"pypi"}]}'
+        standard_wheel_matrix='{"include":[{"wheel_variant":"pypi","ttnn_dep_mode":"pypi"}]}'
         ;;
     *)
         echo "Unknown S3 wheel variant: $wheel_variant" >&2
@@ -136,11 +141,13 @@ output_file="${GITHUB_OUTPUT:-/dev/stdout}"
     echo "wheel_variant=$wheel_variant"
     echo "wheel_variants=$wheel_variants"
     echo "wheel_matrix=$wheel_matrix"
+    echo "standard_wheel_matrix=$standard_wheel_matrix"
     echo "allow_final_internal_version=$allow_final_internal_version"
 } >> "$output_file"
 
 echo "Resolved wheel_variant=$wheel_variant"
 echo "Resolved wheel_variants=$wheel_variants"
+echo "Resolved standard_wheel_matrix=$standard_wheel_matrix"
 echo "Resolved version_override=$version_override"
 echo "Resolved allow_final_internal_version=$allow_final_internal_version"
 echo "Resolved dry_run=$dry_run"

@@ -44,9 +44,9 @@ fresh_tagged_repo() {
     assert_output "$BASE_TAG"
 }
 
-# --- Clean tag, one commit past, no uplift ---
+# --- Clean tag, one commit past, no container input changes ---
 
-@test "non-uplift commit past tag returns the tag (no suffix)" {
+@test "non-container commit past tag returns the tag (no suffix)" {
     REPO=$(fresh_tagged_repo)
     echo "kernel fix" >> "$REPO/python/sim/example.py"
     commit_all "$REPO" "kernel fix"
@@ -54,35 +54,39 @@ fresh_tagged_repo() {
     assert_output "$BASE_TAG"
 }
 
-# --- Per-path uplift: each of the 5 uplift paths separately ---
+# --- Per-path container input changes ---
 
-uplift_one_path() {
+container_input_one_path() {
     local path_to_change="$1"
     REPO=$(fresh_tagged_repo)
     echo "modified" >> "$REPO/$path_to_change"
-    commit_all "$REPO" "uplift $path_to_change"
+    commit_all "$REPO" "container input $path_to_change"
     run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
-    [[ "$output" =~ ^v99\.99\.99-uplift-[a-f0-9]{8}$ ]]
+    [[ "$output" =~ ^v99\.99\.99-[a-f0-9]{8}$ ]]
 }
 
-@test "uplift in third-party/tt-metal-version -> -uplift-<hash> form" {
-    uplift_one_path "third-party/tt-metal-version"
+@test "container input change in third-party/tt-metal-version -> -<hash> form" {
+    container_input_one_path "third-party/tt-metal-version"
 }
 
-@test "uplift in third-party/llvm-project/sentinel -> -uplift-<hash> form" {
-    uplift_one_path "third-party/llvm-project/sentinel"
+@test "container input change in third-party/llvm-project/sentinel -> -<hash> form" {
+    container_input_one_path "third-party/llvm-project/sentinel"
 }
 
-@test "uplift in third-party/tt-metal/sentinel -> -uplift-<hash> form" {
-    uplift_one_path "third-party/tt-metal/sentinel"
+@test "container input change in third-party/tt-metal/sentinel -> -<hash> form" {
+    container_input_one_path "third-party/tt-metal/sentinel"
 }
 
-@test "uplift in .github/containers/Dockerfile.base -> -uplift-<hash> form" {
-    uplift_one_path ".github/containers/Dockerfile.base"
+@test "container input change in .github/containers/Dockerfile.base -> -<hash> form" {
+    container_input_one_path ".github/containers/Dockerfile.base"
 }
 
-@test "uplift in requirements-runtime.txt -> -uplift-<hash> form" {
-    uplift_one_path "requirements-runtime.txt"
+@test "container input change in .github/containers/Dockerfile.wheel-manylinux-2-34 -> -<hash> form" {
+    container_input_one_path ".github/containers/Dockerfile.wheel-manylinux-2-34"
+}
+
+@test "container input change in requirements-runtime.txt -> -<hash> form" {
+    container_input_one_path "requirements-runtime.txt"
 }
 
 # --- Hash determinism: same content yields same tag ---
@@ -92,19 +96,19 @@ uplift_one_path() {
     REPO2=$(fresh_tagged_repo)
     for r in "$REPO1" "$REPO2"; do
         echo "identical-content-v2" > "$r/third-party/tt-metal-version"
-        commit_all "$r" "uplift"
+        commit_all "$r" "container input"
     done
     tag1=$(get_tag "$REPO1")
     tag2=$(get_tag "$REPO2")
     assert_equal "$tag1" "$tag2"
 }
 
-# --- Revert determinism: uplift, revert, re-apply same uplift ---
+# --- Revert determinism: modify, revert, re-apply same container input ---
 
-@test "revert + re-apply same uplift yields same hash" {
+@test "revert + re-apply same container input yields same hash" {
     REPO=$(fresh_tagged_repo)
-    echo "uplift-state" > "$REPO/third-party/tt-metal-version"
-    commit_all "$REPO" "uplift"
+    echo "container-state" > "$REPO/third-party/tt-metal-version"
+    commit_all "$REPO" "container input"
     first_tag=$(get_tag "$REPO")
     # Restore the exact content mkrepo() initialized so revert matches BASE_TAG.
     write_tt_metal_version_file "$REPO/third-party/tt-metal-version" \
@@ -113,22 +117,22 @@ uplift_one_path() {
         "$TEST_TT_METAL_TAG"
     commit_all "$REPO" "revert"
     revert_tag=$(get_tag "$REPO")
-    echo "uplift-state" > "$REPO/third-party/tt-metal-version"
-    commit_all "$REPO" "re-uplift"
+    echo "container-state" > "$REPO/third-party/tt-metal-version"
+    commit_all "$REPO" "reapply container input"
     second_tag=$(get_tag "$REPO")
     assert_equal "$revert_tag" "$BASE_TAG"
     assert_equal "$first_tag" "$second_tag"
 }
 
-# --- Different uplift content yields different hashes ---
+# --- Different container input content yields different hashes ---
 
-@test "different uplift contents yield different hashes" {
+@test "different container input contents yield different hashes" {
     REPO1=$(fresh_tagged_repo)
     REPO2=$(fresh_tagged_repo)
     echo "content-A" > "$REPO1/third-party/tt-metal-version"
     echo "content-B" > "$REPO2/third-party/tt-metal-version"
-    commit_all "$REPO1" "uplift A"
-    commit_all "$REPO2" "uplift B"
+    commit_all "$REPO1" "container input A"
+    commit_all "$REPO2" "container input B"
     tag1=$(get_tag "$REPO1")
     tag2=$(get_tag "$REPO2")
     refute [ "$tag1" = "$tag2" ]
@@ -177,8 +181,8 @@ uplift_one_path() {
 
 @test "running from a subdirectory of the repo yields the same tag" {
     REPO=$(fresh_tagged_repo)
-    echo "uplift" > "$REPO/third-party/tt-metal-version"
-    commit_all "$REPO" "uplift"
+    echo "container input" > "$REPO/third-party/tt-metal-version"
+    commit_all "$REPO" "container input"
     top_tag=$(cd "$REPO" && .github/containers/get-version-tag.sh)
     sub_tag=$(cd "$REPO/python/sim" && ../../.github/containers/get-version-tag.sh)
     assert_equal "$top_tag" "$sub_tag"
@@ -191,34 +195,34 @@ uplift_one_path() {
         skip "en_US.UTF-8 locale not installed"
     fi
     REPO=$(fresh_tagged_repo)
-    echo "uplift" > "$REPO/third-party/tt-metal-version"
-    commit_all "$REPO" "uplift"
+    echo "container input" > "$REPO/third-party/tt-metal-version"
+    commit_all "$REPO" "container input"
     c_tag=$(LC_ALL=C get_tag "$REPO")
     en_tag=$(LC_ALL=en_US.UTF-8 get_tag "$REPO")
     assert_equal "$c_tag" "$en_tag"
 }
 
-# --- Change in a non-uplift path doesn't toggle uplift form ---
+# --- Change outside container inputs does not toggle hashed form ---
 
-@test "change in non-uplift path stays on clean tag" {
+@test "change outside container inputs stays on clean tag" {
     REPO=$(fresh_tagged_repo)
     mkdir -p "$REPO/lib"
-    echo "non-uplift file" > "$REPO/lib/something.cpp"
-    commit_all "$REPO" "non-uplift change"
+    echo "non-container file" > "$REPO/lib/something.cpp"
+    commit_all "$REPO" "non-container change"
     run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
     assert_output "$BASE_TAG"
 }
 
-# --- Multiple uplift paths together produce a single uplift tag ---
+# --- Multiple container input paths together produce a single hashed tag ---
 
-@test "multiple uplift paths together produce a single uplift tag" {
+@test "multiple container input paths together produce a single hashed tag" {
     REPO=$(fresh_tagged_repo)
     echo "new-version" > "$REPO/third-party/tt-metal-version"
     echo "new-llvm" >> "$REPO/third-party/llvm-project/sentinel"
     echo "new-dep" >> "$REPO/requirements-runtime.txt"
-    commit_all "$REPO" "multi-uplift"
+    commit_all "$REPO" "multi-container-input"
     run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
-    [[ "$output" =~ ^v99\.99\.99-uplift-[a-f0-9]{8}$ ]]
+    [[ "$output" =~ ^v99\.99\.99-[a-f0-9]{8}$ ]]
 }
 
 # --- Missing UPLIFT_PATHS file fails noisily ---
@@ -239,13 +243,14 @@ uplift_one_path() {
     echo "new-version" > "$REPO/third-party/tt-metal-version"
     echo "new-llvm" >> "$REPO/third-party/llvm-project/sentinel"
     echo "new-dep" >> "$REPO/requirements-runtime.txt"
-    commit_all "$REPO" "multi-uplift"
+    commit_all "$REPO" "multi-container-input"
     tag_forward=$(get_tag "$REPO")
     cat > "$REPO/.github/scripts/uplift-paths.sh" <<'EOF'
 #!/bin/bash
 UPLIFT_PATHS=(
     requirements-runtime.txt
     .github/containers/Dockerfile.base
+    .github/containers/Dockerfile.wheel-manylinux-2-34
     third-party/tt-metal
     third-party/llvm-project
     third-party/tt-metal-version

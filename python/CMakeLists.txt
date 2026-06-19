@@ -256,9 +256,11 @@ add_mlir_python_common_capi_library(TTLangPythonCAPI
   INSTALL_DESTINATION python_packages/ttl/_mlir_libs
   OUTPUT_DIRECTORY "${TTLANG_PYTHON_PACKAGES_DIR}/ttl/_mlir_libs"
   DECLARED_SOURCES
-    # Upstream MLIR (MLIRPythonSources includes .Core and all sub-packages)
+    # Upstream MLIR sources (.Core + sub-packages). RegisterEverything is
+    # intentionally omitted; tt-lang registers only the upstream dialects and
+    # passes its pipeline uses (see lib/CAPI/Dialects.cpp) so the Python CAPI
+    # library does not statically link all of MLIR.
     MLIRPythonSources
-    MLIRPythonExtension.RegisterEverything
     # Minimal tt-mlir
     TTMLIRMinPythonSources
     TTMLIRMinPythonExtensions
@@ -281,9 +283,11 @@ add_mlir_python_modules(TTLangPythonModules
   ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttl"
   INSTALL_PREFIX "python_packages/ttl"
   DECLARED_SOURCES
-    # Upstream MLIR (MLIRPythonSources includes .Core and all sub-packages)
+    # Upstream MLIR sources (.Core + sub-packages). RegisterEverything is
+    # intentionally omitted; tt-lang registers only the upstream dialects and
+    # passes its pipeline uses (see lib/CAPI/Dialects.cpp) so the Python CAPI
+    # library does not statically link all of MLIR.
     MLIRPythonSources
-    MLIRPythonExtension.RegisterEverything
     # Minimal tt-mlir
     TTMLIRMinPythonSources
     TTMLIRMinPythonExtensions

@@ -1,6 +1,9 @@
 core.*
 .local
-**/build*
+/build/
+/build-*/
+/test/**/build/
+_plans/
 third_party/tt-metal
 third_party/ttnn-python
 .DS_STORE
