@@ -387,6 +387,144 @@ Both strategies measure operand handoff + math + pack inside the zone (the prior
 table here measured DST-K with its single pack *outside* the zone -- math only --
 which made DST-K look ~math-bound and always cheaper; corrected below).
 
+### Per-node GEMM utilization checks
+
+`third-party/tt-metal/tech_reports/GEMM_FLOPS/GEMM_FLOPS.md` reports matrix-engine
+throughput and this utilization formula:
+
+```
+ideal cycles = (M * K * N) / (32 * 32 * 32) * cycle_per_tile / num_cores
+```
+
+For MB3, `num_cores = 1`, `M = mt * 32`, `N = nt * 32`, and `K = kt * 32`, so:
+
+```
+matmul_ideal_cycles = mt * nt * kt * cycle_per_tile
+cycle_per_tile = 16 (LoFi), 32 (HiFi2), 64 (HiFi4)
+```
+
+`matmul_sweep.py` now records this per-node check in the CSV:
+
+- `matmul_ideal_cycles`: ideal matrix-engine cycles for the tiled matmul work.
+- `trisc_max_cycles`: measured zone time converted with profiler `CHIP_FREQ[MHz]`.
+- `math_cycles`: measured math-thread zone time converted with the same clock.
+- `zone_utilization_pct`: `100 * matmul_ideal_cycles / trisc_max_cycles`.
+- `math_utilization_pct`: `100 * matmul_ideal_cycles / math_cycles`.
+
+`math_utilization_pct` is the raw `matmul_block` sanity check. A low value there
+means the benchmark is not feeding the matrix engine efficiently.
+`zone_utilization_pct` is the single-node composed-kernel utilization, including
+unpack/pack and DFB handoff. Fused GELU leaves these columns blank because the
+timed zone includes epilogue work and is not a plain matmul measurement.
+
+These columns are sanity checks for MB3, not claims that MB3 is a GEMM
+benchmark. The current MB3 numbers should not be read as TTNN GEMM device
+utilization. The specific differences are:
+
+- `matmul_sweep.py` is a one-node `ttnn.generic_op` strategy comparison. Its
+  timed zone includes DFB handoff, `cb_wait_front`, `cb_pop_front`, tile-register
+  synchronization, and pack.
+- MB3 calls `matmul_block(..., kt_dim=1)` once per K tile per output subblock.
+  This matches the strategy the cost model needs to compare, but it is not the
+  TTNN large-block GEMM program.
+- L1-K intentionally packs the accumulator to L1 every K step. That measures the
+  L1 accumulation strategy, not raw matrix-engine throughput.
+- The tt-metal GEMM benchmark runs `ttnn.matmul` with
+  `MatmulMultiCoreReuseMultiCastProgramConfig`, the GEMM subblock preference
+  order, `packer_l1_acc=True`, `math_approx_mode=True`, and
+  `ThrottleLevel.NO_THROTTLE`. Its device-utilization number uses the profiler's
+  TRISC1 kernel duration.
+- MB3's `zone_utilization_pct` is the composed-kernel cost-model number.
+  `math_utilization_pct` is the closer matrix-engine feeding check, but it is
+  still from the handwritten generic-op kernel, not from TTNN matmul.
+
+The implementation differences are concrete:
+
+- TTNN dispatches `MatmulMultiCoreReuseMultiCastProgramConfig` through
+  `MatmulMultiCoreReuseMcast2DProgramFactory`. Even on a 1x1 grid, that factory
+  constructs the same optimized A-reader, B-reader/output-writer, compute-kernel,
+  DFB, and compile-time-argument contract used by the full-grid GEMM benchmark.
+- TTNN's compute kernel is
+  `bmm_large_block_zm_fused_bias_activation.cpp`. Its compute arguments include
+  `in0_block_w`, `in0_num_subblocks`, `in0_block_num_tiles`,
+  `in1_num_subblocks`, `in1_block_num_tiles`, output block counts, subblock
+  sizes, and `cb_intermed0`. MB3 passes only `mt`, `nt`, `kt`, `sub_mt`,
+  `sub_nt`, and optional epilogue state.
+- TTNN consumes a K block in the large-block kernel by looping
+  `inner_dim_idx < in0_block_w` and calling `matmul_block(..., kt_dim =
+  in0_block_w)` while advancing A/B offsets. MB3 DST-K and L1-K call
+  `matmul_block(..., kt_dim = 1)` per K tile per output subblock.
+- TTNN handles `num_blocks_inner_dim > 1` with an intermediate partials DFB. It
+  packs partials to `cb_intermed0` and reloads only when needed; when
+  `packer_l1_acc` is enabled, longer K blocks avoid part of the spill/reload
+  cost. MB3 L1-K intentionally repacks the full accumulator to L1 on every K
+  step; MB3 DST-K intentionally keeps DST resident and re-unpacks operands per
+  output subblock.
+- TTNN readers stream operand blocks in the layout required by the large-block
+  kernel. A uses `out_block_h * in0_block_w` tiles per block; B uses
+  `out_block_w * in0_block_w` tiles per block. MB3's reader lays out A as
+  `kt` columns of `mt` tiles and B as `kt` rows of `nt` tiles to support the
+  strategy comparison.
+- TTNN's B reader is also the output writer, so its output DFB and writer
+  contract are part of the optimized program. MB3 uses the common
+  `drain_writer.cpp`, which is intentionally generic across the microbenchmarks.
+- TTNN configures `math_approx_mode=True`, `packer_l1_acc=True`, and
+  `ThrottleLevel.NO_THROTTLE` in the GEMM benchmark. MB3 uses the generic-op
+  harness compute config with `math_approx_mode=False` and no explicit throttle
+  or TTNN matmul program-level options.
+
+`matmul_compute_sweep.py` is a compute-feed diagnostic (not a realistic workload
+or a cost-model input): a 1x1 grid via `ttnn.generic_op` with single-node block
+layouts, built as a ladder of five strategies where each rung adds one change over
+the previous, so the per-change benefit is measurable:
+
+- `mm1_tile_loop`: per-tile `matmul_tiles` in a K loop.
+- `mm2_block`: `matmul_block` over output subblocks, whole K block resident
+  (num_blocks = 1), operands waited for outside the timed zone.
+- `mm3_block_stream`: K-block streaming with spill-and-reload accumulation.
+- `mm4_block_stream_l1acc`: packer L1 accumulation instead of spill-reload (TTNN's
+  no-bias mechanism: blocks 0..n-2 accumulate in L1, only the last block reloads).
+- `mm5_block_stream_l1acc_packblock`: one `pack_tile_block` per subblock instead of
+  a per-tile `pack_tile` loop.
+
+The metric comparable to TTNN's GEMM number is the **math thread (TRISC1)**
+utilization. Zone utilization (trisc_max) is lower because the **pack thread** is
+the slowest thread at this size -- a metric distinction, not a feed difference.
+
+Blackhole bf16 HiFi4, 8x8 per node, math-thread utilization (num_blocks set by
+`in0_block_w_div`: kt=8 div=1 is one block, kt=32 div=4 is four):
+
+| rung | change added | num_blocks=1 | num_blocks=4 | PCC |
+|---|---|---:|---:|---:|
+| mm1_tile_loop | baseline (`matmul_tiles`) | 80.2% | 82.0% | 0.9998 |
+| mm2_block | `matmul_block` | 87.9% | n/a | 0.9999 |
+| mm3_block_stream | K-block streaming | 87.8% | 89.2% | 0.9998 |
+| mm4_block_stream_l1acc | packer L1 accumulation | 88.0% | 91.8% | 0.9999 |
+| mm5_..._packblock | block pack | 88.1% | 91.8% | 0.9999 |
+| TTNN matmul (reference) | -- | 88.0% | 92.1% | 0.9999 |
+
+Per-change benefit (percentage points of math-thread utilization):
+
+- **mm1 -> mm2: +7.7 pp** -- `matmul_block` is the dominant win: one MOP call per
+  subblock reuses A/B across the subblock with no per-tile RISC dispatch, where
+  `matmul_tiles` re-issues every tile.
+- **mm2 -> mm3: ~0 pp** -- K-block streaming is utilization-neutral but is what
+  lets K exceed what fits resident in L1.
+- **mm3 -> mm4: +2.6 pp at num_blocks=4** -- packer L1 accumulation removes the
+  per-block reload copies; the benefit grows with num_blocks (neutral at 1-2
+  blocks, where both do at most one reload). mm4 reaches TTNN parity (91.8 vs 92.1).
+- **mm4 -> mm5: ~0 pp** -- block pack is utilization-neutral. The residual
+  pack-thread overhang (zone < math) is pack-engine throughput, not RISC dispatch,
+  so collapsing the pack calls does not recover it; TTNN sits at the same ceiling.
+
+So the earlier reading that the handwritten kernel trailed TTNN was a metric
+mismatch (zone/pack-thread vs TTNN's math-thread number); on the same thread they
+match. `matmul_block` plus packer L1 accumulation reproduce TTNN's single-node
+feeding, and operands resident vs streamed makes no difference at num_blocks=1
+(mm2 ~ mm3), so the gap was never operand load.
+
+Wormhole: pending host-reservation access; the same ladder will be added.
+
 ### MB3.A -- output fits DST (P <= capacity, reuse = 1)
 
 One subblock = the whole output. DST-K accumulates all `kt` matmuls in DST and
