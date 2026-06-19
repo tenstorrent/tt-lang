@@ -491,39 +491,58 @@ The metric comparable to TTNN's GEMM number is the **math thread (TRISC1)**
 utilization. Zone utilization (trisc_max) is lower because the **pack thread** is
 the slowest thread at this size -- a metric distinction, not a feed difference.
 
-Blackhole bf16 HiFi4, 8x8 per node, math-thread utilization (num_blocks set by
-`in0_block_w_div`: kt=8 div=1 is one block, kt=32 div=4 is four):
+8x8 per node, bf16 HiFi4, math-thread utilization. num_blocks=1 is kt=8 div=1;
+num_blocks=3 is kt=24 div=3 (mm2_block is one-block only, so it is absent at
+num_blocks=3):
 
-| rung | change added | num_blocks=1 | num_blocks=4 | PCC |
-|---|---|---:|---:|---:|
-| mm1_tile_loop | baseline (`matmul_tiles`) | 80.2% | 82.0% | 0.9998 |
-| mm2_block | `matmul_block` | 87.9% | n/a | 0.9999 |
-| mm3_block_stream | K-block streaming | 87.8% | 89.2% | 0.9998 |
-| mm4_block_stream_l1acc | packer L1 accumulation | 88.0% | 91.8% | 0.9999 |
-| mm5_..._packblock | block pack | 88.1% | 91.8% | 0.9999 |
-| TTNN matmul (reference) | -- | 88.0% | 92.1% | 0.9999 |
+num_blocks=1:
+
+| rung | change added | Blackhole | Wormhole |
+|---|---|---:|---:|
+| mm1_tile_loop | baseline (`matmul_tiles`) | 80.2% | 74.6% |
+| mm2_block | `matmul_block` | 87.9% | 82.9% |
+| mm3_block_stream | K-block streaming | 87.8% | 82.5% |
+| mm4_block_stream_l1acc | packer L1 accumulation | 88.0% | 82.9% |
+| mm5_..._packblock | block pack | 88.1% | 83.0% |
+| TTNN matmul (reference) | -- | 88.0% | 82.8% |
+
+num_blocks=3:
+
+| rung | Blackhole | Wormhole |
+|---|---:|---:|
+| mm1_tile_loop | 81.8% | 76.1% |
+| mm3_block_stream | 89.1% | 85.1% |
+| mm4_block_stream_l1acc | 90.8% | 87.1% |
+| mm5_..._packblock | 90.8% | 87.2% |
+| TTNN matmul (reference) | 90.9% | 87.1% |
 
 Per-change benefit (percentage points of math-thread utilization):
 
-- **mm1 -> mm2: +7.7 pp** -- `matmul_block` is the dominant win: one MOP call per
-  subblock reuses A/B across the subblock with no per-tile RISC dispatch, where
-  `matmul_tiles` re-issues every tile.
+- **mm1 -> mm2: +7.7 pp Blackhole, +8.4 pp Wormhole** -- `matmul_block` is the
+  dominant win: one MOP call per subblock reuses A/B across the subblock with no
+  per-tile RISC dispatch, where `matmul_tiles` re-issues every tile.
 - **mm2 -> mm3: ~0 pp** -- K-block streaming is utilization-neutral but is what
   lets K exceed what fits resident in L1.
-- **mm3 -> mm4: +2.6 pp at num_blocks=4** -- packer L1 accumulation removes the
-  per-block reload copies; the benefit grows with num_blocks (neutral at 1-2
-  blocks, where both do at most one reload). mm4 reaches TTNN parity (91.8 vs 92.1).
-- **mm4 -> mm5: ~0 pp** -- block pack is utilization-neutral. The residual
+- **mm3 -> mm4: +1.7 pp Blackhole, +2.1 pp Wormhole (num_blocks=3)** -- packer L1
+  accumulation removes the per-block reload copies; the benefit grows with
+  num_blocks (neutral at 1-2 blocks, where both do at most one reload; Blackhole
+  reaches +2.6 pp at num_blocks=4). mm4 reaches TTNN parity on both (BH 90.8 vs
+  90.9; WH 87.1 vs 87.1).
+- **mm4 -> mm5: ~0 pp both** -- block pack is utilization-neutral. The residual
   pack-thread overhang (zone < math) is pack-engine throughput, not RISC dispatch,
   so collapsing the pack calls does not recover it; TTNN sits at the same ceiling.
 
-So the earlier reading that the handwritten kernel trailed TTNN was a metric
-mismatch (zone/pack-thread vs TTNN's math-thread number); on the same thread they
-match. `matmul_block` plus packer L1 accumulation reproduce TTNN's single-node
-feeding, and operands resident vs streamed makes no difference at num_blocks=1
-(mm2 ~ mm3), so the gap was never operand load.
+Wormhole runs at a lower absolute utilization than Blackhole at the same config
+(lower matrix-feed ceiling), but the ladder shape is identical and mm4 matches
+TTNN on both. The earlier reading that the handwritten kernel trailed TTNN was a
+metric mismatch (zone/pack-thread vs TTNN's math-thread number); on the same
+thread they match, and operands resident vs streamed makes no difference at
+num_blocks=1 (mm2 ~ mm3), so the gap was never operand load.
 
-Wormhole: pending host-reservation access; the same ladder will be added.
+Blackhole also reaches mm4 91.8% (TTNN 92.1%) at num_blocks=4 (kt=32); that 8x8
+streamed config does not fit Wormhole's 1.43 MB L1, because the streamed
+strategies size in0/in1 to the whole operand (the resident rungs require that).
+Sizing the streamed operand DFBs to `block_count * block` would remove the limit.
 
 ### MB3.A -- output fits DST (P <= capacity, reuse = 1)
 
