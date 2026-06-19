@@ -29,10 +29,11 @@ at run time.
   (`harness.dst_subblock`), covering MB3.A (output fits DST, reuse=1) and MB3.B
   (output exceeds DST, reuse>1).
 - Matmul compute-feed diagnostic (`matmul_compute_sweep.py`): non-realistic
-  single-node generic-op matmul with operands resident before the timed zone. It
-  checks matrix-engine feeding with a direct `matmul_tiles` strategy and a
-  `ttnn_like` strategy that mirrors TTNN's large-block single-node compute
-  contract. This is not a cost-model workload.
+  single-node generic-op matmul that checks matrix-engine feeding as a five-rung
+  ladder, each rung one change over the previous: `mm1_tile_loop` (`matmul_tiles`),
+  `mm2_block` (`matmul_block`, operands resident), `mm3_block_stream` (K-block
+  streaming), `mm4_block_stream_l1acc` (packer L1 accumulation), and
+  `mm5_block_stream_l1acc_packblock` (block pack). Not a cost-model workload.
 - TTNN matmul utilization (`ttnn_matmul_utilization.py`): single-node
   `ttnn.matmul` validation using the same utilization formula and program-config
   conventions as the tt-metal GEMM FLOPS report.
@@ -107,11 +108,14 @@ report's device-utilization definition based on the TRISC1 kernel duration, and
 `trisc_max_utilization_pct`, which shows whether another compute thread is
 slower.
 
-`matmul_compute_sweep.py` writes one row per diagnostic strategy. `tiles` uses a
-direct `matmul_tiles` loop. `ttnn_like` uses TTNN-style A/B block layout,
-`in0_block_w`, output subblock order, and `matmul_block(..., kt_dim =
-in0_block_w)`. The probe keeps operands resident before the timed zone, so it is
-not a realistic workload sequence.
+`matmul_compute_sweep.py` writes one row per diagnostic rung (`mm1_tile_loop`
+through `mm5_block_stream_l1acc_packblock`). mm1 uses a direct `matmul_tiles`
+loop; mm2 switches to `matmul_block` over output subblocks with operands resident
+(waited for outside the timed zone). mm3-mm5 stream A/B in K blocks (TTNN-style
+layout, `in0_block_w`, `matmul_block(..., kt_dim = in0_block_w)`) and differ only
+in cross-K accumulation: spill-reload (mm3), packer L1 accumulation (mm4), block
+pack (mm5). The streamed rungs wait on operand blocks inside the timed zone; only
+mm1/mm2 keep operands resident.
 
 CSV files are written under `benchmarks/microbench/results/` by default and are
 ignored by git. `fit.py` consumes MB1 CSVs and fits:

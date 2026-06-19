@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 //
-// MB3 resident-operand matmul_block roofline probe. Same matmul issue as the
+// MB3 resident-operand matmul_block diagnostic probe. Same matmul issue as the
 // ttnn_like kernel (one matmul_block per K tile per output subblock, the whole
 // sub_mt x sub_nt grid in one MOP call), but A and B are waited for OUTSIDE the
 // timed zone, so the zone measures matmul + pack only and excludes the upfront

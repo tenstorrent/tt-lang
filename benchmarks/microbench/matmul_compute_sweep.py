@@ -3,12 +3,12 @@
 
 """Matmul diagnostic -- per-node compute-feed utilization probe.
 
-This is not a realistic workload or a cost-model input. It removes runtime
-operand movement from the timed zone, keeps operands resident in DFBs, and uses
-single-node block layouts to test whether a handwritten generic-op matmul can
-feed the matrix engine efficiently. The `ttnn_like` strategy mirrors the
-single-node compute contract of TTNN's large-block matmul kernel more closely
-than the direct `matmul_tiles` strategy.
+This is not a realistic workload or a cost-model input. It tests whether a
+handwritten generic-op matmul can feed the matrix engine efficiently, as a
+five-rung ladder (mm1_tile_loop .. mm5_block_stream_l1acc_packblock) where each
+rung adds one change. The resident rungs (mm1, mm2) wait for operands outside the
+timed zone; the streamed rungs (mm3-mm5) wait on operand K-blocks inside the
+zone, mirroring TTNN's large-block single-node compute contract.
 
     python -m benchmarks.microbench.matmul_compute_sweep --mt 4 --nt 4 --kt 8,16
 """
@@ -114,25 +114,31 @@ class MatmulCompute(MicroBenchmark):
         Tensor("c", lambda cfg: (cfg["mt"] * TILE, cfg["nt"] * TILE), init="empty"),
     )
     DFBS = (
-        DFB(0, lambda cfg: MatmulCompute._operand_pages(cfg, "a")),
-        DFB(1, lambda cfg: MatmulCompute._operand_pages(cfg, "b")),
+        DFB(0, lambda cfg, strategy: MatmulCompute._operand_pages(cfg, strategy, "a")),
+        DFB(1, lambda cfg, strategy: MatmulCompute._operand_pages(cfg, strategy, "b")),
         DFB(4, lambda cfg: cfg["mt"] * cfg["nt"]),
         DFB(5, lambda cfg: cfg["mt"] * cfg["nt"]),
         DFB(16, lambda cfg: cfg["block_count"] * cfg["mt"] * cfg["nt"]),
     )
 
     @staticmethod
-    def _operand_pages(cfg, operand):
+    def _operand_pages(cfg, strategy, operand):
+        # Resident rungs (mm1, mm2) hold the whole operand in L1. Streamed rungs
+        # (mm3-mm5) only need a double-buffered K block, so they stay within L1
+        # (Wormhole could not fit the whole-operand sizing) and match TTNN's block
+        # CBs. block_count sets prefetch depth, floored at 2 so the next block's
+        # load overlaps the current block's compute.
         in0_block_w = MatmulCompute._in0_block_w(cfg)
+        num_blocks = cfg["kt"] // in0_block_w
+        resident = strategy in ("mm1_tile_loop", "mm2_block")
+        depth = min(num_blocks, max(2, cfg["block_count"]))
         if operand == "a":
-            return max(
-                cfg["mt"] * cfg["kt"],
-                cfg["block_count"] * cfg["mt"] * in0_block_w,
-            )
-        return max(
-            cfg["kt"] * cfg["nt"],
-            cfg["block_count"] * in0_block_w * cfg["nt"],
-        )
+            if resident:
+                return cfg["mt"] * cfg["kt"]
+            return depth * cfg["mt"] * in0_block_w
+        if resident:
+            return cfg["kt"] * cfg["nt"]
+        return depth * in0_block_w * cfg["nt"]
 
     @staticmethod
     def _in0_block_w(cfg):
