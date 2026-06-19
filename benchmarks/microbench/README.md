@@ -28,12 +28,15 @@ at run time.
   comparing DST-K against L1-K. The output is subblocked as the compiler would
   (`harness.dst_subblock`), covering MB3.A (output fits DST, reuse=1) and MB3.B
   (output exceeds DST, reuse>1).
-- Matmul compute-feed diagnostic (`matmul_compute_sweep.py`): non-realistic
-  single-node generic-op matmul that checks matrix-engine feeding as a five-rung
-  ladder, each rung one change over the previous: `mm1_tile_loop` (`matmul_tiles`),
-  `mm2_block` (`matmul_block`, operands resident), `mm3_block_stream` (K-block
-  streaming), `mm4_block_stream_l1acc` (packer L1 accumulation), and
-  `mm5_block_stream_l1acc_packblock` (block pack). Not a cost-model workload.
+- `matmul_compute_sweep.py` measures the matmul compute-feed term. It runs a
+  single-node `ttnn.generic_op` matmul that checks matrix-engine feeding with
+  five diagnostic variants: `mm1_tile_loop`
+  (`matmul_tiles`), `mm2_block` (`matmul_block`, operands resident),
+  `mm3_block_stream` (K-block streaming), `mm4_block_stream_l1acc` (packer L1
+  accumulation), and `mm5_block_stream_l1acc_packblock` (block pack). The
+  mm1->mm2 comparison bundles the baseline-to-block-kernel changes; mm2->mm5
+  each change one implementation detail. These measurements parameterize the
+  single-node matrix-engine compute-feed term.
 - TTNN matmul utilization (`ttnn_matmul_utilization.py`): single-node
   `ttnn.matmul` validation using the same utilization formula and program-config
   conventions as the tt-metal GEMM FLOPS report.
@@ -108,14 +111,14 @@ report's device-utilization definition based on the TRISC1 kernel duration, and
 `trisc_max_utilization_pct`, which shows whether another compute thread is
 slower.
 
-`matmul_compute_sweep.py` writes one row per diagnostic rung (`mm1_tile_loop`
+`matmul_compute_sweep.py` writes one row per diagnostic variant (`mm1_tile_loop`
 through `mm5_block_stream_l1acc_packblock`). mm1 uses a direct `matmul_tiles`
 loop; mm2 switches to `matmul_block` over output subblocks with operands resident
 (waited for outside the timed zone). mm3-mm5 stream A/B in K blocks (TTNN-style
 layout, `in0_block_w`, `matmul_block(..., kt_dim = in0_block_w)`) and differ only
 in cross-K accumulation: spill-reload (mm3), packer L1 accumulation (mm4), block
-pack (mm5). The streamed rungs wait on operand blocks inside the timed zone; only
-mm1/mm2 keep operands resident.
+pack (mm5). The streamed variants wait on operand blocks inside the timed zone;
+only mm1/mm2 keep operands resident.
 
 CSV files are written under `benchmarks/microbench/results/` by default and are
 ignored by git. `fit.py` consumes MB1 CSVs and fits:
@@ -140,7 +143,7 @@ python -m benchmarks.microbench.fit "benchmarks/microbench/results/pack_unpack_*
 - `sweep.py`: MB1 pack/unpack probe.
 - `acc_sweep.py`: MB2 accumulation strategy comparison.
 - `matmul_sweep.py`: MB3 matmul K-accumulation strategy comparison.
-- `matmul_compute_sweep.py`: non-realistic matmul compute-feed diagnostic.
+- `matmul_compute_sweep.py`: matmul compute-feed measurement.
 - `ttnn_matmul_utilization.py`: single-node TTNN matmul utilization validation.
 - `compute_sweep.py`: MB4 compute-op (SFPU math) probe.
 - `fit.py`: MB1 fixed plus per-tile regression.

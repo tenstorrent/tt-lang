@@ -271,9 +271,7 @@ def run_config(device, args, mt, nt, kt):
         "trisc1_cycles": trisc1_cycles,
         "trisc_max_cycles": trisc_max_cycles,
         "trisc1_utilization_pct": utilization_pct(ideal_cycles, trisc1_cycles),
-        "trisc_max_utilization_pct": utilization_pct(
-            ideal_cycles, trisc_max_cycles
-        ),
+        "trisc_max_utilization_pct": utilization_pct(ideal_cycles, trisc_max_cycles),
         "pcc": round(pcc, 6),
     }
 

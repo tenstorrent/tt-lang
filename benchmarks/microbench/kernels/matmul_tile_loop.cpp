@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Diagnostic compute-feed matmul probe. This is intentionally closer to tt-metal's
-// large-block matmul compute kernel than the DST-K/L1-K strategy benchmark:
-// operands are already resident, A/B use row-major per-node block layout, and
-// the K tile block is consumed inside one output-block loop.
+// Diagnostic compute-feed matmul probe. This is intentionally closer to
+// tt-metal's large-block matmul compute kernel than the DST-K/L1-K strategy
+// benchmark: operands are already resident, A/B use row-major per-node block
+// layout, and the K tile block is consumed inside one output-block loop.
 //
 // Compile-time args: 0 = mt, 1 = nt, 2 = kt, 3 = sub_mt, 4 = sub_nt.
 
@@ -42,28 +42,25 @@ void kernel_main() {
       for (uint32_t output_col = 0; output_col < nt; output_col += sub_nt) {
         tile_regs_acquire();
         uint32_t dst_index = 0;
-        for (uint32_t subblock_row = 0; subblock_row < sub_mt;
-             ++subblock_row) {
+        for (uint32_t subblock_row = 0; subblock_row < sub_mt; ++subblock_row) {
           for (uint32_t subblock_col = 0; subblock_col < sub_nt;
                ++subblock_col) {
             for (uint32_t k_index = 0; k_index < kt; ++k_index) {
               matmul_tiles(dfb_in0, dfb_in1,
                            (output_row + subblock_row) * kt + k_index,
-                           k_index * nt + output_col + subblock_col,
-                           dst_index);
+                           k_index * nt + output_col + subblock_col, dst_index);
             }
             ++dst_index;
           }
         }
         tile_regs_commit();
         tile_regs_wait();
-        for (uint32_t subblock_row = 0; subblock_row < sub_mt;
-             ++subblock_row) {
+        for (uint32_t subblock_row = 0; subblock_row < sub_mt; ++subblock_row) {
           for (uint32_t subblock_col = 0; subblock_col < sub_nt;
                ++subblock_col) {
-            pack_tile<true>(
-                subblock_row * sub_nt + subblock_col, dfb_out,
-                (output_row + subblock_row) * nt + (output_col + subblock_col));
+            pack_tile<true>(subblock_row * sub_nt + subblock_col, dfb_out,
+                            (output_row + subblock_row) * nt +
+                                (output_col + subblock_col));
           }
         }
         tile_regs_release();

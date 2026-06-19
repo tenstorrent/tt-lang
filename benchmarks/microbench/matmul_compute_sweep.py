@@ -1,14 +1,16 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Matmul diagnostic -- per-node compute-feed utilization probe.
+"""Matmul diagnostic: per-node compute-feed utilization probe.
 
-This is not a realistic workload or a cost-model input. It tests whether a
-handwritten generic-op matmul can feed the matrix engine efficiently, as a
-five-rung ladder (mm1_tile_loop .. mm5_block_stream_l1acc_packblock) where each
-rung adds one change. The resident rungs (mm1, mm2) wait for operands outside the
-timed zone; the streamed rungs (mm3-mm5) wait on operand K-blocks inside the
-zone, mirroring TTNN's large-block single-node compute contract.
+matmul_compute_sweep.py measures the matmul lowering cost model's compute-feed
+term. It tests whether a handwritten generic-op matmul can feed the matrix
+engine efficiently, using five diagnostic variants
+(mm1_tile_loop .. mm5_block_stream_l1acc_packblock). The mm1->mm2 comparison
+bundles the baseline-to-block-kernel changes; mm2->mm5 each change one
+implementation detail. The resident variants (mm1, mm2) wait for operands
+outside the timed zone; the streamed variants (mm3-mm5) wait on operand K-blocks
+inside the zone, mirroring TTNN's large-block single-node compute contract.
 
     python -m benchmarks.microbench.matmul_compute_sweep --mt 4 --nt 4 --kt 8,16
 """
@@ -32,9 +34,7 @@ COMPUTE_KERNEL = str(KERNELS / "matmul_tile_loop.cpp")
 READER_KERNEL = str(KERNELS / "matmul_tile_loop_reader.cpp")
 TTNN_LIKE_COMPUTE_KERNEL = str(KERNELS / "matmul_ttnn_like.cpp")
 TTNN_LIKE_READER_KERNEL = str(KERNELS / "matmul_ttnn_like_reader.cpp")
-TTNN_LIKE_READER_WRITER_KERNEL = str(
-    KERNELS / "matmul_ttnn_like_reader_writer.cpp"
-)
+TTNN_LIKE_READER_WRITER_KERNEL = str(KERNELS / "matmul_ttnn_like_reader_writer.cpp")
 BLOCK_RESIDENT_COMPUTE_KERNEL = str(KERNELS / "matmul_block_resident.cpp")
 L1ACC_COMPUTE_KERNEL = str(KERNELS / "matmul_block_stream_l1acc.cpp")
 L1ACC_PACKBLOCK_COMPUTE_KERNEL = str(
@@ -123,11 +123,11 @@ class MatmulCompute(MicroBenchmark):
 
     @staticmethod
     def _operand_pages(cfg, strategy, operand):
-        # Resident rungs (mm1, mm2) hold the whole operand in L1. Streamed rungs
-        # (mm3-mm5) only need a double-buffered K block, so they stay within L1
-        # (Wormhole could not fit the whole-operand sizing) and match TTNN's block
-        # CBs. block_count sets prefetch depth, floored at 2 so the next block's
-        # load overlaps the current block's compute.
+        # Resident variants (mm1, mm2) hold the whole operand in L1. Streamed
+        # variants (mm3-mm5) only need a double-buffered K block, so they stay
+        # within L1 (Wormhole could not fit the whole-operand sizing) and match
+        # TTNN's block dataflow buffers. block_count sets prefetch depth, floored
+        # at 2 so the next block's load overlaps the current block's compute.
         in0_block_w = MatmulCompute._in0_block_w(cfg)
         num_blocks = cfg["kt"] // in0_block_w
         resident = strategy in ("mm1_tile_loop", "mm2_block")
@@ -238,7 +238,15 @@ class MatmulCompute(MicroBenchmark):
         if ctx.strategy in streamed_kernels:
             compute.math_approx_mode = True
             return self._build_streamed(
-                ctx, tensors, compute, mt, nt, kt, in0_block_w, sub_mt, sub_nt,
+                ctx,
+                tensors,
+                compute,
+                mt,
+                nt,
+                kt,
+                in0_block_w,
+                sub_mt,
+                sub_nt,
                 streamed_kernels[ctx.strategy],
             )
         if ctx.strategy == "mm2_block":
@@ -281,7 +289,16 @@ class MatmulCompute(MicroBenchmark):
         return kernels, ref
 
     def _build_streamed(
-        self, ctx, tensors, compute, mt, nt, kt, in0_block_w, sub_mt, sub_nt,
+        self,
+        ctx,
+        tensors,
+        compute,
+        mt,
+        nt,
+        kt,
+        in0_block_w,
+        sub_mt,
+        sub_nt,
         compute_kernel,
     ):
         kernels = [
@@ -334,9 +351,7 @@ class MatmulCompute(MicroBenchmark):
         ref = ctx.torch["a"].float() @ ctx.torch["b"].float()
         return kernels, ref
 
-    def _build_block_resident(
-        self, ctx, tensors, compute, mt, nt, kt, sub_mt, sub_nt
-    ):
+    def _build_block_resident(self, ctx, tensors, compute, mt, nt, kt, sub_mt, sub_nt):
         # Reuse the ttnn_like readers with in0_block_w = kt (one K block, whole
         # operand resident); the compute kernel waits outside the timed zone.
         kernels = [
