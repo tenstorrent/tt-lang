@@ -76,6 +76,7 @@ jobs:
     secrets: inherit
     with:
       push: true
+      build_manylinux_wheel_images: true
 
   changes:
     name: Detect wheel/container-affecting changes

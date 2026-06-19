@@ -47,6 +47,7 @@
 | 0.15 | 04/06/2026 | Rename `buffer_factor` to `block_count` |
 | 0.16 | 04/22/2026 | Add `ttl.block.squeeze` and `ttl.block.unsqueeze` |
 | 0.17 | 04/28/2026 | Move `broadcast`, `transpose`, `where`, `mask`, `mask_posinf`, `fill`, `squeeze`, `unsqueeze` to `ttl.block` |
+| 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 
 
 ## Introduction
@@ -1332,6 +1333,20 @@ def matmul_read():
 | `ttl.block.squeeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Remove shape dimension at positions specified by `dims`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimensions 0 (outermost) and 2: `ttl.block.squeeze(a, dims=[0, 2])`. Here if the shape of `a` is `(1, N, 1, M)` the shape of the result will be `(N, M)`.<br><br>Example for squeeze over dimensions -1 (innermost) and -3: `ttl.block.squeeze(a, dim=[-1, -3])`. Here if the shape of `a` is `(N, 1, M, 1)` the shape of the result will be `(N, M)`. |
 | `ttl.block.unsqueeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Add shape dimension of 1 at positions specified by `dims`. Position values in `dims` refer to a position in the resulting shape. <br><br>Example for unsqueeze over dimensions 0 (outermost) and 2: `ttl.block.unsqueeze(a, dims=[0, 2])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, 1, M)`.<br><br>Example for unsqueeze over dimensions -1 (innermost) and -3: `ttl.block.unsqueeze(a, dims=[-1, -3])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, 1, M, 1)`. |
 
+### Scalar element access functions
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.raw_element_read(block: ttl.Block, *coords: List[ttl.NaturalInt]) -> float` | Read a single scalar element from a block at the given coordinates. The block must be in `MR` or `RW` state. Can be used only in data movement kernels. Coordinates are flat scalar-element positions (one per block dimension). |
+| `ttl.raw_element_write(block: ttl.Block, *coords: List[ttl.NaturalInt], value: float)` | Write a scalar `value` to a block at the given coordinates. The block must be in `MW` or `RW` state. Can be used only in data movement kernels. |
+
+#### Limitations
+
+- Only `ttnn.DataType.FLOAT32` and `ttnn.DataType.BFLOAT16` element types are supported
+- Values written via `ttl.raw_element_write` must originate from one of:
+    - A prior `ttl.raw_element_read` on the same or another block
+    - A Python float constant
+
 ## Appendix C. Naming guidelines
 
 | Object | Guideline |
@@ -1382,6 +1397,12 @@ def matmul_read():
 | `ttl.math.reduce_sum` | 0.1.7 | 0.1.8 |
 | `ttl.block.transpose` | 0.1.7 | 0.1.8 |
 | `ttl.block` shape manipulation functions: `squeeze`, `unsqueeze` | N/S | N/S |
+| `>` for result of `ttl.raw_element_read` | 1.0.0 | 1.0.0 |
+| `<` for result of `ttl.raw_element_read` | 1.0.0 | 1.0.0 |
+| `==` for result of `ttl.raw_element_read` | N/S | N/S |
+| `!=` for result of `ttl.raw_element_read` | N/S | N/S |
+| `>=` for result of `ttl.raw_element_read` | N/S | N/S |
+| `<=` for result of `ttl.raw_element_read` | N/S | N/S |
 
 * N/S - Not Supported
 * N/A - Not Applicable

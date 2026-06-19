@@ -30,7 +30,7 @@ setup() {
     BASE=$(cd "$REPO" && git rev-parse HEAD)
 }
 
-# --- Per-path uplift detection: each of the 5 uplift paths separately. ---
+# --- Per-path uplift detection: each uplift path separately. ---
 
 @test "diff in third-party/tt-metal-version marks uplift=true" {
     echo "modified" >> "$REPO/third-party/tt-metal-version"
@@ -55,6 +55,13 @@ setup() {
 
 @test "diff in .github/containers/Dockerfile.base marks uplift=true" {
     echo "modified" >> "$REPO/.github/containers/Dockerfile.base"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in .github/containers/Dockerfile.wheel-manylinux-2-34 marks uplift=true" {
+    echo "modified" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
     commit_all "$REPO" "uplift"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_detect "$BASE" "$head")" "true"

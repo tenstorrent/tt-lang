@@ -1252,6 +1252,227 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Raw Element Access Lowering
+//===----------------------------------------------------------------------===//
+
+/// Return the scalar type and matching integer type for a raw element access.
+/// f32 -> (i32, 32), bf16 -> (i16, 16).
+static std::pair<Type, unsigned> getIntTypeForFloat(MLIRContext *ctx,
+                                                    Type floatTy) {
+  if (floatTy.isF32()) {
+    return {IntegerType::get(ctx, 32), 32};
+  }
+  assert(floatTy.isBF16());
+  return {IntegerType::get(ctx, 16), 16};
+}
+
+/// Compute the flat element offset for a raw element access operation.
+/// For tiled layouts, decomposes coordinates into tile index and intra-tile
+/// face-order offset. For row-major layouts, linearizes coordinates directly.
+/// Returns an i32 value.
+static Value computeRawElementOffset(RankedTensorType blockType,
+                                     ValueRange coords,
+                                     ConversionPatternRewriter &rewriter,
+                                     Location loc) {
+  auto i32Ty = rewriter.getI32Type();
+
+  auto toI32 = [&](Value v) -> Value {
+    return arith::IndexCastOp::create(rewriter, loc, i32Ty, v);
+  };
+  auto cst = [&](int64_t v) -> Value {
+    return arith::ConstantIntOp::create(rewriter, loc, v, 32);
+  };
+
+  Type elemTy = blockType.getElementType();
+  auto tileType = mlir::dyn_cast<tt::ttcore::TileType>(elemTy);
+
+  if (!tileType) {
+    // Row-major: linearize coords into a flat element index.
+    ArrayRef<int64_t> shape = blockType.getShape();
+    int64_t rank = blockType.getRank();
+    Value flat = toI32(coords[0]);
+    for (int64_t i = 1; i < rank; ++i) {
+      flat = arith::MulIOp::create(rewriter, loc, flat, cst(shape[i]));
+      flat = arith::AddIOp::create(rewriter, loc, flat, toI32(coords[i]));
+    }
+    return flat;
+  }
+
+  // Tiled layout: decompose into tile index + face-order intra-tile offset.
+  int64_t tileH = tileType.getHeight();
+  int64_t tileW = tileType.getWidth();
+  int64_t tileElems = tileH * tileW;
+  constexpr int64_t kFaceH = 16;
+  constexpr int64_t kFaceW = 16;
+  constexpr int64_t kFaceElems = kFaceH * kFaceW;
+  ArrayRef<int64_t> gridShape = blockType.getShape();
+  int64_t rank = blockType.getRank();
+
+  Value tileIdx, intraRow, intraCol;
+
+  if (rank == 1) {
+    Value coord = toI32(coords[0]);
+    Value tileElemsC = cst(tileElems);
+    tileIdx = arith::DivUIOp::create(rewriter, loc, coord, tileElemsC);
+    Value intraFlat = arith::RemUIOp::create(rewriter, loc, coord, tileElemsC);
+    Value tileWC = cst(tileW);
+    intraRow = arith::DivUIOp::create(rewriter, loc, intraFlat, tileWC);
+    intraCol = arith::RemUIOp::create(rewriter, loc, intraFlat, tileWC);
+  } else {
+    Value rowCoord = toI32(coords[rank - 2]);
+    Value colCoord = toI32(coords[rank - 1]);
+    Value tileHC = cst(tileH);
+    Value tileWC = cst(tileW);
+
+    Value tileRow = arith::DivUIOp::create(rewriter, loc, rowCoord, tileHC);
+    Value tileCol = arith::DivUIOp::create(rewriter, loc, colCoord, tileWC);
+    intraRow = arith::RemUIOp::create(rewriter, loc, rowCoord, tileHC);
+    intraCol = arith::RemUIOp::create(rewriter, loc, colCoord, tileWC);
+
+    int64_t gridCols = gridShape[rank - 1];
+    tileIdx = arith::MulIOp::create(rewriter, loc, tileRow, cst(gridCols));
+    tileIdx = arith::AddIOp::create(rewriter, loc, tileIdx, tileCol);
+
+    for (int64_t i = rank - 3; i >= 0; --i) {
+      int64_t stride = 1;
+      for (int64_t j = i + 1; j < rank; ++j) {
+        stride *= gridShape[j];
+      }
+      Value contrib =
+          arith::MulIOp::create(rewriter, loc, toI32(coords[i]), cst(stride));
+      tileIdx = arith::AddIOp::create(rewriter, loc, tileIdx, contrib);
+    }
+  }
+
+  // Face decomposition: 4x(16x16) faces in row-major face order.
+  Value faceHC = cst(kFaceH);
+  Value faceWC = cst(kFaceW);
+  Value faceRow = arith::DivUIOp::create(rewriter, loc, intraRow, faceHC);
+  Value faceCol = arith::DivUIOp::create(rewriter, loc, intraCol, faceWC);
+  Value faceIdx = arith::MulIOp::create(rewriter, loc, faceRow, cst(2));
+  faceIdx = arith::AddIOp::create(rewriter, loc, faceIdx, faceCol);
+
+  Value localRow = arith::RemUIOp::create(rewriter, loc, intraRow, faceHC);
+  Value localCol = arith::RemUIOp::create(rewriter, loc, intraCol, faceWC);
+
+  Value intraElem =
+      arith::MulIOp::create(rewriter, loc, faceIdx, cst(kFaceElems));
+  Value rowPart = arith::MulIOp::create(rewriter, loc, localRow, faceWC);
+  intraElem = arith::AddIOp::create(rewriter, loc, intraElem, rowPart);
+  intraElem = arith::AddIOp::create(rewriter, loc, intraElem, localCol);
+
+  Value tileOffset =
+      arith::MulIOp::create(rewriter, loc, tileIdx, cst(tileElems));
+  return arith::AddIOp::create(rewriter, loc, tileOffset, intraElem);
+}
+
+/// Emit the common L1 pointer setup: get_read_ptr or get_write_ptr, then
+/// reinterpret_cast to the appropriate L1 typed pointer.
+static std::pair<Value, Value>
+emitL1PtrAndOffset(Value cb, Value originalBlock, RankedTensorType blockType,
+                   ValueRange coords, unsigned elemWidth,
+                   ConversionPatternRewriter &rewriter, Location loc) {
+  bool fromWait =
+      llvm::isa_and_nonnull<CBWaitOp>(findCBAcquireOp(originalBlock));
+  Value baseAddr =
+      fromWait ? ttk::GetReadPtrOp::create(rewriter, loc, cb).getResult()
+               : ttk::GetWritePtrOp::create(rewriter, loc, cb).getResult();
+
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), elemWidth);
+  Value l1Ptr = ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, baseAddr);
+
+  Value offset = computeRawElementOffset(blockType, coords, rewriter, loc);
+  return {l1Ptr, offset};
+}
+
+/// Resolve the TTKernel CB from a raw element op's block operand.
+/// Tries getCBFromView on the adapted block first; falls back to
+/// getAttachedCB on the original block and converts the !ttl.cb.
+static FailureOr<Value>
+resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
+                       ConversionPatternRewriter &rewriter, Location loc,
+                       const TypeConverter *typeConverter) {
+  auto cb = getCBFromView(adaptedBlock);
+  if (succeeded(cb)) {
+    return cb;
+  }
+
+  Value origCB = getAttachedCB(originalBlock);
+  if (!origCB) {
+    return failure();
+  }
+
+  return utils::convertTTLCBToTTKernel(origCB, rewriter, loc, typeConverter);
+}
+
+struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(RawElementReadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
+    Type scalarTy = op.getResult().getType();
+    auto [intTy, elemWidth] =
+        getIntTypeForFloat(rewriter.getContext(), scalarTy);
+
+    auto cb = resolveCBForRawElement(adaptor.getBlock(), op.getBlock(),
+                                     rewriter, loc, this->getTypeConverter());
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(op, "block does not trace to a CB");
+    }
+
+    auto [l1Ptr, offset] =
+        emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
+                           elemWidth, rewriter, loc);
+
+    Value loaded =
+        ttk::LoadFromL1Op::create(rewriter, loc, intTy, l1Ptr, offset);
+
+    auto viewCast =
+        UnrealizedConversionCastOp::create(rewriter, loc, scalarTy, loaded);
+    rewriter.replaceOp(op, viewCast.getResult(0));
+    return success();
+  }
+};
+
+struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(RawElementWriteOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
+    Type scalarTy = op.getValue().getType();
+    auto [intTy, elemWidth] =
+        getIntTypeForFloat(rewriter.getContext(), scalarTy);
+
+    auto cb = resolveCBForRawElement(adaptor.getBlock(), op.getBlock(),
+                                     rewriter, loc, this->getTypeConverter());
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(op, "block does not trace to a CB");
+    }
+
+    auto intVal =
+        utils::materializeIntBits(adaptor.getValue(), intTy, rewriter, loc);
+    if (failed(intVal)) {
+      return rewriter.notifyMatchFailure(
+          op, "could not materialize integer bits from float value");
+    }
+
+    auto [l1Ptr, offset] =
+        emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
+                           elemWidth, rewriter, loc);
+
+    ttk::StoreToL1Op::create(rewriter, loc, *intVal, l1Ptr, offset);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // TTLConvertTTLToTTKernelPass helper methods
 //===----------------------------------------------------------------------===//
 
@@ -1280,8 +1501,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addLegalOp<SignpostOp, DPrintOp>();
 
   // Tile compute ops and data movement ops (copy_tile, copy_dst) remain legal
-  // until the tile ops lowering phase.
+  // until the tile ops lowering phase. Raw element access ops are lowered here
+  // despite carrying the DataMovement trait.
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
+    if (llvm::isa<RawElementReadOp, RawElementWriteOp>(op)) {
+      return false;
+    }
     return tt::ttl::isTileComputeOp(op) ||
            op->hasTrait<TTLDataMovementOpTrait>();
   });
@@ -1364,8 +1589,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                                          pipeResourcePlan);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
-      typeConverter, &ctx);
+               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
+               RawElementReadLowering, RawElementWriteLowering>(typeConverter,
+                                                                &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

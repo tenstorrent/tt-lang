@@ -504,7 +504,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.visit(callback_body)
 
                 self.symbol_tables.pop()
-                ttl.yield_()
+                ttl.yield_([])
 
         return None  # Statement, no return value
 
@@ -1418,7 +1418,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 block = Block.create_at_start(scope_op.body)
                 with InsertionPoint(block):
                     self._emit_cb_with_body(node)
-                    ttl.yield_()
+                    ttl.yield_([])
                 return
 
             self._emit_cb_with_body(node)

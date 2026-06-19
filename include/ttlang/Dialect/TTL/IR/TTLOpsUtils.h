@@ -109,6 +109,29 @@ traceTransferHandleSource(mlir::Value value, MatchFn match,
   return ResultT();
 }
 
+/// Trace a tensor value back to its originating CB acquire operation
+/// (CBWaitOp or CBReserveOp). Traces through unrealized_conversion_cast,
+/// AttachCBOp, and tensor.extract_slice. Returns the acquire Operation*,
+/// or null if the chain does not end at one.
+inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
+  tensor = traceUnrealizedCasts(tensor);
+  if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+    tensor = attach.getTensor();
+    tensor = traceUnrealizedCasts(tensor);
+  }
+  while (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
+    tensor = traceUnrealizedCasts(tensor);
+  }
+  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+    mlir::Value source = viewLike.getViewSource();
+    if (mlir::isa<CircularBufferType>(source.getType())) {
+      return viewLike.getOperation();
+    }
+  }
+  return nullptr;
+}
+
 /// Trace a pipe transfer value through casts, tensor containers, and
 /// loop-carried values to the transfer creation op.
 inline PipeTransferCreateOp
@@ -137,21 +160,12 @@ inline PipeTransferPostOp findPipeTransferPostForToken(mlir::Value token) {
 /// Walk through `tensor.extract_slice` ops and return the underlying
 /// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
-  view = traceUnrealizedCasts(view);
-  while (auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-    view = slice.getSource();
-    view = traceUnrealizedCasts(view);
-  }
-  return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view));
 }
 
 /// Return the user reserve that produced a pipe receive destination block.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
-  dst = traceUnrealizedCasts(dst);
-  if (auto attach = dst.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
-    return findCBReserveForView(attach.getTensor());
-  }
-  return findCBReserveForView(dst);
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst));
 }
 
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion
@@ -175,19 +189,12 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   return std::nullopt;
 }
 
-/// Return true when `tensor` was directly acquired from a CB via
-/// ttl.cb_wait or ttl.cb_reserve (the only two ViewLikeOpInterface
-/// implementations whose view source is a CircularBufferType).
-/// Unlike getAttachedCB, this rejects ttl.attach_cb, tensor.extract, and
-/// tensor.extract_slice chains -- it only traces through unrealized
-/// conversion casts.
+/// Return true when `tensor` was acquired from a CB via ttl.cb_wait or
+/// ttl.cb_reserve (the only two ViewLikeOpInterface implementations whose
+/// view source is a CircularBufferType). Traces through
+/// unrealized_conversion_cast, ttl.attach_cb, and tensor.extract_slice.
 inline bool isCBAcquireView(mlir::Value tensor) {
-  tensor = traceUnrealizedCasts(tensor);
-  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
-    mlir::Value source = viewLike.getViewSource();
-    return mlir::isa<CircularBufferType>(source.getType());
-  }
-  return false;
+  return findCBAcquireOp(tensor) != nullptr;
 }
 
 /// Return the circular buffer attached to `tensor`, or null if none.

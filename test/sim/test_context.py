@@ -8,10 +8,13 @@ Verifies that simulator state is properly isolated per-greenlet
 and that child greenlets inherit parent context correctly.
 """
 
+import sys
+
 import pytest
 from greenlet import greenlet, getcurrent
 
 from sim.context import (
+    cleanup_run_context,
     get_context,
     set_context,
     reset_context,
@@ -89,6 +92,26 @@ class TestContextCreation:
         assert new_ctx.config.max_dfbs == 32
         assert new_ctx.config.scheduler_algorithm == "fair"
         assert len(new_ctx.copy_state.pipe_buffer) == 0
+
+    def test_reset_context_without_sys_monitoring(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Python 3.10 cleanup has no sys.monitoring tool slot to free."""
+        monkeypatch.delattr(sys, "monitoring", raising=False)
+
+        reset_context()
+
+        assert isinstance(get_context(), SimulatorContext)
+
+    def test_cleanup_run_context_without_sys_monitoring(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Run cleanup is import-safe on Python 3.10."""
+        monkeypatch.delattr(sys, "monitoring", raising=False)
+
+        cleanup_run_context()
+
+        assert get_context().active_hooks == {}
 
 
 class TestGreenletInheritance:

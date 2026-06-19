@@ -709,6 +709,18 @@ class TTCompilerBase(PyKernelAstBase):
             rhs = _cast(rhs, lhs.type)
         assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
 
+        if isinstance(lhs.type, FloatType):
+            match (node.ops[0]):
+                case ast.Gt():
+                    return arith.cmpf(arith.CmpFPredicate.OGT, lhs, rhs)
+                case ast.Lt():
+                    return arith.cmpf(arith.CmpFPredicate.OLT, lhs, rhs)
+                case _:
+                    raise NotImplementedError(
+                        f"Float compare operator {type(node.ops[0]).__name__} "
+                        f"not implemented"
+                    )
+
         match (node.ops[0]):
             case ast.Eq():
                 return arith.cmpi(arith.CmpIPredicate.eq, lhs, rhs)

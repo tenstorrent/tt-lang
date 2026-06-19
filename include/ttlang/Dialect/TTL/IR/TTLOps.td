@@ -326,16 +326,58 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
-                 "PipeNetScopeOp"]>]> {
+                 "PipeNetScopeOp", "AccumulationScopeOp"]>]> {
   let summary = "Terminate a TTL region body";
   let description = [{
     `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
-    `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. It carries no
-    operands and produces no results; the trait
-    `SingleBlockImplicitTerminator` auto-inserts it.
+    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`, and
+    `ttl.accumulation_scope`. In `ttl.accumulation_scope`, it carries one
+    updated value per accumulation output. Other TTL regions use an
+    operand-less terminator.
   }];
-  let assemblyFormat = "attr-dict";
+  let arguments = (ins Variadic<AnyType>:$values);
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+  let hasVerifier = 1;
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+}
+
+//===----------------------------------------------------------------------===//
+// Accumulation scope
+//===----------------------------------------------------------------------===//
+
+def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
+    AttrSizedOperandSegments,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    RecursiveMemoryEffects,
+    DeclareOpInterfaceMethods<TTL_AccumulationScopeOpInterface>
+  ]> {
+  let summary = "Structured accumulation scope";
+  let description = [{
+    `ttl.accumulation_scope` records an accumulation policy for one or more
+    destination tensors. The operation does not prescribe whether the
+    accumulated value is stored in DST, a dataflow buffer, or another
+    target-specific storage mechanism.
+
+    The `initial_modes` attribute contains one entry per output. `inits`
+    contains one operand for each output whose initial mode is `init`, in output
+    order.
+
+    The body uses one block argument per output and yields one value per output.
+    This form makes
+    cross-output data dependence an SSA property: if the yielded value for one
+    output uses another output's updated value, normal SSA use-def edges encode
+    that dependency.
+  }];
+
+  let arguments = (ins
+    Variadic<AnyRankedTensor>:$outputs,
+    Variadic<AnyRankedTensor>:$inits,
+    ArrayAttr:$initial_modes
+  );
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1079,7 +1121,7 @@ defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 // `ttl.typecast` is a unary elementwise op that converts the data type of
 // every element. The tile-level form `ttl.tile_typecast` carries the
 // destination dtype implicitly via its result tile element type. Because
-// input and result element types differ, typecast does not use the standard
+// input and result element types can differ, typecast does not use the standard
 // unary elementwise multiclass (which constrains all operand and result
 // element types to match).
 
@@ -1088,13 +1130,15 @@ def TTL_TypecastOp : TTL_Op<"typecast",
   let summary = "Elementwise typecast on tensors";
   let description = [{
     Convert each element of `input` to the result element type. The result
-    tensor has the same shape as the input but with a different element type.
+    tensor has the same shape as the input. Identity typecasts fold to the
+    input.
     Lowered to `ttl.compute` containing a `ttl.tile_typecast` operation.
   }];
   let arguments = (ins AnyType:$input);
   let results = (outs AnyType:$result);
   let assemblyFormat =
       "$input attr-dict `:` functional-type(operands, results)";
+  let hasFolder = 1;
 }
 
 def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
@@ -1112,6 +1156,7 @@ def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
       "$input `into` `dst` `[` $dst_index `]` attr-dict `:` "
       "type($input) `->` type($result)";
   let hasVerifier = 1;
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//

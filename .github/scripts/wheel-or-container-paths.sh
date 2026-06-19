@@ -9,8 +9,15 @@
 WHEEL_OR_CONTAINER_PATHS=(
     .github/containers/Dockerfile
     .github/containers/Dockerfile.base
+    .github/containers/Dockerfile.wheel-manylinux-2-34
+    .github/containers/build-wheel-manylinux-images.sh
+    .github/scripts/build-s3-light-core-wheel.sh
+    .github/scripts/build-s3-light-metapackage-wheel.sh
+    .github/scripts/lib/docker-image-utils.sh
     .github/scripts/run-tutorials.sh
     .github/scripts/smoke-test-wheel.py
+    .github/scripts/test-s3-light-wheels.sh
+    scripts/build-s3-light-wheels-local.sh
     bin
     CMakeLists.txt
     examples

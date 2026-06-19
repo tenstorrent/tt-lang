@@ -587,5 +587,34 @@ The verifier (`verifyRawElementOp` in `TTLOps.cpp`) enforces:
 4. Only `f32` and `bf16` are accepted.
 
 Both ops carry `MemRead`/`MemWrite` side effects to prevent reordering
-across acquire/release boundaries. Lowering to TTKernel/EmitC is future
-work
+across acquire/release boundaries.
+
+### Lowering
+
+`convert-ttl-to-ttkernel` lowers element access ops to
+`ttkernel.load_from_l1` / `ttkernel.store_to_l1` with computed L1 pointer
+offsets. For tiled blocks, the offset includes face-order decomposition
+(4x16x16 faces per 32x32 tile). For row-major blocks, coordinates
+linearize directly. See `computeRawElementOffset` in
+`ConvertTTLToTTKernel.cpp`.
+
+### Supported Value Sources for Writes
+
+`materializeIntBits` in `ConvertTTLToTTKernel.cpp` resolves the integer
+bit pattern for `raw_element_write`. Three value sources are handled:
+
+- Result of `raw_element_read` (via `unrealized_conversion_cast`)
+- Float constants (materializes the IEEE-754 bit pattern as an integer)
+- `arith.truncf` from f32 to bf16 (extracts upper 16 bits via
+  shift+trunc)
+
+Other SSA float values (e.g., from `arith.addf`) fail lowering because
+the compiler cannot extract a compile-time or cast-based bit pattern.
+
+### bf16 Implicit Truncation
+
+When writing an f32 value to a bf16 block, the Python DSL auto-inserts
+`arith.truncf`. The lowering extracts the upper 16 bits of the f32
+IEEE-754 encoding, which matches the bf16 representation. This
+truncation is lossy for values that are not exactly representable in
+bf16.
