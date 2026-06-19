@@ -23,6 +23,7 @@ Implemented per benchmark:
                                 # optional: values derived after profiling.
 """
 
+import inspect
 from dataclasses import dataclass
 from itertools import product
 from typing import Callable
@@ -56,7 +57,14 @@ class Tensor:
 @dataclass(frozen=True)
 class DFB:
     index: int
-    pages: Callable  # cfg -> tile count
+    pages: Callable  # cfg -> tile count, or (cfg, strategy) -> tile count
+
+
+def _dfb_pages(spec, cfg, strategy):
+    """DFB tile count; the lambda may take (cfg) or (cfg, strategy)."""
+    if len(inspect.signature(spec.pages).parameters) >= 2:
+        return spec.pages(cfg, strategy)
+    return spec.pages(cfg)
 
 
 class Ctx:
@@ -205,7 +213,13 @@ class MicroBenchmark:
         core, grid = harness.single_core()
         torch_inputs, dev_tensors = self._materialize(cfg, device)
         dfbs = [
-            harness.dfb(spec.index, ttnn_dtype, page_size, grid, spec.pages(cfg))
+            harness.dfb(
+                spec.index,
+                ttnn_dtype,
+                page_size,
+                grid,
+                _dfb_pages(spec, cfg, strategy),
+            )
             for spec in self.DFBS
         ]
         kernels, ref = self.build(
