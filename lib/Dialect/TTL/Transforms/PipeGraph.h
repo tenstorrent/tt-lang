@@ -174,6 +174,7 @@ struct PipeReceiverDFBNode {
   PipeReceiverDFBKey receiverDFB;
   SmallVector<PipeReceiverEndpointId> writerEndpoints;
   int64_t receiverBatchSize = 1;
+  bool hasProvenPipeOnlyStream = false;
 };
 
 /// Return the semantic transfer contract used by pipe synchronization. The
@@ -273,6 +274,8 @@ private:
   LogicalResult assignReceiverSlotIndices(ModuleOp mod);
 
   void rebuildEndpointGraph();
+
+  LogicalResult provePipeOnlyReceiverStreams(ModuleOp mod);
 
   llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
   SmallVector<PipeEdge, 0> pipeEdges;

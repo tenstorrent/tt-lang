@@ -4,6 +4,7 @@
 
 #include "PipeCapacityAnalysis.h"
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "PipeLowering.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
@@ -14,8 +15,6 @@
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
@@ -97,6 +96,7 @@ struct OperationLaunchDomain {
 
 struct PipeCapacityAnalysisState : LaunchNodeDomainState {
   llvm::DenseMap<Operation *, OperationLaunchDomain> operationLaunchDomains;
+  DFBReleaseOwnerMaps dfbReleaseOwners;
 };
 
 struct PipeSourceCoord {
@@ -261,20 +261,29 @@ static bool isMatchingTransfer(const PipeCapacityEndpoint &endpoint,
                                       traced.getOperation());
 }
 
-static std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp) {
-  auto cbType = mlir::dyn_cast<CircularBufferType>(popOp.getCb().getType());
+static std::optional<int64_t> getDFBBlockCount(Value cb,
+                                               IntegerAttr numTilesAttr) {
+  auto cbType = mlir::dyn_cast<CircularBufferType>(cb.getType());
   if (!cbType) {
     return std::nullopt;
   }
   int64_t elementsPerBlock = cbType.getElementsPerBlock();
   int64_t releasedTiles = elementsPerBlock;
-  if (auto attr = popOp.getNumTilesAttr()) {
-    releasedTiles = attr.getInt();
+  if (numTilesAttr) {
+    releasedTiles = numTilesAttr.getInt();
   }
   if (releasedTiles <= 0 || releasedTiles % elementsPerBlock != 0) {
     return std::nullopt;
   }
   return releasedTiles / elementsPerBlock;
+}
+
+static std::optional<int64_t> getWaitedBlockCount(CBWaitOp waitOp) {
+  return getDFBBlockCount(waitOp.getCb(), waitOp.getNumTilesAttr());
+}
+
+static std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp) {
+  return getDFBBlockCount(popOp.getCb(), popOp.getNumTilesAttr());
 }
 
 static LogicalResult
@@ -294,7 +303,11 @@ collectLaunchNodeDomains(ModuleOp mod, PipeCapacityAnalysisState &state) {
         OperationLaunchDomain{domain, unanalyzableOp};
   };
   solver.load<LaunchNodeDomainAnalysis>(state, options);
-  return solver.initializeAndRun(mod);
+  if (failed(solver.initializeAndRun(mod))) {
+    return failure();
+  }
+  buildDFBReleaseOwnerMaps(mod, state.dfbReleaseOwners);
+  return success();
 }
 
 static PipeCapacityEndpoint
@@ -314,7 +327,6 @@ getCapacityEndpoint(const PipeGraph &pipeGraph,
 static bool collectAndCheckPosts(ModuleOp mod,
                                  const PipeCapacityEndpoint &endpoint,
                                  PipeCapacityAnalysisState &state,
-                                 llvm::SmallPtrSetImpl<Operation *> &postFuncs,
                                  SmallVectorImpl<PipeTransferPostOp> &posts) {
   LaunchNodeDomain receiverDomain =
       getSingleNodeDomain(endpoint.receiverDFB.receiver);
@@ -338,44 +350,11 @@ static bool collectAndCheckPosts(ModuleOp mod,
       return;
     }
     posts.push_back(postOp);
-    if (FuncOp func = postOp->getParentOfType<FuncOp>()) {
-      postFuncs.insert(func.getOperation());
-    }
   });
   if (valid && posts.empty()) {
     debugRejectEndpoint(endpoint, "no matching receiver posts");
     valid = false;
   }
-  return valid;
-}
-
-static bool
-checkPushStream(ModuleOp mod, const PipeCapacityEndpoint &endpoint,
-                PipeCapacityAnalysisState &state,
-                const llvm::SmallPtrSetImpl<Operation *> &postFuncs) {
-  LaunchNodeDomain receiverDomain =
-      getSingleNodeDomain(endpoint.receiverDFB.receiver);
-  bool valid = true;
-  mod.walk([&](CBPushOp pushOp) {
-    if (!isReceiverDFB(pushOp.getCb(), endpoint.receiverDFB)) {
-      return;
-    }
-    OperationLaunchDomain pushDomain = getOperationLaunchDomain(pushOp, state);
-    if (!domainsOverlap(pushDomain.domain, receiverDomain)) {
-      return;
-    }
-    if (!(pushDomain.domain == receiverDomain) || !isNocThread(pushOp)) {
-      debugRejectEndpoint(endpoint, "push is not in the receiver NOC domain");
-      valid = false;
-      return;
-    }
-    FuncOp func = pushOp->getParentOfType<FuncOp>();
-    if (!func || !postFuncs.contains(func.getOperation())) {
-      debugRejectEndpoint(endpoint,
-                          "push is not paired with a matching receiver post");
-      valid = false;
-    }
-  });
   return valid;
 }
 
@@ -426,6 +405,30 @@ static bool collectAndCheckPops(ModuleOp mod,
     std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
     if (!releasedBlocks || *releasedBlocks != 1) {
       debugRejectEndpoint(endpoint, "pop does not release one DFB block");
+      valid = false;
+      return;
+    }
+    auto ownerIt = state.dfbReleaseOwners.waitByPop.find(popOp.getOperation());
+    auto waitOp = ownerIt == state.dfbReleaseOwners.waitByPop.end()
+                      ? CBWaitOp()
+                      : dyn_cast_or_null<CBWaitOp>(ownerIt->second);
+    if (!waitOp) {
+      debugRejectEndpoint(endpoint,
+                          "pop is not owned by a matching receiver wait");
+      valid = false;
+      return;
+    }
+    OperationLaunchDomain waitDomain =
+        getOperationLaunchDomain(waitOp.getOperation(), state);
+    if (!(waitDomain.domain == receiverDomain) || !isNocThread(waitOp)) {
+      debugRejectEndpoint(endpoint, "wait is not in the receiver NOC domain");
+      valid = false;
+      return;
+    }
+    std::optional<int64_t> waitedBlocks = getWaitedBlockCount(waitOp);
+    if (!waitedBlocks || *waitedBlocks != *releasedBlocks) {
+      debugRejectEndpoint(endpoint,
+                          "wait and pop release different DFB block counts");
       valid = false;
       return;
     }
@@ -529,12 +532,19 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
       continue;
     }
 
-    llvm::SmallPtrSet<Operation *, 4> postFuncs;
-    SmallVector<PipeTransferPostOp> posts;
-    if (!collectAndCheckPosts(mod, endpoint, state, postFuncs, posts)) {
+    const PipeReceiverDFBNode &receiverDFBNode =
+        pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+    if (!receiverDFBNode.hasProvenPipeOnlyStream) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "PipeCapacity: reject ";
+        printEndpoint(llvm::dbgs(), endpoint);
+        llvm::dbgs() << ": receiver DFB stream is not proven pipe-only\n";
+      });
       continue;
     }
-    if (!checkPushStream(mod, endpoint, state, postFuncs)) {
+
+    SmallVector<PipeTransferPostOp> posts;
+    if (!collectAndCheckPosts(mod, endpoint, state, posts)) {
       continue;
     }
 

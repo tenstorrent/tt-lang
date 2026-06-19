@@ -13,12 +13,14 @@
 //
 // The safety invariant is graph-local: a receiver dataflow buffer pop may
 // release sender capacity only when its receiver dataflow buffer node has
-// exactly one writer endpoint. With one writer endpoint, every valid pop from
-// that receiver dataflow buffer frees one capacity unit for that endpoint's
-// sender. If the node has zero writer endpoints, no sender can be identified.
-// If the node has multiple writer endpoints, a pop names only the receiver
-// dataflow buffer, so the analysis cannot prove which sender should receive
-// capacity.
+// exactly one writer endpoint and a proven pipe-only stream. A pipe-only stream
+// has every receiver-domain push owned by one receiver reserve with one
+// matching `ttl.pipe_transfer.post`, every matching post followed by a receive
+// wait before the push, and every receiver-domain pop owned by a matching
+// `ttl.cb_wait`. With one writer endpoint, each valid pop frees one capacity
+// unit for that endpoint's sender. If the node has zero or multiple writer
+// endpoints, a pop names only the receiver dataflow buffer, so the analysis
+// cannot prove which sender should receive capacity.
 //
 // This analysis must run after `ttl-insert-cb-sync` and
 // `ttl-finalize-dfb-indices`. The proof depends on finalized receiver dataflow
@@ -34,10 +36,10 @@
 //     require node.writerEndpoints.size() == 1
 //     require every endpoint post to target the receiver DFB from the receiver
 //             NOC thread
-//     require every receiver-overlapping push of the DFB to come from a post
+//     require the receiver DFB node to have a proven pipe-only stream
 //     require every send to run on the sender NOC thread
-//     require every receiver-overlapping pop of the DFB to run on the receiver
-//             NOC thread and free one block
+//     require every receiver-overlapping pop of the DFB to be owned by a
+//             receiver-domain wait and free one block
 //
 //   for pipeEdge in pipeGraph.getPipeEdges():
 //     require every receiver endpoint of pipeEdge to be proven and lowerable

@@ -4,8 +4,10 @@
 
 #include "PipeGraph.h"
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
@@ -13,10 +15,15 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 
 namespace mlir::tt::ttl {
+
+using mlir::func::FuncOp;
+namespace ttk = mlir::tt::ttkernel;
 
 static PipeKey getPipeKey(PipeType pipeType) {
   return {pipeType.getSrcX(),      pipeType.getSrcY(),
@@ -29,6 +36,7 @@ namespace {
 
 struct PipeGraphAnalysisState : LaunchNodeDomainState {
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
+  DFBReleaseOwnerMaps dfbReleaseOwners;
 };
 
 static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
@@ -47,7 +55,11 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
     state.operationLaunchDomains[op] = domain;
   };
   solver.load<LaunchNodeDomainAnalysis>(state, options);
-  return solver.initializeAndRun(mod);
+  if (failed(solver.initializeAndRun(mod))) {
+    return failure();
+  }
+  buildDFBReleaseOwnerMaps(mod, state.dfbReleaseOwners);
+  return success();
 }
 
 static LaunchNodeDomain
@@ -62,6 +74,20 @@ getOperationLaunchDomain(Operation *op, PipeGraphAnalysisState &state) {
   return it->second;
 }
 
+static LaunchNodeDomain getSingleNodeDomain(PipeReceiverCoord coord) {
+  LaunchNodeDomain domain;
+  domain.nodes.insert(LaunchNodeCoord{coord.x, coord.y});
+  return domain;
+}
+
+static bool domainsOverlap(const LaunchNodeDomain &lhs,
+                           const LaunchNodeDomain &rhs) {
+  if (!lhs.known || !rhs.known) {
+    return true;
+  }
+  return !lhs.intersectWith(rhs).nodes.empty();
+}
+
 static bool domainContainsReceiver(const LaunchNodeDomain &domain,
                                    PipeReceiverCoord receiver) {
   if (!domain.known) {
@@ -71,20 +97,132 @@ static bool domainContainsReceiver(const LaunchNodeDomain &domain,
          domain.nodes.end();
 }
 
-static std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp) {
-  auto cbType = mlir::dyn_cast<CircularBufferType>(popOp.getCb().getType());
+static bool knownDomainContainsReceiver(const LaunchNodeDomain &domain,
+                                        PipeReceiverCoord receiver) {
+  return domain.known && domainContainsReceiver(domain, receiver);
+}
+
+static std::optional<ttk::ThreadType> getKernelThreadType(FuncOp func) {
+  if (!func) {
+    return std::nullopt;
+  }
+  if (auto attr = func->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread")) {
+    return attr.getValue();
+  }
+  if (auto attr =
+          func->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
+    return attr.getValue();
+  }
+  return std::nullopt;
+}
+
+static bool isNocThread(Operation *op) {
+  return getKernelThreadType(op->getParentOfType<FuncOp>()) ==
+         ttk::ThreadType::Noc;
+}
+
+static std::optional<int64_t> getDFBBlockCount(Value cb,
+                                               IntegerAttr numTilesAttr) {
+  auto cbType = mlir::dyn_cast<CircularBufferType>(cb.getType());
   if (!cbType) {
     return std::nullopt;
   }
   int64_t elementsPerBlock = cbType.getElementsPerBlock();
   int64_t releasedTiles = elementsPerBlock;
-  if (auto attr = popOp.getNumTilesAttr()) {
-    releasedTiles = attr.getInt();
+  if (numTilesAttr) {
+    releasedTiles = numTilesAttr.getInt();
   }
   if (releasedTiles <= 0 || releasedTiles % elementsPerBlock != 0) {
     return std::nullopt;
   }
   return releasedTiles / elementsPerBlock;
+}
+
+static std::optional<int64_t> getPushedBlockCount(CBPushOp pushOp) {
+  return getDFBBlockCount(pushOp.getCb(), pushOp.getNumTilesAttr());
+}
+
+static std::optional<int64_t> getWaitedBlockCount(CBWaitOp waitOp) {
+  return getDFBBlockCount(waitOp.getCb(), waitOp.getNumTilesAttr());
+}
+
+static std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp) {
+  return getDFBBlockCount(popOp.getCb(), popOp.getNumTilesAttr());
+}
+
+static bool isReceiverDFB(Value cb, const PipeReceiverDFBKey &receiverDFB) {
+  std::optional<int64_t> dfbIndex = getCBIndex(cb);
+  return dfbIndex && *dfbIndex == receiverDFB.dfbIndex;
+}
+
+static bool isPostForReceiverDFB(
+    PipeTransferPostOp postOp, const PipeReceiverDFBKey &receiverDFB,
+    const llvm::MapVector<PipeKey, ReceiverDFBInfo> &receiverDFBs,
+    PipeGraphAnalysisState &state) {
+  auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
+  if (!createOp) {
+    return false;
+  }
+  PipeKey pipeKey =
+      getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
+  auto receiverIt = receiverDFBs.find(pipeKey);
+  if (receiverIt == receiverDFBs.end() ||
+      receiverIt->second.dfbIndex != receiverDFB.dfbIndex) {
+    return false;
+  }
+  LaunchNodeDomain postDomain =
+      getOperationLaunchDomain(postOp.getOperation(), state);
+  return knownDomainContainsReceiver(postDomain, receiverDFB.receiver);
+}
+
+static SmallVector<PipeTransferPostOp>
+getPostsOwnedByReserve(CBReserveOp reserveOp,
+                       ArrayRef<PipeTransferPostOp> posts) {
+  SmallVector<PipeTransferPostOp> ownedPosts;
+  for (PipeTransferPostOp postOp : posts) {
+    if (findCBReserveForPipeReceive(postOp.getDst()) == reserveOp) {
+      ownedPosts.push_back(postOp);
+    }
+  }
+  return ownedPosts;
+}
+
+static std::optional<int64_t> getReceiverSlotSpanBlocksForPost(
+    PipeTransferPostOp postOp,
+    const llvm::MapVector<PipeKey, ReceiverDFBInfo> &receiverDFBs) {
+  auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
+  if (!createOp) {
+    return std::nullopt;
+  }
+  PipeKey pipeKey =
+      getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
+  auto receiverIt = receiverDFBs.find(pipeKey);
+  if (receiverIt == receiverDFBs.end()) {
+    return std::nullopt;
+  }
+  return receiverIt->second.receiverSlotSpanBlocks;
+}
+
+static bool isBeforeInSameBlock(Operation *before, Operation *after) {
+  return before->getBlock() == after->getBlock() &&
+         before->isBeforeInBlock(after);
+}
+
+static bool hasMatchingReceiveWaitBeforePush(PipeTransferPostOp postOp,
+                                             CBPushOp pushOp) {
+  FuncOp func = pushOp->getParentOfType<FuncOp>();
+  if (!func) {
+    return false;
+  }
+  bool found = false;
+  func.walk([&](PipeTransferWaitOp waitOp) {
+    if (found || findPipeTransferPostForToken(waitOp.getToken()) != postOp) {
+      return;
+    }
+    found = isBeforeInSameBlock(postOp, waitOp) &&
+            isBeforeInSameBlock(waitOp, pushOp);
+  });
+  return found;
 }
 
 template <typename Fn>
@@ -346,6 +484,152 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
              << " is assigned to this pipe; "
              << "block_count must be >= " << requiredBlocks;
     }
+  }
+  return success();
+}
+
+LogicalResult PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod) {
+  PipeGraphAnalysisState analysisState;
+  if (failed(collectLaunchNodeDomains(mod, analysisState))) {
+    return failure();
+  }
+
+  for (PipeReceiverDFBNode &node : receiverDFBNodes) {
+    PipeReceiverDFBKey receiverDFB = node.receiverDFB;
+    LaunchNodeDomain receiverDomain = getSingleNodeDomain(receiverDFB.receiver);
+
+    SmallVector<PipeTransferPostOp> posts;
+    mod.walk([&](PipeTransferPostOp postOp) {
+      if (isPostForReceiverDFB(postOp, receiverDFB, receiverDFBs,
+                               analysisState)) {
+        posts.push_back(postOp);
+      }
+    });
+    if (posts.empty()) {
+      continue;
+    }
+
+    bool valid = true;
+    llvm::DenseSet<Operation *> postsWithPush;
+    llvm::DenseSet<Operation *> waitsWithPop;
+
+    mod.walk([&](CBPushOp pushOp) {
+      if (!valid || !isReceiverDFB(pushOp.getCb(), receiverDFB)) {
+        return;
+      }
+      LaunchNodeDomain pushDomain =
+          getOperationLaunchDomain(pushOp.getOperation(), analysisState);
+      if (!domainsOverlap(pushDomain, receiverDomain)) {
+        return;
+      }
+      if (!knownDomainContainsReceiver(pushDomain, receiverDFB.receiver) ||
+          !isNocThread(pushOp)) {
+        valid = false;
+        return;
+      }
+      std::optional<int64_t> pushedBlocks = getPushedBlockCount(pushOp);
+      if (!pushedBlocks) {
+        valid = false;
+        return;
+      }
+      auto ownerIt = analysisState.dfbReleaseOwners.reserveByPush.find(
+          pushOp.getOperation());
+      auto reserveOp =
+          ownerIt == analysisState.dfbReleaseOwners.reserveByPush.end()
+              ? CBReserveOp()
+              : dyn_cast_or_null<CBReserveOp>(ownerIt->second);
+      if (!reserveOp) {
+        valid = false;
+        return;
+      }
+      SmallVector<PipeTransferPostOp> ownedPosts =
+          getPostsOwnedByReserve(reserveOp, posts);
+      if (ownedPosts.empty()) {
+        valid = false;
+        return;
+      }
+      int64_t postedBlocks = 0;
+      for (PipeTransferPostOp postOp : ownedPosts) {
+        if (!hasMatchingReceiveWaitBeforePush(postOp, pushOp)) {
+          valid = false;
+          return;
+        }
+        std::optional<int64_t> span =
+            getReceiverSlotSpanBlocksForPost(postOp, receiverDFBs);
+        if (!span) {
+          valid = false;
+          return;
+        }
+        postedBlocks += *span;
+        if (!postsWithPush.insert(postOp.getOperation()).second) {
+          valid = false;
+          return;
+        }
+      }
+      if (*pushedBlocks != postedBlocks) {
+        valid = false;
+      }
+    });
+    if (!valid) {
+      continue;
+    }
+
+    for (PipeTransferPostOp postOp : posts) {
+      if (!postsWithPush.contains(postOp.getOperation())) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid) {
+      continue;
+    }
+
+    mod.walk([&](CBPopOp popOp) {
+      if (!valid || !isReceiverDFB(popOp.getCb(), receiverDFB)) {
+        return;
+      }
+      LaunchNodeDomain popDomain =
+          getOperationLaunchDomain(popOp.getOperation(), analysisState);
+      if (!domainsOverlap(popDomain, receiverDomain)) {
+        return;
+      }
+      if (!knownDomainContainsReceiver(popDomain, receiverDFB.receiver) ||
+          !isNocThread(popOp)) {
+        valid = false;
+        return;
+      }
+      std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
+      if (!releasedBlocks) {
+        valid = false;
+        return;
+      }
+      auto ownerIt =
+          analysisState.dfbReleaseOwners.waitByPop.find(popOp.getOperation());
+      auto waitOp = ownerIt == analysisState.dfbReleaseOwners.waitByPop.end()
+                        ? CBWaitOp()
+                        : dyn_cast_or_null<CBWaitOp>(ownerIt->second);
+      if (!waitOp) {
+        valid = false;
+        return;
+      }
+      LaunchNodeDomain waitDomain =
+          getOperationLaunchDomain(waitOp.getOperation(), analysisState);
+      if (!knownDomainContainsReceiver(waitDomain, receiverDFB.receiver) ||
+          !isNocThread(waitOp)) {
+        valid = false;
+        return;
+      }
+      std::optional<int64_t> waitedBlocks = getWaitedBlockCount(waitOp);
+      if (!waitedBlocks || *waitedBlocks != *releasedBlocks) {
+        valid = false;
+        return;
+      }
+      if (!waitsWithPop.insert(waitOp.getOperation()).second) {
+        valid = false;
+      }
+    });
+
+    node.hasProvenPipeOnlyStream = valid;
   }
   return success();
 }
@@ -674,6 +958,9 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   }
 
   graph.rebuildEndpointGraph();
+  if (failed(graph.provePipeOnlyReceiverStreams(mod))) {
+    return failure();
+  }
   return std::move(graph);
 }
 
