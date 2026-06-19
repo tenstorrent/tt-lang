@@ -4,10 +4,10 @@
 // mm4_block_stream_l1acc: matmul_block + K-block streaming + packer L1
 // accumulation. Same matmul issue and K streaming as mm3_block_stream, but the
 // cross-K-block accumulation uses pack_reconfig_l1_acc instead of spill-and-
-// reload: blocks 0..n-2 pack their partial into the partials DFB with the packer
-// accumulating in L1 (no DST reload), and only the last block reloads the
-// accumulated partials into DST, adds its own contribution, and packs to the
-// output. This mirrors TTNN's no-bias PACKER_L1_ACC compute kernel.
+// reload: blocks 0..n-2 pack their partial into the partials DFB with the
+// packer accumulating in L1 (no DST reload), and only the last block reloads
+// the accumulated partials into DST, adds its own contribution, and packs to
+// the output. This mirrors TTNN's no-bias PACKER_L1_ACC compute kernel.
 //
 // Compile-time args: 0 = mt, 1 = nt, 2 = kt, 3 = in0_block_w, 4 = sub_mt,
 // 5 = sub_nt.
@@ -97,9 +97,9 @@ void kernel_main() {
             // DST already holds the full sum (reloaded partials + last block).
             pack_reconfig_l1_acc(0);
           } else if (block_index == 0) {
-            pack_reconfig_l1_acc(0);  // first block overwrites the partials
+            pack_reconfig_l1_acc(0); // first block overwrites the partials
           } else {
-            pack_reconfig_l1_acc(1);  // later blocks accumulate in L1
+            pack_reconfig_l1_acc(1); // later blocks accumulate in L1
           }
           for (uint32_t tile_index = 0; tile_index < subblock_tiles;
                ++tile_index) {

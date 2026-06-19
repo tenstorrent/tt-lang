@@ -35,7 +35,8 @@ void kernel_main() {
 
   mm_block_init(dfb_in0, dfb_in1, dfb_out, false, sub_nt, sub_mt, kt);
 
-  // Operands resident before the timed zone (load excluded from the measurement).
+  // Operands resident before the timed zone (load excluded from the
+  // measurement).
   cb_wait_front(dfb_in0, mt * kt);
   cb_wait_front(dfb_in1, kt * nt);
 
