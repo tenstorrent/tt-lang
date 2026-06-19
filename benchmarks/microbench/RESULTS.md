@@ -438,7 +438,7 @@ utilization. The specific differences are:
   `math_utilization_pct` is the closer matrix-engine feeding check, but it is
   still from the handwritten generic-op kernel, not from TTNN matmul.
 
-The implementation differences are concrete:
+The handwritten path differs from TTNN in these ways:
 
 - TTNN dispatches `MatmulMultiCoreReuseMultiCastProgramConfig` through
   `MatmulMultiCoreReuseMcast2DProgramFactory`. Even on a 1x1 grid, that factory
@@ -475,8 +475,11 @@ The implementation differences are concrete:
 
 `matmul_compute_sweep.py` is a compute-feed diagnostic (not a realistic workload
 or a cost-model input): a 1x1 grid via `ttnn.generic_op` with single-node block
-layouts, built as a ladder of five strategies where each rung adds one change over
-the previous, so the per-change benefit is measurable:
+layouts, built as a ladder of five strategies. mm2 through mm5 each change one
+thing over the previous rung, so those deltas isolate a single optimization. mm1
+is the naive baseline; the mm1 -> mm2 step also changes subblock selection
+(`dst_subblock` to the TTNN preference order) and the reader/writer scaffolding,
+so its delta is the block kernel as a whole, dominated by `matmul_block`.
 
 - `mm1_tile_loop`: per-tile `matmul_tiles` in a K loop.
 - `mm2_block`: `matmul_block` over output subblocks, whole K block resident
@@ -518,9 +521,11 @@ num_blocks=3:
 
 Per-change benefit (percentage points of math-thread utilization):
 
-- **mm1 -> mm2: +7.7 pp Blackhole, +8.4 pp Wormhole** -- `matmul_block` is the
-  dominant win: one MOP call per subblock reuses A/B across the subblock with no
-  per-tile RISC dispatch, where `matmul_tiles` re-issues every tile.
+- **mm1 -> mm2: +7.7 pp Blackhole, +8.4 pp Wormhole** -- the block kernel as a
+  whole (`matmul_block` + the TTNN subblock selection + the block reader/writer),
+  dominated by `matmul_block`: one MOP call per subblock reuses A/B across the
+  subblock with no per-tile RISC dispatch, where `matmul_tiles` re-issues every
+  tile. (This is the one rung that bundles more than a single change.)
 - **mm2 -> mm3: ~0 pp** -- K-block streaming is utilization-neutral but is what
   lets K exceed what fits resident in L1.
 - **mm3 -> mm4: +1.7 pp Blackhole, +2.1 pp Wormhole (num_blocks=3)** -- packer L1
@@ -539,10 +544,12 @@ metric mismatch (zone/pack-thread vs TTNN's math-thread number); on the same
 thread they match, and operands resident vs streamed makes no difference at
 num_blocks=1 (mm2 ~ mm3), so the gap was never operand load.
 
-Blackhole also reaches mm4 91.8% (TTNN 92.1%) at num_blocks=4 (kt=32); that 8x8
-streamed config does not fit Wormhole's 1.43 MB L1, because the streamed
-strategies size in0/in1 to the whole operand (the resident rungs require that).
-Sizing the streamed operand DFBs to `block_count * block` would remove the limit.
+Blackhole also reaches mm4 91.8% (TTNN 92.1%) at num_blocks=4 (kt=32). The
+streamed rungs (mm3-mm5) size in0/in1 to a double-buffered K block, so they fit
+Wormhole at kt=32; but the resident baseline rungs (mm1, mm2) hold the whole
+operand, which overflows Wormhole's 1.43 MB L1 at kt=32. So the full-ladder
+Wormhole point is shown at num_blocks=3 (kt=24, where every rung fits); Blackhole,
+with more L1, runs the full ladder at num_blocks=4.
 
 ### MB3.A -- output fits DST (P <= capacity, reuse = 1)
 
