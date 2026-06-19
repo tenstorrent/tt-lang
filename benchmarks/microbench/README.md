@@ -10,10 +10,11 @@ These benchmarks cover behavior that isolated primitive tests do not measure:
 operation overlap across RISCs, DFB handoff cost, and strategy comparisons such
 as DST-resident accumulation versus L1-pack accumulation.
 
-The kernels mirror tt-lang lowering sequences by construction. For example, MB2
-uses `binary_dest_reuse_tiles<ELWADD, DEST_TO_SRCA>`, matching
-`tile_accumulate_add` lowering. The tt-lang compiler is not involved; tt-metal
-JIT-compiles the handwritten kernels at run time.
+The cost-model workloads mirror tt-lang lowering sequences by construction. For
+example, MB2 uses `binary_dest_reuse_tiles<ELWADD, DEST_TO_SRCA>`, matching
+`tile_accumulate_add` lowering. Diagnostic probes are called out separately. The
+tt-lang compiler is not involved; tt-metal JIT-compiles the handwritten kernels
+at run time.
 
 ## Benchmarks
 
@@ -27,6 +28,14 @@ JIT-compiles the handwritten kernels at run time.
   comparing DST-K against L1-K. The output is subblocked as the compiler would
   (`harness.dst_subblock`), covering MB3.A (output fits DST, reuse=1) and MB3.B
   (output exceeds DST, reuse>1).
+- Matmul compute-feed diagnostic (`matmul_compute_sweep.py`): non-realistic
+  single-node generic-op matmul with operands resident before the timed zone. It
+  checks matrix-engine feeding with a direct `matmul_tiles` strategy and a
+  `ttnn_like` strategy that mirrors TTNN's large-block single-node compute
+  contract. This is not a cost-model workload.
+- TTNN matmul utilization (`ttnn_matmul_utilization.py`): single-node
+  `ttnn.matmul` validation using the same utilization formula and program-config
+  conventions as the tt-metal GEMM FLOPS report.
 - MB4 compute-op (`compute_sweep.py`): per-op SFPU math-engine tile cost
   (copy/exp/gelu/recip/sqrt/rsqrt) on the math thread (what tt-lang emits).
   A pack-thread activation arm and reduce/binary ops are planned.
@@ -62,6 +71,16 @@ python -m benchmarks.microbench.matmul_sweep \
   --mt 1,2,4 \
   --nt 1,2 \
   --kt 1,2,4,8,16
+
+python -m benchmarks.microbench.matmul_compute_sweep \
+  --mt 4,8 \
+  --nt 4,8 \
+  --kt 8,16,32
+
+python -m benchmarks.microbench.ttnn_matmul_utilization \
+  --mt 8 \
+  --nt 8 \
+  --kt 8,16,32
 ```
 
 Common runner options:
@@ -77,6 +96,22 @@ Common runner options:
 Times are compute-thread microseconds from per-RISC `DeviceZoneScopedN` ranges,
 converted with profiler `CHIP_FREQ[MHz]`. Correctness is reported as PCC against
 a torch reference.
+
+For plain MB3 matmul runs, CSV output also includes per-node utilization columns
+derived from tt-metal's GEMM FLOPS report: `matmul_ideal_cycles`,
+`trisc_max_cycles`, `math_cycles`, `zone_utilization_pct`, and
+`math_utilization_pct`.
+
+`ttnn_matmul_utilization.py` reports `trisc1_utilization_pct`, matching the GEMM
+report's device-utilization definition based on the TRISC1 kernel duration, and
+`trisc_max_utilization_pct`, which shows whether another compute thread is
+slower.
+
+`matmul_compute_sweep.py` writes one row per diagnostic strategy. `tiles` uses a
+direct `matmul_tiles` loop. `ttnn_like` uses TTNN-style A/B block layout,
+`in0_block_w`, output subblock order, and `matmul_block(..., kt_dim =
+in0_block_w)`. The probe keeps operands resident before the timed zone, so it is
+not a realistic workload sequence.
 
 CSV files are written under `benchmarks/microbench/results/` by default and are
 ignored by git. `fit.py` consumes MB1 CSVs and fits:
@@ -101,6 +136,8 @@ python -m benchmarks.microbench.fit "benchmarks/microbench/results/pack_unpack_*
 - `sweep.py`: MB1 pack/unpack probe.
 - `acc_sweep.py`: MB2 accumulation strategy comparison.
 - `matmul_sweep.py`: MB3 matmul K-accumulation strategy comparison.
+- `matmul_compute_sweep.py`: non-realistic matmul compute-feed diagnostic.
+- `ttnn_matmul_utilization.py`: single-node TTNN matmul utilization validation.
 - `compute_sweep.py`: MB4 compute-op (SFPU math) probe.
 - `fit.py`: MB1 fixed plus per-tile regression.
 - `RESULTS.md`: measurement notes and current hardware results.

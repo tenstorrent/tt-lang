@@ -44,6 +44,7 @@ DST_KERNEL = str(KERNELS / "matmul_k_dst.cpp")
 L1_KERNEL = str(KERNELS / "matmul_k_l1.cpp")
 READER_KERNEL = str(KERNELS / "matmul_reader.cpp")
 WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+MATMUL_CYCLES_PER_TILE = {"lofi": 16, "hifi2": 32, "hifi4": 64}
 
 
 class MatmulK(MicroBenchmark):
@@ -54,6 +55,13 @@ class MatmulK(MicroBenchmark):
     PER_UNIT = "kt"
     CSV_TAG = ("dtype", "fidelity", "fuse", "full_sync")
     EXTRA_COLUMNS = ("sub_mt", "sub_nt", "reuse")
+    POST_COLUMNS = (
+        "matmul_ideal_cycles",
+        "trisc_max_cycles",
+        "math_cycles",
+        "zone_utilization_pct",
+        "math_utilization_pct",
+    )
     PARAMS = (
         Param("mt", "1", sweep=True, help="output rows (tiles)"),
         Param("nt", "1", sweep=True, help="output cols (tiles)"),
@@ -104,6 +112,37 @@ class MatmulK(MicroBenchmark):
         sub_mt, sub_nt = self._subblock(cfg)
         reuse = (cfg["mt"] // sub_mt) * (cfg["nt"] // sub_nt)
         return {"sub_mt": sub_mt, "sub_nt": sub_nt, "reuse": reuse}
+
+    def post_columns(self, cfg, strategy, zone_summary, row):
+        empty = {column: None for column in self.POST_COLUMNS}
+        if cfg["fuse"] != "none":
+            return empty
+
+        tile_matmul_count = cfg["mt"] * cfg["nt"] * cfg["kt"]
+        matmul_ideal_cycles = (
+            tile_matmul_count * MATMUL_CYCLES_PER_TILE[cfg["fidelity"]]
+        )
+        freq_mhz = zone_summary["freq_mhz"]
+
+        def cycles(microseconds):
+            if microseconds is None:
+                return None
+            return round(microseconds * freq_mhz, 2)
+
+        def utilization_pct(actual_cycles):
+            if actual_cycles is None or actual_cycles <= 0:
+                return None
+            return round(100.0 * matmul_ideal_cycles / actual_cycles, 2)
+
+        trisc_max_cycles = cycles(zone_summary["trisc_max_us"])
+        math_cycles = cycles(zone_summary["math_us"])
+        return {
+            "matmul_ideal_cycles": matmul_ideal_cycles,
+            "trisc_max_cycles": trisc_max_cycles,
+            "math_cycles": math_cycles,
+            "zone_utilization_pct": utilization_pct(trisc_max_cycles),
+            "math_utilization_pct": utilization_pct(math_cycles),
+        }
 
     def build(self, ctx):
         cfg = ctx.cfg
