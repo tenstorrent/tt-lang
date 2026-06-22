@@ -217,9 +217,9 @@ The TTL-to-TTKernel pipeline handles accumulation in this order:
    `accumulation-strategy`. Stateful scopes with yielded state lower in
    `auto` mode by emitting one final `ttl.store` per yielded value and leaving
    tensor loop-carried state for explicit DFB materialization. Required `dst`
-   or `l1-pack` strategy reports an error for stateful scopes until grouped
-   lowering is implemented. The pass removes the semantic wrapper before
-   general loop-state materialization.
+   or `l1-pack` strategy reports an error for stateful scopes until stateful
+   DST or L1 packer lowering is implemented. The pass removes the semantic
+   wrapper before general loop-state materialization.
 
 3. `ttl-materialize-loop-state` handles remaining tensor `scf.for`
    iter_args through compiler-allocated DFB state. Additive recurrences

@@ -170,6 +170,24 @@ static bool hasStatefulBody(AccumulationScopeOp scope) {
   return body.getNumArguments() != 0 || !yield.getValues().empty();
 }
 
+/// Return true if the scope already contains an output store owned by the
+/// additive tensor form.
+static bool hasTopLevelOutputStore(AccumulationScopeOp scope) {
+  Block &body = scope.getBody().front();
+  for (Operation &operation : body.without_terminator()) {
+    auto store = dyn_cast<StoreOp>(&operation);
+    if (!store) {
+      continue;
+    }
+    for (Value output : scope.getOutputs()) {
+      if (store.getView() == output) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /// Return values used when removing the scope body block. Init-mode outputs use
 /// their init operands; other modes preserve the output view SSA value.
 static SmallVector<Value>
@@ -337,6 +355,9 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
   FailureOr<TensorAccumulationMatch> match =
       matchTensorAccumulationScope(scope, /*emitDiagnostics=*/false);
   if (failed(match)) {
+    if (hasTopLevelOutputStore(scope)) {
+      return matchTensorAccumulationScope(scope, /*emitDiagnostics=*/true);
+    }
     return lowerStatefulTensorAccumulationScope(scope, strategy, rewriter);
   }
 
