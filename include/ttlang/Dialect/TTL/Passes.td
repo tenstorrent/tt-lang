@@ -194,16 +194,18 @@ def TTLLowerAccumulationScopes
   let summary = "Lower semantic accumulation scopes";
   let description = [{
     Lowers `ttl.accumulation_scope` regions to a concrete storage strategy.
-    Tensor mode supports single-output additive tensor recurrences inserted by
-    `ttl-insert-accumulation-scopes`. DFB mode lowers user-written accumulating
-    stores to L1 packer metadata.
+    Tensor mode supports additive tensor recurrences inserted by
+    `ttl-insert-accumulation-scopes` and stateful tensor scopes that lower to
+    explicit stores in `strategy=auto`. DFB mode lowers user-written
+    accumulating stores to L1 packer metadata.
     L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
     metadata for TTKernel packer reconfiguration placement.
 
-    For tensor scopes, `strategy=auto` selects DST when a tensor recurrence
+    For additive tensor scopes, `strategy=auto` selects DST when the recurrence
     satisfies the DST legality rules and otherwise uses L1 packer accumulation.
     `strategy=dst` requires DST and emits an error when the tensor scope is not
     DST-compatible. `strategy=l1-pack` always uses the L1 packer strategy.
+    Stateful tensor scopes lower only in `strategy=auto`.
     For f32 recurrences the DST strategy feeds the accumulator back through SRCA
     each iteration, truncating to tf32; `l1-pack` accumulates in f32 L1 and
     retains full f32 precision.

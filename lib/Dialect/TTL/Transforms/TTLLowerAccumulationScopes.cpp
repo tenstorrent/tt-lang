@@ -31,14 +31,23 @@ namespace mlir::tt::ttl {
 namespace {
 
 /// Verify the scope policy for single-output additive tensor accumulation.
-static LogicalResult verifySingleAddInitTensorScope(AccumulationScopeOp scope) {
+static LogicalResult
+verifySingleAddInitTensorScope(AccumulationScopeOp scope,
+                               bool emitDiagnostics = true) {
+  auto fail = [&](StringRef message) -> LogicalResult {
+    if (emitDiagnostics) {
+      (void)(scope.emitOpError() << message);
+    }
+    return failure();
+  };
+
   if (scope.getOutputs().size() != 1) {
-    return scope.emitOpError(
+    return fail(
         "tensor accumulation lowering supports exactly one output; split "
         "multiple accumulators into separate scopes");
   }
   if (scope.getInits().size() != 1) {
-    return scope.emitOpError(
+    return fail(
         "tensor accumulation lowering requires one init; use DFB "
         "accumulation lowering for overwrite or accumulate_existing modes");
   }
@@ -46,13 +55,13 @@ static LogicalResult verifySingleAddInitTensorScope(AccumulationScopeOp scope) {
   SmallVector<AccumulationInitialMode> initialModes =
       scope.getAccumulationInitialModes();
   if (initialModes.front() != AccumulationInitialMode::Init) {
-    return scope.emitOpError(
+    return fail(
         "tensor accumulation lowering requires init initial mode; use DFB "
         "accumulation lowering for overwrite or accumulate_existing modes");
   }
 
   if (!scope.getOutputs().front().getDefiningOp<CBReserveOp>()) {
-    return scope.emitOpError(
+    return fail(
         "tensor accumulation lowering requires output from ttl.cb_reserve");
   }
   return success();
@@ -94,8 +103,9 @@ getSingleTensorAccumulationLoop(AccumulationScopeOp scope,
 
 /// Return the additive recurrence represented by a normalized tensor scope.
 static FailureOr<TensorAccumulationMatch>
-matchTensorAccumulationScope(AccumulationScopeOp scope) {
-  if (failed(verifySingleAddInitTensorScope(scope))) {
+matchTensorAccumulationScope(AccumulationScopeOp scope,
+                             bool emitDiagnostics = true) {
+  if (failed(verifySingleAddInitTensorScope(scope, emitDiagnostics))) {
     return failure();
   }
 
@@ -103,12 +113,13 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
   FailureOr<scf::ForOp> loop =
       getSingleTensorAccumulationLoop(scope, finalStore);
   if (failed(loop)) {
-    (void)scope.emitOpError(
-        "tensor accumulation lowering requires a normalized scope body with "
-        "one "
-        "top-level scf.for followed by the final ttl.store; run "
-        "ttl-insert-accumulation-scopes or split other operations outside the "
-        "scope");
+    if (emitDiagnostics) {
+      (void)scope.emitOpError(
+          "tensor accumulation lowering requires one top-level scf.for "
+          "followed by the final ttl.store; run "
+          "ttl-insert-accumulation-scopes or move other operations outside "
+          "the scope");
+    }
     return failure();
   }
 
@@ -118,17 +129,21 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
       ArrayRef<Operation *>{scope.getOperation()},
       ArrayRef<Operation *>{scope.getBody().front().getTerminator()});
   if (failed(match)) {
-    (void)scope.emitOpError(
-        "tensor accumulation lowering requires a loop-carried additive "
-        "recurrence of the form acc = acc + contribution; rewrite the loop");
+    if (emitDiagnostics) {
+      (void)scope.emitOpError(
+          "tensor accumulation lowering requires a loop-carried additive "
+          "recurrence of the form acc = acc + contribution; rewrite the loop");
+    }
     return failure();
   }
 
   if (match->finalStore != finalStore ||
       match->initialValue != scope.getBody().front().getArgument(0)) {
-    (void)scope.emitOpError(
-        "tensor accumulation scope policy must match the loop recurrence; "
-        "rebuild the scope with ttl-insert-accumulation-scopes");
+    if (emitDiagnostics) {
+      (void)scope.emitOpError(
+          "tensor accumulation scope policy must match the loop recurrence; "
+          "rebuild the scope with ttl-insert-accumulation-scopes");
+    }
     return failure();
   }
   match->initialValue = scope.getInits().front();
@@ -205,13 +220,14 @@ lowerStatefulTensorAccumulationScope(AccumulationScopeOp scope,
                                      RewriterBase &rewriter) {
   if (strategy == AccumulationStrategy::Dst) {
     return scope.emitOpError(
-        "cannot lower stateful tensor accumulation scope to DST: grouped DST "
-        "lowering is not implemented");
+        "cannot lower stateful tensor accumulation scope to DST: stateful DST "
+        "lowering is not implemented (at this point)");
   }
   if (strategy == AccumulationStrategy::L1Pack) {
     return scope.emitOpError(
         "cannot lower stateful tensor accumulation scope to L1 packer "
-        "accumulation: grouped L1 packer lowering is not implemented");
+        "accumulation: stateful L1 packer lowering is not implemented (at "
+        "this point)");
   }
 
   if (failed(verifyStatefulTensorScope(scope))) {
@@ -318,14 +334,10 @@ static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
                                                   AccumulationStrategy strategy,
                                                   int64_t scopeId,
                                                   RewriterBase &rewriter) {
-  if (scope.getOutputs().size() != 1) {
-    return lowerStatefulTensorAccumulationScope(scope, strategy, rewriter);
-  }
-
   FailureOr<TensorAccumulationMatch> match =
-      matchTensorAccumulationScope(scope);
+      matchTensorAccumulationScope(scope, /*emitDiagnostics=*/false);
   if (failed(match)) {
-    return failure();
+    return lowerStatefulTensorAccumulationScope(scope, strategy, rewriter);
   }
 
   scf::ForOp loop = match->add->getParentOfType<scf::ForOp>();

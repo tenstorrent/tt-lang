@@ -298,8 +298,8 @@ Consumer side:
 ```
 
 Each acquire owns exactly one interval. The release inserted for that interval
-must follow the last owned use and precede the next acquire in the same DFB sync
-class:
+must follow the last owned use. For direct DFB ownership, that release also
+precedes the next acquire in the same DFB sync class:
 
 ```
 cb_wait A  ->  owned reads  ->  cb_pop A  ->  cb_wait B
@@ -335,15 +335,22 @@ insertReleases(acquires, releases, releaseOp):
     if matching:
       continue
 
-    erase nested releases
     liveEnd = last transitive tensor or direction-matched direct DFB use
-              before boundary
+              where boundary applies only to direct DFB uses
+    if liveEnd reaches boundary:
+      matching = same-block release on dfb after liveEnd
+      if matching:
+        continue
+
+    erase nested releases
     insert releaseOp(dfb) after liveEnd
 ```
 
-The same-block release check makes the pass idempotent. A release after the
-next acquire in the same DFB sync class belongs to that later interval and does
-not satisfy the earlier acquire.
+The same-block release checks make the pass idempotent. For direct DFB
+ownership, a release after the next acquire in the same DFB sync class belongs
+to that later interval and does not satisfy the earlier acquire. For tile-SSA
+ownership, an already-present release at or after the tile's last use can sit
+past the next acquire and still satisfy the earlier acquire.
 
 ## DFB Acquire Coalescing
 
