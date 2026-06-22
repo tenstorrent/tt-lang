@@ -273,6 +273,11 @@ struct TTLTileTypecastToTTKernel : OpConversionPattern<TileTypecastOp> {
       return rewriter.notifyMatchFailure(op,
                                          "input or result is not a tile type");
     }
+    if (op.getInput().getType() == op.getResult().getType()) {
+      rewriter.replaceOp(op, adaptor.getInput());
+      return success();
+    }
+
     auto inDtypeAttr = tt::ttcore::DataTypeAttr::get(rewriter.getContext(),
                                                      inputTileTy.getDataType());
     auto outDtypeAttr = tt::ttcore::DataTypeAttr::get(
@@ -288,10 +293,12 @@ struct TTLTileTypecastToTTKernel : OpConversionPattern<TileTypecastOp> {
 
 static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
                                        ConversionPatternRewriter &rewriter) {
-  if (auto *defOp = operand.getDefiningOp()) {
-    if (auto dstVal = getTileOpDstIndex(defOp)) {
-      return *dstVal;
+  FailureOr<DstFootprint> footprint = getDstFootprint(operand);
+  if (succeeded(footprint)) {
+    if (footprint->tileCount == 1) {
+      return footprint->baseIndex;
     }
+    return failure();
   }
   auto idx = getDstIndexFromValue(operand);
   if (idx) {

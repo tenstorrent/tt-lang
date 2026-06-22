@@ -94,13 +94,13 @@ echo ""
 
 # Compute image names up front (used by both build and check-only paths).
 if [ "$NO_PUSH" = false ]; then
-    BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-    IRD_IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+    BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
+    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-24-04:$DOCKER_TAG"
+    IRD_IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-24-04:$DOCKER_TAG"
 else
-    BASE_IMAGE="tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-    IRD_IMAGE="tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+    BASE_IMAGE="tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
+    DIST_IMAGE="tt-lang-dist-ubuntu-24-04:$DOCKER_TAG"
+    IRD_IMAGE="tt-lang-ird-ubuntu-24-04:$DOCKER_TAG"
 fi
 
 # Write image names to files for workflow consumption (avoids fragile log parsing).
@@ -171,11 +171,11 @@ build_image() {
     # registry image if no local build exists.
     local base_image_arg=""
     if [ "$NO_PUSH" = false ]; then
-        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    elif docker image inspect "tt-lang-base-ubuntu-22-04:$DOCKER_TAG" > /dev/null 2>&1; then
-        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
+    elif docker image inspect "tt-lang-base-ubuntu-24-04:$DOCKER_TAG" > /dev/null 2>&1; then
+        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
     else
-        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-24-04:$DOCKER_TAG"
     fi
 
     docker build \
@@ -211,13 +211,13 @@ DOCKERFILE=".github/containers/Dockerfile"
 
 # Build images -- filtered by --image-type if specified, otherwise build all three
 if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "base" ]]; then
-    build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
+    build_image "tt-lang-base-ubuntu-24-04" .github/containers/Dockerfile.base ""
 fi
 if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "dist" ]]; then
-    build_image "tt-lang-dist-ubuntu-22-04" "$DOCKERFILE" dist
+    build_image "tt-lang-dist-ubuntu-24-04" "$DOCKERFILE" dist
 fi
 if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "ird" ]]; then
-    build_image "tt-lang-ird-ubuntu-22-04"  "$DOCKERFILE" ird
+    build_image "tt-lang-ird-ubuntu-24-04"  "$DOCKERFILE" ird
 fi
 
 

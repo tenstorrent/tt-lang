@@ -548,10 +548,16 @@ def collect_reachable_analyses(
 # Public API: runtime interception
 # ---------------------------------------------------------------------------
 
-# sys.monitoring tool ID used by this module.  OPTIMIZER_ID is chosen
-# because the simulator is not a debugger, coverage tool, or profiler.
-# The tool is claimed once per interpreter session.
-_TOOL_ID: int = sys.monitoring.OPTIMIZER_ID
+
+def _monitoring_api():
+    """Return ``sys.monitoring`` or fail before copy-wait hooks are required."""
+    monitoring = getattr(sys, "monitoring", None)
+    if monitoring is None:
+        raise RuntimeError(
+            "Automatic copy-wait injection requires Python 3.12 or newer. "
+            "Add explicit tx.wait() calls or run the simulator with Python 3.12+."
+        )
+    return monitoring
 
 
 def _fire_injection(frame: types.FrameType, ip: InjectionPoint) -> None:
@@ -664,7 +670,7 @@ def install_copy_wait_hooks(
     ``get_context().active_hooks``; bare-copy line numbers (Case A) are added
     to ``get_context().auto_wait_copy_lines``.
 
-    On first call, claims ``_TOOL_ID`` from ``sys.monitoring`` and registers
+    On first call, claims a ``sys.monitoring`` tool ID and registers
     ``_line_callback`` / ``_return_callback``.  Subsequent calls only update
     the context's hooks and enable local events for new code objects.
 
@@ -681,6 +687,7 @@ def install_copy_wait_hooks(
         for code, analysis in injection_map.items()
         if analysis.injection_points
     }
+    monitoring = _monitoring_api() if active_map else None
 
     # Build lookup tables and store in the current context's active_hooks.
     from .context import get_context
@@ -695,15 +702,13 @@ def install_copy_wait_hooks(
     if not active_map:
         return
 
+    tool_id = monitoring.OPTIMIZER_ID
+
     # Claim the tool ID and register callbacks.  reset_context() frees the
     # slot between runs, so this always starts from a clean state.
-    sys.monitoring.use_tool_id(_TOOL_ID, "tt-lang-sim")
-    sys.monitoring.register_callback(
-        _TOOL_ID, sys.monitoring.events.LINE, _line_callback
-    )
-    sys.monitoring.register_callback(
-        _TOOL_ID, sys.monitoring.events.PY_RETURN, _return_callback
-    )
+    monitoring.use_tool_id(tool_id, "tt-lang-sim")
+    monitoring.register_callback(tool_id, monitoring.events.LINE, _line_callback)
+    monitoring.register_callback(tool_id, monitoring.events.PY_RETURN, _return_callback)
 
     # Build lookup tables, store them, and enable per-code-object events.
     # id(code) is used as the dict key so that lookup in the callbacks is
@@ -719,9 +724,9 @@ def install_copy_wait_hooks(
                 by_lineno.setdefault(ip.trigger_lineno, []).append(ip)  # type: ignore[arg-type]
         ctx.active_hooks[id(code)] = (by_lineno, return_ips)
 
-        ev = sys.monitoring.events.NO_EVENTS
+        ev = monitoring.events.NO_EVENTS
         if by_lineno:
-            ev |= sys.monitoring.events.LINE
+            ev |= monitoring.events.LINE
         if return_ips:
-            ev |= sys.monitoring.events.PY_RETURN
-        sys.monitoring.set_local_events(_TOOL_ID, code, ev)
+            ev |= monitoring.events.PY_RETURN
+        monitoring.set_local_events(tool_id, code, ev)

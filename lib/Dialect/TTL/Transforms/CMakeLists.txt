@@ -1,5 +1,6 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
+  DFBMaterialization.cpp
   PipeGraph.cpp
   PipeLowering.cpp
   ConvertTTLToCompute.cpp
@@ -7,6 +8,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLTileOpsToTTKernel.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
+  LowerScalarCmpFToTTKernel.cpp
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
@@ -24,6 +26,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
+  DstSubblockUtils.cpp
   TTLSubblockComputeForDST.cpp
 
   DEPENDS

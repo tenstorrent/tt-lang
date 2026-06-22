@@ -48,7 +48,7 @@ buffer, the receiver-side slot allocation is handled by
 `PipeGraph::assignGatherSlotIndices` (in
 `lib/Dialect/TTL/Transforms/PipeGraph.h`). It greedy-colors the pipes
 that share a `(receiver, cbIndex)` pair so each pipe gets a distinct
-slot index in the receiver dataflow buffer. `verifyGatherBlockCounts`
+slot index in the receiver dataflow buffer. `verifyReceiverDFBBlockCounts`
 then requires `block_count >= max_slot_idx + 1` per receiver. This
 makes overlapping multicast unrepresentable when more than 32 pipes
 target the same receiver: the tt-metal per-Tensix CB cap is 32

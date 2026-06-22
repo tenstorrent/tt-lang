@@ -56,4 +56,91 @@ def TTL_PipeNetPredicateOpInterface
   ];
 }
 
+def TTL_AccumulationScopeOpInterface
+    : OpInterface<"AccumulationScopeOpInterface"> {
+  let description = [{
+    Region-like operations that explicitly describe accumulation semantics.
+    The interface separates the accumulation policy from the storage mechanism,
+    so consumers can reason about the declared policy directly.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return true when this operation instance carries active "
+               "accumulation semantics.",
+      /*retTy=*/"bool",
+      /*methodName=*/"isAccumulation",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return the destination tensor operands governed by the "
+               "accumulation policy.",
+      /*retTy=*/"::mlir::ValueRange",
+      /*methodName=*/"getAccumulationOutputs",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return init operands for outputs whose initial mode requires "
+               "one.",
+      /*retTy=*/"::mlir::ValueRange",
+      /*methodName=*/"getAccumulationInits",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return one initial-value mode per accumulation output.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::AccumulationInitialMode>",
+      /*methodName=*/"getAccumulationInitialModes",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return the region containing the accumulation body.",
+      /*retTy=*/"::mlir::Region &",
+      /*methodName=*/"getAccumulationBody",
+      /*args=*/(ins)>,
+  ];
+}
+
+def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
+  let description = [{
+    Tile-level operations that expose concrete DST register reads, writes, and
+    result residency. The interface is specific to DST behavior after tile
+    lowering has assigned DST indices; it does not model dataflow buffer,
+    packer, or generic memory effects.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return DST slots read by this operation.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>",
+      /*methodName=*/"getDstReadFootprints",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultDstReadFootprints($_op.getOperation());
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return DST slots written by this operation.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>",
+      /*methodName=*/"getDstWriteFootprints",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultDstWriteFootprints($_op.getOperation());
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the DST footprint represented by `result` when it is a DST-resident tile result of this operation.",
+      /*retTy=*/"::mlir::FailureOr<::mlir::tt::ttl::DstFootprint>",
+      /*methodName=*/"getResultDstFootprint",
+      /*args=*/(ins "::mlir::Value":$result),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultResultDstFootprint(
+            $_op.getOperation(), result);
+      }]
+    >
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLINTERFACES_TD

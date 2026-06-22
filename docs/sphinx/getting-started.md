@@ -15,9 +15,11 @@ functional simulator (no compiler or hardware support) and does not depend on
 `ttnn`.
 
 First, create an isolated Python environment (venv, conda, etc.) with Python
-3.11 or later (Python 3.12 recommended). The wheel targets a specific CPython
-ABI, so the venv's Python must match — invoke `python3.12` (or `python3.11`)
-explicitly rather than the system default `python3`:
+matching the selected wheel. Public PyPI hardware wheels currently use Python
+3.12; S3 light wheels are built for Python 3.10 and Python 3.12. The wheel
+targets a specific CPython ABI, so the venv's Python must match. Invoke
+`python3.12` (or `python3.10` for a light wheel) explicitly rather than the
+system default `python3`:
 
 ```bash
 python3.12 -m venv --prompt ttlang ttlang-venv
@@ -162,7 +164,7 @@ docker run -d --name $USER-dist \
   -v /dev/hugepages:/dev/hugepages \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:latest \
   sleep infinity
 
 docker exec -it $USER-dist /bin/bash
@@ -186,7 +188,7 @@ docker run -d --name $USER-ird \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
   -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:latest \
   sleep infinity
 
 docker exec -it $USER-ird /bin/bash
@@ -214,7 +216,7 @@ python examples/elementwise-tutorial/step_4_multinode_grid_full.py
 ### Prerequisites
 
 - CMake 3.28+, Ninja, and Clang 17+ or GCC 12+
-- Python 3.11+
+- Python 3.10+ (Python 3.12 recommended)
 - For faster builds: a pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` (default
   `/opt/ttlang-toolchain`). Without one, LLVM and tt-metal build from submodules
   on first configure.

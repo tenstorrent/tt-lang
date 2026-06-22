@@ -25,6 +25,18 @@ def TTL_TransferKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_PipeTransferKind_PointToPoint :
+    I32EnumAttrCase<"PointToPoint", 0, "point_to_point">;
+def TTL_PipeTransferKind_Collective :
+    I32EnumAttrCase<"Collective", 1, "collective">;
+
+def TTL_PipeTransferKind : I32EnumAttr<
+    "PipeTransferKind", "TTL pipe transfer kind",
+    [TTL_PipeTransferKind_PointToPoint, TTL_PipeTransferKind_Collective]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_BcastType_Col    : I32EnumAttrCase<"Col",    1, "col">;
 def TTL_BcastType_Row    : I32EnumAttrCase<"Row",    2, "row">;
 def TTL_BcastType_Scalar : I32EnumAttrCase<"Scalar", 3, "scalar">;
@@ -43,6 +55,20 @@ def TTL_ReduceType_Max : I32EnumAttrCase<"Max", 1, "max">;
 
 def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduction function type",
     [TTL_ReduceType_Sum, TTL_ReduceType_Max]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_AccumulationInitialMode_Overwrite
+    : I32EnumAttrCase<"Overwrite", 0, "overwrite">;
+def TTL_AccumulationInitialMode_AccumulateExisting
+    : I32EnumAttrCase<"AccumulateExisting", 1, "accumulate_existing">;
+def TTL_AccumulationInitialMode_Init : I32EnumAttrCase<"Init", 2, "init">;
+
+def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
+    "TTL accumulation initial-value mode",
+    [TTL_AccumulationInitialMode_Overwrite,
+     TTL_AccumulationInitialMode_AccumulateExisting,
+     TTL_AccumulationInitialMode_Init]> {
   let cppNamespace = "::mlir::tt::ttl";
 }
 

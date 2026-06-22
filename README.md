@@ -14,7 +14,7 @@
 pl<br>
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
-![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
+![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue.svg)
 ![Build Status](https://github.com/tenstorrent/tt-lang/actions/workflows/ci.yml/badge.svg)
 
 A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current simulator and compiler support.
@@ -44,7 +44,9 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.
 
-First, create an isolated Python environment (venv, conda, etc.) with Python 3.11 or later (python3.12 recommended). For example:
+First, create an isolated Python environment (venv, conda, etc.) with Python
+matching the selected wheel. Public PyPI hardware wheels currently use Python
+3.12; S3 light wheels are built for Python 3.10 and Python 3.12. For example:
 
 ```bash
 python3 -m venv --prompt ttlang ttlang-venv
@@ -86,14 +88,14 @@ Two images are available:
 
 | Image                                                                                           | Purpose                                                            | Preinstalled tt-lang<br />(including tt-lang-sim) | Can clone/build tt-lang? |
 | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | :----------------------------------------------: | :----------------------: |
-| ![dist](https://img.shields.io/badge/dist-tt--lang--dist--ubuntu--22--04-brightgreen)<br />"dist" | Run tt-lang programs using<br />tt-lang-sim or Tenstorrent hardware |                       Yes                       |            No            |
-| ![ird](https://img.shields.io/badge/ird-tt--lang--ird--ubuntu--22--04-blueviolet)<br />"ird"      | Develop and build tt-lang from source                              |                        No                        |           Yes           |
+| ![dist](https://img.shields.io/badge/dist-tt--lang--dist--ubuntu--24--04-brightgreen)<br />"dist" | Run tt-lang programs using<br />tt-lang-sim or Tenstorrent hardware |                       Yes                       |            No            |
+| ![ird](https://img.shields.io/badge/ird-tt--lang--ird--ubuntu--24--04-blueviolet)<br />"ird"      | Develop and build tt-lang from source                              |                        No                        |           Yes           |
 
 Both images can be used with `ird reserve` (see [container build docs](.github/containers/README.md) for details).
 
 ### 2.3 ![dist](https://img.shields.io/badge/dist-brightgreen) Pre-built tt-lang (for users)
 
-Image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-dist-ubuntu-22-04))
+Image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-dist-ubuntu-24-04))
 
 The **dist** image contains a single, fully built tt-lang installation in `/opt/ttlang-toolchain`. Use it to compile and run any tt-lang program without building any of the prerequisites.
 
@@ -107,7 +109,7 @@ docker run -d --name $USER-dist \
   -v /dev/hugepages:/dev/hugepages \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v $HOME:$HOME \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-24-04:latest \
   sleep infinity
 ```
 
@@ -127,7 +129,7 @@ To learn more, take a [tour](docs/sphinx/tour/index.md), explore the [programmin
 
 ### 2.4 ![ird](https://img.shields.io/badge/ird-blueviolet) Development image (for building tt-lang)
 
-Image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-ird-ubuntu-22-04))
+Image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-ird-ubuntu-24-04))
 
 The **ird** image has the pre-built toolchain (LLVM, tt-metal, Python venv) but does not include tt-lang itself. Clone the repository and build against the toolchain. You can maintain multiple clones or branches side by side, each with its own build directory.
 
@@ -141,7 +143,7 @@ docker run -d --name $USER-ird \
   -v $HOME:$HOME \
   -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
   -v $HOME/.ssh/known_hosts:/root/.ssh/known_hosts:ro \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:latest \
   sleep infinity
 ```
 

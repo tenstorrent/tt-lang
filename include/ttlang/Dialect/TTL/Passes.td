@@ -441,7 +441,7 @@ def TTLScheduleOperations
     one init per consecutive group of same-type ops.
 
     Ops are sorted by (dependency depth, category, TypeID, init affinity,
-    dst_index). Dependency depth considers RAW (SSA def-use), WAW (same DST
+    dst_index). Dependency depth considers SSA RAW, DST RAW, WAW (same DST
     write index), and WAR (write after prior read of same DST index) hazards.
     Ops at the same depth are independent and can be reordered.
 
@@ -449,7 +449,8 @@ def TTLScheduleOperations
     scheduled. Store ops (after the commit/wait boundary) are not reordered.
 
     Category ordering:
-      CopyTile < Bcast < FPUBinary < SFPUUnary < SFPUBinary < CopyDst
+      Bcast < Transpose < CopyTile < FPUBinary < SFPUUnary < SFPUBinary <
+      CopyDst < DstIndex
 
     Example:
     ```mlir
@@ -688,6 +689,43 @@ def TTLDumpCBFlowGraph
   let options = [
     Option<"outputPath", "output", "std::string", "\"\"",
            "Path to write JSON output (empty for stderr debug only)">
+  ];
+}
+
+def TTLLowerScalarCmpF
+    : Pass<"ttl-lower-scalar-cmpf", "::mlir::ModuleOp"> {
+  let summary = "Lower arith.cmpf on scalar floats to TTKernel soft-float ops";
+  let description = [{
+    Converts `arith.cmpf` operations on scalar floats (from `raw_element_read`
+    lowering) to TTKernel soft-float comparison ops. After
+    `convert-ttl-to-ttkernel`, float values from L1 loads are represented as
+    integer bit patterns with `unrealized_conversion_cast` bridging to float
+    types. This pass resolves those casts and emits the appropriate TTKernel
+    comparison op.
+
+    Supported predicates:
+    - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
+    - `olt` -> same ops with swapped operands
+
+    All other predicates (`oeq`, `one`, `oge`, `ole`, and all unordered
+    predicates `uno`, `ueq`, `ugt`, `uge`, `ult`, `ule`, `une`) emit an
+    error diagnostic and signal pass failure.
+
+    Operand requirements: each `arith.cmpf` operand must resolve to an
+    integer bit pattern via one of two sources:
+    1. `unrealized_conversion_cast(iN -> fN)` from a prior
+       `RawElementReadLowering` (unwraps to the integer directly).
+    2. `arith.constant <float>` (materializes the IEEE-754 bit pattern
+       as an integer constant).
+
+    Operands from other sources (e.g., `arith.addf` results) cannot be
+    resolved and cause a diagnostic: "could not resolve float operand to
+    integer bit pattern".
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 

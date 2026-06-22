@@ -56,6 +56,7 @@ output_value() {
     assert_equal "$(output_value wheel_variant)" "light"
     assert_equal "$(output_value wheel_variants)" '["light"]'
     assert_equal "$(output_value wheel_matrix)" '{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+    assert_equal "$(output_value standard_wheel_matrix)" '{"include":[]}'
     assert_output --partial "Using existing docker_tag=mytag"
 }
 
@@ -65,6 +66,7 @@ output_value() {
     assert_equal "$(output_value wheel_variant)" "bundled-and-light"
     assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
     assert_equal "$(output_value wheel_matrix)" '{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"},{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+    assert_equal "$(output_value standard_wheel_matrix)" '{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
     assert_output --partial 'Resolved wheel_variants=["bundled","light"]'
 }
 
@@ -87,6 +89,7 @@ output_value() {
     DISPATCH_WHEEL_VARIANT="" EVENT_NAME=schedule run -0 "$SCRIPT"
     assert_equal "$(output_value wheel_variant)" "bundled-and-light"
     assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
+    assert_equal "$(output_value standard_wheel_matrix)" '{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
 }
 
 @test "schedule event keeps overwrite_releases=true if already set" {
@@ -102,7 +105,7 @@ output_value() {
 @test "stable tag push publishes bundled and light when public PyPI is blocked" {
     version_file=$(make_tt_metal_version_file \
         "$TEST_TT_METAL_RC1_TAG" \
-        "$TEST_TT_METAL_RC2_TAG")
+        "$TEST_TT_METAL_NEXT_TAG")
 
     DISPATCH_VERSION_OVERRIDE="" \
     DISPATCH_WHEEL_VARIANT="" \
@@ -121,7 +124,7 @@ output_value() {
 @test "stable tag push publishes only light when public PyPI is aligned" {
     version_file=$(make_tt_metal_version_file \
         "$TEST_TT_METAL_RC2_TAG" \
-        "$TEST_TT_METAL_RC2_TAG")
+        "$TEST_TT_METAL_TAG")
 
     DISPATCH_VERSION_OVERRIDE="" \
     DISPATCH_WHEEL_VARIANT="" \
@@ -139,7 +142,7 @@ output_value() {
 @test "stable manual bundled publish is rejected when public PyPI is aligned" {
     version_file=$(make_tt_metal_version_file \
         "$TEST_TT_METAL_RC2_TAG" \
-        "$TEST_TT_METAL_RC2_TAG")
+        "$TEST_TT_METAL_TAG")
 
     DISPATCH_VERSION_OVERRIDE="1.2.3" \
     DISPATCH_WHEEL_VARIANT=bundled \
@@ -189,6 +192,7 @@ EOF
     assert_output --partial "version_override=42.42.42.dev20260527"
     assert_output --partial "wheel_variant=bundled"
     assert_output --partial 'wheel_variants=["bundled"]'
+    assert_output --partial 'standard_wheel_matrix={"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
     assert_output --partial "allow_final_internal_version=false"
 }
 

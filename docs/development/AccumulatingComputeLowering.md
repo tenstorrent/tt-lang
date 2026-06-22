@@ -1,28 +1,21 @@
 # Accumulating Compute Lowering
 
 This document describes how the tt-lang compiler lowers operations that
-accumulate results across multiple invocations — reductions, matmul
-K-accumulation, and user-written `+=` loops — onto the Tenstorrent
+accumulate results across multiple invocations - reductions, matmul
+K-accumulation, and user-written `+=` loops - onto the Tenstorrent
 compute engines.
 
 ## Overview
 
-Tenstorrent hardware supports two accumulation mechanisms, and the
-compiler maps each accumulation source to one of them.
+An accumulation in tt-lang can be compiled in three ways with the same
+program semantics and different thread-local data movement:
 
-**DST register accumulation.** The compute engines hold partial results
-in a destination register file (DST) that persists across tile ops as
-long as it stays acquired (not released). Per-tile accumulation (matmul
-K-reduction, reduce across a reduction dim) happens inside one
-acquire/release cycle.
+1. Keep the partial value in the destination register file (DST).
+2. Add packed output tiles into L1 through the packer.
+3. Carry the partial value through an explicit compiler-managed dataflow
+   buffer (DFB).
 
-**L1 packer accumulation.** The pack unit can add each packed tile to
-the existing L1 value instead of overwriting, controlled by
-`pack_reconfig_l1_acc(1)` (enable) and `pack_reconfig_l1_acc(0)`
-(disable). Accumulation across separate acquire/release cycles uses
-this mechanism because DST is released between iterations.
-
-The compiler surface covers three accumulation sources:
+The current compiler lowering recognizes these accumulation forms:
 
 - `reduce_tile` and `matmul_tiles` accumulate per-tile over a reduction
   dim. The `dst-accumulation` pass option on `ttl-lower-to-loops`
@@ -40,10 +33,90 @@ The compiler surface covers three accumulation sources:
   prior-pack value rather than overwriting it. `precededByNonAccumulatingPack`
   detects the preceding non-accumulating pack.
 
-The rest of this document details each piece: `DstSectionOp` as the IR
-primitive that keeps DST live, the choice between DST and L1
-accumulation, the emitted loop structure, per-op init insertion, and
-the L1-acc guard placement (standard and prior-value variants).
+The accumulation-scope IR declares which destination tensor views participate
+in an accumulation region, plus the initial-state policy for each output. Later
+lowering can select DST, L1 packer accumulation, or explicit DFB state without
+reconstructing that policy from neighboring stores or DFB operations.
+
+The rest of this document details each piece: accumulation scopes,
+`DstSectionOp` as the IR primitive that keeps DST live, the choice between DST
+and L1 accumulation, the emitted loop structure, per-op init insertion, and the
+L1-acc guard placement.
+
+## Accumulation Scope IR
+
+`ttl.accumulation_scope` declares the accumulation contract for one or more
+destination tensor views. It records which outputs share a region, how each
+output is initialized, and which value returned by the region updates each
+output. The op does not select the storage mechanism used for partial values.
+It has:
+
+- `outputs`: destination tensor views governed by the accumulation policy;
+- `inits`: init operands for outputs whose initial mode is `init`;
+- `initial_modes`: one accumulation initial-mode per output (`overwrite`,
+  `accumulate_existing`, or `init`);
+- `body`: a single-block region with one block argument and one yielded value
+  per output.
+
+The op has `RecursiveMemoryEffects`; its effects are the effects of the body.
+It produces no tensor results. Tensor result support is deferred until the
+compiler needs value-style accumulation scopes.
+
+The verifier is structural:
+
+- initial-mode count equals output count;
+- init modes have matching init operands;
+- init operand types match their corresponding outputs;
+- the body has one block argument and one yielded value per output;
+- body arguments and yielded values match their output types;
+- nested `ttl.accumulation_scope` is rejected until nested accumulation
+  semantics are defined.
+
+The verifier does not prove that stores target the declared outputs or that
+control flow reaches an update. Those are nonlocal formation and strategy
+lowering responsibilities.
+
+Initial modes have these meanings:
+
+- `overwrite`: the first executed contribution defines the accumulator value.
+- `accumulate_existing`: an existing value in the output location
+  participates in the result.
+- `init`: an init operand seeds the accumulator, independent of the final
+  output location.
+
+Example:
+
+```mlir
+ttl.accumulation_scope
+    outs(%out_view : tensor<...>)
+    inits(%init : tensor<...>)
+{
+^bb0(%acc: tensor<...>):
+  %next = ttl.add %acc, %contribution : tensor<...>, tensor<...> -> tensor<...>
+  ttl.yield %next : tensor<...>
+} initial_modes([init])
+```
+
+Accumulation scopes expose accumulator state as block arguments and return the
+updated state through `ttl.yield`. Cross-output dependence is represented by
+ordinary SSA use-def edges between yielded values.
+
+```mlir
+ttl.accumulation_scope
+    outs(%out0, %out1 : tensor<...>, tensor<...>)
+    inits(%init0, %init1 : tensor<...>, tensor<...>)
+{
+^bb0(%acc0: tensor<...>, %acc1: tensor<...>):
+  %next0 = ttl.add %acc0, %acc1 : tensor<...>, tensor<...> -> tensor<...>
+  %next1 = ttl.add %acc1, %next0 : tensor<...>, tensor<...> -> tensor<...>
+  ttl.yield %next0, %next1 : tensor<...>, tensor<...>
+} initial_modes([init, init])
+```
+
+`AccumulationScopeOpInterface` gives consumers a common contract for ops that
+declare accumulation outputs and policies. The initial implementation is
+`ttl.accumulation_scope`; later PRs extend the same contract to structured
+reductions where the reduction body already represents accumulation.
 
 ## DstSectionOp
 

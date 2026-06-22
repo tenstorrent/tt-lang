@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Paths whose change between two commits indicates the dist/ird container
-# content would differ — i.e. a new image must be built. Sourced by
+# Paths whose change between two commits indicates container image content
+# would differ -- i.e. a new image must be built. Sourced by
 # detect-uplift.sh (drift signal) and get-version-tag.sh (deterministic
 # docker-tag suffix).
 #
@@ -20,5 +20,6 @@ UPLIFT_PATHS=(
     third-party/llvm-project
     third-party/tt-metal
     .github/containers/Dockerfile.base
+    .github/containers/Dockerfile.wheel-manylinux-2-34
     requirements-runtime.txt
 )

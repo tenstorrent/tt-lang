@@ -31,11 +31,11 @@ permissions:
 jobs:
     build-tt-lang:
         name: "Build and test tt-lang"
-        runs-on: ubuntu-22.04
+        runs-on: ubuntu-24.04
         timeout-minutes: 60
 
         container:
-            image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${{ inputs.docker_tag }}
+            image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
 
         defaults:
             run:
