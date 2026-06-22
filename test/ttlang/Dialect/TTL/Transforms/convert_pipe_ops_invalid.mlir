@@ -36,6 +36,39 @@ func.func @gather_block_count_too_small()
 
 // -----
 
+// A multi-block receive cannot wrap around the physical DFB ring. The receiver
+// must pop before reusing earlier slots or use a larger block_count.
+
+func.func @gather_receive_span_would_wrap_block_count()
+    attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 3}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>
+  %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 0>
+  %recv1 = ttl.cb_reserve %cb {num_tiles = 2 : i64}
+      : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+      -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  %xf1 = ttl.copy %p1, %recv1
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x2x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %xf1 : !ttl.transfer_handle
+  %recv2 = ttl.cb_reserve %cb {num_tiles = 2 : i64}
+      : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+      -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{gather pipe receiver DFB reserve at slot 2 spans 2 block(s), which would wrap block_count=3}}
+  %xf2 = ttl.copy %p2, %recv2
+      : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x2x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %xf2 : !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
 // A collective pipe cannot publish different receiver DFB slice offsets because
 // NoC multicast uses one destination SRAM address for all receivers.
 

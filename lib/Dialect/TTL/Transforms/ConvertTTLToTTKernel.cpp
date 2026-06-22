@@ -1573,9 +1573,24 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // don't walk the module per match.
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
+  PipeResourcePlan preliminaryPipeResourcePlan;
+  if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr,
+                                   preliminaryPipeResourcePlan,
+                                   pipeComputedAddresses,
+                                   /*pipeCapacityPlan=*/nullptr,
+                                   /*updateComputedAddressAttrs=*/false))) {
+    return failure();
+  }
+  PipeCapacityPlan preliminaryPipeCapacityPlan;
+  if (failed(buildPipeCapacityPlan(mod, *pipeGraphOrErr,
+                                   preliminaryPipeResourcePlan,
+                                   preliminaryPipeCapacityPlan))) {
+    return failure();
+  }
   PipeResourcePlan pipeResourcePlan;
   if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr, pipeResourcePlan,
-                                   pipeComputedAddresses))) {
+                                   pipeComputedAddresses,
+                                   &preliminaryPipeCapacityPlan))) {
     return failure();
   }
   PipeCapacityPlan pipeCapacityPlan;

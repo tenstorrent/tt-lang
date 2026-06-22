@@ -296,6 +296,8 @@ private:
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
   bool hasAnalyzedLaunchGrid = false;
+  /// Cached operation-keyed analysis facts are valid only before lowering
+  /// starts erasing or replacing IR operations.
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
   DFBReleaseOwnerMaps dfbReleaseOwners;
 };

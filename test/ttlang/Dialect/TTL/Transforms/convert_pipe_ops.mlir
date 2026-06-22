@@ -181,7 +181,7 @@ func.func @explicit_pipe_transfer_ir() attributes { "ttl.kernel_thread" = #ttker
 // with sender-local capacity released by the receiver pop.
 // CHECK-LABEL: func.func @computed_address_capacity_protocol
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-// CHECK-DAG: %[[CAPACITY_SEM:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[CAPACITY_SEM:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[INITIAL_CAPACITY:.*]] = arith.constant 1 : i32
 // CHECK: ttkernel.semaphore_set(%[[CAPACITY_SEM]], %[[INITIAL_CAPACITY]])
 // CHECK: ttkernel.cb_reserve_back

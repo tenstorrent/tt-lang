@@ -142,7 +142,8 @@ struct PipeAddressStorageInfo {
 struct PipeResourceInfo {
   PipeKey pipe;
   PipeTransferContract transferContract;
-  PipeReadyCounterInfo readyCounter;
+  /// Absent when the transfer is proven to use sender-capacity protocol.
+  std::optional<PipeReadyCounterInfo> readyCounter;
   PipeAddressStorageInfo addressStorage;
 };
 
@@ -199,7 +200,10 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// with every other transfer interval from the same source core.
 LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
-                                    bool enableComputedAddresses = true);
+                                    bool enableComputedAddresses = true,
+                                    const PipeCapacityPlan *pipeCapacityPlan =
+                                        nullptr,
+                                    bool updateComputedAddressAttrs = true);
 
 /// Emit sender-side capacity semaphore initial values at kernel entry.
 void initializePipeCapacitySemaphores(const PipeCapacityPlan &pipeCapacityPlan);

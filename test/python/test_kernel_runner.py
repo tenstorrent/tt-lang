@@ -77,6 +77,33 @@ class _FakeTTNN:
             self.common_runtime_args = common_runtime_args
             self.config = config
 
+    class CBFormatDescriptor:
+        def __init__(self, buffer_index, data_format, page_size):
+            self.buffer_index = buffer_index
+            self.data_format = data_format
+            self.page_size = page_size
+
+    class CBDescriptor:
+        def __init__(self, total_size, core_ranges, format_descriptors):
+            self.total_size = total_size
+            self.core_ranges = core_ranges
+            self.format_descriptors = format_descriptors
+            self.backing_desc = None
+
+        def set_buffer_from_cb(self, backing_desc):
+            self.backing_desc = backing_desc
+
+    @staticmethod
+    def cb_descriptor_from_sharded_tensor(
+        cb_index, tensor, total_size, core_ranges
+    ):
+        return {
+            "cb_index": cb_index,
+            "tensor": tensor,
+            "total_size": total_size,
+            "core_ranges": core_ranges,
+        }
+
     @staticmethod
     def generic_op(tensors, program):
         return {
@@ -299,6 +326,29 @@ def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
 
     assert len(fake_ttnn.create_calls) == 4
     assert lifetime == fake_ttnn.create_calls[-2:]
+
+
+def test_build_cb_descriptors_counts_computed_address_backing_tensors(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1024
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Total circular buffer allocation \\(1312 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(object())],
+            cb_configs=[
+                ((1, 1), 1, object(), 512, 512),
+                ((1, 1), 1, object(), 800, 800),
+            ],
+            core_ranges=_FakeCoreRanges(),
+            pipe_computed_address_backing_tensors={1: object()},
+        )
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():

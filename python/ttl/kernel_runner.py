@@ -541,17 +541,14 @@ def build_cb_descriptors(
             break
 
     # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
-    # tile_bytes_from_dtype; see issue #511.
-    anonymous_cb_bytes = sum(
-        total_size
-        for cb_index, (_, _, total_size, _) in enumerate(rows)
-        if cb_index not in backing_tensors
-    )
-    if anonymous_cb_bytes > remaining_bytes:
+    # tile_bytes_from_dtype; see issue #511. Computed-address backing tensors
+    # also consume L1, so they remain part of the same static DFB budget.
+    static_cb_bytes = sum(total_size for _, _, total_size, _ in rows)
+    if static_cb_bytes > remaining_bytes:
         breakdown = "\n".join(r[3] for r in rows)
         raise ValueError(
             "Total circular buffer allocation ("
-            f"{anonymous_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
+            f"{static_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
             "This checks static CB backing store only (not all L1 on core).\n"
             + breakdown
             + "\n  hint: reduce DFB shapes or block_count."

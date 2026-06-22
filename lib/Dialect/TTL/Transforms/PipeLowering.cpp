@@ -242,7 +242,9 @@ int64_t PipeReadyCounterInfo::getLocalSemaphoreIndex() const {
 static ReadyCounterAddressInfo
 getReadyCounterAddressInfo(Operation *op, const PipeResourceInfo &pipeResource,
                            const PipeResourcePlan &pipeResourcePlan) {
-  return pipeResource.readyCounter.getAddressInfo(op, pipeResourcePlan);
+  assert(pipeResource.readyCounter &&
+         "sender-ready protocol selected without a sender-ready counter");
+  return pipeResource.readyCounter->getAddressInfo(op, pipeResourcePlan);
 }
 
 /// Build the L1 address for the sender-ready counter for either storage kind.
@@ -1501,6 +1503,21 @@ countPostAndSendEvents(const PipeTransferAllocationUnit &unit) {
   return {postCount, sendCount};
 }
 
+static bool
+usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
+                       const PipeCapacityPlan *pipeCapacityPlan) {
+  if (!pipeCapacityPlan) {
+    return true;
+  }
+  for (Operation *transferCreateOp : unit.transferCreateOps) {
+    if (!pipeCapacityPlan->usesCapacityProtocol(
+            llvm::cast<PipeTransferCreateOp>(transferCreateOp))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static std::optional<FuncOp>
 getSingleSenderFunc(const PipeTransferAllocationUnit &unit) {
   std::optional<FuncOp> senderFunc;
@@ -1566,6 +1583,10 @@ getUniformReceiverBatchSize(const PipeGraph &pipeGraph,
 static std::optional<int64_t>
 getStaticReceiverByteOffset(const ReceiverDFBInfo &receiverInfo,
                             int64_t receiverBatchSize) {
+  // Static receiver addresses use one compile-time base per receiver DFB.
+  // This is exact only when the physical DFB ring period equals the receiver
+  // batch; otherwise the sender would need dynamic batch-iteration state to
+  // distinguish repeated visits to the same physical slot.
   if (receiverInfo.blockCount != receiverBatchSize) {
     return std::nullopt;
   }
@@ -1616,7 +1637,8 @@ struct ComputedAddressPlan {
 static ComputedAddressPlan
 buildComputedAddressPlan(ModuleOp mod,
                          MutableArrayRef<PipeTransferAllocationUnit> units,
-                         const PipeGraph &pipeGraph) {
+                         const PipeGraph &pipeGraph,
+                         bool updateFunctionAttrs) {
   ComputedAddressPlan plan;
 
   struct Candidate {
@@ -1672,10 +1694,13 @@ buildComputedAddressPlan(ModuleOp mod,
     for (int64_t dfbIndex : sortedDFBIndices) {
       dfbAttrs.push_back(static_cast<int32_t>(dfbIndex));
     }
-    func->setAttr(kPipeComputedAddressDFBIndicesAttrName,
-                  builder.getDenseI32ArrayAttr(dfbAttrs));
-    func->setAttr(kBaseCTAIndexAttrName,
-                  builder.getI32IntegerAttr(baseCTA + sortedDFBIndices.size()));
+    if (updateFunctionAttrs) {
+      func->setAttr(kPipeComputedAddressDFBIndicesAttrName,
+                    builder.getDenseI32ArrayAttr(dfbAttrs));
+      func->setAttr(
+          kBaseCTAIndexAttrName,
+          builder.getI32IntegerAttr(baseCTA + sortedDFBIndices.size()));
+    }
   }
 
   for (const Candidate &candidate : candidates) {
@@ -1696,7 +1721,9 @@ buildComputedAddressPlan(ModuleOp mod,
 
 LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
-                                    bool enableComputedAddresses) {
+                                    bool enableComputedAddresses,
+                                    const PipeCapacityPlan *pipeCapacityPlan,
+                                    bool updateComputedAddressAttrs) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
@@ -1709,7 +1736,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
       assignLiveIntervalColors(units, dominanceInfo);
   ComputedAddressPlan computedAddressPlan;
   if (enableComputedAddresses) {
-    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph);
+    computedAddressPlan = buildComputedAddressPlan(
+        mod, units, pipeGraph, updateComputedAddressAttrs);
   }
 
   llvm::SmallSetVector<int64_t, 4> activePipeNetIds;
@@ -1730,11 +1758,28 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
         firstSourceLocalReadyCounterSemIdx, receiverCompletionSemIdx + 1);
   }
 
+  llvm::MapVector<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
+      readyColorBySourceColor;
   int64_t maxReadyCountersPerSource = 0;
   for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
-    (void)sourceKey;
+    int64_t nextReadyColor = 0;
+    llvm::DenseMap<int64_t, int64_t> &readyColors =
+        readyColorBySourceColor[sourceKey];
+    for (auto indexedColor : llvm::enumerate(colorUsers)) {
+      bool colorUsesSenderReady = false;
+      for (unsigned unitIndex : indexedColor.value()) {
+        if (usesSenderReadyCounter(units[unitIndex], pipeCapacityPlan)) {
+          colorUsesSenderReady = true;
+          break;
+        }
+      }
+      if (colorUsesSenderReady) {
+        readyColors[static_cast<int64_t>(indexedColor.index())] =
+            nextReadyColor++;
+      }
+    }
     maxReadyCountersPerSource =
-        std::max<int64_t>(maxReadyCountersPerSource, colorUsers.size());
+        std::max(maxReadyCountersPerSource, nextReadyColor);
   }
 
   // Use one ready-counter kind per kernel so host allocation has one compact
@@ -1746,55 +1791,75 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
   llvm::MapVector<PipeSourceKey, SmallVector<int64_t>> globalIndexBySourceColor;
   int64_t nextGlobalSemaphoreIndex = 0;
   if (useGlobalReadyCounters) {
-    for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
+    for (const auto &[sourceKey, readyColors] : readyColorBySourceColor) {
       SmallVector<int64_t> &indices = globalIndexBySourceColor[sourceKey];
-      indices.reserve(colorUsers.size());
-      for (unsigned color = 0, colorCount = colorUsers.size();
+      indices.reserve(readyColors.size());
+      for (unsigned color = 0, colorCount = readyColors.size();
            color < colorCount; ++color) {
         indices.push_back(nextGlobalSemaphoreIndex++);
       }
     }
   }
 
+  llvm::MapVector<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
+      addressColorBySourceColor;
   int64_t maxAddressTableBytes = 0;
   for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
-    (void)sourceKey;
-    int64_t maxFallbackColor = -1;
+    int64_t nextAddressColor = 0;
+    llvm::DenseMap<int64_t, int64_t> &addressColors =
+        addressColorBySourceColor[sourceKey];
     for (auto indexedColor : llvm::enumerate(colorUsers)) {
+      bool colorUsesAddressTable = false;
       for (unsigned unitIndex : indexedColor.value()) {
         if (computedAddressPlan.infoByUnitIndex.find(unitIndex) ==
             computedAddressPlan.infoByUnitIndex.end()) {
-          maxFallbackColor =
-              std::max<int64_t>(maxFallbackColor, indexedColor.index());
+          colorUsesAddressTable = true;
+          break;
         }
+      }
+      if (colorUsesAddressTable) {
+        addressColors[static_cast<int64_t>(indexedColor.index())] =
+            nextAddressColor++;
       }
     }
     maxAddressTableBytes = std::max<int64_t>(
-        maxAddressTableBytes, (maxFallbackColor + 1) * kPipeAddressWordBytes);
+        maxAddressTableBytes, nextAddressColor * kPipeAddressWordBytes);
   }
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     const PipeTransferAllocationUnit &unit = indexedUnit.value();
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
-    PipeReadyCounterInfo readyCounter = PipeReadyCounterInfo::localSemaphore(
-        firstSourceLocalReadyCounterSemIdx + unit.resourceColor);
-    if (useGlobalReadyCounters) {
-      auto globalIt = globalIndexBySourceColor.find(sourceKey);
-      assert(globalIt != globalIndexBySourceColor.end());
-      assert(unit.resourceColor <
-             static_cast<int64_t>(globalIt->second.size()));
-      readyCounter = PipeReadyCounterInfo::globalSemaphore(
-          globalIt->second[unit.resourceColor]);
+    std::optional<PipeReadyCounterInfo> readyCounter;
+    if (usesSenderReadyCounter(unit, pipeCapacityPlan)) {
+      auto sourceIt = readyColorBySourceColor.find(sourceKey);
+      assert(sourceIt != readyColorBySourceColor.end());
+      auto colorIt = sourceIt->second.find(unit.resourceColor);
+      assert(colorIt != sourceIt->second.end());
+      int64_t readyColor = colorIt->second;
+      readyCounter = PipeReadyCounterInfo::localSemaphore(
+          firstSourceLocalReadyCounterSemIdx + readyColor);
+      if (useGlobalReadyCounters) {
+        auto globalIt = globalIndexBySourceColor.find(sourceKey);
+        assert(globalIt != globalIndexBySourceColor.end());
+        assert(readyColor < static_cast<int64_t>(globalIt->second.size()));
+        readyCounter =
+            PipeReadyCounterInfo::globalSemaphore(globalIt->second[readyColor]);
+      }
     }
-    PipeAddressStorageInfo addressStorage =
-        PipeAddressStorageInfo::receiverPublishedAddressTable(
-            PipeSramAddressTableInfo{unit.resourceColor *
-                                     kPipeAddressWordBytes});
+
     auto computedIt = computedAddressPlan.infoByUnitIndex.find(
         static_cast<unsigned>(indexedUnit.index()));
+    PipeAddressStorageInfo addressStorage;
     if (computedIt != computedAddressPlan.infoByUnitIndex.end()) {
       addressStorage =
           PipeAddressStorageInfo::computedReceiverDFB(computedIt->second);
+    } else {
+      auto sourceIt = addressColorBySourceColor.find(sourceKey);
+      assert(sourceIt != addressColorBySourceColor.end());
+      auto colorIt = sourceIt->second.find(unit.resourceColor);
+      assert(colorIt != sourceIt->second.end());
+      addressStorage = PipeAddressStorageInfo::receiverPublishedAddressTable(
+          PipeSramAddressTableInfo{colorIt->second * kPipeAddressWordBytes});
     }
     PipeResourceInfo pipeResource{
         unit.pipe,
@@ -1838,7 +1903,9 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
   }
   for (const auto &[transferCreateOp, resource] : info.resources) {
     (void)transferCreateOp;
-    resource.readyCounter.observe(observer);
+    if (resource.readyCounter) {
+      resource.readyCounter->observe(observer);
+    }
   }
 
   int64_t syncSemaphoreCount = observer.highestSyncSemaphoreIndex + 1;
@@ -1897,8 +1964,10 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
   }
   for (const auto &[transferCreateOp, resource] : info.resources) {
     (void)transferCreateOp;
-    SenderReadyObserver observer(highest, resource.pipe);
-    resource.readyCounter.observe(observer);
+    if (resource.readyCounter) {
+      SenderReadyObserver observer(highest, resource.pipe);
+      resource.readyCounter->observe(observer);
+    }
   }
   if (pipeCapacityPlan &&
       pipeCapacityPlan->getSyncSemaphoreCount() - 1 > highest.index) {

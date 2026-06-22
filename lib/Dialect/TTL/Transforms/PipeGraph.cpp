@@ -431,6 +431,11 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
 LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
   for (auto &[pk, info] : receiverDFBs) {
     if (!info.receiverSlotIndex.has_value()) {
+      if (pk.hasSingleReceiver()) {
+        return emitError(info.loc)
+               << "point-to-point pipe receiver post is not proven to execute "
+                  "on the receiver node; cannot assign a receiver DFB slot";
+      }
       return emitError(info.loc)
              << "collective pipe receiver posts reserve different DFB slots; "
                 "TT-Metal NoC multicast requires one destination SRAM address "
