@@ -27,6 +27,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLMaterializeLoopState.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
+  DstSubblockUtils.cpp
   TTLSubblockComputeForDST.cpp
   TTLValidateCBBudget.cpp
   TTLVerifyDFBSPSC.cpp

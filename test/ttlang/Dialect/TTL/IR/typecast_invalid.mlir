@@ -1,6 +1,6 @@
 // Verifier tests for ttl.tile_typecast: the tile shape must be preserved,
-// input/result data types must differ, and both data types must be floating
-// point formats supported by the hardware typecast path.
+// and both data types must be floating point formats supported by the hardware
+// typecast path.
 //
 // RUN: ttlang-opt --verify-diagnostics --split-input-file %s
 
@@ -22,18 +22,6 @@ func.func @tile_typecast_nontile_input_result(%a: i32) -> i32 {
   // expected-error @below {{ttcore.tile type}}
   %0 = ttl.tile_typecast %a into dst[%c0] : i32 -> i32
   return %0 : i32
-}
-
-// -----
-
-// Identity tile typecasts are not meaningful and should be rejected.
-func.func @tile_typecast_identity(%a: !ttcore.tile<32x32, f32>)
-    -> !ttcore.tile<32x32, f32> {
-  %c0 = arith.constant 0 : index
-  // expected-error @below {{input and result tile data types must differ}}
-  %0 = ttl.tile_typecast %a into dst[%c0]
-       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  return %0 : !ttcore.tile<32x32, f32>
 }
 
 // -----

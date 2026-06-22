@@ -47,6 +47,7 @@
 | 0.15 | 04/06/2026 | Rename `buffer_factor` to `block_count` |
 | 0.16 | 04/22/2026 | Add `ttl.block.squeeze` and `ttl.block.unsqueeze` |
 | 0.17 | 04/28/2026 | Move `broadcast`, `transpose`, `where`, `mask`, `mask_posinf`, `fill`, `squeeze`, `unsqueeze` to `ttl.block` |
+| 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 
 
 ## Introduction
@@ -455,39 +456,38 @@ def elwise_write():
 # ---------------------
 # Batched matrix multiplication with bias:
 #
-# y[i, m, n] = ∑(a[i, m, k] * b[k, n]) + c[m, n]
+# y[l, m, n] = ∑(a[l, m, k] * b[k, n]) + c[m, n]
 #              k
 #
 # Tensor   Torch shape   Note
-# a        I, M, K       Batched a matrix (e.g. input activations)
+# a        L, M, K       Batched a matrix (e.g. input activations)
 # b        K, N          Non-batched b matrix (e.g. weights)
 # c        M, N          Non-batched bias matrix c (e.g. weights)
-# y        I, M, N       Batched y matrix (e.g. output activations)
+# y        L, M, N       Batched y matrix (e.g. output activations)
 #
 # All tensors have tiled layout
 
-# Shape in tiles (I, M, N and K are evenly divisible by TILE_SIZE)
-I_TILES = I // TILE_SIZE
+# Shape in tiles (M, N and K are evenly divisible by TILE_SIZE)
 M_TILES = M // TILE_SIZE
 N_TILES = N // TILE_SIZE
 K_TILES = K // TILE_SIZE
 
-# Shape in blocks (I_TILES, M_TILES, N_TILES and K_TILES are evenly
-# divisible by I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE and K_BLOCK_SIZE)
-I_BLOCKS = I_TILES // I_BLOCK_SIZE
+# Shape in blocks (L, M_TILES, N_TILES and K_TILES are evenly
+# divisible by L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE and K_BLOCK_SIZE)
+L_BLOCKS = L // L_BLOCK_SIZE
 M_BLOCKS = M_TILES // M_BLOCK_SIZE
 N_BLOCKS = N_TILES // N_BLOCK_SIZE
 K_BLOCKS = K_TILES // K_BLOCK_SIZE
 
-a_dfb = ttl.make_dataflow_buffer_like(a, shape = (I_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE))
+a_dfb = ttl.make_dataflow_buffer_like(a, shape = (L_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE))
 b_dfb = ttl.make_dataflow_buffer_like(b, shape = (K_BLOCK_SIZE, N_BLOCK_SIZE))
 c_dfb = ttl.make_dataflow_buffer_like(c, shape = (M_BLOCK_SIZE, N_BLOCK_SIZE))
-y_dfb = ttl.make_dataflow_buffer_like(y, shape = (I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+y_dfb = ttl.make_dataflow_buffer_like(y, shape = (L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
 @ttl.datamovement()
 def matmul_read():
-    for i_block in range(I_BLOCKS):
-        i_slice = slice(i_block * I_BLOCK_SIZE, (i_block + 1) * I_BLOCK_SIZE)
+    for l_block in range(L_BLOCKS):
+        l_slice = slice(l_block * L_BLOCK_SIZE, (l_block + 1) * L_BLOCK_SIZE)
 
         for m_block in range(M_BLOCKS):
             m_slice = slice(m_block * M_BLOCK_SIZE, (m_block + 1) * M_BLOCK_SIZE)
@@ -514,9 +514,9 @@ def matmul_read():
                         a_dfb.reserve() as a_blk,
                         b_dfb.reserve() as b_blk,
                     ):
-                        # Load I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a into a_blk
+                        # Load L_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a into a_blk
                         # and K_BLOCK_SIZE×N_BLOCK_SIZE of b into b_blk
-                        a_xf = ttl.copy(a[i_slice, m_slice, k_slice], a_blk)
+                        a_xf = ttl.copy(a[l_slice, m_slice, k_slice], a_blk)
                         b_xf = ttl.copy(b[k_slice, n_slice], b_blk)
 
                         a_xf.wait()
@@ -527,7 +527,7 @@ def matmul_read():
 
 @ttl.compute()
 def matmul_compute():
-    for _ in range(I_BLOCKS):
+    for _ in range(L_BLOCKS):
         for _ in range(M_BLOCKS):
             for _ in range(N_BLOCKS):
 
@@ -535,7 +535,7 @@ def matmul_compute():
                 with y_dfb.reserve() as y_blk:
 
                     # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
-                    y_final = ttl.block.fill(0, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                    y_final = ttl.block.fill(0, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                     # Repeat for each K block
                     for _ in range(K_BLOCKS):
@@ -547,11 +547,11 @@ def matmul_compute():
                         ):
                             # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
                             # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
-                            # broadcast it over dim 0 to I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b_bcast = ttl.block.broadcast(ttl.block.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
+                            # broadcast it over dim 0 to L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
+                            b_bcast = ttl.block.broadcast(ttl.block.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(L_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
 
-                            # Accumulate dot product between I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
-                            # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
+                            # Accumulate dot product between L_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
+                            # L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
                             y_final += a_blk @ b_bcast
 
                             # End of "with" scope:
@@ -562,8 +562,8 @@ def matmul_compute():
 
                         # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
                         # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
-                        # broadcast it over dim 0 to I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
-                        c_bcast = ttl.block.broadcast(ttl.block.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                        # broadcast it over dim 0 to L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
+                        c_bcast = ttl.block.broadcast(ttl.block.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                         y_final = y_final + c_bcast
 
@@ -577,16 +577,16 @@ def matmul_compute():
 
 @ttl.datamovement()
 def matmul_write():
-    for i_block in range(I_BLOCKS):
+    for l_block in range(L_BLOCKS):
         for m_block in range(M_BLOCKS):
             for n_block in range(N_BLOCKS):
 
                 # Wait for matmul_compute to store and push y_blk
                 with y_dfb.wait() as y_blk:
 
-                    # Store I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE y_blk block into y
+                    # Store L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE y_blk block into y
                     y_xf = ttl.copy(y_blk, y[
-                        i_block * I_BLOCK_SIZE : (i_block + 1) * I_BLOCK_SIZE,
+                        l_block * L_BLOCK_SIZE : (l_block + 1) * L_BLOCK_SIZE,
                         m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE,
                         n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE])
                     y_xf.wait()
@@ -1003,83 +1003,6 @@ def writer():
 | `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
 
-## Scalar Element Access
-
-`ttl.raw_element_read` and `ttl.raw_element_write` provide per-element L1
-access within DFB blocks from data movement (noc) threads. These
-operations fill the gap between the whole-block DFB interface and
-use cases requiring element-level manipulation, such as KV-cache updates,
-top-K selection, and argmax reductions.
-
-### API
-
-| Function | Description |
-| :---- | :---- |
-| `ttl.raw_element_read(block, *coords) -> float` | Read a single scalar element from a DFB block at the given coordinates. The block must come from `ttl.cb_wait`. Returns an `f32` or `bf16` value matching the block's element dtype. |
-| `ttl.raw_element_write(block, *coords, val)` | Write a scalar value to a DFB block at the given coordinates. The block must come from `ttl.cb_reserve`. |
-
-Coordinates are flat scalar-element positions (one per tensor dimension).
-For tiled blocks the compiler decomposes coordinates into tile index and
-intra-tile face-order offset. For row-major blocks coordinates linearize
-directly.
-
-### Supported Dtypes
-
-Only `f32` and `bf16` element types are supported. The L1 pointer width
-matches the dtype: 32-bit (`uint32_t*`) for f32, 16-bit (`uint16_t*`) for
-bf16.
-
-### Thread Restriction
-
-Both operations are restricted to data movement (noc) kernel threads.
-The verifier rejects them if the enclosing function does not carry the
-`ttl.kernel_thread = #ttkernel.thread<noc>` attribute.
-
-### Comparison Operators
-
-Values from `raw_element_read` support scalar float comparisons:
-
-| Python operator | Supported |
-| :---- | :---- |
-| `>` | Yes |
-| `<` | Yes |
-| `==` | No (compile-time error) |
-| `!=` | No (compile-time error) |
-| `>=` | No (compile-time error) |
-| `<=` | No (compile-time error) |
-
-### Example
-
-```python
-@ttl.datamovement()
-def dm_write():
-    with inp_dfb.wait() as rblk:
-        with out_dfb.reserve() as wblk:
-            max_val = ttl.raw_element_read(rblk, 0, 0)
-            for c in range(1, 32):
-                val = ttl.raw_element_read(rblk, 0, c)
-                if val > max_val:
-                    max_val = val
-            ttl.raw_element_write(wblk, 0, 0, max_val)
-            tx = ttl.copy(wblk, out[0, 0])
-            tx.wait()
-```
-Note this example currently does not work with the compiler due to conditional scalar variable assignment, issue #380
-
-### Write Value Sources
-
-Values written via `raw_element_write` must originate from one of:
-
-- A prior `raw_element_read` on the same or another block.
-- A Python float constant (materializes the IEEE-754 bit pattern).
-- An f32 value written to a bf16 block (the DSL auto-inserts
-  `arith.truncf`; truncation is lossy for values not exactly
-  representable in bf16).
-
-Other SSA float values (e.g., results of arithmetic operations) are not
-supported and fail at compile time.
-
-
 ## Semaphore
 
 A *semaphore* is a communication primitive for general synchronization between data movement kernels on different nodes. Each semaphore has an associated 32-bit unsigned integer *semaphore value* for each node. This value can be changed (set or incremented) by a data movement kernel on the local or a remote node. When changing semaphore value remotely a single node coordinate for unicast change or a node range for multicast change is specified. Only setting the semaphore value is supported as a multicast change. A data movement kernel can wait on a semaphore until its value satisfies a condition. It is possible to specify either a condition with exact value or a condition with minimum value. Only local data movement kernels can wait on a semaphore.
@@ -1410,6 +1333,20 @@ def matmul_read():
 | `ttl.block.squeeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Remove shape dimension at positions specified by `dims`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimensions 0 (outermost) and 2: `ttl.block.squeeze(a, dims=[0, 2])`. Here if the shape of `a` is `(1, N, 1, M)` the shape of the result will be `(N, M)`.<br><br>Example for squeeze over dimensions -1 (innermost) and -3: `ttl.block.squeeze(a, dim=[-1, -3])`. Here if the shape of `a` is `(N, 1, M, 1)` the shape of the result will be `(N, M)`. |
 | `ttl.block.unsqueeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Add shape dimension of 1 at positions specified by `dims`. Position values in `dims` refer to a position in the resulting shape. <br><br>Example for unsqueeze over dimensions 0 (outermost) and 2: `ttl.block.unsqueeze(a, dims=[0, 2])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, 1, M)`.<br><br>Example for unsqueeze over dimensions -1 (innermost) and -3: `ttl.block.unsqueeze(a, dims=[-1, -3])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, 1, M, 1)`. |
 
+### Scalar element access functions
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.raw_element_read(block: ttl.Block, *coords: List[ttl.NaturalInt]) -> float` | Read a single scalar element from a block at the given coordinates. The block must be in `MR` or `RW` state. Can be used only in data movement kernels. Coordinates are flat scalar-element positions (one per block dimension). |
+| `ttl.raw_element_write(block: ttl.Block, *coords: List[ttl.NaturalInt], value: float)` | Write a scalar `value` to a block at the given coordinates. The block must be in `MW` or `RW` state. Can be used only in data movement kernels. |
+
+#### Limitations
+
+- Only `ttnn.DataType.FLOAT32` and `ttnn.DataType.BFLOAT16` element types are supported
+- Values written via `ttl.raw_element_write` must originate from one of:
+    - A prior `ttl.raw_element_read` on the same or another block
+    - A Python float constant
+
 ## Appendix C. Naming guidelines
 
 | Object | Guideline |
@@ -1460,6 +1397,12 @@ def matmul_read():
 | `ttl.math.reduce_sum` | 0.1.7 | 0.1.8 |
 | `ttl.block.transpose` | 0.1.7 | 0.1.8 |
 | `ttl.block` shape manipulation functions: `squeeze`, `unsqueeze` | N/S | N/S |
+| `>` for result of `ttl.raw_element_read` | 1.0.0 | 1.0.0 |
+| `<` for result of `ttl.raw_element_read` | 1.0.0 | 1.0.0 |
+| `==` for result of `ttl.raw_element_read` | N/S | N/S |
+| `!=` for result of `ttl.raw_element_read` | N/S | N/S |
+| `>=` for result of `ttl.raw_element_read` | N/S | N/S |
+| `<=` for result of `ttl.raw_element_read` | N/S | N/S |
 
 * N/S - Not Supported
 * N/A - Not Applicable

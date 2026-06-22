@@ -260,6 +260,12 @@ class CMakeBuild(build_ext):
             if package_dir.exists():
                 shutil.rmtree(package_dir)
 
+    def _remove_stale_native_payloads(self, install_dir):
+        """Remove previously staged native extension files before CMake install."""
+        mlir_libs_dir = install_dir / "ttl" / "_mlir_libs"
+        if mlir_libs_dir.exists():
+            shutil.rmtree(mlir_libs_dir)
+
     def _sanitize_env_for_cmake(self):
         """Remove pip build-isolation env vars that break cmake's nested pip calls.
 
@@ -353,6 +359,8 @@ class CMakeBuild(build_ext):
         self.spawn(
             ["cmake", "--build", str(build_dir), "--target", "TTLangPythonModules"]
         )
+
+        self._remove_stale_native_payloads(install_dir)
 
         # Use --prefix to override the install location at install time.
         # This avoids reconfiguring the build just to change

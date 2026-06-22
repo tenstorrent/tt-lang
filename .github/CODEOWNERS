@@ -17,7 +17,7 @@
 # Build and packaging infrastructure.
 /cmake/ bnorris@tenstorrent.com
 /scripts/ bnorris@tenstorrent.com phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com
-/packaging/ bnorris@tenstorrent.com kfragkiadakis@tenstorrent.com
+/packaging/ bnorris@tenstorrent.com phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com
 
 # Core compiler and dialect implementation.
 /include/ bnorris@tenstorrent.com zcarver@tenstorrent.com vtsilytskyi@tenstorrent.com

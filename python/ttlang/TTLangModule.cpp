@@ -28,10 +28,15 @@ NB_MODULE(_ttlang, m) {
       nb::arg("context"),
       "Register and load the TTL dialect into the given context");
 
-  // Register dialects into a dialect registry (for site initialization)
+  // Register dialects into a dialect registry (for site initialization).
+  // Also registers the minimal upstream MLIR dialects the pipeline uses, which
+  // previously came from MLIR's RegisterEverything.
   m.def(
       "register_dialects",
-      [](MlirDialectRegistry registry) { ttlangRegisterTTLDialect(registry); },
+      [](MlirDialectRegistry registry) {
+        ttlangRegisterTTLDialect(registry);
+        ttlangRegisterUpstreamDialects(registry);
+      },
       nb::arg("dialectRegistry"),
       "Register all tt-lang dialects into the given dialect registry");
 

@@ -10,12 +10,22 @@ eliminating the need for module-level globals.
 
 from __future__ import annotations
 
+import sys
 from typing import Optional
 
 from greenlet import getcurrent
 
 from .context_types import SimulatorContext
 from .blockstate import KernelType
+
+
+def _free_monitoring_tool_id() -> None:
+    monitoring = getattr(sys, "monitoring", None)
+    if monitoring is None:
+        return
+    tool_id = monitoring.OPTIMIZER_ID
+    if monitoring.get_tool(tool_id) is not None:
+        monitoring.free_tool_id(tool_id)
 
 
 def get_context() -> SimulatorContext:
@@ -68,10 +78,7 @@ def reset_context() -> None:
     the next simulation run can re-register its callbacks from a clean state.
     Primarily useful for test cleanup.
     """
-    import sys
-
-    if sys.monitoring.get_tool(sys.monitoring.OPTIMIZER_ID) is not None:
-        sys.monitoring.free_tool_id(sys.monitoring.OPTIMIZER_ID)
+    _free_monitoring_tool_id()
     getcurrent()._sim_context = SimulatorContext()  # type: ignore
 
 
@@ -85,8 +92,6 @@ def cleanup_run_context() -> None:
 
     Called by the ``@ttl.operation`` wrapper after each ``Program`` run.
     """
-    import sys
-
     ctx = get_context()
     ctx.scheduler = None
     ctx.current_kernel_type = None
@@ -96,8 +101,7 @@ def cleanup_run_context() -> None:
     ctx.active_hooks.clear()
     ctx.injection_points_cache.clear()
     ctx.auto_wait_copy_lines.clear()
-    if sys.monitoring.get_tool(sys.monitoring.OPTIMIZER_ID) is not None:
-        sys.monitoring.free_tool_id(sys.monitoring.OPTIMIZER_ID)
+    _free_monitoring_tool_id()
 
 
 def get_current_kernel_type() -> KernelType:

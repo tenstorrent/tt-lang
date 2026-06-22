@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       docker_tag:
-        description: "Docker image tag for the ird container. Leave empty to build and push one first."
+        description: "Docker image tag for required builder containers. Leave empty to build and push them first."
         type: string
         default: ""
         required: false
@@ -66,6 +66,7 @@ jobs:
       wheel_variant: ${{ steps.resolve.outputs.wheel_variant }}
       wheel_variants: ${{ steps.resolve.outputs.wheel_variants }}
       wheel_matrix: ${{ steps.resolve.outputs.wheel_matrix }}
+      standard_wheel_matrix: ${{ steps.resolve.outputs.standard_wheel_matrix }}
       allow_final_internal_version: ${{ steps.resolve.outputs.allow_final_internal_version }}
 
     steps:
@@ -97,14 +98,15 @@ jobs:
     secrets: inherit
     with:
       push: true
+      build_manylinux_wheel_images: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
 
-  build-wheels:
+  build-standard-wheels:
     needs: [preflight, build-docker]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && (contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') || contains(fromJSON(needs.preflight.outputs.wheel_variants), 'pypi')) }}
     name: "Build ${{ matrix.wheel_variant }} wheels"
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.preflight.outputs.wheel_matrix) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.standard_wheel_matrix) }}
     permissions:
       contents: read
       packages: read
@@ -116,14 +118,109 @@ jobs:
       external_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/tt-metal' || '' }}
       external_python_venv: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
       bundled_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
-      build_sim_wheel: ${{ !(needs.preflight.outputs.wheel_variant == 'bundled-and-light' && matrix.wheel_variant == 'light') }}
+      build_sim_wheel: true
       allow_final_internal_version: ${{ needs.preflight.outputs.allow_final_internal_version == 'true' }}
       artifact_name: tt-lang-wheels-${{ matrix.wheel_variant }}
 
+  build-light-wheels:
+    needs: [preflight, build-docker]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
+    name: "Build light wheel (${{ matrix.python_tag }})"
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        python_tag: [cp310, cp312]
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}:${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
+
+    defaults:
+      run:
+        shell: bash
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fix git safe directory
+        run: git config --global --add safe.directory '*'
+
+      - name: Build light core wheel
+        env:
+          TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
+        run: .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
+
+      - name: Build tt-lang-light metapackage
+        if: ${{ matrix.python_tag == 'cp312' }}
+        env:
+          TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
+        run: .github/scripts/build-s3-light-metapackage-wheel.sh --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
+
+      - name: Upload per-ABI wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: tt-lang-s3-light-${{ matrix.python_tag }}
+          path: dist/*.whl
+          retention-days: 14
+
+  collect-light-wheels:
+    name: "Verify S3 light wheel set"
+    needs: [preflight, build-docker, build-light-wheels]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && needs.build-light-wheels.result == 'success' && contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Download per-ABI wheels
+        uses: actions/download-artifact@v8
+        with:
+          pattern: tt-lang-s3-light-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify wheel filenames and versions
+        run: .github/scripts/verify-s3-wheel-versions.sh --no-sim light "${{ needs.preflight.outputs.version_override }}" dist
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Install-test light wheels
+        run: .github/scripts/test-s3-light-wheels.sh --version "${{ needs.preflight.outputs.version_override }}" --docker-tag "${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}" --dist-dir dist
+
+      - name: Upload combined wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: tt-lang-wheels-light
+          path: dist/*.whl
+          retention-days: 14
+
   publish:
     name: "Publish wheels to S3 PyPI"
-    needs: [preflight, build-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && needs.build-wheels.result == 'success' }}
+    needs: [preflight, build-standard-wheels, collect-light-wheels]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-standard-wheels.result == 'success' || needs.build-standard-wheels.result == 'skipped') && (needs.collect-light-wheels.result == 'success' || needs.collect-light-wheels.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -168,11 +265,7 @@ jobs:
             prepare_args+=(bundled=wheel-artifacts/bundled)
           fi
           if [ -d wheel-artifacts/light ]; then
-            if [ -d wheel-artifacts/bundled ]; then
-              prepare_args+=(light:no-sim=wheel-artifacts/light)
-            else
-              prepare_args+=(light=wheel-artifacts/light)
-            fi
+            prepare_args+=(light:no-sim=wheel-artifacts/light)
           fi
           if [ -d wheel-artifacts/pypi ]; then
             prepare_args+=(pypi=wheel-artifacts/pypi)

@@ -355,9 +355,9 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
   let summary = "Structured accumulation scope";
   let description = [{
     `ttl.accumulation_scope` records an accumulation policy for one or more
-    destination tensors. The operation does not prescribe whether the accumulated value is
-    stored in DST, a dataflow buffer, or another target-specific storage
-    mechanism.
+    destination tensors. The operation does not prescribe whether the
+    accumulated value is stored in DST, a dataflow buffer, or another
+    target-specific storage mechanism.
 
     The `initial_modes` attribute contains one entry per output. `inits`
     contains one operand for each output whose initial mode is `init`, in output
@@ -1144,7 +1144,7 @@ defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 // `ttl.typecast` is a unary elementwise op that converts the data type of
 // every element. The tile-level form `ttl.tile_typecast` carries the
 // destination dtype implicitly via its result tile element type. Because
-// input and result element types differ, typecast does not use the standard
+// input and result element types can differ, typecast does not use the standard
 // unary elementwise multiclass (which constrains all operand and result
 // element types to match).
 
@@ -1153,13 +1153,15 @@ def TTL_TypecastOp : TTL_Op<"typecast",
   let summary = "Elementwise typecast on tensors";
   let description = [{
     Convert each element of `input` to the result element type. The result
-    tensor has the same shape as the input but with a different element type.
+    tensor has the same shape as the input. Identity typecasts fold to the
+    input.
     Lowered to `ttl.compute` containing a `ttl.tile_typecast` operation.
   }];
   let arguments = (ins AnyType:$input);
   let results = (outs AnyType:$result);
   let assemblyFormat =
       "$input attr-dict `:` functional-type(operands, results)";
+  let hasFolder = 1;
 }
 
 def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
@@ -1177,6 +1179,7 @@ def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
       "$input `into` `dst` `[` $dst_index `]` attr-dict `:` "
       "type($input) `->` type($result)";
   let hasVerifier = 1;
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//

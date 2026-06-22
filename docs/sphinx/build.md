@@ -13,7 +13,7 @@ fully working environment.
 - CMake 3.28+
 - Ninja
 - Clang/Clang++ 17+ (or GCC 12+)
-- Python 3.11+
+- Python 3.10+ (Python 3.12 recommended)
 - Git (submodules must be initialized:
   `git submodule update --init --recursive`)
 
@@ -601,9 +601,11 @@ that image, verify the wheel versions, and publish the result to S3 PyPI. The
 selected variant set is `bundled-and-light` when public PyPI publishing is
 blocked, and `light` when public PyPI publishing is aligned.
 
-The scheduled workflow also defaults to `wheel_variant: bundled-and-light`,
-builds and pushes the matching IRD image, builds bundled and light wheels from
-that image, verifies the wheel versions, and publishes the result to S3 PyPI.
+The scheduled workflow defaults to `wheel_variant: bundled-and-light`. It keeps
+building the complete bundled wheel from the IRD image, and also builds and
+pushes the matching manylinux_2_34 wheel-builder images for Python 3.10 and
+Python 3.12 light wheels. The workflow verifies all wheel versions before
+publishing the combined result to S3 PyPI.
 
 For a manual bundled internal wheel with an existing IRD image, dispatch the
 workflow with:
@@ -629,12 +631,12 @@ wheel_variant: light
 version_override: <internal-version>
 ```
 
-The workflow maps this publish selection to the reusable wheel builder's
-`TTLANG_TTNN_DEP_MODE=external` build mode and sets
-`TTLANG_VERSION_OVERRIDE=<version_override>+light`. The resulting `tt-lang` wheel
-omits `Requires-Dist: ttnn`; the normal PyPI build keeps that requirement. The
-same build also emits `tt-lang-light==<version_override>`, a metapackage that
-depends on `tt-lang==<version_override>+light`.
+The workflow maps this publish selection to the manylinux_2_34 light wheel
+builder. It emits `cp310` and `cp312` `tt-lang==<version_override>+light`
+wheels. Those wheels omit `Requires-Dist: ttnn`; the normal PyPI build keeps
+that requirement. The same build also emits
+`tt-lang-light==<version_override>`, a metapackage that depends on
+`tt-lang==<version_override>+light`.
 
 To publish bundled and light wheels from the same workflow run, dispatch with:
 
@@ -645,9 +647,8 @@ version_override: <internal-version>
 
 The workflow builds the bundled and light wheel sets separately, uploads
 mode-specific artifacts, verifies each artifact with the expected version rules,
-then publishes a single combined directory. The light build skips
-`tt-lang-sim` in this mode because the bundled build already provides the same
-`tt-lang-sim==<version_override>` package/version for the S3 index.
+then publishes a single combined directory. The light build does not emit
+`tt-lang-sim`; bundled/public wheel builds keep producing the simulator wheel.
 
 #### Local internal wheel testing
 
@@ -672,32 +673,12 @@ auditwheel repair /tmp/ttlang-wheels/bundled/raw/tt_lang-*.whl \
   --wheel-dir=/tmp/ttlang-wheels/bundled/dist
 ```
 
-Light wheel:
+Light wheels:
 
 ```bash
-source /opt/ttlang-toolchain/venv/bin/activate
-TTLANG_VERSION=<internal-version>
-
-TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION+light" \
-cmake -G Ninja -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DTTLANG_USE_TOOLCHAIN=ON \
-  -DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
-  -DTTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv
-
-TTLANG_TTNN_DEP_MODE=external \
-TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION+light" \
-TTLANG_EXTERNAL_TT_METAL_DIR=/opt/ttlang-toolchain/tt-metal \
-TTLANG_PYTHON_VENV=/opt/ttlang-toolchain/venv \
-pip wheel . --wheel-dir=/tmp/ttlang-wheels/light/raw --no-deps --no-build-isolation
-
-auditwheel repair /tmp/ttlang-wheels/light/raw/tt_lang-*.whl \
-  --wheel-dir=/tmp/ttlang-wheels/light/dist
-
-TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
-TTLANG_LIGHT_TTLANG_VERSION="$TTLANG_VERSION+light" \
-pip wheel packaging/light --wheel-dir=/tmp/ttlang-wheels/light/dist \
-  --no-deps --no-build-isolation
+scripts/build-s3-light-wheels-local.sh \
+  --version <internal-version> \
+  --build-images
 ```
 
 Install-test the light package from the local wheel directory. The setup command
@@ -705,9 +686,10 @@ copies tutorials into `./tutorials/` and skips sfpi installation for light
 installs because the external tt-metal tree provides sfpi:
 
 ```bash
+TTLANG_VERSION=<internal-version>
 python3.12 -m venv /tmp/ttlang-light-test
 source /tmp/ttlang-light-test/bin/activate
-pip install --find-links=/tmp/ttlang-wheels/light/dist \
+pip install --find-links=/tmp/ttlang-s3-light-wheels/dist \
   "tt-lang-light==$TTLANG_VERSION"
 tt-lang-setup
 ```
