@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
 """Flash chain 8-node example using compiler-allocated DFBs where supported.
 
 Computes single-query scaled dot-product attention over eight K/V shards and
@@ -150,7 +153,9 @@ def flash_chain_tiny_local(q, k, v, final_out):
 
     m_state_cb = ttl.make_dataflow_buffer_like(k, shape=(PNHt, 1), block_count=2)
     l_state_cb = ttl.make_dataflow_buffer_like(k, shape=(PNHt, 1), block_count=2)
-    o_state_cb = ttl.make_dataflow_buffer_like(k, shape=(PNHt, TINY_vDHt), block_count=2)
+    o_state_cb = ttl.make_dataflow_buffer_like(
+        k, shape=(PNHt, TINY_vDHt), block_count=2
+    )
     out_cb = ttl.make_dataflow_buffer_like(k, shape=(PNHt, TINY_vDHt), block_count=2)
 
     @ttl.compute()
@@ -180,9 +185,7 @@ def flash_chain_tiny_local(q, k, v, final_out):
             m_next = m_state_cb.reserve()
             m_next.store(m_new)
 
-            m_bc = ttl.block.broadcast(
-                m_new, dims=[1], shape=(PNHt, TINY_Sk_chunk_t)
-            )
+            m_bc = ttl.block.broadcast(m_new, dims=[1], shape=(PNHt, TINY_Sk_chunk_t))
             qk = score_cb.wait()
             exp_scores = ttl.exp(ttl.sub(qk, m_bc) * TINY_SCALE)
             cs_w = scalar_tmp_cb.reserve()
@@ -194,9 +197,7 @@ def flash_chain_tiny_local(q, k, v, final_out):
             l_next.store(ttl.add(ttl.mul(alpha, l_old), chunk_sum))
 
             o_old = o_state_cb.wait()
-            alpha_bc = ttl.block.broadcast(
-                alpha, dims=[1], shape=(PNHt, TINY_vDHt)
-            )
+            alpha_bc = ttl.block.broadcast(alpha, dims=[1], shape=(PNHt, TINY_vDHt))
             o_corr_w = o_state_cb.reserve()
             o_corr_w.store(ttl.mul(alpha_bc, o_old))
             partial_v = exp_scores @ v_blk
@@ -649,7 +650,9 @@ def main():
     device = ttnn.open_device(device_id=args.device_id, worker_l1_size=worker_l1_size)
     try:
         query_torch = torch.randn(Q_ROWS, variant.head_dim, dtype=torch.bfloat16) * 0.1
-        key_torch = torch.randn(variant.seq, variant.head_dim, dtype=torch.bfloat16) * 0.1
+        key_torch = (
+            torch.randn(variant.seq, variant.head_dim, dtype=torch.bfloat16) * 0.1
+        )
         value_torch = (
             torch.randn(variant.seq, variant.head_dim_v, dtype=torch.bfloat16) * 0.1
         )

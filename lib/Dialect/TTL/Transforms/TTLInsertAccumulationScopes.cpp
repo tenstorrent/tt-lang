@@ -320,9 +320,9 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
   }
 
   rewriter.setInsertionPoint(loop);
-  auto scope = AccumulationScopeOp::create(
-      rewriter, loop.getLoc(), outputs, ValueRange{},
-      rewriter.getArrayAttr(initialModes));
+  auto scope = AccumulationScopeOp::create(rewriter, loop.getLoc(), outputs,
+                                           ValueRange{},
+                                           rewriter.getArrayAttr(initialModes));
 
   SmallVector<Type, 2> outputTypes;
   SmallVector<Location, 2> outputLocs;
