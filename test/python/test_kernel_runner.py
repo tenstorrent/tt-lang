@@ -94,9 +94,7 @@ class _FakeTTNN:
             self.backing_desc = backing_desc
 
     @staticmethod
-    def cb_descriptor_from_sharded_tensor(
-        cb_index, tensor, total_size, core_ranges
-    ):
+    def cb_descriptor_from_sharded_tensor(cb_index, tensor, total_size, core_ranges):
         return {
             "cb_index": cb_index,
             "tensor": tensor,

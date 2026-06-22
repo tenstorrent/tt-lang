@@ -1503,9 +1503,8 @@ countPostAndSendEvents(const PipeTransferAllocationUnit &unit) {
   return {postCount, sendCount};
 }
 
-static bool
-usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
-                       const PipeCapacityPlan *pipeCapacityPlan) {
+static bool usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
+                                   const PipeCapacityPlan *pipeCapacityPlan) {
   if (!pipeCapacityPlan) {
     return true;
   }
@@ -1637,8 +1636,7 @@ struct ComputedAddressPlan {
 static ComputedAddressPlan
 buildComputedAddressPlan(ModuleOp mod,
                          MutableArrayRef<PipeTransferAllocationUnit> units,
-                         const PipeGraph &pipeGraph,
-                         bool updateFunctionAttrs) {
+                         const PipeGraph &pipeGraph, bool updateFunctionAttrs) {
   ComputedAddressPlan plan;
 
   struct Candidate {
@@ -1736,8 +1734,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
       assignLiveIntervalColors(units, dominanceInfo);
   ComputedAddressPlan computedAddressPlan;
   if (enableComputedAddresses) {
-    computedAddressPlan = buildComputedAddressPlan(
-        mod, units, pipeGraph, updateComputedAddressAttrs);
+    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph,
+                                                   updateComputedAddressAttrs);
   }
 
   llvm::SmallSetVector<int64_t, 4> activePipeNetIds;

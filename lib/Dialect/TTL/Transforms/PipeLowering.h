@@ -198,12 +198,12 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
-LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
-                                    PipeResourcePlan &info,
-                                    bool enableComputedAddresses = true,
-                                    const PipeCapacityPlan *pipeCapacityPlan =
-                                        nullptr,
-                                    bool updateComputedAddressAttrs = true);
+LogicalResult
+buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
+                      PipeResourcePlan &info,
+                      bool enableComputedAddresses = true,
+                      const PipeCapacityPlan *pipeCapacityPlan = nullptr,
+                      bool updateComputedAddressAttrs = true);
 
 /// Emit sender-side capacity semaphore initial values at kernel entry.
 void initializePipeCapacitySemaphores(const PipeCapacityPlan &pipeCapacityPlan);
