@@ -181,7 +181,9 @@ def _time_call(device, label, operation, inp, out, warmups, iterations):
 
 def _print_comparison(computed_result, receiver_published_result):
     delta_ms = receiver_published_result.mean_ms - computed_result.mean_ms
-    delta_us = receiver_published_result.per_transfer_us - computed_result.per_transfer_us
+    delta_us = (
+        receiver_published_result.per_transfer_us - computed_result.per_transfer_us
+    )
     ratio = receiver_published_result.mean_ms / computed_result.mean_ms
     time_reduction_percent = 100.0 * delta_ms / receiver_published_result.mean_ms
     speedup_percent = 100.0 * (ratio - 1.0)

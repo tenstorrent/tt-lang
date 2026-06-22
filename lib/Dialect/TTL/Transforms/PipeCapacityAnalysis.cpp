@@ -6,14 +6,10 @@
 
 #include "DFBAcquireReleaseAnalysis.h"
 #include "PipeLowering.h"
-#include "mlir/Analysis/DataFlow/Utils.h"
-#include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
@@ -26,7 +22,6 @@
 namespace mlir::tt::ttl {
 
 using mlir::func::FuncOp;
-namespace ttk = mlir::tt::ttkernel;
 
 ArrayRef<PipeCapacityAcquireInfo>
 PipeCapacityPlan::lookupAcquires(PipeTransferSendOp op) const {
@@ -88,16 +83,6 @@ int64_t PipeCapacityPlan::allocateSemaphoreIndex() {
 }
 
 namespace {
-
-struct OperationLaunchDomain {
-  LaunchNodeDomain domain = LaunchNodeDomain::unknown();
-  Operation *unanalyzableOp = nullptr;
-};
-
-struct PipeCapacityAnalysisState : LaunchNodeDomainState {
-  llvm::DenseMap<Operation *, OperationLaunchDomain> operationLaunchDomains;
-  DFBReleaseOwnerMaps dfbReleaseOwners;
-};
 
 struct PipeSourceCoord {
   int64_t x = 0;
@@ -173,58 +158,9 @@ static void debugAcceptEndpoint(const PipeCapacityEndpoint &endpoint,
   });
 }
 
-static std::optional<ttk::ThreadType> getKernelThreadType(FuncOp func) {
-  if (!func) {
-    return std::nullopt;
-  }
-  if (auto attr = func->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread")) {
-    return attr.getValue();
-  }
-  if (auto attr =
-          func->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
-    return attr.getValue();
-  }
-  return std::nullopt;
-}
-
-static bool isNocThread(Operation *op) {
-  return getKernelThreadType(op->getParentOfType<FuncOp>()) ==
-         ttk::ThreadType::Noc;
-}
-
-static OperationLaunchDomain
-getOperationLaunchDomain(Operation *op, PipeCapacityAnalysisState &state) {
-  auto it = state.operationLaunchDomains.find(op);
-  if (it == state.operationLaunchDomains.end()) {
-    return {LaunchNodeDomain::unknown(), op};
-  }
-  return it->second;
-}
-
-static LaunchNodeDomain getSingleNodeDomain(PipeReceiverCoord coord) {
-  LaunchNodeDomain domain;
-  domain.nodes.insert(LaunchNodeCoord{coord.x, coord.y});
-  return domain;
-}
-
-static LaunchNodeDomain getSingleNodeDomain(PipeSourceCoord coord) {
-  LaunchNodeDomain domain;
-  domain.nodes.insert(LaunchNodeCoord{coord.x, coord.y});
-  return domain;
-}
-
-static bool domainsOverlap(const LaunchNodeDomain &lhs,
-                           const LaunchNodeDomain &rhs) {
-  if (!lhs.known || !rhs.known) {
-    return true;
-  }
-  return !lhs.intersectWith(rhs).nodes.empty();
-}
-
 static bool isExactlyDomain(Operation *op, const LaunchNodeDomain &expected,
-                            PipeCapacityAnalysisState &state) {
-  OperationLaunchDomain actual = getOperationLaunchDomain(op, state);
-  return actual.domain == expected;
+                            const PipeGraph &pipeGraph) {
+  return pipeGraph.getOperationLaunchDomain(op) == expected;
 }
 
 static std::optional<int64_t> getDFBIndex(Value cb) {
@@ -261,55 +197,6 @@ static bool isMatchingTransfer(const PipeCapacityEndpoint &endpoint,
                                       traced.getOperation());
 }
 
-static std::optional<int64_t> getDFBBlockCount(Value cb,
-                                               IntegerAttr numTilesAttr) {
-  auto cbType = mlir::dyn_cast<CircularBufferType>(cb.getType());
-  if (!cbType) {
-    return std::nullopt;
-  }
-  int64_t elementsPerBlock = cbType.getElementsPerBlock();
-  int64_t releasedTiles = elementsPerBlock;
-  if (numTilesAttr) {
-    releasedTiles = numTilesAttr.getInt();
-  }
-  if (releasedTiles <= 0 || releasedTiles % elementsPerBlock != 0) {
-    return std::nullopt;
-  }
-  return releasedTiles / elementsPerBlock;
-}
-
-static std::optional<int64_t> getWaitedBlockCount(CBWaitOp waitOp) {
-  return getDFBBlockCount(waitOp.getCb(), waitOp.getNumTilesAttr());
-}
-
-static std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp) {
-  return getDFBBlockCount(popOp.getCb(), popOp.getNumTilesAttr());
-}
-
-static LogicalResult
-collectLaunchNodeDomains(ModuleOp mod, PipeCapacityAnalysisState &state) {
-  state.initialize(mod);
-  if (!state.hasLaunchGrid) {
-    return success();
-  }
-
-  DataFlowSolver solver;
-  dataflow::loadBaselineAnalyses(solver);
-  LaunchNodeDomainAnalysisOptions options;
-  options.narrowPipeNetScopes = true;
-  options.operationCallback = [&](Operation *op, const LaunchNodeDomain &domain,
-                                  Operation *unanalyzableOp) {
-    state.operationLaunchDomains[op] =
-        OperationLaunchDomain{domain, unanalyzableOp};
-  };
-  solver.load<LaunchNodeDomainAnalysis>(state, options);
-  if (failed(solver.initializeAndRun(mod))) {
-    return failure();
-  }
-  buildDFBReleaseOwnerMaps(mod, state.dfbReleaseOwners);
-  return success();
-}
-
 static PipeCapacityEndpoint
 getCapacityEndpoint(const PipeGraph &pipeGraph,
                     const PipeReceiverEndpoint &receiverEndpoint) {
@@ -326,20 +213,21 @@ getCapacityEndpoint(const PipeGraph &pipeGraph,
 
 static bool collectAndCheckPosts(ModuleOp mod,
                                  const PipeCapacityEndpoint &endpoint,
-                                 PipeCapacityAnalysisState &state,
+                                 const PipeGraph &pipeGraph,
                                  SmallVectorImpl<PipeTransferPostOp> &posts) {
-  LaunchNodeDomain receiverDomain =
-      getSingleNodeDomain(endpoint.receiverDFB.receiver);
+  LaunchNodeDomain receiverDomain = getSingleLaunchNodeDomain(
+      {endpoint.receiverDFB.receiver.x, endpoint.receiverDFB.receiver.y});
   bool valid = true;
   mod.walk([&](PipeTransferPostOp postOp) {
     if (!isMatchingTransfer(endpoint, postOp.getTransfer())) {
       return;
     }
-    OperationLaunchDomain postDomain = getOperationLaunchDomain(postOp, state);
-    if (!domainsOverlap(postDomain.domain, receiverDomain)) {
+    LaunchNodeDomain postDomain =
+        pipeGraph.getOperationLaunchDomain(postOp.getOperation());
+    if (!launchNodeDomainsOverlap(postDomain, receiverDomain)) {
       return;
     }
-    if (!(postDomain.domain == receiverDomain) || !isNocThread(postOp)) {
+    if (!(postDomain == receiverDomain) || !isNocKernelThread(postOp)) {
       debugRejectEndpoint(endpoint, "post is not in the receiver NOC domain");
       valid = false;
       return;
@@ -360,15 +248,17 @@ static bool collectAndCheckPosts(ModuleOp mod,
 
 static bool collectAndCheckSends(ModuleOp mod,
                                  const PipeCapacityEndpoint &endpoint,
-                                 PipeCapacityAnalysisState &state,
+                                 const PipeGraph &pipeGraph,
                                  SmallVectorImpl<PipeTransferSendOp> &sends) {
-  LaunchNodeDomain sourceDomain = getSingleNodeDomain(endpoint.source);
+  LaunchNodeDomain sourceDomain =
+      getSingleLaunchNodeDomain({endpoint.source.x, endpoint.source.y});
   bool valid = true;
   mod.walk([&](PipeTransferSendOp sendOp) {
     if (!isMatchingTransfer(endpoint, sendOp.getTransfer())) {
       return;
     }
-    if (!isExactlyDomain(sendOp, sourceDomain, state) || !isNocThread(sendOp)) {
+    if (!isExactlyDomain(sendOp, sourceDomain, pipeGraph) ||
+        !isNocKernelThread(sendOp)) {
       debugRejectEndpoint(endpoint, "send is not in the sender NOC domain");
       valid = false;
       return;
@@ -384,20 +274,21 @@ static bool collectAndCheckSends(ModuleOp mod,
 
 static bool collectAndCheckPops(ModuleOp mod,
                                 const PipeCapacityEndpoint &endpoint,
-                                PipeCapacityAnalysisState &state,
+                                const PipeGraph &pipeGraph,
                                 SmallVectorImpl<CBPopOp> &pops) {
-  LaunchNodeDomain receiverDomain =
-      getSingleNodeDomain(endpoint.receiverDFB.receiver);
+  LaunchNodeDomain receiverDomain = getSingleLaunchNodeDomain(
+      {endpoint.receiverDFB.receiver.x, endpoint.receiverDFB.receiver.y});
   bool valid = true;
   mod.walk([&](CBPopOp popOp) {
     if (!isReceiverDFB(popOp.getCb(), endpoint.receiverDFB)) {
       return;
     }
-    OperationLaunchDomain popDomain = getOperationLaunchDomain(popOp, state);
-    if (!domainsOverlap(popDomain.domain, receiverDomain)) {
+    LaunchNodeDomain popDomain =
+        pipeGraph.getOperationLaunchDomain(popOp.getOperation());
+    if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
       return;
     }
-    if (!(popDomain.domain == receiverDomain) || !isNocThread(popOp)) {
+    if (!(popDomain == receiverDomain) || !isNocKernelThread(popOp)) {
       debugRejectEndpoint(endpoint, "pop is not in the receiver NOC domain");
       valid = false;
       return;
@@ -408,8 +299,9 @@ static bool collectAndCheckPops(ModuleOp mod,
       valid = false;
       return;
     }
-    auto ownerIt = state.dfbReleaseOwners.waitByPop.find(popOp.getOperation());
-    auto waitOp = ownerIt == state.dfbReleaseOwners.waitByPop.end()
+    const DFBReleaseOwnerMaps &owners = pipeGraph.getDFBReleaseOwnerMaps();
+    auto ownerIt = owners.waitByPop.find(popOp.getOperation());
+    auto waitOp = ownerIt == owners.waitByPop.end()
                       ? CBWaitOp()
                       : dyn_cast_or_null<CBWaitOp>(ownerIt->second);
     if (!waitOp) {
@@ -418,9 +310,9 @@ static bool collectAndCheckPops(ModuleOp mod,
       valid = false;
       return;
     }
-    OperationLaunchDomain waitDomain =
-        getOperationLaunchDomain(waitOp.getOperation(), state);
-    if (!(waitDomain.domain == receiverDomain) || !isNocThread(waitOp)) {
+    LaunchNodeDomain waitDomain =
+        pipeGraph.getOperationLaunchDomain(waitOp.getOperation());
+    if (!(waitDomain == receiverDomain) || !isNocKernelThread(waitOp)) {
       debugRejectEndpoint(endpoint, "wait is not in the receiver NOC domain");
       valid = false;
       return;
@@ -494,13 +386,9 @@ static void markCapacityTransferCreates(const PipeEdge &pipeEdge,
 LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
                                     const PipeResourcePlan &resources,
                                     PipeCapacityPlan &plan) {
-  PipeCapacityAnalysisState state;
-  if (failed(collectLaunchNodeDomains(mod, state))) {
-    return failure();
-  }
   plan.initializeSemaphoreAllocation(
       getPipeResourceRequirements(resources).syncSemaphoreCount);
-  if (!state.hasLaunchGrid) {
+  if (!pipeGraph.hasLaunchGrid()) {
     LLVM_DEBUG(llvm::dbgs()
                << "PipeCapacity: skip module without ttl.launch_grid\n");
     return success();
@@ -544,17 +432,17 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
     }
 
     SmallVector<PipeTransferPostOp> posts;
-    if (!collectAndCheckPosts(mod, endpoint, state, posts)) {
+    if (!collectAndCheckPosts(mod, endpoint, pipeGraph, posts)) {
       continue;
     }
 
     SmallVector<PipeTransferSendOp> sends;
-    if (!collectAndCheckSends(mod, endpoint, state, sends)) {
+    if (!collectAndCheckSends(mod, endpoint, pipeGraph, sends)) {
       continue;
     }
 
     SmallVector<CBPopOp> pops;
-    if (!collectAndCheckPops(mod, endpoint, state, pops)) {
+    if (!collectAndCheckPops(mod, endpoint, pipeGraph, pops)) {
       continue;
     }
 

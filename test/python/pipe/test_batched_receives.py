@@ -333,8 +333,10 @@ def _make_input(shape):
     num_elements = 1
     for extent in shape:
         num_elements *= extent
-    return torch.arange(num_elements, dtype=torch.float32).reshape(shape).to(
-        torch.bfloat16
+    return (
+        torch.arange(num_elements, dtype=torch.float32)
+        .reshape(shape)
+        .to(torch.bfloat16)
     )
 
 

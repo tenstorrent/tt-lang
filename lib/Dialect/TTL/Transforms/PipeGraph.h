@@ -5,12 +5,14 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_PIPEGRAPH_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPEGRAPH_H
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
@@ -22,6 +24,8 @@
 #include <optional>
 
 namespace mlir::tt::ttl {
+
+struct PipeGraphAnalysisState;
 
 //===----------------------------------------------------------------------===//
 // Pipe Graph: Tracks receiver dataflow buffer associations for pipe copies.
@@ -267,20 +271,33 @@ public:
     return receiverDFBs;
   }
 
+  bool hasLaunchGrid() const { return hasAnalyzedLaunchGrid; }
+
+  LaunchNodeDomain getOperationLaunchDomain(Operation *op) const;
+
+  const DFBReleaseOwnerMaps &getDFBReleaseOwnerMaps() const {
+    return dfbReleaseOwners;
+  }
+
 private:
   /// Assign each pipe the physical DFB slot reserved by the corresponding
   /// receiver post. Multicast pipes require the same receiver slot at every
   /// receiver because TT-Metal NoC multicast carries one destination address.
-  LogicalResult assignReceiverSlotIndices(ModuleOp mod);
+  LogicalResult assignReceiverSlotIndices(ModuleOp mod,
+                                          PipeGraphAnalysisState &state);
 
   void rebuildEndpointGraph();
 
-  LogicalResult provePipeOnlyReceiverStreams(ModuleOp mod);
+  LogicalResult provePipeOnlyReceiverStreams(ModuleOp mod,
+                                             PipeGraphAnalysisState &state);
 
   llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
   SmallVector<PipeEdge, 0> pipeEdges;
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
+  bool hasAnalyzedLaunchGrid = false;
+  llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
+  DFBReleaseOwnerMaps dfbReleaseOwners;
 };
 
 } // namespace mlir::tt::ttl

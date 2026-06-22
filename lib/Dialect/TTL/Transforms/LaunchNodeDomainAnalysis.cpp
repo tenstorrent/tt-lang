@@ -127,6 +127,33 @@ LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType) {
   return result;
 }
 
+LaunchNodeDomain getSingleLaunchNodeDomain(LaunchNodeCoord coord) {
+  LaunchNodeDomain result;
+  result.nodes.insert(coord);
+  return result;
+}
+
+bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
+                              const LaunchNodeDomain &rhs) {
+  if (!lhs.known || !rhs.known) {
+    return true;
+  }
+  return !lhs.intersectWith(rhs).nodes.empty();
+}
+
+bool launchNodeDomainContains(const LaunchNodeDomain &domain,
+                              LaunchNodeCoord coord) {
+  if (!domain.known) {
+    return true;
+  }
+  return domain.nodes.find(coord) != domain.nodes.end();
+}
+
+bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
+                                   LaunchNodeCoord coord) {
+  return domain.known && launchNodeDomainContains(domain, coord);
+}
+
 /// Normalize integer-array attributes before verifier-specific interpretation.
 static bool readI64ArrayAttr(Operation *op, llvm::StringLiteral name,
                              SmallVectorImpl<int64_t> &values) {
