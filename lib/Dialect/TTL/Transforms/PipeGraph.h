@@ -74,11 +74,6 @@ struct PipeKey {
     return dstStartX == dstEndX && dstStartY == dstEndY;
   }
 
-  PipeReceiverCoord getSingleReceiver() const {
-    assert(hasSingleReceiver() && "expected a single receiver");
-    return PipeReceiverCoord{dstStartX, dstStartY};
-  }
-
   template <typename Fn>
   void forEachReceiver(Fn &&callback) const {
     for (int64_t receiverY = dstStartY; receiverY <= dstEndY; ++receiverY) {
