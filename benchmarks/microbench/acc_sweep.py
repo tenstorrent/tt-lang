@@ -110,7 +110,7 @@ class Accumulation(MicroBenchmark):
         acc_tiles, iters = cfg["acc_tiles"], cfg["iters"]
         cap = harness.dst_capacity(cfg["dtype"], cfg["full_sync"], cfg["fp32_dest_acc"])
         groups = iters if cfg["source"] == "dram" else 1
-        reuse = 0 if cfg["source"] == "dram" else 1
+        delta_resident = 0 if cfg["source"] == "dram" else 1
         expr_id = EXPR_IDS[cfg["expr"]]
         tensors = ctx.tensors
 
@@ -136,9 +136,9 @@ class Accumulation(MicroBenchmark):
             fp32_dest_acc=cfg["fp32_dest_acc"], full_sync=cfg["full_sync"]
         )
         compute_cta = (
-            [acc_tiles, iters, reuse, expr_id]
+            [acc_tiles, iters, delta_resident, expr_id]
             if ctx.strategy == "dst"
-            else [acc_tiles, iters, cap, reuse, expr_id]
+            else [acc_tiles, iters, cap, delta_resident, expr_id]
         )
         kernels = [
             harness.file_kernel(
