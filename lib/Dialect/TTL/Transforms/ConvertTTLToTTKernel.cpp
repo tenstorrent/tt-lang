@@ -1573,14 +1573,15 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // don't walk the module per match.
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
-  // The resource plan and the capacity plan are mutually dependent: ready-counter
-  // allocation skips edges the capacity plan owns, while capacity eligibility
-  // requires the resource plan to have selected computed receiver addresses. This
-  // converges in two passes because computed-address eligibility depends only on
-  // the graph and the option, not on the capacity plan, so the preliminary and
-  // final capacity plans agree on which edges use the protocol; only the
-  // ready-counter semaphore base shrinks once capacity edges stop reserving ready
-  // counters. The final resource and capacity plans are the ones lowering uses.
+  // The resource plan and the capacity plan are mutually dependent:
+  // ready-counter allocation skips edges the capacity plan owns, while capacity
+  // eligibility requires the resource plan to have selected computed receiver
+  // addresses. This converges in two passes because computed-address
+  // eligibility depends only on the graph and the option, not on the capacity
+  // plan, so the preliminary and final capacity plans agree on which edges use
+  // the protocol; only the ready-counter semaphore base shrinks once capacity
+  // edges stop reserving ready counters. The final resource and capacity plans
+  // are the ones lowering uses.
   PipeResourcePlan preliminaryPipeResourcePlan;
   if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr,
                                    preliminaryPipeResourcePlan,

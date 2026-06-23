@@ -411,8 +411,8 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
     // The capacity counter accounts one unit per send and one per pop, so it is
     // balanced only when each reserve spans a single DFB block. A wider reserve
     // is rejected transitively today (collectAndCheckPops requires a one-block
-    // pop), but make the single-block invariant a local precondition so a future
-    // change to the pop check cannot let an unbalanced counter through.
+    // pop), but make the single-block invariant a local precondition so a
+    // future change to the pop check cannot let an unbalanced counter through.
     if (endpoint.pipeEdge->receiverDFBInfo.receiverSlotSpanBlocks != 1) {
       debugRejectEndpoint(
           endpoint,

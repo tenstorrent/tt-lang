@@ -742,7 +742,8 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   auto indexTy = rewriter.getIndexType();
 
   // Preflight the only fallible validation before emitting any ops, so a match
-  // failure leaves no partially-built IR for the conversion driver to roll back.
+  // failure leaves no partially-built IR for the conversion driver to roll
+  // back.
   bool usesComputedReceiverDFB =
       pipeResource.addressStorage.usesComputedReceiverDFB();
   std::optional<ReceiverPublishedAddressInfo> publishedAddressInfo;
