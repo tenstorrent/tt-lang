@@ -56,6 +56,12 @@ python examples/<example_name>.py
 |---------|-------------|:---:|:--:|
 | `demo_one.py` | Comprehensive demo with auto grid and bounds checking | ✓ | ✓ |
 
+### Multidevice PipeNet Designs
+
+| Example | Description | Sim | HW |
+|---------|-------------|:---:|:--:|
+| `multidevice_tree_all_reduce.py` | Full-grid four-device tree all-reduce using the planned `DeviceDomain` and `TransferGraph` PipeNet API | planned | planned |
+
 ### Error Examples (Negative Tests)
 
 The `errors/` subdirectory contains examples with intentionally incorrect or risky code. They demonstrate how the simulator reports mistakes (shape checks, dataflow locks, deadlocks). Exact wording changes over time; tests in `test/sim/test_examples.py` pin the important substrings.
