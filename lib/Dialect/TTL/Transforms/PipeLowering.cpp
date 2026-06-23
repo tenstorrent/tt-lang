@@ -28,6 +28,7 @@
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <functional>
@@ -812,8 +813,9 @@ static Value computeDFBPopNumTiles(CBPopOp op, Value originalCb,
     return arith::ConstantIntOp::create(rewriter, loc, attr.getInt(), 32);
   }
   auto ttlCbTy = getTTLCBType(originalCb);
-  int64_t numTiles = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
-  return arith::ConstantIntOp::create(rewriter, loc, numTiles, 32);
+  assert(ttlCbTy && "lowerCBPop already verified the DFB type");
+  return arith::ConstantIntOp::create(rewriter, loc,
+                                      ttlCbTy.getElementsPerBlock(), 32);
 }
 
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
@@ -1718,6 +1720,8 @@ buildComputedAddressPlan(ModuleOp mod,
     int64_t baseCompileTimeArgIndex =
         baseCTAByFunc[senderFunc] + std::distance(dfbIndices.begin(), dfbIt);
 
+    assert(llvm::isInt<32>(candidate.staticByteOffset) &&
+           "computed receiver byte offset must fit the i32 NoC address space");
     plan.infoByUnitIndex[candidate.unitIndex] = PipeComputedAddressInfo{
         candidate.receiverInfo->dfbIndex, baseCompileTimeArgIndex,
         candidate.staticByteOffset};
