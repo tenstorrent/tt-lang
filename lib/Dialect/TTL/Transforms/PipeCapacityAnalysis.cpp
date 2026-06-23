@@ -431,6 +431,22 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
       continue;
     }
 
+    // The capacity counter accounts one unit per send and one per pop, so it is
+    // balanced only when each reserve spans a single DFB block. A wider reserve
+    // is rejected transitively today (collectAndCheckPops requires a one-block
+    // pop), but make the single-block invariant a local precondition so a future
+    // change to the pop check cannot let an unbalanced counter through.
+    if (endpoint.pipeEdge->receiverDFBInfo.receiverSlotSpanBlocks != 1) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "PipeCapacity: reject ";
+        printEndpoint(llvm::dbgs(), endpoint);
+        llvm::dbgs() << ": receiver reserve spans "
+                     << endpoint.pipeEdge->receiverDFBInfo.receiverSlotSpanBlocks
+                     << " DFB blocks; capacity accounting assumes one\n";
+      });
+      continue;
+    }
+
     SmallVector<PipeTransferPostOp> posts;
     if (!collectAndCheckPosts(mod, endpoint, pipeGraph, posts)) {
       continue;
