@@ -6,17 +6,17 @@
 # TTLANG_TUTORIAL_CI: requires-multi-device
 # type: ignore
 
-"""Full-grid four-device tree all-reduce over planned multidevice PipeNet syntax.
+"""Parameterized full-grid tree all-reduce over planned multidevice PipeNet syntax.
 
 This example is written against the planned API from
 ``/home/bnorris/tt/plans/PipesMultidevice.md``. Current ``main`` does not yet
 define ``ttl.DeviceDomain``, ``ttl.TransferGraph``, or ``ttl.PipeNet(graph=...)``.
 
-The operation launches the full core grid on each logical device in a 1x4
-domain. Each core reduces its assigned local tensor tiles across matching cores
-on the four devices. The reduce sends device 1 to 0 and 3 to 2, then 2 to 0.
-The broadcast sends the final tensor tiles from 0 to 2, then from 0 to 1 and 2
-to 3. Every device writes the same reduced tensor.
+The operation launches the full core grid on each logical device. Each core
+reduces its assigned local tensor tiles across matching cores on a power-of-two
+device domain. The Python frontend builds the tree stages from ``num_devices``,
+so user code does not hard-code the number of levels. The compiler still sees a
+fixed set of PipeNets for the concrete domain used by the operation.
 """
 
 from __future__ import annotations
@@ -52,11 +52,38 @@ def _require_multidevice_pipenet_api() -> None:
         )
 
 
-def make_tree_all_reduce_operation() -> Callable[[ttnn.Tensor, ttnn.Tensor], None]:
+def _validate_num_devices(num_devices: int) -> None:
+    if num_devices < 2:
+        raise ValueError("num_devices must be at least 2.")
+    if num_devices & (num_devices - 1) != 0:
+        raise ValueError("this binary-tree example requires power-of-two devices.")
+
+
+def _make_reduce_stage_edges(num_devices: int, device):
+    reduce_stage_edges = []
+    distance = 1
+    while distance < num_devices:
+        edges = []
+        for dst_column in range(0, num_devices, 2 * distance):
+            src_column = dst_column + distance
+            edges.append((device(src_column), device(dst_column)))
+        reduce_stage_edges.append(edges)
+        distance *= 2
+    return reduce_stage_edges
+
+
+def _reverse_edges(edges):
+    return [(dst, src) for src, dst in edges]
+
+
+def make_tree_all_reduce_operation(
+    num_devices: int = NUM_DEVICES,
+) -> Callable[[ttnn.Tensor, ttnn.Tensor], None]:
     _require_multidevice_pipenet_api()
+    _validate_num_devices(num_devices)
 
     device_domain = ttl.DeviceDomain(
-        (1, NUM_DEVICES),
+        (1, num_devices),
         topology=ttl.Fabric1D(axis=1),
     )
 
@@ -66,24 +93,14 @@ def make_tree_all_reduce_operation() -> Callable[[ttnn.Tensor, ttnn.Tensor], Non
     def graph(edges):
         return ttl.TransferGraph.edges(device_domain, edges=edges)
 
-    reduce_pairs = ttl.PipeNet(
-        graph=graph(
-            [
-                (device(1), device(0)),
-                (device(3), device(2)),
-            ]
-        )
-    )
-    reduce_root = ttl.PipeNet(graph=graph([(device(2), device(0))]))
-    broadcast_mid = ttl.PipeNet(graph=graph([(device(0), device(2))]))
-    broadcast_leaves = ttl.PipeNet(
-        graph=graph(
-            [
-                (device(0), device(1)),
-                (device(2), device(3)),
-            ]
-        )
-    )
+    reduce_stage_edges = _make_reduce_stage_edges(num_devices, device)
+    reduce_nets = [
+        ttl.PipeNet(graph=graph(edges)) for edges in reduce_stage_edges
+    ]
+    broadcast_nets = [
+        ttl.PipeNet(graph=graph(_reverse_edges(edges)))
+        for edges in reversed(reduce_stage_edges)
+    ]
 
     @ttl.operation(grid="full", device_domain=device_domain)
     def tree_all_reduce(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
@@ -95,23 +112,22 @@ def make_tree_all_reduce_operation() -> Callable[[ttnn.Tensor, ttnn.Tensor], Non
         cols_per_core = -(-col_tiles // grid_cols)
 
         local_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-        pair_recv_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
-        )
-        partial_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-        root_recv_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
-        )
-        root_send_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
-        )
-        mid_recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-        leaf_send_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
-        )
-        leaf_recv_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
-        )
+        reduce_recv_dfbs = [
+            ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            for _ in reduce_nets
+        ]
+        reduce_value_dfbs = [
+            ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            for _ in reduce_nets
+        ]
+        broadcast_recv_dfbs = [
+            ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            for _ in broadcast_nets
+        ]
+        broadcast_value_dfbs = [
+            ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            for _ in broadcast_nets
+        ]
         final_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
         @ttl.datamovement()
@@ -141,57 +157,66 @@ def make_tree_all_reduce_operation() -> Callable[[ttnn.Tensor, ttnn.Tensor], Non
                     for local_col in range(cols_per_core):
                         col_tile = core_col * cols_per_core + local_col
                         if col_tile < col_tiles:
-                            if reduce_pairs.is_active():
+                            for reduce_level, reduce_net in enumerate(reduce_nets):
+                                if reduce_net.is_active():
+                                    send_dfb = (
+                                        local_dfb
+                                        if reduce_level == 0
+                                        else reduce_value_dfbs[reduce_level - 1]
+                                    )
+                                    recv_dfb = reduce_recv_dfbs[reduce_level]
 
-                                def send_pair(pipe) -> None:
-                                    with local_dfb.wait() as local_blk:
-                                        ttl.copy(local_blk, pipe).wait()
+                                    def send_reduce(pipe, send_dfb=send_dfb) -> None:
+                                        with send_dfb.wait() as value_blk:
+                                            ttl.copy(value_blk, pipe).wait()
 
-                                def recv_pair(pipe) -> None:
-                                    with pair_recv_dfb.reserve() as recv_blk:
-                                        ttl.copy(pipe, recv_blk).wait()
+                                    def recv_reduce(pipe, recv_dfb=recv_dfb) -> None:
+                                        with recv_dfb.reserve() as recv_blk:
+                                            ttl.copy(pipe, recv_blk).wait()
 
-                                reduce_pairs.if_src(send_pair)
-                                reduce_pairs.if_dst(recv_pair)
+                                    reduce_net.if_src(send_reduce)
+                                    reduce_net.if_dst(recv_reduce)
 
-                            if reduce_root.is_active():
+                            for broadcast_level, broadcast_net in enumerate(
+                                broadcast_nets
+                            ):
+                                if broadcast_net.is_active():
+                                    send_dfb = broadcast_value_dfbs[broadcast_level]
+                                    recv_dfb = broadcast_recv_dfbs[broadcast_level]
 
-                                def send_root(pipe) -> None:
-                                    with partial_dfb.wait() as partial_blk:
-                                        ttl.copy(partial_blk, pipe).wait()
+                                    if broadcast_level + 1 < len(broadcast_nets):
+                                        next_net = broadcast_nets[broadcast_level + 1]
+                                        next_dfb = broadcast_value_dfbs[
+                                            broadcast_level + 1
+                                        ]
 
-                                def recv_root(pipe) -> None:
-                                    with root_recv_dfb.reserve() as recv_blk:
-                                        ttl.copy(pipe, recv_blk).wait()
+                                        def send_broadcast(
+                                            pipe,
+                                            send_dfb=send_dfb,
+                                            next_net=next_net,
+                                            next_dfb=next_dfb,
+                                        ) -> None:
+                                            with send_dfb.wait() as value_blk:
+                                                ttl.copy(value_blk, pipe).wait()
+                                                if next_net.is_src():
+                                                    with next_dfb.reserve() as next_blk:
+                                                        next_blk.store(value_blk)
 
-                                reduce_root.if_src(send_root)
-                                reduce_root.if_dst(recv_root)
+                                    else:
 
-                            if broadcast_mid.is_active():
+                                        def send_broadcast(
+                                            pipe,
+                                            send_dfb=send_dfb,
+                                        ) -> None:
+                                            with send_dfb.wait() as value_blk:
+                                                ttl.copy(value_blk, pipe).wait()
 
-                                def send_mid(pipe) -> None:
-                                    with root_send_dfb.wait() as total_blk:
-                                        ttl.copy(total_blk, pipe).wait()
+                                    def recv_broadcast(pipe, recv_dfb=recv_dfb) -> None:
+                                        with recv_dfb.reserve() as recv_blk:
+                                            ttl.copy(pipe, recv_blk).wait()
 
-                                def recv_mid(pipe) -> None:
-                                    with mid_recv_dfb.reserve() as recv_blk:
-                                        ttl.copy(pipe, recv_blk).wait()
-
-                                broadcast_mid.if_src(send_mid)
-                                broadcast_mid.if_dst(recv_mid)
-
-                            if broadcast_leaves.is_active():
-
-                                def send_leaf(pipe) -> None:
-                                    with leaf_send_dfb.wait() as total_blk:
-                                        ttl.copy(total_blk, pipe).wait()
-
-                                def recv_leaf(pipe) -> None:
-                                    with leaf_recv_dfb.reserve() as recv_blk:
-                                        ttl.copy(pipe, recv_blk).wait()
-
-                                broadcast_leaves.if_src(send_leaf)
-                                broadcast_leaves.if_dst(recv_leaf)
+                                    broadcast_net.if_src(send_broadcast)
+                                    broadcast_net.if_dst(recv_broadcast)
 
         @ttl.compute()
         def compute() -> None:
@@ -202,42 +227,67 @@ def make_tree_all_reduce_operation() -> Callable[[ttnn.Tensor, ttnn.Tensor], Non
                     for local_col in range(cols_per_core):
                         col_tile = core_col * cols_per_core + local_col
                         if col_tile < col_tiles:
-                            if reduce_pairs.is_dst():
-                                with (
-                                    local_dfb.wait() as local_blk,
-                                    pair_recv_dfb.wait() as remote_blk,
-                                    partial_dfb.reserve() as partial_blk,
-                                ):
-                                    partial_blk.store(local_blk + remote_blk)
+                            for reduce_level, reduce_net in enumerate(reduce_nets):
+                                if reduce_net.is_dst():
+                                    input_dfb = (
+                                        local_dfb
+                                        if reduce_level == 0
+                                        else reduce_value_dfbs[reduce_level - 1]
+                                    )
+                                    recv_dfb = reduce_recv_dfbs[reduce_level]
+                                    value_dfb = reduce_value_dfbs[reduce_level]
 
-                            if reduce_root.is_dst():
-                                with (
-                                    partial_dfb.wait() as partial_blk,
-                                    root_recv_dfb.wait() as remote_blk,
-                                    root_send_dfb.reserve() as root_send_blk,
-                                    leaf_send_dfb.reserve() as leaf_send_blk,
-                                    final_dfb.reserve() as final_blk,
-                                ):
-                                    total = partial_blk + remote_blk
-                                    root_send_blk.store(total)
-                                    leaf_send_blk.store(total)
-                                    final_blk.store(total)
+                                    if reduce_level == len(reduce_nets) - 1:
+                                        with (
+                                            input_dfb.wait() as local_blk,
+                                            recv_dfb.wait() as remote_blk,
+                                            value_dfb.reserve() as value_blk,
+                                            broadcast_value_dfbs[0].reserve()
+                                            as broadcast_blk,
+                                            final_dfb.reserve() as final_blk,
+                                        ):
+                                            total = local_blk + remote_blk
+                                            value_blk.store(total)
+                                            broadcast_blk.store(total)
+                                            final_blk.store(total)
+                                    else:
+                                        with (
+                                            input_dfb.wait() as local_blk,
+                                            recv_dfb.wait() as remote_blk,
+                                            value_dfb.reserve() as value_blk,
+                                        ):
+                                            value_blk.store(local_blk + remote_blk)
 
-                            if broadcast_mid.is_dst():
-                                with (
-                                    mid_recv_dfb.wait() as total_blk,
-                                    leaf_send_dfb.reserve() as leaf_send_blk,
-                                    final_dfb.reserve() as final_blk,
-                                ):
-                                    leaf_send_blk.store(total_blk)
-                                    final_blk.store(total_blk)
-
-                            if broadcast_leaves.is_dst():
-                                with (
-                                    leaf_recv_dfb.wait() as total_blk,
-                                    final_dfb.reserve() as final_blk,
-                                ):
-                                    final_blk.store(total_blk)
+                            for broadcast_level, broadcast_net in enumerate(
+                                broadcast_nets
+                            ):
+                                if broadcast_net.is_dst():
+                                    recv_dfb = broadcast_recv_dfbs[broadcast_level]
+                                    if broadcast_level + 1 < len(broadcast_nets):
+                                        next_net = broadcast_nets[broadcast_level + 1]
+                                        if next_net.is_src():
+                                            next_dfb = broadcast_value_dfbs[
+                                                broadcast_level + 1
+                                            ]
+                                            with (
+                                                recv_dfb.wait() as total_blk,
+                                                next_dfb.reserve() as next_blk,
+                                                final_dfb.reserve() as final_blk,
+                                            ):
+                                                next_blk.store(total_blk)
+                                                final_blk.store(total_blk)
+                                        else:
+                                            with (
+                                                recv_dfb.wait() as total_blk,
+                                                final_dfb.reserve() as final_blk,
+                                            ):
+                                                final_blk.store(total_blk)
+                                    else:
+                                        with (
+                                            recv_dfb.wait() as total_blk,
+                                            final_dfb.reserve() as final_blk,
+                                        ):
+                                            final_blk.store(total_blk)
 
         @ttl.datamovement()
         def write_output() -> None:
@@ -280,19 +330,20 @@ def _expected_reduced_tensor(device_tensors: list[torch.Tensor]) -> torch.Tensor
     for device_tensor in device_tensors:
         reduced_tensor = reduced_tensor + device_tensor.float()
     return torch.cat(
-        [reduced_tensor.to(torch.bfloat16) for _ in range(NUM_DEVICES)],
+        [reduced_tensor.to(torch.bfloat16) for _ in range(len(device_tensors))],
         dim=0,
     )
 
 
 def main() -> None:
-    tree_all_reduce = make_tree_all_reduce_operation()
+    num_devices = NUM_DEVICES
+    tree_all_reduce = make_tree_all_reduce_operation(num_devices)
 
-    if ttnn.GetNumAvailableDevices() < NUM_DEVICES:
-        raise RuntimeError(f"This example requires at least {NUM_DEVICES} devices.")
+    if ttnn.GetNumAvailableDevices() < num_devices:
+        raise RuntimeError(f"This example requires at least {num_devices} devices.")
 
     ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D)
-    mesh_device = ttnn.open_mesh_device(ttnn.MeshShape(1, NUM_DEVICES))
+    mesh_device = ttnn.open_mesh_device(ttnn.MeshShape(1, num_devices))
 
     try:
         base_tensor = (
@@ -304,7 +355,7 @@ def main() -> None:
         )
         device_tensors = [
             (base_tensor + float(device_index + 1)).to(torch.bfloat16)
-            for device_index in range(NUM_DEVICES)
+            for device_index in range(num_devices)
         ]
         input_torch = torch.cat(device_tensors, dim=0)
         output_torch = torch.zeros_like(input_torch)
