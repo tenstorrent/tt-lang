@@ -12,6 +12,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 
@@ -84,17 +85,12 @@ int64_t PipeCapacityPlan::allocateSemaphoreIndex() {
 
 namespace {
 
-struct PipeSourceCoord {
-  int64_t x = 0;
-  int64_t y = 0;
-};
-
 struct PipeCapacityEndpoint {
   const PipeEdge *pipeEdge = nullptr;
   PipeReceiverEndpointId endpointId = 0;
   PipeReceiverDFBNodeId receiverDFBNode = 0;
   PipeReceiverDFBKey receiverDFB;
-  PipeSourceCoord source;
+  PipeCapacitySenderCoord source;
   int64_t initialCapacity = 0;
 };
 
@@ -124,7 +120,7 @@ static void printEndpoint(llvm::raw_ostream &os,
 }
 
 static void debugSkipResource(const PipeResourceInfo &resource,
-                              llvm::StringRef reason) {
+                              const llvm::Twine &reason) {
   LLVM_DEBUG({
     llvm::dbgs() << "PipeCapacity: skip ";
     printPipe(llvm::dbgs(), resource.pipe);
@@ -141,7 +137,7 @@ static void debugCandidateEndpoint(const PipeCapacityEndpoint &endpoint) {
 }
 
 static void debugRejectEndpoint(const PipeCapacityEndpoint &endpoint,
-                                llvm::StringRef reason) {
+                                const llvm::Twine &reason) {
   LLVM_DEBUG({
     llvm::dbgs() << "PipeCapacity: reject ";
     printEndpoint(llvm::dbgs(), endpoint);
@@ -163,24 +159,16 @@ static bool isExactlyDomain(Operation *op, const LaunchNodeDomain &expected,
   return pipeGraph.getOperationLaunchDomain(op) == expected;
 }
 
-static std::optional<int64_t> getDFBIndex(Value cb) {
-  std::optional<int64_t> dfbIndex = getCBIndex(cb);
-  if (!dfbIndex) {
-    return std::nullopt;
-  }
-  return *dfbIndex;
-}
-
 static std::optional<int64_t> getDFBIndexFromView(Value view) {
   Value cb = getAttachedCB(view);
   if (!cb) {
     return std::nullopt;
   }
-  return getDFBIndex(cb);
+  return getCBIndex(cb);
 }
 
 static bool isReceiverDFB(Value cb, const PipeReceiverDFBKey &receiverDFB) {
-  std::optional<int64_t> dfbIndex = getDFBIndex(cb);
+  std::optional<int64_t> dfbIndex = getCBIndex(cb);
   return dfbIndex && *dfbIndex == receiverDFB.dfbIndex;
 }
 
@@ -206,17 +194,18 @@ getCapacityEndpoint(const PipeGraph &pipeGraph,
       receiverEndpoint.id,
       receiverEndpoint.receiverDFBNode,
       receiverEndpoint.receiverDFB,
-      PipeSourceCoord{pipeEdge.pipe.srcX, pipeEdge.pipe.srcY},
+      PipeCapacitySenderCoord{pipeEdge.pipe.srcX, pipeEdge.pipe.srcY},
       pipeEdge.receiverDFBInfo.blockCount,
   };
 }
 
 static bool collectAndCheckPosts(ModuleOp mod,
                                  const PipeCapacityEndpoint &endpoint,
-                                 const PipeGraph &pipeGraph,
-                                 SmallVectorImpl<PipeTransferPostOp> &posts) {
+                                 const PipeGraph &pipeGraph) {
   LaunchNodeDomain receiverDomain = getSingleLaunchNodeDomain(
       {endpoint.receiverDFB.receiver.x, endpoint.receiverDFB.receiver.y});
+  // Posts gate validity but carry no facts; the caller does not need them.
+  SmallVector<PipeTransferPostOp> posts;
   bool valid = true;
   mod.walk([&](PipeTransferPostOp postOp) {
     if (!isMatchingTransfer(endpoint, postOp.getTransfer())) {
@@ -344,10 +333,8 @@ static void recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &facts,
         PipeCapacityInitInfo{capacitySemaphoreIndex, endpoint.initialCapacity});
   }
   for (CBPopOp popOp : facts.pops) {
-    plan.addRelease(popOp, PipeCapacityReleaseInfo{
-                               PipeCapacitySenderCoord{endpoint.source.x,
-                                                       endpoint.source.y},
-                               capacitySemaphoreIndex, 1});
+    plan.addRelease(popOp, PipeCapacityReleaseInfo{endpoint.source,
+                                                   capacitySemaphoreIndex, 1});
   }
 }
 
@@ -357,11 +344,7 @@ static bool isCapacityProtocolLowerable(const PipeCapacityEndpoint &endpoint,
   for (Operation *createOp : endpoint.pipeEdge->transferCreateOps) {
     auto resourceIt = resources.resources.find(createOp);
     if (resourceIt == resources.resources.end()) {
-      LLVM_DEBUG({
-        llvm::dbgs() << "PipeCapacity: reject ";
-        printEndpoint(llvm::dbgs(), endpoint);
-        llvm::dbgs() << ": pipe resource is missing\n";
-      });
+      debugRejectEndpoint(endpoint, "pipe resource is missing");
       return false;
     }
     hasResource = true;
@@ -411,23 +394,17 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
     ArrayRef<PipeReceiverEndpointId> writerEndpoints =
         pipeGraph.getReceiverDFBWriterEndpoints(endpoint.receiverDFBNode);
     if (writerEndpoints.size() != 1) {
-      LLVM_DEBUG({
-        llvm::dbgs() << "PipeCapacity: reject ";
-        printEndpoint(llvm::dbgs(), endpoint);
-        llvm::dbgs() << ": receiver DFB has " << writerEndpoints.size()
-                     << " writer endpoint(s)\n";
-      });
+      debugRejectEndpoint(endpoint, "receiver DFB has " +
+                                        llvm::Twine(writerEndpoints.size()) +
+                                        " writer endpoint(s)");
       continue;
     }
 
     const PipeReceiverDFBNode &receiverDFBNode =
         pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
     if (!receiverDFBNode.hasProvenPipeOnlyStream) {
-      LLVM_DEBUG({
-        llvm::dbgs() << "PipeCapacity: reject ";
-        printEndpoint(llvm::dbgs(), endpoint);
-        llvm::dbgs() << ": receiver DFB stream is not proven pipe-only\n";
-      });
+      debugRejectEndpoint(endpoint,
+                          "receiver DFB stream is not proven pipe-only");
       continue;
     }
 
@@ -437,18 +414,16 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
     // pop), but make the single-block invariant a local precondition so a future
     // change to the pop check cannot let an unbalanced counter through.
     if (endpoint.pipeEdge->receiverDFBInfo.receiverSlotSpanBlocks != 1) {
-      LLVM_DEBUG({
-        llvm::dbgs() << "PipeCapacity: reject ";
-        printEndpoint(llvm::dbgs(), endpoint);
-        llvm::dbgs() << ": receiver reserve spans "
-                     << endpoint.pipeEdge->receiverDFBInfo.receiverSlotSpanBlocks
-                     << " DFB blocks; capacity accounting assumes one\n";
-      });
+      debugRejectEndpoint(
+          endpoint,
+          "receiver reserve spans " +
+              llvm::Twine(
+                  endpoint.pipeEdge->receiverDFBInfo.receiverSlotSpanBlocks) +
+              " DFB blocks; capacity accounting assumes one");
       continue;
     }
 
-    SmallVector<PipeTransferPostOp> posts;
-    if (!collectAndCheckPosts(mod, endpoint, pipeGraph, posts)) {
+    if (!collectAndCheckPosts(mod, endpoint, pipeGraph)) {
       continue;
     }
 
