@@ -65,3 +65,54 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     func.return
   }
 }
+
+// -----
+
+// Purpose: when one receiver DFB is written by two pipe edges, a receiver pop
+// names only the DFB, so the analysis cannot attribute the released capacity to
+// one sender. Both endpoints are rejected for having more than one writer
+// endpoint, the central safety predicate for the capacity protocol.
+// DEBUG: PipeCapacity: 1 receiver DFB node(s), 2 receiver endpoint(s)
+// DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(2, 0) DFB 2 capacity 2
+// DEBUG: PipeCapacity: reject src(0, 0) -> receiver(2, 0) DFB 2 capacity 2: receiver DFB has 2 writer endpoint(s)
+// DEBUG: PipeCapacity: candidate src(1, 0) -> receiver(2, 0) DFB 2 capacity 2
+// DEBUG: PipeCapacity: reject src(1, 0) -> receiver(2, 0) DFB 2 capacity 2: receiver DFB has 2 writer endpoint(s)
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  func.func @two_writers_one_receiver_dfb()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src_cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %src_cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pA = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
+    %pB = ttl.create_pipe src(1, 0) dst(2, 0) to(2, 0) net 1 : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>
+    %tA = ttl.pipe_transfer.create %pA {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
+    %tB = ttl.pipe_transfer.create %pB {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1> -> !ttl.pipe_transfer
+    %recvA = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %tokA = ttl.pipe_transfer.post %tA, %recvA
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+    ttl.pipe_transfer.wait %tokA : !ttl.pipe_token<net 0>
+    ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %readyA = ttl.cb_wait %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %recvB = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %tokB = ttl.pipe_transfer.post %tB, %recvB
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 1>
+    ttl.pipe_transfer.wait %tokB : !ttl.pipe_token<net 1>
+    ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %readyB = ttl.cb_wait %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    ttl.if_src %pA : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
+      %sendA = ttl.pipe_transfer.send %tA, %src_cb0
+          : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+      ttl.wait %sendA : !ttl.transfer_handle<write>
+    }
+    ttl.if_src %pB : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1> {
+      %sendB = ttl.pipe_transfer.send %tB, %src_cb1
+          : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+      ttl.wait %sendB : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
