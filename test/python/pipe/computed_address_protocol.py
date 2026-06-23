@@ -3,12 +3,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_FINAL_MLIR=%t.p2p.final.mlir TTLANG_OP=point_to_point %python %s > %t.p2p.output 2>&1
-# RUN: FileCheck %s --input-file=%t.p2p.final.mlir --check-prefix=P2P-FINAL
-# RUN: FileCheck %s --input-file=%t.p2p.output --check-prefix=P2P-CPP
-# RUN: env TTLANG_FINAL_MLIR=%t.allgather.final.mlir TTLANG_OP=all_gather %python %s > %t.allgather.output 2>&1
-# RUN: FileCheck %s --input-file=%t.allgather.final.mlir --check-prefix=ALLGATHER-FINAL
-# RUN: FileCheck %s --input-file=%t.allgather.output --check-prefix=ALLGATHER-CPP
+# RUN: env TTLANG_FINAL_MLIR=%t.p2p.bf16.final.mlir TTLANG_OP=point_to_point TTLANG_DTYPE=bf16 %python %s > %t.p2p.bf16.output 2>&1
+# RUN: FileCheck %s --input-file=%t.p2p.bf16.final.mlir --check-prefix=P2P-FINAL
+# RUN: FileCheck %s --input-file=%t.p2p.bf16.output --check-prefix=P2P-CPP
+# RUN: env TTLANG_FINAL_MLIR=%t.p2p.fp32.final.mlir TTLANG_OP=point_to_point TTLANG_DTYPE=fp32 %python %s > %t.p2p.fp32.output 2>&1
+# RUN: FileCheck %s --input-file=%t.p2p.fp32.final.mlir --check-prefix=P2P-FINAL
+# RUN: FileCheck %s --input-file=%t.p2p.fp32.output --check-prefix=P2P-CPP
+# RUN: env TTLANG_FINAL_MLIR=%t.allgather.bf16.final.mlir TTLANG_OP=all_gather TTLANG_DTYPE=bf16 %python %s > %t.allgather.bf16.output 2>&1
+# RUN: FileCheck %s --input-file=%t.allgather.bf16.final.mlir --check-prefixes=ALLGATHER-FINAL,ALLGATHER-BF16-FINAL
+# RUN: FileCheck %s --input-file=%t.allgather.bf16.output --check-prefix=ALLGATHER-CPP
+# RUN: env TTLANG_FINAL_MLIR=%t.allgather.fp32.final.mlir TTLANG_OP=all_gather TTLANG_DTYPE=fp32 %python %s > %t.allgather.fp32.output 2>&1
+# RUN: FileCheck %s --input-file=%t.allgather.fp32.final.mlir --check-prefixes=ALLGATHER-FINAL,ALLGATHER-FP32-FINAL
+# RUN: FileCheck %s --input-file=%t.allgather.fp32.output --check-prefix=ALLGATHER-CPP
 
 """Computed receiver-address protocol coverage for PipeNet lowering.
 
@@ -24,27 +30,25 @@ import torch  # noqa: E402
 import ttnn  # noqa: E402
 
 import ttl  # noqa: E402
-from utils.correctness import assert_pcc  # noqa: E402
+from ttlang_test_utils import to_dram, torch_dtype_from_env  # noqa: E402
+from utils.correctness import assert_allclose  # noqa: E402
 
 TILE = 32
 ALL_GATHER_WIDTH = 4
 
 
-def _make_input(shape):
+def _make_input(shape, dtype):
     numel = 1
     for extent in shape:
         numel *= extent
-    return torch.arange(numel, dtype=torch.float32).reshape(shape).to(torch.bfloat16)
+    return torch.arange(numel, dtype=torch.float32).reshape(shape).to(dtype)
 
 
-def _device_ttnn(tensor, device):
-    return ttnn.from_torch(
-        tensor,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+def _assert_copy_matches(expected, actual, dtype):
+    if dtype == torch.bfloat16:
+        assert_allclose(actual.float(), expected.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual.float(), expected.float(), rtol=1e-5, atol=1e-5)
 
 
 @ttl.operation(grid=(2, 1))
@@ -169,7 +173,8 @@ def row_all_gather_computed_address(inp, out):
 # but the destination DFB address is computed instead of loaded from SRAM.
 # ALLGATHER-FINAL-LABEL: func.func @dm
 # ALLGATHER-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-# ALLGATHER-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 2048 : i32}>
+# ALLGATHER-BF16-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 2048 : i32}>
+# ALLGATHER-FP32-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 4096 : i32}>
 # ALLGATHER-FINAL: experimental::semaphore_wait
 # ALLGATHER-FINAL: get_compile_time_arg_val
 # ALLGATHER-FINAL: %[[BASE:.*]] = literal "get_compile_time_arg_val(2)" : i32
@@ -190,25 +195,26 @@ def row_all_gather_computed_address(inp, out):
 
 def main():
     op_name = os.environ.get("TTLANG_OP", "point_to_point")
+    dtype = torch_dtype_from_env("TTLANG_DTYPE")
     device = ttnn.open_device(device_id=0)
     try:
         if op_name == "point_to_point":
-            inp_torch = _make_input((TILE, TILE))
-            out_torch = torch.zeros((TILE, TILE), dtype=torch.bfloat16)
-            inp = _device_ttnn(inp_torch, device)
-            out = _device_ttnn(out_torch, device)
+            inp_torch = _make_input((TILE, TILE), dtype)
+            out_torch = torch.zeros((TILE, TILE), dtype=dtype)
+            inp = to_dram(inp_torch, device)
+            out = to_dram(out_torch, device)
             point_to_point_computed_address(inp, out)
             ttnn.synchronize_device(device)
-            assert_pcc(inp_torch.float(), ttnn.to_torch(out).float())
+            _assert_copy_matches(inp_torch, ttnn.to_torch(out), dtype)
             return
 
-        inp_torch = _make_input((TILE, ALL_GATHER_WIDTH * TILE))
-        out_torch = torch.zeros((TILE, ALL_GATHER_WIDTH * TILE), dtype=torch.bfloat16)
-        inp = _device_ttnn(inp_torch, device)
-        out = _device_ttnn(out_torch, device)
+        inp_torch = _make_input((TILE, ALL_GATHER_WIDTH * TILE), dtype)
+        out_torch = torch.zeros((TILE, ALL_GATHER_WIDTH * TILE), dtype=dtype)
+        inp = to_dram(inp_torch, device)
+        out = to_dram(out_torch, device)
         row_all_gather_computed_address(inp, out)
         ttnn.synchronize_device(device)
-        assert_pcc(inp_torch.float(), ttnn.to_torch(out).float())
+        _assert_copy_matches(inp_torch, ttnn.to_torch(out), dtype)
     finally:
         ttnn.close_device(device)
 

@@ -11,7 +11,7 @@ import ttl
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import to_dram
-from utils.correctness import assert_pcc
+from utils.correctness import assert_allclose
 
 N_ITERS = 8
 
@@ -20,7 +20,7 @@ N_ITERS = 8
 def unicast_dataflow_capacity_loop(inp, out):
     net = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
     send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
 
     @ttl.compute()
     def compute():
@@ -51,9 +51,16 @@ def unicast_dataflow_capacity_loop(inp, out):
         pass
 
 
-def test_unicast_dataflow_capacity_loop(device):
-    inp_torch = torch.randn(32, 32, dtype=torch.bfloat16)
-    out_torch = torch.zeros(32, 32, dtype=torch.bfloat16)
+@pytest.mark.parametrize(
+    ("dtype", "rtol", "atol"),
+    [
+        pytest.param(torch.bfloat16, 0.05, 1.0, id="bf16"),
+        pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
+    ],
+)
+def test_unicast_dataflow_capacity_loop(device, dtype, rtol, atol):
+    inp_torch = torch.randn(32, 32, dtype=dtype)
+    out_torch = torch.zeros(32, 32, dtype=dtype)
 
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
@@ -62,4 +69,4 @@ def test_unicast_dataflow_capacity_loop(device):
     ttnn.synchronize_device(device)
 
     result = ttnn.to_torch(out)
-    assert_pcc(inp_torch.float(), result.float())
+    assert_allclose(result.float(), inp_torch.float(), rtol=rtol, atol=atol)

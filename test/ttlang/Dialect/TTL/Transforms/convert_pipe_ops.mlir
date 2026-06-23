@@ -225,6 +225,66 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Capacity-proven transfers do not reserve sender-ready counters, while
+// fallback transfers in the same module still do. The capacity semaphore starts
+// after receiver-completion ids and the one remaining sender-ready id.
+// CHECK-LABEL: module attributes
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 4 : i64
+// CHECK-LABEL: func.func @mixed_capacity_and_sender_ready_compact_resources
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1, 2>
+// CHECK: %[[READY_SEM:.*]] = arith.constant 2 : index
+// CHECK: %[[CAPACITY_SEM:.*]] = arith.constant 3 : index
+// CHECK: ttkernel.semaphore_set(%[[CAPACITY_SEM]]
+// CHECK: ttkernel.semaphore_up_remote(%[[CAPACITY_SEM]]
+// CHECK: ttkernel.semaphore_down(%[[CAPACITY_SEM]]
+// CHECK: ttkernel.get_semaphore(%[[READY_SEM]]
+// CHECK: ttkernel.experimental::semaphore_wait
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  func.func @mixed_capacity_and_sender_ready_compact_resources()
+      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %capacity_dst = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %ready_dst = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %capacity_pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %ready_pipe = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 1>
+    %capacity_transfer = ttl.pipe_transfer.create %capacity_pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+    %ready_transfer = ttl.pipe_transfer.create %ready_pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 1> -> !ttl.pipe_transfer
+    ttl.if_dst %capacity_pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %capacity_dst : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %token = ttl.pipe_transfer.post %capacity_transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+      ttl.cb_push %capacity_dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      %ready = ttl.cb_wait %capacity_dst : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %capacity_dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %capacity_pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.pipe_transfer.send %capacity_transfer, %src_cb
+          : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    ttl.if_dst %ready_pipe : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 1> {
+      %recv = ttl.cb_reserve %ready_dst : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %token = ttl.pipe_transfer.post %ready_transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 1>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 1>
+      ttl.cb_push %ready_dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %ready_pipe : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 1> {
+      %send = ttl.pipe_transfer.send %ready_transfer, %src_cb
+          : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Static receiver subviews compute the DFB block address and add the static
 // byte offset inside the block.
 // CHECK-LABEL: func.func @static_subview_pipe_transfer_computed_address
@@ -302,6 +362,70 @@ func.func @two_incoming_edges_one_dfb_compute_addresses() attributes { "ttl.kern
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipe_transfer.wait %tokB : !ttl.pipe_token<net 1>
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
+// Receiver-published fallback transfers use a compact SRAM address table even
+// when a computed-address transfer is live between them in the same source
+// stream. The second fallback slot is byte offset 4, not offset 8.
+// CHECK-LABEL: func.func @receiver_published_address_slots_ignore_computed_colors
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 2>
+// CHECK-DAG: %[[SECOND_SLOT_OFFSET:.*]] = arith.constant 4 : i32
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: %[[SECOND_TABLE_ADDR:.*]] = arith.addi {{.*}}, %[[SECOND_SLOT_OFFSET]]
+// CHECK: ttkernel.get_noc_addr({{.*}}, %[[SECOND_TABLE_ADDR]]
+// CHECK: ttkernel.noc_inline_dw_write
+func.func @receiver_published_address_slots_ignore_computed_colors(%dynamic_idx: index)
+    attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %fallback_a_dst = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 1>
+  %computed_dst = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %fallback_b_dst = ttl.bind_cb {cb_index = 3, block_count = 1} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 1>
+  %fallback_a_pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %computed_pipe = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 1
+      : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 1>
+  %fallback_b_pipe = ttl.create_pipe src(0, 0) dst(3, 0) to(3, 0) net 2
+      : !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 2>
+  %fallback_a_transfer = ttl.pipe_transfer.create %fallback_a_pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+  %computed_transfer = ttl.pipe_transfer.create %computed_pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 1> -> !ttl.pipe_transfer
+  %fallback_b_transfer = ttl.pipe_transfer.create %fallback_b_pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 2> -> !ttl.pipe_transfer
+  %fallback_a_full = ttl.cb_reserve %fallback_a_dst
+      : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
+  %fallback_a_recv = tensor.extract_slice %fallback_a_full[%dynamic_idx, 0] [1, 1] [1, 1]
+      : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
+  %fallback_a_token = ttl.pipe_transfer.post %fallback_a_transfer, %fallback_a_recv
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+  %computed_recv = ttl.cb_reserve %computed_dst
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %computed_token = ttl.pipe_transfer.post %computed_transfer, %computed_recv
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 1>
+  %fallback_b_full = ttl.cb_reserve %fallback_b_dst
+      : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
+  %fallback_b_recv = tensor.extract_slice %fallback_b_full[%dynamic_idx, 0] [1, 1] [1, 1]
+      : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
+  %fallback_b_token = ttl.pipe_transfer.post %fallback_b_transfer, %fallback_b_recv
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 2>
+  %fallback_a_send = ttl.pipe_transfer.send %fallback_a_transfer, %src_cb
+      : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+  %computed_send = ttl.pipe_transfer.send %computed_transfer, %src_cb
+      : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+  %fallback_b_send = ttl.pipe_transfer.send %fallback_b_transfer, %src_cb
+      : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+  ttl.wait %fallback_a_send : !ttl.transfer_handle<write>
+  ttl.wait %computed_send : !ttl.transfer_handle<write>
+  ttl.wait %fallback_b_send : !ttl.transfer_handle<write>
+  ttl.pipe_transfer.wait %fallback_a_token : !ttl.pipe_token<net 0>
+  ttl.cb_push %fallback_a_dst : <[2, 1], !ttcore.tile<32x32, f32>, 1>
+  ttl.pipe_transfer.wait %computed_token : !ttl.pipe_token<net 1>
+  ttl.cb_push %computed_dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+  ttl.pipe_transfer.wait %fallback_b_token : !ttl.pipe_token<net 2>
+  ttl.cb_push %fallback_b_dst : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   func.return
 }
 

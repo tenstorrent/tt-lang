@@ -80,7 +80,7 @@ def receiver_published_address(inp, out):
 # contract.
 # FINAL-LABEL: func.func @dm
 # FINAL-NOT: ttl.pipe_computed_address_dfb_indices
-# FINAL-NOT: Semaphore({}).down
+# FINAL-NOT: .down(
 # FINAL: noc_inline_dw_write
 # FINAL: experimental::semaphore_wait_min
 
