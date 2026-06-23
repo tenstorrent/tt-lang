@@ -160,10 +160,42 @@ class TTCompilerBase(PyKernelAstBase):
         """Hook for subclasses to act before exiting a scoped body."""
         pass
 
-    def visit_If(self, node):
-        # NOTE: else-if blocks are not supported in SCF dialect
+    @staticmethod
+    def _collect_assigned_names(stmts):
+        """Return the set of simple variable names assigned in a statement list.
+
+        Walks the AST subtree rooted at each statement to find all
+        ast.Assign and ast.AugAssign targets that are plain ast.Name
+        nodes. Nested control flow (if/for/with) is included because
+        an assignment at any depth inside the branch body must be
+        propagated out of the enclosing scf.if.
+        """
+        names = set()
+        for stmt in stmts:
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            names.add(target.id)
+                elif isinstance(node, ast.AugAssign):
+                    if isinstance(node.target, ast.Name):
+                        names.add(node.target.id)
+        return names
+
+    @staticmethod
+    def _is_yieldable_value(val):
+        """True when *val* is an MLIR SSA value that can be yielded
+        from an scf.if region (i.e. it has a .type attribute and is a
+        Value, OpView, or OpResult).  Python-level objects such as
+        PipeNet, DataflowBuffer, or AST callback nodes return False."""
+        if val is None:
+            return False
+        return hasattr(val, "type") and isinstance(val, (Value, OpView, OpResult))
+
+    def _resolve_if_condition(self, node):
+        """Evaluate the test expression of an ``if`` and normalise it to an
+        ``i1`` suitable for ``scf.IfOp``."""
         if_cond = self.visit(node.test)
-        cond_type = None
 
         if hasattr(if_cond, "result"):
             if_cond = if_cond.result
@@ -177,35 +209,81 @@ class TTCompilerBase(PyKernelAstBase):
             cond_type = if_cond.type
         elif isinstance(if_cond, arith.ConstantOp):
             cond_type = if_cond.type
+        else:
+            cond_type = None
 
-        # Create C-Style comparison if cond_type is not None
         if cond_type is None or not isinstance(cond_type, IntegerType):
             raise ValueError("Cannot Compare Non-Integer Values")
 
         if cond_type.width != 1:
-            # Turn into comparison to make sure value is not 0
             if_cond = arith.cmpi(
                 arith.CmpIPredicate.ne, if_cond, arith.ConstantOp(cond_type, 0)
             )
-        if_exp = scf.IfOp(cond=if_cond, has_else=bool(node.orelse))
+        return if_cond
 
+    def _collect_yield_value(self, name, outer_val):
+        """Return the MLIR value that should be yielded for *name* at the
+        end of the current branch scope.  Falls back to *outer_val* when
+        the branch did not (re)assign the variable."""
+        tbl = self._var_exists(name)
+        if tbl and name in tbl:
+            val = tbl[name]
+            if self._is_yieldable_value(val):
+                return val
+        return outer_val
+
+    def visit_If(self, node):
+        if_cond = self._resolve_if_condition(node)
+
+        # --- Pre-scan: discover which variables are (re)assigned ---------
+        then_names = self._collect_assigned_names(node.body)
+        else_names = self._collect_assigned_names(node.orelse) if node.orelse else set()
+        all_names = then_names | else_names
+
+        tracked = []  # [(name, outer_value), ...]
+        for name in sorted(all_names):
+            tbl = self._var_exists(name)
+            if not tbl:
+                continue
+            outer_val = tbl[name]
+            if not self._is_yieldable_value(outer_val):
+                continue
+            tracked.append((name, outer_val))
+
+        result_types = [v.type for _, v in tracked]
+
+        # When tracked variables exist we always need an else block so
+        # that every path yields a value (SSA dominance).
+        need_else = bool(node.orelse) or bool(tracked)
+
+        if_exp = scf.IfOp(cond=if_cond, results_=result_types, has_else=need_else)
+
+        # --- Then block ---------------------------------------------------
         self._on_scope_exit()
         with InsertionPoint(if_exp.then_block), Location.unknown():
             self.symbol_tables.append({})
             for stmt in node.body:
                 self.visit(stmt)
+            yield_vals = [self._collect_yield_value(n, v) for n, v in tracked]
             self._on_scope_exit()
-            scf.YieldOp([])
+            scf.YieldOp(yield_vals)
             self.symbol_tables.pop()
 
-        if node.orelse:
+        # --- Else block (explicit or synthesised) -------------------------
+        if need_else:
             with InsertionPoint(if_exp.else_block), Location.unknown():
                 self.symbol_tables.append({})
-                for stmt in node.orelse:
-                    self.visit(stmt)
+                if node.orelse:
+                    for stmt in node.orelse:
+                        self.visit(stmt)
+                yield_vals = [self._collect_yield_value(n, v) for n, v in tracked]
                 self._on_scope_exit()
-                scf.YieldOp([])
+                scf.YieldOp(yield_vals)
                 self.symbol_tables.pop()
+
+        # --- Rebind results in the outer scope ----------------------------
+        for i, (name, _) in enumerate(tracked):
+            self._set_var(name, if_exp.results[i])
 
     def visit_For(self, node):
         assert node.iter.func.id == "range", "Only range() supported in for loops"
