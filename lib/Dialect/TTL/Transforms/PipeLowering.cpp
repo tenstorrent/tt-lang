@@ -740,6 +740,20 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   int64_t nocIdx = getNocIndex(op);
   auto indexTy = rewriter.getIndexType();
 
+  // Preflight the only fallible validation before emitting any ops, so a match
+  // failure leaves no partially-built IR for the conversion driver to roll back.
+  bool usesComputedReceiverDFB =
+      pipeResource.addressStorage.usesComputedReceiverDFB();
+  std::optional<ReceiverPublishedAddressInfo> publishedAddressInfo;
+  if (!usesComputedReceiverDFB) {
+    FailureOr<ReceiverPublishedAddressInfo> info =
+        getReceiverPublishedAddressInfo(op, dst, rewriter);
+    if (failed(info)) {
+      return failure();
+    }
+    publishedAddressInfo = *info;
+  }
+
   Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
                                            rewriter.getI8IntegerAttr(nocIdx));
 
@@ -752,12 +766,7 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, srcYLogical);
 
-  if (!pipeResource.addressStorage.usesComputedReceiverDFB()) {
-    FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
-        getReceiverPublishedAddressInfo(op, dst, rewriter);
-    if (failed(publishedAddressInfo)) {
-      return failure();
-    }
+  if (!usesComputedReceiverDFB) {
     AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
     Value publishedAddress = buildReceiverPublishedAddress(
         dst, loc, *publishedAddressInfo, rewriter);
