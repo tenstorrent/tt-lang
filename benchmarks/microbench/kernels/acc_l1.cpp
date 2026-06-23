@@ -8,8 +8,8 @@
 // accumulator round-trips through L1 every step.
 //
 // Compile-time args: 0 = accumulator tiles, 1 = contributions, 2 = DST
-// capacity, 3 = reuse (1 = contributions L1-resident: re-read one block every
-// iteration; 0 = streamed: consume a fresh contribution block each iteration),
+// capacity, 3 = delta_resident (1 = contributions L1-resident: re-read one block
+// every iteration; 0 = streamed: consume a fresh contribution block each iteration),
 // 4 = expr. expr ids: 0 add, 1 mul, 2 gelu.
 
 #include <cstdint>
@@ -85,7 +85,7 @@ void kernel_main() {
   const uint32_t acc_tiles = get_compile_time_arg_val(0);
   const uint32_t iters = get_compile_time_arg_val(1);
   const uint32_t cap = get_compile_time_arg_val(2);
-  const uint32_t reuse = get_compile_time_arg_val(3);
+  const uint32_t delta_resident = get_compile_time_arg_val(3);
   const uint32_t expr = get_compile_time_arg_val(4);
 
   init_sfpu(dfb_init, dfb_out);
@@ -112,11 +112,11 @@ void kernel_main() {
     for (uint32_t iter = 0; iter < iters; ++iter) {
       cb_wait_front(dfb_delta, acc_tiles);
       expr_and_pack(dfb_delta, acc_tiles, cap, expr);
-      if (!reuse) {
+      if (!delta_resident) {
         cb_pop_front(dfb_delta, acc_tiles);
       }
     }
-    if (reuse) {
+    if (delta_resident) {
       cb_pop_front(dfb_delta, acc_tiles);
     }
   }

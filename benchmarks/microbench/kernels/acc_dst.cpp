@@ -15,9 +15,11 @@
 // place. It is handled only by the L1-pack strategy (packer accumulation). See
 // https://github.com/tenstorrent/tt-metal/blob/ba9340e3a45ac5ba51c752a49341f2def28d0514/tt_metal/hw/inc/api/compute/eltwise_binary.h#L168-L185
 //
-// Compile-time args: 0 = accumulator tiles, 1 = contributions, 2 = reuse,
-// 3 = expr. reuse: 1 re-reads one resident contribution block; 0 consumes one
-// streamed contribution block per iteration. expr ids: 0 add, 2 gelu.
+// Compile-time args: 0 = accumulator tiles, 1 = contributions,
+// 2 = delta_resident, 3 = expr. delta_resident: 1 re-reads one resident
+// contribution block; 0 consumes one streamed contribution block per iteration.
+// (This is the contribution-operand source, independent of the DST accumulator.)
+// expr ids: 0 add, 2 gelu.
 
 #include <cstdint>
 
@@ -42,7 +44,7 @@ constexpr uint32_t expr_gelu = 2;
 void kernel_main() {
   const uint32_t acc_tiles = get_compile_time_arg_val(0);
   const uint32_t iters = get_compile_time_arg_val(1);
-  const uint32_t reuse = get_compile_time_arg_val(2);
+  const uint32_t delta_resident = get_compile_time_arg_val(2);
   const uint32_t expr = get_compile_time_arg_val(3);
 
   if (expr == expr_gelu) {
@@ -92,11 +94,11 @@ void kernel_main() {
           add_binary_tile(tile_index, acc_tiles + tile_index, tile_index);
         }
       }
-      if (!reuse) {
+      if (!delta_resident) {
         cb_pop_front(dfb_delta, acc_tiles);
       }
     }
-    if (reuse) {
+    if (delta_resident) {
       cb_pop_front(dfb_delta, acc_tiles);
     }
     // Single pack is inside the timed zone, matching L1-pack's per-step packs.
