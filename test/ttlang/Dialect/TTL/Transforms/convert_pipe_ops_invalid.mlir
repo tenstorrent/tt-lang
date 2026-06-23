@@ -69,6 +69,33 @@ func.func @gather_receive_span_would_wrap_block_count()
 
 // -----
 
+// A receiver pop cannot release part of a live pipe receive slot. Partial
+// release would make the low blocks reusable while the high blocks remain live.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @gather_partial_receiver_pop_rejected()
+      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv = ttl.cb_reserve %cb {num_tiles = 2 : i64}
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x2x!ttcore.tile<32x32, f32>>
+    %xf = ttl.copy %p, %recv
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x2x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf : !ttl.transfer_handle
+    // expected-error @below {{pipe receiver DFB pop releases 1 block(s), but oldest live receive slot spans 2 block(s); receiver pops must release whole DFB slots}}
+    ttl.cb_pop %cb {num_tiles = 1 : i64}
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
 // A collective pipe cannot publish different receiver DFB slice offsets because
 // NoC multicast uses one destination SRAM address for all receivers.
 

@@ -225,20 +225,27 @@ static bool slotRangesOverlap(int64_t lhsSlot, int64_t lhsSpan, int64_t rhsSlot,
 // in-order consumption. A pop that freed only part of the oldest slot would
 // leave the slot's high blocks live while the overlap check treats its low
 // blocks as free, so require each release to drain a whole live slot.
-static void releaseReceiverSlots(ReceiverSlotState &state,
-                                 int64_t releasedBlocks) {
-  while (releasedBlocks > 0 && !state.liveSlots.empty()) {
-    LiveReceiverSlot &slot = state.liveSlots.front();
-    assert(releasedBlocks >= slot.span &&
-           "receiver pop must release a whole live DFB slot");
-    int64_t releasedFromSlot = std::min(releasedBlocks, slot.span);
-    slot.slot += releasedFromSlot;
-    slot.span -= releasedFromSlot;
-    releasedBlocks -= releasedFromSlot;
-    if (slot.span == 0) {
-      state.liveSlots.erase(state.liveSlots.begin());
+static LogicalResult releaseReceiverSlots(CBPopOp popOp,
+                                          ReceiverSlotState &state,
+                                          int64_t releasedBlocks) {
+  unsigned slotsToRelease = 0;
+  int64_t remainingBlocks = releasedBlocks;
+  for (const LiveReceiverSlot &slot : state.liveSlots) {
+    if (remainingBlocks == 0) {
+      break;
     }
+    if (remainingBlocks < slot.span) {
+      return popOp.emitError()
+             << "pipe receiver DFB pop releases " << remainingBlocks
+             << " block(s), but oldest live receive slot spans " << slot.span
+             << " block(s); receiver pops must release whole DFB slots";
+    }
+    remainingBlocks -= slot.span;
+    ++slotsToRelease;
   }
+  state.liveSlots.erase(state.liveSlots.begin(),
+                        state.liveSlots.begin() + slotsToRelease);
+  return success();
 }
 
 } // namespace
@@ -395,19 +402,19 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
     return success();
   };
 
-  auto processPop = [&](CBPopOp popOp) {
+  auto processPop = [&](CBPopOp popOp) -> LogicalResult {
     std::optional<int64_t> dfbIndex = getCBIndex(popOp.getCb());
     if (!dfbIndex) {
-      return;
+      return success();
     }
     std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
     if (!releasedBlocks) {
-      return;
+      return success();
     }
     LaunchNodeDomain popDomain =
         lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
     if (!popDomain.known) {
-      return;
+      return success();
     }
     for (LaunchNodeCoord coord : popDomain.nodes) {
       PipeReceiverDFBKey receiverDFB{PipeReceiverCoord{coord.x, coord.y},
@@ -416,8 +423,12 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
       if (stateIt == slotStateByReceiverDFB.end()) {
         continue;
       }
-      releaseReceiverSlots(stateIt->second, *releasedBlocks);
+      if (failed(
+              releaseReceiverSlots(popOp, stateIt->second, *releasedBlocks))) {
+        return failure();
+      }
     }
+    return success();
   };
 
   WalkResult walkResult =
@@ -427,7 +438,8 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
                                              : WalkResult::advance();
         }
         if (auto popOp = dyn_cast<CBPopOp>(op)) {
-          processPop(popOp);
+          return failed(processPop(popOp)) ? WalkResult::interrupt()
+                                           : WalkResult::advance();
         }
         return WalkResult::advance();
       });
