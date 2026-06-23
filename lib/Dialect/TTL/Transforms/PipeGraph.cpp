@@ -221,10 +221,16 @@ static bool slotRangesOverlap(int64_t lhsSlot, int64_t lhsSpan, int64_t rhsSlot,
   return lhsSlot < rhsSlot + rhsSpan && rhsSlot < lhsSlot + lhsSpan;
 }
 
+// Pops release whole live slots in FIFO order, matching the hardware ring's
+// in-order consumption. A pop that freed only part of the oldest slot would
+// leave the slot's high blocks live while the overlap check treats its low
+// blocks as free, so require each release to drain a whole live slot.
 static void releaseReceiverSlots(ReceiverSlotState &state,
                                  int64_t releasedBlocks) {
   while (releasedBlocks > 0 && !state.liveSlots.empty()) {
     LiveReceiverSlot &slot = state.liveSlots.front();
+    assert(releasedBlocks >= slot.span &&
+           "receiver pop must release a whole live DFB slot");
     int64_t releasedFromSlot = std::min(releasedBlocks, slot.span);
     slot.slot += releasedFromSlot;
     slot.span -= releasedFromSlot;
