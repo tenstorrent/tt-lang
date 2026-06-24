@@ -16,6 +16,234 @@ from .kernel_types import ClassRegistry
 from .utils import _cast, _get_type_str
 
 
+def _extract_target_names(target):
+    """Names bound by a single assignment target, supporting nested tuples
+    and starred unpacking. Subscript/Attribute targets bind storage, not
+    variables, and are skipped."""
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            yield from _extract_target_names(elt)
+    elif isinstance(target, ast.Starred):
+        yield from _extract_target_names(target.value)
+
+
+class _ScopedCollector(ast.NodeVisitor):
+    """Base for collectors that walk a statement body without descending
+    into nested function or lambda definitions."""
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_Lambda(self, node):
+        return
+
+    def visit_For(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_With(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_If(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+        for stmt in node.orelse:
+            self.visit(stmt)
+
+
+class _ReadVariableCollector(_ScopedCollector):
+    def __init__(self):
+        self.names = set()
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Load):
+            self.names.add(node.id)
+
+
+def _collect_read_variable_names(node):
+    collector = _ReadVariableCollector()
+    collector.visit(node)
+    return collector.names
+
+
+class _AssignmentCollector(_ScopedCollector):
+    """Assignment analysis shared by `scf.if` and `scf.for` lowering.
+
+    `names` contains every variable assigned in the visited body, in first-use
+    order. `scf.if` uses this list because any branch-local reassignment of an
+    outer value must become an if result.
+
+    `loop_carried_names` contains assigned variables whose new value depends on
+    their previous value, directly (`acc = acc + x`) or through local aliases
+    (`tmp = acc; acc = tmp + x`). `scf.for` uses this narrower list because
+    loop-local assignments that do not depend on a previous outer value do not
+    need iter_args.
+
+    `augassign_only_names` preserves the DFB-attached block exception:
+    `out_blk += x` lowers through block `__iadd__` as an in-place accumulating
+    store, so an AugAssign-only DFB block target is not an SCF result. If the
+    same name also appears in a plain assignment, the assignment produces a new
+    SSA value and the name must be carried."""
+
+    def __init__(self):
+        self.names = []
+        self._seen = set()
+        self.loop_carried_names = []
+        self._loop_carried_seen = set()
+        self.augassign_only_names = set()
+        self._dependencies_by_name = {}
+
+    def _expand_dependencies(self, read_variable_names):
+        dependencies = set()
+        for name in read_variable_names:
+            dependencies.update(self._dependencies_by_name.get(name, {name}))
+        return dependencies
+
+    def _add_assigned_name(self, name, *, from_augassign):
+        if name not in self._seen:
+            self.names.append(name)
+            self._seen.add(name)
+            if from_augassign:
+                self.augassign_only_names.add(name)
+            return
+        if not from_augassign:
+            self.augassign_only_names.discard(name)
+
+    def _add_loop_carried_name(self, name):
+        if name in self._loop_carried_seen:
+            return
+        self.loop_carried_names.append(name)
+        self._loop_carried_seen.add(name)
+
+    def _record_assignment(self, targets, value, *, from_augassign=False):
+        read_variable_names = _collect_read_variable_names(value)
+        if from_augassign:
+            for target in targets:
+                read_variable_names.update(_extract_target_names(target))
+        dependencies = self._expand_dependencies(read_variable_names)
+
+        for target in targets:
+            for name in _extract_target_names(target):
+                self._add_assigned_name(name, from_augassign=from_augassign)
+                if name in dependencies:
+                    self._add_loop_carried_name(name)
+                self._dependencies_by_name[name] = set(dependencies)
+
+    def visit_Assign(self, node):
+        self._record_assignment(node.targets, node.value)
+
+    def visit_AnnAssign(self, node):
+        if node.value is None:
+            self._record_assignment([node.target], ast.Constant(value=None))
+            return
+        self._record_assignment([node.target], node.value)
+
+    def visit_AugAssign(self, node):
+        # `target op= value` reads `target` implicitly. For block targets
+        # __iadd__ lowers them in place, so AugAssign-only entries are
+        # filtered out before creating SCF result values.
+        self._record_assignment([node.target], node.value, from_augassign=True)
+
+
+class _UnsupportedLanguageConstructCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.unsupported = []
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_Lambda(self, node):
+        return
+
+    def _add(self, node, construct_name):
+        self.unsupported.append((node, construct_name))
+
+    def visit_While(self, node):
+        self._add(node, "while loops")
+
+    def visit_IfExp(self, node):
+        self._add(node, "conditional expressions")
+
+    def visit_NamedExpr(self, node):
+        self._add(node, "assignment expressions")
+
+    def visit_Match(self, node):
+        self._add(node, "match statements")
+
+
+def _collect_unsupported_language_constructs(nodes):
+    collector = _UnsupportedLanguageConstructCollector()
+    for node in nodes:
+        collector.visit(node)
+    return collector.unsupported
+
+
+def _get_single_result(value):
+    if isinstance(value, OpView):
+        if len(value.results) != 1:
+            raise ValueError(
+                f"Expected operation with exactly one result, got "
+                f"{len(value.results)} from {value.operation.name}"
+            )
+        return value.result
+    if isinstance(value, Operation):
+        if len(value.results) != 1:
+            raise ValueError(
+                f"Expected operation with exactly one result, got "
+                f"{len(value.results)} from {value.name}"
+            )
+        return value.results[0]
+    return value
+
+
+def _is_attach_cb_block(value):
+    """Block targets (`out_blk = cb.reserve()` / `cb.wait()`) wrap the
+    result of `ttl.attach_cb` and lower `+=` via __iadd__ to an L1 acc
+    store. They are not scf.for iter_arg / scf.if result candidates."""
+    inner = _get_single_result(value)
+    owner = getattr(inner, "owner", None)
+    if owner is None or not hasattr(owner, "name"):
+        return False
+    return owner.name == "ttl.attach_cb"
+
+
+def _get_value_type(value):
+    if hasattr(value, "type"):
+        return value.type
+    value = _get_single_result(value)
+    if hasattr(value, "type"):
+        return value.type
+    return None
+
+
+def _require_mlir_value_type(value, var_name, construct_name):
+    """Return the type for a value that will appear in an SCF result list."""
+    value_type = _get_value_type(value)
+    if value_type is not None:
+        return value_type
+    construct_display_name = (
+        "if statement" if construct_name == "an if statement" else "loop"
+    )
+    local_scope_name = "branch" if construct_name == "an if statement" else "loop body"
+    raise ValueError(
+        f"Variable '{var_name}' is reassigned inside {construct_name}, but it "
+        "is a plain Python value, such as a tuple, list, string, or integer; "
+        f"TT-Lang only supports reassigning TT-Lang tensor, block, and scalar "
+        f"values across {construct_name}; move the Python assignment outside "
+        f"the {construct_display_name} or use a different local variable name "
+        f"inside the {local_scope_name}"
+    )
+
+
 def _is_host_scalar_constant(val) -> bool:
     """True if `val` is a Float- or Integer-typed MLIR Value defined by
     arith.ConstantOp (i.e. a Python int/float captured by the AST). Index
@@ -80,6 +308,7 @@ class TTCompilerBase(PyKernelAstBase):
             ast.Attribute,
             ast.Expr,
             ast.IfExp,
+            ast.NamedExpr,
             ast.Call,
             ast.UnaryOp,
             ast.UAdd,
@@ -119,6 +348,8 @@ class TTCompilerBase(PyKernelAstBase):
             ast.Assign,
             ast.AugAssign,
             ast.AnnAssign,
+            ast.While,
+            ast.Match,
             # Function-and-class-definitions
             ast.Module,
             ast.FunctionDef,
@@ -155,12 +386,23 @@ class TTCompilerBase(PyKernelAstBase):
         self.verbose = kwargs.get("_verbose", False)
         self.source_code = kwargs.get("_source_code", "")
 
+    def _reject_unsupported_language_constructs(self, nodes):
+        unsupported = _collect_unsupported_language_constructs(nodes)
+        if not unsupported:
+            return
+        _, construct_name = unsupported[0]
+        raise NotImplementedError(
+            f"{construct_name} are not supported in TT-Lang kernels"
+        )
+
     # Control Flow
     def _on_scope_exit(self):
         """Hook for subclasses to act before exiting a scoped body."""
         pass
 
     def visit_If(self, node):
+        self._reject_unsupported_language_constructs([node])
+
         # NOTE: else-if blocks are not supported in SCF dialect
         if_cond = self.visit(node.test)
         cond_type = None
@@ -187,27 +429,62 @@ class TTCompilerBase(PyKernelAstBase):
             if_cond = arith.cmpi(
                 arith.CmpIPredicate.ne, if_cond, arith.ConstantOp(cond_type, 0)
             )
-        if_exp = scf.IfOp(cond=if_cond, has_else=bool(node.orelse))
+        carried_var_names = self._get_if_carried_var_names(node)
+        carried_initial_values = [
+            _get_single_result(self._var_exists(var_name)[var_name])
+            for var_name in carried_var_names
+        ]
+        carried_types = [
+            _require_mlir_value_type(value, var_name, "an if statement")
+            for var_name, value in zip(carried_var_names, carried_initial_values)
+        ]
+
+        if_exp = scf.IfOp(
+            cond=if_cond,
+            results_=carried_types,
+            has_else=bool(node.orelse) or bool(carried_var_names),
+        )
 
         self._on_scope_exit()
         with InsertionPoint(if_exp.then_block), Location.unknown():
-            self.symbol_tables.append({})
-            for stmt in node.body:
-                self.visit(stmt)
-            self._on_scope_exit()
-            scf.YieldOp([])
-            self.symbol_tables.pop()
+            self._visit_if_region(node.body, carried_var_names, carried_initial_values)
 
-        if node.orelse:
+        if node.orelse or carried_var_names:
             with InsertionPoint(if_exp.else_block), Location.unknown():
-                self.symbol_tables.append({})
-                for stmt in node.orelse:
-                    self.visit(stmt)
-                self._on_scope_exit()
-                scf.YieldOp([])
-                self.symbol_tables.pop()
+                self._visit_if_region(
+                    node.orelse, carried_var_names, carried_initial_values
+                )
+
+        for var_name, result in zip(carried_var_names, if_exp.results):
+            self._set_var(var_name, result)
+
+    def _visit_if_region(self, stmts, carried_var_names, carried_initial_values):
+        self.symbol_tables.append({})
+        for stmt in stmts:
+            self.visit(stmt)
+        self._on_scope_exit()
+
+        yield_values = []
+        for var_name, initial_value in zip(carried_var_names, carried_initial_values):
+            final_value = self.symbol_tables[-1].get(var_name, initial_value)
+            initial_type = _require_mlir_value_type(
+                initial_value, var_name, "an if statement"
+            )
+            final_type = _require_mlir_value_type(
+                final_value, var_name, "an if statement"
+            )
+            if final_type != initial_type:
+                raise ValueError(
+                    f"Variable '{var_name}' changes type across an if statement from "
+                    f"{initial_type} to {final_type}"
+                )
+            yield_values.append(_get_single_result(final_value))
+        scf.YieldOp(yield_values)
+        self.symbol_tables.pop()
 
     def visit_For(self, node):
+        self._reject_unsupported_language_constructs([node])
+
         assert node.iter.func.id == "range", "Only range() supported in for loops"
 
         if len(node.iter.args) == 1:
@@ -248,21 +525,116 @@ class TTCompilerBase(PyKernelAstBase):
             comment = self._get_source_comment_block(node)
             emitc.verbatim(comment, [])
 
+        carried_var_names = self._get_loop_carried_var_names(node)
+        carried_initial_values = [
+            _get_single_result(self._var_exists(var_name)[var_name])
+            for var_name in carried_var_names
+        ]
+
         self._on_scope_exit()
-        for_op = scf.ForOp(lower_bound, upper_bound, step)
+        for_op = scf.ForOp(lower_bound, upper_bound, step, carried_initial_values)
         with InsertionPoint(for_op.body), Location.unknown():
             self.symbol_tables.append({})
 
             # Add the iterator into the symbol table.
             self._set_var(node.target.id, for_op.induction_variable)
+            for var_name, iter_arg in zip(carried_var_names, for_op.inner_iter_args):
+                self._set_var(var_name, iter_arg)
 
             for stmt in node.body:
                 self.visit(stmt)
             self._on_scope_exit()
-            scf.YieldOp([])
+            yield_values = []
+            for var_name, initial_value in zip(
+                carried_var_names, carried_initial_values
+            ):
+                final_value = self.symbol_tables[-1].get(var_name, initial_value)
+                initial_type = _require_mlir_value_type(
+                    initial_value, var_name, "a loop"
+                )
+                final_type = _require_mlir_value_type(final_value, var_name, "a loop")
+                if final_type != initial_type:
+                    raise ValueError(
+                        f"Variable '{var_name}' changes type across a loop from "
+                        f"{initial_type} to {final_type}"
+                    )
+                yield_values.append(_get_single_result(final_value))
+            scf.YieldOp(yield_values)
             self.symbol_tables.pop()
 
+        for var_name, result in zip(carried_var_names, for_op.results):
+            self._set_var(var_name, result)
+
+    def _get_loop_carried_var_names(self, node):
+        collector = _AssignmentCollector()
+        for stmt in node.body:
+            collector.visit(stmt)
+
+        # A name is carried only if it already exists outside the loop;
+        # otherwise it is loop-local and rebinding it does not need an
+        # iter_arg. Type is not constrained: scf.for accepts any iter_arg
+        # type, so tensor and scalar recurrences are both materialized.
+        # An AugAssign-only entry on a DFB-attached block target
+        # (`out_blk = cb.reserve(); out_blk += x`) is dropped because
+        # __iadd__ lowers it to an in-place accumulating store rather than a
+        # new SSA value to carry. If the same name also appears in a
+        # plain Assign (`acc = acc + d`), it stays carried; the Assign
+        # produces a fresh value that scf.for must thread.
+        carried_var_names = []
+        for var_name in collector.loop_carried_names:
+            if var_name == node.target.id:
+                continue
+            if not self._var_exists(var_name):
+                continue
+            if var_name in collector.augassign_only_names:
+                value = self._var_exists(var_name)[var_name]
+                if _is_attach_cb_block(value):
+                    continue
+            carried_var_names.append(var_name)
+        return carried_var_names
+
+    def _get_if_carried_var_names(self, node):
+        collector = _AssignmentCollector()
+        for stmt in node.body:
+            collector.visit(stmt)
+        for stmt in node.orelse:
+            collector.visit(stmt)
+
+        # Only names that exist outside the if are carried; fresh names
+        # bound inside a branch stay branch-local.
+        # An AugAssign-only DFB-attached block target lowers in place through
+        # __iadd__; carrying it would replace the block view with an scf.if
+        # result and lose the DFB reserve operations.
+        carried_var_names = []
+        for var_name in collector.names:
+            if not self._var_exists(var_name):
+                continue
+            if var_name in collector.augassign_only_names:
+                value = self._var_exists(var_name)[var_name]
+                if _is_attach_cb_block(value):
+                    continue
+            carried_var_names.append(var_name)
+        return carried_var_names
+
     # Statements
+    def visit_While(self, node):
+        raise NotImplementedError("while loops are not supported in TT-Lang kernels")
+
+    def visit_Match(self, node):
+        raise NotImplementedError(
+            "match statements are not supported in TT-Lang kernels"
+        )
+
+    def visit_IfExp(self, node):
+        raise NotImplementedError(
+            "conditional expressions are not supported in TT-Lang kernels"
+        )
+
+    def visit_NamedExpr(self, node):
+        raise NotImplementedError(
+            "assignment expressions are not supported in TT-Lang kernels"
+        )
+
     def visit_Name(self, node):
         var_name = node.id
 
@@ -276,10 +648,27 @@ class TTCompilerBase(PyKernelAstBase):
 
         return None
 
+    def _assign_target(self, target, value):
+        var = self.visit(target)
+
+        if isinstance(target, ast.Subscript):
+            memref.StoreOp(value, var.memref, var.indices)
+            return
+
+        if not isinstance(target, ast.Name):
+            raise NotImplementedError(
+                f"Assignment target {type(target).__name__} not supported"
+            )
+
+        if hasattr(var, "type") and isinstance(var.type, MemRefType):
+            memref.StoreOp(value, var, [arith.ConstantOp(IndexType.get(self.ctx), 0)])
+            return
+
+        self._set_var(target.id, value)
+
     def visit_Assign(self, node):
         # Loosely support slice + tuple assignment for rt_args
-        assert len(node.targets) == 1, "Only single assignments supported"
-        if isinstance(node.targets[0], ast.Tuple):
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Tuple):
             # Make sure that these are being assigned from rt_args
             if self.rt_args is None:
                 raise NotImplementedError(
@@ -308,21 +697,9 @@ class TTCompilerBase(PyKernelAstBase):
                 # Exit out of function now
                 return
 
-        var = self.visit(node.targets[0])
         value = self.visit(node.value)
-
-        # Handle Subscript Assignment here
-        if isinstance(node.targets[0], ast.Subscript):
-            # Var will contain a memref.LoadOp here, we can access the memref and write to it
-            memref.StoreOp(value, var.memref, var.indices)
-            return
-
-        var_name = node.targets[0].id
-
-        if hasattr(var, "type") and isinstance(var.type, MemRefType):
-            memref.StoreOp(value, var, [arith.ConstantOp(IndexType.get(self.ctx), 0)])
-        else:
-            self._set_var(var_name, value)
+        for target in node.targets:
+            self._assign_target(target, value)
 
     def visit_AnnAssign(self, node):
         # NOTE: TTKernel types can not be used with memrefs
