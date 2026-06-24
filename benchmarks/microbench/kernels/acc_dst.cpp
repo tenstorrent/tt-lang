@@ -18,8 +18,8 @@
 // Compile-time args: 0 = accumulator tiles, 1 = contributions,
 // 2 = delta_resident, 3 = expr. delta_resident: 1 re-reads one resident
 // contribution block; 0 consumes one streamed contribution block per iteration.
-// (This is the contribution-operand source, independent of the DST accumulator.)
-// expr ids: 0 add, 2 gelu.
+// (This is the contribution-operand source, independent of the DST
+// accumulator.) expr ids: 0 add, 2 gelu.
 
 #include <cstdint>
 

@@ -12,10 +12,13 @@ that isolated LLK measurements do not measure:
 
 - **Composition.** The generated kernel runs unpack/math/pack pipelined across
   three RISCs; the LLK microbenchmarks time each engine alone, so adding them up
-  does not reproduce the composed cost. Blackhole bf16, per tile:
-  - LLK unpack ~ 0.030 + LLK pack ~ 0.026 = **0.056 µs** (serial sum)
-  - slowest single engine = **0.030 µs** (perfect-overlap lower bound)
-  - MB1 measured, over DFBs = **0.039 µs**
+  does not reproduce the composed cost. Blackhole bf16, comparing slopes in µs
+  per additional tile:
+  - LLK unpack ~ 0.030 µs/tile.
+  - LLK pack ~ 0.026 µs/tile.
+  - Serial sum = **0.056 µs/tile**.
+  - Perfect-overlap lower bound = **0.030 µs/tile**.
+  - MB1 fit slope over DFBs = **0.039 µs per additional tile**.
 
   The measured value sits between the serial sum and the perfect-overlap lower
   bound. The kernel pipelines unpack and pack across RISCs, recovering ~30% of

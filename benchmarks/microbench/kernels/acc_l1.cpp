@@ -8,9 +8,9 @@
 // accumulator round-trips through L1 every step.
 //
 // Compile-time args: 0 = accumulator tiles, 1 = contributions, 2 = DST
-// capacity, 3 = delta_resident (1 = contributions L1-resident: re-read one block
-// every iteration; 0 = streamed: consume a fresh contribution block each iteration),
-// 4 = expr. expr ids: 0 add, 1 mul, 2 gelu.
+// capacity, 3 = delta_resident (1 = contributions L1-resident: re-read one
+// block every iteration; 0 = streamed: consume a fresh contribution block each
+// iteration), 4 = expr. expr ids: 0 add, 1 mul, 2 gelu.
 
 #include <cstdint>
 
