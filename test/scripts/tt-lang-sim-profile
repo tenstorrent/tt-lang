@@ -8,8 +8,10 @@ Run a tt-lang-sim script under cProfile and print a hotspot report.
 All arguments are forwarded to tt-lang-sim unchanged.  Use --save FILE to
 save the binary cProfile stats for later inspection with python -m pstats.
 
-The --save option must appear after all other arguments to avoid ambiguity
-with simulator options that begin with --.
+The --save option is consumed by this wrapper and must appear before any ``--``
+separator (which marks the start of the script's own arguments). Placing it
+after all other simulator options also avoids ambiguity with options that begin
+with --.
 
 Usage:
     tt-lang-sim-profile SCRIPT.py [SIMULATOR_OPTIONS...]
@@ -54,31 +56,43 @@ else:
 
 
 def _extract_save_arg(argv: list) -> tuple:
-    """Remove --save FILE from argv; return (output_file, remaining_argv).
+    """Remove the profiler's --save FILE from argv; return (output_file, remaining_argv).
 
-    Everything other than the --save option is passed through to tt-lang-sim
-    unchanged.
+    Only the portion before the first ``--`` separator is scanned. A ``--``
+    marks the start of the script's own arguments, which are forwarded verbatim,
+    so e.g. ``... -- --save out`` keeps ``--save out`` for the script rather than
+    capturing it here. Everything other than the profiler's --save option is
+    passed through to tt-lang-sim unchanged.
     """
+    # Split off the script's own arguments at the first "--"; they are never
+    # scanned for --save and are appended to the forwarded args verbatim.
+    try:
+        sep = argv.index("--")
+    except ValueError:
+        head, tail = argv, []
+    else:
+        head, tail = argv[:sep], argv[sep:]
+
     output_file = ""
     remaining = []
     i = 0
-    while i < len(argv):
-        if argv[i] == "--save":
-            if i + 1 >= len(argv):
+    while i < len(head):
+        if head[i] == "--save":
+            if i + 1 >= len(head):
                 print(
                     "tt-lang-sim-profile: --save requires a FILE argument",
                     file=sys.stderr,
                 )
                 sys.exit(2)
-            output_file = argv[i + 1]
+            output_file = head[i + 1]
             i += 2
-        elif argv[i].startswith("--save="):
-            output_file = argv[i][len("--save=") :]
+        elif head[i].startswith("--save="):
+            output_file = head[i][len("--save=") :]
             i += 1
         else:
-            remaining.append(argv[i])
+            remaining.append(head[i])
             i += 1
-    return output_file, remaining
+    return output_file, remaining + tail
 
 
 def _emit_profile_report(profiler: cProfile.Profile, output_file: str) -> None:

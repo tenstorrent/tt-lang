@@ -198,7 +198,7 @@ with simulator flags that also begin with `--`.
 
 ## Dry-run mode
 
-Pass `--dry-run` to `ttlang-sim` (or call `sim.context.set_dry_run(True)` from Python)
+Pass `--dry-run` to `tt-lang-sim` (or call `sim.context.set_dry_run(True)` from Python)
 to validate kernel structure without performing any actual computation or data movement.
 
 In dry-run mode the simulator bypasses the *computational payload* of
@@ -221,3 +221,14 @@ Everything else runs normally:
 control flow.  Kernels that branch or set loop bounds based on the *values*
 inside a simulated tile will not be structurally validated — the branch will
 follow whatever path the zero/dummy payload produces.
+
+**Assertions are not stripped.** `--dry-run` does *not* disable Python
+`assert` statements.  This is deliberate: a kernel may contain structural or
+shape assertions that remain valid under dry-run.  As a consequence, a script
+ending in a *result-verification* assertion (for example `assert pcc > 0.99`)
+will fail under `--dry-run`, because the dry-run output is a zero/`nan`
+placeholder rather than the real result.  Such scripts should either guard
+those assertions or be run with assertions disabled via Python's `-O` flag,
+e.g. `PYTHONOPTIMIZE=1 tt-lang-sim script.py --dry-run`.  (The matmul-tutorial
+CI does exactly this when it runs the tutorial examples as dry-run smoke
+tests.)

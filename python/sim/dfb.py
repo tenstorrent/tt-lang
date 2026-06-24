@@ -62,10 +62,45 @@ def _is_dry_run() -> bool:
     return get_context().config.dry_run
 
 
-# A single zero-element Tensor shared across all dry-run result blocks.
-# Using a sentinel avoids any per-operation tensor allocation in dry-run mode;
-# its content and element shape are irrelevant since all consumers are also guarded.
-_DRY_RUN_SENTINEL = Tensor(torch.empty(0))
+# Zero-element Tensors shared across all dry-run result blocks, one per layout.
+# Using sentinels avoids any per-operation tensor allocation in dry-run mode;
+# their content and element shape are irrelevant since all consumers are also
+# guarded. The layout is still tracked so a dry-run result block reports the same
+# layout as the non-dry path would (Block.layout reads its backing tensor's
+# layout), keeping check_same_layout meaningful for chained operations. There are
+# only ever two layouts, so two constants suffice.
+_DRY_RUN_SENTINEL = Tensor(torch.empty(0), TILE_LAYOUT)
+_DRY_RUN_SENTINEL_ROW_MAJOR = Tensor(torch.empty(0), ROW_MAJOR_LAYOUT)
+
+
+def _dry_run_sentinel(layout: IndexType = TILE_LAYOUT) -> Tensor:
+    """Return the shared zero-element sentinel for the given layout."""
+    if layout == ROW_MAJOR_LAYOUT:
+        return _DRY_RUN_SENTINEL_ROW_MAJOR
+    return _DRY_RUN_SENTINEL
+
+
+def _dry_run_result(shape: Shape, *sources: "Block") -> "Block":
+    """Return a temporary block backed by a shared sentinel tensor without any computation.
+
+    Shared by the ``ttl.math`` and ``ttl.block`` helpers for their dry-run paths.
+    Only safe in dry-run mode: tensor content and element dimensions are meaningless.
+    The tile-grid shape is set correctly so downstream structural checks see the right
+    grid, and no memory is allocated beyond a single Block object. The result layout is
+    propagated from the first source (matching the non-dry path, which preserves the
+    operand layout) so layout checks remain valid across chained operations; with no
+    sources it defaults to TILE_LAYOUT.
+    """
+    layout = sources[0].layout if sources else TILE_LAYOUT
+    result_block = Block(
+        tensor=_dry_run_sentinel(layout),
+        shape=shape,
+        acquisition=BlockAcquisition.RESERVE,
+        kernel_type=KernelType.COMPUTE,
+        is_temporary=True,
+    )
+    track_source_blocks(result_block, *sources)
+    return result_block
 
 
 def _name_phrase_for_error(block: "Block") -> str:
@@ -763,7 +798,7 @@ class Block:
 
     def _unary_op(self, op: "Callable[[Tensor], Tensor]") -> "Block":
         """Apply a unary op, skipping computation and reusing the sentinel in dry-run."""
-        buf = _DRY_RUN_SENTINEL if _is_dry_run() else op(self._buf)
+        buf = _dry_run_sentinel(self.layout) if _is_dry_run() else op(self._buf)
         return self._create_temporary_result(buf, self._shape)
 
     def _binary_op(
@@ -794,9 +829,12 @@ class Block:
             )
 
         # Skip the actual elementwise compute in dry-run: tile-grid shape and
-        # source-block tracking are all the downstream pipeline needs.
+        # source-block tracking are all the downstream pipeline needs. The
+        # operands share a layout (checked above), so propagate it to the result.
         if _is_dry_run():
-            return self._create_temporary_result(_DRY_RUN_SENTINEL, left_shape, other)
+            return self._create_temporary_result(
+                _dry_run_sentinel(self.layout), left_shape, other
+            )
 
         # Perform operation
         return self._create_temporary_result(
@@ -1177,11 +1215,11 @@ class DataflowBuffer:
         # the slot's bytes are never read because every downstream operation
         # (``Block.store``, ``__matmul__``, ``ttl.math.*``, ``ttl.copy``) is
         # itself dry-run-guarded and returns its own sentinel.  Same precedent
-        # as ``Block.__call__`` at the ``_DRY_RUN_SENTINEL if _is_dry_run()``
+        # as ``Block._unary_op`` at the ``_DRY_RUN_SENTINEL if _is_dry_run()``
         # site above.  Removes ~6 M ``torch.zeros`` calls and ~6 M ``Tensor``
         # constructions per matmul step_1 dry-run.
         if _is_dry_run():
-            slot = _DRY_RUN_SENTINEL
+            slot = _dry_run_sentinel(self.likeness_tensor.layout)
         else:
             slot = Tensor(
                 torch.zeros(

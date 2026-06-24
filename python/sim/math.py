@@ -20,39 +20,21 @@ from typing import Callable, List, Optional, Set, Tuple
 import torch
 
 from .context import get_context
-from .dfb import Block, check_same_layout, track_source_blocks, matmul
-from .blockstate import BlockAcquisition, KernelType
+from .dfb import (
+    Block,
+    check_same_layout,
+    track_source_blocks,
+    matmul,
+    _dry_run_result,
+)
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
-from .typedefs import PositiveInt, Shape
+from .typedefs import PositiveInt
 
 _ = matmul
 
 
 def _is_dry_run() -> bool:
     return get_context().config.dry_run
-
-
-# Shared sentinel: a single zero-element Tensor used for all dry-run result blocks in
-# this module. Avoids any per-operation tensor allocation; content is irrelevant.
-_DRY_RUN_SENTINEL = Tensor(torch.empty(0))
-
-
-def _dry_run_result(shape: Shape, *sources: Block) -> Block:
-    """Return a temporary block backed by the shared sentinel tensor without any computation.
-
-    Only safe in dry-run mode: tensor content and element dimensions are meaningless.
-    The tile-grid shape is set correctly so downstream structural checks see the right
-    grid, and no memory is allocated beyond a single Block object.
-    """
-    result_block = Block(
-        tensor=_DRY_RUN_SENTINEL,
-        shape=shape,
-        acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
-        is_temporary=True,
-    )
-    track_source_blocks(result_block, *sources)
-    return result_block
 
 
 # Helper function to create unary operation wrappers

@@ -24,7 +24,7 @@ from typing import (
 )
 
 from .context import get_context
-from .context_types import PipeEntry
+from .context_types import PipeEntry, PipeMessage
 from .dfb import Block
 from .pipe import (
     AnySrcPipeIdentity,
@@ -39,7 +39,6 @@ from .ttnnsim import (
     Tensor,
     check_count_match,
     tile_count_from_shape,
-    tile_count_from_tensor,
 )
 from .typedefs import IndexType, NodeCoord, Shape
 
@@ -68,6 +67,10 @@ CopyEndpointType = Union[
     Type[AnySrcPipeIdentity],
     Type[DstPipeIdentity],
 ]
+
+
+def _is_dry_run() -> bool:
+    return get_context().config.dry_run
 
 
 def _get_or_create_pipe_entry(pipe: AnyPipe) -> PipeEntry:
@@ -224,8 +227,18 @@ class BlockToPipeHandler:
         pass
 
     def transfer(self, src: Block, dst: AnyPipe) -> None:
-        """Pipe send: store data in shared buffer accessible by all nodes."""
-        src_data = src.raw_tensor
+        """Pipe send: store data in shared buffer accessible by all nodes.
+
+        The queued ``PipeMessage`` always records the sent block's tile-grid
+        shape so the destination shape check runs identically in both modes. In
+        dry-run mode the message's ``data`` is left ``None`` (no payload bytes),
+        but the queue bookkeeping (receiver count, message id, receiver set) is
+        still maintained so pipe sequencing and backpressure are exercised.
+        """
+        message = PipeMessage(
+            grid_shape=src.shape,
+            data=None if _is_dry_run() else src.raw_tensor,
+        )
 
         # Get or create pipe entry atomically
         entry = _get_or_create_pipe_entry(dst)
@@ -258,13 +271,13 @@ class BlockToPipeHandler:
         # Add to the queue with receiver count, message ID, and empty receiver set.
         msg_id = entry["next_msg_id"]
         entry["next_msg_id"] += 1
-        entry["queue"].append((src_data, num_receivers, msg_id, set[int]()))
+        entry["queue"].append((message, num_receivers, msg_id, set[int]()))
 
         if TRACE.enabled:
             trace(
                 "pipe_send",
                 pipe=get_pipe_name(dst),
-                tiles=tile_count_from_tensor(src_data),
+                tiles=math.prod(message.grid_shape),
             )
 
     def can_wait(self, src: Block, dst: AnyPipe) -> bool:
@@ -281,6 +294,8 @@ class TensorToBlockHandler:
 
     def transfer(self, src: Tensor, dst: Block) -> None:
         """Transfer tensor data into Block."""
+        if _is_dry_run():
+            return
         dst.copy_as_dest(src)
 
     def can_wait(self, src: Tensor, dst: Block) -> bool:
@@ -296,6 +311,8 @@ class BlockToTensorHandler:
 
     def transfer(self, src: Block, dst: Tensor) -> None:
         """Transfer Block data into tensor."""
+        if _is_dry_run():
+            return
         dst_raw = dst.to_torch()
         src_raw = src.raw_tensor.to_torch()
         dst_raw.copy_(src_raw.reshape(dst_raw.shape))
@@ -354,20 +371,25 @@ class PipeToBlockHandler:
             node_id = None
 
         # Find the first message this node has not yet received.
-        for idx, (msg_data, remaining_recv, msg_id, recv_set) in enumerate(queue):
+        for idx, (message, remaining_recv, msg_id, recv_set) in enumerate(queue):
             if not node_id_available or node_id not in recv_set:
-                if msg_data.shape != dst.raw_tensor.shape:
+                if message.grid_shape != dst.shape:
                     raise ValueError(
-                        f"Destination Block shape {dst.raw_tensor.shape} "
-                        f"does not match pipe data shape {msg_data.shape}"
+                        f"Destination Block shape {dst.shape} "
+                        f"does not match pipe data shape {message.grid_shape}"
                     )
 
-                dst.copy_as_dest(msg_data)
+                # Payload copy only happens when data is present; in dry-run the
+                # message carries no bytes (data is None) and the copy is skipped
+                # while the queue bookkeeping below still runs.
+                if message.data is not None:
+                    dst.copy_as_dest(message.data)
+
                 if TRACE.enabled:
                     trace(
                         "pipe_recv",
                         pipe=get_pipe_name(src),
-                        tiles=tile_count_from_tensor(msg_data),
+                        tiles=math.prod(message.grid_shape),
                     )
 
                 if node_id_available:
@@ -381,7 +403,7 @@ class PipeToBlockHandler:
                 if remaining_recv == 0:
                     del queue[idx]
                 else:
-                    queue[idx] = (msg_data, remaining_recv, msg_id, recv_set)
+                    queue[idx] = (message, remaining_recv, msg_id, recv_set)
                 return
 
         # Unreachable if can_wait() was accurate.

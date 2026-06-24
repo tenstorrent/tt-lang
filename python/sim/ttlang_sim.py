@@ -57,8 +57,12 @@ def execute_script_with_simulator(
         capture_output: If True, capture and return stdout/stderr; if False, print directly
         argv: Command-line arguments to pass to the script (for sys.argv)
         optimize: If True, compile with optimize=1 (strips assert statements, equivalent
-            to Python's -O flag). Useful for dry-run mode where correctness assertions
-            are meaningless because math operations are skipped.
+            to Python's -O flag). This is independent of dry-run: the CLI --dry-run
+            path leaves assertions intact (a kernel may have structural/shape asserts
+            unrelated to computed data). This flag exists so callers such as the
+            matmul-tutorial CI harness can run example scripts that end in a
+            result-verification assert (e.g. ``assert pcc > 0.99``), which would
+            otherwise fail when dry-run produces placeholder output.
 
     Returns:
         (exit_code, output) tuple where exit_code is 0 on success, 1 on error,

@@ -1648,8 +1648,17 @@ class Tensor:
         )
 
     def _zeros_matmul(self, other: "Tensor") -> "Tensor":
-        """Return zeros shaped by the matmul output of self @ other."""
-        out_shape = (*self._tensor.shape[:-1], other._tensor.shape[-1])
+        """Return zeros shaped like the real matmul output of self @ other.
+
+        The shape is derived exactly as the non-dry path would: the real path
+        is ``self._tensor @ other._tensor`` (``torch.matmul``), so running that
+        same op on meta tensors reproduces torch's batched/broadcast matmul
+        rules (and raises identically on incompatible dims) without allocating
+        storage or computing any values.
+        """
+        out_shape = torch.matmul(
+            self._tensor.to("meta"), other._tensor.to("meta")
+        ).shape
         return Tensor(
             torch.zeros(out_shape, dtype=self._tensor.dtype),
             self._layout,

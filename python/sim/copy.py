@@ -187,11 +187,13 @@ class CopyTransaction:
 
         # Transfer - let exceptions propagate to scheduler for context.
         if not self._transfer_performed:
-            # In dry-run mode the payload bytes are not moved; only the block
-            # state transitions below still fire so that structural checks
+            # Each handler decides what to do in dry-run mode: payload-only
+            # handlers (Tensor<->Block) skip the byte copy, while structural
+            # handlers (Pipe send/receive) still maintain their queue
+            # bookkeeping so pipe sequencing is exercised symmetrically. The
+            # block state transitions below always fire so structural checks
             # (state machine, deadlock) remain fully exercised.
-            if not get_context().config.dry_run:
-                self._handler.transfer(self._src, self._dst)
+            self._handler.transfer(self._src, self._dst)
             self._transfer_performed = True
         self._completed = True
 

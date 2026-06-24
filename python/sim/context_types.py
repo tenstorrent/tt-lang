@@ -50,6 +50,20 @@ class TraceEvent:
     data: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PipeMessage:
+    """A single message queued on a pipe.
+
+    ``grid_shape`` (the tile-grid shape of the sent block) is always populated
+    so the destination shape check runs identically in dry-run and normal mode.
+    ``data`` holds the backing tile tensor, or is ``None`` in dry-run mode where
+    the payload bytes are not moved.
+    """
+
+    grid_shape: Shape
+    data: Optional[Tensor] = None
+
+
 class PipeEntry(TypedDict):
     """Pipe buffer entry for NoC pipe communication simulation.
 
@@ -57,7 +71,7 @@ class PipeEntry(TypedDict):
     No locking needed because greenlet scheduler is cooperative.
     """
 
-    queue: Deque[Tuple[Tensor, Count, int, set[int]]]
+    queue: Deque[Tuple[PipeMessage, Count, int, set[int]]]
     next_msg_id: int
 
 

@@ -343,9 +343,11 @@ class GreenletScheduler:
         This initialization ensures all kernels have blocking_obj set,
         so can_{operation}() checks work correctly in the fair scheduler.
 
-        Timestamps are only given to kernels that made progress (passed at least
-        one block_if_needed check). Kernels that blocked on their first check
-        keep ts=0, giving them priority in fair scheduling.
+        Scheduling order is encoded by position in the ``_active`` ordered dict
+        rather than a per-kernel timestamp. Kernels that made progress (passed at
+        least one block_if_needed check) are moved to the end of ``_active``;
+        kernels that blocked on their first check stay at the front, giving them
+        priority in the next fair-scheduling round.
         """
 
         for kernel_id in list(self._active.keys()):

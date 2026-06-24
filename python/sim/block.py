@@ -18,37 +18,13 @@ import torch
 
 from .constants import TILE_SHAPE
 from .context import get_context
-from .dfb import Block, check_same_layout, track_source_blocks
+from .dfb import Block, check_same_layout, track_source_blocks, _dry_run_result
 from .blockstate import BlockAcquisition, KernelType
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
-from .typedefs import Shape
 
 
 def _is_dry_run() -> bool:
     return get_context().config.dry_run
-
-
-# Shared sentinel: a single zero-element Tensor used for all dry-run result blocks in
-# this module. Avoids any per-operation tensor allocation; content is irrelevant.
-_DRY_RUN_SENTINEL = Tensor(torch.empty(0))
-
-
-def _dry_run_result(shape: Shape, *sources: Block) -> Block:
-    """Return a temporary block backed by the shared sentinel tensor without any computation.
-
-    Only safe in dry-run mode: tensor content and element dimensions are meaningless.
-    The tile-grid shape is set correctly so downstream structural checks see the right
-    grid, and no memory is allocated beyond a single Block object.
-    """
-    result_block = Block(
-        tensor=_DRY_RUN_SENTINEL,
-        shape=shape,
-        acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
-        is_temporary=True,
-    )
-    track_source_blocks(result_block, *sources)
-    return result_block
 
 
 def _apply_binary_op(
@@ -386,6 +362,10 @@ def squeeze(block: Block, dims: List[int]) -> Block:
         norm_dims.add(nd)
 
     new_shape = tuple(s for i, s in enumerate(block_shape) if i not in norm_dims)
+
+    if _is_dry_run():
+        return _dry_run_result(new_shape, block)
+
     tiles = block.to_list()
     result = Block.from_list(tiles, new_shape)
     track_source_blocks(result, block)
@@ -434,6 +414,9 @@ def unsqueeze(block: Block, dims: List[int]) -> Block:
     for pos in sorted(set(norm_positions)):
         result_list.insert(pos, 1)
     new_shape = tuple(result_list)
+
+    if _is_dry_run():
+        return _dry_run_result(new_shape, block)
 
     tiles = block.to_list()
     result = Block.from_list(tiles, new_shape)
