@@ -345,11 +345,14 @@ def _is_block(value) -> bool:
     """Check if a value is a block (result of cb.reserve() or cb.wait()).
 
     A block is a tensor with an attached CB, produced by ttl.attach_cb.
+    BlockArguments (e.g. scf.for iter_args) report a `Block` as their
+    owner, not an `Operation`, so they are never blocks in this sense.
     """
     if not hasattr(value, "owner") or value.owner is None:
         return False
-    owner_name = value.owner.name
-    return owner_name == "ttl.attach_cb"
+    if not hasattr(value.owner, "name"):
+        return False
+    return value.owner.name == "ttl.attach_cb"
 
 
 def _get_reserve_from_block(block):

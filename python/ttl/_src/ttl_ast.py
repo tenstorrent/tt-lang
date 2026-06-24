@@ -334,21 +334,46 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(node, str(e))
 
     def visit_AugAssign(self, node):
-        """Handle += on tensor blocks via the registered __iadd__ method."""
+        """Handle augmented assignment on tensor values.
+
+        `+=` on a DFB-attached block emits an accumulating store through
+        `__iadd__`. Other tensor targets are rewritten to an ordinary
+        assignment so loop-carried SSA values can be represented by `scf.for`
+        iter_args.
+        """
         with self._loc_for_node(node):
             target = self.visit(node.target)
-            if (
-                isinstance(node.op, ast.Add)
-                and hasattr(target, "type")
-                and isinstance(target.type, RankedTensorType)
-            ):
-                rhs = self.visit(node.value)
-                mlir_type = _get_type_str(target.type)
-                iadd_fn = self._fn_map.get(f"{mlir_type}.__iadd__")
-                if iadd_fn:
-                    result = iadd_fn(target, rhs)
-                    self._set_var(node.target.id, result)
-                    return
+            if hasattr(target, "type") and isinstance(target.type, RankedTensorType):
+                from ..operators import _is_block
+
+                if isinstance(node.op, ast.Add) and _is_block(target):
+                    rhs = self.visit(node.value)
+                    mlir_type = _get_type_str(target.type)
+                    iadd_fn = self._fn_map.get(f"{mlir_type}.__iadd__")
+                    if iadd_fn:
+                        result = iadd_fn(target, rhs)
+                        self._set_var(node.target.id, result)
+                        return
+                if isinstance(node.target, ast.Name):
+                    load_target = ast.copy_location(
+                        ast.Name(id=node.target.id, ctx=ast.Load()), node.target
+                    )
+                    store_target = ast.copy_location(
+                        ast.Name(id=node.target.id, ctx=ast.Store()), node.target
+                    )
+                    synthetic = ast.copy_location(
+                        ast.Assign(
+                            targets=[store_target],
+                            value=ast.copy_location(
+                                ast.BinOp(
+                                    left=load_target, op=node.op, right=node.value
+                                ),
+                                node.value,
+                            ),
+                        ),
+                        node,
+                    )
+                    return self.visit(synthetic)
             return super().visit_AugAssign(node)
 
     def _is_pipenet_callback_call(self, node):
@@ -630,20 +655,25 @@ class TTLGenericCompiler(TTCompilerBase):
                     or self._is_ttl_block_access(node)
                 ):
                     return self._resolve_ttl_function(node, func_args, kwargs)
-                # Tensor-typed .shape: return the value's grid shape as a
-                # Python tuple of ints. Lets users write `y_blk.shape` inside
-                # @ttl.compute / @ttl.datamovement to derive shape kwargs for
-                # spec-form ops like ttl.block.broadcast(..., shape=y_blk.shape).
-                # Resolved before the chained-call and module-attribute branches
-                # so it also works on call expressions whose result is a ranked
-                # tensor. Non-tensor receivers fall through to the existing
-                # handlers and surface their normal diagnostic.
-                if not func_args and not kwargs and node.attr == "shape":
+                # Tensor-typed attributes are resolved from the SSA value type
+                # so spec-form ops can construct result types without reading a
+                # destination DFB during lowering.
+                if not func_args and not kwargs and node.attr in ("shape", "dtype"):
                     value = self.visit(node.value)
                     if value is not None and hasattr(value, "type"):
                         tensor_ty = RankedTensorType.maybe_downcast(value.type)
                         if tensor_ty is not None:
-                            return tuple(tensor_ty.shape)
+                            if node.attr == "shape":
+                                return tuple(tensor_ty.shape)
+                            tile_ty = ttcore.ir.TileType.maybe_downcast(
+                                tensor_ty.element_type
+                            )
+                            if tile_ty is not None:
+                                return ttcore.DataType(tile_ty.data_type_as_int)
+                            if tensor_ty.element_type == F32Type.get(self.ctx):
+                                return ttcore.DataType.Float32
+                            if tensor_ty.element_type == BF16Type.get(self.ctx):
+                                return ttcore.DataType.BFloat16
                 # Handle chained method calls: expr().method()
                 if isinstance(node.value, ast.Call):
                     return self._resolve_chained_method_call(node, func_args, kwargs)
