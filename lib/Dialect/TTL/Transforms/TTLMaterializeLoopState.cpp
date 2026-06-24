@@ -45,9 +45,8 @@ struct TensorLoopState {
   BindCBOp stateDFB;
 };
 
-// Collects tensor loop-carried values that still require explicit state. The
-// accumulation passes run before this pass, so this transform does not infer or
-// select accumulation strategies.
+/// Collects tensor loop-carried values that require explicit DFB state. This
+/// transform does not infer or select accumulation strategies.
 static SmallVector<TensorLoopState> collectTensorLoopStates(scf::ForOp loop) {
   auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
 
@@ -67,8 +66,8 @@ static SmallVector<TensorLoopState> collectTensorLoopStates(scf::ForOp loop) {
   return states;
 }
 
-// Tests whether an old loop result is one of the tensor states removed from the
-// reconstructed scf.for signature.
+/// Tests whether an old loop result is one of the tensor states removed from
+/// the reconstructed scf.for signature.
 static bool isTensorStateIndex(ArrayRef<TensorLoopState> states,
                                unsigned resultIndex) {
   return llvm::any_of(states, [&](const TensorLoopState &state) {
@@ -76,9 +75,9 @@ static bool isTensorStateIndex(ArrayRef<TensorLoopState> states,
   });
 }
 
-// Seeds each compiler-allocated state DFB before the rewritten loop. The
-// pre-loop store preserves zero-trip scf.for semantics without keeping tensor
-// values in the loop signature.
+/// Seeds each compiler-allocated state DFB before the rewritten loop. The
+/// pre-loop store preserves zero-trip scf.for semantics without keeping tensor
+/// values in the loop signature.
 static void createInitialStores(ArrayRef<TensorLoopState> states,
                                 scf::ForOp loop, RewriterBase &rewriter) {
   for (TensorLoopState state : states) {
@@ -87,8 +86,8 @@ static void createInitialStores(ArrayRef<TensorLoopState> states,
   }
 }
 
-// Rebuilds the loop with only non-tensor iter_args so tensor state is carried
-// by explicit dataflow buffer operations instead of scf.for results.
+/// Rebuilds the loop with only non-tensor iter_args so tensor state is carried
+/// by explicit dataflow buffer operations instead of scf.for results.
 static scf::ForOp createLoopWithoutTensorState(scf::ForOp loop,
                                                ArrayRef<TensorLoopState> states,
                                                RewriterBase &rewriter) {
@@ -117,8 +116,8 @@ static scf::ForOp createLoopWithoutTensorState(scf::ForOp loop,
   return newLoop;
 }
 
-// Maps old loop-carried SSA values into the rebuilt loop and materializes
-// tensor iter_args from their DFB state slots at loop entry.
+/// Maps old loop-carried SSA values into the rebuilt loop and materializes
+/// tensor iter_args from their DFB state slots at loop entry.
 static void mapLoopCarriedValues(scf::ForOp loop, scf::ForOp newLoop,
                                  ArrayRef<TensorLoopState> states,
                                  IRMapping &mapper, RewriterBase &rewriter) {
@@ -143,9 +142,9 @@ static void mapLoopCarriedValues(scf::ForOp loop, scf::ForOp newLoop,
   }
 }
 
-// Stores each yielded tensor value at the earliest cloned location where the
-// value is available. This keeps producer-consumer ordering local to the loop
-// body while replacing tensor iter_args with explicit DFB state.
+/// Stores each yielded tensor value at the earliest cloned location where the
+/// value is available. This keeps producer-consumer ordering local to the loop
+/// body while replacing tensor iter_args with explicit DFB state.
 static void cloneBodyAndMaterializeNextState(scf::ForOp loop,
                                              scf::ForOp newLoop,
                                              ArrayRef<TensorLoopState> states,
@@ -203,8 +202,8 @@ static void cloneBodyAndMaterializeNextState(scf::ForOp loop,
   scf::YieldOp::create(rewriter, yield.getLoc(), newYieldOperands);
 }
 
-// Reconnects users of the old loop results after tensor state has been
-// materialized through compiler-allocated DFB state.
+/// Reconnects users of the old loop results after tensor state has been
+/// materialized through compiler-allocated DFB state.
 static void replaceLoopResults(scf::ForOp loop, scf::ForOp newLoop,
                                ArrayRef<TensorLoopState> states,
                                RewriterBase &rewriter) {
@@ -232,8 +231,8 @@ static void replaceLoopResults(scf::ForOp loop, scf::ForOp newLoop,
   }
 }
 
-// Applies tensor state materialization to one loop. A loop without tensor
-// iter_args is not a match and is left untouched by the pass driver.
+/// Applies tensor state materialization to one loop. A loop without tensor
+/// iter_args is not a match and is left untouched by the pass driver.
 static LogicalResult materializeLoopState(scf::ForOp loop,
                                           RewriterBase &rewriter) {
   SmallVector<TensorLoopState> states = collectTensorLoopStates(loop);

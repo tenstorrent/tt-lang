@@ -8,8 +8,9 @@ Covers loop-carried recurrences (`acc = acc + x`), `+=` rewrite, tuple
 targets, multi-accumulator and multi-tile recurrences, zero-trip loops,
 and conditional rebinds. The core regression is #527 (`acc = acc +
 recv.wait()` silently dropped its loop-carried value); the rest
-exercise the `ttl-materialize-loop-state` and L1-acc-multi-CB paths
-added alongside the fix.
+exercise `ttl-materialize-loop-state`, augmented-assignment rewriting,
+accumulation strategy lowering, and existing DFB-attached block `+=`
+behavior.
 """
 
 import pytest
@@ -218,8 +219,7 @@ def test_self_rebound_add_result_is_carried_out_of_loop(device, dtype):
     ids=["auto", "dst", "l1"],
 )
 def test_tensor_accumulation_strategy_options(device, dtype, accumulation_strategy):
-    """Direct additive recurrences are DST-compatible, so every strategy
-    option is valid for this tensor recurrence."""
+    """Direct additive recurrences are valid under every strategy option."""
     initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
     delta = torch.full((TILE, TILE), 2.0, dtype=dtype)
     expected = initial.float() + N_ITERS * delta.float()
@@ -408,7 +408,7 @@ def _make_three_accumulator_kernel():
 @pytest.mark.requires_device
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 def test_three_accumulators_in_one_loop(device, dtype):
-    """Extends the L1-acc multi-accumulator coverage to three CBs in one loop."""
+    """Covers three DFB-backed tensor recurrences in one loop."""
     kernel = _make_three_accumulator_kernel()
 
     a_seed = torch.full((TILE, TILE), 1.0, dtype=dtype)
@@ -631,7 +631,7 @@ def _make_multi_target_aug_kernel():
 def test_aug_assign_multi_target_in_loop(device, dtype):
     """Two plain-tensor accumulators each rebound with `+=` in the same
     loop: exercises the AugAssign rewrite alongside multi-iter_arg
-    emission and the multi-CB L1-acc path."""
+    emission and multiple DFB-attached accumulating stores."""
     a_seed = torch.full((TILE, TILE), 1.0, dtype=dtype)
     b_seed = torch.full((TILE, TILE), 10.0, dtype=dtype)
     delta = torch.full((TILE, TILE), 1.0, dtype=dtype)
@@ -739,7 +739,7 @@ def _make_sub_aug_kernel():
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 def test_aug_assign_sub_op(device, dtype):
     """`-=` on a plain tensor is rewritten the same way as `+=`; it lowers
-    through ttl.sub without the L1-acc fast path (which is Add-only).
+    through ttl.sub instead of DFB-attached in-place addition.
     Final value: a - d_init - N_ITERS * d."""
     a_seed = torch.full((TILE, TILE), 100.0, dtype=dtype)
     delta = torch.full((TILE, TILE), 2.0, dtype=dtype)
@@ -760,8 +760,8 @@ def _make_block_aug_in_loop_kernel():
     `scf.for` loop. The collector must NOT register `out_blk` as a
     loop-carried iter_arg; if it does, the block target is shadowed to
     an scf.for BlockArgument and `+=` falls into the plain-tensor
-    rewrite path (`ttl.add` producing an SSA value) instead of the
-    block `__iadd__` L1-acc store, leaving the CB at its initial fill."""
+    rewrite (`ttl.add` producing an SSA value) instead of the
+    block `__iadd__` accumulating store, leaving the DFB at its initial fill."""
 
     @ttl.operation(grid=(1, 1))
     def kernel(x, out):
@@ -800,7 +800,7 @@ def _make_block_aug_in_loop_kernel():
 def test_block_aug_assign_in_loop_uses_l1_acc(device, dtype, accumulation_strategy):
     """Regression for #540 review: `out_blk += x` inside a for loop on a
     reserve block carried over from an enclosing `with:` scope must
-    continue to lower via __iadd__ (L1 acc store), not be wrongly added
+    continue to lower via __iadd__ (an accumulating store), not be wrongly added
     as an scf.for iter_arg by the new loop-carried collector."""
     x = torch.full((TILE, TILE), 1.0, dtype=dtype)
     out = torch.zeros((TILE, TILE), dtype=dtype)

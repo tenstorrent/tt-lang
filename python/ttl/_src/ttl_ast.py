@@ -334,18 +334,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(node, str(e))
 
     def visit_AugAssign(self, node):
-        """Handle augmented assignment on tensors.
+        """Handle augmented assignment on tensor values.
 
-        - `+=` on a CB-attached block (`out_blk = cb.reserve()`): emit an
-          L1 accumulating `ttl.store` via the registered `__iadd__`
-          method. Guarantees L1 accumulation at lowering time.
-        - Any other case on a tensor target (non-block target, or
-          non-`Add` op on a block): rewrite `target op= value` to
-          `target = target op value` and visit, so the result flows
-          through `ttl.add` / `ttl.sub` / ... and (when inside a loop)
-          `ttl-materialize-loop-state`. L1 acc is then used
-          opportunistically when the surrounding pattern matches the
-          accumulator preconditions.
+        `+=` on a DFB-attached block emits an accumulating store through
+        `__iadd__`. Other tensor targets are rewritten to an ordinary
+        assignment so loop-carried SSA values can be represented by `scf.for`
+        iter_args; accumulation lowering handles recognized additive
+        recurrences.
         """
         with self._loc_for_node(node):
             target = self.visit(node.target)

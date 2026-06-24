@@ -652,6 +652,27 @@ mechanism. It round-trips the state through L1 each iteration because a
 non-additive recurrence cannot be expressed as DST or packer
 accumulation.
 
+## Loop-Carried Tensor State
+
+A Python `for` loop that reassigns a tensor variable read on a later
+iteration (`acc = acc + x`, `state = ttl.math.relu(state)`) compiles to an
+`scf.for` with a ranked-tensor `iter_arg`. `ttl-materialize-loop-state`
+eliminates those tensor iter_args before compute lowering by creating
+compiler-managed DFB state:
+
+```
+store init -> state DFB
+for ...:
+    wait/attach state DFB
+    compute next state
+    reserve/store next state -> state DFB
+wait/attach final state DFB
+```
+
+The pass preserves non-tensor loop iter_args. It also preserves zero-trip
+loop semantics because the initial value is stored before the rewritten loop
+and the final value is read after the loop.
+
 ## DstSectionOp
 
 `ttl.dst_section` demarcates a DST register acquisition scope. All
