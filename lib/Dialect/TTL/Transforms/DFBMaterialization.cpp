@@ -6,8 +6,160 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/IRMapping.h"
 
 namespace mlir::tt::ttl {
+
+namespace {
+
+Value createEmptyTensorLike(RankedTensorType tensorType, Location loc,
+                            ValueRange exemplars, OpBuilder &builder) {
+  SmallVector<Value> dynamicDims;
+  for (auto [dimIndex, dimSize] : llvm::enumerate(tensorType.getShape())) {
+    if (dimSize != ShapedType::kDynamic) {
+      continue;
+    }
+    assert(!exemplars.empty() &&
+           "dynamic DFB materialization requires an exemplar tensor");
+    dynamicDims.push_back(
+        tensor::DimOp::create(builder, loc, exemplars.front(), dimIndex));
+  }
+  return tensor::EmptyOp::create(builder, loc, tensorType.getShape(),
+                                 tensorType.getElementType(), dynamicDims);
+}
+
+FailureOr<DFBMaterializedValue>
+materializeComputeResultToDFB(OpResult intermediate, Operation *consumerOp,
+                              ModuleOp moduleOp, OpBuilder &builder) {
+  auto computeOp = cast<ComputeOp>(intermediate.getOwner());
+  auto tensorType = cast<RankedTensorType>(intermediate.getType());
+  unsigned resultIndex = intermediate.getResultNumber();
+  Location loc = intermediate.getLoc();
+
+  if (resultIndex >= computeOp.getNumOutputs()) {
+    return computeOp.emitOpError()
+           << "result " << resultIndex
+           << " has no matching formal output for DFB materialization";
+  }
+
+  Value selectedOutput = computeOp.getOutputs()[resultIndex];
+  Value selectedCB = getAttachedCB(selectedOutput);
+  if (!selectedCB) {
+    return computeOp.emitOpError()
+           << "result " << resultIndex
+           << " has no DFB-attached formal output for materialization";
+  }
+
+  auto funcOp = computeOp->getParentOfType<func::FuncOp>();
+  assert(funcOp && "compute materialization requires a func::FuncOp");
+
+  BindCBOp bindDFB;
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    bindDFB =
+        createCompilerAllocatedDFB(tensorType, loc, funcOp, moduleOp, builder);
+  }
+
+  builder.setInsertionPoint(computeOp);
+  auto reserve =
+      CBReserveOp::create(builder, loc, tensorType, bindDFB.getResult());
+  Value init =
+      createEmptyTensorLike(tensorType, loc, computeOp.getInputs(), builder);
+  auto initAttached =
+      AttachCBOp::create(builder, loc, tensorType, init, bindDFB.getResult());
+
+  SmallVector<Type> resultTypes(computeOp.getResultTypes().begin(),
+                                computeOp.getResultTypes().end());
+  resultTypes.push_back(tensorType);
+
+  SmallVector<Value> outputs(computeOp.getOutputs().begin(),
+                             computeOp.getOutputs().end());
+  outputs.push_back(initAttached);
+
+  SmallVector<Attribute> indexingMaps(computeOp.getIndexingMaps().begin(),
+                                      computeOp.getIndexingMaps().end());
+  indexingMaps.push_back(
+      computeOp.getIndexingMaps()[computeOp.getNumInputs() + resultIndex]);
+
+  auto newCompute = ComputeOp::create(
+      builder, computeOp.getLoc(), TypeRange(resultTypes),
+      computeOp.getInputs(), ValueRange(outputs),
+      builder.getArrayAttr(indexingMaps), computeOp.getIteratorTypesAttr());
+
+  Block &oldBody = computeOp.getBody().front();
+  Block *newBody = builder.createBlock(&newCompute.getBody());
+  IRMapping mapping;
+  for (BlockArgument oldArg : oldBody.getArguments()) {
+    BlockArgument newArg = newBody->addArgument(oldArg.getType(), loc);
+    mapping.map(oldArg, newArg);
+  }
+  newBody->addArgument(tensorType.getElementType(), loc);
+
+  builder.setInsertionPointToStart(newBody);
+  unsigned materializedStoreCount = 0;
+  for (Operation &bodyOp : oldBody.without_terminator()) {
+    Operation *cloned = builder.clone(bodyOp, mapping);
+    auto oldStore = dyn_cast<TileStoreOp>(bodyOp);
+    if (!oldStore || getAttachedCB(oldStore.getView()) != selectedCB) {
+      continue;
+    }
+
+    auto clonedStore = cast<TileStoreOp>(cloned);
+    SmallVector<Value> indices(clonedStore.getIndices().begin(),
+                               clonedStore.getIndices().end());
+    TileStoreOp::create(builder, clonedStore.getLoc(), clonedStore.getTile(),
+                        reserve.getResult(), indices,
+                        clonedStore.getDstIndex());
+    ++materializedStoreCount;
+  }
+  YieldOp::create(builder, oldBody.getTerminator()->getLoc());
+
+  assert(materializedStoreCount > 0 &&
+         "verified compute output must have a tile_store");
+
+  Value remappedSource = newCompute.getResult(resultIndex);
+  for (auto [index, result] : llvm::enumerate(computeOp.getResults())) {
+    result.replaceAllUsesWith(newCompute.getResult(index));
+  }
+  computeOp.erase();
+
+  builder.setInsertionPointAfter(newCompute);
+  CBPushOp::create(builder, loc, bindDFB.getResult(),
+                   /*num_tiles=*/IntegerAttr{});
+
+  builder.setInsertionPoint(consumerOp);
+  auto attach =
+      createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
+  return DFBMaterializedValue{attach.getResult(), remappedSource};
+}
+
+FailureOr<DFBMaterializedValue>
+materializeTensorValueToDFB(Value intermediate, ModuleOp moduleOp,
+                            OpBuilder &builder) {
+  auto tensorType = cast<RankedTensorType>(intermediate.getType());
+  Location loc = intermediate.getLoc();
+
+  Operation *defOp = intermediate.getDefiningOp();
+  assert(defOp && "intermediate must have a defining op");
+
+  auto funcOp = defOp->getParentOfType<func::FuncOp>();
+  assert(funcOp && "intermediate must be inside a func::FuncOp");
+
+  BindCBOp bindDFB =
+      createCompilerAllocatedDFB(tensorType, loc, funcOp, moduleOp, builder);
+
+  builder.setInsertionPointAfter(defOp);
+  createDFBStore(intermediate, bindDFB.getResult(), builder);
+
+  auto attach =
+      createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
+  return DFBMaterializedValue{attach.getResult(), intermediate};
+}
+
+} // namespace
 
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
                                     func::FuncOp funcOp, ModuleOp moduleOp,
@@ -63,26 +215,15 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                       OpBuilder &builder) {
-  auto tensorType = cast<RankedTensorType>(intermediate.getType());
-  Location loc = intermediate.getLoc();
-
-  Operation *defOp = intermediate.getDefiningOp();
-  assert(defOp && "intermediate must have a defining op");
-
-  auto funcOp = defOp->getParentOfType<func::FuncOp>();
-  assert(funcOp && "intermediate must be inside a func::FuncOp");
-
-  BindCBOp bindDFB =
-      createCompilerAllocatedDFB(tensorType, loc, funcOp, moduleOp, builder);
-
-  builder.setInsertionPointAfter(defOp);
-  createDFBStore(intermediate, bindDFB.getResult(), builder);
-
-  auto attach =
-      createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
-  return attach.getResult();
+FailureOr<DFBMaterializedValue> materializeToDFB(Value intermediate,
+                                                 Operation *consumerOp,
+                                                 ModuleOp moduleOp,
+                                                 OpBuilder &builder) {
+  auto result = dyn_cast<OpResult>(intermediate);
+  if (result && isa<ComputeOp>(result.getOwner())) {
+    return materializeComputeResultToDFB(result, consumerOp, moduleOp, builder);
+  }
+  return materializeTensorValueToDFB(intermediate, moduleOp, builder);
 }
 
 } // namespace mlir::tt::ttl

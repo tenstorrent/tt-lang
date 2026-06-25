@@ -46,10 +46,12 @@ def compile_ttl_to_ttkernel(
     # Build per-function passes.
     func_passes = [
         "ttl-materialize-loop-state",
-        "ttl-insert-intermediate-dfbs",
         "ttl-insert-copy-wait",
         "ttl-auto-sync",
+        "ttl-form-producer-compute",
+        "ttl-insert-intermediate-dfbs",
         "convert-ttl-to-compute",
+        "ttl-auto-sync",
         set_compute_config_pass,
         "ttl-assign-dst",
     ]
