@@ -45,4 +45,4 @@ TTNN_PYPI_TT_METAL_TAG="v0.72.0-rc4"
 # DANGER: public PyPI publish is blocked until TT_METAL_TAG and
 # TTNN_PYPI_TT_METAL_TAG share the same vX.Y.Z component. See
 # docs/sphinx/build.md#publishing-to-s3-pypi.
-TT_METAL_TAG="v0.72.0"
+TT_METAL_TAG="v0.74.0-dev20260624"

@@ -76,7 +76,7 @@ def multinode_add(lhs, rhs, out):
 # =============================================================================
 
 # dm_read kernel should use logical coordinates for tile indexing
-# CHECK-CPP: // dm_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 
 # Verify both logical coordinates appear (x before y in generated code)
@@ -84,7 +84,7 @@ def multinode_add(lhs, rhs, out):
 # CHECK-CPP: get_absolute_logical_y()
 
 # dm_write kernel should also use logical coordinates
-# CHECK-CPP: // dm_write
+# CHECK-CPP: === dm_write kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: get_absolute_logical_x()
 # CHECK-CPP: get_absolute_logical_y()

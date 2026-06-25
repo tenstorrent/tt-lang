@@ -72,7 +72,7 @@ def compile_ttl_to_ttkernel(
         f"canonicalize,"
         f"cse,"
         f"lower-affine,"
-        f"convert-ttkernel-to-emitc,"
+        f"func.func(convert-ttkernel-to-emitc),"
         f"canonicalize"
         f")"
     )

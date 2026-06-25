@@ -93,7 +93,7 @@ def bcast_multitile_kernel(
 # C++ Kernel Checks - Verify auto profiler output
 # =============================================================================
 
-# CHECK:          // demo_compute
+# CHECK: === demo_compute kernel written to {{.*}} ===
 # CHECK:          void kernel_main()
 # CHECK-DAG:          CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-DAG:          CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -171,7 +171,7 @@ def bcast_multitile_kernel(
 # Subblocked: 4 tiles per subblock, grouped ops, auto-profiler scopes on DFBs
 # =============================================================================
 
-# CHECK-FPU:          // demo_compute
+# CHECK-FPU: === demo_compute kernel written to {{.*}} ===
 # CHECK-FPU:          void kernel_main()
 # CHECK-FPU-DAG:          CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-FPU-DAG:          CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

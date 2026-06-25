@@ -82,18 +82,18 @@ def unicast_pipe(inp, out):
 
 # Sender side: wait for receiver address publication, then unicast write and
 # completion signal.
-# CHECK-CPP: // dm_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
-# CHECK-CPP: noc.async_write(
-# CHECK-CPP: noc0.async_write_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: noc0.async_write(
+# CHECK-CPP: noc0.async_write_barrier();
 # CHECK-CPP: noc_semaphore_inc(
 
 # Receiver side: publish the reserved DFB address, then wait for sender
 # completion.
 # CHECK-CPP: reserve_back(
-# CHECK-CPP: noc_inline_dw_write
+# CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
 # CHECK-CPP-SAME: get_write_ptr()
 # CHECK-CPP: noc_semaphore_inc(
 # CHECK-CPP: experimental::semaphore_wait_min(

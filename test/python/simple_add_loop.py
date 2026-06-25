@@ -80,7 +80,7 @@ def add_loop_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify for loop in generated compute code
 # =============================================================================
 
-# CHECK-CPP: // add_compute
+# CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: int32_t [[ZERO:v[0-9]+]] = 0;
 # CHECK-CPP-DAG: int32_t [[ONE:v[0-9]+]] = 1;
@@ -117,7 +117,7 @@ def add_loop_kernel(lhs, rhs, out):
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # =============================================================================
 
-# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP-FPU: void kernel_main()
 # CHECK-CPP-FPU-DAG: int32_t [[ZERO:v[0-9]+]] = 0;
 # CHECK-CPP-FPU-DAG: int32_t [[ONE:v[0-9]+]] = 1;

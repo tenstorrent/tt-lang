@@ -58,7 +58,7 @@ def multi_store_kernel(a, b, out1, out2, out3):
         pass
 
 
-# CHECK:          // compute
+# CHECK: === compute kernel written to {{.*}} ===
 # CHECK:          void kernel_main()
 # CHECK-DAG:          CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-DAG:          CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -108,7 +108,7 @@ def multi_store_kernel(a, b, out1, out2, out3):
 # Single tile add uses FPU binary (add_tiles), 3 stores unchanged
 # =============================================================================
 
-# CHECK-FPU:          // compute
+# CHECK-FPU: === compute kernel written to {{.*}} ===
 # CHECK-FPU:          void kernel_main()
 # CHECK-FPU-DAG:          CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-FPU-DAG:          CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

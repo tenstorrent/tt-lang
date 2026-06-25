@@ -9,15 +9,15 @@
 // address and uses that address for the NoC write. It must not reserve or push
 // the receiver DFB.
 // CHECK-LABEL: func.func @sender_uses_published_unicast_address
-// CHECK: %[[NOC:.+]] = arith.constant {{.*}} : i8
-// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK: %[[NOC:.+]] = arith.constant 0 : i8
+// CHECK: ttkernel.experimental.semaphore_wait
 // CHECK-NOT: ttkernel.cb_reserve_back
 // CHECK: %[[SRC_WP:.+]] = ttkernel.get_write_ptr
-// CHECK: %[[DST_X:.+]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y:.+]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X:.+]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y:.+]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[DST_WP:.+]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DST_WP]])
-// CHECK: ttkernel.noc_async_write %[[SRC_WP]], core[%[[DST_X]], %[[DST_Y]]], %[[DST_WP]], {{.*}} : (i32, index, index, i32, i32) -> ()
+// CHECK: ttkernel.noc_async_write %[[SRC_WP]], core[%[[DST_X]], %[[DST_Y]]], %[[DST_WP]], {{.*}}, noc %[[NOC]] : (i32, index, index, i32, i32, i8) -> ()
 // CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK-NOT: ttkernel.cb_push_back
@@ -41,17 +41,17 @@ func.func @sender_uses_published_unicast_address() attributes { "ttl.kernel_thre
 // The sender waits for all destinations to publish before issuing the multicast
 // write and must not advance any receiver DFB.
 // CHECK-LABEL: func.func @sender_uses_published_multicast_addresses
-// CHECK: %[[NOC:.+]] = arith.constant {{.*}} : i8
-// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK: %[[NOC:.+]] = arith.constant 0 : i8
+// CHECK: ttkernel.experimental.semaphore_wait
 // CHECK-NOT: ttkernel.cb_reserve_back
 // CHECK: %[[SRC_WP:.+]] = ttkernel.get_write_ptr
-// CHECK: %[[DST_X_START:.+]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_START:.+]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[DST_X_END:.+]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_END:.+]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_START:.+]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START:.+]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: %[[DST_X_END:.+]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END:.+]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[DST_WP:.+]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[DST_WP]]
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_WP]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_WP]], %[[NOC]])
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_WP]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_WP]], noc %[[NOC]])
 // CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc_multicast({{.*}}, {{.*}}, {{.*}}, %[[NOC]])
 // CHECK: ttkernel.noc_async_atomic_barrier(%[[NOC]])
@@ -82,7 +82,7 @@ func.func @sender_uses_published_multicast_addresses() attributes { "ttl.kernel_
 // CHECK: %[[OLD:.+]] = memref.load
 // CHECK: %[[NEW:.+]] = arith.addi %[[OLD]]
 // CHECK: memref.store %[[NEW]]
-// CHECK: ttkernel.experimental::semaphore_wait_min({{.*}}, %[[NEW]])
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NEW]])
 // CHECK: ttkernel.cb_push_back
 func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %dst = ttl.bind_cb {cb_index = 5, block_count = 2}
@@ -119,7 +119,7 @@ func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_th
 // CHECK: memref.load %[[CTR]]
 // CHECK: %[[NEXT:.+]] = arith.addi
 // CHECK: memref.store %[[NEXT]], %[[CTR]]
-// CHECK: ttkernel.experimental::semaphore_wait_min(%[[DONE_PTR]], %[[NEXT]])
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[DONE_PTR]], %[[NEXT]])
 // CHECK: ttkernel.cb_push_back(%[[DST_DFB]]
 func.func @receiver_advances_wait_counter_inside_loop() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %dst = ttl.bind_cb {cb_index = 0, block_count = 2}

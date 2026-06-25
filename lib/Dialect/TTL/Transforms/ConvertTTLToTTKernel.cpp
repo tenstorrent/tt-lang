@@ -62,6 +62,18 @@ constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
 
 // PipeGraph is defined in PipeGraph.h.
 
+static int64_t getNocIndex(Operation *op) {
+  auto parentFunc = op->getParentOfType<FuncOp>();
+  if (!parentFunc) {
+    return 0;
+  }
+  auto attr = parentFunc->getAttrOfType<IntegerAttr>("ttl.noc_index");
+  if (!attr) {
+    return 0;
+  }
+  return attr.getInt();
+}
+
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
@@ -910,6 +922,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   auto pageSizeIdx = arith::ConstantIndexOp::create(
       rewriter, loc, accessorInfo->pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
+  int64_t nocIndex = getNocIndex(op);
+  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                           rewriter.getI8IntegerAttr(nocIndex));
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
@@ -956,10 +971,10 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
 
         if (isRead) {
           ttk::NocAsyncReadTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
-                                          accessor, cbAddr);
+                                          accessor, cbAddr, nocVal);
         } else {
-          ttk::NocAsyncWriteTileOp::create(loopBuilder, bodyLoc,
-                                           tensorTileIdx32, accessor, cbAddr);
+          ttk::NocAsyncWriteTileOp::create(
+              loopBuilder, bodyLoc, tensorTileIdx32, accessor, cbAddr, nocVal);
         }
       });
 
@@ -1146,10 +1161,14 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
       return op.emitError("untyped transfer handle survived pipe receive "
                           "expansion");
     }
+    int64_t nocIndex = getNocIndex(op);
+    Value nocVal =
+        arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getI8Type(),
+                                  rewriter.getI8IntegerAttr(nocIndex));
     if (*kind == TransferKind::read) {
-      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), Value());
+      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), nocVal);
     } else if (*kind == TransferKind::write) {
-      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), Value());
+      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), nocVal);
     } else {
       // Future-proofing: TransferKind is currently {read, write}, but fail
       // explicitly if it ever expands without updating the lowering.

@@ -550,7 +550,7 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   if (pipeType.hasSingleReceiver()) {
     ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
                                  ValueRange{dstStartXVal, dstStartYVal},
-                                 ValueRange{}, dstAddr, totalSizeVal);
+                                 ValueRange{}, dstAddr, totalSizeVal, nocVal);
   } else {
     if (pipeType.srcInDstRange()) {
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
@@ -679,12 +679,11 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
       buildAddressTableAddress(loc, addressTableInfo, rewriter);
   // [Device 2.0] This is a receiver-authored write to a typed address table;
   // only this lowering should select the current inline NoC write primitive.
-  auto senderTableNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, tableAddress, nocVal);
   auto byteEnableAll = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-  ttk::NocInlineDwWriteOp::create(rewriter, loc, senderTableNocAddr.getResult(),
-                                  publishedAddress, byteEnableAll, nocVal);
+  ttk::NocInlineDwWriteOp::create(rewriter, loc, srcXTranslated, srcYTranslated,
+                                  tableAddress, publishedAddress, byteEnableAll,
+                                  nocVal);
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
 
   Value senderReadyCounterAddr =

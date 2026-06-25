@@ -45,6 +45,19 @@ if(TARGET TTLangPythonModules)
   list(APPEND TTLANG_PYTHON_TEST_DEPENDS TTLangPythonModules)
 endif()
 
+# Pytest tests launch compiler/runtime subprocesses. Set the same environment
+# as env/activate so CMake test targets do not depend on the caller's shell.
+set(TTLANG_PYTEST_ENV
+  "TT_LANG_HOME=${TT_LANG_HOME}"
+  "TTLANG_HAS_DEVICE=${TTLANG_HAS_DEVICE_INT}"
+  "LLVM_INSTALL_DIR=${LLVM_INSTALL_DIR}"
+  "TT_METAL_HOME=${TT_METAL_HOME}"
+  "TT_METAL_RUNTIME_ROOT=${TT_METAL_HOME}"
+  "PATH=${CMAKE_BINARY_DIR}/bin:${TT_LANG_HOME}/bin:${LLVM_INSTALL_DIR}/bin:${TTLANG_PYTHON_VENV}/bin:$ENV{PATH}"
+  "PYTHONPATH=${TT_METAL_PYTHON_PATH}:${CMAKE_BINARY_DIR}/python_packages:${TT_LANG_HOME}/python:${TT_LANG_HOME}/test:$ENV{PYTHONPATH}"
+  "LD_LIBRARY_PATH=${TT_METAL_LIB_PATH}:${CMAKE_BINARY_DIR}/lib:${LLVM_INSTALL_DIR}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
 # MLIR tests only (no TT device required).
 add_lit_testsuite(check-ttlang-mlir "Running ttlang MLIR tests"
   ${CMAKE_CURRENT_BINARY_DIR}/ttlang
@@ -91,7 +104,8 @@ add_custom_target(check-ttlang
 
 # Pytest tests (test/python/test_*.py files).
 add_custom_target(check-ttlang-pytest
-  COMMAND ${Python3_EXECUTABLE} -m pytest
+  COMMAND ${CMAKE_COMMAND} -E env ${TTLANG_PYTEST_ENV}
+    ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/python
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
@@ -104,7 +118,8 @@ set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
 # Middle end to end tests (test/me2e/).
 add_custom_target(check-ttlang-me2e
-  COMMAND ${Python3_EXECUTABLE} -m pytest
+  COMMAND ${CMAKE_COMMAND} -E env ${TTLANG_PYTEST_ENV}
+    ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/me2e
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/me2e-report.xml
