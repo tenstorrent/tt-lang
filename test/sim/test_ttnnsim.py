@@ -3211,3 +3211,35 @@ class TestAllGatherNd:
         assert r.shape == torch.Size([8, 4, 4])
         assert torch.allclose(r[0:4], data)
         assert torch.allclose(r[4:8], data)
+
+
+class TestAllReduce2dMesh:
+    """all_reduce over a 2-axis mesh (the device layout a 4D launch grid maps to)."""
+
+    def _tensor(self) -> Any:
+        # Shape (4, 4) split into four quadrants over a 2x2 mesh; quadrant (a, b)
+        # holds the value a*2 + b + 1 (i.e. 1, 2, 3, 4).
+        data = torch.zeros(4, 4)
+        for a in range(2):
+            for b in range(2):
+                data[a * 2 : a * 2 + 2, b * 2 : b * 2 + 2] = a * 2 + b + 1
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        return ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(0, 1)),
+        )
+
+    def test_reduce_all_axes_sums_all_quadrants(self) -> None:
+        result = ttnn.all_reduce(self._tensor(), cluster_axis=None)
+        r = result.to_torch()
+        # Both axes reduced: every element holds 1 + 2 + 3 + 4 = 10.
+        assert torch.allclose(r, torch.full((4, 4), 10.0))
+
+    def test_reduce_single_axis(self) -> None:
+        result = ttnn.all_reduce(self._tensor(), cluster_axis=1)
+        r = result.to_torch()
+        # cluster_axis=1 reduces along dim 1 (column halves) only:
+        # row half 0 -> 1 + 2 = 3; row half 1 -> 3 + 4 = 7, broadcast across columns.
+        assert torch.allclose(r[0:2], torch.full((2, 4), 3.0))
+        assert torch.allclose(r[2:4], torch.full((2, 4), 7.0))
