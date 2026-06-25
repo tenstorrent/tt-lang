@@ -14,8 +14,13 @@ The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
 
 ```
 ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
-ttl-insert-intermediate-dfbs   (FuncOp)   Create compiler-allocated DFBs
-ttl-insert-cb-sync             (FuncOp)   Insert cb_push / cb_pop
+ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
+ttl-auto-sync                  (FuncOp)   Insert/coalesce user and loop-state DFB sync
+ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
+ttl-form-producer-compute      (FuncOp)   Form producer compute regions
+ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
+convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
+ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
   ... compute lowering, DST assignment, loop lowering ...
 ttl-finalize-dfb-indices       (Module)   Index reuse + limit check
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
@@ -45,7 +50,7 @@ bind_cb   cb_reserve                cb_wait              L1 buffer held
 
 `cb_reserve` claims a buffer slot for the packer; `cb_push` releases that slot to the unpacker. `cb_wait` blocks until the slot is available; `cb_pop` releases it back to the packer. `bind_cb` allocates the L1 backing storage and is shared by both sides.
 
-For compiler-allocated DFBs, `InsertIntermediateDFBs` creates the full sequence from `bind_cb` through `attach_cb`. `InsertCBSync` adds `cb_push` (after the producer's last use) and `cb_pop` (after the consumer's last use).
+For compiler-allocated intermediate DFBs, `InsertIntermediateDFBs` creates the DFB and materializes the producer side. For `ttl.compute` results, this means `bind_cb` at function entry, `cb_reserve` before the producing compute, `tile_store` inside the compute body, `cb_push` after the compute, and `cb_wait`/`attach_cb` before the consumer. The later `ttl-auto-sync` run inserts the matching `cb_pop`.
 
 A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the interval used for index reuse.
 
@@ -157,11 +162,29 @@ users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
 
 ## Intermediate DFB Insertion
 
-`TTLInsertIntermediateDFBs` walks all operations implementing `DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that the interface marks as requiring a CB-attached value, the pass checks whether the operand traces to an existing CB via `getAttachedCB`. If not, the pass materializes the value through a fresh DFB: `bind_cb`, `cb_reserve`, `store`, `cb_wait`, `attach_cb`. The new DFB receives the `ttl.compiler_allocated` marker attribute.
+`TTLInsertIntermediateDFBs` walks all operations implementing `DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that the interface marks as requiring a CB-attached value, the pass checks whether the operand traces to an existing DFB via `getAttachedCB`. If not, the pass materializes the value through a fresh compiler-allocated DFB marked with `ttl.compiler_allocated`.
+
+The standard pipeline runs this pass after `ttl-form-producer-compute`. Values produced by `ttl.compute` are materialized as extra compute outputs instead of tensor-level stores. The canonical order is:
+
+```
+bind_cb {ttl.compiler_allocated}
+cb_reserve
+ttl.compute {
+  ...
+  tile_store ..., %reserved_slot
+}
+cb_push
+cb_wait
+attach_cb
+... consumer ...
+cb_pop
+```
+
+This ordering is constructed directly by `TTLInsertIntermediateDFBs` for the producer side. The final `convert-ttl-to-compute` pass lowers consumers that now receive DFB-attached operands. The following `ttl-auto-sync` run inserts the consumer `cb_pop`.
 
 `TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args before compute lowering.
 
-When multiple `DFBInputOpInterface` operations consume the same non-CB-attached value, the materialization is shared -- only one DFB is created and the second consumer's operand is rewritten to the existing attached value.
+When multiple `DFBInputOpInterface` operations consume the same non-DFB-attached value, the materialization is shared -- only one DFB is created and the second consumer's operand is rewritten to the existing attached value.
 
 Each DFB is created with `blockCount=2` (double-buffering) so the packer and unpacker can operate on different halves simultaneously within the same thread.
 

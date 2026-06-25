@@ -21,8 +21,14 @@
 
 namespace mlir::tt::ttl {
 
+#define GEN_PASS_DEF_TTLFORMPRODUCERCOMPUTE
 #define GEN_PASS_DEF_TTLCONVERTTTLTOCOMPUTE
 #include "ttlang/Dialect/TTL/Passes.h.inc"
+
+enum class TTLToComputeMode {
+  ComputeFormation,
+  FinalConversion,
+};
 
 static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
@@ -201,30 +207,9 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
         rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
   }
-  // Some stores get absorbed into the compute body, pulling their data
-  // production past the cb_push that the frontend emitted right after the
-  // block-level store. When that happens, move the push to after the
-  // compute so the push executes after pack_tile writes the data. Only
-  // move pushes that are currently in the compute's block AND before the
-  // compute — pushes already positioned later (e.g., at the end of a
-  // `with reserve: ... multi-store ...` scope) are already correctly
-  // placed and must not be moved forward, or they'd commit before the
-  // later stores pack their data.
   for (StoreOp s : storesToErase) {
     assert(s->getBlock() == computeOp->getBlock() &&
            "stores absorbed into a compute must be siblings of that compute");
-    Value viewCB = getAttachedCB(s.getView());
-    if (viewCB) {
-      for (Operation *op = s->getNextNode(); op != nullptr;
-           op = op->getNextNode()) {
-        if (auto pushOp = dyn_cast<CBPushOp>(op)) {
-          if (pushOp.getCb() == viewCB && pushOp->isBeforeInBlock(computeOp)) {
-            pushOp->moveAfter(computeOp);
-            break;
-          }
-        }
-      }
-    }
     rewriter.eraseOp(s);
   }
 }
@@ -1080,7 +1065,8 @@ static std::optional<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
 
 /// Validate a single BlockBroadcastOp. Called from runOnOperation() before
 /// patterns run, so emitOpError is safe (not inside a pattern rewriter).
-static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op) {
+static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op,
+                                              TTLToComputeMode mode) {
   auto outputType = getTensorType(op.getResult());
   auto inputType = getTensorType(op.getInput());
   if (!outputType || !inputType) {
@@ -1088,6 +1074,9 @@ static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op) {
   }
 
   if (!getAttachedCB(op.getInput())) {
+    if (mode == TTLToComputeMode::ComputeFormation) {
+      return success();
+    }
     return op.emitOpError(
         "broadcast input must come directly from a circular buffer, not from "
         "an elementwise result; move the broadcast to its own compute block "
@@ -1401,7 +1390,8 @@ static FailureOr<ttkernel::ReduceDim> computeReduceDim(ArrayRef<int64_t> dims,
 /// The iteration domain covers the full input shape with reduction iterators
 /// on the reduced dimensions.
 struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
-  using OpRewritePattern<ReduceOp>::OpRewritePattern;
+  LowerReduceToCompute(MLIRContext *context, TTLToComputeMode mode)
+      : OpRewritePattern<ReduceOp>(context), mode(mode) {}
 
   LogicalResult matchAndRewrite(ReduceOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1424,6 +1414,10 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
       Operation *defOp = op.getInput().getDefiningOp();
       if (defOp && (isElementwiseOp(defOp) || isa<MatmulOp>(defOp) ||
                     isa<BlockBroadcastOp>(defOp) || isa<FillOp>(defOp))) {
+        if (mode == TTLToComputeMode::ComputeFormation) {
+          return rewriter.notifyMatchFailure(
+              op, "reduce input requires deferred DFB materialization");
+        }
         op.emitError("elementwise operations feeding into reduce cannot be "
                      "fused yet; store the intermediate result to a dataflow "
                      "buffer before passing it to reduce (see issue #474)");
@@ -1487,6 +1481,9 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
               body->getArgument(2), reduceType, reduceDim);
         });
   }
+
+private:
+  TTLToComputeMode mode;
 };
 
 /// Lower ttl.mul_unary_const to ttl.compute with a single tile operation, or
@@ -1686,6 +1683,41 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
 // Pass Implementations
 //===----------------------------------------------------------------------===//
 
+static void populateTTLToComputePatternsForMode(RewritePatternSet &patterns,
+                                                TTLToComputeMode mode);
+
+static LogicalResult runTTLToCompute(func::FuncOp func, TTLToComputeMode mode) {
+  // Validate bcast ops before running patterns. Emitting errors here (outside
+  // a pattern rewriter) is safe for the Python bindings.
+  bool hasErrors = false;
+  func.walk([&](BlockBroadcastOp op) {
+    if (failed(validateBlockBroadcastOp(op, mode))) {
+      hasErrors = true;
+    }
+  });
+  if (hasErrors) {
+    return failure();
+  }
+
+  RewritePatternSet patterns(func.getContext());
+  populateTTLToComputePatternsForMode(patterns, mode);
+  return applyPatternsGreedily(func, std::move(patterns));
+}
+
+struct TTLFormProducerComputePass
+    : public tt::ttl::impl::TTLFormProducerComputeBase<
+          TTLFormProducerComputePass> {
+  using tt::ttl::impl::TTLFormProducerComputeBase<
+      TTLFormProducerComputePass>::TTLFormProducerComputeBase;
+
+  void runOnOperation() override {
+    if (failed(runTTLToCompute(getOperation(),
+                               TTLToComputeMode::ComputeFormation))) {
+      return signalPassFailure();
+    }
+  }
+};
+
 struct TTLConvertTTLToComputePass
     : public tt::ttl::impl::TTLConvertTTLToComputeBase<
           TTLConvertTTLToComputePass> {
@@ -1693,35 +1725,15 @@ struct TTLConvertTTLToComputePass
       TTLConvertTTLToComputePass>::TTLConvertTTLToComputeBase;
 
   void runOnOperation() override {
-    func::FuncOp func = getOperation();
-
-    // Validate bcast ops before running patterns. Emitting errors here
-    // (outside a pattern rewriter) is safe for the Python bindings.
-    bool hasErrors = false;
-    func.walk([&](BlockBroadcastOp op) {
-      if (failed(validateBlockBroadcastOp(op))) {
-        hasErrors = true;
-      }
-    });
-    if (hasErrors) {
-      return signalPassFailure();
-    }
-
-    RewritePatternSet patterns(func.getContext());
-    populateTTLToComputePatterns(patterns);
-    if (failed(applyPatternsGreedily(func, std::move(patterns)))) {
+    if (failed(runTTLToCompute(getOperation(),
+                               TTLToComputeMode::FinalConversion))) {
       return signalPassFailure();
     }
   }
 };
 
-} // namespace
-
-//===----------------------------------------------------------------------===//
-// Public API
-//===----------------------------------------------------------------------===//
-
-void populateTTLToComputePatterns(RewritePatternSet &patterns) {
+static void populateTTLToComputePatternsForMode(RewritePatternSet &patterns,
+                                                TTLToComputeMode mode) {
   MLIRContext *ctx = patterns.getContext();
 
   // Register patterns for lowering to ttl.compute with tile ops.
@@ -1738,12 +1750,23 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 
   patterns.add<LowerBlockBroadcastToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);
-  patterns.add<LowerReduceToCompute>(ctx);
+  patterns.add<LowerReduceToCompute>(ctx, mode);
   patterns.add<LowerMulUnaryConstToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
   patterns.add<LowerTypecastToCompute>(ctx);
   patterns.add<LowerFillToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
+}
+
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// Public API
+//===----------------------------------------------------------------------===//
+
+void populateTTLToComputePatterns(RewritePatternSet &patterns) {
+  populateTTLToComputePatternsForMode(patterns,
+                                      TTLToComputeMode::FinalConversion);
 }
 
 } // namespace mlir::tt::ttl

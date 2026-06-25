@@ -7,10 +7,10 @@
 //===----------------------------------------------------------------------===//
 //
 // Inserts compiler-allocated intermediate dataflow buffers at fusion split
-// points. Tensor-level ops whose tile-level lowerings require DFB inputs
-// may receive operands from fused expression chains that are not
-// DFB-attached. This pass materializes those intermediates to L1 via DFBs
-// so that convert-ttl-to-compute sees all required operands as CB-attached.
+// points. Tensor-level ops whose tile-level lowerings require DFB inputs may
+// receive operands from ttl.compute results that are not DFB-attached. This
+// pass materializes those compute results as extra compute outputs so the
+// remaining consumers can be converted after attachment.
 //
 //===----------------------------------------------------------------------===//
 
@@ -96,14 +96,19 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        Value replacement = materializeToDFB(operand, moduleOp, builder);
+        FailureOr<DFBMaterializedValue> materialization =
+            materializeToDFB(operand, op, moduleOp, builder);
+        if (failed(materialization)) {
+          signalPassFailure();
+          return;
+        }
 
         // Replace only this specific operand. Elementwise consumers of
         // the same value retain the original SSA value and fuse with
         // the producer in a single compute block.
-        op->setOperand(idx, replacement);
+        op->setOperand(idx, materialization->materialized);
 
-        materialized[operand] = replacement;
+        materialized[materialization->source] = materialization->materialized;
       }
     }
   }

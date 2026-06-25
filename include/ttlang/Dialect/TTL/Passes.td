@@ -233,13 +233,22 @@ def TTLInsertIntermediateDFBs
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
-    When an operand comes from a fused expression chain (not DFB-attached),
-    the pass inserts a compiler-allocated DFB:
+    When an operand comes from `ttl.compute`, the pass materializes it as an
+    extra compute output backed by a compiler-allocated DFB:
+
+      bind_cb -> cb_reserve -> ttl.compute tile_store -> cb_push -> cb_wait -> attach_cb
+
+    The pass emits the producer-side `cb_push` immediately after the producing
+    compute because it constructs the producer interval directly. The following
+    `ttl-insert-cb-sync` pass inserts the consumer-side `cb_pop`.
+
+    Non-compute producers use the tensor-level helper:
 
       bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
 
-    `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
-    based on transitive use analysis.
+    In the standard pipeline this pass runs after
+    `ttl-form-producer-compute`, so tensor-level materialization is limited
+    to IR forms that have not yet been converted to `ttl.compute`.
 
     Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
     that `ttl-finalize-dfb-indices` can register them for the Python
@@ -259,6 +268,25 @@ def TTLInsertIntermediateDFBs
 
   let dependentDialects = [
     "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLFormProducerCompute
+    : Pass<"ttl-form-producer-compute", "::mlir::func::FuncOp"> {
+  let summary = "Form ttl.compute ops before compiler DFB materialization";
+  let description = [{
+    Runs the ttl.compute formation patterns before compiler-allocated
+    intermediate DFB insertion. Operations whose operands already satisfy DFB
+    requirements are converted to `ttl.compute`. Operations that still require
+    compiler DFB materialization are left unchanged so
+    `ttl-insert-intermediate-dfbs` can materialize the producer compute result
+    as an extra compute output.
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 

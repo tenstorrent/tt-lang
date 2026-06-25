@@ -10,12 +10,24 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
 
 /// \file
 /// Helpers for materializing tensor SSA values through compiler-managed
 /// dataflow buffers.
 
 namespace mlir::tt::ttl {
+
+struct DFBMaterializedValue {
+  /// DFB-attached tensor value that should replace the consumer operand.
+  Value materialized;
+
+  /// Current SSA value for the original source after materialization. This is
+  /// different from the input value when a producing ttl.compute is replaced
+  /// with an additional output.
+  Value source;
+};
 
 /// Allocates a fresh compiler-managed dataflow buffer and emits its
 /// `bind_cb` at function entry, where `finalize-dfb-indices` requires every
@@ -40,12 +52,18 @@ StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder);
 AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
                                   Location loc, OpBuilder &builder);
 
-/// Routes `intermediate` through a fresh compiler-allocated DFB and returns a
-/// tensor SSA value backed by it. The new `bind_cb` is placed at function entry
-/// (see `createCompilerAllocatedDFB`); the store, wait, and attach are emitted
-/// at `intermediate.getDefiningOp()`.
-Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                       OpBuilder &builder);
+/// Routes `intermediate` through a fresh compiler-allocated DFB for
+/// `consumerOp`.
+///
+/// Non-compute producers use the tensor-level fallback: reserve/store at the
+/// definition site, followed by wait/attach. Values produced by `ttl.compute`
+/// are materialized as an extra compute output: reserve before the compute,
+/// tile_store inside the body, push after the compute, and wait/attach before
+/// `consumerOp`.
+FailureOr<DFBMaterializedValue> materializeToDFB(Value intermediate,
+                                                 Operation *consumerOp,
+                                                 ModuleOp moduleOp,
+                                                 OpBuilder &builder);
 
 } // namespace mlir::tt::ttl
 
