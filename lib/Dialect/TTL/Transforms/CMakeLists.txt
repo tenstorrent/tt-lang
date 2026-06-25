@@ -1,5 +1,6 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
+  DFBAcquireReleaseAnalysis.cpp
   DFBMaterialization.cpp
   PipeGraph.cpp
   PipeLowering.cpp
@@ -20,6 +21,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
+  TTLMaterializeLoopState.cpp
   TTLVerifyDFBSPSC.cpp
   TTLVerifyPipeNetGuards.cpp
   TTLErasePipeNetScopes.cpp

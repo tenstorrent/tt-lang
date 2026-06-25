@@ -18,6 +18,7 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import to_dram, to_l1
+from utils.correctness import assert_pcc
 
 import ttl
 
@@ -192,9 +193,9 @@ def test_comprehensive_multinode(device):
     result2 = ttnn.to_torch(out2)
     result3 = ttnn.to_torch(out3)
 
-    assert torch.allclose(result1.float(), exp1, rtol=0.05, atol=0.15)
-    assert torch.allclose(result2.float(), exp2, rtol=0.05, atol=0.15)
-    assert torch.allclose(result3.float(), exp3, rtol=0.05, atol=0.15)
+    assert_pcc(exp1.float(), result1.float(), threshold=0.999)
+    assert_pcc(exp2.float(), result2.float(), threshold=0.999)
+    assert_pcc(exp3.float(), result3.float(), threshold=0.999)
 
 
 if __name__ == "__main__":
