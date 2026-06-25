@@ -1033,19 +1033,52 @@ def set_fabric_config(config: Any) -> None:
 
 
 class MeshShape:
-    """Logical shape of a device mesh (rows x cols)."""
+    """Logical shape of a device mesh over an arbitrary number of axes.
 
-    def __init__(self, rows: int, cols: int) -> None:
-        self.rows = rows
-        self.cols = cols
+    Accepts any number of axis sizes, e.g. ``MeshShape(8)`` (1D),
+    ``MeshShape(2, 4)`` (2D), or ``MeshShape(2, 2, 2)`` (3D).  ``rows`` and
+    ``cols`` remain available for 2D call sites; for higher-rank meshes use
+    :attr:`dims` (or indexing / iteration) directly.
+    """
+
+    def __init__(self, *dims: int) -> None:
+        if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
+            dims = tuple(dims[0])
+        if not dims:
+            raise ValueError("MeshShape requires at least one axis")
+        self.dims: tuple[int, ...] = tuple(int(d) for d in dims)
+
+    @property
+    def rows(self) -> int:
+        return self.dims[0]
+
+    @property
+    def cols(self) -> int:
+        return self.dims[1] if len(self.dims) > 1 else 1
+
+    @property
+    def num_devices(self) -> int:
+        return math.prod(self.dims)
+
+    def __iter__(self) -> Any:
+        return iter(self.dims)
+
+    def __len__(self) -> int:
+        return len(self.dims)
+
+    def __getitem__(self, index: int) -> int:
+        return self.dims[index]
+
+    def __repr__(self) -> str:
+        return f"MeshShape{self.dims}"
 
 
 class MeshDevice:
-    """Handle for a simulated mesh of ``rows * cols`` virtual devices."""
+    """Handle for a simulated mesh of ``prod(shape.dims)`` virtual devices."""
 
     def __init__(self, shape: MeshShape) -> None:
         self.shape = shape
-        self.num_devices = shape.rows * shape.cols
+        self.num_devices = shape.num_devices
 
 
 def open_mesh_device(shape: MeshShape) -> MeshDevice:
@@ -1066,22 +1099,34 @@ class MeshShardInfo:
     mesh axis does not partition the tensor; a non-negative integer means it
     partitions that tensor dimension (already normalized by ``from_torch``).
 
-    For a 1D mesh (MeshShape(1, n)) sharding along tensor dim d:
-        mesh_shape=(1, n), dims=(None, d)
+    ``mesh_shape`` and ``dims`` are parallel tuples of equal length, one entry
+    per mesh axis, supporting an arbitrary number of axes:
+
+    For a 1D mesh (MeshShape(n)) sharding along tensor dim d:
+        mesh_shape=(n,), dims=(d,)
     For a 2D mesh (MeshShape(rows, cols)) sharding along dims (d0, d1):
         mesh_shape=(rows, cols), dims=(d0, d1)
+    For a 3D mesh sharding only along its last axis:
+        mesh_shape=(a, b, c), dims=(None, None, d)
 
     Kept separate from MemoryConfig to avoid conflating inter-device
     distribution with intra-device sharding strategies (HEIGHT_SHARDED, etc.).
     """
 
-    mesh_shape: tuple[int, int]
-    dims: tuple[Optional[int], Optional[int]]
+    mesh_shape: tuple[int, ...]
+    dims: tuple[Optional[int], ...]
+
+    def __post_init__(self) -> None:
+        if len(self.mesh_shape) != len(self.dims):
+            raise ValueError(
+                f"MeshShardInfo mesh_shape {self.mesh_shape} and dims {self.dims} "
+                "must have the same number of axes"
+            )
 
     @property
     def num_devices(self) -> int:
         """Total number of devices across all mesh axes."""
-        return self.mesh_shape[0] * self.mesh_shape[1]
+        return math.prod(self.mesh_shape)
 
     @property
     def dim(self) -> int:
@@ -1154,6 +1199,48 @@ class ShardTensor2dMesh(TensorToMesh):
         self.mesh = mesh
         self.mesh_shape = mesh_shape
         self.dims = dims
+
+
+class ShardTensorNdMesh(TensorToMesh):
+    """Mapper for from_torch: shards a tensor across an N-dimensional mesh.
+
+    Generalizes :class:`ShardTensor2dMesh` to an arbitrary number of mesh axes.
+    ``mesh_shape`` and ``dims`` are parallel tuples of equal length, one entry
+    per mesh axis.  Pass ``None`` in ``dims`` for any axis that should not shard
+    the tensor; negative integers are interpreted as Python-style dim indices
+    and normalized by :func:`from_torch`.
+
+    Args:
+        mesh: Mesh device (e.g. from :func:`open_mesh_device`).
+        mesh_shape: Axis sizes of the mesh, e.g. ``(2, 2, 2)``.
+        dims: Which tensor dim each mesh axis partitions (``None`` to leave an
+            axis unsharded).  Must be the same length as ``mesh_shape``.
+
+    Example::
+
+        mesh = ttnnsim.open_mesh_device(ttnnsim.MeshShape(2, 2, 2))
+        t = ttnnsim.from_torch(
+            data,
+            mesh_mapper=ttnnsim.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(0, 1, 2)
+            ),
+        )
+    """
+
+    def __init__(
+        self,
+        mesh: MeshDevice,
+        mesh_shape: tuple[int, ...],
+        dims: tuple[Optional[int], ...],
+    ) -> None:
+        if len(mesh_shape) != len(dims):
+            raise ValueError(
+                f"ShardTensorNdMesh mesh_shape {mesh_shape} and dims {dims} "
+                "must have the same number of axes"
+            )
+        self.mesh = mesh
+        self.mesh_shape = tuple(mesh_shape)
+        self.dims = tuple(dims)
 
 
 class ReplicateTensorToMesh(TensorToMesh):
@@ -1520,6 +1607,11 @@ class Tensor:
         if hasattr(self, "_name"):
             result._name = self._name  # type: ignore
         result.memory_config = self.memory_config
+        # Carry mesh sharding metadata and the root tensor's full shape onto the
+        # view so cross-device access validation can locate this slice within the
+        # original mesh-sharded tensor.
+        result.mesh_shard_info = self.mesh_shard_info
+        result._root_shape = getattr(self, "_root_shape", self.shape)  # type: ignore[attr-defined]
         # Accumulate the element-space origin so locality analysis can find the
         # position of this slice within the original (root) sharded tensor.
         # Open-ended slices (e.g. tensor[:]) have no computable start, so fall
@@ -1846,14 +1938,13 @@ def from_torch(
     if isinstance(mesh_mapper, ShardTensorToMesh):
         n = mesh_mapper.mesh.num_devices
         d = mesh_mapper.dim % tensor.ndim
-        result.mesh_shard_info = MeshShardInfo(mesh_shape=(1, n), dims=(None, d))
-    elif isinstance(mesh_mapper, ShardTensor2dMesh):
-        rows, cols = mesh_mapper.mesh_shape
-        d0, d1 = mesh_mapper.dims
-        norm_d0 = None if d0 is None else d0 % tensor.ndim
-        norm_d1 = None if d1 is None else d1 % tensor.ndim
+        result.mesh_shard_info = MeshShardInfo(mesh_shape=(n,), dims=(d,))
+    elif isinstance(mesh_mapper, (ShardTensor2dMesh, ShardTensorNdMesh)):
+        norm_dims = tuple(
+            None if d is None else d % tensor.ndim for d in mesh_mapper.dims
+        )
         result.mesh_shard_info = MeshShardInfo(
-            mesh_shape=(rows, cols), dims=(norm_d0, norm_d1)
+            mesh_shape=tuple(mesh_mapper.mesh_shape), dims=norm_dims
         )
     return result
 
@@ -2205,7 +2296,7 @@ def all_reduce(
 
     t = input_tensor.to_torch()
 
-    axes = [cluster_axis] if cluster_axis is not None else range(2)
+    axes = [cluster_axis] if cluster_axis is not None else range(len(msi.mesh_shape))
     active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
     result = t
@@ -2284,7 +2375,7 @@ def all_gather(
 
     t = input_tensor.to_torch()
 
-    axes = [cluster_axis] if cluster_axis is not None else range(2)
+    axes = [cluster_axis] if cluster_axis is not None else range(len(msi.mesh_shape))
     active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
     result = t

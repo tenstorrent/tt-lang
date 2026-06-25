@@ -48,6 +48,46 @@ def _get_from_frame(var_name: str, error_msg: str) -> Any:
     raise RuntimeError(error_msg)
 
 
+def node_coord_from_linear(linear_node: Index, grid: Shape) -> tuple[int, ...]:
+    """Decompose a linear node index into per-axis grid coordinates.
+
+    Uses the same row-major, outermost-first convention as :func:`node`: for a
+    grid ``(g0, g1, ..., g_{k-1})`` the returned coordinate ``(c0, ..., c_{k-1})``
+    satisfies ``linear_node = ((c0 * g1 + c1) * g2 + ...)``.
+    """
+    nid = int(linear_node)
+    coords: List[int] = []
+    for s in reversed(grid):
+        coords.append(nid % s)
+        nid //= s
+    coords.reverse()
+    return tuple(coords)
+
+
+def mesh_axes_of_grid(grid: Shape) -> tuple[int, ...]:
+    """Return the leading mesh-axis sizes of a grid.
+
+    A grid's trailing two dimensions are the Tensix core grid; any leading
+    dimensions are device-mesh axes (one virtual device per leading-coordinate
+    combination).  Grids of rank <= 2 describe a single device and therefore
+    have no mesh axes.
+    """
+    return tuple(grid[:-2]) if len(grid) > 2 else ()
+
+
+def node_mesh_coord(linear_node: Index, grid: Shape) -> tuple[int, ...]:
+    """Return the device-mesh coordinate a node belongs to.
+
+    The mesh coordinate is the leading portion of the node's full grid
+    coordinate, covering only the mesh axes (see :func:`mesh_axes_of_grid`).
+    For single-device grids (rank <= 2) this is the empty tuple.
+    """
+    n_mesh = len(mesh_axes_of_grid(grid))
+    if n_mesh == 0:
+        return ()
+    return node_coord_from_linear(linear_node, grid)[:n_mesh]
+
+
 def flatten_node_index(node_coord: NodeCoord) -> Index:
     """Flatten a NodeCoord to a linear node index.
 

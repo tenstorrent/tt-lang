@@ -332,24 +332,39 @@ tools can apply further filtering on the already-reduced dataset.
 ### Output format
 
 Trace events are written as JSON Lines (JSONL): one JSON object per line, one line
-per event. Each object has three fixed fields and zero or more event-specific fields
-at the top level:
+per event. Each object has the fixed fields `tick`, `kernel`, `event`, and -- when an
+event can be attributed to a node -- `node` and `device`, followed by zero or more
+event-specific fields at the top level:
 
 ```
-{"tick": 1, "kernel": "node0-dm_read",  "event": "kernel_start"}
-{"tick": 1, "kernel": "node0-dm_read",  "event": "dfb_reserve_begin", "dfb": "dfb1"}
-{"tick": 1, "kernel": "node0-dm_read",  "event": "dfb_reserve_end",   "dfb": "dfb1", "occupied": 1}
-{"tick": 1, "kernel": "node0-dm_read",  "event": "dfb_push",          "dfb": "dfb1", "occupied": 1}
-{"tick": 1, "kernel": "node0-dm_read",  "event": "dfb_reserve_begin", "dfb": "dfb1"}
-{"tick": 1, "kernel": "node0-dm_read",  "event": "kernel_block",      "op": "reserve", "dfb": "dfb1"}
-{"tick": 2, "kernel": "node0-compute",  "event": "kernel_start"}
-{"tick": 2, "kernel": "node0-compute",  "event": "dfb_wait_begin",    "dfb": "dfb1"}
+{"tick": 1, "kernel": "node0-dm_read",  "event": "kernel_start",       "node": "node0", "device": []}
+{"tick": 1, "kernel": "node0-dm_read",  "event": "dfb_reserve_begin",  "node": "node0", "device": [], "dfb": "dfb1"}
+{"tick": 1, "kernel": "node0-dm_read",  "event": "dfb_reserve_end",    "node": "node0", "device": [], "dfb": "dfb1", "occupied": 1}
+{"tick": 1, "kernel": "node0-dm_read",  "event": "dfb_push",           "node": "node0", "device": [], "dfb": "dfb1", "occupied": 1}
+{"tick": 1, "kernel": "node0-dm_read",  "event": "kernel_block",       "node": "node0", "device": [], "op": "reserve", "dfb": "dfb1"}
+{"tick": 2, "kernel": "node0-compute",  "event": "kernel_start",       "node": "node0", "device": []}
+{"tick": 2, "kernel": "node0-compute",  "event": "dfb_wait_begin",     "node": "node0", "device": [], "dfb": "dfb1"}
 ...
 ```
+
+The `node` field is the linear-node label (`"node0"`, `"node1"`, ...). The `device`
+field is the **device-mesh coordinate** the node belongs to, as a list of ints: it is
+the empty list `[]` for single-device or SPMD grids (rank <= 2, which have no mesh
+axes), and a coordinate such as `[1, 0]` for a node on a multidevice mesh grid (the
+leading grid dimensions are mesh axes; see the simulator's grid->mesh convention).
+This lets tools attribute each event to both a node and a device. Both fields win over
+any same-named key in an event's payload, so their types stay consistent across event
+types.
 
 The extra fields are flat (not nested) so that tools do not need to unwrap a sub-object
 to access them. JSONL is streamable and can be read line by line without loading the
 full file into memory.
+
+The offline `tt-lang-sim-stats` summary tables group dataflow-buffer activity **by
+node**, not by device. The `device` field is available in the JSONL for tools that need
+per-device grouping (e.g. via `jq`), but the built-in stats deliberately keep a single
+node-level breakdown to avoid a more complex multi-level table; node grouping is
+sufficient for the buffer-occupancy and locality questions those tables answer.
 
 **Querying with `jq`**:
 

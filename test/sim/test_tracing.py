@@ -272,6 +272,102 @@ class TestTraceEventTypes:
         assert len(ctx.trace_events) == 0
 
 
+class TestDeviceAttribution:
+    """Trace events carry node and device (mesh-coordinate) attribution."""
+
+    def _run_grid_kernel(self, grid: tuple[int, ...]) -> list:
+        """Run a minimal one-tile passthrough kernel over ``grid`` and return events."""
+        ctx = get_context()
+        ctx.config.trace_set = ALL_CATEGORIES
+
+        inp = ttnn.rand((32, 32))
+        out = ttnn.empty((32, 32))
+
+        @ttl.operation(grid=grid)
+        def grid_kernel(a: ttnn.Tensor, o: ttnn.Tensor):
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(o, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                with dfb.wait() as blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(blk + blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                with dfb.reserve() as blk:
+                    tx = ttl.copy(a[0, 0], blk)
+                    tx.wait()
+
+            @ttl.datamovement()
+            def dm_write():
+                with out_dfb.wait() as blk:
+                    tx = ttl.copy(blk, o[0, 0])
+                    tx.wait()
+
+        grid_kernel(inp, out)
+        return list(ctx.trace_events)
+
+    def test_single_device_grid_has_empty_device(self) -> None:
+        """A rank-2 grid has no mesh axes, so device is the empty coordinate."""
+        events = self._run_grid_kernel((1, 1))
+        kernel_events = [e for e in events if e.kernel is not None]
+        assert kernel_events
+        for ev in kernel_events:
+            assert ev.node == "node0"
+            assert ev.device == []
+
+    def test_3d_grid_attributes_distinct_devices(self) -> None:
+        """A rank-3 grid (2,1,1) maps its two nodes onto distinct mesh devices."""
+        events = self._run_grid_kernel((2, 1, 1))
+        devices_by_node: dict[str, list[int]] = {}
+        for ev in events:
+            if ev.node is not None and ev.device is not None:
+                devices_by_node[ev.node] = ev.device
+        assert devices_by_node.get("node0") == [0]
+        assert devices_by_node.get("node1") == [1]
+
+    def test_operation_events_carry_device(self) -> None:
+        """operation_start / operation_end carry node and device fields."""
+        events = self._run_grid_kernel((2, 1, 1))
+        op_events = [
+            e for e in events if e.event in ("operation_start", "operation_end")
+        ]
+        assert op_events
+        for ev in op_events:
+            assert ev.node is not None
+            assert ev.device in ([0], [1])
+
+    def test_jsonl_node_field_is_consistent_string(self, tmp_path) -> None:
+        """Serialized JSONL records carry node as a 'nodeN' string for every event.
+
+        Regression guard: operation_start/end carry a legacy int ``node`` in
+        their data payload; the writer must not let it clobber the promoted
+        string ``node`` field, or the schema would be type-inconsistent across
+        event types.
+        """
+        import json
+
+        from sim.ttlang_sim import _write_jsonl_trace
+
+        ctx = get_context()
+        self._run_grid_kernel((2, 1, 1))
+        out = tmp_path / "trace.jsonl"
+        _write_jsonl_trace(out, ctx.trace_events)
+
+        saw_operation = False
+        for line in out.read_text().splitlines():
+            record = json.loads(line)
+            if record["event"] in ("operation_start", "operation_end"):
+                saw_operation = True
+            if "node" in record:
+                assert isinstance(record["node"], str), record
+                assert record["node"].startswith("node"), record
+            if "device" in record:
+                assert record["device"] in ([0], [1]), record
+        assert saw_operation, "expected operation_start/end events in trace"
+
+
 class TestFiltering:
     """Verify inclusive and exclusive category filtering."""
 

@@ -3081,3 +3081,133 @@ class TestAllGather2DMesh:
         t = ttnn.Tensor(torch.ones(4, 4))
         with pytest.raises(ValueError, match="Mesh device is required"):
             ttnn.all_gather(t, dim=0)
+
+
+# ---------------------------------------------------------------------------
+# N-D mesh support (>= 3 mesh axes)
+# ---------------------------------------------------------------------------
+
+
+class TestMeshShapeNd:
+    """MeshShape accepts an arbitrary number of axes."""
+
+    def test_1d_shape(self) -> None:
+        s = ttnn.MeshShape(8)
+        assert s.dims == (8,)
+        assert s.num_devices == 8
+        assert s.rows == 8
+        assert s.cols == 1
+
+    def test_2d_shape_back_compat(self) -> None:
+        s = ttnn.MeshShape(2, 4)
+        assert s.dims == (2, 4)
+        assert s.rows == 2
+        assert s.cols == 4
+        assert s.num_devices == 8
+
+    def test_3d_shape(self) -> None:
+        s = ttnn.MeshShape(2, 2, 2)
+        assert s.dims == (2, 2, 2)
+        assert s.num_devices == 8
+        assert list(s) == [2, 2, 2]
+        assert s[2] == 2
+
+    def test_open_mesh_device_nd(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        assert mesh.num_devices == 8
+
+    def test_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one axis"):
+            ttnn.MeshShape()
+
+
+class TestShardTensorNdMesh:
+    """ShardTensorNdMesh records N-axis MeshShardInfo via from_torch."""
+
+    def test_3d_shard_records_mesh_shard_info(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        t = ttnn.from_torch(
+            torch.zeros(4, 4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(0, 1, 2)
+            ),
+        )
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.mesh_shape == (2, 2, 2)
+        assert t.mesh_shard_info.dims == (0, 1, 2)
+        assert t.mesh_shard_info.num_devices == 8
+
+    def test_normalizes_negative_dims(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        t = ttnn.from_torch(
+            torch.zeros(4, 4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(-3, None, -1)
+            ),
+        )
+        assert t.mesh_shard_info.dims == (0, None, 2)
+
+    def test_mismatched_lengths_raise(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        with pytest.raises(ValueError, match="same number of axes"):
+            ttnn.ShardTensorNdMesh(mesh, mesh_shape=(2, 2, 2), dims=(0, 1))
+
+
+class TestAllReduceNd:
+    """all_reduce across an N-D mesh reduces along every active axis."""
+
+    def _tensor(self) -> Any:
+        # Shape (4, 4, 4); shard each axis along a distinct tensor dim.
+        data = torch.zeros(4, 4, 4)
+        # Fill so each (dim0-half, dim1-half, dim2-half) octant is distinct.
+        idx = 0
+        for a in range(2):
+            for b in range(2):
+                for c in range(2):
+                    idx += 1
+                    data[a * 2 : a * 2 + 2, b * 2 : b * 2 + 2, c * 2 : c * 2 + 2] = idx
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        return ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(0, 1, 2)
+            ),
+        )
+
+    def test_reduce_all_axes_sums_all_octants(self) -> None:
+        result = ttnn.all_reduce(self._tensor(), cluster_axis=None)
+        r = result.to_torch()
+        # Sum of octant values 1..8 = 36; every position holds the same total.
+        assert torch.allclose(r, torch.full((4, 4, 4), 36.0))
+
+    def test_reduce_single_axis(self) -> None:
+        result = ttnn.all_reduce(self._tensor(), cluster_axis=2)
+        r = result.to_torch()
+        # cluster_axis=2 sums the two dim-2 halves only.
+        # Octant (a=0,b=0): values 1 (c=0) and 2 (c=1) -> 3 in both halves.
+        assert torch.allclose(r[0:2, 0:2, 0:2], torch.full((2, 2, 2), 3.0))
+        assert torch.allclose(r[0:2, 0:2, 2:4], torch.full((2, 2, 2), 3.0))
+
+
+class TestAllGatherNd:
+    """all_gather across an N-D mesh round-trips to the full tensor."""
+
+    def test_gather_all_axes_along_shard_dims(self) -> None:
+        data = torch.arange(64, dtype=torch.float32).reshape(4, 4, 4)
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(0, 1, 2)
+            ),
+        )
+        # Gathering a single axis along its own shard dim duplicates that dim.
+        result = ttnn.all_gather(t, dim=0, cluster_axis=0)
+        r = result.to_torch()
+        assert r.shape == torch.Size([8, 4, 4])
+        assert torch.allclose(r[0:4], data)
+        assert torch.allclose(r[4:8], data)

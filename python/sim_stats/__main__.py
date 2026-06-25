@@ -15,6 +15,13 @@ simulator summary tables:
   Dataflow Buffer Statistics -- reserves/waits and tile counts per DFB name,
                                 broken down by node with a per-DFB subtotal
 
+These tables group by node, not by device. Device-aware traces carry a per-event
+``device`` (mesh-coordinate) field in the JSONL, but this tool deliberately keeps a
+single node-level breakdown rather than a node-and-device table: node grouping answers
+the buffer-occupancy and locality questions these summaries target, and avoids a more
+complex multi-level layout. Tools needing per-device grouping can read the ``device``
+field directly from the JSONL (e.g. with ``jq``).
+
 Usage:
     tt-lang-sim-stats trace.jsonl
     tt-lang-sim-stats --help
@@ -35,6 +42,18 @@ def _node_from_kernel(kernel: str | None) -> str:
     if kernel and "-" in kernel:
         return kernel.split("-", 1)[0]
     return kernel or "unknown"
+
+
+def _node_of_event(ev: dict[str, Any]) -> str:
+    """Return an event's node label, preferring the explicit ``node`` field.
+
+    Falls back to parsing the kernel name for traces predating device-aware
+    tracing, where node was only encoded in the kernel label.
+    """
+    node = ev.get("node")
+    if isinstance(node, str) and node:
+        return node
+    return _node_from_kernel(ev.get("kernel"))
 
 
 def _node_sort_key(node: str) -> int:
@@ -146,7 +165,7 @@ def _accumulate(
             case "dfb_reserve_end":
                 dfb = ev.get("dfb")
                 tiles = ev.get("tiles", 0)
-                node = _node_from_kernel(ev.get("kernel"))
+                node = _node_of_event(ev)
                 if dfb:
                     dfb_stats[dfb]["reserves"] += 1
                     dfb_stats[dfb]["tiles_reserved"] += tiles
@@ -156,7 +175,7 @@ def _accumulate(
             case "dfb_wait_end":
                 dfb = ev.get("dfb")
                 tiles = ev.get("tiles", 0)
-                node = _node_from_kernel(ev.get("kernel"))
+                node = _node_of_event(ev)
                 if dfb:
                     dfb_stats[dfb]["waits"] += 1
                     dfb_stats[dfb]["tiles_waited"] += tiles

@@ -18,6 +18,7 @@ from .copyhandlers import (
 )
 from .ttnnsim import Tensor, tile_count_from_tensor
 from .sharding import try_count_locality
+from .mesh_access import validate_mesh_access
 from .trace import trace
 from .pipe import Pipe, SrcPipeIdentity
 import math
@@ -109,6 +110,19 @@ class CopyTransaction:
 
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
+
+        # Enforce that a mesh-sharded tensor is only accessed within the slice
+        # owned by the current node's device-mesh coordinate.
+        match src:
+            case Tensor():
+                validate_mesh_access(src, "read")
+            case _:
+                pass
+        match dst:
+            case Tensor():
+                validate_mesh_access(dst, "write")
+            case _:
+                pass
 
         trace(
             "copy_start",
