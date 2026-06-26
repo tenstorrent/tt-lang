@@ -9,8 +9,12 @@
 
 namespace mlir::tt::ttkernel {
 
-/// Populate cleanup patterns for TTKernel ops.
-void populateTTKernelCleanupPatterns(RewritePatternSet &patterns);
+/// Populate cleanup patterns for TTKernel ops. These patterns optimize
+/// TTKernel code by removing redundant operations (e.g., deduplicating
+/// consecutive barriers of the same type).
+/// When useTridBarriers is true, also adds TRID-barrier deduplication patterns.
+void populateTTKernelCleanupPatterns(RewritePatternSet &patterns,
+                                     bool useTridBarriers = false);
 
 } // namespace mlir::tt::ttkernel
 

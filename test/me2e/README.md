@@ -441,7 +441,10 @@ class E2EConfig:
     block_count: int = 2                 # 1=single, 2=double buffer (default)
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
     buffer_type: BufferType = BufferType.DRAM
+    use_trid_barriers: bool = False        # TRID-aware DMA barriers (pass option)
 ```
+
+`use_trid_barriers` enables the convert-ttl-to-ttkernel pass option `use-trid-barriers=1` for runtime coverage of TRID barrier lowering; some ME2E configs (e.g. in CONFIGS) set it to True.
 
 ### Memory Configuration
 

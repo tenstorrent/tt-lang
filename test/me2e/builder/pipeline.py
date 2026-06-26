@@ -20,6 +20,7 @@ def compile_ttl_to_ttkernel(
     device: Optional[Any] = None,
     maximize_dst: bool = True,
     enable_fpu_binary_ops: bool = True,
+    use_trid_barriers: bool = False,
 ) -> Module:
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
@@ -31,6 +32,8 @@ def compile_ttl_to_ttkernel(
         device: Optional TTNN device (unused, kept for API compat).
         maximize_dst: Enable DST maximization (subblocking + scheduling).
         enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
+        use_trid_barriers: If True, use TRID-aware DMA barriers (pass option
+            use-trid-barriers=1). Default False matches pass default.
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
@@ -58,6 +61,12 @@ def compile_ttl_to_ttkernel(
         func_passes.append("ttl-schedule-operations")
     func_pipeline = ",".join(func_passes)
 
+    ttkernel_pass = (
+        "convert-ttl-to-ttkernel{use-trid-barriers=1}"
+        if use_trid_barriers
+        else "convert-ttl-to-ttkernel"
+    )
+
     pipeline_str = (
         f"builtin.module("
         f"func.func({func_pipeline}),"
@@ -67,7 +76,7 @@ def compile_ttl_to_ttkernel(
         f"ttl-verify-dfb-spsc,"
         f"ttl-erase-pipenet-scopes,"
         f"ttl-validate-cb-budget,"
-        f"convert-ttl-to-ttkernel,"
+        f"{ttkernel_pass},"
         f"ttkernel-insert-inits,"
         f"canonicalize,"
         f"cse,"
