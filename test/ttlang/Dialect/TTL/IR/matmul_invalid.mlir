@@ -75,3 +75,27 @@ func.func @matmul_result_element_mismatch(
   %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<3x4x!ttcore.tile<32x32, bf16>> -> tensor<2x4x!ttcore.tile<32x32, f32>>
   return %r : tensor<2x4x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Test: transpose_rhs K mismatch. RHS is [N, K]=[4, 5] so its K (5) does not
+// match lhs K (3).
+func.func @matmul_transpose_k_mismatch(
+    %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<4x5x!ttcore.tile<32x32, bf16>>) -> tensor<2x4x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{K dimension mismatch: lhs has 3 columns but rhs has 5 columns}}
+  %r = ttl.matmul %a, %b {transpose_rhs} : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<4x5x!ttcore.tile<32x32, bf16>> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<2x4x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Test: transpose_rhs wrong result shape. RHS is [N, K]=[4, 3] so the result
+// must be [M, N]=[2, 4], not [2, 3].
+func.func @matmul_transpose_bad_result(
+    %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<4x3x!ttcore.tile<32x32, bf16>>) -> tensor<2x3x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{result shape [2, 3] does not match expected [2, 4]}}
+  %r = ttl.matmul %a, %b {transpose_rhs} : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<4x3x!ttcore.tile<32x32, bf16>> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<2x3x!ttcore.tile<32x32, bf16>>
+}

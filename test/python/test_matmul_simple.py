@@ -257,6 +257,105 @@ def test_matmul_n_tiling_distinct(device):
     )
 
 
+def _make_matmul_transpose_kernel(block_count=2):
+    """Matmul kernel where B is provided transposed as [N, K]."""
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(a, b, out):
+        Mt = a.shape[0] // TILE
+        Kt = a.shape[1] // TILE
+        Nt = b.shape[0] // TILE  # B is [N, K]
+
+        a_dfb = ttl.make_dataflow_buffer_like(
+            a, shape=(Mt, Kt), block_count=block_count
+        )
+        b_dfb = ttl.make_dataflow_buffer_like(
+            b, shape=(Nt, Kt), block_count=block_count
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(Mt, Nt), block_count=block_count
+        )
+
+        @ttl.compute()
+        def mm_compute():
+            a_blk = a_dfb.wait()
+            b_blk = b_dfb.wait()
+            o = out_dfb.reserve()
+            result = ttl.matmul(a_blk, b_blk, transpose_rhs=True)
+            o.store(result)
+            a_blk.pop()
+            b_blk.pop()
+            o.push()
+
+        @ttl.datamovement()
+        def dm_read():
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[0:Mt, 0:Kt], blk)
+                tx.wait()
+            with b_dfb.reserve() as blk:
+                tx = ttl.copy(b[0:Nt, 0:Kt], blk)
+                tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, out[0:Mt, 0:Nt])
+                tx.wait()
+
+    return kernel
+
+
+matmul_transpose_kernel = _make_matmul_transpose_kernel(block_count=2)
+
+
+# Transposed RHS: B is stored as [N, K] and the matmul computes A @ B^T.
+# N (output columns) is kept at 1 tile: the hardware matmul_block reads the
+# ct output-column tiles consecutively, which only matches the [N, K] layout
+# for a single output column.
+TRANSPOSE_SHAPES = [
+    (1, 1, 1),  # Minimal: single tile.
+    (2, 1, 1),  # Tall output.
+    (1, 2, 1),  # K > 1.
+    (2, 4, 1),  # Multi-tile M with K > 1.
+]
+
+
+@pytest.mark.parametrize(
+    "shape,dtype",
+    [(s, torch.bfloat16) for s in TRANSPOSE_SHAPES]
+    + [(s, torch.float32) for s in TRANSPOSE_SHAPES],
+    ids=[f"{m}x{k}x{n}_bf16" for (m, k, n) in TRANSPOSE_SHAPES]
+    + [f"{m}x{k}x{n}_f32" for (m, k, n) in TRANSPOSE_SHAPES],
+)
+@pytest.mark.requires_device
+def test_matmul_transpose_rhs(shape, dtype, device):
+    """A @ B^T where B is passed in its transposed [N, K] tile layout."""
+    Mt, Kt, Nt = shape
+    M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
+
+    a_torch = torch.randn(M, K, dtype=dtype)
+    b_torch = torch.randn(N, K, dtype=dtype)  # B stored as [N, K]
+    out_torch = torch.zeros(M, N, dtype=dtype)
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out = to_dram(out_torch, device)
+
+    matmul_transpose_kernel(a, b, out)
+
+    result = ttnn.to_torch(out).float()
+    golden = (a_torch @ b_torch.t()).float()
+
+    pcc = torch.corrcoef(torch.stack([result.flatten(), golden.flatten()]))[0, 1].item()
+    threshold = 0.9999 if dtype == torch.float32 else 0.999
+    assert pcc > threshold, (
+        f"PCC {pcc:.6f} < {threshold} for {Mt}x{Kt}x{Nt} transposed matmul. "
+        f"Max diff: {(result - golden).abs().max().item()}"
+    )
+    rtol, atol = (1e-2, 2e-2)
+    assert_allclose(result, golden, rtol=rtol, atol=atol)
+
+
 @pytest.mark.requires_device
 def test_matmul_l1(device):
     """Matmul with tensors in L1 memory (instead of DRAM)."""
