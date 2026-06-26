@@ -88,6 +88,60 @@ def node_mesh_coord(linear_node: Index, grid: Shape) -> tuple[int, ...]:
     return node_coord_from_linear(linear_node, grid)[:n_mesh]
 
 
+def pipe_crosses_mesh(src: NodeCoord, dst: Any, grid: Shape) -> bool:
+    """Return True if a pipe from ``src`` to ``dst`` spans more than one device.
+
+    A pipe is "fabric" (cross-device) when its source and any destination differ
+    on a mesh axis (the leading ``len(grid) - 2`` grid dims; see
+    :func:`mesh_axes_of_grid`).  Otherwise it stays within a single device's core
+    grid and lowers to an on-chip NoC transfer.
+
+    ``dst`` may be a single coordinate or a :class:`~sim.typedefs.NodeRange`
+    (a tuple that may contain ``slice`` objects for multicast); a slice on a mesh
+    axis that covers any value other than the source's coordinate makes the pipe
+    fabric.  Grids of rank <= 2 have no mesh axes, so the result is always False.
+
+    Both endpoints must be full grid rank: the mesh/core split (``grid[:-2]`` vs
+    the trailing two dims) only lines up with a coordinate's entries when the
+    coordinate addresses every grid axis.  A shorter coordinate is ambiguous --
+    the simulator flattens leading dims for sub-rank coordinates, so its entries
+    no longer correspond one-to-one with mesh axes -- and raises rather than
+    guess.
+
+    Raises:
+        ValueError: If ``src`` or ``dst`` does not have exactly ``len(grid)``
+            entries (and the grid has mesh axes).
+    """
+    n_mesh = len(mesh_axes_of_grid(grid))
+    if n_mesh == 0:
+        return False
+
+    src_t = (src,) if isinstance(src, int) else tuple(src)
+    dst_t = (dst,) if isinstance(dst, int) else tuple(dst)
+
+    rank = len(grid)
+    if len(src_t) != rank or len(dst_t) != rank:
+        raise ValueError(
+            f"pipe endpoints must be full grid rank ({rank}) to classify mesh "
+            f"crossing; got src {src_t} and dst {dst_t} for grid {tuple(grid)}"
+        )
+
+    for axis in range(n_mesh):
+        src_coord = src_t[axis]
+        dst_sel = dst_t[axis]
+        match dst_sel:
+            case slice():
+                start = dst_sel.start if dst_sel.start is not None else 0
+                stop = dst_sel.stop if dst_sel.stop is not None else grid[axis]
+                step = dst_sel.step if dst_sel.step is not None else 1
+                if any(v != src_coord for v in range(start, stop, step)):
+                    return True
+            case _:
+                if dst_sel != src_coord:
+                    return True
+    return False
+
+
 def flatten_node_index(node_coord: NodeCoord) -> Index:
     """Flatten a NodeCoord to a linear node index.
 

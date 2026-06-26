@@ -74,6 +74,22 @@ def _get_or_create_pipe_entry(pipe: AnyPipe) -> PipeEntry:
     return entry
 
 
+def _pipe_is_fabric(pipe: AnyPipe) -> bool:
+    """Return True if ``pipe`` crosses a device-mesh axis (a fabric transfer).
+
+    Derived from the pipe's endpoints and the launch grid (its leading dims are
+    mesh axes); on-chip NoC pipes and single-device grids return False.  Used
+    only to annotate trace events; it does not affect transfer semantics.
+    """
+    from .nodecontext import pipe_crosses_mesh
+
+    scheduler = get_context().scheduler
+    grid = tuple(getattr(scheduler, "grid", ()) or ()) if scheduler is not None else ()
+    if not grid:
+        return False
+    return pipe_crosses_mesh(pipe.src, pipe.dst, grid)
+
+
 class CopyTransferHandler(Protocol):
     """Protocol for copy transfer handlers."""
 
@@ -197,7 +213,10 @@ class BlockToPipeHandler:
         entry["queue"].append((src_data, num_receivers, msg_id, set[int]()))
 
         trace(
-            "pipe_send", pipe=get_pipe_name(dst), tiles=tile_count_from_tensor(src_data)
+            "pipe_send",
+            pipe=get_pipe_name(dst),
+            tiles=tile_count_from_tensor(src_data),
+            fabric=_pipe_is_fabric(dst),
         )
 
     def can_wait(self, src: Block, dst: AnyPipe) -> bool:
@@ -334,6 +353,7 @@ class PipeToBlockHandler:
                     "pipe_recv",
                     pipe=get_pipe_name(src),
                     tiles=tile_count_from_tensor(msg_data),
+                    fabric=_pipe_is_fabric(src),
                 )
 
                 if node_id_available:

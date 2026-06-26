@@ -65,6 +65,31 @@ A span covering each `copy()` call:
 completing a DMA: the tick difference between them is the number of scheduler
 activations the issuing kernel spent blocked waiting for the transfer to finish.
 
+### Pipe transfers
+
+Instant events at each pipe send/receive:
+
+- **pipe_send** -- a `copy(block, pipe)` posted a payload to a pipe. Fields: pipe
+  name, tile count, `fabric`, node, kernel.
+- **pipe_recv** -- a `copy(pipe, block)` drained a payload from a pipe. Fields: pipe
+  name, tile count, `fabric`, node, kernel.
+
+The boolean **fabric** field classifies the transfer by topology, derived from the
+pipe's endpoints and the launch grid: a grid's leading `len(grid) - 2` dimensions are
+device-mesh axes and its trailing two are the Tensix core grid. A pipe is `fabric:
+true` when its source and any destination differ on a mesh axis (a cross-device hop,
+lowering to fabric on hardware) and `fabric: false` when it stays within one device's
+core grid (an on-chip NoC transfer). On a single-device grid (rank <= 2, no mesh axes)
+every pipe is `fabric: false`.
+
+This distinction reflects the simulator's cross-device contract: a device may read
+mesh-sharded **tensor** data only within its own shard (enforced by
+`validate_mesh_access`; see `python/sim/mesh_access.py`), and the sanctioned way to
+obtain another device's data is through a (fabric) pipe. Pipe payloads carry no tensor
+ownership, so they are exempt from shard validation -- the two mechanisms compose:
+tensor validation guards illegal direct reads, while fabric pipes are the explicit
+cross-device channel.
+
 ---
 
 ## Logical Time

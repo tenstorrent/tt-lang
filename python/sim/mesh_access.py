@@ -16,6 +16,14 @@ node is mapped to a device-mesh coordinate and may only touch the element slice
 that coordinate owns.  Touching any element outside the owned slice raises
 :class:`MeshAccessError`.
 
+This validation guards only direct **tensor** reads/writes (``ttl.copy`` with a
+:class:`~sim.ttnnsim.Tensor` endpoint).  The sanctioned way for a node to obtain
+another device's data is a cross-device (fabric) **pipe**: pipe payloads carry no
+tensor ownership and are deliberately exempt from this check (see
+:func:`~sim.nodecontext.pipe_crosses_mesh` and the ``fabric`` trace field).  The
+two mechanisms compose -- tensor validation forbids illegal direct reads, while
+fabric pipes are the explicit cross-device channel.
+
 Validation is *skipped* (a mesh-sharded tensor is treated as fully owned) only in
 the two cases where every device legitimately owns the whole tensor:
 
