@@ -579,9 +579,7 @@ def _make_aug_outside_loop_kernel():
     @ttl.operation(grid=(1, 1))
     def kernel(a_seed, delta, out):
         a_cb = ttl.make_dataflow_buffer_like(a_seed, shape=(1, 1), block_count=2)
-        delta_fpu_cb = ttl.make_dataflow_buffer_like(
-            delta, shape=(1, 1), block_count=2
-        )
+        delta_fpu_cb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=2)
         delta_sfpu_cb = ttl.make_dataflow_buffer_like(
             delta, shape=(1, 1), block_count=2
         )
@@ -589,12 +587,15 @@ def _make_aug_outside_loop_kernel():
 
         @ttl.compute()
         def compute():
-            with a_cb.wait() as a, delta_fpu_cb.wait() as d_fpu:
+            with (
+                a_cb.wait() as a,
+                delta_fpu_cb.wait() as d_fpu,
+                delta_sfpu_cb.wait() as d_sfpu,
+            ):
                 acc = a + d_fpu
                 # `+=` outside any loop: the rewrite produces a plain
                 # `acc = acc + d` with no recurrence machinery involved.
-                with delta_sfpu_cb.wait() as d_sfpu:
-                    acc += d_sfpu
+                acc += d_sfpu
                 with out_cb.reserve() as o:
                     o.store(acc)
 
