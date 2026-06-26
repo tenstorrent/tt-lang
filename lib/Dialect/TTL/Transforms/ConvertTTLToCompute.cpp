@@ -405,10 +405,12 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Without this, subblocking along M would incorrectly slice B (which is
   // indexed by [K, N], not [M, N]).
   DenseSet<Value> matmulLhsTensors, matmulRhsTensors;
+  bool matmulTransposeRhs = false;
   for (Operation *op : trace.opsInOrder) {
     if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
       matmulLhsTensors.insert(matmulOp.getLhs());
       matmulRhsTensors.insert(matmulOp.getRhs());
+      matmulTransposeRhs |= matmulOp.getTransposeRhs();
     }
   }
   bool hasMatmul = !matmulLhsTensors.empty();
@@ -420,13 +422,14 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   if (hasMatmul) {
     // 3D iteration space [M, N, K] with matmul indexing maps.
-    // LHS A is [M, K], RHS B is [K, N] (non-transposed).
-    // TODO(#420): derive RHS map from a transpose flag for transposed B.
+    // LHS A is [M, K]. RHS B is [K, N] (non-transposed) or [N, K] when
+    // transpose_rhs is set, so its indexing map swaps to (N, K) = (d1, d2).
     auto d0 = getAffineDimExpr(0, ctx); // M
     auto d1 = getAffineDimExpr(1, ctx); // N
     auto d2 = getAffineDimExpr(2, ctx); // K
     AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
-    AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
+    AffineMap rhsMap = matmulTransposeRhs ? AffineMap::get(3, 0, {d1, d2}, ctx)
+                                          : AffineMap::get(3, 0, {d2, d1}, ctx);
     AffineMap parallelMap = AffineMap::get(3, 0, {d0, d1}, ctx);
 
     for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
@@ -682,6 +685,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         auto matmulTileOp =
             createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
                 rewriter, loc, matmulTileType, lhsTile, rhsTile, Value());
+        matmulTileOp.setTransposeRhsAttr(matmulOp.getTransposeRhsAttr());
         tileResult = matmulTileOp;
       }
     } else {
@@ -710,6 +714,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           auto foldedMatmul =
               createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
                   rewriter, loc, addTileType, mmLhs, mmRhs, accTile);
+          if (auto mmOp = tensorA.getDefiningOp<MatmulOp>()) {
+            foldedMatmul.setTransposeRhsAttr(mmOp.getTransposeRhsAttr());
+          }
           return foldedMatmul;
         };
         Value folded = tryFold(operands[0], operands[1]);
@@ -742,6 +749,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
             auto mmTileOp =
                 createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
                     rewriter, loc, matmulTileType, mmLhs, mmRhs, Value());
+            if (auto mmOp = operand.getDefiningOp<MatmulOp>()) {
+              mmTileOp.setTransposeRhsAttr(mmOp.getTransposeRhsAttr());
+            }
             tensorToTile[operand] = mmTileOp;
             deferredMatmul.erase(dfIt);
           }
@@ -1262,11 +1272,14 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     auto resultType = getTensorType(op.getResult());
     MLIRContext *ctx = rewriter.getContext();
 
+    bool transposeRhs = op.getTransposeRhs();
     auto d0 = getAffineDimExpr(0, ctx); // m
     auto d1 = getAffineDimExpr(1, ctx); // n
     auto d2 = getAffineDimExpr(2, ctx); // k
     AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
-    AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
+    // RHS B is [K, N] (non-transposed) or [N, K] when transpose_rhs is set.
+    AffineMap rhsMap = transposeRhs ? AffineMap::get(3, 0, {d1, d2}, ctx)
+                                    : AffineMap::get(3, 0, {d2, d1}, ctx);
     AffineMap outMap = AffineMap::get(3, 0, {d0, d1}, ctx);
     SmallVector<Attribute> inputMaps = {AffineMapAttr::get(lhsMap),
                                         AffineMapAttr::get(rhsMap)};
@@ -1276,10 +1289,12 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
 
     return buildComputeFromInputs(
         op, rewriter, ValueRange{lhs, rhs}, resultType, inputMaps, outMap,
-        iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
-          return createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
+        iterTypes, [&](OpBuilder &b, Location loc, Type tileType, Block *body) {
+          auto tileOp = createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               Value());
+          tileOp.setTransposeRhsAttr(op.getTransposeRhsAttr());
+          return tileOp;
         });
   }
 };

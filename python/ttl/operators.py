@@ -195,17 +195,10 @@ class TensorBlock:
         """Matrix multiplication using ttl.matmul.
 
         Computes C[M,N] = A[M,K] * B[K,N]. Both operands must be
-        CB-attached tensors of tiles.
+        CB-attached tensors of tiles. This is sugar for the non-transposed
+        ``ttl.matmul`` free function.
         """
-        lhs_type = ast_self.type
-        rhs_type = rhs.type
-        lhs_shape = list(lhs_type.shape)
-        rhs_shape = list(rhs_type.shape)
-        result_shape = [lhs_shape[0], rhs_shape[1]]
-        result_type = RankedTensorType.get(
-            result_shape, lhs_type.element_type, lhs_type.encoding
-        )
-        return ttl.matmul(result_type, ast_self, rhs)
+        return _build_matmul(ast_self, rhs, transpose_rhs=False)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view (overwrite).
@@ -759,6 +752,69 @@ def reduce_max(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     return _reduce_impl(input, dims, reduce_type=1)
 
 
+def _resolve_transpose_flag(val) -> bool:
+    """Resolve a transpose keyword into a Python bool.
+
+    Inside ``@ttl.compute``, ``True``/``False`` literals are lowered to i1
+    ``arith.constant`` SSA values by the AST compiler, so accept either a
+    Python bool (from the default argument) or a constant int/i1 value.
+    """
+    if isinstance(val, bool):
+        return val
+    iv = get_constant_int_value(val)
+    if iv is not None:
+        return bool(iv)
+    raise ValueError("transpose_rhs must be a compile-time boolean constant")
+
+
+def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
+    """Build a ttl.matmul op, computing the result shape from the operands.
+
+    For the non-transposed form ``rhs`` is ``[K, N]``; for the transposed
+    form (``transpose_rhs``) ``rhs`` is ``[N, K]`` and the matmul computes
+    ``C[M, N] = A[M, K] * B[N, K]^T``.
+    """
+    transpose = _resolve_transpose_flag(transpose_rhs)
+    lhs_type = lhs.type
+    rhs_type = rhs.type
+    lhs_shape = list(lhs_type.shape)
+    rhs_shape = list(rhs_type.shape)
+    if len(lhs_shape) != 2 or len(rhs_shape) != 2:
+        raise ValueError(
+            f"matmul requires rank-2 operands, got lhs rank {len(lhs_shape)} "
+            f"and rhs rank {len(rhs_shape)}"
+        )
+
+    # K is lhs columns. For transposed rhs [N, K], K is rhs.shape[1] and N is
+    # rhs.shape[0]; otherwise rhs is [K, N], so K is rhs.shape[0] and N is
+    # rhs.shape[1].
+    rhs_k = rhs_shape[1] if transpose else rhs_shape[0]
+    if lhs_shape[1] != rhs_k:
+        raise ValueError(
+            f"matmul K dimension mismatch: lhs has {lhs_shape[1]} columns but "
+            f"rhs has {rhs_k} {'columns' if transpose else 'rows'}"
+        )
+    n = rhs_shape[0] if transpose else rhs_shape[1]
+    result_shape = [lhs_shape[0], n]
+    result_type = RankedTensorType.get(
+        result_shape, lhs_type.element_type, lhs_type.encoding
+    )
+    if transpose:
+        return ttl.matmul(result_type, lhs, rhs, transpose_rhs=True)
+    return ttl.matmul(result_type, lhs, rhs)
+
+
+@syntax("matmul")
+def matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs=False) -> TensorBlock:
+    """Matrix multiply two CB-attached tensors of tiles.
+
+    Computes ``C[M, N] = A[M, K] * B[K, N]``. When ``transpose_rhs`` is set,
+    ``rhs`` is provided as ``[N, K]`` and the matmul computes
+    ``C[M, N] = A[M, K] * B[N, K]^T`` using the hardware transpose path.
+    """
+    return _build_matmul(lhs, rhs, transpose_rhs=transpose_rhs)
+
+
 @syntax("transpose")
 def transpose(input: TensorBlock) -> TensorBlock:
     """Transpose a 2D block: (M, N) -> (N, M)."""
@@ -998,6 +1054,7 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
+    "matmul",
     "fill",
     "typecast",
     "raw_element_read",
