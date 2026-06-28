@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: %python %s > %t.output.txt 2>&1
+# RUN: env -u TT_VISIBLE_DEVICES %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
 """
@@ -62,14 +62,19 @@ def add_kernel(a, b, out):
             tx.wait()
 
 
+# Shard correctness is enforced by the Python asserts below (a mismatch exits
+# non-zero and fails the RUN). FileCheck only confirms the test ran to a PASS,
+# so it matches both the multi-card run and the skip on hosts with < 4 cards.
 # CHECK: Mesh Tensor SPMD Test
+# CHECK: Available devices: {{[0-9]+}}
+# CHECK: PASS
+# CHECK: Mesh Tensor SPMD Test Passed
 print("=== Mesh Tensor SPMD Test ===")
 
 n_available = ttnn.get_num_devices()
 print("Available devices: %d" % n_available)
 
 if n_available < N_DEVICES:
-    # CHECK: PASS
     print("PASS: skipped (need %d devices, have %d)" % (N_DEVICES, n_available))
 else:
     print(
@@ -135,8 +140,6 @@ else:
                 )
             print("PASS: all %d shards correct (2 + 3 = 5)" % N_DEVICES)
     except FabricMeshUnavailable as skip:
-        # CHECK: PASS
         print("PASS: skipped (%s)" % skip)
 
-# CHECK: Mesh Tensor SPMD Test Passed
 print("=== Mesh Tensor SPMD Test Passed ===")

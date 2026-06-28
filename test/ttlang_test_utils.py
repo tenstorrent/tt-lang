@@ -125,21 +125,18 @@ class FabricMeshUnavailable(RuntimeError):
     pass
 
 
-def _require_fabric_mesh_descriptor():
-    if not os.environ.get("TT_MESH_GRAPH_DESC_PATH"):
-        raise FabricMeshUnavailable(
-            "set TT_MESH_GRAPH_DESC_PATH for fabric on this host"
-        )
-
-
 @contextmanager
 def open_fabric_mesh(requested_mesh_shape: tuple[int, int]):
-    """Open a fabric-enabled mesh with the same setup as TT-Metal P2P tests."""
+    """Open a fabric-enabled mesh, matching TT-Metal's P2P test setup.
+
+    tt-metal's control plane auto-discovers the fabric topology, so no mesh graph
+    descriptor is required. A non-standard topology can still be forced by
+    exporting TT_MESH_GRAPH_DESC_PATH, which tt-metal reads from the environment.
+    """
     ttnn_module = _get_ttnn()
     if ttnn_module is None:
         raise FabricMeshUnavailable("TTNN not available")
 
-    _require_fabric_mesh_descriptor()
     requested_mesh_shape = tuple(requested_mesh_shape)
 
     mesh_device = None
