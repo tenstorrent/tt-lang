@@ -1973,20 +1973,20 @@ void mlir::tt::ttl::IfSrcOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point.isParent()) {
     regions.push_back(RegionSuccessor(&getBody()));
-    regions.push_back(RegionSuccessor::parent());
+    regions.push_back(RegionSuccessor(getOperation()));
     return;
   }
-  regions.push_back(RegionSuccessor::parent());
+  regions.push_back(RegionSuccessor(getOperation()));
 }
 
 void mlir::tt::ttl::IfDstOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point.isParent()) {
     regions.push_back(RegionSuccessor(&getBody()));
-    regions.push_back(RegionSuccessor::parent());
+    regions.push_back(RegionSuccessor(getOperation()));
     return;
   }
-  regions.push_back(RegionSuccessor::parent());
+  regions.push_back(RegionSuccessor(getOperation()));
 }
 
 void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
@@ -1995,5 +1995,5 @@ void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
     regions.push_back(RegionSuccessor(&getBody()));
     return;
   }
-  regions.push_back(RegionSuccessor::parent());
+  regions.push_back(RegionSuccessor(getOperation()));
 }
