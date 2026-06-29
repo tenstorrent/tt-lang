@@ -14,13 +14,13 @@
 //   for (USER_ITER in 0..4) {              ← User loop from input MLIR
 //     for (tile_y in 0..2) {               ← Generated tile loop for Tensor1
 //       for (tile_x in 0..2) {             ← Generated tile loop for Tensor1
-//         noc0.async_read(...)         ← Tensor1 → CB1
+//         noc0.async_read(...)             ← Tensor1 → CB1
 //       }
 //     }
 //     noc0.async_read_barrier()
 //     for (tile_y in 0..3) {               ← Generated tile loop for Tensor2
 //       for (tile_x in 0..2) {             ← Generated tile loop for Tensor2
-//         noc0.async_read(...)         ← Tensor2 → CB2
+//         noc0.async_read(...)             ← Tensor2 → CB2
 //       }
 //     }
 //     noc0.async_read_barrier()
