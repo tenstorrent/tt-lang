@@ -1361,9 +1361,15 @@ def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
     must match: lhs.shape[1] == rhs.shape[0]. Result shape is
     [lhs.shape[0], rhs.shape[1]].
 
+    When the optional `transpose_rhs` unit attribute is set, `rhs` is the
+    transpose of B and stored as [N, K]: result[i, j] = sum_k(lhs[i, k] *
+    rhs[j, k]). The inner (K) dimensions then match as lhs.shape[1] ==
+    rhs.shape[1], and the result shape is [lhs.shape[0], rhs.shape[0]].
+
     Lowered to ttl.compute with ttl.tile_matmul_block by convert-ttl-to-compute.
   }];
-  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs,
+                       UnitAttr:$transpose_rhs);
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat =
       "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
@@ -1384,11 +1390,16 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     accumulator + lhs @ rhs, exploiting matmul_block's additive
     accumulation to eliminate an explicit add.
 
+    When the optional `transpose_rhs` unit attribute is set, the B operand
+    is the transpose of the multiplicand and stored as [N, K]; the attribute
+    is forwarded to matmul_block's transpose argument and selects the
+    transposed per-K addressing during TTKernel lowering.
+
     Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,
-                       Index:$dst_index);
+                       Index:$dst_index, UnitAttr:$transpose_rhs);
   let results = (outs TTL_TileOrTensor:$result);
   let assemblyFormat = [{
     $lhs `,` $rhs (`,` $accumulator^)? `into` `dst` `[` $dst_index `]` attr-dict `:`

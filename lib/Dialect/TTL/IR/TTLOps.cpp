@@ -1543,15 +1543,20 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
     return emitOpError() << "result must have static shape";
   }
 
+  // When transpose_rhs is set, rhs is the transpose B stored as [N, K], so K
+  // is rhs.shape[1] and N is rhs.shape[0].
+  bool transposeRhs = getTransposeRhs();
   int64_t lhsK = lhsType.getDimSize(1);
-  int64_t rhsK = rhsType.getDimSize(0);
+  int64_t rhsK = transposeRhs ? rhsType.getDimSize(1) : rhsType.getDimSize(0);
   if (lhsK != rhsK) {
     return emitOpError() << "K dimension mismatch: lhs has " << lhsK
-                         << " columns but rhs has " << rhsK << " rows";
+                         << " columns but rhs has " << rhsK
+                         << (transposeRhs ? " columns" : " rows");
   }
 
   int64_t expectedM = lhsType.getDimSize(0);
-  int64_t expectedN = rhsType.getDimSize(1);
+  int64_t expectedN =
+      transposeRhs ? rhsType.getDimSize(0) : rhsType.getDimSize(1);
   if (resultType.getDimSize(0) != expectedM ||
       resultType.getDimSize(1) != expectedN) {
     return emitOpError() << "result shape [" << resultType.getDimSize(0) << ", "
