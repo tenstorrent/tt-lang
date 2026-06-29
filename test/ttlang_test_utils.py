@@ -126,18 +126,22 @@ class FabricMeshUnavailable(RuntimeError):
 
 
 @contextmanager
-def open_fabric_mesh(requested_mesh_shape: tuple[int, int]):
-    """Open a fabric-enabled mesh, matching TT-Metal's P2P test setup.
-
-    tt-metal's control plane auto-discovers the fabric topology, so no mesh graph
-    descriptor is required. A non-standard topology can still be forced by
-    exporting TT_MESH_GRAPH_DESC_PATH, which tt-metal reads from the environment.
+def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
+    """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
+    control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
+    mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
+    override topology discovery.
     """
     ttnn_module = _get_ttnn()
     if ttnn_module is None:
         raise FabricMeshUnavailable("TTNN not available")
 
-    requested_mesh_shape = tuple(requested_mesh_shape)
+    if requested_mesh_shape is None:
+        requested_mesh_shape = tuple(
+            ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
+        )
+    else:
+        requested_mesh_shape = tuple(requested_mesh_shape)
 
     mesh_device = None
     try:

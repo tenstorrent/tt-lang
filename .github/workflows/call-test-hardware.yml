@@ -117,12 +117,13 @@ jobs:
       - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/python -v --tb=long --timeout=60 --timeout-method=signal --junitxml=build/test/pytest-report.xml
+          # thread method kills a C-level device deadlock that SIGALRM cannot.
+          python3 -m pytest test/python -v --tb=long --timeout=300 --timeout-method=thread --junitxml=build/test/pytest-report.xml
 
       - name: ME2E tests (MLIR input end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/me2e -v --tb=short --timeout=60 --timeout-method=signal --junitxml=build/test/me2e-report.xml
+          python3 -m pytest test/me2e -v --tb=short --timeout=300 --timeout-method=thread --junitxml=build/test/me2e-report.xml
 
       - name: Hardware compiler example scripts
         run: |

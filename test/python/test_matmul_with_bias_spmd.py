@@ -177,7 +177,7 @@ def mesh_device():
     if n_devices < MIN_DEVICES:
         pytest.skip(f"need >={MIN_DEVICES} devices, have {n_devices}")
 
-    with open_fabric_mesh((1, n_devices)) as mesh:
+    with open_fabric_mesh() as mesh:
         yield mesh, n_devices
 
 
