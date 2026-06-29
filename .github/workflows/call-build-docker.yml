@@ -228,7 +228,7 @@ jobs:
           # tag (released images already exist at clean tags; dryrun only
           # runs when the resolved tag already points at an existing image).
           BASE_IMAGE="ghcr.io/${{ github.repository }}/tt-lang-base-ubuntu-24-04:${{ steps.docker-tag.outputs.docker-tag }}"
-          docker pull "$BASE_IMAGE"
+          .github/scripts/pull-image-retry.sh "$BASE_IMAGE"
           echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
 
       - name: Configure tt-lang
