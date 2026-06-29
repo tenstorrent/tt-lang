@@ -539,14 +539,9 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
     Value dstIdx = adaptor.getDstIndex();
 
     auto srcTileType =
-        mlir::dyn_cast<tt::ttcore::TileType>(op.getSrcTile().getType());
-    if (!srcTileType) {
-      return rewriter.notifyMatchFailure(op, "source is not a tile type");
-    }
+        mlir::cast<tt::ttcore::TileType>(op.getSrcTile().getType());
     auto dataFormat = tt::ttcore::DataTypeAttr::get(rewriter.getContext(),
                                                     srcTileType.getDataType());
-
-    // copy_dest_values dispatches on the DST data format.
     ttk::CopyDestValuesOp::create(rewriter, loc, *srcIdx, dstIdx, dataFormat);
 
     // Replace with an unrealized conversion cast to preserve the tile value.

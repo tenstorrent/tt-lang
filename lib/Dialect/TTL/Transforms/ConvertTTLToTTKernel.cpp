@@ -62,18 +62,6 @@ constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
 
 // PipeGraph is defined in PipeGraph.h.
 
-static int64_t getNocIndex(Operation *op) {
-  auto parentFunc = op->getParentOfType<FuncOp>();
-  if (!parentFunc) {
-    return 0;
-  }
-  auto attr = parentFunc->getAttrOfType<IntegerAttr>("ttl.noc_index");
-  if (!attr) {
-    return 0;
-  }
-  return attr.getInt();
-}
-
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
@@ -1161,20 +1149,22 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
       return op.emitError("untyped transfer handle survived pipe receive "
                           "expansion");
     }
+    // Future-proofing: TransferKind is currently {read, write}, but fail
+    // explicitly before mutating IR if it ever expands without updating the
+    // lowering.
+    if (*kind != TransferKind::read && *kind != TransferKind::write) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << "unsupported TransferKind for ttl.wait lowering";
+      });
+    }
     int64_t nocIndex = getNocIndex(op);
     Value nocVal =
         arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getI8Type(),
                                   rewriter.getI8IntegerAttr(nocIndex));
     if (*kind == TransferKind::read) {
       ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), nocVal);
-    } else if (*kind == TransferKind::write) {
-      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), nocVal);
     } else {
-      // Future-proofing: TransferKind is currently {read, write}, but fail
-      // explicitly if it ever expands without updating the lowering.
-      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "unsupported TransferKind for ttl.wait lowering";
-      });
+      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), nocVal);
     }
     rewriter.eraseOp(op);
     return success();
@@ -1234,7 +1224,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       return failure();
     }
     op->removeAttr(kKernelThreadAttrName);
-    op->removeAttr("ttl.noc_index");
+    op->removeAttr(kNocIndexAttrName);
     op->setAttr("ttkernel.thread", ttlAttr);
 
     // If function has arguments, we need to transform them

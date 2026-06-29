@@ -64,18 +64,6 @@ static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
   return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 }
 
-static int64_t getNocIndex(Operation *op) {
-  auto parentFunc = op->getParentOfType<FuncOp>();
-  if (!parentFunc) {
-    return 0;
-  }
-  auto attr = parentFunc->getAttrOfType<IntegerAttr>("ttl.noc_index");
-  if (!attr) {
-    return 0;
-  }
-  return attr.getInt();
-}
-
 static PipeKey getPipeKey(PipeType pipeType) {
   return {pipeType.getSrcX(),      pipeType.getSrcY(),
           pipeType.getDstStartX(), pipeType.getDstStartY(),

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: tt-device
+# REQUIRES: tt-device, multi-device
 # RUN: env -u TT_VISIBLE_DEVICES %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
@@ -17,14 +17,15 @@ kernel would only touch the first tile and produce incorrect results for the
 rest. Correct output for all elements proves the tensor was properly sharded
 so each device sees its own 32x32 slice.
 
-Requires >=4 devices for real mesh sharding. On single-card, the test is
-skipped (single-device execution is covered by other tests).
+Requires >=4 devices for real mesh sharding. The `multi-device` lit feature
+gates the test so lit reports it unsupported on hosts with fewer cards
+(single-device execution is covered by other tests).
 """
 
 import torch
 import ttnn
 import ttl
-from ttlang_test_utils import FabricMeshUnavailable, open_fabric_mesh
+from ttlang_test_utils import open_fabric_mesh
 
 TILE = 32
 N_DEVICES = 4
@@ -62,84 +63,83 @@ def add_kernel(a, b, out):
             tx.wait()
 
 
-# Shard correctness is enforced by the Python asserts below (a mismatch exits
-# non-zero and fails the RUN). FileCheck only confirms the test ran to a PASS,
-# so it matches both the multi-card run and the skip on hosts with < 4 cards.
-# CHECK: Mesh Tensor SPMD Test
+# The `multi-device` lit feature gates this to hosts with >= 4 cards, so the
+# multi-card path always runs; these CHECKs assert it did. A skip or a failure to
+# shard would not print "Multi-card path"/"all 4 shards correct". Shard
+# correctness is enforced by the Python asserts below (a mismatch exits non-zero,
+# failing the RUN).
+# CHECK: === Mesh Tensor SPMD Test ===
 # CHECK: Available devices: {{[0-9]+}}
-# CHECK: PASS
-# CHECK: Mesh Tensor SPMD Test Passed
+# CHECK: Multi-card path: sharding [128, 32] across 4 devices
+# CHECK: PASS: all 4 shards correct (2 + 3 = 5)
+# CHECK: === Mesh Tensor SPMD Test Passed ===
 print("=== Mesh Tensor SPMD Test ===")
 
 n_available = ttnn.get_num_devices()
 print("Available devices: %d" % n_available)
+assert (
+    n_available >= N_DEVICES
+), "multi-device gating guarantees >= %d cards, but ttnn reports %d" % (
+    N_DEVICES,
+    n_available,
+)
 
-if n_available < N_DEVICES:
-    print("PASS: skipped (need %d devices, have %d)" % (N_DEVICES, n_available))
-else:
-    print(
-        "Multi-card path: sharding [%d, %d] across %d devices"
-        % (LOGICAL_ROWS, LOGICAL_COLS, N_DEVICES)
+print(
+    "Multi-card path: sharding [%d, %d] across %d devices"
+    % (LOGICAL_ROWS, LOGICAL_COLS, N_DEVICES)
+)
+
+a_torch = torch.full((SHARD_ROWS, LOGICAL_COLS), 2.0, dtype=torch.bfloat16)
+b_torch = torch.full((SHARD_ROWS, LOGICAL_COLS), 3.0, dtype=torch.bfloat16)
+expected = a_torch + b_torch
+
+with open_fabric_mesh(REQUESTED_MESH_SHAPE) as mesh_device:
+    a_logical = torch.full((LOGICAL_ROWS, LOGICAL_COLS), 2.0, dtype=torch.bfloat16)
+    b_logical = torch.full((LOGICAL_ROWS, LOGICAL_COLS), 3.0, dtype=torch.bfloat16)
+    out_logical = torch.zeros(LOGICAL_ROWS, LOGICAL_COLS, dtype=torch.bfloat16)
+
+    a = ttnn.from_torch(
+        a_logical,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
+    )
+    b = ttnn.from_torch(
+        b_logical,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
+    )
+    out = ttnn.from_torch(
+        out_logical,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
 
-    a_torch = torch.full((SHARD_ROWS, LOGICAL_COLS), 2.0, dtype=torch.bfloat16)
-    b_torch = torch.full((SHARD_ROWS, LOGICAL_COLS), 3.0, dtype=torch.bfloat16)
-    expected = a_torch + b_torch
+    add_kernel(a, b, out)
 
-    try:
-        with open_fabric_mesh(REQUESTED_MESH_SHAPE) as mesh_device:
-            a_logical = torch.full(
-                (LOGICAL_ROWS, LOGICAL_COLS), 2.0, dtype=torch.bfloat16
-            )
-            b_logical = torch.full(
-                (LOGICAL_ROWS, LOGICAL_COLS), 3.0, dtype=torch.bfloat16
-            )
-            out_logical = torch.zeros(LOGICAL_ROWS, LOGICAL_COLS, dtype=torch.bfloat16)
-
-            a = ttnn.from_torch(
-                a_logical,
-                dtype=ttnn.bfloat16,
-                layout=ttnn.TILE_LAYOUT,
-                device=mesh_device,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
-                mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
-            )
-            b = ttnn.from_torch(
-                b_logical,
-                dtype=ttnn.bfloat16,
-                layout=ttnn.TILE_LAYOUT,
-                device=mesh_device,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
-                mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
-            )
-            out = ttnn.from_torch(
-                out_logical,
-                dtype=ttnn.bfloat16,
-                layout=ttnn.TILE_LAYOUT,
-                device=mesh_device,
-                memory_config=ttnn.L1_MEMORY_CONFIG,
-                mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
-            )
-
-            add_kernel(a, b, out)
-
-            result = ttnn.to_torch(
-                out,
-                mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0),
-            )
-            # Each device should have computed 2+3=5 on its 32x32 shard.
-            # Without proper sharding the kernel would only write the first tile,
-            # leaving the rest as zeros.
-            for i in range(N_DEVICES):
-                shard = result[i * SHARD_ROWS : (i + 1) * SHARD_ROWS]
-                assert torch.allclose(
-                    shard.float(), expected.float(), rtol=1e-2
-                ), "Device %d shard incorrect: max error %.4f" % (
-                    i,
-                    (shard.float() - expected.float()).abs().max().item(),
-                )
-            print("PASS: all %d shards correct (2 + 3 = 5)" % N_DEVICES)
-    except FabricMeshUnavailable as skip:
-        print("PASS: skipped (%s)" % skip)
+    result = ttnn.to_torch(
+        out,
+        mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0),
+    )
+    # Each device should have computed 2+3=5 on its 32x32 shard. Without proper
+    # sharding the kernel would only write the first tile, leaving the rest as
+    # zeros.
+    for i in range(N_DEVICES):
+        shard = result[i * SHARD_ROWS : (i + 1) * SHARD_ROWS]
+        assert torch.allclose(
+            shard.float(), expected.float(), rtol=1e-2
+        ), "Device %d shard incorrect: max error %.4f" % (
+            i,
+            (shard.float() - expected.float()).abs().max().item(),
+        )
+    print("PASS: all %d shards correct (2 + 3 = 5)" % N_DEVICES)
 
 print("=== Mesh Tensor SPMD Test Passed ===")
