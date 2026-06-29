@@ -664,6 +664,32 @@ def test_scalar_times_reduce_fp32_dest_acc(device, reduce_fn):
     assert_allclose(actual, expected, **_tolerances(torch.float32, scaler))
 
 
+def test_fp32_scalar_mul_add_uses_fp32_unpack_for_sfpu_rhs(device):
+    """`0.5 * a + b` keeps fp32 precision when `b` is copied through DST.
+
+    The scalar multiply produces an intermediate DST value, so the following add
+    lowers through the SFPU path and copies the RHS CB operand into DST. This
+    requires `ttl.unpack_to_dest_fp32` for the fp32 RHS CB.
+    """
+    kernel = make_scalar_non_reduce_kernel("0.5 * a_blk + b_blk", 2, 2)
+
+    tensor_shape = (2 * TILE, 2 * TILE)
+    input_a_torch = (torch.rand(tensor_shape, dtype=torch.float32) - 0.5) * 4.0
+    input_b_torch = (torch.rand(tensor_shape, dtype=torch.float32) - 0.5) * 4.0
+    input_c_torch = torch.zeros(tensor_shape, dtype=torch.float32)
+    out_torch = torch.zeros(tensor_shape, dtype=torch.float32)
+
+    input_a = to_l1(input_a_torch, device)
+    input_b = to_l1(input_b_torch, device)
+    input_c = to_l1(input_c_torch, device)
+    out = to_l1(out_torch, device)
+    kernel(input_a, input_b, input_c, out)
+
+    expected = input_a_torch.float() * 0.5 + input_b_torch.float()
+    actual = ttnn.to_torch(out).float()
+    assert_allclose(actual, expected, **_tolerances(torch.float32, 0.5))
+
+
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 def test_bf16_rounded_scalar(device, dtype):
     """Scalar computed from a torch 0-dim bf16 tensor via `.item()`. The
@@ -794,11 +820,6 @@ def test_scalar_times_non_reduce_expression(
     device, dtype, expr_name, tile_shape, scaler, expr
 ):
     """Scalar multiply over non-reduce expressions and multi-tile blocks."""
-    if expr_name == "mul_add_lhs" and dtype == torch.float32:
-        pytest.xfail(
-            "fp32 scalar unary feeding SFPU add corrupts output. Tracked in #612."
-        )
-
     tile_rows, tile_cols = tile_shape
     kernel = make_scalar_non_reduce_kernel(expr, tile_rows, tile_cols)
 
