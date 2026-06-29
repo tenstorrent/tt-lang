@@ -326,19 +326,48 @@ class TTCompilerBase(PyKernelAstBase):
             comment = self._get_source_comment_block(node)
             emitc.verbatim(comment, [])
 
+        # --- Pre-scan: discover which outer-scope variables the loop
+        # body (re)assigns so they can be carried as iter_args. --------
+        body_names = self._collect_assigned_names(node.body)
+        tracked = []  # [(name, outer_value), ...]
+        for name in sorted(body_names):
+            if name == node.target.id:
+                continue
+            tbl = self._var_exists(name)
+            if not tbl:
+                continue
+            outer_val = tbl[name]
+            if not self._is_yieldable_value(outer_val):
+                continue
+            tracked.append((name, outer_val))
+
+        iter_arg_init = [v for _, v in tracked]
+
         self._on_scope_exit()
-        for_op = scf.ForOp(lower_bound, upper_bound, step)
+        for_op = scf.ForOp(lower_bound, upper_bound, step, iter_args=iter_arg_init)
         with InsertionPoint(for_op.body), Location.unknown():
             self.symbol_tables.append({})
 
-            # Add the iterator into the symbol table.
             self._set_var(node.target.id, for_op.induction_variable)
+
+            # Bind iter_args as the inner-scope values so the loop body
+            # sees the running value from the previous iteration.
+            for i, (name, _) in enumerate(tracked):
+                self._set_var(name, for_op.inner_iter_args[i])
 
             for stmt in node.body:
                 self.visit(stmt)
+
+            # Collect the (possibly updated) values to yield back.
+            yield_vals = [self._collect_yield_value(n, for_op.inner_iter_args[i])
+                          for i, (n, _) in enumerate(tracked)]
             self._on_scope_exit()
-            scf.YieldOp([])
+            scf.YieldOp(yield_vals)
             self.symbol_tables.pop()
+
+        # --- Rebind loop results in the outer scope -------------------
+        for i, (name, _) in enumerate(tracked):
+            self._set_var(name, for_op.results[i])
 
     # Statements
     def visit_Name(self, node):

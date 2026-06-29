@@ -692,39 +692,36 @@ def TTLDumpCBFlowGraph
   ];
 }
 
-def TTLLowerScalarCmpF
-    : Pass<"ttl-lower-scalar-cmpf", "::mlir::ModuleOp"> {
-  let summary = "Lower arith.cmpf on scalar floats to TTKernel soft-float ops";
+def TTLLowerScalarFpTypes
+    : Pass<"ttl-lower-scalar-fp-types", "::mlir::ModuleOp"> {
+  let summary = "Lower scalar float types to integer bit patterns through control flow";
   let description = [{
-    Converts `arith.cmpf` operations on scalar floats (from `raw_element_read`
-    lowering) to TTKernel soft-float comparison ops. After
-    `convert-ttl-to-ttkernel`, float values from L1 loads are represented as
-    integer bit patterns with `unrealized_conversion_cast` bridging to float
-    types. This pass resolves those casts and emits the appropriate TTKernel
-    comparison op.
+    Resolves `unrealized_conversion_cast` bridges between integer bit patterns
+    and float types introduced by `convert-ttl-to-ttkernel`. After that pass,
+    float values from L1 loads are represented as integer bit patterns with
+    `unrealized_conversion_cast(iN -> fN)` presenting them as floats for user
+    code. This pass propagates the integer representation through control flow
+    and lowers float operations to their integer-domain equivalents.
 
-    Supported predicates:
-    - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
-    - `olt` -> same ops with swapped operands
+    Two rewrites are performed:
 
-    All other predicates (`oeq`, `one`, `oge`, `ole`, and all unordered
-    predicates `uno`, `ueq`, `ugt`, `uge`, `ult`, `ule`, `une`) emit an
-    error diagnostic and signal pass failure.
+    1. **arith.cmpf lowering**: Converts `arith.cmpf` on scalar floats to
+       TTKernel soft-float comparison ops that operate on integer bit patterns.
+       Supported predicates:
+       - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
+       - `olt` -> same ops with swapped operands
+       Unsupported predicates emit an error diagnostic and signal pass failure.
 
-    Operand requirements: each `arith.cmpf` operand must resolve to an
-    integer bit pattern via one of two sources:
-    1. `unrealized_conversion_cast(iN -> fN)` from a prior
-       `RawElementReadLowering` (unwraps to the integer directly).
-    2. `arith.constant <float>` (materializes the IEEE-754 bit pattern
-       as an integer constant).
-
-    Operands from other sources (e.g., `arith.addf` results) cannot be
-    resolved and cause a diagnostic: "could not resolve float operand to
-    integer bit pattern".
+    2. **scf.if cast propagation**: When an `scf.if` yields float values via
+       `unrealized_conversion_cast(iN -> fN)` and the result is consumed by
+       `unrealized_conversion_cast(fN -> iN)`, rewrites the `scf.if` to yield
+       the integer values directly and eliminates the cast chain. This handles
+       conditional reassignment of scalar values read from L1.
   }];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }

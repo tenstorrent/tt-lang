@@ -8,7 +8,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLTileOpsToTTKernel.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
-  LowerScalarCmpFToTTKernel.cpp
+  LowerScalarFpTypes.cpp
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp

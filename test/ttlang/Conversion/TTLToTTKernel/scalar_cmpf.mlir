@@ -1,6 +1,6 @@
-// Tests for ttl-lower-scalar-cmpf pass: lowers arith.cmpf on float scalars
+// Tests for ttl-lower-scalar-fp-types pass: lowers arith.cmpf on float scalars
 // (from raw_element_read bit patterns) to TTKernel soft-float comparison ops.
-// RUN: ttlang-opt --ttl-lower-scalar-cmpf --canonicalize -cse --split-input-file %s | FileCheck %s
+// RUN: ttlang-opt --ttl-lower-scalar-fp-types --canonicalize -cse --split-input-file %s | FileCheck %s
 
 // -----
 

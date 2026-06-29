@@ -109,14 +109,17 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
 }
 
 /// Materialize an integer value representing the bit pattern of a float-typed
-/// SSA value. Handles three cases (checked in order):
+/// SSA value. Handles the following cases (checked in order):
 ///   1. arith.truncf (e.g. f32 -> bf16) -- recursively materialize the wider
 ///      source bits, then extract the upper target-width bits via shift+trunc.
 ///      bf16 is the upper 16 bits of the f32 IEEE-754 encoding.
 ///   2. unrealized_conversion_cast(iN -> fN) from a prior
-///   RawElementReadLowering
-///      -- unwrap to get the integer directly.
+///      RawElementReadLowering -- unwrap to get the integer directly.
 ///   3. arith.constant float -- create the integer bit pattern.
+///   4. Fallback -- emit unrealized_conversion_cast(fN -> iN) for values
+///      whose producer is not one of the above (e.g. scf.if results, block
+///      arguments). The cast is reconciled once the float-to-int-bits type
+///      change has fully propagated.
 inline FailureOr<Value> materializeIntBits(Value floatVal, Type intTy,
                                            OpBuilder &builder, Location loc) {
   if (auto truncOp = floatVal.getDefiningOp<arith::TruncFOp>()) {
@@ -147,6 +150,29 @@ inline FailureOr<Value> materializeIntBits(Value floatVal, Type intTy,
           builder, loc, bits.getZExtValue(), bits.getBitWidth());
       return intConst;
     }
+  }
+  // Fallback for control-flow passthroughs: scf.if results and loop
+  // iter_args carry bit patterns through SSA without computation.
+  // Emit an unrealized_conversion_cast(fN -> iN) that will be reconciled
+  // by ttl-lower-scalar-fp-types (scf.if propagation phase).
+  // Computational float ops (arith.addf, etc.) and bare function arguments
+  // are NOT accepted -- they don't represent integer bit patterns.
+  bool isControlFlowPassthrough = false;
+  if (floatVal.getDefiningOp<scf::IfOp>() ||
+      floatVal.getDefiningOp<scf::ForOp>() ||
+      floatVal.getDefiningOp<scf::WhileOp>()) {
+    isControlFlowPassthrough = true;
+  } else if (auto blockArg = mlir::dyn_cast<BlockArgument>(floatVal)) {
+    auto *parentOp = blockArg.getOwner()->getParentOp();
+    if (mlir::isa<scf::ForOp, scf::WhileOp>(parentOp))
+      isControlFlowPassthrough = true;
+  }
+  if (isControlFlowPassthrough &&
+      floatVal.getType().getIntOrFloatBitWidth() ==
+          mlir::cast<IntegerType>(intTy).getWidth()) {
+    auto cast =
+        UnrealizedConversionCastOp::create(builder, loc, intTy, floatVal);
+    return cast.getResult(0);
   }
   return failure();
 }

@@ -1,5 +1,5 @@
-// Negative tests for ttl-lower-scalar-cmpf: unsupported predicates emit errors.
-// RUN: ttlang-opt --ttl-lower-scalar-cmpf --verify-diagnostics --split-input-file %s
+// Negative tests for ttl-lower-scalar-fp-types: unsupported predicates emit errors.
+// RUN: ttlang-opt --ttl-lower-scalar-fp-types --verify-diagnostics --split-input-file %s
 
 // -----
 
