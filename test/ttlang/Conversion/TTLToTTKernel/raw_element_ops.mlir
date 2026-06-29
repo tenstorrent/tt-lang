@@ -12,7 +12,7 @@
 // CHECK-DAG: %[[C5:.*]] = arith.constant 5 : i32
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_wait_front(%[[CB]],
-// CHECK: %[[PTR:.*]] = ttkernel.get_read_ptr(%[[CB]])
+// CHECK: %[[PTR:.*]] = ttkernel.get_read_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, f32>>) -> i32
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: ttkernel.load_from_l1(%[[L1]], %[[C5]]) : (!ttkernel.l1_addr_ptr, i32) -> i32
 module {
@@ -34,7 +34,8 @@ module {
 // CHECK-LABEL: func.func @read_tiled_bf16
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : i32
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast({{.*}}) : (i32) -> !ttkernel.l1_addr_ptr<16>
+// CHECK: %[[PTR:.*]] = ttkernel.get_read_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, bf16>>) -> i32
+// CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr<16>
 // CHECK: ttkernel.load_from_l1(%[[L1]], %[[C1]]) : (!ttkernel.l1_addr_ptr<16>, i32) -> i16
 module {
   func.func @read_tiled_bf16()
@@ -185,7 +186,7 @@ module {
 // CHECK-DAG: %[[BITS:.*]] = arith.constant 1065353216 : i32
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[CB]],
-// CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr(%[[CB]])
+// CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, f32>>) -> i32
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], %[[C0]]) : (i32, !ttkernel.l1_addr_ptr, i32) -> ()
 module {
@@ -207,7 +208,9 @@ module {
 // CHECK-LABEL: func.func @write_tiled_bf16_constant
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[BITS:.*]] = arith.constant 16256 : i16
-// CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast({{.*}}) : (i32) -> !ttkernel.l1_addr_ptr<16>
+// CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, bf16>>) -> i32
+// CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr<16>
 // CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], %[[C0]]) : (i16, !ttkernel.l1_addr_ptr<16>, i32) -> ()
 module {
   func.func @write_tiled_bf16_constant()
@@ -227,7 +230,7 @@ module {
 // CHECK-LABEL: func.func @write_row_major_f32
 // CHECK-DAG: %[[C21:.*]] = arith.constant 21 : i32
 // CHECK-DAG: %[[BITS:.*]] = arith.constant 1065353216 : i32
-// CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr({{.*}})
+// CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<{{[0-9]+}}, f32>) -> i32
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], %[[C21]])
 module {
@@ -249,10 +252,10 @@ module {
 // The unrealized_conversion_cast between read and write is folded away.
 // CHECK-LABEL: func.func @read_write_chain
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[RPTR:.*]] = ttkernel.get_read_ptr(%[[CB]])
+// CHECK: %[[RPTR:.*]] = ttkernel.get_read_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, f32>>) -> i32
 // CHECK: %[[RL1:.*]] = ttkernel.reinterpret_cast(%[[RPTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: %[[VAL:.*]] = ttkernel.load_from_l1(%[[RL1]], {{.*}}) : (!ttkernel.l1_addr_ptr, i32) -> i32
-// CHECK: %[[WPTR:.*]] = ttkernel.get_write_ptr(%[[CB]])
+// CHECK: %[[WPTR:.*]] = ttkernel.get_write_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, f32>>) -> i32
 // CHECK: %[[WL1:.*]] = ttkernel.reinterpret_cast(%[[WPTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: ttkernel.store_to_l1(%[[VAL]], %[[WL1]], {{.*}}) : (i32, !ttkernel.l1_addr_ptr, i32) -> ()
 module {
@@ -311,7 +314,7 @@ module {
 // Dynamic coordinates: arith ops for face decomposition are present.
 // CHECK-LABEL: func.func @read_tiled_dynamic
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[PTR:.*]] = ttkernel.get_read_ptr(%[[CB]])
+// CHECK: %[[PTR:.*]] = ttkernel.get_read_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, f32>>) -> i32
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: arith.divui
 // CHECK: arith.remui
@@ -481,7 +484,7 @@ module {
 // frontend emits). Must trace through attach_cb to get_read_ptr.
 // CHECK-LABEL: func.func @read_attach_cb_wait
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[PTR:.*]] = ttkernel.get_read_ptr(%[[CB]])
+// CHECK: %[[PTR:.*]] = ttkernel.get_read_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, f32>>) -> i32
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: ttkernel.load_from_l1(%[[L1]], {{.*}}) : (!ttkernel.l1_addr_ptr, i32) -> i32
 module {
@@ -508,7 +511,7 @@ module {
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[BITS:.*]] = arith.constant 1065353216 : i32
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr(%[[CB]])
+// CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, f32>>) -> i32
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], %[[C0]]) : (i32, !ttkernel.l1_addr_ptr, i32) -> ()
 module {

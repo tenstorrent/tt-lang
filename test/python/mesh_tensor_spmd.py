@@ -18,7 +18,7 @@ rest. Correct output for all elements proves the tensor was properly sharded
 so each device sees its own 32x32 slice.
 
 Requires >=4 devices for real mesh sharding. The `multi-device` lit feature
-gates the test so lit reports it unsupported on hosts with fewer cards
+restricts the test so lit reports it unsupported on hosts with fewer cards
 (single-device execution is covered by other tests).
 """
 
@@ -63,11 +63,9 @@ def add_kernel(a, b, out):
             tx.wait()
 
 
-# The `multi-device` lit feature gates this to hosts with >= 4 cards, so the
-# multi-card path always runs; these CHECKs assert it did. A skip or a failure to
-# shard would not print "Multi-card path"/"all 4 shards correct". Shard
-# correctness is enforced by the Python asserts below (a mismatch exits non-zero,
-# failing the RUN).
+# The `multi-device` feature restricts this to hosts with >= 4 cards, so the
+# multi-card path always runs and these CHECKs can assert it. Shard correctness
+# is verified by the Python asserts in the code, not with FileCheck.
 # CHECK: === Mesh Tensor SPMD Test ===
 # CHECK: Available devices: {{[0-9]+}}
 # CHECK: Multi-card path: sharding [128, 32] across 4 devices
