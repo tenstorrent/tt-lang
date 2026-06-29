@@ -240,15 +240,13 @@ Simulations (software simulation of runtime behavior):
 pytest test/sim/
 ```
 
-Matmul-tutorial simulator tests (steps 2-6) are skipped by default.  Pass
-`--run-matmul-tutorial-no-ttnn` to include them (the GitHub-hosted sim CI
-does this automatically).  Steps 0 and 7 require real ttnn and are skipped
-by default; pass `--run-matmul-tutorial-ttnn` to include them (the hardware
-CI does this automatically).
+Matmul-tutorial simulator tests (steps 0 and 2-7, dry-run mode) are skipped
+by default.  Pass `--run-matmul-tutorial-dry` to include them (the
+GitHub-hosted sim CI does this automatically).  Step 1 is excluded as it is
+too slow for the simulator at the default matrix size.
 
 ```bash
-pytest test/sim/ --run-matmul-tutorial-no-ttnn  # steps 2-6, no ttnn required
-pytest test/sim/ --run-matmul-tutorial-ttnn     # steps 0 and 7, requires ttnn
+pytest test/sim/test_examples.py --run-matmul-tutorial-dry -m matmul_tutorial
 ```
 
 ### Running with Simulator

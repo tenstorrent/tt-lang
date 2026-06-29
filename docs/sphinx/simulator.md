@@ -177,3 +177,58 @@ Create a debug configuration in `.vscode/launch.json`:
 2. Set breakpoints in your program code
 3. Press F5 or select "Debug TT-Lang Simulator" from the Run menu
 4. The debugger stops at breakpoints, allowing variable inspection and step-through execution
+
+## Python profiling (`tt-lang-sim-profile`)
+
+`test/scripts/tt-lang-sim-profile` runs a simulator script under `cProfile` and
+prints a top-30 hotspot report (by cumulative time and by internal time) to
+stderr after the run.  All arguments are forwarded to `tt-lang-sim` unchanged.
+
+```bash
+# Profile with stdout/stderr interleaved
+test/scripts/tt-lang-sim-profile examples/matmul-tutorial/step_1_single_node_single_tile_block.py --dry-run --scheduler=greedy
+
+# Save binary cProfile stats for later inspection with python -m pstats
+test/scripts/tt-lang-sim-profile examples/matmul-tutorial/step_1_single_node_single_tile_block.py --dry-run --save /tmp/stats.prof
+python -m pstats /tmp/stats.prof
+```
+
+The `--save FILE` option must appear after all other arguments to avoid ambiguity
+with simulator flags that also begin with `--`.
+
+## Dry-run mode
+
+Pass `--dry-run` to `tt-lang-sim` (or call `sim.context.set_dry_run(True)` from Python)
+to validate kernel structure without performing any actual computation or data movement.
+
+In dry-run mode the simulator bypasses the *computational payload* of
+simulator-managed objects:
+
+- `ttnn.Tensor` arithmetic operators return zero tensors of the correct shape.
+- `ttl.math` block operations return dummy blocks without computing.
+- `ttl.copy()` transfers complete immediately without moving any bytes.
+
+Everything else runs normally:
+
+- DFB sequencing, block state machine transitions, deadlock detection, and
+  copy-wait injection are all active.
+- Plain Python code — arithmetic on scalars, standard-library calls, and
+  user-defined data structures — executes as usual.
+- Structural errors (e.g. block state machine violations) are still caught
+  and reported.
+
+**Limitation:** dry-run assumes computation results do not affect Python
+control flow.  Kernels that branch or set loop bounds based on the *values*
+inside a simulated tile will not be structurally validated — the branch will
+follow whatever path the zero/dummy payload produces.
+
+**Assertions are not stripped.** `--dry-run` does *not* disable Python
+`assert` statements.  This is deliberate: a kernel may contain structural or
+shape assertions that remain valid under dry-run.  As a consequence, a script
+ending in a *result-verification* assertion (for example `assert pcc > 0.99`)
+will fail under `--dry-run`, because the dry-run output is a zero/`nan`
+placeholder rather than the real result.  Such scripts should either guard
+those assertions or be run with assertions disabled via Python's `-O` flag,
+e.g. `PYTHONOPTIMIZE=1 tt-lang-sim script.py --dry-run`.  (The matmul-tutorial
+CI does exactly this when it runs the tutorial examples as dry-run smoke
+tests.)

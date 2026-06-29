@@ -2,10 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Simulator context management using greenlet-local storage.
+Simulator context management.
 
-All simulator state is stored in the current greenlet's attributes,
-eliminating the need for module-level globals.
+The simulator owns a single ``SimulatorContext`` per process at any time.
+Each simulation run (a ``Program`` invocation, a ``tt-lang-sim`` command, or a
+single pytest test) gets its own fresh context, set up at the start of the
+run.
+
+A simulator run is single-threaded from the host's perspective: greenlets are
+cooperative, so at most one is executing at a time and they all share the
+same context.  Pytest workers are separate processes, so tests in different
+workers each have their own module state.  This is why a single module-level
+reference is sufficient -- there is no concurrent reader/writer that would
+require per-greenlet (or per-thread) isolation.
+
+``reset_context()`` exists mainly to give tests a clean slate between runs:
+it discards the current context and installs a fresh one, equivalent to
+starting a new run.
 """
 
 from __future__ import annotations
@@ -13,10 +26,14 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
-from greenlet import getcurrent
-
 from .context_types import SimulatorContext
 from .blockstate import KernelType
+
+
+# Single per-process simulator context.  Created lazily by ``get_context()``
+# and swapped wholesale by ``set_context()`` / ``reset_context()``.  See the
+# module docstring for why a plain module global is the right abstraction.
+_current_context: Optional[SimulatorContext] = None
 
 
 def _free_monitoring_tool_id() -> None:
@@ -29,68 +46,59 @@ def _free_monitoring_tool_id() -> None:
 
 
 def get_context() -> SimulatorContext:
-    """Get simulator context from current greenlet or its parents.
+    """Return the current simulator context, creating one on first access.
 
-    Context is stored as an attribute on greenlet objects. This function
-    walks up the greenlet parent chain to find the context, eliminating
-    the need for module-level globals.
-
-    In production code, this is the only context function you need - it
-    auto-creates contexts on first access. The set/reset functions are
-    primarily for testing scenarios.
-
-    Returns:
-        SimulatorContext for the current greenlet tree
+    Auto-creation makes simulator APIs usable from any thread/greenlet
+    without explicit setup, which keeps ad-hoc scripts and the existing
+    test surface simple.  Production callers (the ``tt-lang-sim`` CLI, the
+    pytest fixture, and ``Program.__call__``) explicitly install a fresh
+    context at the start of each run via ``reset_context()``.
     """
-    greenlet = getcurrent()
-
-    # Walk up the greenlet parent chain to find context
-    while greenlet is not None:
-        if hasattr(greenlet, "_sim_context"):
-            return greenlet._sim_context  # type: ignore
-        # Move to parent greenlet
-        greenlet = getattr(greenlet, "parent", None)
-
-    # No context found in any parent - create one on the root greenlet
-    # This happens when called outside of any Program execution
-    root = getcurrent()
-    root._sim_context = SimulatorContext()  # type: ignore
-    return root._sim_context  # type: ignore
+    global _current_context
+    if _current_context is None:
+        _current_context = SimulatorContext()
+    return _current_context
 
 
 def set_context(ctx: SimulatorContext) -> None:
-    """Set simulator context for current greenlet.
+    """Install ``ctx`` as the current simulator context.
 
-    Mainly useful for testing when you want to inject a specific context.
-    Production code typically doesn't need this - use get_context() instead.
-
-    Args:
-        ctx: Context to set
+    Primarily a testing hook for injecting a specific context; production
+    code should use ``reset_context()`` to install a fresh one.
     """
-    getcurrent()._sim_context = ctx  # type: ignore
+    global _current_context
+    _current_context = ctx
 
 
 def reset_context() -> None:
-    """Reset context for current greenlet to defaults.
+    """Discard the current context and install a fresh one.
 
-    Creates a fresh context, discarding any previous state.
-    Also frees the sys.monitoring tool slot used for copy-wait injection so
-    the next simulation run can re-register its callbacks from a clean state.
-    Primarily useful for test cleanup.
+    Called at the start of every test (via the autouse fixture) and by
+    ``tt-lang-sim`` at process startup so each run begins with default
+    state.  Also releases the ``sys.monitoring`` tool slot used for
+    copy-wait injection so the next run can re-register its callbacks.
+
+    Trace configuration lives on the ``trace`` module's own singleton
+    (see :mod:`.trace`) and is *not* reset here, both because it has no
+    place on the context and because importing trace from here would
+    introduce a module-level cycle.  Callers that want a clean trace
+    slate between runs (the pytest autouse fixture; the CLI when
+    bootstrapping a fresh process) call :func:`trace.set_tracing`
+    explicitly.
     """
     _free_monitoring_tool_id()
-    getcurrent()._sim_context = SimulatorContext()  # type: ignore
+    set_context(SimulatorContext())
 
 
 def cleanup_run_context() -> None:
-    """Clean up execution-specific state after a single Program run.
-
-    Clears scheduler, monitoring hooks, and per-run caches so that a
-    subsequent operation starts cleanly.  Unlike ``reset_context()``, this
-    preserves persistent session state such as ``trace_events`` and ``config``
-    so that callers can read trace output after the run completes.
+    """Clear execution-specific state inside the current context.
 
     Called by the ``@ttl.operation`` wrapper after each ``Program`` run.
+    Unlike ``reset_context()``, this preserves persistent session state
+    such as ``trace_events`` and ``config`` so that callers can read
+    trace output after the run completes; it only zeroes the
+    per-run scratch state (scheduler, kernel registry, monitoring hooks,
+    auto-wait caches, DFB and L1 counters).
     """
     ctx = get_context()
     ctx.scheduler = None
@@ -102,6 +110,32 @@ def cleanup_run_context() -> None:
     ctx.injection_points_cache.clear()
     ctx.auto_wait_copy_lines.clear()
     _free_monitoring_tool_id()
+
+
+def set_dry_run(enabled: bool) -> None:
+    """Enable or disable dry-run mode for the current simulator context.
+
+    In dry-run mode the simulator skips the computational payload of
+    simulator-managed objects: ``ttnn.Tensor`` arithmetic operators return
+    zero tensors of the correct shape, ``ttl.math`` block operations return
+    dummy blocks, and ``ttl.copy()`` transfers complete without moving any
+    bytes.  The full DFB sequencing, block state machine, deadlock detection,
+    and copy-wait injection still run unchanged.  This makes it safe to
+    validate kernel structure without needing meaningful input data.
+
+    **Scope:** dry-run only intercepts calls that go through the simulator
+    APIs listed above.  All other Python code -- plain arithmetic on scalars,
+    standard-library calls, user-defined data structures, and any control
+    flow that does not branch on a simulated tensor value -- executes
+    normally.  Kernels that derive loop bounds or branch conditions from
+    computed tile values will therefore not be structurally validated by
+    dry-run (the simulator assumes computation results do not affect control
+    flow).
+
+    Args:
+        enabled: True to enable dry-run, False to disable.
+    """
+    get_context().config.dry_run = enabled
 
 
 def get_current_kernel_type() -> KernelType:

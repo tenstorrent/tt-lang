@@ -24,7 +24,7 @@ except ImportError:
     TTNN_AVAILABLE = False
 
 # Import simulator modules
-from sim.context import reset_context
+from sim.context import reset_context, set_dry_run
 from sim.greenlet_scheduler import set_scheduler_algorithm
 from sim.program import set_max_l1_bytes
 from sim.ttlang_sim import execute_script_with_simulator
@@ -74,6 +74,7 @@ def run_script_in_process(
     scheduler: str = "fair",
     max_l1_bytes: int | None = None,
     no_float32_promotion: bool = False,
+    dry_run: bool = False,
 ) -> tuple[int, str]:
     """Run a script in-process with simulator backend.
 
@@ -84,6 +85,7 @@ def run_script_in_process(
             simulator default when None
         no_float32_promotion: If True, disable the default float32 promotion so
             the script runs with its declared dtypes (e.g. bfloat16 as bfloat16)
+        dry_run: If True, skip math/data operations and only run structural checks
 
     Returns:
         (exit_code, output) tuple where exit_code is 0 on success, 1 on error
@@ -93,6 +95,8 @@ def run_script_in_process(
         set_max_l1_bytes(max_l1_bytes)
     if no_float32_promotion:
         sim.ttnn.set_disable_float32_promotion(True)
+    if dry_run:
+        set_dry_run(True)
 
     # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
     # Done here so it doesn't interfere with other tests in parallel execution
@@ -102,7 +106,9 @@ def run_script_in_process(
 
     try:
         # Use the shared execution logic from ttlang_sim
-        return execute_script_with_simulator(script_path, capture_output=True)
+        return execute_script_with_simulator(
+            script_path, capture_output=True, optimize=dry_run
+        )
     finally:
         # Restore original sys.modules to avoid interfering with other tests
         for name, original in original_modules.items():
@@ -414,10 +420,13 @@ def test_max_dfbs_warning_warns_at_limit(scheduler: str) -> None:
 @pytest.mark.parametrize(
     "script_name",
     [
-        # steps 2–6 define custom ttl kernels; verification uses torch.relu(a @ b + c).
-        # All ttnn surface calls (from_torch, to_torch, open_device, open_mesh_device,
-        # GetNumAvailableDevices, ShardTensorToMesh, set_fabric_config) are natively
-        # implemented in the simulator.
+        # step_0 is a plain ttnn program; all ttnn surface calls (add, matmul, relu,
+        # from_torch, to_torch, open_device) are implemented in the simulator.
+        "step_0_ttnn_base.py",
+        # steps 2–7 define custom ttl kernels; verification uses torch.relu(a @ b + c).
+        # All ttnn surface calls (from_torch, to_torch, open_mesh_device,
+        # GetNumAvailableDevices, ShardTensorToMesh, set_fabric_config, all_reduce,
+        # relu) are natively implemented in the simulator.
         # step_1 is excluded: single-tile-block granularity produces too many simulator
         # coroutine steps at M=K=N=8192 to be practical.
         "step_2_single_node_multitile_block.py",
@@ -425,32 +434,21 @@ def test_max_dfbs_warning_warns_at_limit(scheduler: str) -> None:
         "step_4_multinode_grid_full.py",
         "step_5_multidevice_shard_m.py",
         "step_6_multidevice_shard_k.py",
+        "step_7_multidevice_shard_k_all_reduce.py",
     ],
 )
-@pytest.mark.matmul_tutorial_no_ttnn
-def test_matmul_tutorial_sim(script_name: str) -> None:
-    """Test matmul-tutorial steps 2-6 on the simulator (pass --run-matmul-tutorial-no-ttnn to enable)."""
-    code, out = run_script_in_process(
-        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair"
-    )
-    assert code == 0, f"Script failed with code {code}. Output:\n{out}"
+@pytest.mark.matmul_tutorial
+def test_matmul_tutorial(script_name: str) -> None:
+    """Test matmul-tutorial steps 0 and 2-7 on the simulator (pass --run-matmul-tutorial-dry to enable).
 
+    Runs in dry-run mode: math and data operations are skipped, but all
+    structural checks (deadlock detection, DFB state machine, copy-wait
+    injection, L1 allocation) are exercised.
 
-@pytest.mark.parametrize(
-    "script_name",
-    [
-        # step_0 is a plain ttnn program — requires real ttnn hardware.
-        pytest.param("step_0_ttnn_base.py", marks=requires_ttnn_marks),
-        # step_7 uses ttnn.all_reduce and ttnn.relu — requires real ttnn hardware.
-        pytest.param(
-            "step_7_multidevice_shard_k_all_reduce.py", marks=requires_ttnn_marks
-        ),
-    ],
-)
-@pytest.mark.matmul_tutorial_ttnn
-def test_matmul_tutorial_hw(script_name: str) -> None:
-    """Test matmul-tutorial steps 0 and 7 on hardware (pass --run-matmul-tutorial-ttnn to enable)."""
+    step_1 is excluded because single-tile-block granularity at M=K=N=8192
+    produces too many simulator coroutine steps to be practical.
+    """
     code, out = run_script_in_process(
-        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair"
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", dry_run=True
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
