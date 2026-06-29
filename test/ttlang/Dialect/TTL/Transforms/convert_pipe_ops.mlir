@@ -42,6 +42,22 @@ func.func @if_dst_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // -----
 
+// Adjacent barriers on different NoCs are not redundant.
+// CHECK-LABEL: func.func @different_noc_write_barriers_survive
+// CHECK-DAG: %[[NOC0:.*]] = arith.constant 0 : i8
+// CHECK-DAG: %[[NOC1:.*]] = arith.constant 1 : i8
+// CHECK: ttkernel.noc_async_write_barrier(%[[NOC0]])
+// CHECK: ttkernel.noc_async_write_barrier(%[[NOC1]])
+func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %noc0 = arith.constant 0 : i8
+  %noc1 = arith.constant 1 : i8
+  "ttkernel.noc_async_write_barrier"(%noc0) : (i8) -> ()
+  "ttkernel.noc_async_write_barrier"(%noc1) : (i8) -> ()
+  func.return
+}
+
+// -----
+
 // CB -> Pipe copy (unicast): lowers to noc_async_write + semaphore inc
 // CHECK-LABEL: func.func @copy_cb_to_pipe
 // CHECK: %[[NOC:.*]] = arith.constant 0 : i8

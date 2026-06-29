@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: tt-device, multi-device
+# REQUIRES: ttnn, tt-device, multi-device
 # RUN: env -u TT_VISIBLE_DEVICES %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
