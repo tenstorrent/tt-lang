@@ -41,6 +41,23 @@ atexit.register(_cleanup_temp_kernel_files)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ttlang_test_utils import is_hardware_available, is_ttnn_available
 
+
+def _pin_xdist_worker_to_device():
+    """Mask each pytest-xdist worker to one chip via TT_VISIBLE_DEVICES, so tests
+    that open device_id=0 land on distinct physical cards and can run in parallel.
+    Runs before any hardware probe. The serial (no-xdist) run stays unmasked so
+    multi_device tests see every chip. An explicit TT_VISIBLE_DEVICES is honored.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker or "TT_VISIBLE_DEVICES" in os.environ:
+        return
+    digits = "".join(ch for ch in worker if ch.isdigit())
+    if digits:
+        os.environ["TT_VISIBLE_DEVICES"] = digits
+
+
+_pin_xdist_worker_to_device()
+
 # =============================================================================
 # Feature detection
 # =============================================================================
@@ -73,6 +90,11 @@ def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
         "markers", "requires_device: skip test if no TT device is available"
+    )
+    config.addinivalue_line(
+        "markers",
+        "multi_device: needs all chips (a fabric mesh); excluded from the "
+        "per-chip parallel run and executed serially",
     )
 
 

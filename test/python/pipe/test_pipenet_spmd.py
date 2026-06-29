@@ -18,6 +18,9 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import assert_allclose, open_fabric_mesh
 
+# Opens a fabric mesh across all chips; run serially, not in the per-chip pool.
+pytestmark = pytest.mark.multi_device
+
 TILE = 32
 GRID_X = 2
 GRID_Y = 1
