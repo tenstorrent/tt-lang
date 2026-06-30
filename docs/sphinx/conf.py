@@ -74,10 +74,7 @@ html_favicon = _theme_favicon
 html_static_path = _theme_static_paths
 templates_path = [_theme_templates]
 html_last_updated_fmt = "%b %d, %Y"
-html_css_files = [
-    "https://docs.tenstorrent.com/_static/tt_theme.css",
-    "tt_theme.css",
-]
+html_css_files = ["https://docs.tenstorrent.com/_static/tt_theme.css"]
 
 html_context = {
     "versions": None,
@@ -100,4 +97,5 @@ def autodoc_skip_member(
 
 
 def setup(app: Any) -> None:
+    app.add_css_file("tt_theme.css")
     app.connect("autodoc-skip-member", autodoc_skip_member)
