@@ -107,39 +107,6 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
   return cast.getResult(0);
 }
 
-/// Materialize an integer value representing the bit pattern of a float-typed
-/// SSA value. Handles two immediate cases:
-///   1. unrealized_conversion_cast(iN -> fN) from a prior
-///      RawElementReadLowering -- unwrap to get the integer directly.
-///   2. arith.constant float -- create the integer bit pattern.
-///
-/// For all other float values (arith.truncf, scf.if/for/while results, block
-/// arguments), emits an unrealized_conversion_cast(fN -> iN) that the
-/// ttl-lower-scalar-fp-types pass resolves via dialect conversion.
-inline FailureOr<Value> materializeIntBits(Value floatVal, Type intTy,
-                                           OpBuilder &builder, Location loc) {
-  if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (cast.getInputs().size() == 1 &&
-        cast.getInputs()[0].getType() == intTy) {
-      return cast.getInputs()[0];
-    }
-  }
-  if (auto constOp = floatVal.getDefiningOp<arith::ConstantOp>()) {
-    if (auto floatAttr = mlir::dyn_cast<FloatAttr>(constOp.getValue())) {
-      APInt bits = floatAttr.getValue().bitcastToAPInt();
-      return Value(arith::ConstantIntOp::create(
-          builder, loc, bits.getZExtValue(), bits.getBitWidth()));
-    }
-  }
-  if (floatVal.getType().getIntOrFloatBitWidth() ==
-      mlir::cast<IntegerType>(intTy).getWidth()) {
-    auto cast =
-        UnrealizedConversionCastOp::create(builder, loc, intTy, floatVal);
-    return cast.getResult(0);
-  }
-  return failure();
-}
-
 /// Run applyPartialConversion, capturing the first diagnostic on failure.
 inline bool
 applyPartialConversionWithDiag(Operation *root, ConversionTarget &target,
