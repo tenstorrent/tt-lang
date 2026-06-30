@@ -80,10 +80,12 @@ class _AssignmentCollector(_ScopedCollector):
     outer value must become an if result.
 
     `loop_carried_names` contains assigned variables whose new value depends on
-    their previous value, directly (`acc = acc + x`) or through local aliases
-    (`tmp = acc; acc = tmp + x`). `scf.for` uses this narrower list because
-    loop-local assignments that do not depend on a previous outer value do not
-    need iter_args.
+    their previous value, directly (`acc = acc + x`), through local aliases
+    (`tmp = acc; acc = tmp + x`), or through control-flow dependencies where
+    the enclosing if-condition reads the assigned variable
+    (`if val > max_val: max_val = val`). `scf.for` uses this narrower list
+    because loop-local assignments that do not depend on a previous outer value
+    do not need iter_args.
 
     `augassign_only_names` preserves the DFB-attached block exception:
     `out_blk += x` lowers through block `__iadd__` as an in-place accumulating
@@ -149,6 +151,25 @@ class _AssignmentCollector(_ScopedCollector):
         # __iadd__ lowers them in place, so AugAssign-only entries are
         # filtered out before creating SCF result values.
         self._record_assignment([node.target], node.value, from_augassign=True)
+
+    def visit_If(self, node):
+        condition_reads = _collect_read_variable_names(node.test)
+        condition_reads = self._expand_dependencies(condition_reads)
+        # Shallow copy: values are the same set objects. The identity check
+        # below works because _record_assignment always creates a *new* set
+        # via set(dependencies), so any entry that was written during the
+        # body visit will be a different object than the snapshot.
+        deps_before = dict(self._dependencies_by_name)
+        for stmt in node.body:
+            self.visit(stmt)
+        for stmt in node.orelse:
+            self.visit(stmt)
+        for name in self._dependencies_by_name:
+            if self._dependencies_by_name[name] is not deps_before.get(name):
+                updated = self._dependencies_by_name[name] | condition_reads
+                self._dependencies_by_name[name] = updated
+                if name in updated:
+                    self._add_loop_carried_name(name)
 
 
 class _UnsupportedLanguageConstructCollector(ast.NodeVisitor):
