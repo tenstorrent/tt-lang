@@ -93,3 +93,21 @@ call_count() {
     assert_failure
     assert_output --partial "PYTEST_ARGS"
 }
+
+@test "under_gdb=true fails when gdb is unavailable" {
+    write_fake_python 0
+
+    PATH="$BIN" PYTEST_ARGS="a.py" UNDER_GDB=true run /usr/bin/bash "$SCRIPT"
+
+    assert_failure 2
+    assert_output --partial "requires gdb"
+}
+
+@test "rejects invalid repeat count" {
+    write_fake_python 0
+
+    PYTEST_ARGS="a.py" REPEAT=0 run "$SCRIPT"
+
+    assert_failure 2
+    assert_output --partial "REPEAT"
+}

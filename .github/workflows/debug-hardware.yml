@@ -1,10 +1,10 @@
 name: Debug Hardware (manual)
 
 # Manually run a chosen subset of hardware tests, repeatedly, with crash capture.
-# Built for reproducing and root-causing flaky or hardware-specific failures
-# (e.g. an architecture-specific segfault) on one runner without paying for the
-# whole suite. Provide a pytest selection; optionally repeat it and run under gdb
-# to capture a native backtrace. Dispatch from the Actions tab.
+# This workflow reproduces intermittent or hardware-specific failures (e.g. an
+# architecture-specific segfault) on one runner without running the full suite.
+# Provide a pytest selection; optionally repeat it and run under gdb to capture a
+# native backtrace. Dispatch from the Actions tab.
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ on:
         required: true
         type: string
       repeat:
-        description: 'Run the selection up to this many times (raise to hunt flaky crashes)'
+        description: 'Run the selection up to this many times'
         required: false
         type: number
         default: 1
@@ -103,8 +103,8 @@ jobs:
           pip install -r dev-requirements.txt
 
       - name: Repeat-run selection with crash capture
-        # Selection goes through env, never inlined into the script, to avoid
-        # workflow command injection from the dispatch input.
+        # Selection is passed through environment variables, not inlined into the
+        # shell, to avoid workflow command injection from the dispatch input.
         env:
           PYTEST_ARGS: ${{ inputs.pytest_args }}
           REPEAT: ${{ inputs.repeat }}

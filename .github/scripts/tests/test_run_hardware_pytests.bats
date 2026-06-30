@@ -19,8 +19,27 @@ write_fake_python() {
     local exit_code="${1:-0}"
     cat > "$BIN/python3" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$CALLS"
+printf 'env:%s args:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\$*" >> "$CALLS"
 exit $exit_code
+EOF
+    chmod +x "$BIN/python3"
+}
+
+write_fake_python_sequence() {
+    local first_exit="$1"
+    local second_exit="$2"
+    local count_file="$BATS_TEST_TMPDIR/python-call-count"
+    cat > "$BIN/python3" <<EOF
+#!/usr/bin/env bash
+call_count=0
+[ -f "$count_file" ] && call_count=\$(cat "$count_file")
+call_count=\$((call_count + 1))
+printf '%s\n' "\$call_count" > "$count_file"
+printf 'env:%s args:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\$*" >> "$CALLS"
+case "\$call_count" in
+    1) exit $first_exit ;;
+    *) exit $second_exit ;;
+esac
 EOF
     chmod +x "$BIN/python3"
 }
@@ -32,6 +51,7 @@ EOF
 
     assert_success
     run cat "$CALLS"
+    assert_line --partial "env:1 args:"
     assert_line --partial "pytest test/python -m not multi_device -n 4"
     assert_line --partial "pytest-report-parallel.xml"
     assert_line --partial "pytest test/python -m multi_device"
@@ -47,6 +67,7 @@ EOF
     assert_success
     run cat "$CALLS"
     assert_output --partial "pytest test/python"
+    refute_output --partial "env:1"
     refute_output --partial " -n "
     refute_output --partial "multi_device"
     assert_output --partial "pytest-report.xml"
@@ -73,9 +94,46 @@ EOF
     [ "${#lines[@]}" -eq 2 ]
 }
 
+@test "multi-chip: empty parallel phase is allowed when multi_device tests run" {
+    write_fake_python_sequence 5 0
+
+    HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/only_multidevice.py build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "multi-chip: empty multi_device phase is allowed when parallel tests run" {
+    write_fake_python_sequence 0 5
+
+    HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/only_single_device.py build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "multi-chip: both phases empty is an error" {
+    write_fake_python_sequence 5 5
+
+    HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/empty.py build/test/pytest-report
+
+    assert_failure 5
+}
+
 @test "requires test-dir and report-prefix arguments" {
     run "$SCRIPT" test/python
 
     assert_failure
     assert_output --partial "usage"
+}
+
+@test "rejects invalid chip override" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=abc run "$SCRIPT" test/python build/test/pytest-report
+
+    assert_failure 2
+    assert_output --partial "chip count"
 }
