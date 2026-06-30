@@ -268,7 +268,7 @@ jobs:
           docker push "$REGISTRY"
 
       - name: Push dist image to GHCR as :latest
-        if: ${{ inputs.push && github.ref == 'refs/heads/main' }}
+        if: ${{ inputs.push && (github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-'))) }}
         run: |
           set -e
           LOCAL="${{ steps.build-dist.outputs.local-image }}"
@@ -327,7 +327,7 @@ jobs:
           docker push "$REGISTRY"
 
       - name: Push ird image to GHCR as :latest
-        if: ${{ inputs.push && github.ref == 'refs/heads/main' }}
+        if: ${{ inputs.push && (github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-'))) }}
         run: |
           set -e
           LOCAL="${{ steps.build-ird.outputs.local-image }}"
