@@ -34,6 +34,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinxcontrib.mermaid",
+    "sphinx_reredirects",
 ]
 
 source_suffix = {
@@ -63,15 +64,27 @@ autosummary_generate = True
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_rtd_theme"
+html_theme_options = {
+    "collapse_navigation": False,
+    "titles_only": True,
+    "navigation_depth": 2,
+}
 html_logo = _theme_logo
 html_favicon = _theme_favicon
 html_static_path = _theme_static_paths
 templates_path = [_theme_templates]
 html_last_updated_fmt = "%b %d, %Y"
+html_css_files = ["https://docs.tenstorrent.com/_static/tt_theme.css"]
 
 html_context = {
     "versions": None,
     "logo_link_url": os.environ.get("homepage", "https://docs.tenstorrent.com/"),
+    "search_site_base_url": "https://docs.tenstorrent.com/tt-lang/",
+}
+
+redirects = {
+    "tour/operation-basics": "index.html#operation-basics",
+    "tour/dataflow-buffers": "index.html#dataflow-buffers",
 }
 
 

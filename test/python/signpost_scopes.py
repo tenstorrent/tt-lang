@@ -96,7 +96,7 @@ def bcast_multitile_kernel(
 # C++ Kernel Checks - Verify generated compute kernel structure
 # =============================================================================
 
-# CHECK: // demo_compute
+# CHECK: === demo_compute kernel written to {{.*}} ===
 # CHECK: void kernel_main()
 
 # No signpost scopes outside the inner tile loops
@@ -143,7 +143,7 @@ def bcast_multitile_kernel(
 # Subblocked: 4 tiles per subblock, 3 nested loops, grouped ops
 # =============================================================================
 
-# CHECK-FPU: // demo_compute
+# CHECK-FPU: === demo_compute kernel written to {{.*}} ===
 # CHECK-FPU: void kernel_main()
 
 # No signpost scopes outside the inner subblock loop

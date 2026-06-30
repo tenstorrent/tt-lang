@@ -296,6 +296,18 @@ inline bool getKernelBoolAttr(mlir::Operation *op, llvm::StringRef attrName) {
   return false;
 }
 
+/// NOC index for the kernel enclosing `op`: 0 = reader/NCRISC, 1 =
+/// writer/BRISC. A func without `ttl.noc_index` (e.g. test IR fed straight to
+/// lowering) takes the reader default, not an error.
+inline int64_t getNocIndex(mlir::Operation *op) {
+  auto funcOp = op->getParentOfType<mlir::func::FuncOp>();
+  assert(funcOp && "getNocIndex called on op outside of func.func");
+  if (auto attr = funcOp->getAttrOfType<mlir::IntegerAttr>(kNocIndexAttrName)) {
+    return attr.getInt();
+  }
+  return 0;
+}
+
 /// Return true when an add/sub/mul tile op is eligible to lower to its FPU
 /// form. Eligibility requires all of:
 ///   1. op carries TTLStrategyDependentBinaryOpTrait;

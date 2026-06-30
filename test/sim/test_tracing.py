@@ -21,9 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from python.sim import ttl, ttnn
-from python.sim.context import get_context, reset_context
-from python.sim.trace import ALL_CATEGORIES
+from sim import ttl, ttnn
+from sim.context import get_context, reset_context
+from sim.trace import ALL_CATEGORIES, set_tracing
 
 
 def _run_simple_kernel_with_tracing(
@@ -37,7 +37,7 @@ def _run_simple_kernel_with_tracing(
     Returns the collected trace events as a list of dicts (matching TraceEvent fields).
     """
     ctx = get_context()
-    ctx.config.trace_set = trace_set if trace_set is not None else ALL_CATEGORIES
+    set_tracing(trace_set if trace_set is not None else ALL_CATEGORIES)
 
     inp = ttnn.rand((32, 32))
     out = ttnn.empty((32, 32))
@@ -86,7 +86,7 @@ def _run_pipe_kernel_with_tracing(
     Returns the collected trace events as a list of dicts.
     """
     ctx = get_context()
-    ctx.config.trace_set = trace_set if trace_set is not None else ALL_CATEGORIES
+    set_tracing(trace_set if trace_set is not None else ALL_CATEGORIES)
 
     inp = ttnn.rand((32, 32))
     out = ttnn.empty((32, 32))
@@ -241,7 +241,7 @@ class TestTraceEventTypes:
     def test_no_events_when_tracing_disabled(self) -> None:
         """No trace events are recorded when trace_set is empty."""
         ctx = get_context()
-        ctx.config.trace_set = frozenset()
+        set_tracing(frozenset())
 
         inp = ttnn.rand((32, 32))
         out = ttnn.empty((32, 32))

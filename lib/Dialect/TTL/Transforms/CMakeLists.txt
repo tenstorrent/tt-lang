@@ -1,10 +1,12 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationAnalysis.cpp
   AccumulationUtils.cpp
+  ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLToTTKernel.cpp
+  DFBAcquireReleaseAnalysis.cpp
   DFBMaterialization.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp

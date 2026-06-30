@@ -76,7 +76,18 @@ jobs:
     secrets: inherit
     with:
       push: true
-      build_manylinux_wheel_images: true
+
+  # Wheel-builder images are only consumed by the S3 light-wheel publish, never
+  # by hardware tests or standard wheels. Build them alongside build-docker so
+  # the `build` job (hardware tests) does not wait on this 360-min build.
+  build-wheel-images:
+    needs: resolve-docker-tag
+    if: ${{ needs.resolve-docker-tag.outputs.needs_rebuild == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/call-build-wheel-images.yml
+    secrets: inherit
 
   changes:
     name: Detect wheel/container-affecting changes
@@ -130,8 +141,20 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: github-pages
+    env:
+      SEARCH_API_BASE: https://csl860x2oj.execute-api.us-east-2.amazonaws.com/prod
+      DOC_CATALOG_SOURCE_ID: docs-tenstorrent
+      DOC_SITE_BASE_URL: https://docs.tenstorrent.com/tt-lang
+      DOCS_ID_NAMESPACE: tt-lang
+      DOCS_INDEX_VERSION: latest
+      DOCS_OUTPUT_DIR: build/docs/sphinx/_build/html
+      DOCS_SEARCH_INGEST_API_KEY: ${{ secrets.DOCS_SEARCH_INGEST_API_KEY_DOCS_TENSTORRENT }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12.10"
@@ -141,6 +164,14 @@ jobs:
           python -m pip install -r docs/requirements.txt
       - name: Build documentation
         run: sphinx-build -b html docs/sphinx build/docs/sphinx/_build/html
+      - name: Warn if search ingest key is missing
+        if: ${{ env.DOCS_SEARCH_INGEST_API_KEY == '' }}
+        run: |
+          echo "::warning::Skipping OpenSearch indexing: DOCS_SEARCH_INGEST_API_KEY_DOCS_TENSTORRENT secret not set."
+      - name: Index docs into OpenSearch
+        if: ${{ env.DOCS_SEARCH_INGEST_API_KEY != '' }}
+        continue-on-error: true
+        run: python scripts/index_remote_search.py
       - name: Upload documentation artifact
         uses: actions/upload-pages-artifact@v5
         with:
@@ -202,6 +233,7 @@ jobs:
       - check-tt-metal-version
       - resolve-docker-tag
       - build-docker
+      - build-wheel-images
       - dryrun-docker
       - changes
       - build
@@ -215,5 +247,5 @@ jobs:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
-          allowed-skips: build-docker, dryrun-docker, build-docs, test-dist-tutorials
+          allowed-skips: build-docker, build-wheel-images, dryrun-docker, build-docs, test-dist-tutorials
           jobs: ${{ toJSON(needs) }}

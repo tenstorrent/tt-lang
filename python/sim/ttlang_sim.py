@@ -21,10 +21,11 @@ import sys
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
+from .context import set_dry_run
 
 
 def setup_simulator_imports() -> None:
@@ -46,6 +47,7 @@ def execute_script_with_simulator(
     script_path: Path,
     capture_output: bool = False,
     argv: list[str] | None = None,
+    optimize: bool = False,
 ) -> tuple[int, str]:
     """
     Execute a script with simulator backend.
@@ -54,6 +56,13 @@ def execute_script_with_simulator(
         script_path: Path to the Python file to execute
         capture_output: If True, capture and return stdout/stderr; if False, print directly
         argv: Command-line arguments to pass to the script (for sys.argv)
+        optimize: If True, compile with optimize=1 (strips assert statements, equivalent
+            to Python's -O flag). This is independent of dry-run: the CLI --dry-run
+            path leaves assertions intact (a kernel may have structural/shape asserts
+            unrelated to computed data). This flag exists so callers such as the
+            matmul-tutorial CI harness can run example scripts that end in a
+            result-verification assert (e.g. ``assert pcc > 0.99``), which would
+            otherwise fail when dry-run produces placeholder output.
 
     Returns:
         (exit_code, output) tuple where exit_code is 0 on success, 1 on error,
@@ -77,7 +86,12 @@ def execute_script_with_simulator(
     }
 
     try:
-        code = compile(script_path.read_text(), str(script_path), "exec")
+        code = compile(
+            script_path.read_text(),
+            str(script_path),
+            "exec",
+            optimize=1 if optimize else -1,
+        )
 
         if capture_output:
             assert output_capture is not None  # Guaranteed by capture_output=True
@@ -321,6 +335,20 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help=(
+            "Skip the computational payload of simulator-managed objects "
+            "(Tensor arithmetic, block math, copy transfers) while still "
+            "running DFB sequencing, deadlock detection, and block state "
+            "machine checks. Plain Python code outside the simulator APIs "
+            "executes normally. Assumes computation results do not affect "
+            "control flow."
+        ),
+    )
+
     if not argv:
         parser.print_help()
         sys.exit(1)
@@ -384,6 +412,10 @@ def main() -> None:
 
         set_scheduler_algorithm(args.scheduler)
 
+    # Enable dry-run mode if requested
+    if args.dry_run:
+        set_dry_run(True)
+
     # Disable float32 promotion if requested.
     if args.no_float32_promotion:
         from .ttnnsim import set_disable_float32_promotion
@@ -421,8 +453,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.trace:
-        from .trace import ALL_CATEGORIES
-        from .context import get_context
+        from .trace import ALL_CATEGORIES, set_tracing
 
         if args.trace_events:
             cats = {c.strip() for c in args.trace_events.split(",")}
@@ -449,7 +480,7 @@ def main() -> None:
         else:
             trace_set = ALL_CATEGORIES
 
-        get_context().config.trace_set = trace_set
+        set_tracing(trace_set)
 
     # Run the target
     try:

@@ -9,18 +9,23 @@ enabling data transfer operations between tensors and Blocks in the
 DataflowBuffer system.
 """
 
-from .dfb import Block
+import math
+import sys
+from typing import Optional, Tuple
+
+from .context import get_context
 from .copyhandlers import (
     CopyEndpoint,
     CopyEndpointType,
     CopyTransferHandler,
     HANDLER_REGISTRY,
 )
-from .ttnnsim import Tensor, tile_count_from_tensor
+from .dfb import Block
+from .greenlet_scheduler import block_if_needed
 from .sharding import try_count_locality
-from .trace import trace
+from .trace import TRACE, trace
+from .ttnnsim import Tensor, tile_count_from_tensor
 from .pipe import Pipe, SrcPipeIdentity
-import math
 
 
 def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
@@ -74,6 +79,7 @@ class CopyTransaction:
         self,
         src: CopyEndpoint,
         dst: CopyEndpoint,
+        user_location: Optional[Tuple[str, int]] = None,
     ):
         """
         Initialize a copy transaction from src to dst.
@@ -81,6 +87,11 @@ class CopyTransaction:
         Args:
             src: Source data (tensor, Block, or Pipe)
             dst: Destination (tensor, Block, or Pipe)
+            user_location: Pre-captured ``(filename, lineno)`` for the user
+                code initiating this copy.  Passed in by :func:`copy` so that
+                ``Block.mark_copy_as_{source,dest}`` can skip the per-call
+                stack walk in :func:`find_user_code_location`.  ``None`` only
+                from tests that construct ``CopyTransaction`` directly.
 
         Raises:
             ValueError: If the source and destination types are not supported
@@ -89,6 +100,10 @@ class CopyTransaction:
         self._dst = dst
         self._completed = False
         self._transfer_performed = False
+        # Stable trace label, computed once at construction so the scheduler
+        # can read it via direct attribute access from inside the hot
+        # block_current_kernel path instead of paying for a getattr/fallback.
+        self._trace_name: str = f"tx_{id(self) & 0xFFFF:04x}"
 
         # Lookup and store the handler for this type combination
         handler = self._lookup_handler(type(src), type(dst))
@@ -98,24 +113,25 @@ class CopyTransaction:
         # that prevent user access during the copy operation
         match src:
             case Block():
-                src.mark_copy_as_source()
+                src.mark_copy_as_source(user_location)
             case _:
                 pass
         match dst:
             case Block():
-                dst.mark_copy_as_dest()
+                dst.mark_copy_as_dest(user_location)
             case _:
                 pass
 
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
 
-        trace(
-            "copy_start",
-            src=type(src).__name__,
-            dst=type(dst).__name__,
-            **_copy_trace_fields(src, dst),
-        )
+        if TRACE.enabled:
+            trace(
+                "copy_start",
+                src=type(src).__name__,
+                dst=type(dst).__name__,
+                **_copy_trace_fields(src, dst),
+            )
 
         if self._starts_on_copy():
             self._handler.transfer(self._src, self._dst)
@@ -167,12 +183,16 @@ class CopyTransaction:
             return
 
         # Block if copy cannot proceed
-        from .greenlet_scheduler import block_if_needed
-
         block_if_needed(self, "wait")
 
         # Transfer - let exceptions propagate to scheduler for context.
         if not self._transfer_performed:
+            # Each handler decides what to do in dry-run mode: payload-only
+            # handlers (Tensor<->Block) skip the byte copy, while structural
+            # handlers (Pipe send/receive) still maintain their queue
+            # bookkeeping so pipe sequencing is exercised symmetrically. The
+            # block state transitions below always fire so structural checks
+            # (state machine, deadlock) remain fully exercised.
             self._handler.transfer(self._src, self._dst)
             self._transfer_performed = True
         self._completed = True
@@ -189,12 +209,13 @@ class CopyTransaction:
             case _:
                 pass
 
-        trace(
-            "copy_end",
-            src=type(self._src).__name__,
-            dst=type(self._dst).__name__,
-            **_copy_trace_fields(self._src, self._dst),
-        )
+        if TRACE.enabled:
+            trace(
+                "copy_end",
+                src=type(self._src).__name__,
+                dst=type(self._dst).__name__,
+                **_copy_trace_fields(self._src, self._dst),
+            )
 
     def can_wait(self) -> bool:
         """
@@ -291,18 +312,27 @@ def copy(
         tx = copy(dfb_block, tensor_slice)
         tx.wait()
     """
-    handle = CopyTransaction(src, dst)
+    # Capture the user's source location ONCE here (cheap: one ``_getframe``,
+    # no chain walk) so that ``Block.mark_copy_as_{source,dest}`` -- both
+    # invoked inside ``CopyTransaction.__init__`` below -- can stash it without
+    # paying for two ``find_user_code_location()`` stack walks per copy.  In
+    # the matmul-tutorial dry-run that's 4.2 M walks eliminated.
+    #
+    # ``sys._getframe(1)`` returns the immediate caller of ``copy()``.  For the
+    # public ``ttl.copy`` entry point that's user code (or a user-defined
+    # helper, which ``find_user_code_location`` would also surface since both
+    # are non-simulator frames).  Reused immediately below for the auto-wait
+    # call-site lookup.
+    frame = sys._getframe(1)
+    user_location: Tuple[str, int] = (frame.f_code.co_filename, frame.f_lineno)
+
+    handle = CopyTransaction(src, dst, user_location=user_location)
 
     # Case A: bare ttl.copy(...) with no assignment — auto-wait immediately.
     # The AST analysis in analyze_kernel_function identifies these call sites
     # and registers their (caller_code, abs_lineno) in context.auto_wait_copy_lines.
     # Using equality-based set lookup so that code objects from different files
     # with identical bodies are still matched correctly.
-    import sys
-
-    frame = sys._getframe(1)
-    from .context import get_context
-
     ctx = get_context()
     if (
         ctx.auto_wait_copy_lines

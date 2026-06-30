@@ -415,6 +415,40 @@ li.toctree-l1.current>a {
   line-height: inherit;
 }
 
+.rst-content .wy-table-responsive {
+  overflow-x: auto;
+}
+
+.rst-content .wy-table-responsive table.docutils,
+.rst-content table.docutils {
+  table-layout: auto;
+  width: 100%;
+}
+
+.rst-content .wy-table-responsive table.docutils th,
+.rst-content .wy-table-responsive table.docutils td,
+.rst-content table.docutils th,
+.rst-content table.docutils td {
+  white-space: normal !important;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.rst-content .wy-table-responsive table.docutils code,
+.rst-content .wy-table-responsive table.docutils tt,
+.rst-content table.docutils code,
+.rst-content table.docutils tt {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.rst-content section#compiler-options table.docutils th:first-child,
+.rst-content section#compiler-options table.docutils td:first-child {
+  min-width: 14rem;
+  width: 28%;
+}
+
 .document * h1,
 .document * h2,
 .document * h3,

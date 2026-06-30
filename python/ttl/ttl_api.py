@@ -1628,7 +1628,7 @@ def _compile_kernel(
             "cse",
             "lower-affine",
             "ttl-lower-signpost-to-emitc",
-            "convert-ttkernel-to-emitc",
+            "func.func(convert-ttkernel-to-emitc)",
             "symbol-dce",
         ]
 

@@ -14,6 +14,7 @@ import math
 import operator as _op
 from itertools import product as _product
 from typing import (
+    AbstractSet,
     Any,
     Callable,
     Dict,
@@ -26,6 +27,7 @@ from typing import (
 )
 
 import torch
+from greenlet import getcurrent
 
 from pydantic import validate_call
 
@@ -38,7 +40,7 @@ from .blockstate import (
     format_cannot_read_block,
     format_cannot_write_block,
 )
-from .context import get_current_kernel_type
+from .context import get_context, get_current_kernel_type
 from .diagnostics import find_user_code_location
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
@@ -47,11 +49,58 @@ from .ttnnsim import (
     ROW_MAJOR_LAYOUT,
     TILE_LAYOUT,
     Tensor,
+    check_count_match,
     tile_count_from_tensor,
     tile_shape_from_tensor,
 )
-from .trace import get_dfb_name, trace
+from .trace import TRACE, trace
 from .typedefs import Index, IndexType, PositiveInt, Shape, Size
+from .greenlet_scheduler import block_if_needed
+
+
+def _is_dry_run() -> bool:
+    return get_context().config.dry_run
+
+
+# Zero-element Tensors shared across all dry-run result blocks, one per layout.
+# Using sentinels avoids any per-operation tensor allocation in dry-run mode;
+# their content and element shape are irrelevant since all consumers are also
+# guarded. The layout is still tracked so a dry-run result block reports the same
+# layout as the non-dry path would (Block.layout reads its backing tensor's
+# layout), keeping check_same_layout meaningful for chained operations. There are
+# only ever two layouts, so two constants suffice.
+_DRY_RUN_SENTINEL = Tensor(torch.empty(0), TILE_LAYOUT)
+_DRY_RUN_SENTINEL_ROW_MAJOR = Tensor(torch.empty(0), ROW_MAJOR_LAYOUT)
+
+
+def _dry_run_sentinel(layout: IndexType = TILE_LAYOUT) -> Tensor:
+    """Return the shared zero-element sentinel for the given layout."""
+    if layout == ROW_MAJOR_LAYOUT:
+        return _DRY_RUN_SENTINEL_ROW_MAJOR
+    return _DRY_RUN_SENTINEL
+
+
+def _dry_run_result(shape: Shape, *sources: "Block") -> "Block":
+    """Return a temporary block backed by a shared sentinel tensor without any computation.
+
+    Shared by the ``ttl.math`` and ``ttl.block`` helpers for their dry-run paths.
+    Only safe in dry-run mode: tensor content and element dimensions are meaningless.
+    The tile-grid shape is set correctly so downstream structural checks see the right
+    grid, and no memory is allocated beyond a single Block object. The result layout is
+    propagated from the first source (matching the non-dry path, which preserves the
+    operand layout) so layout checks remain valid across chained operations; with no
+    sources it defaults to TILE_LAYOUT.
+    """
+    layout = sources[0].layout if sources else TILE_LAYOUT
+    result_block = Block(
+        tensor=_dry_run_sentinel(layout),
+        shape=shape,
+        acquisition=BlockAcquisition.RESERVE,
+        kernel_type=KernelType.COMPUTE,
+        is_temporary=True,
+    )
+    track_source_blocks(result_block, *sources)
+    return result_block
 
 
 def _name_phrase_for_error(block: "Block") -> str:
@@ -82,7 +131,6 @@ class Block:
         "_is_temporary",
         "_store_confirmation_pending",  # Set by assign_src; cleared by mark_store_read_complete
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
-        "_broadcast_dims",  # Pending broadcast dimensions (None or tuple of ints)
         "_name",  # optional label from reserve(name=) / wait(name=); used in dataflow error messages
         "_pending_copy_dest_location",  # user (file, line) of copy(..., self) while destination copy is in flight (NAW)
         "_pending_copy_src_location",  # user (file, line) of copy(self, ...) while source copies may be in flight (ROR)
@@ -112,7 +160,13 @@ class Block:
         self._store_confirmation_pending: bool = (
             False  # Set by assign_src; cleared by mark_store_read_complete
         )
-        self._source_blocks: List["Block"] = []  # Track source wait() blocks
+        # Lazy-init: stays ``None`` until a wait()/COMPUTE source actually
+        # needs tracking.  Most Blocks (~17M per matmul-tutorial dry run)
+        # never accumulate sources, so deferring the list allocation
+        # eliminates ~17M short-lived empty lists.  Readers must treat
+        # ``None`` as "no sources" (the existing falsy-check on the list
+        # still works because ``None`` is also falsy).
+        self._source_blocks: Optional[List["Block"]] = None
         self.dfb = dfb  # Reference to DataflowBuffer for context manager support
         self.dfb_state: Optional[DFBState] = None
         self.dfb_slot_idx: int = -1
@@ -126,27 +180,6 @@ class Block:
             self._sm.initialize()
         else:
             self._sm.set_unrestricted()
-
-    # ------------------------------------------------------------------
-    # Property proxies onto the state machine (used by dfb.py internals,
-    # tests, and the public API properties further below).
-    # ------------------------------------------------------------------
-
-    @property
-    def _acquisition(self) -> BlockAcquisition:
-        return self._sm.acquisition
-
-    @property
-    def _kernel_type(self) -> KernelType:
-        return self._sm.kernel_type
-
-    @property
-    def _access_state(self) -> AccessState:
-        return self._sm.access_state
-
-    @property
-    def _expected_ops(self) -> set[ExpectedOp]:
-        return self._sm.expected_ops
 
     def __enter__(self) -> "Block":
         """Context manager entry - returns self for use in with statement."""
@@ -169,21 +202,21 @@ class Block:
         # Only perform cleanup if no exception occurred
         if exc_type is None and self.dfb is not None:
             # Block came from DFB - perform appropriate cleanup
-            if self._acquisition == BlockAcquisition.RESERVE:
+            if self._sm.acquisition == BlockAcquisition.RESERVE:
                 self.push()
-            elif self._acquisition == BlockAcquisition.WAIT:
+            elif self._sm.acquisition == BlockAcquisition.WAIT:
                 self.pop()
 
     def __repr__(self) -> str:
-        acq = self._acquisition.name
-        expected = {op.name for op in self._expected_ops}
+        acq = self._sm.acquisition.name
+        expected = {op.name for op in self._sm.expected_ops}
         return (
             f"Block("
             f"shape={self._shape}, "
             f"data={repr(self._buf.to_torch())}, "
             f"acq={acq}, "
-            f"kernel={self._kernel_type.name}, "
-            f"access={self._access_state.name}, "
+            f"kernel={self._sm.kernel_type.name}, "
+            f"access={self._sm.access_state.name}, "
             f"expected={expected})"
         )
 
@@ -203,51 +236,71 @@ class Block:
 
     def _pending_copy_site_for_errors(self) -> Optional[Tuple[str, int]]:
         """User callsite for copy(...) involving this block while NAW or ROR (for error messages)."""
-        if self._access_state == AccessState.NAW:
+        if self._sm.access_state == AccessState.NAW:
             return self._pending_copy_dest_location
-        if self._access_state == AccessState.ROR:
+        if self._sm.access_state == AccessState.ROR:
             return self._pending_copy_src_location
         return None
 
-    def mark_copy_as_source(self) -> None:
-        """Mark that this block is being used as a copy source."""
-        pending = self._pending_copy_site_for_errors()
+    def mark_copy_as_source(
+        self, user_location: Optional[Tuple[str, int]] = None
+    ) -> None:
+        """Mark that this block is being used as a copy source.
+
+        Args:
+            user_location: Pre-captured ``(filename, lineno)`` for the user
+                code that initiated this copy.  When provided (the hot path
+                from :func:`sim.copy.copy`), stored directly without a stack
+                walk.  When ``None`` (direct ``CopyTransaction(...)``
+                construction from tests), falls back to
+                :func:`find_user_code_location` for backwards-compatible
+                behaviour.
+        """
         self._sm.transition(
             "copy_src",
             "copy (as source)",
             ExpectedOp.COPY_SRC,
-            pending_copy_location=pending,
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
-        try:
-            self._pending_copy_src_location = find_user_code_location()
-        except RuntimeError:
-            self._pending_copy_src_location = None
+        if user_location is not None:
+            self._pending_copy_src_location = user_location
+        else:
+            try:
+                self._pending_copy_src_location = find_user_code_location()
+            except RuntimeError:
+                self._pending_copy_src_location = None
 
-    def mark_copy_as_dest(self) -> None:
-        """Mark that this block is being used as a copy destination."""
-        pending = self._pending_copy_site_for_errors()
+    def mark_copy_as_dest(
+        self, user_location: Optional[Tuple[str, int]] = None
+    ) -> None:
+        """Mark that this block is being used as a copy destination.
+
+        See :meth:`mark_copy_as_source` for ``user_location`` semantics.
+        """
         self._sm.transition(
             "copy_dst",
             "copy (as destination)",
             ExpectedOp.COPY_DST,
-            pending_copy_location=pending,
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
-        try:
-            self._pending_copy_dest_location = find_user_code_location()
-        except RuntimeError:
-            self._pending_copy_dest_location = None
+        if user_location is not None:
+            self._pending_copy_dest_location = user_location
+        else:
+            try:
+                self._pending_copy_dest_location = find_user_code_location()
+            except RuntimeError:
+                self._pending_copy_dest_location = None
 
     def mark_tx_wait_complete(self) -> None:
         """Mark that tx.wait() has completed for a copy operation."""
-        pending = self._pending_copy_site_for_errors()
         self._sm.transition(
             "tx_wait",
             "tx.wait()",
             ExpectedOp.TX_WAIT,
-            pending_copy_location=pending,
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
         self._pending_copy_dest_location = None
-        if self._access_state != AccessState.ROR:
+        if self._sm.access_state != AccessState.ROR:
             self._pending_copy_src_location = None
 
     def mark_assign_src_complete(self) -> None:
@@ -279,7 +332,7 @@ class Block:
                 "store_src",
                 "store (as source)",
                 ExpectedOp.STORE_SRC,
-                pending_copy_location=self._pending_copy_site_for_errors(),
+                pending_copy_location=self._pending_copy_site_for_errors,
             )
         self._store_confirmation_pending = False
         if self.dfb is not None:
@@ -291,19 +344,19 @@ class Block:
             "store_dst",
             "store()",
             ExpectedOp.STORE,
-            pending_copy_location=self._pending_copy_site_for_errors(),
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
 
     def mark_push_complete(self) -> None:
         """Mark that push() has completed (RESERVE blocks only)."""
         self._sm.transition_push(
-            pending_copy_location=self._pending_copy_site_for_errors(),
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
 
     def mark_pop_complete(self) -> None:
         """Mark that pop() has completed (WAIT blocks only)."""
         self._sm.transition_pop(
-            pending_copy_location=self._pending_copy_site_for_errors(),
+            pending_copy_location=self._pending_copy_site_for_errors,
         )
 
     def __len__(self) -> Size:
@@ -325,21 +378,21 @@ class Block:
             return
 
         # State machine check
-        if self._access_state == AccessState.MW:
+        if self._sm.access_state == AccessState.MW:
             raise RuntimeError(
                 format_cannot_read_block(
-                    self._access_state,
-                    self._expected_ops,
+                    self._sm.access_state,
+                    self._sm.expected_ops,
                     self.acquisition,
                     self.name,
                     pending_copy_location=self._pending_copy_site_for_errors(),
                 )
             )
-        if self._access_state in (AccessState.NAW, AccessState.OS):
+        if self._sm.access_state in (AccessState.NAW, AccessState.OS):
             raise RuntimeError(
                 format_cannot_read_block(
-                    self._access_state,
-                    self._expected_ops,
+                    self._sm.access_state,
+                    self._sm.expected_ops,
                     self.acquisition,
                     self.name,
                     pending_copy_location=self._pending_copy_site_for_errors(),
@@ -358,20 +411,20 @@ class Block:
             return
 
         # State machine check
-        if self._access_state == AccessState.NAW:
+        if self._sm.access_state == AccessState.NAW:
             raise RuntimeError(
                 format_cannot_write_block(
-                    self._access_state,
-                    self._expected_ops,
+                    self._sm.access_state,
+                    self._sm.expected_ops,
                     self.name,
                     pending_copy_location=self._pending_copy_site_for_errors(),
                 )
             )
-        if self._access_state in (AccessState.ROR, AccessState.OS):
+        if self._sm.access_state in (AccessState.ROR, AccessState.OS):
             raise RuntimeError(
                 format_cannot_write_block(
-                    self._access_state,
-                    self._expected_ops,
+                    self._sm.access_state,
+                    self._sm.expected_ops,
                     self.name,
                     pending_copy_location=self._pending_copy_site_for_errors(),
                 )
@@ -605,8 +658,6 @@ class Block:
                 f"but block has layout {self.layout.name}"
             )
 
-        from .ttnnsim import check_count_match
-
         check_count_match(
             tile_count_from_tensor(tensor),
             math.prod(self._shape),
@@ -642,16 +693,16 @@ class Block:
         source_blocks_to_mark: List["Block"] = []
         # Track wait() Compute source blocks for state machine
         if (
-            items._acquisition == BlockAcquisition.WAIT
-            and items._kernel_type == KernelType.COMPUTE
-            and ExpectedOp.STORE_SRC in items._expected_ops
+            items._sm.acquisition == BlockAcquisition.WAIT
+            and items._sm.kernel_type == KernelType.COMPUTE
+            and ExpectedOp.STORE_SRC in items._sm.expected_ops
         ):
             source_blocks_to_mark.append(items)
         elif items._is_temporary and items._source_blocks:
             source_blocks_to_mark.extend(
                 blk
                 for blk in items._source_blocks
-                if ExpectedOp.STORE_SRC in blk._expected_ops
+                if ExpectedOp.STORE_SRC in blk._sm.expected_ops
                 or blk._store_confirmation_pending
             )
 
@@ -673,6 +724,10 @@ class Block:
             source_block.mark_store_read_complete()
 
         self.mark_store_complete()
+
+        if _is_dry_run():
+            # Skip payload copy; state machine transition above still fires.
+            return
 
         if src_tensor.shape == self._buf.shape:
             # Fast path: same element shape — copy in-place
@@ -700,17 +755,21 @@ class Block:
         for source in sources:
             if (
                 not source._is_temporary
-                and source._acquisition == BlockAcquisition.WAIT
-                and source._kernel_type == KernelType.COMPUTE
+                and source._sm.acquisition == BlockAcquisition.WAIT
+                and source._sm.kernel_type == KernelType.COMPUTE
             ):
+                if result_block._source_blocks is None:
+                    result_block._source_blocks = []
                 result_block._source_blocks.append(source)
                 # Fire assign_src so pop() is allowed when the 'with' context exits,
                 # even though store() on the result block may come later.
                 # The block is registered as pending store confirmation and cleared
                 # by mark_store_read_complete() when store() eventually fires.
-                if ExpectedOp.STORE_SRC in source._expected_ops:
+                if ExpectedOp.STORE_SRC in source._sm.expected_ops:
                     source.mark_assign_src_complete()
-            elif source._is_temporary:
+            elif source._is_temporary and source._source_blocks:
+                if result_block._source_blocks is None:
+                    result_block._source_blocks = []
                 result_block._source_blocks.extend(source._source_blocks)
 
     def _create_temporary_result(
@@ -737,6 +796,11 @@ class Block:
         self._track_sources_for_result(result_block, self, *additional_sources)
         return result_block
 
+    def _unary_op(self, op: "Callable[[Tensor], Tensor]") -> "Block":
+        """Apply a unary op, skipping computation and reusing the sentinel in dry-run."""
+        buf = _dry_run_sentinel(self.layout) if _is_dry_run() else op(self._buf)
+        return self._create_temporary_result(buf, self._shape)
+
     def _binary_op(
         self,
         other: "Block",
@@ -762,6 +826,14 @@ class Block:
             raise ValueError(
                 f"Shape mismatch in binary operation: left shape {left_shape} does not match "
                 f"right shape {right_shape}. Use broadcast() to expand operands first."
+            )
+
+        # Skip the actual elementwise compute in dry-run: tile-grid shape and
+        # source-block tracking are all the downstream pipeline needs. The
+        # operands share a layout (checked above), so propagate it to the result.
+        if _is_dry_run():
+            return self._create_temporary_result(
+                _dry_run_sentinel(self.layout), left_shape, other
             )
 
         # Perform operation
@@ -796,17 +868,17 @@ class Block:
         """
         match other:
             case int():
-                return self._create_temporary_result(self._buf**other, self._shape)
+                return self._unary_op(lambda b: b**other)
             case _:
                 return self._binary_op(other, _op.pow)
 
     def __neg__(self) -> "Block":
         """Unary negation (-block)."""
-        return self._create_temporary_result(-self._buf, self._shape)
+        return self._unary_op(lambda b: -b)
 
     def __abs__(self) -> "Block":
         """Absolute value (abs(block))."""
-        return self._create_temporary_result(abs(self._buf), self._shape)
+        return self._unary_op(abs)
 
     def __matmul__(self, other: "Block") -> "Block":
         # Matrix multiplication is not a broadcasting operation.
@@ -839,25 +911,24 @@ class Block:
 
     def __radd__(self, other: "Union[int, float]") -> "Block":
         """Scalar + Block: fill(v) + blk creates a temporary block with v added."""
-        result_tensor = Tensor(
-            torch.tensor(other, dtype=self._buf.dtype) + self._buf.to_torch()
+        return self._unary_op(
+            lambda b: Tensor(torch.tensor(other, dtype=b.dtype) + b.to_torch())
         )
-        return self._create_temporary_result(result_tensor, self._shape)
 
     @property
     def acquisition(self) -> BlockAcquisition:
         """Get the acquisition method (reserve or wait) of this block."""
-        return self._acquisition
+        return self._sm.acquisition
 
     @property
     def kernel_type(self) -> KernelType:
         """Get the kernel role (DM or Compute) that acquired this block."""
-        return self._kernel_type
+        return self._sm.kernel_type
 
     @property
     def access_state(self) -> AccessState:
         """Get the current access state of this block."""
-        return self._access_state
+        return self._sm.access_state
 
     @property
     def raw_tensor(self) -> Tensor:
@@ -865,9 +936,15 @@ class Block:
         return self._buf
 
     @property
-    def expected_ops(self) -> set[ExpectedOp]:
-        """Get the set of expected operations for this block."""
-        return self._expected_ops
+    def expected_ops(self) -> AbstractSet[ExpectedOp]:
+        """Get the set of expected operations for this block.
+
+        Returns an ``AbstractSet`` because the state machine now stores
+        shared frozensets (rather than per-Block mutable sets) on the hot
+        path to avoid millions of short-lived ``set`` allocations.  Callers
+        treat the result as read-only.
+        """
+        return self._sm.expected_ops
 
     @property
     def name(self) -> Optional[str]:
@@ -1003,6 +1080,11 @@ class DataflowBuffer:
         # Prevents a different kernel function's cleanup from touching this block.
         self._pending_reserved_greenlet: object = None
         self._pending_waited_greenlet: object = None
+        # Stable trace label, computed once at construction.  Read directly
+        # as ``self._trace_name`` from the reserve/wait/push/pop trace sites
+        # (called millions of times per run) so we avoid a function call,
+        # getattr, and f-string allocation per trace event.
+        self._trace_name: str = f"dfb_{id(self) & 0xFFFF:04x}"
 
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
@@ -1039,9 +1121,8 @@ class DataflowBuffer:
         if self._pending_waited_block is not None:
             self.auto_pop_block()
 
-        from .greenlet_scheduler import block_if_needed
-
-        trace("dfb_wait_begin", dfb=get_dfb_name(self))
+        if TRACE.enabled:
+            trace("dfb_wait_begin", dfb=self._trace_name)
         block_if_needed(self, "wait")
 
         state = self._state
@@ -1061,14 +1142,16 @@ class DataflowBuffer:
         )
         block.dfb = self
         self._pending_waited_block = block
-        from greenlet import getcurrent
-
         self._pending_waited_greenlet = getcurrent()
 
-        tiles = math.prod(state.shape)
-        trace(
-            "dfb_wait_end", dfb=get_dfb_name(self), occupied=state.visible, tiles=tiles
-        )
+        if TRACE.enabled:
+            tiles = math.prod(state.shape)
+            trace(
+                "dfb_wait_end",
+                dfb=self._trace_name,
+                occupied=state.visible,
+                tiles=tiles,
+            )
 
         return block
 
@@ -1112,9 +1195,8 @@ class DataflowBuffer:
         if self._pending_reserved_block is not None:
             self.auto_push_block()
 
-        from .greenlet_scheduler import block_if_needed
-
-        trace("dfb_reserve_begin", dfb=get_dfb_name(self))
+        if TRACE.enabled:
+            trace("dfb_reserve_begin", dfb=self._trace_name)
         block_if_needed(self, "reserve")
 
         state = self._state
@@ -1128,13 +1210,24 @@ class DataflowBuffer:
         #   copy and comparison operations stay type-consistent with other tensors;
         # - declared _dtype is propagated so element_size and size_in_bytes report
         #   the correct hardware byte count for L1 accounting.
-        slot = Tensor(
-            torch.zeros(
-                self._element_shape, dtype=self.likeness_tensor.underlying_dtype
-            ),
-            self.likeness_tensor.layout,
-            dtype=self.likeness_tensor.dtype,
-        )
+        #
+        # In dry-run we skip the ``torch.zeros`` + ``Tensor`` wrap entirely:
+        # the slot's bytes are never read because every downstream operation
+        # (``Block.store``, ``__matmul__``, ``ttl.math.*``, ``ttl.copy``) is
+        # itself dry-run-guarded and returns its own sentinel.  Same precedent
+        # as ``Block._unary_op`` at the ``_DRY_RUN_SENTINEL if _is_dry_run()``
+        # site above.  Removes ~6 M ``torch.zeros`` calls and ~6 M ``Tensor``
+        # constructions per matmul step_1 dry-run.
+        if _is_dry_run():
+            slot = _dry_run_sentinel(self.likeness_tensor.layout)
+        else:
+            slot = Tensor(
+                torch.zeros(
+                    self._element_shape, dtype=self.likeness_tensor.underlying_dtype
+                ),
+                self.likeness_tensor.layout,
+                dtype=self.likeness_tensor.dtype,
+            )
         state.buf[slot_idx] = slot
         state.reserved += 1
 
@@ -1151,17 +1244,16 @@ class DataflowBuffer:
         block.dfb_slot_idx = slot_idx
 
         self._pending_reserved_block = block
-        from greenlet import getcurrent
-
         self._pending_reserved_greenlet = getcurrent()
 
-        tiles = math.prod(state.shape)
-        trace(
-            "dfb_reserve_end",
-            dfb=get_dfb_name(self),
-            occupied=state.visible + state.reserved,
-            tiles=tiles,
-        )
+        if TRACE.enabled:
+            tiles = math.prod(state.shape)
+            trace(
+                "dfb_reserve_end",
+                dfb=self._trace_name,
+                occupied=state.visible + state.reserved,
+                tiles=tiles,
+            )
 
         return block
 
@@ -1192,7 +1284,8 @@ class DataflowBuffer:
         state.reserved -= 1
         state.visible += 1
 
-        trace("dfb_push", dfb=get_dfb_name(self), occupied=state.visible)
+        if TRACE.enabled:
+            trace("dfb_push", dfb=self._trace_name, occupied=state.visible)
 
     def pop_block(self) -> None:
         """Free the consumed slot, advancing the read pointer.
@@ -1214,7 +1307,8 @@ class DataflowBuffer:
         state.head = (state.head + 1) % state.cap
         state.visible -= 1
 
-        trace("dfb_pop", dfb=get_dfb_name(self), occupied=state.visible)
+        if TRACE.enabled:
+            trace("dfb_pop", dfb=self._trace_name, occupied=state.visible)
 
     def auto_push_block(self) -> None:
         """Push the reserved block if one is pending for the current greenlet.
@@ -1224,8 +1318,6 @@ class DataflowBuffer:
         """
         if self._pending_reserved_block is None:
             return
-        from greenlet import getcurrent
-
         if self._pending_reserved_greenlet is not getcurrent():
             return
         self.push_block()
@@ -1238,8 +1330,6 @@ class DataflowBuffer:
         """
         if self._pending_waited_block is None:
             return
-        from greenlet import getcurrent
-
         if self._pending_waited_greenlet is not getcurrent():
             return
         self.pop_block()
@@ -1403,8 +1493,6 @@ def make_dataflow_buffer_like(
         x = ttnn.zeros((64, 64), dtype=ttnn.float32)
         x_dfb = make_dataflow_buffer_like(x, shape=(2, 2), block_count=2)
     """
-    from .context import get_context
-
     dfb = DataflowBuffer(
         likeness_tensor=likeness_tensor, shape=shape, block_count=block_count
     )
@@ -1435,9 +1523,19 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
             and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
             and getattr(block, "kernel_type", None) == KernelType.COMPUTE
         ):
-            source_blocks = getattr(result_block, "_source_blocks", None)
-            if source_blocks is not None:
-                source_blocks.append(block)
+            # ``_source_blocks`` is now lazy-init on Block (``None`` until
+            # the first source append) to skip ~17M empty-list allocations
+            # in the hot path; ``getattr`` keeps this function loose-typed
+            # for tests that pass mock blocks.
+            existing = getattr(result_block, "_source_blocks", None)
+            if existing is None:
+                # ``hasattr`` guards against mock objects without the slot.
+                if hasattr(result_block, "_source_blocks"):
+                    result_block._source_blocks = [
+                        block
+                    ]  # pyright: ignore[reportPrivateUsage]
+            else:
+                existing.append(block)
             # Fire assign_src so pop() is allowed when the 'with' context exits.
             # MR means the block has not yet been consumed as an arithmetic source.
             # The block is registered as pending store confirmation and cleared
@@ -1446,9 +1544,15 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
                 block.mark_assign_src_complete()
         elif is_temporary:
             actual_source = getattr(block, "_source_blocks", None)
-            result_source = getattr(result_block, "_source_blocks", None)
-            if actual_source is not None and result_source is not None:
-                result_source.extend(actual_source)
+            if actual_source:
+                existing = getattr(result_block, "_source_blocks", None)
+                if existing is None:
+                    if hasattr(result_block, "_source_blocks"):
+                        result_block._source_blocks = list(
+                            actual_source
+                        )  # pyright: ignore[reportPrivateUsage]
+                else:
+                    existing.extend(actual_source)
 
 
 def check_same_layout(*blocks: Block) -> None:
@@ -1519,8 +1623,11 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
         Block whose tile shape corresponds to the matmul output shape.
     """
     check_same_layout(a, b)
-    result_tensor = a.to_tensor() @ b.to_tensor()
     result_shape = _matmul_tile_shape(a.shape, b.shape)
+    if _is_dry_run():
+        result_tensor = _DRY_RUN_SENTINEL
+    else:
+        result_tensor = a.to_tensor() @ b.to_tensor()
     result_block = Block(
         tensor=result_tensor,
         shape=result_shape,

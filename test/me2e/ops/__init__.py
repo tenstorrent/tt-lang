@@ -199,24 +199,27 @@ class OpTestBase(ME2ETestBase):
     INPUT_RANGE: Optional[Tuple[float, float]] = None
 
     @pytest.fixture(scope="class")
-    def torch_op(self) -> Callable[..., Tensor]:
+    @classmethod
+    def torch_op(cls) -> Callable[..., Tensor]:
         """Get torch reference function from OP_STR."""
-        if self.OP_STR not in OP_TORCH_MAP:
-            pytest.skip(f"No torch reference for {self.OP_STR}")
-        return OP_TORCH_MAP[self.OP_STR]
+        if cls.OP_STR not in OP_TORCH_MAP:
+            pytest.skip(f"No torch reference for {cls.OP_STR}")
+        return OP_TORCH_MAP[cls.OP_STR]
 
     @pytest.fixture(scope="class")
-    def config(self) -> E2EConfig:
+    @classmethod
+    def config(cls) -> E2EConfig:
         """Get test configuration."""
         return E2EConfig(
-            grid_shape=self.INPUT_SHAPE,
-            dtype=self.INPUT_DTYPE,
+            grid_shape=cls.INPUT_SHAPE,
+            dtype=cls.INPUT_DTYPE,
         )
 
     @pytest.fixture(scope="class")
-    def input_range(self) -> Tuple[float, float]:
+    @classmethod
+    def input_range(cls) -> Tuple[float, float]:
         """Get input value range."""
-        return self.INPUT_RANGE or (self.MIN_VALUE, self.MAX_VALUE)
+        return cls.INPUT_RANGE or (cls.MIN_VALUE, cls.MAX_VALUE)
 
     @pytest.mark.order(1)
     def test_build_module(
