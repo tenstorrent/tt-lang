@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
 """Crawl the built docs in output/ and push them to the OpenSearch-backed
 docs search service so the in-page search modal has something to query.
 
@@ -14,31 +17,89 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
 
 
 # Keep batches small: the indexer Lambda fans each batch out to an OpenSearch
-# _bulk call, and API Gateway caps the request at ~29s. 200 docs in one POST
-# times out (HTTP 504) on the larger catalogs; 50 stays comfortably under it.
+# _bulk call, and API Gateway caps the request at about 29 seconds.
 MAX_BATCH_SIZE = 50
 TIMEOUT_SECONDS = 30
 
+# HTMLParser gets no end event for slash-less HTML5 void elements, so counting
+# them would unbalance the article-body depth and leak the footer text.
+_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
 
-def _strip_html_to_text(content: str) -> str:
-    # Remove script/style blocks first so they do not pollute search text.
-    content = re.sub(r"<script\b[^>]*>.*?</script>", " ", content, flags=re.IGNORECASE | re.DOTALL)
-    content = re.sub(r"<style\b[^>]*>.*?</style>", " ", content, flags=re.IGNORECASE | re.DOTALL)
-    # Strip tags.
-    content = re.sub(r"<[^>]+>", " ", content)
-    # Decode entities and normalize whitespace.
-    content = html.unescape(content)
-    content = re.sub(r"\s+", " ", content).strip()
-    return content
+
+class _TextExtractor(HTMLParser):
+    def __init__(self, *, article_body_only: bool):
+        super().__init__(convert_charrefs=True)
+        self.article_body_only = article_body_only
+        self.article_depth: int | None = None
+        self.skip_depth = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style"}:
+            self.skip_depth += 1
+
+        if self.article_body_only:
+            attr_values = dict(attrs)
+            if (
+                self.article_depth is None
+                and attr_values.get("itemprop") == "articleBody"
+            ):
+                self.article_depth = 0
+            if self.article_depth is not None and tag not in _VOID_TAGS:
+                self.article_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.skip_depth > 0 and tag in {"script", "style"}:
+            self.skip_depth -= 1
+
+        if self.article_depth is not None and tag not in _VOID_TAGS:
+            self.article_depth -= 1
+            if self.article_depth == 0:
+                self.article_depth = None
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth > 0:
+            return
+        if self.article_body_only and self.article_depth is None:
+            return
+        self.parts.append(data)
+
+
+def _strip_html_to_text(content: str, *, article_body_only: bool = False) -> str:
+    parser = _TextExtractor(article_body_only=article_body_only)
+    parser.feed(content)
+    parser.close()
+    text = html.unescape(" ".join(parser.parts))
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _extract_title(content: str, fallback: str) -> str:
-    match = re.search(r"<title[^>]*>(.*?)</title>", content, flags=re.IGNORECASE | re.DOTALL)
+    match = re.search(
+        r"<title[^>]*>(.*?)</title>", content, flags=re.IGNORECASE | re.DOTALL
+    )
     if not match:
         return fallback
     return _strip_html_to_text(match.group(1)) or fallback
@@ -51,14 +112,16 @@ def _iter_html_files(output_root: Path) -> Iterable[Path]:
             continue
         if "/_static/" in rel or "/_sources/" in rel:
             continue
-        # Skip Sphinx's own search/genindex shell pages — they carry no content.
+        # Skip Sphinx's own search/genindex shell pages.
         name = path.name
         if name in {"search.html", "genindex.html"}:
             continue
         yield path
 
 
-def _build_documents(output_root: Path, site_base_url: str, catalog: str, version: str, id_namespace: str) -> list[dict]:
+def _build_documents(
+    output_root: Path, site_base_url: str, catalog: str, version: str, id_namespace: str
+) -> list[dict]:
     site_base_url = site_base_url.rstrip("/")
     docs: list[dict] = []
 
@@ -66,7 +129,9 @@ def _build_documents(output_root: Path, site_base_url: str, catalog: str, versio
         rel = html_file.relative_to(output_root).as_posix()
         raw = html_file.read_text(encoding="utf-8", errors="ignore")
         title = _extract_title(raw, rel)
-        body = _strip_html_to_text(raw)
+        body = _strip_html_to_text(raw, article_body_only=True) or _strip_html_to_text(
+            raw
+        )
         doc_id = f"{catalog}:{id_namespace}:{version}:{rel}"
         url = f"{site_base_url}/{rel}"
         docs.append({"id": doc_id, "title": title, "body": body, "url": url})
