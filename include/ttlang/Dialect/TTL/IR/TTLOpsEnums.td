@@ -58,6 +58,20 @@ def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduction function type",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+def TTL_AccumulationInitialMode_Overwrite
+    : I32EnumAttrCase<"Overwrite", 0, "overwrite">;
+def TTL_AccumulationInitialMode_AccumulateExisting
+    : I32EnumAttrCase<"AccumulateExisting", 1, "accumulate_existing">;
+def TTL_AccumulationInitialMode_Init : I32EnumAttrCase<"Init", 2, "init">;
+
+def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
+    "TTL accumulation initial-value mode",
+    [TTL_AccumulationInitialMode_Overwrite,
+     TTL_AccumulationInitialMode_AccumulateExisting,
+     TTL_AccumulationInitialMode_Init]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 // Buffer type for tensor memory placement.
 // Values match TTNN BufferType enum for compatibility.
 def TTL_BufferType_DRAM       : I32EnumAttrCase<"DRAM",       0, "dram">;

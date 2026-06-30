@@ -7,6 +7,8 @@
 Tests for ttlang_sim.py module (simulator launcher).
 """
 
+import importlib.machinery
+import importlib.util
 import os
 import subprocess
 import sys
@@ -759,6 +761,86 @@ if __name__ == "__main__":
         assert "declared_dtype=torch.bfloat16" in result.stdout
 
 
+class TestDryRunCommandLineOption:
+    """Test the --dry-run flag and its interaction with PYTHONOPTIMIZE.
+
+    --dry-run skips computation, so a script ending in a result-verification
+    assert (which checks the computed output) fails -- the dry-run output is a
+    zero placeholder.  --dry-run deliberately does *not* strip asserts; the
+    documented escape hatch for such scripts is to disable assertions via
+    PYTHONOPTIMIZE=1 (the CLI compiles with optimize=-1, so it honors the
+    interpreter's -O level).  These tests pin that end-to-end behavior.
+    """
+
+    _REPO = Path(__file__).parent.parent.parent
+
+    @staticmethod
+    def create_test_script() -> Path:
+        """Create a script whose final assert verifies a computed result.
+
+        Real run: ``a + a`` on ones sums to a non-zero value and the assert
+        passes.  Dry-run: the payload is zeroed, the sum is 0, and the assert
+        fails unless assertions are stripped.
+        """
+        content = """
+import ttl
+import ttnn
+import torch
+
+a = ttnn.from_torch(torch.ones(32, 32))
+b = a + a
+assert float(b.to_torch().sum()) != 0.0, "result-verification assert"
+print("SUCCESS")
+"""
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+        tmp.write(content)
+        tmp.close()
+        return Path(tmp.name)
+
+    def _run(
+        self, *extra_args: str, optimize: bool = False
+    ) -> subprocess.CompletedProcess:
+        script = self.create_test_script()
+        env = {**os.environ, "PYTHONPATH": "python"}
+        if optimize:
+            env["PYTHONOPTIMIZE"] = "1"
+        try:
+            return subprocess.run(
+                [sys.executable, "-m", "sim.ttlang_sim", str(script), *extra_args],
+                cwd=self._REPO,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            script.unlink()
+
+    def test_result_assert_passes_without_dry_run(self):
+        """Sanity check: with real computation the result-verification assert passes."""
+        result = self._run()
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        assert "SUCCESS" in result.stdout
+
+    def test_dry_run_keeps_result_assert(self):
+        """--dry-run does not strip asserts, so the result-verification assert fires."""
+        result = self._run("--dry-run")
+        assert result.returncode != 0, (
+            "Expected the result-verification assert to fail under --dry-run, "
+            f"but it succeeded. stdout: {result.stdout}"
+        )
+        assert "result-verification assert" in result.stderr
+        assert "SUCCESS" not in result.stdout
+
+    def test_dry_run_with_pythonoptimize_strips_assert(self):
+        """PYTHONOPTIMIZE=1 strips asserts so a dry-run smoke test of the script passes."""
+        result = self._run("--dry-run", optimize=True)
+        assert result.returncode == 0, (
+            "Expected PYTHONOPTIMIZE=1 to strip the result-verification assert "
+            f"under --dry-run. stderr: {result.stderr}"
+        )
+        assert "SUCCESS" in result.stdout
+
+
 class TestSimStats:
     """Test tt-lang-sim-stats post-processing tool."""
 
@@ -1041,3 +1123,67 @@ class TestSignpost:
         # Should have __enter__ and __exit__ methods
         assert hasattr(result, "__enter__")
         assert hasattr(result, "__exit__")
+
+
+class TestSimProfileArgParsing:
+    """Test tt-lang-sim-profile's --save extraction and -- separator handling.
+
+    The wrapper consumes its own --save FILE from the leading options and
+    forwards everything else (and everything after a ``--`` separator) verbatim
+    to tt-lang-sim.  These tests pin the subtle split-at-first-``--`` behavior.
+    """
+
+    @staticmethod
+    def _load_extract():
+        """Load _extract_save_arg from the extension-less wrapper script."""
+        script = (
+            Path(__file__).parent.parent / "scripts" / "tt-lang-sim-profile"
+        ).resolve()
+        loader = importlib.machinery.SourceFileLoader(
+            "tt_lang_sim_profile_under_test", str(script)
+        )
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module._extract_save_arg
+
+    def test_no_save_passes_argv_through(self):
+        extract = self._load_extract()
+        out, remaining = extract(["script.py", "--dry-run", "--grid", "4,4"])
+        assert out == ""
+        assert remaining == ["script.py", "--dry-run", "--grid", "4,4"]
+
+    def test_save_space_form_is_extracted(self):
+        extract = self._load_extract()
+        out, remaining = extract(["script.py", "--dry-run", "--save", "stats.prof"])
+        assert out == "stats.prof"
+        assert remaining == ["script.py", "--dry-run"]
+
+    def test_save_equals_form_is_extracted(self):
+        extract = self._load_extract()
+        out, remaining = extract(["script.py", "--save=stats.prof", "--dry-run"])
+        assert out == "stats.prof"
+        assert remaining == ["script.py", "--dry-run"]
+
+    def test_save_after_separator_is_forwarded_not_captured(self):
+        """A --save after ``--`` belongs to the script and must be forwarded verbatim."""
+        extract = self._load_extract()
+        out, remaining = extract(["script.py", "--dry-run", "--", "--save", "out"])
+        assert out == ""
+        assert remaining == ["script.py", "--dry-run", "--", "--save", "out"]
+
+    def test_save_before_separator_extracted_rest_forwarded(self):
+        """--save before ``--`` is consumed; the post-``--`` args pass through intact."""
+        extract = self._load_extract()
+        out, remaining = extract(
+            ["script.py", "--save", "stats.prof", "--", "--save", "scriptarg"]
+        )
+        assert out == "stats.prof"
+        assert remaining == ["script.py", "--", "--save", "scriptarg"]
+
+    def test_save_missing_file_exits(self):
+        """--save with no following FILE (before ``--``) is a usage error."""
+        extract = self._load_extract()
+        with pytest.raises(SystemExit) as exc:
+            extract(["script.py", "--save"])
+        assert exc.value.code == 2

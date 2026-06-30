@@ -184,7 +184,7 @@ docker run -it \
 - `activate-install.sh` -- environment activation for installed tt-lang (used in containers)
 - `build-docker-images.sh` -- build/push script with `--image-type` filter
 - `cleanup-toolchain.sh` -- normalizes toolchain venv (lib64 symlink fix), strips LLVM binaries, and optionally removes headers/static libs for dist
-- `get-version-tag.sh` -- emits the Docker version tag for the current checkout: `vX.Y.Z` (clean) or `vX.Y.Z-uplift-<hash>` (uplift). See `../scripts/uplift-paths.sh`.
+- `get-version-tag.sh` -- emits the Docker version tag for the current checkout: `vX.Y.Z` when container inputs match the nearest version tag, or `vX.Y.Z-<hash>` when container inputs differ. See `../scripts/uplift-paths.sh`.
 - `test-docker-smoke.sh` -- quick smoke test for container functionality
 - `CONTAINER_README.md` -- welcome message shown inside dist container
 - `IRD_README.md` -- welcome message shown inside IRD container

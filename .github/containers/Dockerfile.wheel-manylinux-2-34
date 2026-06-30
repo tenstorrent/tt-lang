@@ -1,0 +1,106 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build a tt-lang wheel-builder image for S3 light wheels. The toolchain is
+# built inside manylinux_2_34 base (matching tt-metal's base image) so the
+# toolchain and the wheel are compiled against the same glibc version.
+
+FROM quay.io/pypa/manylinux_2_34_x86_64
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG PYTHON_TAG=cp312
+ARG TT_METAL_TAG
+ARG TT_METAL_SHORT_SHA
+ARG TTLANG_BUILD_PARALLEL_LEVEL=""
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+
+RUN dnf install -y \
+      boost-devel \
+      capstone-devel \
+      clang \
+      clang-tools-extra \
+      cmake \
+      curl \
+      git \
+      hwloc-devel \
+      jq \
+      libatomic \
+      libffi-devel \
+      libstdc++ \
+      libuuid-devel \
+      llvm \
+      make \
+      ninja-build \
+      numactl-devel \
+      openssl-devel \
+      patch \
+      pkgconf-pkg-config \
+      python3-devel \
+      python3-pip \
+      sudo \
+      tar \
+      tbb-devel \
+      time \
+      unzip \
+      vim-common \
+      wget \
+      which \
+      xz \
+      yaml-cpp-devel \
+      zlib-devel \
+      zstd \
+      libzstd-devel && \
+    dnf clean all
+
+# AlmaLinux clang 21 crashes while compiling generated MLIR bytecode sources in
+# this image. Keep the override local to this wheel-builder image.
+#
+# LLVM_ENABLE_ZSTD=OFF drops LLVM's libzstd dependency (unused by the
+# tt-lang -> ttkernel -> emitc pipeline). Otherwise auditwheel vendors libzstd
+# and rewrites MLIR/tt-lang shared libraries via patchelf --replace-needed; that
+# rewrite corrupts the large libraries and makes `import ttl` segfault.
+ENV TTLANG_LLVM_EXTRA_CMAKE_ARGS="-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON;-DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc;-DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++;-DLLVM_ENABLE_ZSTD=OFF"
+
+COPY . /workspace
+WORKDIR /workspace
+
+RUN git config --global --add safe.directory '*'
+
+# Docker build contexts intentionally exclude .git. tt-metal's version.cmake is
+# marked export-subst, so reproduce the git-archive substitutions in the copied
+# source tree before configuring tt-metal.
+RUN test -n "${TT_METAL_TAG}" && \
+    test -n "${TT_METAL_SHORT_SHA}" && \
+    sed -i \
+      -e "s|\\\$Format:%(describe)\\\$|${TT_METAL_TAG}|g" \
+      -e "s|\\\$Format:%h\\\$|${TT_METAL_SHORT_SHA}|g" \
+      third-party/tt-metal/cmake/version.cmake
+
+RUN python_dir="/opt/python/${PYTHON_TAG}-${PYTHON_TAG}" && \
+    test -x "${python_dir}/bin/python" && \
+    "${python_dir}/bin/python" -m pip install --no-cache-dir \
+      auditwheel \
+      cmake==3.28.4 \
+      packaging \
+      patchelf \
+      wheel && \
+    if [ -n "${TTLANG_BUILD_PARALLEL_LEVEL}" ]; then \
+      export CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"; \
+    fi && \
+    export PATH="${python_dir}/bin:${PATH}" && \
+    scripts/build-and-install.sh \
+      --toolchain-only \
+      --force-rebuild \
+      --accept-ttmetal-mismatch \
+      --python "${python_dir}/bin/python" \
+      --python-venv "${TTLANG_TOOLCHAIN_DIR}/venv" \
+      --remove-build-dir && \
+    "${TTLANG_TOOLCHAIN_DIR}/venv/bin/python" -m pip install --no-cache-dir \
+      auditwheel \
+      packaging \
+      patchelf \
+      wheel
+
+ENV PATH="/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:${PATH}"
+ENV CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"

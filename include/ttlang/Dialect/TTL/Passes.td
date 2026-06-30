@@ -117,6 +117,47 @@ def TTLInsertCopyWait
   let dependentDialects = [];
 }
 
+def TTLMaterializeLoopState
+    : Pass<"ttl-materialize-loop-state", "::mlir::func::FuncOp"> {
+  let summary = "Materialize loop-carried tensor state";
+  let description = [{
+    Rewrites ranked tensor `scf.for` iter args into explicit TTL dataflow
+    buffer state. The pass removes tensor results from the loop while
+    preserving non-tensor iter args.
+
+    Tensor recurrences use compiler-allocated dataflow buffer state:
+    ```mlir
+    %state = scf.for %iv = %lb to %ub step %step
+        iter_args(%arg = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+      %next = ttl.relu %arg : ...
+      scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    ```
+
+    becomes:
+    ```mlir
+    %state_cb = ttl.bind_cb ... {ttl.compiler_allocated}
+    %init_reserve = ttl.cb_reserve %state_cb : ...
+    ttl.store %init, %init_reserve : ...
+    scf.for %iv = %lb to %ub step %step {
+      %current_wait = ttl.cb_wait %state_cb : ...
+      %current = ttl.attach_cb %current_wait, %state_cb : ...
+      %next = ttl.relu %current : ...
+      %next_reserve = ttl.cb_reserve %state_cb : ...
+      ttl.store %next, %next_reserve : ...
+      scf.yield
+    }
+    %final_wait = ttl.cb_wait %state_cb : ...
+    %final = ttl.attach_cb %final_wait, %state_cb : ...
+    ```
+  }];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";

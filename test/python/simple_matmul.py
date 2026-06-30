@@ -74,7 +74,7 @@ def matmul_kernel(a, b, out):
 # C++ output: matmul_block init and compute
 # =============================================================================
 
-# CHECK-CPP: mm_block_init(
+# CHECK-CPP: matmul_block_init(
 # CHECK-CPP: matmul_block(
 # CHECK-CPP: pack_tile
 

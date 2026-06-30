@@ -91,7 +91,7 @@ def swiglu_gate_kernel(a_tensor, b_tensor, bias_tensor, out_tensor):
 # processes a 1x4 subblock: bias preload, K-loop matmul, SiLU, pack.
 # =============================================================================
 
-# CHECK-CPP:       mm_block_init(
+# CHECK-CPP:       matmul_block_init(
 #   Outer subblock loop over M rows.
 # CHECK-CPP:       for
 # CHECK-CPP:         tile_regs_acquire
@@ -102,7 +102,7 @@ def swiglu_gate_kernel(a_tensor, b_tensor, bias_tensor, out_tensor):
 # CHECK-CPP:         copy_tile(
 # CHECK-CPP:         copy_tile(
 #   Matmul with K-loop (kt=6).
-# CHECK-CPP:         mm_block_init_short(
+# CHECK-CPP:         matmul_block_init(
 # CHECK-CPP:         for
 # CHECK-CPP:           matmul_block(
 #   SiLU on each of the 4 subblock tiles.

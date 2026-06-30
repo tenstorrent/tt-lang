@@ -70,7 +70,7 @@ def reduce_bcast_kernel(inp, out):
 # reduce_init is present.
 # =============================================================================
 
-# CHECK-CPP: // compute_fn
+# CHECK-CPP: === compute_fn kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 
 # Reduce init and tile operation.

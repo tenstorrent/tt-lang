@@ -40,9 +40,9 @@
 # CMake to develop against a newer tt-metal locally (releases must
 # still align with the ttnn PyPI wheel).
 
-TTNN_PYPI="0.72.0"
-TTNN_PYPI_TT_METAL_TAG="v0.72.0-rc4"
+TTNN_PYPI="0.73.1"
+TTNN_PYPI_TT_METAL_TAG="v0.73.1-rc5"
 # DANGER: public PyPI publish is blocked until TT_METAL_TAG and
 # TTNN_PYPI_TT_METAL_TAG share the same vX.Y.Z component. See
 # docs/sphinx/build.md#publishing-to-s3-pypi.
-TT_METAL_TAG="v0.72.0"
+TT_METAL_TAG="v0.74.0-dev20260629"

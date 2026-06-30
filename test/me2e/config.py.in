@@ -11,9 +11,13 @@ memory layouts, and buffering options.
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Tuple
 
 import torch
+
+
+ME2E_OUTPUT_ROOT = Path("@CMAKE_BINARY_DIR@") / "test" / "me2e"
 
 ME2E_MAXIMUM_ULP_THRESHOLDS = {
     torch.float32: 2**14,

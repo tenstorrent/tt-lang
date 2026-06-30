@@ -25,8 +25,8 @@
 // =============================================================================
 // FPU path: reader kernel (same for both paths)
 // =============================================================================
-// FPU-LABEL: // reader_binary
-// FPU: void kernel_main() {
+// FPU-LABEL: void kernel_main() {
+// FPU:   Noc noc0(0);
 // FPU-DAG:   size_t [[BOUND:v[0-9]+]] = 2
 // FPU-DAG:   size_t [[ONE:v[0-9]+]] = 1
 // FPU-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096
@@ -51,15 +51,15 @@
 // Byte offset: tile_offset * page_size + cb_base
 // FPU-NEXT:  size_t [[BYTE_OFF_A:v[0-9]+]] = [[TILE_OFF_A]] * [[PAGE_SIZE]];
 // FPU-NEXT:  size_t [[CB_ADDR_A_IDX:v[0-9]+]] = [[CB0_PTR_IDX]] + [[BYTE_OFF_A]];
-// Cast tile offset and CB address to int32_t for noc_async_read_tile
+// Cast tile offset and CB address to int32_t for noc0.async_read
 // FPU-NEXT:  ptrdiff_t [[TILE_OFF_A_PD:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_A]];
 // FPU-NEXT:  int32_t [[TILE_OFF_A_I32:v[0-9]+]] = (int32_t) [[TILE_OFF_A_PD]];
 // FPU-NEXT:  ptrdiff_t [[CB_ADDR_A_PD:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_A_IDX]];
 // FPU-NEXT:  int32_t [[CB_ADDR_A:v[0-9]+]] = (int32_t) [[CB_ADDR_A_PD]];
-// FPU-NEXT:  noc_async_read_tile([[TILE_OFF_A_I32]], [[ACC_A]], [[CB_ADDR_A]]);
+// FPU-NEXT:  noc0.async_read([[ACC_A]], CoreLocalMem<uint32_t>([[CB_ADDR_A]]), [[ACC_A]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE_OFF_A_I32]])}, {});
 // FPU:     }
 // FPU-NEXT:   }
-// FPU-NEXT:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// FPU-NEXT:   noc0.async_read_barrier();
 
 // Read tensor B into CB1
 // FPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
@@ -76,22 +76,21 @@
 // Byte offset: tile_offset * page_size + cb_base
 // FPU-NEXT:  size_t [[BYTE_OFF_B:v[0-9]+]] = [[TILE_OFF_B]] * [[PAGE_SIZE]];
 // FPU-NEXT:  size_t [[CB_ADDR_B_IDX:v[0-9]+]] = [[CB1_PTR_IDX]] + [[BYTE_OFF_B]];
-// Cast tile offset and CB address to int32_t for noc_async_read_tile
+// Cast tile offset and CB address to int32_t for noc0.async_read
 // FPU-NEXT:  ptrdiff_t [[TILE_OFF_B_PD:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_B]];
 // FPU-NEXT:  int32_t [[TILE_OFF_B_I32:v[0-9]+]] = (int32_t) [[TILE_OFF_B_PD]];
 // FPU-NEXT:  ptrdiff_t [[CB_ADDR_B_PD:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_B_IDX]];
 // FPU-NEXT:  int32_t [[CB_ADDR_B:v[0-9]+]] = (int32_t) [[CB_ADDR_B_PD]];
-// FPU-NEXT:  noc_async_read_tile([[TILE_OFF_B_I32]], [[ACC_B]], [[CB_ADDR_B]]);
+// FPU-NEXT:  noc0.async_read([[ACC_B]], CoreLocalMem<uint32_t>([[CB_ADDR_B]]), [[ACC_B]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE_OFF_B_I32]])}, {});
 // FPU:     }
 // FPU-NEXT:   }
-// FPU-NEXT:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// FPU-NEXT:   noc0.async_read_barrier();
 // FPU-NEXT:   return;
 
 // =============================================================================
 // FPU path: compute kernel -- binary_op_init_common, add_tiles, exp
 // =============================================================================
-// FPU-LABEL: // compute_fused
-// FPU: void kernel_main() {
+// FPU-LABEL: void kernel_main() {
 // FPU-DAG:   int32_t [[TILES:v[0-9]+]] = 4
 // FPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
 // FPU-DAG:   size_t [[CBOUND:v[0-9]+]] = 2
@@ -132,8 +131,8 @@
 // =============================================================================
 // FPU path: writer kernel
 // =============================================================================
-// FPU-LABEL: // writer_unary
-// FPU: void kernel_main() {
+// FPU-LABEL: void kernel_main() {
+// FPU:   Noc noc0(0);
 // FPU-DAG:   size_t [[WBOUND:v[0-9]+]] = 2
 // FPU-DAG:   size_t [[WONE:v[0-9]+]] = 1
 // FPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
@@ -154,21 +153,21 @@
 // Byte offset: tile_offset * page_size + cb_base
 // FPU-NEXT:  size_t [[WBYTE_OFF:v[0-9]+]] = [[WTILE_OFF]] * [[WPAGE]];
 // FPU-NEXT:  size_t [[WCB_ADDR_IDX:v[0-9]+]] = [[WR_PTR_IDX]] + [[WBYTE_OFF]];
-// Cast tile offset and CB address to int32_t for noc_async_write_tile
+// Cast tile offset and CB address to int32_t for noc0.async_write
 // FPU-NEXT:  ptrdiff_t [[WTILE_PD:v[0-9]+]] = (ptrdiff_t) [[WTILE_OFF]];
 // FPU-NEXT:  int32_t [[WTILE_I32:v[0-9]+]] = (int32_t) [[WTILE_PD]];
 // FPU-NEXT:  ptrdiff_t [[WCB_ADDR_PD:v[0-9]+]] = (ptrdiff_t) [[WCB_ADDR_IDX]];
 // FPU-NEXT:  int32_t [[WCB_ADDR:v[0-9]+]] = (int32_t) [[WCB_ADDR_PD]];
-// FPU-NEXT:  noc_async_write_tile([[WTILE_I32]], [[WACC]], [[WCB_ADDR]]);
+// FPU-NEXT:  noc0.async_write(CoreLocalMem<uint32_t>([[WCB_ADDR]]), [[WACC]], [[WACC]].get_aligned_page_size(), {} , {.page_id = static_cast<uint32_t>([[WTILE_I32]])});
 // FPU:     }
 // FPU-NEXT:   }
-// FPU-NEXT:   noc.async_write_barrier<Noc::BarrierMode::FULL>();
+// FPU-NEXT:   noc0.async_write_barrier();
 
 // =============================================================================
 // SFPU path: reader kernel (same for both paths)
 // =============================================================================
-// SFPU-LABEL: // reader_binary
-// SFPU: void kernel_main() {
+// SFPU-LABEL: void kernel_main() {
+// SFPU:   Noc noc0(0);
 // SFPU-DAG:   size_t [[BOUND:v[0-9]+]] = 2
 // SFPU-DAG:   size_t [[ONE:v[0-9]+]] = 1
 // SFPU-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096
@@ -193,15 +192,15 @@
 // Byte offset: tile_offset * page_size + cb_base
 // SFPU-NEXT:  size_t [[BYTE_OFF_A:v[0-9]+]] = [[TILE_OFF_A]] * [[PAGE_SIZE]];
 // SFPU-NEXT:  size_t [[CB_ADDR_A_IDX:v[0-9]+]] = [[CB0_PTR_IDX]] + [[BYTE_OFF_A]];
-// Cast tile offset and CB address to int32_t for noc_async_read_tile
+// Cast tile offset and CB address to int32_t for noc0.async_read
 // SFPU-NEXT:  ptrdiff_t [[TILE_OFF_A_PD:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_A]];
 // SFPU-NEXT:  int32_t [[TILE_OFF_A_I32:v[0-9]+]] = (int32_t) [[TILE_OFF_A_PD]];
 // SFPU-NEXT:  ptrdiff_t [[CB_ADDR_A_PD:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_A_IDX]];
 // SFPU-NEXT:  int32_t [[CB_ADDR_A:v[0-9]+]] = (int32_t) [[CB_ADDR_A_PD]];
-// SFPU-NEXT:  noc_async_read_tile([[TILE_OFF_A_I32]], [[ACC_A]], [[CB_ADDR_A]]);
+// SFPU-NEXT:  noc0.async_read([[ACC_A]], CoreLocalMem<uint32_t>([[CB_ADDR_A]]), [[ACC_A]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE_OFF_A_I32]])}, {});
 // SFPU:     }
 // SFPU-NEXT:   }
-// SFPU-NEXT:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// SFPU-NEXT:   noc0.async_read_barrier();
 
 // Read tensor B into CB1
 // SFPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
@@ -218,22 +217,21 @@
 // Byte offset: tile_offset * page_size + cb_base
 // SFPU-NEXT:  size_t [[BYTE_OFF_B:v[0-9]+]] = [[TILE_OFF_B]] * [[PAGE_SIZE]];
 // SFPU-NEXT:  size_t [[CB_ADDR_B_IDX:v[0-9]+]] = [[CB1_PTR_IDX]] + [[BYTE_OFF_B]];
-// Cast tile offset and CB address to int32_t for noc_async_read_tile
+// Cast tile offset and CB address to int32_t for noc0.async_read
 // SFPU-NEXT:  ptrdiff_t [[TILE_OFF_B_PD:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_B]];
 // SFPU-NEXT:  int32_t [[TILE_OFF_B_I32:v[0-9]+]] = (int32_t) [[TILE_OFF_B_PD]];
 // SFPU-NEXT:  ptrdiff_t [[CB_ADDR_B_PD:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_B_IDX]];
 // SFPU-NEXT:  int32_t [[CB_ADDR_B:v[0-9]+]] = (int32_t) [[CB_ADDR_B_PD]];
-// SFPU-NEXT:  noc_async_read_tile([[TILE_OFF_B_I32]], [[ACC_B]], [[CB_ADDR_B]]);
+// SFPU-NEXT:  noc0.async_read([[ACC_B]], CoreLocalMem<uint32_t>([[CB_ADDR_B]]), [[ACC_B]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE_OFF_B_I32]])}, {});
 // SFPU:     }
 // SFPU-NEXT:   }
-// SFPU-NEXT:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// SFPU-NEXT:   noc0.async_read_barrier();
 // SFPU-NEXT:   return;
 
 // =============================================================================
 // SFPU path: compute kernel -- init_sfpu, copy_tile, add_binary_tile, exp
 // =============================================================================
-// SFPU-LABEL: // compute_fused
-// SFPU: void kernel_main() {
+// SFPU-LABEL: void kernel_main() {
 // SFPU-DAG:   int32_t [[TILES:v[0-9]+]] = 4
 // SFPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
 // SFPU-DAG:   size_t [[CBOUND:v[0-9]+]] = 2
@@ -274,8 +272,8 @@
 // =============================================================================
 // SFPU path: writer kernel
 // =============================================================================
-// SFPU-LABEL: // writer_unary
-// SFPU: void kernel_main() {
+// SFPU-LABEL: void kernel_main() {
+// SFPU:   Noc noc0(0);
 // SFPU-DAG:   size_t [[WBOUND:v[0-9]+]] = 2
 // SFPU-DAG:   size_t [[WONE:v[0-9]+]] = 1
 // SFPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
@@ -296,15 +294,15 @@
 // Byte offset: tile_offset * page_size + cb_base
 // SFPU-NEXT:  size_t [[WBYTE_OFF:v[0-9]+]] = [[WTILE_OFF]] * [[WPAGE]];
 // SFPU-NEXT:  size_t [[WCB_ADDR_IDX:v[0-9]+]] = [[WR_PTR_IDX]] + [[WBYTE_OFF]];
-// Cast tile offset and CB address to int32_t for noc_async_write_tile
+// Cast tile offset and CB address to int32_t for noc0.async_write
 // SFPU-NEXT:  ptrdiff_t [[WTILE_PD:v[0-9]+]] = (ptrdiff_t) [[WTILE_OFF]];
 // SFPU-NEXT:  int32_t [[WTILE_I32:v[0-9]+]] = (int32_t) [[WTILE_PD]];
 // SFPU-NEXT:  ptrdiff_t [[WCB_ADDR_PD:v[0-9]+]] = (ptrdiff_t) [[WCB_ADDR_IDX]];
 // SFPU-NEXT:  int32_t [[WCB_ADDR:v[0-9]+]] = (int32_t) [[WCB_ADDR_PD]];
-// SFPU-NEXT:  noc_async_write_tile([[WTILE_I32]], [[WACC]], [[WCB_ADDR]]);
+// SFPU-NEXT:  noc0.async_write(CoreLocalMem<uint32_t>([[WCB_ADDR]]), [[WACC]], [[WACC]].get_aligned_page_size(), {} , {.page_id = static_cast<uint32_t>([[WTILE_I32]])});
 // SFPU:     }
 // SFPU-NEXT:   }
-// SFPU-NEXT:   noc.async_write_barrier<Noc::BarrierMode::FULL>();
+// SFPU-NEXT:   noc0.async_write_barrier();
 
 // Reader kernel: reads A and B from DRAM, pushes to CB0 and CB1
 func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)

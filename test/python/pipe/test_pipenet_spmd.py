@@ -16,7 +16,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import assert_allclose
+from ttlang_test_utils import assert_allclose, open_fabric_mesh
 
 TILE = 32
 GRID_X = 2
@@ -62,16 +62,12 @@ def mesh_unicast_pipe_kernel(inp, out):
 
 @pytest.fixture
 def mesh_device():
-    num_devices = ttnn.GetNumAvailableDevices()
+    num_devices = ttnn.get_num_devices()
     if num_devices < MIN_DEVICES:
         pytest.skip(f"need >={MIN_DEVICES} devices, have {num_devices}")
 
-    ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D)
-    mesh = ttnn.open_mesh_device(ttnn.MeshShape(1, num_devices))
-    try:
+    with open_fabric_mesh() as mesh:
         yield mesh, num_devices
-    finally:
-        ttnn.close_mesh_device(mesh)
 
 
 def test_mesh_unicast_pipe_spmd(mesh_device):

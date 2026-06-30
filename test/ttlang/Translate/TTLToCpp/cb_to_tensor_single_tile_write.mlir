@@ -9,16 +9,16 @@
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
-// CHECK: // cb_to_tensor
 // CHECK: void kernel_main() {
+// CHECK:   Noc noc0(0);
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CHECK:   CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
 // CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[RT_ARG_IDX:v[0-9]+]]);
 // CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
-// CHECK-NEXT:   noc_async_write_tile([[ZERO]], [[ACCESSOR]], [[CB]].get_read_ptr());
-// CHECK:   noc.async_write_barrier<Noc::BarrierMode::FULL>();
+// CHECK-NEXT:   noc0.async_write(CoreLocalMem<uint32_t>([[CB]].get_read_ptr()), [[ACCESSOR]], [[ACCESSOR]].get_aligned_page_size(), {} , {.page_id = static_cast<uint32_t>([[ZERO]])});
+// CHECK:   noc0.async_write_barrier();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

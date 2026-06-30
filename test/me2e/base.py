@@ -17,7 +17,11 @@ from pathlib import Path
 
 import pytest
 import torch
-from .config import validate_against_golden, validate_exact_mask_against_golden
+from .config import (
+    ME2E_OUTPUT_ROOT,
+    validate_against_golden,
+    validate_exact_mask_against_golden,
+)
 
 
 class ME2ETestBase:
@@ -33,10 +37,11 @@ class ME2ETestBase:
     OUTPUT_DIR: Path
 
     @pytest.fixture(scope="class", autouse=True)
-    def setup(self, request):
+    @classmethod
+    def setup(cls):
         """Initialize test class with output directory."""
-        request.cls.OUTPUT_DIR = Path(f"build/test/me2e/{request.cls.__name__}")
-        request.cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cls.OUTPUT_DIR = ME2E_OUTPUT_ROOT / cls.__name__
+        cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     def output_file(self, name: str) -> Path:
         """Get path for intermediate file."""

@@ -14,7 +14,7 @@
 pl<br>
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
-![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
+![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue.svg)
 ![Build Status](https://github.com/tenstorrent/tt-lang/actions/workflows/ci.yml/badge.svg)
 
 A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current simulator and compiler support.
@@ -44,7 +44,9 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.
 
-First, create an isolated Python environment (venv, conda, etc.) with Python 3.11 or later (python3.12 recommended). For example:
+First, create an isolated Python environment (venv, conda, etc.) with Python
+matching the selected wheel. Public PyPI hardware wheels currently use Python
+3.12; S3 light wheels are built for Python 3.10 and Python 3.12. For example:
 
 ```bash
 python3 -m venv --prompt ttlang ttlang-venv

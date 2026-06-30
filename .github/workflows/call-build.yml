@@ -111,9 +111,13 @@ jobs:
                   path: ./build/docs/sphinx/_build/html
 
     test-hardware:
+        strategy:
+            fail-fast: false
+            matrix:
+                runner: [n150, n300-llmbox]
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
-            runs-on: n150
+            runs-on: ${{ matrix.runner }}
             timeout: 90
             docker_tag: ${{ inputs.docker_tag }}

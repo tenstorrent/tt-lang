@@ -21,7 +21,7 @@
 // CHECK: %[[V1:.*]] = memref.load %[[CTR]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
 // CHECK: memref.store %[[N1]], %[[CTR]]
-// CHECK: ttkernel.experimental::semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 
 // Second Pipe->DFB receive uses the same counter. The previous push releases
@@ -34,7 +34,7 @@
 // CHECK: %[[V2:.*]] = memref.load %[[CTR]]
 // CHECK: %[[N2:.*]] = arith.addi %[[V2]]
 // CHECK: memref.store %[[N2]], %[[CTR]]
-// CHECK: ttkernel.experimental::semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 func.func @overlap_two_receives_share_counter() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
@@ -63,11 +63,11 @@ func.func @overlap_two_receives_share_counter() attributes { "ttl.kernel_thread"
 // CHECK: %[[VA:.*]] = memref.load %[[CTR_A]]
 // CHECK: %[[NA:.*]] = arith.addi %[[VA]]
 // CHECK: memref.store %[[NA]], %[[CTR_A]]
-// CHECK: ttkernel.experimental::semaphore_wait_min({{.*}}, %[[NA]])
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NA]])
 // CHECK: %[[VB:.*]] = memref.load %[[CTR_B]]
 // CHECK: %[[NB:.*]] = arith.addi %[[VB]]
 // CHECK: memref.store %[[NB]], %[[CTR_B]]
-// CHECK: ttkernel.experimental::semaphore_wait_min({{.*}}, %[[NB]])
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NB]])
 func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p_net0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -92,6 +92,7 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @overlap_distinct_slots
+// CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
@@ -101,21 +102,21 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
 // CHECK: %[[POSTED_ADDR2:.*]] = arith.addi %[[POSTED_BASE2]]
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[POSTED_ADDR2]]
 // CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[DST_X_START1:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_START1:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[DST_X_END1:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_END1:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_START1:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START1:.*]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: %[[DST_X_END1:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END1:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[LOADED_ADDR1:.*]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[LOADED_ADDR1]]
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START1]], %[[DST_Y_START1]]], end_xy[%[[DST_X_END1]], %[[DST_Y_END1]]], %[[LOADED_ADDR1]]
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START1]], %[[DST_Y_START1]]], end_xy[%[[DST_X_END1]], %[[DST_Y_END1]]], %[[LOADED_ADDR1]], noc %[[NOC]])
 // CHECK: %[[SRC_ADDR2:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[DST_X_START2:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_START2:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[DST_X_END2:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_END2:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_START2:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START2:.*]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: %[[DST_X_END2:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END2:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[LOADED_ADDR2:.*]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[LOADED_ADDR2]]
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START2]], %[[DST_Y_START2]]], end_xy[%[[DST_X_END2]], %[[DST_Y_END2]]], %[[LOADED_ADDR2]]
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START2]], %[[DST_Y_START2]]], end_xy[%[[DST_X_END2]], %[[DST_Y_END2]]], %[[LOADED_ADDR2]], noc %[[NOC]])
 func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
@@ -144,6 +145,7 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @overlap_distinct_slots_reversed_order
+// CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
@@ -153,21 +155,21 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
 // CHECK: %[[POSTED_ADDR2:.*]] = arith.addi %[[POSTED_BASE2]]
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[POSTED_ADDR2]]
 // CHECK: %[[SRC_ADDR1:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[DST_X_START1:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_START1:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[DST_X_END1:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_END1:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_START1:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START1:.*]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: %[[DST_X_END1:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END1:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[LOADED_ADDR1:.*]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[LOADED_ADDR1]]
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START1]], %[[DST_Y_START1]]], end_xy[%[[DST_X_END1]], %[[DST_Y_END1]]], %[[LOADED_ADDR1]]
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR1]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START1]], %[[DST_Y_START1]]], end_xy[%[[DST_X_END1]], %[[DST_Y_END1]]], %[[LOADED_ADDR1]], noc %[[NOC]])
 // CHECK: %[[SRC_ADDR2:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[DST_X_START2:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_START2:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[DST_X_END2:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_END2:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_START2:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START2:.*]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: %[[DST_X_END2:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END2:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[LOADED_ADDR2:.*]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[LOADED_ADDR2]]
-// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START2]], %[[DST_Y_START2]]], end_xy[%[[DST_X_END2]], %[[DST_Y_END2]]], %[[LOADED_ADDR2]]
+// CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR2]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START2]], %[[DST_Y_START2]]], end_xy[%[[DST_X_END2]], %[[DST_Y_END2]]], %[[LOADED_ADDR2]], noc %[[NOC]])
 func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
@@ -198,15 +200,15 @@ func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thre
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @loopback_self_inc
-// CHECK: %[[NOC:.*]] = arith.constant {{.*}} : i8
+// CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr
-// CHECK: %[[DST_X_START:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_START:.*]] = ttkernel.experimental::convert_logical_y_to_translated
-// CHECK: %[[DST_X_END:.*]] = ttkernel.experimental::convert_logical_x_to_translated
-// CHECK: %[[DST_Y_END:.*]] = ttkernel.experimental::convert_logical_y_to_translated
+// CHECK: %[[DST_X_START:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_START:.*]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: %[[DST_X_END:.*]] = ttkernel.experimental.convert_logical_x_to_translated
+// CHECK: %[[DST_Y_END:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[DST_ADDR]]
-// CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_ADDR]], %[[NOC]])
+// CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_ADDR]], noc %[[NOC]])
 // CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
 // CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[REMOTE_DONE_NOC:.*]] = ttkernel.get_noc_multicast_addr(%[[DST_X_START]], %[[DST_Y_START]], %[[DST_X_END]], %[[DST_Y_END]], %[[DONE_SEM]], %[[NOC]])

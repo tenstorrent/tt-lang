@@ -25,6 +25,18 @@ COMPUTE_NIGHTLY_VERSION = SCRIPTS_DIR / "compute-nightly-version.py"
 CHECK_INSTALLED_TTNN = SCRIPTS_DIR / "check-installed-ttnn.py"
 CHECK_BUNDLED_PAYLOAD = SCRIPTS_DIR / "check-wheel-bundled-payload.py"
 PUBLISH_S3_PYPI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-s3-pypi.yml"
+PUBLISH_PYPI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-pypi.yml"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+CALL_BUILD_DOCKER_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-build-docker.yml"
+)
+CALL_BUILD_WHEEL_IMAGES_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-build-wheel-images.yml"
+)
+MANYLINUX_WHEEL_DOCKERFILE = (
+    REPO_ROOT / ".github" / "containers" / "Dockerfile.wheel-manylinux-2-34"
+)
+SETUP_PY = REPO_ROOT / "setup.py"
 
 
 def _run_script(
@@ -51,13 +63,73 @@ def _write_wheel(dist_dir: Path, filename: str, metadata: str) -> Path:
     return wheel_path
 
 
-def test_s3_schedule_publishes_bundled_and_light_wheels() -> None:
+def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
 
     assert (
         "github.event_name == 'workflow_dispatch' && inputs.wheel_variant || ''"
     ) in workflow
     assert "EVENT_NAME: ${{ github.event_name }}" in workflow
+    assert "tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}" in workflow
+    assert "python_tag: [cp310, cp312]" in workflow
+    assert ".github/scripts/build-s3-light-core-wheel.sh" in workflow
+    assert ".github/scripts/build-s3-light-metapackage-wheel.sh" in workflow
+    assert ".github/scripts/test-s3-light-wheels.sh" in workflow
+    assert "standard_wheel_matrix" in workflow
+
+
+def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
+    build_docker_workflow = CALL_BUILD_DOCKER_WORKFLOW.read_text()
+    wheel_images_workflow = CALL_BUILD_WHEEL_IMAGES_WORKFLOW.read_text()
+    ci_workflow = CI_WORKFLOW.read_text()
+    s3_workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    pypi_workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+    manylinux_dockerfile = MANYLINUX_WHEEL_DOCKERFILE.read_text()
+
+    # The core Docker image build never builds the wheel-builder images, so its
+    # consumers (hardware tests, standard wheels) do not wait on them.
+    assert "build-manylinux-wheel-images:" not in build_docker_workflow
+    assert "build_manylinux_wheel_images" not in build_docker_workflow
+    assert "build-wheel-manylinux-images.sh" not in build_docker_workflow
+
+    # The wheel-builder images live in their own opt-in workflow.
+    assert "build-manylinux-wheel-images:" in wheel_images_workflow
+    assert "python_tag: [cp310, cp312]" in wheel_images_workflow
+    assert "id: docker-tag" in wheel_images_workflow
+    assert "registry-image=${registry_image}" in wheel_images_workflow
+    assert r"Image: \`${registry_image}\`" in wheel_images_workflow
+    assert (
+        "build-wheel-manylinux-images.sh --python-tags"
+        ' "${{ matrix.python_tag }}" --image-tag'
+    ) in wheel_images_workflow
+    assert '"${{ steps.docker-tag.outputs.docker-tag }}"' in wheel_images_workflow
+    assert "--build-parallel-level 2" in wheel_images_workflow
+    assert "ARG TTLANG_BUILD_PARALLEL_LEVEL" in manylinux_dockerfile
+    assert (
+        'ENV CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"'
+        in manylinux_dockerfile
+    )
+
+    # CI opts in on image rebuild; the S3 publish opts in only for the light
+    # wheel variant; the PyPI publish never builds them.
+    assert "uses: ./.github/workflows/call-build-wheel-images.yml" in ci_workflow
+    assert "uses: ./.github/workflows/call-build-wheel-images.yml" in s3_workflow
+    assert (
+        "contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light')"
+        in s3_workflow
+    )
+    assert "call-build-wheel-images" not in pypi_workflow
+    assert "build_manylinux_wheel_images" not in pypi_workflow
+
+
+def test_setup_py_removes_stale_native_payloads_before_wheel_install() -> None:
+    setup_py = SETUP_PY.read_text()
+
+    assert 'mlir_libs_dir = install_dir / "ttl" / "_mlir_libs"' in setup_py
+    assert "shutil.rmtree(mlir_libs_dir)" in setup_py
+    assert setup_py.index("self._remove_stale_native_payloads(install_dir)") < (
+        setup_py.index('"cmake",\n                "--install"')
+    )
 
 
 def test_s3_stable_tags_publish_clean_version_wheels() -> None:

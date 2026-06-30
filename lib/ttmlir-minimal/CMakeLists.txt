@@ -95,6 +95,7 @@ add_mlir_dialect_library(MLIRTTKernelDialect
 # ============================================================================
 add_mlir_dialect_library(MLIRTTKernelTransforms
   "${TT_MLIR_SRC}/lib/Dialect/TTKernel/Transforms/ControlDstSection.cpp"
+  "${TT_MLIR_SRC}/lib/Dialect/TTKernel/Transforms/DedupInits.cpp"
   "${TT_MLIR_SRC}/lib/Dialect/TTKernel/Transforms/HoistInits.cpp"
   "${TT_MLIR_SRC}/lib/Dialect/TTKernel/Transforms/InsertDeviceZoneScopes.cpp"
 

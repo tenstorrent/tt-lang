@@ -8,7 +8,8 @@ load test_helper
 
 IRD_IMAGE_BASE="ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04"
 BARE_TAG="v99.99.99"
-UPLIFT_TAG="v99.99.99-uplift-abcd1234"
+HASHED_TAG="v99.99.99-abcd1234"
+LEGACY_UPLIFT_TAG="v99.99.99-uplift-abcd1234"
 RC_TAG="v99.99.99-rc1"
 DEV_TAG="v99.99.99-dev20260515"
 
@@ -55,15 +56,20 @@ setup() {
     assert_equal "$(read_needs_rebuild "$GH_OUT")" "false"
 }
 
-@test "uplift tag, image present -> needs_rebuild=false" {
-    FAKE_DOCKER_MISSING=0 run -0 "$SCRIPT" "$UPLIFT_TAG"
+@test "hashed tag, image present -> needs_rebuild=false" {
+    FAKE_DOCKER_MISSING=0 run -0 "$SCRIPT" "$HASHED_TAG"
     assert_equal "$(read_needs_rebuild "$GH_OUT")" "false"
 }
 
-# --- Image missing, uplift form -> needs_rebuild=true, exit 0 ---
+# --- Image missing, hashed form -> needs_rebuild=true, exit 0 ---
 
-@test "uplift tag, image missing -> needs_rebuild=true" {
-    FAKE_DOCKER_MISSING=1 run -0 "$SCRIPT" "$UPLIFT_TAG"
+@test "hashed tag, image missing -> needs_rebuild=true" {
+    FAKE_DOCKER_MISSING=1 run -0 "$SCRIPT" "$HASHED_TAG"
+    assert_equal "$(read_needs_rebuild "$GH_OUT")" "true"
+}
+
+@test "legacy uplift tag, image missing -> needs_rebuild=true" {
+    FAKE_DOCKER_MISSING=1 run -0 "$SCRIPT" "$LEGACY_UPLIFT_TAG"
     assert_equal "$(read_needs_rebuild "$GH_OUT")" "true"
 }
 

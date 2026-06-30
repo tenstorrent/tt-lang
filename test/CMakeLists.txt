@@ -8,6 +8,13 @@ configure_file(
   @ONLY
 )
 
+# Generate me2e/config.py so ME2E_OUTPUT_ROOT points at the active build tree.
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/me2e/config.py.in
+  ${CMAKE_CURRENT_SOURCE_DIR}/me2e/config.py
+  @ONLY
+)
+
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py

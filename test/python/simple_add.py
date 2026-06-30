@@ -137,7 +137,7 @@ def add_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify generated compute kernel
 # =============================================================================
 
-# CHECK-CPP: // add_compute
+# CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -179,7 +179,7 @@ def add_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify generated dm_read kernel
 # =============================================================================
 
-# CHECK-CPP: // dm_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -188,8 +188,8 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB0]].reserve_back(
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 3>(), 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: noc_async_read_tile({{.*}}[[CB0]].get_write_ptr()
-# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_read({{.*}}CoreLocalMem<uint32_t>([[CB0]].get_write_ptr())
+# CHECK-CPP: async_read_barrier();
 # CHECK-CPP: [[CB0]].push_back(
 
 # Second input: reserve DFB, read tile, push DFB
@@ -199,15 +199,15 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB1]].reserve_back(
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 3>(), 1>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: noc_async_read_tile({{.*}}[[CB1]].get_write_ptr()
-# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_read({{.*}}CoreLocalMem<uint32_t>([[CB1]].get_write_ptr())
+# CHECK-CPP: async_read_barrier();
 # CHECK-CPP: [[CB1]].push_back(
 
 # =============================================================================
 # C++ Kernel Checks - Verify generated dm_write kernel
 # =============================================================================
 
-# CHECK-CPP: // dm_write
+# CHECK-CPP: === dm_write kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 
@@ -215,8 +215,8 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB2]].wait_front(
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<2, 3>(), 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: noc_async_write_tile({{.*}}[[CB2]].get_read_ptr()
-# CHECK-CPP: noc.async_write_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_write(CoreLocalMem<uint32_t>([[CB2]].get_read_ptr())
+# CHECK-CPP: async_write_barrier();
 # CHECK-CPP: [[CB2]].pop_front(
 
 
@@ -224,7 +224,7 @@ def add_kernel(lhs, rhs, out):
 # SFPU path checks (--no-ttl-maximize-dst --no-ttl-fpu-binary-ops)
 # =============================================================================
 
-# CHECK-CPP-SFPU: // add_compute
+# CHECK-CPP-SFPU: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP-SFPU: void kernel_main()
 # CHECK-CPP-SFPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-SFPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

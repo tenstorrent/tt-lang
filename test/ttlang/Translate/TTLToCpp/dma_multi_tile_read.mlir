@@ -12,8 +12,8 @@
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
-// CHECK-LABEL: // dma_multi_tile_read
-// CHECK: void kernel_main() {
+// CHECK-LABEL: void kernel_main() {
+// CHECK:   Noc noc0(0);
 // CHECK-DAG:   size_t [[TILE_STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
 // CHECK-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096;
@@ -38,10 +38,10 @@
 // CHECK:       int32_t [[TILE_OFFSET:v[0-9]+]] = (int32_t) [[TILE_OFFSET_PTR]];
 // CHECK:       ptrdiff_t [[CB_ADDR_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_IDX]];
 // CHECK:       int32_t [[CB_ADDR:v[0-9]+]] = (int32_t) [[CB_ADDR_PTR]];
-// CHECK:       noc_async_read_tile([[TILE_OFFSET]], [[ACCESSOR]], [[CB_ADDR]]);
+// CHECK:       noc0.async_read([[ACCESSOR]], CoreLocalMem<uint32_t>([[CB_ADDR]]), [[ACCESSOR]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE_OFFSET]])}, {});
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// CHECK:   noc0.async_read_barrier();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

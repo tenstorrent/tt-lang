@@ -18,6 +18,7 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
     dfbOpts.enable = options.compilerDFBs;
@@ -69,7 +70,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createCSEPass());
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
-    pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
+    pm.addNestedPass<func::FuncOp>(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }
