@@ -694,29 +694,31 @@ def TTLDumpCBFlowGraph
 
 def TTLLowerScalarFpTypes
     : Pass<"ttl-lower-scalar-fp-types", "::mlir::ModuleOp"> {
-  let summary = "Lower scalar float types to integer bit patterns through control flow";
+  let summary = "Lower scalar float types to integer bit patterns";
   let description = [{
-    Resolves `unrealized_conversion_cast` bridges between integer bit patterns
-    and float types introduced by `convert-ttl-to-ttkernel`. After that pass,
-    float values from L1 loads are represented as integer bit patterns with
-    `unrealized_conversion_cast(iN -> fN)` presenting them as floats for user
-    code. This pass propagates the integer representation through control flow
-    and lowers float operations to their integer-domain equivalents.
+    Converts all scalar float types to integer bit-pattern types using MLIR
+    dialect conversion. After `convert-ttl-to-ttkernel`, float values from L1
+    loads are represented as integer bit patterns bridged by
+    `unrealized_conversion_cast(iN -> fN)`. This pass eliminates those bridges
+    by converting all scalar `FloatType` values to the corresponding
+    `IntegerType` (f32 -> i32, bf16 -> i16).
 
-    Two rewrites are performed:
+    The following conversions are performed:
 
-    1. **arith.cmpf lowering**: Converts `arith.cmpf` on scalar floats to
-       TTKernel soft-float comparison ops that operate on integer bit patterns.
-       Supported predicates:
-       - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
-       - `olt` -> same ops with swapped operands
-       Unsupported predicates emit an error diagnostic and signal pass failure.
+    1. **arith.cmpf**: Converts scalar float comparisons to TTKernel soft-float
+       comparison ops (`ttkernel.float32_greater` / `ttkernel.bfloat16_greater`).
+       Supported predicates: `ogt` and `olt` (swapped operands). Unsupported
+       predicates cause the pass to fail.
 
-    2. **scf.if cast propagation**: When an `scf.if` yields float values via
-       `unrealized_conversion_cast(iN -> fN)` and the result is consumed by
-       `unrealized_conversion_cast(fN -> iN)`, rewrites the `scf.if` to yield
-       the integer values directly and eliminates the cast chain. This handles
-       conditional reassignment of scalar values read from L1.
+    2. **arith.truncf**: Converts float truncation (e.g. f32 -> bf16) to
+       integer bit extraction via `arith.shrui` + `arith.trunci`.
+
+    3. **arith.constant**: Converts float constants to their integer bit-pattern
+       equivalents.
+
+    4. **SCF control flow**: Propagates integer types through `scf.if`,
+       `scf.for`, `scf.while`, and `scf.yield` using upstream SCF structural
+       type conversion patterns.
   }];
 
   let dependentDialects = [

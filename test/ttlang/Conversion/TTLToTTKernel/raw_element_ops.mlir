@@ -388,14 +388,16 @@ module {
 
 // -----
 
-// Write f32 value truncated to bf16: materializeIntBits handles arith.truncf
-// by extracting the upper 16 bits of the f32 encoding via shift+trunc.
+// Write f32 value truncated to bf16: materializeIntBits emits an
+// unrealized_conversion_cast for the truncf result; ttl-lower-scalar-fp-types
+// resolves it into shrui+trunci later. Here only convert-ttl-to-ttkernel runs,
+// so the cast and truncf remain, and store_to_l1 consumes the cast output.
 // CHECK-LABEL: func.func @write_tiled_bf16_truncf
-// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
-// CHECK-DAG: %[[SHIFTED:.*]] = arith.shrui %arg0, {{.*}} : i32
-// CHECK-DAG: %[[TRUNC:.*]] = arith.trunci %[[SHIFTED]] : i32 to i16
+// CHECK: %[[F32:.*]] = builtin.unrealized_conversion_cast %arg0 : i32 to f32
+// CHECK: %[[BF16:.*]] = arith.truncf %[[F32]] : f32 to bf16
+// CHECK: %[[BITS:.*]] = builtin.unrealized_conversion_cast %[[BF16]] : bf16 to i16
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast<tt_l1_ptr uint32_t*>({{.*}}) : (i32) -> !ttkernel.l1_addr_ptr<16>
-// CHECK: ttkernel.store_to_l1(%[[TRUNC]], %[[L1]], %[[C0]]) : (i16, !ttkernel.l1_addr_ptr<16>, i32) -> ()
+// CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], {{.*}}) : (i16, !ttkernel.l1_addr_ptr<16>, i32) -> ()
 module {
   func.func @write_tiled_bf16_truncf(%a_int: i32)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
