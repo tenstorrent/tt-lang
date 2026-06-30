@@ -96,7 +96,8 @@ struct TruncFToBitExtract : OpConversionPattern<arith::TruncFOp> {
 };
 
 /// Convert arith.constant with a FloatAttr into an integer constant holding
-/// the IEEE-754 bit pattern.
+/// the IEEE-754 bit pattern.  Skip constants consumed by TTKernel ops, which
+/// legitimately operate on scalar floats (e.g. ttkernel.fill_tile).
 struct ConstantOpConversion : OpConversionPattern<arith::ConstantOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -106,6 +107,13 @@ struct ConstantOpConversion : OpConversionPattern<arith::ConstantOp> {
     auto floatAttr = mlir::dyn_cast<FloatAttr>(op.getValue());
     if (!floatAttr) {
       return rewriter.notifyMatchFailure(op, "not a float constant");
+    }
+
+    for (Operation *user : op.getResult().getUsers()) {
+      if (isa<ttk::TTKernelDialect>(user->getDialect())) {
+        return rewriter.notifyMatchFailure(
+            op, "float constant consumed by TTKernel op");
+      }
     }
 
     APInt bits = floatAttr.getValue().bitcastToAPInt();
@@ -143,7 +151,15 @@ struct TTLLowerScalarFpTypesPass
     target.addIllegalOp<arith::CmpFOp>();
     target.addIllegalOp<arith::TruncFOp>();
     target.addDynamicallyLegalOp<arith::ConstantOp>([](arith::ConstantOp op) {
-      return !mlir::isa<FloatAttr>(op.getValue());
+      if (!mlir::isa<FloatAttr>(op.getValue())) {
+        return true;
+      }
+      for (Operation *user : op.getResult().getUsers()) {
+        if (isa<ttk::TTKernelDialect>(user->getDialect())) {
+          return true;
+        }
+      }
+      return false;
     });
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return typeConverter.isSignatureLegal(op.getFunctionType()) &&
