@@ -56,7 +56,7 @@ def tensor_dst_acc(initial, delta, out):
             ttl.copy(out_blk, out[0:1, 0:1]).wait()
 
 
-# CHECK-CPP:      // compute
+# CHECK-CPP:      === compute kernel written to {{.*}} ===
 # CHECK-CPP:      void kernel_main()
 # CHECK-CPP-NOT:  llk_pack_reconfig_l1_acc
 # CHECK-CPP:      tile_regs_acquire();

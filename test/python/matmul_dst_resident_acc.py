@@ -57,7 +57,7 @@ def matmul_dst_resident_acc(input_a, input_b, output):
             ttl.copy(output_blk, output[0:1, 0:N_TILES]).wait()
 
 
-# CHECK-CPP-LABEL: // compute
+# CHECK-CPP-LABEL: === compute kernel written to {{.*}} ===
 # CHECK-CPP:       void kernel_main()
 # CHECK-CPP-NOT:   llk_pack_reconfig_l1_acc
 # CHECK-CPP:       tile_regs_acquire();
