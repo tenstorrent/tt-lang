@@ -39,27 +39,14 @@ atexit.register(_cleanup_temp_kernel_files)
 
 # Add test root to path for shared utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from ttlang_test_utils import is_hardware_available, is_ttnn_available
+from ttlang_test_utils import (
+    is_hardware_available,
+    is_ttnn_available,
+    pin_xdist_worker_to_device,
+)
 
 
-def _pin_xdist_worker_to_device():
-    """Mask each pytest-xdist worker to one chip via TT_VISIBLE_DEVICES, so tests
-    that open device_id=0 land on distinct physical cards and can run in parallel.
-    Runs before any hardware probe when the hardware CI runner enables it. The
-    serial run stays unmasked so multi_device tests see every chip. An explicit
-    TT_VISIBLE_DEVICES is honored.
-    """
-    if os.environ.get("TTLANG_PIN_XDIST_WORKERS_TO_DEVICES") != "1":
-        return
-    worker = os.environ.get("PYTEST_XDIST_WORKER")
-    if not worker or "TT_VISIBLE_DEVICES" in os.environ:
-        return
-    digits = "".join(character for character in worker if character.isdigit())
-    if digits:
-        os.environ["TT_VISIBLE_DEVICES"] = digits
-
-
-_pin_xdist_worker_to_device()
+pin_xdist_worker_to_device()
 
 # =============================================================================
 # Feature detection

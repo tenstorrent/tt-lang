@@ -95,6 +95,20 @@ def is_hardware_available() -> bool:
     return _hardware_available
 
 
+def pin_xdist_worker_to_device() -> None:
+    """Restrict a pytest-xdist worker to one visible chip when CI enables it."""
+    if os.environ.get("TTLANG_PIN_XDIST_WORKERS_TO_DEVICES") != "1":
+        return
+    worker_name = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker_name or "TT_VISIBLE_DEVICES" in os.environ:
+        return
+    worker_index = "".join(
+        character for character in worker_name if character.isdigit()
+    )
+    if worker_index:
+        os.environ["TT_VISIBLE_DEVICES"] = worker_index
+
+
 def require_ttnn():
     """Exit test if TTNN is not available."""
     if not _ttnn_available:

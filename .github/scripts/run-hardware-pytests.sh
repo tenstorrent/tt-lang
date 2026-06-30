@@ -17,29 +17,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/hardware-test-common.sh"
+
 TEST_DIR="${1:?usage: run-hardware-pytests.sh <test-dir> <report-prefix>}"
 REPORT_PREFIX="${2:?usage: run-hardware-pytests.sh <test-dir> <report-prefix>}"
 
-count_chips() {
-    local chip_count=0 entry
-    for entry in /dev/tenstorrent/*; do
-        entry="${entry##*/}"
-        case "$entry" in
-            '' | *[!0-9]*) ;; # the literal glob (no match) or non-numeric nodes
-            *) chip_count=$((chip_count + 1)) ;;
-        esac
-    done
-    printf '%s\n' "$chip_count"
+chips="$(resolve_tt_chip_count "${HW_PYTEST_CHIPS:-}")" || {
+    echo "run-hardware-pytests.sh: invalid ${chips:-chip count}" >&2
+    exit 2
 }
-
-chips="${HW_PYTEST_CHIPS:-$(count_chips)}"
-
-case "$chips" in
-    '' | *[!0-9]*)
-        echo "run-hardware-pytests.sh: chip count must be a non-negative integer, got '${chips}'" >&2
-        exit 2
-        ;;
-esac
 
 # The thread timeout method interrupts C-level device deadlocks; SIGALRM cannot.
 common=(-v --tb=long --timeout=300 --timeout-method=thread)

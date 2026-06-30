@@ -11,6 +11,9 @@ setup() {
     BIN="$BATS_TEST_TMPDIR/bin"
     CALLS="$BATS_TEST_TMPDIR/pytest.calls"
     mkdir -p "$BIN"
+    ln -s "$SCRIPTS_DIR/hardware-test-common.sh" "$BATS_TEST_TMPDIR/hardware-test-common.sh"
+    cp "$SCRIPT" "$BATS_TEST_TMPDIR/run-hardware-pytests.sh"
+    SCRIPT="$BATS_TEST_TMPDIR/run-hardware-pytests.sh"
     PATH="$BIN:$PATH"
 }
 
