@@ -1471,9 +1471,9 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
         cast.getInputs()[0].getType() == intTy) {
       intVal = cast.getInputs()[0];
     } else {
-      intVal = UnrealizedConversionCastOp::create(rewriter, loc, intTy,
-                                                  floatVal)
-                   .getResult(0);
+      intVal =
+          UnrealizedConversionCastOp::create(rewriter, loc, intTy, floatVal)
+              .getResult(0);
     }
 
     auto [l1Ptr, offset] =

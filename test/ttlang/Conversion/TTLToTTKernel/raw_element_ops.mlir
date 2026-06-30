@@ -419,10 +419,11 @@ module {
 // -----
 
 // Write bf16 constant (2.5) to row-major block at (1, 3) -> offset = 1*8 + 3 = 11.
-// 2.5 bf16 = 0x4020 = 16416.
+// The constant stays as bf16; materializeIntBits inserts unrealized_conversion_cast.
 // CHECK-LABEL: func.func @write_row_major_bf16
 // CHECK-DAG: %[[C11:.*]] = arith.constant 11 : i32
-// CHECK-DAG: %[[BITS:.*]] = arith.constant 16416 : i16
+// CHECK-DAG: %[[CST:.*]] = arith.constant 2.500000e+00 : bf16
+// CHECK: %[[BITS:.*]] = builtin.unrealized_conversion_cast %[[CST]] : bf16 to i16
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast({{.*}}) : (i32) -> !ttkernel.l1_addr_ptr<16>
 // CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], %[[C11]]) : (i16, !ttkernel.l1_addr_ptr<16>, i32) -> ()
 module {
@@ -510,11 +511,12 @@ module {
 
 // Write f32 to an attach_cb-wrapped cb_reserve block. Must trace through
 // attach_cb to get_write_ptr.
-// 1.0f = 0x3F800000 = 1065353216.
+// The constant stays as f32; materializeIntBits inserts unrealized_conversion_cast.
 // CHECK-LABEL: func.func @write_attach_cb_reserve
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
-// CHECK-DAG: %[[BITS:.*]] = arith.constant 1065353216 : i32
+// CHECK-DAG: %[[CST:.*]] = arith.constant 1.000000e+00 : f32
 // CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[BITS:.*]] = builtin.unrealized_conversion_cast %[[CST]] : f32 to i32
 // CHECK: %[[PTR:.*]] = ttkernel.get_write_ptr(%[[CB]]) : (!ttkernel.cb<{{[0-9]+}}, !ttcore.tile<32x32, f32>>) -> i32
 // CHECK: %[[L1:.*]] = ttkernel.reinterpret_cast(%[[PTR]]) : (i32) -> !ttkernel.l1_addr_ptr
 // CHECK: ttkernel.store_to_l1(%[[BITS]], %[[L1]], %[[C0]]) : (i32, !ttkernel.l1_addr_ptr, i32) -> ()
