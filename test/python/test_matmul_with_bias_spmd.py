@@ -230,7 +230,7 @@ def test_matmul_with_bias_spmd(mesh_device):
         mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0),
     )
 
-    expected = A_torch @ B_torch + C_torch
+    expected = (A_torch.float() @ B_torch.float() + C_torch.float()).to(torch.bfloat16)
 
     pcc = torch.corrcoef(
         torch.stack([result.flatten().float(), expected.flatten().float()])
