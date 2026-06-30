@@ -9,8 +9,8 @@ pack_reconfig_l1_acc). `--source l1|dram` selects contribution residency
 (re-read one L1 block vs stream one block per iteration). `--expr add|mul|gelu`
 selects the per-iteration contribution expression. See runner.py.
 
-    python -m benchmarks.microbench.acc_sweep --acc-tiles 1,2,4 --iters 1,2,4,8,16 --source l1
-    python -m benchmarks.microbench.acc_sweep --expr mul --source dram
+    python -m benchmarks.microbench.mb2.acc_sweep --acc-tiles 1,2,4 --iters 1,2,4,8,16 --source l1
+    python -m benchmarks.microbench.mb2.acc_sweep --expr mul --source dram
 """
 
 import os
@@ -28,10 +28,10 @@ from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
-DST_KERNEL = str(KERNELS / "acc_dst.cpp")
-L1_KERNEL = str(KERNELS / "acc_l1.cpp")
-READER_KERNEL = str(KERNELS / "acc_reader.cpp")
-WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+DST_KERNEL = str(KERNELS / "compute" / "acc_dst.cpp")
+L1_KERNEL = str(KERNELS / "compute" / "acc_l1.cpp")
+READER_KERNEL = str(KERNELS / "compute" / "acc_reader.cpp")
+WRITER_KERNEL = str(KERNELS / "common" / "drain_writer.cpp")
 
 EXPR_CHOICES = ("add", "mul", "gelu")
 EXPR_IDS = {expr: expr_id for expr_id, expr in enumerate(EXPR_CHOICES)}

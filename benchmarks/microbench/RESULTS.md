@@ -815,38 +815,73 @@ compute/SFPU-bound, where each math op is best characterized as INIT / KERNEL /
 TILE_LOOP with a per-RISC split. MB4 measures per-op compute-engine tile costs to
 feed a compute-aware model (also what the nonadditive work needs).
 
-**Implemented (`compute_sweep.py`): math-thread SFPU unary.** A selected op is
-applied to `tiles` tiles `iters` times; `op=copy` is the baseline (subtract it for
-the SFPU op's marginal math cost). Preliminary, Blackhole bf16, tiles=4, math
-thread, marginal µs/tile (over the copy baseline ~0.03):
+**Implemented (`compute_sweep.py`, one kernel per category --
+`compute_unary.cpp`, `compute_binary.cpp` (binary + broadcast),
+`compute_reduce.cpp`): unary, binary, broadcast, and reduce on the math
+thread.** A selected op runs on `tiles` tiles `iters`
+times; the second operand is all ones (timing-neutral, so the PCC ref is trivial).
+`op=copy` is the unary baseline. Blackhole bf16, tiles=4, math thread.
+
+*Unary SFPU* -- marginal µs/tile over the copy baseline (~0.033), i.e. the SFPU
+math added on top of the copy+pack pipeline:
 
 | op | exp | gelu (fast) | recip | sqrt | rsqrt |
 |---|---|---|---|---|---|
 | µs/tile | 0.42 | 0.14 | 0.88 | 0.64 | 0.73 |
 
-PCC is the real SFPU approximation accuracy (sqrt/rsqrt ~0.9994, gelu ~0.9997).
-Pending: full sweep (tiles x bf16/fp32 x init-hoist, both architectures), a
-pack-thread activation arm (the MB3.C headroom), and reduce/binary/bcast ops.
+*Binary / broadcast / reduce* -- absolute composed µs/tile (unpack + op + pack,
+pipelined; these read their operands directly, so there is no copy to subtract).
+`copy` shown for reference; reduce is per *input* tile reduced (output is one tile):
 
-Planned coverage:
+| op | copy | add | sub_bcast | mul | mul_bcast | reduce_max | reduce_sum |
+|---|---|---|---|---|---|---|---|
+| µs/tile | 0.033 | 0.027 | 0.027 | 0.068 | 0.069 | 0.050 | 0.103 |
 
-| engine | ops |
-|---|---|
-| FPU (matrix) | `matmul_tiles`, `matmul_block` (x kt), matmul init |
-| SFPU (vector) | `exp` (fast/slow), `sub`/`sub_exp`, `add_block`, `mul_tiles_bcast`/`mul_block_bcast` (x broadcast Col/Row/Scalar), inplace variants |
-| reduce | FPU fast-reduce, SFPU reduce (`reduce_max`, `reduce_sum`) + reduce init |
-| copy | `copy_tile` |
-| pack | fast vs slow pack, full vs half DST-bank util, pack-with-acc |
+Observations (measured; mechanisms are tentative):
 
-Options not yet covered:
+- **add/sub ≈ 0.027, below the copy baseline.** A fused FPU binary appears cheaper
+  than `copy_tile`, which routes through the SFPU copy path.
+- **mul ≈ 2.5x add** (0.068 vs 0.027). Likely because multiply runs through a
+  fidelity-honoring FPU datapath (default HiFi4) while add/sub are single-pass --
+  to confirm with a fidelity sweep, so the binary cost is op- (and probably
+  fidelity-) dependent.
+- **Broadcast is ~free over its binary base** (mul_bcast ≈ mul, sub_bcast ≈ add):
+  the per-row column-broadcast adds negligible cost.
+- **reduce_sum ≈ 2x reduce_max** (0.103 vs 0.050 per input tile): sum and max
+  appear to take different reduce datapaths.
+- **SFPU transcendentals dominate.** The cheapest SFPU op (gelu, 0.14 marginal)
+  already exceeds mul, and recip (0.88) is ~30x a fused add -- in SDPA-like code
+  the SFPU ops, not the FPU binary/bcast, set the compute cost.
 
-- `math_fidelity` (LoFi / HiFi2 / HiFi4), `fp32_dest_acc`, `unpack_to_dest`,
-  `broadcast_type`.
-- **Init cost measured separately from the loop** (a major SDPA lever:
-  "compressed inits", "re-inits", "hoist inits"). Match the INIT vs TILE_LOOP
-  marker split used by the workbook.
-- fast-pack vs slow-pack; full vs half DST bank.
-- TRISC cross-op overlap (the xlsx "overlapped" rows).
+PCC is the real op accuracy (SFPU sqrt/rsqrt ~0.9994, gelu ~0.9997; reduce ~1.0,
+the result living in column 0). Validated across bf16/fp32 and init_hoist 0/1 (all
+paths run). Pending: the clean fp32 and INIT-vs-loop tables (from the init_hoist
+delta), the full tile-count sweep, a pack-thread activation arm (the MB3.C
+headroom -- `gelu_tile_pack` / `exp_packthread_tile`, both confirmed in the API),
+and both architectures.
+
+Coverage status:
+
+| engine | ops | status |
+|---|---|---|
+| SFPU unary | `exp`, `gelu`, `recip`, `sqrt`, `rsqrt`, `copy` | **done** (table above) |
+| FPU binary | `add`, `mul` (`sub` ≈ `add`) | **done** |
+| broadcast | `mul`/`sub` bcast cols | **done** (rows/scalar pending) |
+| reduce | SFPU `reduce_sum`, `reduce_max` (row) | **done** (col reduce pending) |
+| FPU matrix | `matmul_tiles`, `matmul_block`, `math_fidelity` | covered by MB3 / MB5.C |
+| pack | fast vs slow, full vs half DST bank, pack-with-acc | pending |
+
+Remaining:
+
+- **Pack-thread activation arm** (the MB3.C headroom): `gelu_tile_pack` /
+  `exp_packthread_tile` vs the math-thread ops above. Both confirmed in the API.
+- **Clean `fp32` and INIT-vs-TILE_LOOP tables.** `fp32_dest_acc` and `init_hoist`
+  are swept (paths validated), but the headline table is bf16/hoisted; the init
+  µs is derivable from the `init_hoist` delta but not yet tabulated.
+- Full **tile-count** sweep (the table above is tiles=4) and **both architectures**
+  (Wormhole needs a WH device).
+- `unpack_to_dest`, remaining `broadcast_type`s, pack micro-variants, and TRISC
+  cross-op overlap (the xlsx "overlapped" rows).
 
 Method: same harness (handwritten compute kernel via `generic_op`,
 `DeviceZoneScopedN` per op-loop, per-RISC µs), sweep `tile_cnt` + the parameters;
@@ -861,132 +896,158 @@ that is optimal. They share one method: hold the *total* tile work fixed,
 force-sweep the subblock (the DST tiles held per `tile_regs_acquire`), and flag the
 heuristic's choice with a `compiler_pick` column, then compare it against the
 fastest row. The regimes run from zero-math (MB5.A) through light FPU (MB5.B),
-plain matmul (MB5.C) and fused matmul (MB5.D), to a whole composite SDPA kernel
-(MB5.E).
+plain matmul (MB5.C) and fused matmul (MB5.D).
 
-Working hypothesis (the headline): **a larger subblock is preferred when operand
-reuse dominates (matmul) or when √tiles already reaches the DST cap; for the
-zero-math passthrough and softmax-dominated SDPA it does not always win -- the
-full-DST chunk can be the worst.** The measured µs in each subsection are solid;
-the *why* (the √tiles trend, the per-term picture below) is interpretation from a
-handful of sizes we have not yet isolated -- read the roadmap as a candidate
-picture to test, not a settled rule.
+Measured headline: **a larger subblock is faster for matmul (MB5.C/D); for the
+zero-math passthrough (MB5.A) it does not always win -- the full-DST chunk can be
+the worst.** Each subsection reports measured µs only; we are not attaching a
+cost-model explanation yet.
 
-### When does a larger subblock win? (hypothesis + roadmap)
+### When does a larger subblock win? (measured roadmap)
 
-A roadmap into MB5.A-E. The `larger subblock?` and `subblock effect` columns are
-measured; the `suspected bound` column is hypothesized:
+A roadmap into MB5.A-D; all columns are measured:
 
-| regime | suspected bound | subblock effect | larger subblock? |
-|---|---|---|---|
-| MB5.A pack/unpack (zero math) | pipeline fill ↔ handshake | up to ~22% | **only up to √tiles**; full-DST worst below that |
-| MB5.B FPU transpose | + access stride | up to **47%** | **yes at working sizes** (√tiles ≥ cap); thin ≫ blocky |
-| MB5.C matmul (clean) | + operand reuse | ~1-11% | **yes** (lower reuse → fewer re-unpacks); avoid (1,1) |
-| MB5.D matmul + pre-seed (scaled-acc) | + operand reuse (no scratch) | ~1-20% (shrinks with kt) | **yes** (reuse 8 best); a cap/2 heuristic would under-shoot |
-| MB5.E whole SDPA | softmax/reduce (reuse diluted) | ~1-2% | **no** -- biggest `(4,2)` was the worst |
+| regime | subblock effect | larger subblock? |
+|---|---|---|
+| MB5.A pack/unpack (zero math) | up to ~22% | not always -- full-DST worst at small tile counts |
+| MB5.B FPU ops (transpose/add/mul) | up to ~76% (chunk) | max-DST at working sizes; same-product shape spread ~19% (transpose) / ~7% (add) / ~0% (mul) |
+| MB5.C matmul (clean) | ~1-11% | yes (only loser is the degenerate (1,1)) |
+| MB5.D matmul + pre-seed (scaled-acc) | ~1-20% (shrinks with kt) | yes (reuse 8 best); a cap/2 heuristic would under-shoot |
 
-The layered reading -- to be tested, not asserted: a per-acquire **pipeline
-balance** is common to all of them (fill/drain ∝ chunk vs handshake ∝ acquires,
-an interior optimum near √tiles -- MB5.A). Each later regime adds one term: MB5.B
-a **shape**/access-stride term while otherwise following √tiles; MB5.C/D a large
-**reuse** term that drives the optimum to the DST cap (so "bigger wins"); MB5.E
-dilutes that reuse term among softmax/reduce work that has none, so the subblock
-barely moves the total and the biggest can even lose. The caveats are real: the
-mechanism splits are not isolated (no per-thread fill/drain vs handshake
-decomposition), the sizes tried are all powers of two, and everything here is
-single-core Blackhole bf16.
+Everything here is single-core Blackhole bf16. These are measured outcomes; we are
+not yet proposing a cost-model mechanism for them.
 
-### MB5.A: Zero-math pack/unpack -- the √tiles baseline
+### MB5.A: Zero-math pack/unpack -- chunk-size sweep
 
-`pack_unpack_chunk_sweep.py` (reuses the MB1 `passthrough_compute.cpp`). No
-arithmetic and no reuse, so it isolates the per-acquire cost -- the baseline the
-other regimes build on.
-
-Hold `tiles` fixed, sweep the DST chunk per acquire; each iteration does one DFB
-hop and `ceil(tiles/chunk)` acquires, so only the acquire count changes. Blackhole
+`subblock_pack_unpack_sweep.py` (reuses the MB1 `passthrough_compute.cpp`). No
+arithmetic and no reuse; holds `tiles` fixed and sweeps the DST chunk per acquire
+(each iteration does one DFB hop and `ceil(tiles/chunk)` acquires, so only the
+acquire count changes). Multiples of 8 (so chunks 1/2/4/8 all divide evenly -- no remainder), Blackhole
 bf16 half-sync (DST cap 8), trisc_max µs/iter:
 
-| tiles | chunk=1 | chunk=2 | chunk=4 | chunk=8 | best | √tiles | full-DST penalty |
+| tiles | chunk=1 | chunk=2 | chunk=4 | chunk=8 | best | max-DST penalty |
+|---|---|---|---|---|---|---|
+| 8   | 0.367 | **0.362** | 0.384 | 0.441 | 2 | +22% |
+| 16  | 0.661 | 0.649 | **0.634** | 0.693 | 4 | +9% |
+| 24  | 0.953 | 0.926 | **0.898** | 0.933 | 4 | +4% |
+| 32  | 1.248 | 1.206 | **1.154** | 1.176 | 4 | +2% |
+| 40  | 1.540 | 1.485 | **1.410** | 1.429 | 4 | +1.3% |
+| 48  | 1.834 | 1.761 | **1.666** | 1.672 | 4 | +0.3% |
+| 56  | 2.128 | 2.041 | 1.923 | **1.919** | 8 | 0% (best) |
+| 64  | 2.420 | 2.320 | 2.179 | **2.165** | 8 | 0% (best) |
+| 128 | 4.767 | 4.548 | 4.230 | **4.126** | 8 | 0% (best) |
+| 176 | 6.527 | 6.220 | 5.768 | **5.597** | 8 | 0% (best) |
+
+Measured observations:
+
+- **chunk=1 is slowest** at every tile count (most acquires).
+- **The best chunk climbs monotonically toward the cap as `tiles` grows** -- 2 at
+  tiles=8, 4 for tiles 16-48, 8 for tiles >= 56.
+- **The max-DST chunk (8) is worst at small tile counts** (tiles=8: +22%,
+  tiles=16: +9%) and its penalty decays smoothly to 0; the c4->c8 crossover is near
+  tiles=52 (48: chunk=8 is +0.3%; 56: chunk=8 best).
+
+**Full-sync (double-buffering off, `--full-sync 1`).** Same sweep with the DST
+single-banked (cap 16, no MATH↔PACK double-buffer). per-iter µs:
+
+| tiles | c1 | c2 | c4 | c8 | c16 | best | max-DST penalty |
 |---|---|---|---|---|---|---|---|
-| 8  | 0.367 | **0.362** | 0.384 | 0.441 | 2 | 2.83 | +22% |
-| 16 | 0.661 | 0.649 | **0.634** | 0.693 | 4 | 4.0 | +9% |
-| 32 | 1.248 | 1.206 | **1.154** | 1.176 | 4 | 5.66 | +2% |
-| 64 | 2.420 | 2.320 | 2.179 | **2.165** | 8 | 8.0 | 0% (best) |
+| 8   | 0.471 | 0.410 | **0.401** | 0.439 | -- | 4 | +9% (vs c8) |
+| 16  | 0.885 | 0.745 | **0.697** | 0.754 | 0.813 | 4 | +17% |
+| 24  | 1.300 | 1.084 | **0.991** | 1.063 | 1.140 | 4 | +15% |
+| 32  | 1.714 | 1.421 | **1.285** | 1.370 | 1.521 | 4 | +18% |
+| 40  | 2.129 | 1.761 | **1.583** | 1.681 | 1.829 | 4 | +16% |
+| 48  | 2.543 | 2.099 | **1.876** | 1.991 | 2.206 | 4 | +18% |
+| 56  | 2.959 | 2.435 | **2.169** | 2.299 | 2.520 | 4 | +16% |
+| 64  | 3.374 | 2.773 | **2.467** | 2.608 | 2.897 | 4 | +17% |
+| 128 | 6.692 | 5.474 | **4.823** | 5.079 | 5.665 | 4 | +18% |
+| 176 | 9.181 | 7.501 | **6.592** | 6.932 | 7.739 | 4 | +17% |
 
-The best chunk *appears* to scale with **√tiles**, clamped at the DST capacity --
-the optima straddle √tiles across the four totals tried (all powers of two, so
-read this as a suggestive trend, not a fit). What is solid in the data: the
-full-DST chunk (8) is the *worst* at small totals (+22% at 8 tiles) and only
-becomes best at 64 tiles. It is at least not simply "cap/2" -- under full-sync
-(cap 16) the optimum at 16 tiles stays at chunk=4, not 8 (chunk 1→0.885, 2→0.745,
-4→**0.697**, 8→0.754, 16→0.813).
+Turning the double-buffer off does **not** make the max-DST chunk win -- the
+opposite. The contrast with half-sync is sharp:
 
-Candidate model (a hypothesis, not yet confirmed against a per-thread
-decomposition): the unpack (TRISC0) and pack (TRISC2) threads pipeline across
-acquires, so
-
-```
-per-iter ≈ tiles·u            (steady-state, fixed)
-         + chunk·u            (pipeline fill/drain, one chunk un-overlapped, ∝ chunk)
-         + H·(tiles/chunk)    (per-acquire tile_regs handshake, ∝ acquires)
-```
-
-If that form holds, minimizing over chunk gives chunk\* = √(H/u · tiles) ≈ √tiles
-(which would require H≈u, not separately measured) -- the point where the two
-variable terms balance. The intuition would be that too big a chunk starves the
-unpack↔pack pipeline (few acquires → fill/drain dominates) while too small pays
-too many handshakes, so maximizing DST would not be optimal below √tiles. But we
-have not isolated the fill/drain and handshake terms to confirm this.
-
-### MB5.B: FPU transpose -- reuse-free light math + a shape effect
-
-`transpose_sweep.py` (`transpose_compute.cpp`): `Y = transpose(X)`, `(R×C)` tiles,
-subblock `(sub_h, sub_w)`, repeated over a resident input (CB hop outside the
-zone). Blackhole bf16 half-sync, trisc_max µs/iter, all PCC 1.0. 64 tiles
-(R=C=8):
-
-| sub (h,w) | chunk | µs/iter |
+| | half-sync (cap 8) | full-sync (cap 16) |
 |---|---|---|
-| (1,8) | 8 | **1.610** (compiler-pick) |
-| (8,1) | 8 | 1.687 |
-| (1,4) | 4 | 1.775 |
-| (4,1) | 4 | 1.802 |
-| (2,4) | 8 | 1.833 |
-| (4,2) | 8 | 1.921 |
-| (2,2) | 4 | 2.137 |
-| (1,1) | 1 | 2.366 |
+| best chunk vs size | drifts 2 → 4 → 8 (up to the cap) | **fixed at 4 at every size** |
+| max-DST penalty | +22% → 0 (max-DST wins at >=56 tiles) | **~+17%, never decays** (max-DST never wins) |
 
-Worst→best is **1.47×** -- the largest subblock effect in the suite (vs ~11%
-matmul reuse, ~1-2% SDPA). Two levers appear to be at play:
+Mechanism (verified in the LLK, not a fitted model): `dst_full_sync_en` removes
+*only* the **MATH↔PACK** double-buffer -- which in half-sync is exactly what lets a
+big chunk overlap its pack with the next acquire's math, so max-DST wins at large
+totals. Without it, the big chunk's pack is an exposed serial tail. The overlap
+that *survives* -- **UNPACK↔PACK** (separate RISCs, disjoint register banks: unpack
+writes srcA, pack reads DST) -- rewards more, smaller acquires, so the optimum pins
+at chunk=4 (small enough to keep that overlap, large enough to amortize the acquire
+handshake) regardless of total size.
 
-- **Chunk size: consistent with the same √tiles trend.** Best chunk by total: 16
-  tiles → chunk 4 ((4,1)=0.431; chunk-8 (4,2)=0.479 loses, (2,4)=0.437 ties); 64
-  tiles → chunk 8 ((1,8)); 128 tiles → chunk 8 ((1,8)=3.272 vs (1,1)=4.728). At
-  working sizes (64+ tiles) √tiles ≥ cap so the largest chunk wins; at 16 tiles
-  the interior optimum (chunk 4) reappears, as in MB5.A.
-- **Shape, at fixed chunk (~15-20%, and larger than the ~1% scalar elementwise
-  showed).** At chunk=8: (1,8)=1.610 and (8,1)=1.687 (thin) beat (2,4)=1.833 and
-  (4,2)=1.921 (blocky). Suspected cause (untested): a `(1,w)` subblock reads `w`
-  contiguous input tiles (row-major) → contiguous unpack; an `(h,1)` packs `h`
-  contiguous output tiles → contiguous pack; a blocky `(h,w)` fragments both, so
-  thin may win by keeping one of unpack/pack streamed. `(1,w)` edging `(h,1)`
-  would then point to the unpack side mattering slightly more, which would fit
-  `transpose_wh` being unpack/math-heavy -- but we have not confirmed the access
-  pattern is the cause.
+(tiles >= 184 exceed L1 even after trimming the single-use seed/drain DFBs;
+non-power-of-two chunk sizes are deferred for now.)
 
-The compiler's "maximize product, tie toward larger cols" picks `(1,w)`, which
-lands on both the best chunk (at working sizes) and the best shape; at 16 tiles
-it overshoots to chunk 8, but picks the good thin shape, so the gap is +1.4%.
+### MB5.B: FPU ops (transpose / add / mul) -- subblock shape and size
 
-(R=16×16 / 256 tiles does not fit: its static CBs grow to ~1.68 MB > 1.57 MB L1.)
+`subblock_fpu_op_sweep.py` (`fpu_op_compute.cpp`) generalized from a transpose probe to three FPU ops over a
+square `n x n` block, subblocked by `(sub_h, sub_w)`, repeated over a resident
+input (CB hop outside the zone). Every op reads its operand(s) straight into
+srcA/srcB -- no copy_tile; the binary ops feed the input as *both* operands
+(`add` = 2x, `mul` = x²), so the footprint is `2·n²` tiles for all three and they
+reach the same max block (n=16, 256 tiles). Blackhole bf16 half-sync, per-iter
+trisc_max µs (128 iters), all PCC >= 0.9999.
 
-### MB5.C: Matmul (clean power-of-two) -- the reuse term
+**All subblock shapes** (n=8, 64 tiles -- every valid `(sub_h, sub_w)`, ranked by
+subblock size (product) largest first; per-iter µs, min per op in bold):
 
-`subblock_sweep.py` runs the MB3 DST-K kernel (`matmul_k_dst.cpp`) and sweeps
-every valid `(sub_mt, sub_nt)` -- each dividing `(mt, nt)` with `sub_mt*sub_nt <=
-DST capacity` -- so the only variable is the subblock shape. `compiler_pick` flags
-the shape `computeMultiDimSubblockSizes` would select. This is the matmul regime,
-where the operand-reuse term enters.
+| sub (h,w) | chunk | transpose | add | mul |
+|---|---|---|---|---|
+| (1,8) | 8 | **1.610** | **1.348** | **3.984** |
+| (8,1) | 8 | 1.687 | 1.409 | 3.984 |
+| (2,4) | 8 | 1.833 | 1.438 | 3.984 |
+| (4,2) | 8 | 1.921 | 1.447 | 3.984 |
+| (1,4) | 4 | 1.775 | 1.490 | 4.060 |
+| (4,1) | 4 | 1.803 | 1.506 | 4.061 |
+| (2,2) | 4 | 1.995 | 1.490 | 4.061 |
+| (2,1) | 2 | 1.939 | 1.777 | 4.214 |
+| (1,2) | 2 | 1.941 | 1.776 | 4.215 |
+| (1,1) | 1 | 2.366 | 2.366 | 4.523 |
+
+Two things vary -- the chunk (product) and the shape at a fixed product:
+
+- **Chunk:** for all three ops per-iter falls as the product grows 1→8 (more tiles
+  per acquire, fewer acquires); the chunk-8 rows (top) are fastest for every op.
+- **Shape at fixed product:** the spread across same-product shapes is large for
+  transpose (chunk=8 spans 1.610-1.921, ~19%), smaller for add (1.348-1.447, ~7%),
+  and ~nil for mul (all 3.984). So *which* shape at a given product matters for
+  transpose, barely for add, not at all for mul -- the spread shrinks as the op
+  gets more math-bound (mul honors fidelity). n=16 (256 tiles) behaves the same
+  (transpose chunk=8 spans 6.674-7.602). Access-pattern cause not investigated --
+  measured only.
+
+**Chunk-size sensitivity** (n=16, chunk=1 vs the best chunk=8):
+
+| op | chunk=1 | best (chunk=8) | chunk=1 penalty |
+|---|---|---|---|
+| add | 9.45 | 5.38 | +76% |
+| transpose | 9.45 | 6.67 | +42% |
+| mul | 18.08 | 15.92 | +14% |
+
+add (cheapest op) is most chunk-sensitive, mul (math-bound) least; add and
+transpose coincide at chunk=1 (9.45 -- 256 acquires dominate, the op barely
+registers) and separate at chunk=8 as the op cost surfaces. Op ordering holds:
+add < transpose < mul (mul ~3-4×, fidelity).
+
+**Best subblock: the max-DST chunk `(1,8)`** for all three ops at every size tested
+(n=8 / n=16 best = transpose 1.610 / 6.674, add 1.348 / 5.382, mul 3.984 / 15.92) --
+i.e. the compiler's maximize-product pick is fastest or tied.
+
+(Square blocks cap at n=16 / 256 tiles in L1; larger or non-power-of-two sizes
+are deferred.)
+
+### MB5.C: Matmul (clean power-of-two)
+
+`subblock_matmul_sweep.py` sweeps every valid `(sub_mt, sub_nt)` -- each dividing
+`(mt, nt)` with `sub_mt*sub_nt <= DST capacity` -- through the MB3 matmul kernels,
+selectable with `--accum`: DST-K (`matmul_k_dst.cpp`, default) or L1-K
+(`matmul_k_l1.cpp`). `compiler_pick` flags the `computeMultiDimSubblockSizes`
+shape; `reuse = (mt/sub_mt)·(nt/sub_nt)` is the measured operand re-read factor.
 
 **Clean 8x8, Blackhole bf16 HiFi4.** trisc_max µs; the heuristic picks `(1,8)`.
 All 10 valid subblocks land within ~1-2% except the degenerate `(1,1)` (reuse
@@ -1005,7 +1066,32 @@ heuristic never picks. The penalty shrinks with kt: at low kt the matmul is
 small so the per-subblock acquire + operand re-unpack (scaling with `reuse`) is
 a larger fraction; at high kt the matmul amortizes it.
 
-**Fidelity amplifies the effect.** Lower `math_fidelity` makes the kernel less
+**L1-K accumulation (`--accum l1`, `matmul_k_l1.cpp`).** Same sweep with the
+accumulator in L1 (every K step re-packs each subblock with packer accumulate).
+8x8 bf16 HiFi4, trisc_max µs:
+
+| kt | best | best µs | pick `(1,8)` gap | worst `(1,1)` penalty | util range |
+|---|---|---|---|---|---|
+| 1 | (8,1) | 4.59 | +0.4% | +13% | 58-66% |
+| 2 | (8,1) | 7.71 | +0.6% | +15% | 68-79% |
+| 4 | (8,1) | 14.14 | +0.7% | +16% | 74-86% |
+| 8 | (8,1) | 27.18 | +0.3% | +17% | 76-89% |
+
+Same subblock preference -- reuse-8 (max-DST) is best, the `(1,8)` pick within
+~0.7% -- but two differences from DST-K:
+
+- **The `(1,1)` penalty grows with kt (+13→+17%)**, opposite to DST-K's shrink
+  (+11→+2%). L1-K does one acquire per subblock *per K step* (acquires = reuse·kt),
+  so the high-reuse cost compounds with kt; DST-K acquires each subblock once
+  (acquires = reuse) and amortizes it over kt.
+- **L1-K is faster than DST-K for kt >= 2** (best µs: kt=2 7.71 vs 9.02, kt=4 14.14
+  vs 18.06, kt=8 27.18 vs 37.60 -- ~15/22/28% lower; tied at kt=1), at higher util
+  (kt=8: 76-89% vs DST-K's 63-65%) -- the MB3 DST-K-vs-L1-K result.
+
+So the subblock *choice* is the same for both strategies (max-DST, avoid `(1,1)`);
+L1-K just makes it matter more at high kt, and is the faster strategy there.
+
+**Fidelity amplifies the effect (DST-K).** Lower `math_fidelity` makes the kernel less
 math-bound, so the subblock (via operand re-unpack) is a bigger share. `(1,1)`
 penalty vs best, 8x8:
 
@@ -1021,7 +1107,7 @@ util range tracks it: LoFi 20-35% (dataflow-bound), HiFi2 39-51%, HiFi4 59-67%
 fidelities, so fidelity changes how much the choice matters, not whether the
 heuristic is good.
 
-**fp32 reshapes the option set (HiFi4).** fp32 dest halves DST capacity (8->4),
+**fp32 reshapes the option set (HiFi4, DST-K).** fp32 dest halves DST capacity (8->4),
 so the four product-8 shapes drop out: 6 valid subblocks instead of 10, minimum
 `reuse` 16 instead of 8, and the pick shifts `(1,8)` -> `(1,4)`. Absolute cost
 rises ~5-8% (up to +8% at kt=8) from the fp32 pack plus higher reuse. But at
@@ -1038,7 +1124,7 @@ that combination is the planned next sweep.
 
 ### MB5.D: Matmul with a pre-seeded accumulator (scaled-acc) -- the heuristic may under-shoot
 
-`scaled_acc_sweep.py` (`scaled_acc_compute.cpp`): `out = scale*acc + (a @ b)`.
+`subblock_scaled_acc_sweep.py` (`scaled_acc_compute.cpp`): `out = scale*acc + (a @ b)`.
 This is a real matmul with a **pre-seeded accumulator**, not a
 matmul-with-epilogue. Per output subblock, `mul_tiles` runs *first* and computes
 `scale*acc` into the subblock's DST slots; then a `kt`-step `matmul_block` loop
@@ -1065,11 +1151,10 @@ subblock `(1,8)` (reuse 8); the modeled pick is `(1,4)` (reuse 16); the worst is
 - **Bigger subblock wins, as for plain matmul (MB5.C).** Reuse 8 is fastest at
   every kt; reuse 64 `(1,1)` is worst. The penalty shrinks with kt (+20→+11→+7%),
   the same trend as MB5.C -- a deeper matmul amortizes the per-subblock overhead.
-- **The win looks like an unpack reduction** (consistent with a reuse term, not
-  yet isolated). kt=4 unpack drops 19.18 (reuse 64) → 16.48 (reuse 16) → 15.71
-  (reuse 8) as the operand re-unpack scales down, while math and pack move little;
-  the bottleneck appears to shift from math (high reuse) to pack (low reuse). The
-  subblock mainly seems to buy back re-unpack.
+- **The win is in the unpack time.** kt=4 unpack drops 19.18 (reuse 64) → 16.48
+  (reuse 16) → 15.71 (reuse 8) as reuse falls, while math and pack move little; the
+  slowest thread shifts from math (high reuse) to pack (low reuse). Measured
+  per-RISC; we are not modeling why yet.
 - **If the compiler does reserve cap/2 for the scale*acc seed, it would leave ~1-4% on
   the table** -- most at low kt (+3.9% at kt=1, +0.8% at kt=8). The hand-written
   kernel shows the full-cap reuse-8 subblock is both legal (the `mul` targets the
@@ -1091,33 +1176,23 @@ the accumulator. The pre-seed does not change that bigger-is-better, but the
 modeled scratch reservation is the lever that could make a capacity heuristic
 *pick* smaller than optimal.
 
-### MB5.E: Whole-kernel SDPA -- the effect washes out
+### Summary (measured)
 
-`sdpa_sweep.py` runs the whole non-flash SDPA kernel (QKᵀ, fused exp, rowsum,
-recip, bcast, P@V, normalize) under one swept `(sub_h, sub_w)` that drives every
-region at once -- a composite, not a clean isolation like MB5.A-D. At Sq=Sk=HD=4
-(Blackhole bf16) the spread across all legal subblocks is only ~1-2%, and the
-*largest* subblock `(4,2)` (product 8) was the worst while `(4,1)`/`(1,2)` (product
-4/2) were best (~24.7 µs, zone util ~24%). The matmuls are a small share and the
-softmax/reduce work has no reuse to trade, so the reuse term that pushes MB5.C/D
-toward the cap barely registers -- which is why maximizing DST does not win here.
-Treat this as the washed-out endpoint of the roadmap, one config of the larger
-SDPA study, not a full SDPA characterization.
+- **Matmul (MB5.C/D):** a larger subblock is faster; the only clear loser is the
+  degenerate `(1,1)`, which the heuristic never picks. The spread is ~1-2% on clean
+  shapes at HiFi4, widening at low fidelity and high reuse (MB5.C), and up to ~20%
+  for the scaled-acc kernel, where a modeled cap/2 reservation would under-shoot
+  the fastest subblock (MB5.D).
+- **Zero-math (MB5.A):** the largest subblock does not always win -- the full-DST
+  chunk is worst at small tile counts. Under full-sync (double-buffering off) the
+  optimum pins at chunk=4 and the max-DST chunk never wins. The chunk-size curve is
+  a broad plateau with reproducible per-chunk bumps.
+- **Transpose (MB5.B):** the biggest effect in the suite (~1.47x), from both chunk
+  size and a thin-vs-blocky shape preference at fixed product.
 
-### Implications for the selector
-
-The practical reading for the subblock heuristic: maximizing the product (filling
-DST) is a good default only when (a) operand reuse dominates -- plain or fused
-matmul, MB5.C/D -- or (b) √tiles already meets the cap (light-compute blocks at
-working sizes, MB5.A/B). It is *not* a safe default when the region is reuse-free
-and small (the full-DST chunk loses below √tiles, MB5.A) or when matmul is a minor
-share of a composite (MB5.E). Two concrete heuristic gaps surfaced here: the
-degenerate `(1,1)` should always be avoided (MB5.C), and a capacity model that
-over-reserves DST for a fused term can under-shoot the subblock when no scratch is
-actually needed (MB5.D). A cost model would do better estimating which term bounds
-the region than always maximizing the product. Confirming the mechanism splits (a
-per-thread fill/drain vs handshake decomposition, non-power-of-two sizes,
-Wormhole) is the open work.
+We are not proposing a cost model for these yet. Open work toward one: a per-thread
+(unpack / math / pack) timeline to explain the chunk-size curve, non-power-of-two
+and larger tile counts beyond what fits L1, and Wormhole.
 
 ## Result CSVs (local only, git-ignored; under `benchmarks/microbench/results/`)
 
@@ -1142,24 +1217,23 @@ Wormhole) is the open work.
   (MB3.A/B); HiFi4 in the hifi4 CSV.
 - `matmul_k_blackhole_bf16_{lofi,hifi2}_gelu_*.csv`: fidelity for fused GELU
   (MB3.C).
-- `compute_op_{blackhole,wormhole_b0}_*.csv`: MB4 per-op SFPU math-engine tile
-  costs.
+- `compute_op_{blackhole,wormhole_b0}_*.csv`: MB4 per-op compute-engine tile costs
+  (SFPU unary + FPU binary/bcast/reduce), with the `category`/`out_tiles` columns.
 - `matmul_k_wormhole_b0_bf16_{lofi,hifi2}_{none,gelu}_*.csv`: Wormhole fidelity,
   P=16 (plain + fused).
 - `matmul_k_{blackhole,wormhole_b0}_fp32_hifi4_none_*.csv`: fp32 dest (cap
   halved).
 - `matmul_k_{blackhole,wormhole_b0}_bf16_hifi4_none_True_*.csv`: full-sync (cap
   doubled; `full_sync` now in the CSV tag).
-- `subblock_blackhole_{bf16,fp32}_{lofi,hifi2,hifi4}_*.csv`: MB5.C subblock-selection
+- `subblock_matmul_blackhole_{bf16,fp32}_{lofi,hifi2,hifi4}_*.csv`: MB5.C subblock-selection
   sweep, 8x8, all valid `(sub_mt, sub_nt)` x kt with `compiler_pick` (fidelity and
   fp32 cap-halving variants in the tag).
-- `pack_unpack_chunk_blackhole_*.csv`: MB5.A zero-compute chunk sweep -- DST chunk
-  per acquire swept at fixed `tiles` (the √tiles trend; `dst_chunk`/`acquires`
-  columns).
-- `transpose_blackhole_bf16_*.csv`: MB5.B FPU transpose subblock sweep, all
-  valid `(sub_h, sub_w)` at fixed `(r, c)` with `compiler_pick` (dtype/full_sync
-  in the tag).
-- `scaled_acc_blackhole_bf16_*.csv`: MB5.D fused `scale*acc + a@b` subblock sweep,
+- `subblock_pack_unpack_blackhole_*.csv`: MB5.A zero-compute chunk sweep -- DST chunk
+  per acquire swept at fixed `tiles` (`dst_chunk`/`acquires` columns).
+- `subblock_fpu_op_blackhole_bf16_*.csv`: MB5.B FPU-op subblock sweep (`op` ∈
+  transpose/add/mul × square `n` × all valid `(sub_h, sub_w)`) with `dst_chunk`/
+  `acquires`/`compiler_pick` (dtype/full_sync in the tag).
+- `subblock_scaled_acc_blackhole_bf16_*.csv`: MB5.D fused `scale*acc + a@b` subblock sweep,
   all valid `(sub_mt, sub_nt)` at fixed `(mt, nt, kt)` with `reuse`/`compiler_pick`
   (kt is a scalar param, swept across runs).
 
@@ -1237,10 +1311,6 @@ both architectures (see their sections). Remaining:
   softmax-like code, including max/sum reductions, broadcasted scalar or
   row-vector updates, and fused pointwise transforms. New MB2 CSVs include the
   expression tag after the source tag.
-- Attention / flash: a streaming-KV flash-attention kernel exists (`fa_sweep.py`
-  with `kernels/fa_compute.cpp` + `fa_reader.cpp`, validated PCC 1.0) but is not
-  yet written up as an MB. The documented attention result is the non-flash SDPA
-  (MB5.E); a flash MB would isolate the online-softmax (running max/sum) variant.
 - Validation: LLK composition cross-check. Blackhole is checked against the SDPA
   optimization workbook's per-engine measurements (see Verification). Wormhole
   still needs the same per-engine measurements, which the workbook does not

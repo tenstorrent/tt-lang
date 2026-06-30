@@ -40,9 +40,14 @@ at run time.
 - TTNN matmul utilization (`ttnn_matmul_utilization.py`): single-node
   `ttnn.matmul` validation using the same utilization formula and program-config
   conventions as the tt-metal GEMM FLOPS report.
-- MB4 compute-op (`compute_sweep.py`): per-op SFPU math-engine tile cost
-  (copy/exp/gelu/recip/sqrt/rsqrt) on the math thread (what tt-lang emits).
-  A pack-thread activation arm and reduce/binary ops are planned.
+- MB4 compute-op (`compute_sweep.py`): per-op compute-engine tile cost on the
+  math thread (what tt-lang emits) -- unary SFPU (copy/exp/gelu/recip/sqrt/rsqrt),
+  binary FPU (add/mul), broadcast (mul/sub bcast), and row reduce (sum/max).
+- MB5 subblock-size selection (`subblock_*_sweep.py`): holds the total tile work
+  fixed and force-sweeps the subblock (DST tiles per `tile_regs_acquire`) to test
+  when the compiler's max-DST heuristic is optimal, across zero-math pack/unpack
+  (MB5.A), light FPU ops (MB5.B), matmul (MB5.C), and pre-seeded scaled-acc
+  matmul (MB5.D).
 
 ## Requirements
 
@@ -61,27 +66,27 @@ them.
 Run from the repository root in the active hardware environment:
 
 ```bash
-python -m benchmarks.microbench.sweep \
+python -m benchmarks.microbench.mb1.sweep \
   --tiles 1,2,4,8,16 \
   --iters 128
 
-python -m benchmarks.microbench.acc_sweep \
+python -m benchmarks.microbench.mb2.acc_sweep \
   --acc-tiles 1,2,4 \
   --iters 1,2,4,8,16 \
   --source l1 \
   --expr add
 
-python -m benchmarks.microbench.matmul_sweep \
+python -m benchmarks.microbench.mb3.matmul_sweep \
   --mt 1,2,4 \
   --nt 1,2 \
   --kt 1,2,4,8,16
 
-python -m benchmarks.microbench.matmul_compute_sweep \
+python -m benchmarks.microbench.mb3.matmul_compute_sweep \
   --mt 4,8 \
   --nt 4,8 \
   --kt 8,16,32
 
-python -m benchmarks.microbench.ttnn_matmul_utilization \
+python -m benchmarks.microbench.mb3.ttnn_matmul_utilization \
   --mt 8 \
   --nt 8 \
   --kt 8,16,32
@@ -130,21 +135,26 @@ us_per_iter(tiles) = fixed_us + per_tile_us * tiles
 Example:
 
 ```bash
-python -m benchmarks.microbench.fit "benchmarks/microbench/results/pack_unpack_*.csv"
+python -m benchmarks.microbench.mb1.fit "benchmarks/microbench/results/pack_unpack_*.csv"
 ```
 
 ## Layout
 
-- `kernels/`: handwritten compute, reader, and writer kernels.
+- `kernels/`: handwritten compute, reader, and writer kernels, grouped by purpose:
+  `common/` (shared reader/writer), `dataflow/` (pack/unpack), `compute/`
+  (SFPU/FPU eltwise, reduce, accumulation), and `matmul/`.
 - `harness.py`: `ttnn.generic_op` dispatch, DFB descriptors, compute config, and
   CSV writing.
-- `runner.py`: declarative benchmark runner shared by MB1-MB4.
+- `runner.py`: declarative benchmark runner shared by all MBs.
 - `profiler.py`: device-profiler CSV parsing and per-RISC zone summaries.
-- `sweep.py`: MB1 pack/unpack probe.
-- `acc_sweep.py`: MB2 accumulation strategy comparison.
-- `matmul_sweep.py`: MB3 matmul K-accumulation strategy comparison.
-- `matmul_compute_sweep.py`: matmul compute-feed measurement.
-- `ttnn_matmul_utilization.py`: single-node TTNN matmul utilization validation.
-- `compute_sweep.py`: MB4 compute-op (SFPU math) probe.
-- `fit.py`: MB1 fixed plus per-tile regression.
+- `mb1/`: `sweep.py` (pack/unpack probe), `fit.py` (fixed plus per-tile
+  regression).
+- `mb2/`: `acc_sweep.py` (accumulation strategy comparison).
+- `mb3/`: `matmul_sweep.py` (matmul K-accumulation strategy comparison),
+  `matmul_compute_sweep.py` (compute-feed measurement),
+  `ttnn_matmul_utilization.py` (single-node TTNN matmul utilization validation).
+- `mb4/`: `compute_sweep.py` (compute-op: unary / binary / bcast / reduce).
+- `mb5/`: subblock-size selection sweeps -- `subblock_pack_unpack_sweep.py`,
+  `subblock_fpu_op_sweep.py`, `subblock_matmul_sweep.py`,
+  `subblock_scaled_acc_sweep.py`.
 - `RESULTS.md`: measurement notes and current hardware results.

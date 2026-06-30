@@ -12,7 +12,7 @@ implementation detail. The resident variants (mm1, mm2) wait for operands
 outside the timed zone; the streamed variants (mm3-mm5) wait on operand K-blocks
 inside the zone, mirroring TTNN's large-block single-node compute contract.
 
-    python -m benchmarks.microbench.matmul_compute_sweep --mt 4 --nt 4 --kt 8,16
+    python -m benchmarks.microbench.mb3.matmul_compute_sweep --mt 4 --nt 4 --kt 8,16
 """
 
 import os
@@ -30,17 +30,17 @@ from benchmarks.microbench.harness import TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
-COMPUTE_KERNEL = str(KERNELS / "matmul_tile_loop.cpp")
-READER_KERNEL = str(KERNELS / "matmul_tile_loop_reader.cpp")
-TTNN_LIKE_COMPUTE_KERNEL = str(KERNELS / "matmul_ttnn_like.cpp")
-TTNN_LIKE_READER_KERNEL = str(KERNELS / "matmul_ttnn_like_reader.cpp")
-TTNN_LIKE_READER_WRITER_KERNEL = str(KERNELS / "matmul_ttnn_like_reader_writer.cpp")
-BLOCK_RESIDENT_COMPUTE_KERNEL = str(KERNELS / "matmul_block_resident.cpp")
-L1ACC_COMPUTE_KERNEL = str(KERNELS / "matmul_block_stream_l1acc.cpp")
+COMPUTE_KERNEL = str(KERNELS / "matmul" / "matmul_tile_loop.cpp")
+READER_KERNEL = str(KERNELS / "matmul" / "matmul_tile_loop_reader.cpp")
+TTNN_LIKE_COMPUTE_KERNEL = str(KERNELS / "matmul" / "matmul_ttnn_like.cpp")
+TTNN_LIKE_READER_KERNEL = str(KERNELS / "matmul" / "matmul_ttnn_like_reader.cpp")
+TTNN_LIKE_READER_WRITER_KERNEL = str(KERNELS / "matmul" / "matmul_ttnn_like_reader_writer.cpp")
+BLOCK_RESIDENT_COMPUTE_KERNEL = str(KERNELS / "matmul" / "matmul_block_resident.cpp")
+L1ACC_COMPUTE_KERNEL = str(KERNELS / "matmul" / "matmul_block_stream_l1acc.cpp")
 L1ACC_PACKBLOCK_COMPUTE_KERNEL = str(
-    KERNELS / "matmul_block_stream_l1acc_packblock.cpp"
+    KERNELS / "matmul" / "matmul_block_stream_l1acc_packblock.cpp"
 )
-WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+WRITER_KERNEL = str(KERNELS / "common" / "drain_writer.cpp")
 MATMUL_CYCLES_PER_TILE = {"lofi": 16, "hifi2": 32, "hifi4": 64}
 TTNN_SUBBLOCK_HW_CHOICES = (
     (4, 2),

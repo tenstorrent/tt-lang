@@ -6,7 +6,7 @@
 Standalone results-processing utility, not imported by the runner: run by hand
 on saved MB1 CSVs to derive the cost-model weights for RESULTS.md.
 
-Reads one or more probe CSVs (benchmarks.microbench.sweep output), groups by
+Reads one or more probe CSVs (benchmarks.microbench.mb1.sweep output), groups by
 (arch, dtype, dst_full_sync_en, fp32_dest_acc_en), and least-squares fits each
 per-RISC and the TRISC-max per-iteration time against tiles:
 
@@ -16,7 +16,7 @@ The TRISC-max fit is the round-trip per-tile cost (pipelined throughput basis).
 The probe's per-RISC unpack/pack times are pipelined too, not clean engine
 isolates -- the per-engine split comes from the LLK microbenchmarks (RESULTS.md).
 
-    python -m benchmarks.microbench.fit "benchmarks/microbench/results/pack_unpack_*.csv"
+    python -m benchmarks.microbench.mb1.fit "benchmarks/microbench/results/pack_unpack_*.csv"
 """
 
 import csv

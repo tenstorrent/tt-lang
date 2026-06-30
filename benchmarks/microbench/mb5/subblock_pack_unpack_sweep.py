@@ -16,8 +16,8 @@ so the subblock effect should be the largest and monotonic (bigger chunk -> fewe
 acquires -> lower per-iter time). Contrast with the matmul/SDPA subblock sweeps,
 where reuse or SFPU math reshape the picture.
 
-    python -m benchmarks.microbench.pack_unpack_chunk_sweep --tiles 16 --sub 1,2,4,8
-    python -m benchmarks.microbench.pack_unpack_chunk_sweep --tiles 16 \
+    python -m benchmarks.microbench.mb5.subblock_pack_unpack_sweep --tiles 16 --sub 1,2,4,8
+    python -m benchmarks.microbench.mb5.subblock_pack_unpack_sweep --tiles 16 \
         --sub 1,2,4,8,16 --full-sync 0,1
 """
 
@@ -35,15 +35,15 @@ from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
-COMPUTE_KERNEL = str(KERNELS / "passthrough_compute.cpp")
-READER_KERNEL = str(KERNELS / "seed_reader.cpp")
-WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+COMPUTE_KERNEL = str(KERNELS / "dataflow" / "passthrough_compute.cpp")
+READER_KERNEL = str(KERNELS / "common" / "seed_reader.cpp")
+WRITER_KERNEL = str(KERNELS / "common" / "drain_writer.cpp")
 
 
 class PackUnpackChunkSweep(MicroBenchmark):
     NAME = "pack/unpack per-acquire overhead vs DST chunk"
     ZONE = "pack_unpack_loop"
-    DEFAULT_CSV = "benchmarks/microbench/results/pack_unpack_chunk.csv"
+    DEFAULT_CSV = "benchmarks/microbench/results/subblock_pack_unpack.csv"
     STRATEGIES = ("",)
     PER_UNIT = "iters"
     CSV_TAG = ("dtype", "full_sync", "fp32_dest_acc")
@@ -61,10 +61,13 @@ class PackUnpackChunkSweep(MicroBenchmark):
     )
     INPUTS = (Tensor("src", lambda cfg: (TILE, cfg["tiles"] * TILE)),)
     OUTPUTS = (Tensor("out", lambda cfg: (TILE, cfg["tiles"] * TILE), init="empty"),)
+    # Only dfb_loop (the measured self-cycle) needs block_count buffering; dfb_in
+    # (seed) and dfb_out (drain) are single-use outside the zone, so sizing them
+    # to `tiles` frees L1 for larger totals without touching the measurement.
     DFBS = (
-        DFB(0, lambda cfg: cfg["block_count"] * cfg["tiles"]),  # dfb_in
-        DFB(1, lambda cfg: cfg["block_count"] * cfg["tiles"]),  # dfb_loop
-        DFB(16, lambda cfg: cfg["block_count"] * cfg["tiles"]),  # dfb_out
+        DFB(0, lambda cfg: cfg["tiles"]),  # dfb_in (seed once)
+        DFB(1, lambda cfg: cfg["block_count"] * cfg["tiles"]),  # dfb_loop (measured)
+        DFB(16, lambda cfg: cfg["tiles"]),  # dfb_out (drain once)
     )
 
     def _cap(self, cfg):

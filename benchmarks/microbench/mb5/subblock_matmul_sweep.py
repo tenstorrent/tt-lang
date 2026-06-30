@@ -1,26 +1,33 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Subblock-selection probe: how the DST subblock shape affects a matmul.
+"""Subblock-selection probe: how the subblock shape affects a matmul, for one
+K-accumulation strategy (selected with --accum, default dst).
 
 Holds the output fixed (default 8x8 tiles, the "clean" power-of-two case) and
 sweeps every valid (sub_mt, sub_nt) subblock -- each shape dividing (mt, nt)
-with sub_mt*sub_nt <= DST capacity -- through the handwritten DST-K kernel
-(matmul_k_dst.cpp, which already takes sub_mt/sub_nt as compile-time args).
-Everything else (mt, nt, kt, dtype, fidelity) is held constant, so the only
-variable is the subblock, isolating its effect on per-RISC time and utilization.
+with sub_mt*sub_nt <= DST capacity. The kernel is picked by --accum:
 
-The `compiler_pick` column flags the subblock the compiler would choose
-(harness.dst_subblock == computeMultiDimSubblockSizes). Compare it against the
-fastest row to see whether the heuristic is optimal, and read the per-RISC
-split (unpack/math/pack) to see why (high-reuse shapes re-unpack operands per
-subblock -> unpack-dominated).
+  dst (default): matmul_k_dst.cpp -- the subblock stays resident in DST across
+       the K loop, packed once; operands are re-unpacked per subblock (reuse).
+       Acquire count = reuse, so the subblock washes out as kt grows.
+  l1:  matmul_k_l1.cpp -- each K step matmuls every subblock into a fresh DST and
+       packs to L1 with packer accumulation. Acquire count = reuse*kt, so the
+       subblock stays a large lever at every kt.
 
-    # 8x8 output, all valid subblocks, K-depths 1/2/4/8:
-    python -m benchmarks.microbench.subblock_sweep
+Both use the same resident operands (L1-K just pops mt/nt per K step), so the only
+variable per config is the subblock. The `compiler_pick` column flags the subblock
+the compiler would choose (harness.dst_subblock == computeMultiDimSubblockSizes);
+compare it against the fastest row.
+
+    # 8x8 output, all valid subblocks, K-depths 1/2/4/8 (DST-K, default):
+    python -m benchmarks.microbench.mb5.subblock_matmul_sweep
+
+    # L1 accumulation instead:
+    python -m benchmarks.microbench.mb5.subblock_matmul_sweep --accum l1
 
     # focus a single depth:
-    python -m benchmarks.microbench.subblock_sweep --kt 8
+    python -m benchmarks.microbench.mb5.subblock_matmul_sweep --kt 8
 """
 
 import os
@@ -37,19 +44,20 @@ from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
-DST_KERNEL = str(KERNELS / "matmul_k_dst.cpp")
-READER_KERNEL = str(KERNELS / "matmul_reader.cpp")
-WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+DST_KERNEL = str(KERNELS / "matmul" / "matmul_k_dst.cpp")
+L1_KERNEL = str(KERNELS / "matmul" / "matmul_k_l1.cpp")
+READER_KERNEL = str(KERNELS / "matmul" / "matmul_reader.cpp")
+WRITER_KERNEL = str(KERNELS / "common" / "drain_writer.cpp")
 MATMUL_CYCLES_PER_TILE = {"lofi": 16, "hifi2": 32, "hifi4": 64}
 
 
 class SubblockSweep(MicroBenchmark):
     NAME = "matmul subblock selection"
     ZONE = "matmul_k_loop"
-    DEFAULT_CSV = "benchmarks/microbench/results/subblock.csv"
-    STRATEGIES = ("",)  # single strategy: DST-K
+    DEFAULT_CSV = "benchmarks/microbench/results/subblock_matmul.csv"
+    STRATEGIES = ("",)  # one accumulation strategy per run, chosen by --accum
     PER_UNIT = "kt"
-    CSV_TAG = ("dtype", "fidelity", "full_sync")
+    CSV_TAG = ("dtype", "fidelity", "full_sync", "accum")
     EXTRA_COLUMNS = ("reuse", "compiler_pick")
     POST_COLUMNS = (
         "matmul_ideal_cycles",
@@ -64,6 +72,7 @@ class SubblockSweep(MicroBenchmark):
         Param("kt", "1,2,4,8", sweep=True, help="K-depth (tiles)"),
         Param("sub_mt", "1,2,4,8", sweep=True, help="subblock rows (tiles)"),
         Param("sub_nt", "1,2,4,8", sweep=True, help="subblock cols (tiles)"),
+        Param("accum", "dst", choices=("dst", "l1"), help="K-accumulation strategy"),
         Param("dtype", "bf16", choices=("bf16", "fp32")),
         Param("fidelity", "hifi4", choices=("lofi", "hifi2", "hifi4")),
         Param("full_sync", False),
@@ -132,7 +141,7 @@ class SubblockSweep(MicroBenchmark):
         row = next(iter(by_strategy.values()))
         star = "  <== compiler pick" if row["compiler_pick"] else ""
         return (
-            f"mt={cfg['mt']} nt={cfg['nt']} kt={cfg['kt']} "
+            f"[{cfg['accum']}] mt={cfg['mt']} nt={cfg['nt']} kt={cfg['kt']} "
             f"sub=({cfg['sub_mt']},{cfg['sub_nt']}) reuse={row['reuse']:>2} "
             f"| trisc_max={row['trisc_max_us']} µs "
             f"unpack={row['unpack_us']} math={row['math_us']} pack={row['pack_us']} "
@@ -176,9 +185,9 @@ class SubblockSweep(MicroBenchmark):
                 ttnn.WriterConfigDescriptor(),
             ),
             harness.file_kernel(
-                DST_KERNEL,
+                DST_KERNEL if cfg["accum"] == "dst" else L1_KERNEL,
                 ctx.grid,
-                [mt, nt, kt, sub_mt, sub_nt, 0],  # fuse = 0 (plain DST-K)
+                [mt, nt, kt, sub_mt, sub_nt, 0],  # fuse = 0 (plain matmul)
                 [],
                 compute,
             ),

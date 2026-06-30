@@ -12,7 +12,7 @@ Mt/Nt/Kt fixed and force-sweeps the output subblock (sub_mt, sub_nt); the
 reserved ~cap/2 for the scale*acc term, so the sweep shows whether the larger
 subblock (lower reuse) it would skip is actually faster.
 
-    python -m benchmarks.microbench.scaled_acc_sweep --mt 8 --nt 8 --kt 4
+    python -m benchmarks.microbench.mb5.subblock_scaled_acc_sweep --mt 8 --nt 8 --kt 4
 """
 
 import os
@@ -30,15 +30,15 @@ from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
-COMPUTE_KERNEL = str(KERNELS / "scaled_acc_compute.cpp")
-READER_KERNEL = str(KERNELS / "scaled_acc_reader.cpp")
-WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+COMPUTE_KERNEL = str(KERNELS / "matmul" / "scaled_acc_compute.cpp")
+READER_KERNEL = str(KERNELS / "matmul" / "scaled_acc_reader.cpp")
+WRITER_KERNEL = str(KERNELS / "common" / "drain_writer.cpp")
 
 
 class ScaledAccSweep(MicroBenchmark):
     NAME = "scaled-acc matmul subblock sweep"
     ZONE = "scaled_acc_loop"
-    DEFAULT_CSV = "benchmarks/microbench/results/scaled_acc.csv"
+    DEFAULT_CSV = "benchmarks/microbench/results/subblock_scaled_acc.csv"
     STRATEGIES = ("",)
     CSV_TAG = ("dtype", "full_sync")
     EXTRA_COLUMNS = ("reuse", "compiler_pick")

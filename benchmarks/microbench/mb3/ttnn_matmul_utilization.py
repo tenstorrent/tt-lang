@@ -7,7 +7,7 @@ This is the GEMM-report comparison point for matmul diagnostics. It uses TTNN's
 MatmulMultiCoreReuseMultiCastProgramConfig on a 1x1 grid, then computes the same
 ideal-cycle ratio used by tt-metal's GEMM FLOPS benchmark.
 
-    python -m benchmarks.microbench.ttnn_matmul_utilization --mt 8 --nt 8 --kt 8
+    python -m benchmarks.microbench.mb3.ttnn_matmul_utilization --mt 8 --nt 8 --kt 8
 """
 
 import os

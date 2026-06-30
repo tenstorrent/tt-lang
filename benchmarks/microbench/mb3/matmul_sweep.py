@@ -21,8 +21,8 @@ output before its single pack; L1-K must reload the L1 accumulator into DST,
 apply, and repack -- the round trip that can favor DST-K when an epilogue is
 present.
 
-    python -m benchmarks.microbench.matmul_sweep --mt 1,2 --nt 1,2 --kt 1,2,4,8,16
-    python -m benchmarks.microbench.matmul_sweep --mt 4 --nt 4 --kt 4,8 --fuse gelu
+    python -m benchmarks.microbench.mb3.matmul_sweep --mt 1,2 --nt 1,2 --kt 1,2,4,8,16
+    python -m benchmarks.microbench.mb3.matmul_sweep --mt 4 --nt 4 --kt 4,8 --fuse gelu
 """
 
 import os
@@ -40,10 +40,10 @@ from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
-DST_KERNEL = str(KERNELS / "matmul_k_dst.cpp")
-L1_KERNEL = str(KERNELS / "matmul_k_l1.cpp")
-READER_KERNEL = str(KERNELS / "matmul_reader.cpp")
-WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+DST_KERNEL = str(KERNELS / "matmul" / "matmul_k_dst.cpp")
+L1_KERNEL = str(KERNELS / "matmul" / "matmul_k_l1.cpp")
+READER_KERNEL = str(KERNELS / "matmul" / "matmul_reader.cpp")
+WRITER_KERNEL = str(KERNELS / "common" / "drain_writer.cpp")
 MATMUL_CYCLES_PER_TILE = {"lofi": 16, "hifi2": 32, "hifi4": 64}
 
 

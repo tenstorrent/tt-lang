@@ -8,8 +8,8 @@ tiles to L1 and unpack them back, isolating the per-tile pack/unpack + DFB-sync
 cost. fit.py regresses the per-iteration times vs `tiles` into fixed + per-tile.
 Sweep dtype/full_sync/fp32_dest_acc for the config matrix. See runner.py.
 
-    python -m benchmarks.microbench.sweep --tiles 1,2,4,8,16 --iters 128
-    python -m benchmarks.microbench.sweep --tiles 1,2,4,8 --dtype bf16,fp32 --full-sync 0,1
+    python -m benchmarks.microbench.mb1.sweep --tiles 1,2,4,8,16 --iters 128
+    python -m benchmarks.microbench.mb1.sweep --tiles 1,2,4,8 --dtype bf16,fp32 --full-sync 0,1
 """
 
 import os
@@ -26,9 +26,9 @@ from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
-COMPUTE_KERNEL = str(KERNELS / "passthrough_compute.cpp")
-READER_KERNEL = str(KERNELS / "seed_reader.cpp")
-WRITER_KERNEL = str(KERNELS / "drain_writer.cpp")
+COMPUTE_KERNEL = str(KERNELS / "dataflow" / "passthrough_compute.cpp")
+READER_KERNEL = str(KERNELS / "common" / "seed_reader.cpp")
+WRITER_KERNEL = str(KERNELS / "common" / "drain_writer.cpp")
 
 
 class PackUnpackProbe(MicroBenchmark):
