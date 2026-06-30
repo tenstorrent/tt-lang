@@ -68,7 +68,7 @@ def softmax_kernel(inp, out):
 # C++ Checks - Verify intermediate DFB push/wait pattern in compute kernel.
 # =============================================================================
 
-# CHECK-CPP: // compute
+# CHECK-CPP: === compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 
 # reduce_max -> pack to intermediate DFB, push, wait for bcast.

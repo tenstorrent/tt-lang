@@ -30,6 +30,9 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 CALL_BUILD_DOCKER_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-build-docker.yml"
 )
+CALL_BUILD_WHEEL_IMAGES_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-build-wheel-images.yml"
+)
 MANYLINUX_WHEEL_DOCKERFILE = (
     REPO_ROOT / ".github" / "containers" / "Dockerfile.wheel-manylinux-2-34"
 )
@@ -77,33 +80,45 @@ def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
 
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
     build_docker_workflow = CALL_BUILD_DOCKER_WORKFLOW.read_text()
+    wheel_images_workflow = CALL_BUILD_WHEEL_IMAGES_WORKFLOW.read_text()
     ci_workflow = CI_WORKFLOW.read_text()
     s3_workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
     pypi_workflow = PUBLISH_PYPI_WORKFLOW.read_text()
     manylinux_dockerfile = MANYLINUX_WHEEL_DOCKERFILE.read_text()
 
-    assert "build_manylinux_wheel_images" in build_docker_workflow
-    assert "build-manylinux-wheel-images:" in build_docker_workflow
-    assert "python_tag: [cp310, cp312]" in build_docker_workflow
-    assert "id: docker-tag" in build_docker_workflow
-    assert "registry-image=${registry_image}" in build_docker_workflow
-    assert r"Image: \`${registry_image}\`" in build_docker_workflow
+    # The core Docker image build never builds the wheel-builder images, so its
+    # consumers (hardware tests, standard wheels) do not wait on them.
+    assert "build-manylinux-wheel-images:" not in build_docker_workflow
+    assert "build_manylinux_wheel_images" not in build_docker_workflow
+    assert "build-wheel-manylinux-images.sh" not in build_docker_workflow
+
+    # The wheel-builder images live in their own opt-in workflow.
+    assert "build-manylinux-wheel-images:" in wheel_images_workflow
+    assert "python_tag: [cp310, cp312]" in wheel_images_workflow
+    assert "id: docker-tag" in wheel_images_workflow
+    assert "registry-image=${registry_image}" in wheel_images_workflow
+    assert r"Image: \`${registry_image}\`" in wheel_images_workflow
     assert (
         "build-wheel-manylinux-images.sh --python-tags"
         ' "${{ matrix.python_tag }}" --image-tag'
-    ) in build_docker_workflow
-    assert '"${{ steps.docker-tag.outputs.docker-tag }}"' in build_docker_workflow
-    assert "--build-parallel-level 2" in build_docker_workflow
+    ) in wheel_images_workflow
+    assert '"${{ steps.docker-tag.outputs.docker-tag }}"' in wheel_images_workflow
+    assert "--build-parallel-level 2" in wheel_images_workflow
     assert "ARG TTLANG_BUILD_PARALLEL_LEVEL" in manylinux_dockerfile
     assert (
         'ENV CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"'
         in manylinux_dockerfile
     )
-    assert "build_manylinux_wheel_images: true" in ci_workflow
+
+    # CI opts in on image rebuild; the S3 publish opts in only for the light
+    # wheel variant; the PyPI publish never builds them.
+    assert "uses: ./.github/workflows/call-build-wheel-images.yml" in ci_workflow
+    assert "uses: ./.github/workflows/call-build-wheel-images.yml" in s3_workflow
     assert (
-        "build_manylinux_wheel_images: ${{ contains(fromJSON("
-        "needs.preflight.outputs.wheel_variants), 'light') }}"
-    ) in s3_workflow
+        "contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light')"
+        in s3_workflow
+    )
+    assert "call-build-wheel-images" not in pypi_workflow
     assert "build_manylinux_wheel_images" not in pypi_workflow
 
 

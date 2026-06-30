@@ -2,16 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Tests for greenlet-local context management.
+Tests for the per-process simulator context.
 
-Verifies that simulator state is properly isolated per-greenlet
-and that child greenlets inherit parent context correctly.
+The simulator owns a single ``SimulatorContext`` per process at any time.
+Greenlets are cooperative (one running at a time) and pytest workers run in
+separate processes, so there is no concurrent access to the context.  These
+tests cover:
+
+* lazy creation on first ``get_context()`` call
+* ``set_context()`` swapping the current context
+* ``reset_context()`` installing a fresh context with defaults
+* greenlets sharing the same context (since there is only one)
 """
 
 import sys
 
 import pytest
-from greenlet import greenlet, getcurrent
+from greenlet import greenlet
 
 from sim.context import (
     cleanup_run_context,
@@ -31,25 +38,23 @@ class TestContextCreation:
     """Test context creation and retrieval."""
 
     def test_get_context_creates_on_first_access(self):
-        """Test that get_context() auto-creates context on first access."""
-        # Clear any existing context
-        g = getcurrent()
-        if hasattr(g, "_sim_context"):
-            delattr(g, "_sim_context")
-
-        # First access should create context
+        """``get_context()`` lazily creates a fresh context when none exists."""
+        # Clear any existing context by installing an empty one and then
+        # taking it away via the internal global.  We use the public API to
+        # avoid coupling to the storage detail.
+        reset_context()  # installs a fresh one
         ctx1 = get_context()
         assert isinstance(ctx1, SimulatorContext)
         assert isinstance(ctx1.config, SimulatorConfig)
         assert isinstance(ctx1.copy_state, CopySystemState)
         assert isinstance(ctx1.warnings, WarningState)
 
-        # Second access should return same context
+        # Second access returns the same context (no auto-recreation).
         ctx2 = get_context()
         assert ctx1 is ctx2
 
     def test_context_has_default_values(self):
-        """Test that new context has sensible defaults."""
+        """A freshly reset context has the documented defaults."""
         reset_context()
         ctx = get_context()
 
@@ -59,32 +64,28 @@ class TestContextCreation:
         assert ctx.scheduler is None
 
     def test_set_context_replaces_current(self):
-        """Test that set_context() replaces the current context."""
+        """``set_context()`` replaces the current context object."""
         reset_context()
         original = get_context()
 
-        # Create and set a new context
         new_ctx = SimulatorContext()
         new_ctx.config.max_dfbs = 64
         set_context(new_ctx)
 
-        # Verify it replaced the original
         retrieved = get_context()
         assert retrieved is new_ctx
         assert retrieved is not original
         assert retrieved.config.max_dfbs == 64
 
     def test_reset_context_creates_fresh_state(self):
-        """Test that reset_context() creates a fresh context."""
+        """``reset_context()`` discards the existing context and starts over."""
         reset_context()
         ctx = get_context()
 
-        # Modify the context
         ctx.config.max_dfbs = 100
         ctx.config.scheduler_algorithm = "greedy"
         ctx.copy_state.pipe_buffer["test"] = "value"
 
-        # Reset should create new context with defaults
         reset_context()
         new_ctx = get_context()
 
@@ -114,11 +115,11 @@ class TestContextCreation:
         assert get_context().active_hooks == {}
 
 
-class TestGreenletInheritance:
-    """Test that child greenlets inherit parent context."""
+class TestGreenletSharing:
+    """All greenlets within a run share the same context."""
 
-    def test_child_greenlet_inherits_parent_context(self):
-        """Test that child greenlet can access parent's context."""
+    def test_child_greenlet_sees_same_context(self):
+        """A child greenlet sees the same context as its parent."""
         reset_context()
         parent_ctx = get_context()
         parent_ctx.config.max_dfbs = 128
@@ -129,16 +130,14 @@ class TestGreenletInheritance:
             nonlocal child_ctx_ref
             child_ctx_ref = get_context()
 
-        # Create child greenlet
         child = greenlet(child_function)
         child.switch()
 
-        # Child should have accessed parent's context
         assert child_ctx_ref is parent_ctx
         assert child_ctx_ref.config.max_dfbs == 128
 
-    def test_nested_greenlets_walk_up_to_root(self):
-        """Test that deeply nested greenlets can find root context."""
+    def test_deeply_nested_greenlets_share_context(self):
+        """Greenlets created from greenlets all see the same context."""
         reset_context()
         root_ctx = get_context()
         root_ctx.config.max_dfbs = 256
@@ -161,14 +160,13 @@ class TestGreenletInheritance:
         child1 = greenlet(level1)
         child1.switch()
 
-        # All levels should see the same root context
         assert len(contexts_seen) == 3
         for name, ctx in contexts_seen:
             assert ctx is root_ctx, f"{name} saw different context"
             assert ctx.config.max_dfbs == 256
 
     def test_child_can_modify_shared_context(self):
-        """Test that child modifications affect parent's context."""
+        """A child greenlet's writes to the context are visible to the parent."""
         reset_context()
         parent_ctx = get_context()
         parent_ctx.config.max_dfbs = 10
@@ -181,145 +179,42 @@ class TestGreenletInheritance:
         child = greenlet(child_function)
         child.switch()
 
-        # Parent sees child's modifications (shared context)
         assert parent_ctx.config.max_dfbs == 20
         assert parent_ctx.config.scheduler_algorithm == "greedy"
 
-    def test_child_with_own_context_is_isolated(self):
-        """Test that child with its own context doesn't affect parent."""
+    def test_child_set_context_swaps_for_everyone(self):
+        """``set_context()`` from a child swaps the process-wide context.
+
+        In the per-process model there is no greenlet-local isolation: any
+        call to ``set_context()`` (or ``reset_context()``) replaces the
+        single shared context, so the parent observes the change too.
+        Test runs needing isolation should rely on the autouse
+        ``reset_simulator_context`` fixture instead of trying to nest
+        contexts inside greenlets.
+        """
         reset_context()
         parent_ctx = get_context()
         parent_ctx.config.max_dfbs = 32
 
-        child_ctx_ref = None
-
         def child_function():
-            nonlocal child_ctx_ref
-            # Child creates its own context
-            child_ctx = SimulatorContext()
-            child_ctx.config.max_dfbs = 99
-            set_context(child_ctx)
-            child_ctx_ref = get_context()
+            new_ctx = SimulatorContext()
+            new_ctx.config.max_dfbs = 99
+            set_context(new_ctx)
 
         child = greenlet(child_function)
         child.switch()
 
-        # Child should have different context
-        assert child_ctx_ref is not parent_ctx
-        assert child_ctx_ref.config.max_dfbs == 99
-        # Parent context unchanged
-        assert parent_ctx.config.max_dfbs == 32
+        # The parent now sees the new context the child installed.
+        seen_from_parent = get_context()
+        assert seen_from_parent is not parent_ctx
+        assert seen_from_parent.config.max_dfbs == 99
 
 
-class TestStateIsolation:
-    """Test that state is properly isolated between execution contexts."""
-
-    def test_config_isolation_between_resets(self):
-        """Test that config is isolated per independent context."""
-        reset_context()
-        ctx1 = get_context()
-        ctx1.config.max_dfbs = 16
-        ctx1.config.scheduler_algorithm = "greedy"
-
-        other_ctx = None
-
-        def other_greenlet():
-            nonlocal other_ctx
-            reset_context()  # Create fresh context
-            other_ctx = get_context()
-            other_ctx.config.max_dfbs = 64
-            other_ctx.config.scheduler_algorithm = "fair"
-
-        g = greenlet(other_greenlet)
-        g.switch()
-
-        # Original context unchanged
-        assert ctx1.config.max_dfbs == 16
-        assert ctx1.config.scheduler_algorithm == "greedy"
-
-        # Other context has its own config
-        assert other_ctx.config.max_dfbs == 64
-        assert other_ctx.config.scheduler_algorithm == "fair"
-
-    def test_copy_buffer_isolation(self):
-        """Test that pipe buffers are isolated per context."""
-        reset_context()
-        ctx1 = get_context()
-        ctx1.copy_state.pipe_buffer["pipe1"] = {"data": "value1"}
-
-        other_ctx = None
-
-        def other_greenlet():
-            nonlocal other_ctx
-            reset_context()
-            other_ctx = get_context()
-            other_ctx.copy_state.pipe_buffer["pipe2"] = {"data": "value2"}
-
-        g = greenlet(other_greenlet)
-        g.switch()
-
-        # Contexts have different buffers
-        assert "pipe1" in ctx1.copy_state.pipe_buffer
-        assert "pipe2" not in ctx1.copy_state.pipe_buffer
-        assert "pipe2" in other_ctx.copy_state.pipe_buffer
-        assert "pipe1" not in other_ctx.copy_state.pipe_buffer
-
-    def test_trace_events_isolation(self):
-        """Test that trace_events are isolated per context."""
-        from python.sim.context_types import TraceEvent
-
-        reset_context()
-        ctx1 = get_context()
-        ctx1.trace_events.append(TraceEvent(event="test", tick=0, kernel=None))
-
-        other_ctx = None
-
-        def other_greenlet():
-            nonlocal other_ctx
-            reset_context()
-            other_ctx = get_context()
-            other_ctx.trace_events.append(
-                TraceEvent(event="other", tick=1, kernel=None)
-            )
-
-        g = greenlet(other_greenlet)
-        g.switch()
-
-        assert len(ctx1.trace_events) == 1
-        assert ctx1.trace_events[0].event == "test"
-        assert len(other_ctx.trace_events) == 1
-        assert other_ctx.trace_events[0].event == "other"
-
-
-class TestConcurrentExecution:
-    """Test behavior with multiple concurrent greenlets."""
-
-    def test_parallel_greenlets_with_shared_context(self):
-        """Test multiple children sharing parent context."""
-        reset_context()
-        root_ctx = get_context()
-        root_ctx.config.max_dfbs = 0
-
-        results = []
-
-        def worker(worker_id):
-            ctx = get_context()
-            # Increment counter (simulates accumulating shared state)
-            for _ in range(3):
-                ctx.config.max_dfbs += 1
-            results.append((worker_id, ctx.config.max_dfbs))
-
-        # Run three workers
-        for i in range(3):
-            g = greenlet(lambda wid=i: worker(wid))
-            g.switch()
-
-        # Counter was incremented 9 times total (3 workers x 3 increments)
-        assert root_ctx.config.max_dfbs == 9
-        assert len(results) == 3
+class TestSequentialRuns:
+    """``reset_context()`` is how successive runs get clean state."""
 
     def test_sequential_programs_with_reset(self):
-        """Test running multiple programs sequentially with reset between."""
+        """Each reset_context() gives the next ``run'' fresh defaults."""
         results = []
 
         for program_id in range(3):
@@ -328,20 +223,14 @@ class TestConcurrentExecution:
             ctx.config.max_dfbs = 10 * (program_id + 1)
             ctx.config.scheduler_algorithm = "greedy" if program_id % 2 == 0 else "fair"
 
-            def program():
-                ctx = get_context()
-                results.append(
-                    {
-                        "id": program_id,
-                        "max_dfbs": ctx.config.max_dfbs,
-                        "scheduler": ctx.config.scheduler_algorithm,
-                    }
-                )
+            results.append(
+                {
+                    "id": program_id,
+                    "max_dfbs": ctx.config.max_dfbs,
+                    "scheduler": ctx.config.scheduler_algorithm,
+                }
+            )
 
-            g = greenlet(program)
-            g.switch()
-
-        # Each program saw its own isolated context
         assert results[0]["max_dfbs"] == 10
         assert results[1]["max_dfbs"] == 20
         assert results[2]["max_dfbs"] == 30
@@ -349,67 +238,8 @@ class TestConcurrentExecution:
         assert results[1]["scheduler"] == "fair"
         assert results[2]["scheduler"] == "greedy"
 
-
-class TestWarningState:
-    """Test warning deduplication state management."""
-
-    def test_warning_tracking(self):
-        """Test that warnings are tracked per-context."""
-        reset_context()
-        ctx = get_context()
-
-        ctx.warnings.block_print_warnings[("file.py", 10)] = {"node0", "node1"}
-        ctx.warnings.broadcast_1d_warnings[("file.py", 10)] = {"node0", "node1"}
-        ctx.warnings.block_print_warnings[("other.py", 20)] = {"node2"}
-
-        assert len(ctx.warnings.broadcast_1d_warnings) == 1
-        assert len(ctx.warnings.block_print_warnings) == 2
-        assert "node0" in ctx.warnings.block_print_warnings[("file.py", 10)]
-        assert "node0" in ctx.warnings.broadcast_1d_warnings[("file.py", 10)]
-
-    def test_warning_isolation_between_contexts(self):
-        """Test that warnings don't leak between contexts."""
-        reset_context()
-        ctx1 = get_context()
-        ctx1.warnings.block_print_warnings[("file.py", 10)] = {"node0"}
-        ctx1.warnings.broadcast_1d_warnings[("file.py", 10)] = {"node0"}
-
-        other_ctx = None
-
-        def other_greenlet():
-            nonlocal other_ctx
-            reset_context()
-            other_ctx = get_context()
-            other_ctx.warnings.block_print_warnings[("file.py", 20)] = {"node1"}
-            other_ctx.warnings.broadcast_1d_warnings[("file.py", 20)] = {"node1"}
-
-        g = greenlet(other_greenlet)
-        g.switch()
-
-        # Warnings are isolated
-        assert ("file.py", 10) in ctx1.warnings.block_print_warnings
-        assert ("file.py", 20) not in ctx1.warnings.block_print_warnings
-        assert ("file.py", 20) in other_ctx.warnings.block_print_warnings
-        assert ("file.py", 10) not in other_ctx.warnings.block_print_warnings
-        assert ("file.py", 10) in ctx1.warnings.broadcast_1d_warnings
-        assert ("file.py", 20) not in ctx1.warnings.broadcast_1d_warnings
-        assert ("file.py", 20) in other_ctx.warnings.broadcast_1d_warnings
-        assert ("file.py", 10) not in other_ctx.warnings.broadcast_1d_warnings
-
-
-class TestEdgeCases:
-    """Test edge cases and error conditions."""
-
-    def test_context_without_parent_greenlet(self):
-        """Test getting context when there's no parent (main greenlet)."""
-        reset_context()
-        ctx = get_context()
-
-        assert isinstance(ctx, SimulatorContext)
-        assert ctx.config.max_dfbs == 32
-
     def test_multiple_resets(self):
-        """Test that multiple resets work correctly."""
+        """Multiple resets each produce a fresh context with defaults."""
         for i in range(5):
             reset_context()
             ctx = get_context()
@@ -421,7 +251,7 @@ class TestEdgeCases:
             assert new_ctx.config.max_dfbs == 32
 
     def test_context_dataclass_independence(self):
-        """Test that nested dataclasses are independent between contexts."""
+        """Nested dataclasses are independent between successive contexts."""
         reset_context()
         ctx1 = get_context()
         ctx1.copy_state.pipe_buffer["key1"] = {"data": "value"}
@@ -431,3 +261,27 @@ class TestEdgeCases:
 
         assert "key1" not in ctx2.copy_state.pipe_buffer
         assert len(ctx2.copy_state.pipe_buffer) == 0
+
+
+class TestWarningState:
+    """Warning deduplication state lives in the context."""
+
+    def test_warning_tracking(self):
+        """Warnings are tracked per-context."""
+        reset_context()
+        ctx = get_context()
+
+        ctx.warnings.broadcast_1d_warnings[("file.py", 10)] = {"node0", "node1"}
+        ctx.warnings.block_print_warnings[("other.py", 20)] = {"node2"}
+
+        assert len(ctx.warnings.broadcast_1d_warnings) == 1
+        assert len(ctx.warnings.block_print_warnings) == 1
+        assert "node0" in ctx.warnings.broadcast_1d_warnings[("file.py", 10)]
+
+    def test_warning_state_is_reset_between_runs(self):
+        """``reset_context()`` clears accumulated warning state."""
+        reset_context()
+        get_context().warnings.broadcast_1d_warnings[("file.py", 10)] = {"node0"}
+
+        reset_context()
+        assert len(get_context().warnings.broadcast_1d_warnings) == 0

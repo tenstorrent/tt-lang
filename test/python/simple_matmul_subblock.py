@@ -37,7 +37,7 @@ import ttl
 # CHECK-CPP: [[CB0]].wait_front(
 # CHECK-CPP: [[CB1]].wait_front(
 # CHECK-CPP: [[CB2]].reserve_back(
-# CHECK-CPP: mm_block_init(
+# CHECK-CPP: matmul_block_init(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   tile_regs_acquire();
 # CHECK-CPP:   matmul_block(

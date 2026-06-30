@@ -17,6 +17,7 @@ import glob
 import importlib.util
 import os
 import sys
+from contextlib import contextmanager
 from typing import Any, Sequence
 
 # =============================================================================
@@ -113,6 +114,46 @@ def require_hardware(message: str = "Skipping test - no hardware available"):
     if not _hardware_available:
         print(message)
         sys.exit(0)
+
+
+# =============================================================================
+# Mesh fabric utilities
+# =============================================================================
+
+
+class FabricMeshUnavailable(RuntimeError):
+    pass
+
+
+@contextmanager
+def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
+    """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
+    control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
+    mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
+    override topology discovery.
+    """
+    ttnn_module = _get_ttnn()
+    if ttnn_module is None:
+        raise FabricMeshUnavailable("TTNN not available")
+
+    if requested_mesh_shape is None:
+        requested_mesh_shape = tuple(
+            ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
+        )
+    else:
+        requested_mesh_shape = tuple(requested_mesh_shape)
+
+    mesh_device = None
+    try:
+        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.FABRIC_1D)
+        mesh_device = ttnn_module.open_mesh_device(
+            ttnn_module.MeshShape(requested_mesh_shape)
+        )
+        yield mesh_device
+    finally:
+        if mesh_device is not None:
+            ttnn_module.close_mesh_device(mesh_device)
+        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
 
 
 # =============================================================================

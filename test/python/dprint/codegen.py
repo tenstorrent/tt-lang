@@ -71,8 +71,7 @@ def dprint_test_kernel(inp, out):
 # C++ Kernel Checks - Verify dprint in compute kernel
 # =============================================================================
 
-# CHECK: === compute kernel written to
-# CHECK: // compute
+# CHECK: === compute kernel written to {{.*}} ===
 # CHECK: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
 
@@ -126,8 +125,7 @@ def dprint_test_kernel(inp, out):
 # C++ Kernel Checks - Verify dprint with variables in dm_read kernel
 # =============================================================================
 
-# CHECK: === dm_read kernel written to
-# CHECK: // dm_read
+# CHECK: === dm_read kernel written to {{.*}} ===
 # CHECK: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
 # CHECK: DPRINT("dm_read core: {} {}\n", get_absolute_logical_x(), get_absolute_logical_y());
@@ -146,8 +144,7 @@ def dprint_test_kernel(inp, out):
 # C++ Kernel Checks - Verify no dprint in dm_write kernel (no print calls)
 # =============================================================================
 
-# CHECK: === dm_write kernel written to
-# CHECK: // dm_write
+# CHECK: === dm_write kernel written to {{.*}} ===
 # CHECK-NOT: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
 

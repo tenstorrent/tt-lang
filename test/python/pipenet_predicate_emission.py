@@ -27,14 +27,14 @@ without any PipeNet must not contain the predicate machinery.
 # INITIAL: ttl.is_active
 
 # After lowering, the user's guard survives as an emitc.if; the
-# predicate chain reduces to a bitwise_or over the per-pipe role
+# predicate chain reduces to a logical_or over the per-pipe role
 # matches.
-# FINAL: emitc.bitwise_or
+# FINAL: emitc.logical_or
 # FINAL: emitc.if
 
 # A kernel without any PipeNet contains neither the emitc.if nor the
-# bitwise_or — there is no role predicate to evaluate.
-# NO-PIPENET-NOT: emitc.bitwise_or
+# logical_or. There is no role predicate to evaluate.
+# NO-PIPENET-NOT: emitc.logical_or
 
 import os
 

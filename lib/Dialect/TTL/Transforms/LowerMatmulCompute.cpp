@@ -489,10 +489,10 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   Value accTensor = accumulatorInfo.kind == MatmulAccumulatorKind::InputTensor
                         ? accumulatorInfo.tensorAccumulator
                         : Value();
-  Value mmResult =
-      TileMatmulBlockOp::create(secBuilder, loc, tileType, lhsTensor, rhsTensor,
-                                accTensor, dstZero)
-          .getResult();
+  auto newMmOp = TileMatmulBlockOp::create(secBuilder, loc, tileType, lhsTensor,
+                                           rhsTensor, accTensor, dstZero);
+  newMmOp.setTransposeRhsAttr(mmOp.getTransposeRhsAttr());
+  Value mmResult = newMmOp.getResult();
 
   SmallVector<PendingStore> pendingStores;
   for (TileExpansion &expansion : expansions) {

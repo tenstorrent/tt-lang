@@ -1,7 +1,11 @@
 # Runtime dependencies for the tt-lang wheel; also read by pyproject.toml.
 pydantic<3
 torch>=1.9.0
-numpy>=1.24.4,<2
+numpy>=1.20.0
+# Intel-Mac torch (2.2.2, the last release for that platform) needs numpy 1.x
+# but doesn't declare it (#606); torch and ttnn handle numpy 2 elsewhere, so the
+# cap is scoped to Intel Macs only.
+numpy<2; platform_system == "Darwin" and platform_machine == "x86_64"
 greenlet>=3.0.0
 PyYAML>=5.4.0
 typing_extensions>=4.12.2

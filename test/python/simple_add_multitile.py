@@ -95,7 +95,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify loops are generated for multi-tile
 # =============================================================================
 
-# CHECK-CPP: // add_compute
+# CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # Loop bound constant for 2x2 tile grid, plus CB instance bindings.
 # Compiler emits both as immediate locals at kernel_main entry; their relative
@@ -137,7 +137,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # 2x2 = 4 tiles fits in DST (bf16), fully unrolled with FPU binary add
 # =============================================================================
 
-# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP-FPU: void kernel_main()
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

@@ -4,6 +4,7 @@
 #include "Dialects.h"
 
 #include "mlir/CAPI/Registration.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -40,7 +41,8 @@ void ttmlirMinimalRegisterPasses() {
 bool ttmlirMinimalRunTTKernelToEmitC(MlirModule module) {
   mlir::Operation *op = unwrap(mlirModuleGetOperation(module));
   mlir::PassManager pm(op->getName());
-  pm.addPass(mlir::tt::createConvertTTKernelToEmitC());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::tt::createConvertTTKernelToEmitC());
   return mlir::succeeded(pm.run(op));
 }
 

@@ -98,7 +98,15 @@ jobs:
     secrets: inherit
     with:
       push: true
-      build_manylinux_wheel_images: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
+
+  build-wheel-images:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.docker_tag == '' && contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/call-build-wheel-images.yml
+    secrets: inherit
 
   build-standard-wheels:
     needs: [preflight, build-docker]
@@ -123,8 +131,8 @@ jobs:
       artifact_name: tt-lang-wheels-${{ matrix.wheel_variant }}
 
   build-light-wheels:
-    needs: [preflight, build-docker]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
+    needs: [preflight, build-docker, build-wheel-images]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && (needs.build-wheel-images.result == 'success' || needs.build-wheel-images.result == 'skipped') && contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
     name: "Build light wheel (${{ matrix.python_tag }})"
     runs-on: mlir-large-runner-lang
     timeout-minutes: 120
