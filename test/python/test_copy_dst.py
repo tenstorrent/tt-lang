@@ -14,10 +14,6 @@ Reproduces: https://github.com/tenstorrent/tt-lang/issues/384
 Regression: https://github.com/tenstorrent/tt-lang/issues/443
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

@@ -17,10 +17,6 @@ Test patterns:
 5. Unary chain branch (abs→exp, abs→add): operation result with mixed consumers
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl
