@@ -953,6 +953,7 @@ def _compile_ttnn_kernel(
             grid_rows=grid_rows,
             num_tensors=len(args),
             output_path=runner_path,
+            program_hash=program_hash,
             kernel_name="ttlang_kernel",
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,

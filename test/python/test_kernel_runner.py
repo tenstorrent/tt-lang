@@ -61,6 +61,7 @@ class _FakeTTNN:
             self.kernels = kernels
             self.cbs = cbs
             self.semaphores = semaphores
+            self.custom_program_hash = None
 
     class KernelDescriptor:
         def __init__(
@@ -239,6 +240,21 @@ def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     assert result["program"].semaphores == []
 
 
+def test_run_kernel_sets_custom_program_hash(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensorWithoutDevice()
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        program_hash=-1,
+    )
+
+    assert result["program"].custom_program_hash == (1 << 64) - 1
+
+
 def test_build_generic_op_io_tensors_duplicates_single_output():
     tensor = _FakeTensorWithoutDevice()
 
@@ -278,12 +294,15 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
         grid_cols=1,
         grid_rows=1,
         num_tensors=1,
+        program_hash=-2,
         num_pipe_global_semaphores=3,
     )
 
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+    assert "PROGRAM_HASH = 18446744073709551614" in source
     assert "build_pipe_runtime_resources(" in source
     assert "build_kernel_descriptors(" in source
     assert "build_pipe_sync_semaphore_descriptors(" in source
     assert "build_generic_op_io_tensors(" in source
+    assert "program.custom_program_hash = PROGRAM_HASH" in source
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
