@@ -289,24 +289,56 @@ jobs:
 
       - name: Configure AWS Credentials
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::767397912691:role/GitHubActionsS3AccessRole
-          aws-region: us-east-2
+        uses: ./.github/actions/configure-tt-s3-credentials
 
       - name: Install s3pypi
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: python3 -m pip install s3pypi
 
+      # Nightly dev wheels (X.Y.Z.devYYYYMMDD) publish under a <YYYY-MM>/ subdir;
+      # stable releases (X.Y.Z) publish at the flat root. Publish layout only.
+      - name: Derive publish prefix
+        id: publish_prefix
+        run: |
+          set -euo pipefail
+          version="${{ needs.preflight.outputs.version_override }}"
+          prefix=""
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev([0-9]{4})([0-9]{2})[0-9]{2} ]]; then
+            prefix="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+          fi
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "Publish prefix: ${prefix:-<root>}"
+
       - name: Publish wheels
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: |
           set -euo pipefail
+          publish_args=()
           if [ "${{ needs.preflight.outputs.overwrite_releases }}" = "true" ]; then
-            .github/scripts/publish-s3-wheels.sh --overwrite dist
-          else
-            .github/scripts/publish-s3-wheels.sh dist
+            publish_args+=(--overwrite)
           fi
+          if [ -n "${{ steps.publish_prefix.outputs.prefix }}" ]; then
+            publish_args+=(--prefix "${{ steps.publish_prefix.outputs.prefix }}")
+          fi
+          .github/scripts/publish-s3-wheels.sh "${publish_args[@]}" dist
+
+      # s3pypi rewrites the index it just wrote on every upload, so restore the
+      # human-facing README onto that index after publishing.
+      - name: Inject S3 index README
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install markdown
+          prefix="${{ steps.publish_prefix.outputs.prefix }}"
+          key="index.html"
+          if [ -n "$prefix" ]; then
+            key="$prefix/index.html"
+          fi
+          aws s3 cp "s3://tenstorrent-pypi/$key" ./index.html
+          python3 .github/scripts/inject_s3_index_readme.py \
+            packaging/s3-index/README.md ./index.html
+          aws s3 cp ./index.html "s3://tenstorrent-pypi/$key" \
+            --content-type "text/html; charset=utf-8"
 
       - name: Report install command
         run: |
@@ -315,7 +347,59 @@ jobs:
           if [ "${{ needs.preflight.outputs.dry_run }}" = "true" ]; then
             summary_args+=(--dry-run)
           fi
+          if [ -n "${{ steps.publish_prefix.outputs.prefix }}" ]; then
+            summary_args+=(--index-subdir "${{ steps.publish_prefix.outputs.prefix }}")
+          fi
           .github/scripts/publish-s3-summary.sh \
             "${summary_args[@]}" \
             "${{ needs.preflight.outputs.wheel_variant }}" \
             "${{ needs.preflight.outputs.version_override }}"
+
+  # Scheduled runs additionally build a per-tt-metal-SHA light wheel. This runs
+  # here (not on its own schedule) so it reuses the ird and manylinux images
+  # this run just pushed; the manylinux images carry no fixed tag to target.
+  ttmetal-light-detect:
+    name: "Detect tt-metal uplift for light wheel"
+    needs: preflight
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      uplift: ${{ steps.detect.outputs.uplift }}
+      tt_metal_sha: ${{ steps.detect.outputs.tt_metal_sha }}
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-tt-s3-credentials
+
+      - name: Detect uplift
+        id: detect
+        run: .github/scripts/detect-ttmlir-ttmetal-uplift.sh
+
+  ttmetal-light-build:
+    name: "Build light wheel for tt-metal SHA"
+    needs: [preflight, build-docker, build-wheel-images, ttmetal-light-detect]
+    if: ${{ github.event_name == 'schedule' && needs.ttmetal-light-detect.outputs.uplift == 'true' }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    uses: ./.github/workflows/call-ttmetal-light-wheel.yml
+    secrets: inherit
+    with:
+      tt_metal_sha: ${{ needs.ttmetal-light-detect.outputs.tt_metal_sha }}
+      docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
+      dry_run: false
