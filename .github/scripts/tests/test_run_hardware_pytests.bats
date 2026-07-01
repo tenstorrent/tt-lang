@@ -15,6 +15,10 @@ setup() {
     cp "$SCRIPT" "$BATS_TEST_TMPDIR/run-hardware-pytests.sh"
     SCRIPT="$BATS_TEST_TMPDIR/run-hardware-pytests.sh"
     PATH="$BIN:$PATH"
+    unset TT_VISIBLE_DEVICES
+    unset TT_METAL_CACHE
+    unset TTLANG_PIN_XDIST_WORKERS_TO_DEVICES
+    unset TTLANG_XDIST_TT_METAL_CACHE_ROOT
 }
 
 # Fake python3 recording each invocation's args, exiting with $1 (default 0).
@@ -22,7 +26,7 @@ write_fake_python() {
     local exit_code="${1:-0}"
     cat > "$BIN/python3" <<EOF
 #!/usr/bin/env bash
-printf 'env:%s args:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\$*" >> "$CALLS"
+printf 'env:%s cache-root:%s args:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" >> "$CALLS"
 exit $exit_code
 EOF
     chmod +x "$BIN/python3"
@@ -38,7 +42,7 @@ call_count=0
 [ -f "$count_file" ] && call_count=\$(cat "$count_file")
 call_count=\$((call_count + 1))
 printf '%s\n' "\$call_count" > "$count_file"
-printf 'env:%s args:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\$*" >> "$CALLS"
+printf 'env:%s cache-root:%s args:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" >> "$CALLS"
 case "\$call_count" in
     1) exit $first_exit ;;
     *) exit $second_exit ;;
@@ -54,10 +58,10 @@ EOF
 
     assert_success
     run cat "$CALLS"
-    assert_line --partial "env:1 args:"
+    assert_line --partial "env:1 cache-root:build/test/pytest-report-tt-metal-cache args:-m pytest"
     assert_line --partial "pytest test/python -m not multi_device -n 4"
     assert_line --partial "pytest-report-parallel.xml"
-    assert_line --partial "pytest test/python -m multi_device"
+    assert_line --partial "env: cache-root: args:-m pytest test/python -m multi_device"
     assert_line --partial "pytest-report-multidevice.xml"
     [ "${#lines[@]}" -eq 2 ]
 }
@@ -71,6 +75,7 @@ EOF
     run cat "$CALLS"
     assert_output --partial "pytest test/python"
     refute_output --partial "env:1"
+    refute_output --partial "cache-root:build"
     refute_output --partial " -n "
     refute_output --partial "multi_device"
     assert_output --partial "pytest-report.xml"

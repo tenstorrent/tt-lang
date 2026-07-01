@@ -27,6 +27,7 @@ chips="$(resolve_tt_chip_count "${HW_LIT_CHIPS:-}")" || {
 
 lit_common=(-j1 --verbose)
 multi_device_filter="${HW_LIT_MULTI_DEVICE_FILTER:-mesh_tensor}"
+cache_root="${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}"
 
 if [ "$chips" -le 1 ]; then
     echo "Detected ${chips} chip(s): running Python lit serially"
@@ -42,6 +43,8 @@ for ((chip_index = 0; chip_index < chips; chip_index++)); do
     shard_number=$((chip_index + 1))
     (
         export TT_VISIBLE_DEVICES="${chip_index}"
+        export TT_METAL_CACHE="${cache_root}/shard-${shard_number}"
+        mkdir -p "$TT_METAL_CACHE"
         llvm-lit "$TEST_DIR" \
             --num-shards "$chips" \
             --run-shard "$shard_number" \
@@ -57,7 +60,9 @@ for pid in "${pids[@]}"; do
     wait "$pid" || rc=1
 done
 
-env -u TT_VISIBLE_DEVICES llvm-lit "$TEST_DIR" \
+multi_device_cache="${cache_root}/multidevice"
+mkdir -p "$multi_device_cache"
+env -u TT_VISIBLE_DEVICES TT_METAL_CACHE="$multi_device_cache" llvm-lit "$TEST_DIR" \
     --filter "$multi_device_filter" \
     --allow-empty-runs \
     "${lit_common[@]}" \

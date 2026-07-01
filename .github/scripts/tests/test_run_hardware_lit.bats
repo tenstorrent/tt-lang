@@ -14,13 +14,15 @@ setup() {
     ln -s "$SCRIPTS_DIR/hardware-test-common.sh" "$BATS_TEST_TMPDIR/hardware-test-common.sh"
     cp "$SCRIPTS_DIR/run-hardware-lit.sh" "$SCRIPT"
     PATH="$BIN:$PATH"
+    unset TT_VISIBLE_DEVICES
+    unset TT_METAL_CACHE
 }
 
 write_fake_lit() {
     local exit_code="${1:-0}"
     cat > "$BIN/llvm-lit" <<EOF
 #!/usr/bin/env bash
-printf 'env:%s args:%s\n' "\${TT_VISIBLE_DEVICES:-}" "\$*" >> "$CALLS"
+printf 'env:%s cache:%s args:%s\n' "\${TT_VISIBLE_DEVICES:-}" "\${TT_METAL_CACHE:-}" "\$*" >> "$CALLS"
 exit $exit_code
 EOF
     chmod +x "$BIN/llvm-lit"
@@ -33,10 +35,10 @@ EOF
 
     assert_success
     run cat "$CALLS"
-    assert_line --partial "env:0 args:build/test/python --num-shards 3 --run-shard 1"
-    assert_line --partial "env:1 args:build/test/python --num-shards 3 --run-shard 2"
-    assert_line --partial "env:2 args:build/test/python --num-shards 3 --run-shard 3"
-    assert_line --partial "env: args:build/test/python --filter mesh_tensor"
+    assert_line --partial "env:0 cache:build/test/python-lit-report-tt-metal-cache/shard-1 args:build/test/python --num-shards 3 --run-shard 1"
+    assert_line --partial "env:1 cache:build/test/python-lit-report-tt-metal-cache/shard-2 args:build/test/python --num-shards 3 --run-shard 2"
+    assert_line --partial "env:2 cache:build/test/python-lit-report-tt-metal-cache/shard-3 args:build/test/python --num-shards 3 --run-shard 3"
+    assert_line --partial "env: cache:build/test/python-lit-report-tt-metal-cache/multidevice args:build/test/python --filter mesh_tensor"
     assert_line --partial "python-lit-report-shard-1.xml"
     assert_line --partial "python-lit-report-multidevice.xml"
     [ "${#lines[@]}" -eq 4 ]
@@ -64,6 +66,18 @@ EOF
     run cat "$CALLS"
     assert_output --partial "--filter-out fabric_mesh"
     assert_output --partial "--filter fabric_mesh"
+}
+
+@test "multi-chip: existing TT_METAL_CACHE is used as cache root" {
+    write_fake_lit 0
+
+    HW_LIT_CHIPS=2 TT_METAL_CACHE="$BATS_TEST_TMPDIR/cache-root" run "$SCRIPT" build/test/python build/test/python-lit-report
+
+    assert_success
+    run cat "$CALLS"
+    assert_line --partial "cache:$BATS_TEST_TMPDIR/cache-root/shard-1"
+    assert_line --partial "cache:$BATS_TEST_TMPDIR/cache-root/shard-2"
+    assert_line --partial "cache:$BATS_TEST_TMPDIR/cache-root/multidevice"
 }
 
 @test "multi-chip: shard failure is reported after all shards run" {
