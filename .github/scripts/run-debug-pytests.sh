@@ -67,7 +67,7 @@ for ((iteration = 1; iteration <= REPEAT; iteration++)); do
     echo "::group::iteration ${iteration}/${REPEAT}"
     log="${ARTIFACT_DIR}/iter_${iteration}.log"
     if [ "$UNDER_GDB" = "true" ] && [ "$have_gdb" = "true" ]; then
-        gdb -batch -nx -ex run -ex 'thread apply all bt' \
+        gdb -batch -nx --return-child-result -ex run -ex 'thread apply all bt' \
             --args python3 -m pytest "${SELECTOR[@]}" "${PYTEST_FLAGS[@]}" 2>&1 | tee "$log"
         rc=${PIPESTATUS[0]}
     else

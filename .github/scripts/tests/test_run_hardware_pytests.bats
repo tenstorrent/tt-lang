@@ -26,7 +26,7 @@ write_fake_python() {
     local exit_code="${1:-0}"
     cat > "$BIN/python3" <<EOF
 #!/usr/bin/env bash
-printf 'env:%s cache-root:%s args:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" >> "$CALLS"
+printf 'env:%s cache-root:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
 exit $exit_code
 EOF
     chmod +x "$BIN/python3"
@@ -42,7 +42,7 @@ call_count=0
 [ -f "$count_file" ] && call_count=\$(cat "$count_file")
 call_count=\$((call_count + 1))
 printf '%s\n' "\$call_count" > "$count_file"
-printf 'env:%s cache-root:%s args:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" >> "$CALLS"
+printf 'env:%s cache-root:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
 case "\$call_count" in
     1) exit $first_exit ;;
     *) exit $second_exit ;;
@@ -63,6 +63,17 @@ EOF
     assert_line --partial "pytest-report-parallel.xml"
     assert_line --partial "env: cache-root: args:-m pytest test/python -m multi_device"
     assert_line --partial "pytest-report-multidevice.xml"
+    [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "multi-chip: a preset TT_VISIBLE_DEVICES is cleared for both phases" {
+    write_fake_python 0
+
+    TT_VISIBLE_DEVICES=2 HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    refute_output --partial "vis:2"
     [ "${#lines[@]}" -eq 2 ]
 }
 

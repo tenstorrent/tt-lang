@@ -10,11 +10,27 @@ setup() {
     SCRIPT="$SCRIPTS_DIR/run-debug-pytests.sh"
     BIN="$BATS_TEST_TMPDIR/bin"
     CALLS="$BATS_TEST_TMPDIR/pytest.calls"
+    GDB_CALLS="$BATS_TEST_TMPDIR/gdb.calls"
     mkdir -p "$BIN"
     PATH="$BIN:$PATH"
     export ARTIFACT_DIR="$BATS_TEST_TMPDIR/artifacts"
     export UNDER_GDB=false
     cd "$BATS_TEST_TMPDIR"
+}
+
+# Fake gdb recording its argv. It emulates gdb's exit-status contract: the
+# child's failure is reported only when invoked with --return-child-result;
+# otherwise a batch run exits 0 regardless of what the inferior did.
+write_fake_gdb() {
+    cat > "$BIN/gdb" <<EOF
+#!/usr/bin/env bash
+printf 'GDB %s\n' "\$*" >> "$GDB_CALLS"
+for arg in "\$@"; do
+    [ "\$arg" = "--return-child-result" ] && exit 1
+done
+exit 0
+EOF
+    chmod +x "$BIN/gdb"
 }
 
 # Fake python3 recording one "CALL" marker plus each arg per invocation, exiting
@@ -110,4 +126,15 @@ call_count() {
 
     assert_failure 2
     assert_output --partial "REPEAT"
+}
+
+@test "under_gdb=true detects a crashing child via --return-child-result" {
+    write_fake_gdb
+
+    PYTEST_ARGS="a.py" REPEAT=3 STOP_ON_FAIL=true UNDER_GDB=true run "$SCRIPT"
+
+    assert_failure
+    run cat "$GDB_CALLS"
+    assert_output --partial "--return-child-result"
+    [ "$(grep -c '^GDB ' "$GDB_CALLS")" -eq 1 ]
 }

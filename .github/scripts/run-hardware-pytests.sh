@@ -45,6 +45,7 @@ run_pytest_phase() {
 
 if [ "$chips" -gt 1 ]; then
     echo "Detected ${chips} chips: single-device tests in parallel (-n ${chips}), multi_device serial"
+    unset TT_VISIBLE_DEVICES
     rc=0
     TTLANG_PIN_XDIST_WORKERS_TO_DEVICES=1 \
         TTLANG_XDIST_TT_METAL_CACHE_ROOT="${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}" \
