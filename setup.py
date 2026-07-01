@@ -418,11 +418,53 @@ if _ttnn_dep_mode() == "bundled":
     _bundled_packages = _bundled_metadata.packages
     _bundled_package_dir = _bundled_metadata.package_dir
 
+
+def _git_head_sha():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            cwd=str(REPO_ROOT),
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return "unknown"
+
+
+def _git_gitlink_sha(path):
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", f"HEAD:{path}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            cwd=str(REPO_ROOT),
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return "unknown"
+
+
+def _build_provenance_footer():
+    """Provenance footer for the wheel's long description (env overrides from CI,
+    git fallback locally)."""
+    ttlang = os.environ.get("TTLANG_GIT_COMMIT", "").strip() or _git_head_sha()
+    metal_tag = _read_tt_metal_version_var("TT_METAL_TAG")
+    metal = (
+        os.environ.get("TT_METAL_COMMIT", "").strip()
+        or os.environ.get("TT_METAL_SHORT_SHA", "").strip()
+        or _git_gitlink_sha("third-party/tt-metal")
+    )
+    return (
+        f"\n\n---\n**Build provenance:** tt-lang `{ttlang}`, "
+        f"tt-metal `{metal_tag}` (`{metal}`)\n"
+    )
+
+
 readme_path = REPO_ROOT / "README.md"
 with open(str(readme_path), "r", encoding="utf-8") as readme_file:
     readme = absolutize_readme_images(
         readme_file.read(), ref_for_version(_version), REPO_ROOT
     )
+readme = readme + _build_provenance_footer()
 
 setup(
     version=_version,

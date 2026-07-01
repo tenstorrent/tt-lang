@@ -136,6 +136,40 @@ function(ttlang_get_submodule_sha SUBMODULE_DIR OUTPUT_VAR)
   set(${OUTPUT_VAR} "${_sha}" PARENT_SCOPE)
 endfunction()
 
+# ttlang_get_gitlink_sha(REPO_DIR SUBMODULE_PATH OUTPUT_VAR)
+# Reads a submodule's recorded commit from the superproject gitlink, which works
+# whether or not the submodule is checked out. A plain rev-parse in an
+# unpopulated submodule directory would resolve to the superproject HEAD instead.
+function(ttlang_get_gitlink_sha REPO_DIR SUBMODULE_PATH OUTPUT_VAR)
+  execute_process(
+    COMMAND git -C "${REPO_DIR}" rev-parse "HEAD:${SUBMODULE_PATH}"
+    OUTPUT_VARIABLE _sha
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _result
+  )
+  if(NOT _result EQUAL 0)
+    set(_sha "unknown")
+  endif()
+  set(${OUTPUT_VAR} "${_sha}" PARENT_SCOPE)
+endfunction()
+
+# ttlang_read_tt_metal_version_var(VAR_NAME OUTPUT_VAR)
+# Reads a shell-style `VAR="value"` assignment from third-party/tt-metal-version.
+# Sets OUTPUT_VAR to "unknown" if the file or variable is missing.
+function(ttlang_read_tt_metal_version_var VAR_NAME OUTPUT_VAR)
+  set(_version_file "${CMAKE_SOURCE_DIR}/third-party/tt-metal-version")
+  set(_value "unknown")
+  if(EXISTS "${_version_file}")
+    file(STRINGS "${_version_file}" _matches REGEX "^${VAR_NAME}=")
+    if(_matches)
+      list(GET _matches 0 _line)
+      string(REGEX REPLACE "^${VAR_NAME}=\"?([^\"]*)\"?.*$" "\\1" _value "${_line}")
+    endif()
+  endif()
+  set(${OUTPUT_VAR} "${_value}" PARENT_SCOPE)
+endfunction()
+
 # ttlang_debug_message(MESSAGE)
 # Prints a STATUS message only if TTLANG_CMAKE_DEBUG environment variable is defined.
 # Useful for verbose debug output during CMake configuration.
