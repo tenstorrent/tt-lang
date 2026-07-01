@@ -56,12 +56,9 @@ _ttnn_available = is_ttnn_available()
 _hardware_available = is_hardware_available()
 _ttnn_import_failed = False  # Set True after first failed import to prevent nanobind re-registration crash
 
-# Lit tests that should not be collected by pytest (they have # RUN: directives)
+# Helper modules pytest must not collect as tests.
 collect_ignore = [
     "conftest.py",
-    "test_ttnn_interop_add.py",
-    "test_dram_interleaved_add.py",
-    "test_large_dram_streaming.py",
     "utils.py",
 ]
 

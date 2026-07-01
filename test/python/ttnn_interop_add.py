@@ -56,7 +56,7 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
 
 # CHECK: TTNN INTEROP
-# CHECK: Created ProgramDescriptor
+# CHECK: Found {{[0-9]+}} kernels
 
 print("=== Testing TTNN Interop Path ===")
 
