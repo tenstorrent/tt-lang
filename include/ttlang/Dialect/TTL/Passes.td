@@ -239,8 +239,8 @@ def TTLInsertIntermediateDFBs
       bind_cb -> cb_reserve -> ttl.compute tile_store -> cb_push -> cb_wait -> attach_cb
 
     The pass emits the producer-side `cb_push` immediately after the producing
-    compute because it constructs the producer interval directly. The following
-    `ttl-insert-cb-sync` pass inserts the consumer-side `cb_pop`.
+    compute because it constructs the producer interval directly. A later sync
+    pass inserts the consumer-side `cb_pop`.
 
     Non-compute producers use the tensor-level helper:
 
@@ -281,6 +281,12 @@ def TTLFormProducerCompute
     compiler DFB materialization are left unchanged so
     `ttl-insert-intermediate-dfbs` can materialize the producer compute result
     as an extra compute output.
+
+    When a block-level store is absorbed into a producer compute, this pass
+    replaces any corresponding producer release that would otherwise precede
+    the new compute. The constructed order is:
+
+      cb_reserve -> ttl.compute tile_store -> cb_push
   }];
 
   let dependentDialects = [

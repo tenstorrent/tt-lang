@@ -77,6 +77,10 @@ struct TTLInsertIntermediateDFBsPass
     }
 
     OpBuilder builder(funcOp.getContext());
+    // Deduplicate materialization across consumers of the same value, keyed by
+    // the post-materialization source (see DFBMaterializedValue). When a
+    // producing ttl.compute is rebuilt with an extra output, its results are
+    // RAUW'd, so a later consumer's operand already names the new source value.
     llvm::DenseMap<Value, Value> materialized;
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
