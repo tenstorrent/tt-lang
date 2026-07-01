@@ -112,18 +112,17 @@ jobs:
       - name: Python lit tests
         run: |
           source build/env/activate
-          cmake --build build --target check-ttlang-python-lit
+          .github/scripts/run-hardware-lit.sh build/test/python build/test/python-lit-report
 
       - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
-          # thread method kills a C-level device deadlock that SIGALRM cannot.
-          python3 -m pytest test/python -v --tb=long --timeout=300 --timeout-method=thread --junitxml=build/test/pytest-report.xml
+          .github/scripts/run-hardware-pytests.sh test/python build/test/pytest-report
 
       - name: ME2E tests (MLIR input end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/me2e -v --tb=short --timeout=300 --timeout-method=thread --junitxml=build/test/me2e-report.xml
+          .github/scripts/run-hardware-pytests.sh test/me2e build/test/me2e-report
 
       - name: Hardware compiler example scripts
         run: |
@@ -142,7 +141,8 @@ jobs:
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}
           path: |
-            build/test/me2e-report.xml
-            build/test/pytest-report.xml
+            build/test/me2e-report*.xml
+            build/test/python-lit-report*.xml
+            build/test/pytest-report*.xml
             build/test/sim-report.xml
           retention-days: 7

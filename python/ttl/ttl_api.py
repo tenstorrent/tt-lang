@@ -638,20 +638,42 @@ class CompiledTTNNKernel:
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
-    """Write kernel source to /tmp and return the file path."""
+    """Write generated kernel source and return the path used by TT-Metal JIT."""
     import hashlib
     import os
+    import tempfile
 
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
     user = os.environ.get("USER", "default")
-    path = f"/tmp/{user}/ttlang_kernel_{name}_{content_hash}.cpp"
-    os.makedirs(f"/tmp/{user}", exist_ok=True)
-    with open(path, "w") as f:
-        f.write(source)
+    output_dir = Path("/tmp") / user
+    worker_name = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker_name:
+        output_dir = output_dir / worker_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    path = output_dir / f"ttlang_kernel_{name}_{content_hash}.cpp"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=output_dir,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(source)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
     print(f"=== {name} kernel written to {path} ===")
     print(source)
     print("=" * 60)
-    return path
+    return str(path)
 
 
 def _lookup_kernel_func_op(module, kernel_name: str):
