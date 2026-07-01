@@ -61,6 +61,15 @@ S3 package index. A version selector is required because public PyPI also hosts
 `tt-lang`, and pip resolves candidates across all configured indexes. Available
 versions are listed at https://pypi.eng.aws.tenstorrent.com/.
 
+The index groups wheels into simple sub-indexes, so the `--extra-index-url`
+carries a subdir:
+
+- Nightly development wheels are under `<YYYY-MM>/`, the year-month of the
+  version's `devYYYYMMDD` suffix (e.g. version `X.Y.Z.dev20260615` -> `2026-06/`).
+- Light wheels built and device-tested against a specific tt-metal commit are
+  under `<ttmetal7>/`, that commit's 7-character prefix.
+- Stable release wheels (`vX.Y.Z`) stay at the root.
+
 The default internal `tt-lang` wheel bundles the `ttnn` artifacts from the
 toolchain used to build the wheel, so `pip install` does not pull `ttnn` from
 PyPI. As with the public wheel, `tt-lang-setup` then installs the matching sfpi
@@ -69,7 +78,7 @@ runtime and copies the tutorials:
 ```bash
 TTLANG_VERSION=<published-internal-version>
 pip install \
-  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
+  --extra-index-url https://pypi.eng.aws.tenstorrent.com/<YYYY-MM>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   "tt-lang==$TTLANG_VERSION"
 tt-lang-setup    # downloads sfpi into the bundled ttnn tree + copies tutorials
@@ -81,10 +90,13 @@ metapackage: `tt-lang-light==X` depends on the matching no-ttnn core wheel
 `tt-lang==X+light`. Install either `tt-lang` or `tt-lang-light` in an
 environment, not both.
 
+A per-tt-metal-SHA light wheel resolves from that commit's subdir; a nightly
+light wheel resolves from its `<YYYY-MM>/` subdir instead:
+
 ```bash
 TTLANG_VERSION=<published-internal-version>
 pip install \
-  --extra-index-url https://pypi.eng.aws.tenstorrent.com/ \
+  --extra-index-url https://pypi.eng.aws.tenstorrent.com/<ttmetal7>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   "tt-lang-light==$TTLANG_VERSION"
 tt-lang-setup    # copies tutorials only; sfpi is provided by the external tt-metal
