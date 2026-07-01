@@ -87,6 +87,9 @@ evaluate_candidate() {
     log "evaluating $sha: fast device gate"
     (
         cd "$TTLANG_DIR"
+        # env/activate is not nounset-safe; the gate runs like the hardware
+        # workflow, without -u.
+        set +u
         # shellcheck disable=SC1091
         source "$BUILD_DIR/env/activate"
         eval "$GATE_CMD"
