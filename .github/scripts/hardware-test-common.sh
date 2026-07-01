@@ -25,3 +25,11 @@ resolve_tt_chip_count() {
     esac
     printf '%s\n' "$chips"
 }
+
+absolute_path() {
+    local path="${1:?path is required}"
+    case "$path" in
+        /*) printf '%s\n' "$path" ;;
+        *) printf '%s/%s\n' "$PWD" "$path" ;;
+    esac
+}

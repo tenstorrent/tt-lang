@@ -46,9 +46,10 @@ run_pytest_phase() {
 if [ "$chips" -gt 1 ]; then
     echo "Detected ${chips} chips: single-device tests in parallel (-n ${chips}), multi_device serial"
     unset TT_VISIBLE_DEVICES
+    cache_root="$(absolute_path "${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}")"
     rc=0
     TTLANG_PIN_XDIST_WORKERS_TO_DEVICES=1 \
-        TTLANG_XDIST_TT_METAL_CACHE_ROOT="${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}" \
+        TTLANG_XDIST_TT_METAL_CACHE_ROOT="$cache_root" \
         run_pytest_phase "$TEST_DIR" -m "not multi_device" -n "$chips" \
         "${common[@]}" --junitxml="${REPORT_PREFIX}-parallel.xml" || rc=1
     run_pytest_phase "$TEST_DIR" -m multi_device \

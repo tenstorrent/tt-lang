@@ -35,10 +35,10 @@ EOF
 
     assert_success
     run cat "$CALLS"
-    assert_line --partial "env:0 cache:build/test/python-lit-report-tt-metal-cache/shard-1 args:build/test/python --num-shards 3 --run-shard 1"
-    assert_line --partial "env:1 cache:build/test/python-lit-report-tt-metal-cache/shard-2 args:build/test/python --num-shards 3 --run-shard 2"
-    assert_line --partial "env:2 cache:build/test/python-lit-report-tt-metal-cache/shard-3 args:build/test/python --num-shards 3 --run-shard 3"
-    assert_line --partial "env: cache:build/test/python-lit-report-tt-metal-cache/multidevice args:build/test/python --filter mesh_tensor"
+    assert_line --partial "env:0 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-1 args:build/test/python --num-shards 3 --run-shard 1"
+    assert_line --partial "env:1 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-2 args:build/test/python --num-shards 3 --run-shard 2"
+    assert_line --partial "env:2 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-3 args:build/test/python --num-shards 3 --run-shard 3"
+    assert_line --partial "env: cache:$PWD/build/test/python-lit-report-tt-metal-cache/multidevice args:build/test/python --filter mesh_tensor"
     assert_line --partial "python-lit-report-shard-1.xml"
     assert_line --partial "python-lit-report-multidevice.xml"
     [ "${#lines[@]}" -eq 4 ]

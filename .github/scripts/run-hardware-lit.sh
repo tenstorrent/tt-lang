@@ -27,7 +27,7 @@ chips="$(resolve_tt_chip_count "${HW_LIT_CHIPS:-}")" || {
 
 lit_common=(-j1 --verbose)
 multi_device_filter="${HW_LIT_MULTI_DEVICE_FILTER:-mesh_tensor}"
-cache_root="${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}"
+cache_root="$(absolute_path "${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}")"
 
 if [ "$chips" -le 1 ]; then
     echo "Detected ${chips} chip(s): running Python lit serially"

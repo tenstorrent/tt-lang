@@ -111,6 +111,7 @@ def pin_xdist_worker_to_device() -> None:
         os.environ["TT_VISIBLE_DEVICES"] = worker_index
     cache_root = os.environ.get("TTLANG_XDIST_TT_METAL_CACHE_ROOT")
     if cache_root:
+        cache_root = os.path.abspath(cache_root)
         cache_dir = os.path.join(cache_root, f"worker-{worker_index}")
         os.makedirs(cache_dir, exist_ok=True)
         os.environ["TT_METAL_CACHE"] = cache_dir

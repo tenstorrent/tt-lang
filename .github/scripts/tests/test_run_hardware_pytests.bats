@@ -58,7 +58,7 @@ EOF
 
     assert_success
     run cat "$CALLS"
-    assert_line --partial "env:1 cache-root:build/test/pytest-report-tt-metal-cache args:-m pytest"
+    assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache args:-m pytest"
     assert_line --partial "pytest test/python -m not multi_device -n 4"
     assert_line --partial "pytest-report-parallel.xml"
     assert_line --partial "env: cache-root: args:-m pytest test/python -m multi_device"
