@@ -163,7 +163,8 @@ jobs:
           PYTHON_TAGS: ${{ inputs.python_tags }}
           ABI: ${{ matrix.python_tag }}
         run: |
-          if [[ ",$PYTHON_TAGS," == *",$ABI,"* ]]; then
+          python_tags="$(printf '%s' "$PYTHON_TAGS" | tr -d '[:space:]')"
+          if [[ ",$python_tags," == *",$ABI,"* ]]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "build=false" >> "$GITHUB_OUTPUT"

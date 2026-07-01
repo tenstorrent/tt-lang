@@ -61,14 +61,18 @@ S3 package index. A version selector is required because public PyPI also hosts
 `tt-lang`, and pip resolves candidates across all configured indexes. Available
 versions are listed at https://pypi.eng.aws.tenstorrent.com/.
 
-The index groups wheels into simple sub-indexes, so the `--extra-index-url`
-carries a subdir:
+Development and per-SHA wheels use simple sub-indexes. The installed version
+determines the `--extra-index-url`:
 
 - Nightly development wheels are under `<YYYY-MM>/`, the year-month of the
   version's `devYYYYMMDD` suffix (e.g. version `X.Y.Z.dev20260615` -> `2026-06/`).
 - Light wheels built and device-tested against a specific tt-metal commit are
   under `<ttmetal7>/`, that commit's 7-character prefix.
-- Stable release wheels (`vX.Y.Z`) stay at the root.
+- Stable release wheels (`X.Y.Z`) stay at the root index.
+
+The bundled-wheel example below installs a nightly development wheel. Stable
+internal releases use `TTLANG_VERSION=X.Y.Z` and the root index URL
+`https://pypi.eng.aws.tenstorrent.com/`.
 
 The default internal `tt-lang` wheel bundles the `ttnn` artifacts from the
 toolchain used to build the wheel, so `pip install` does not pull `ttnn` from
