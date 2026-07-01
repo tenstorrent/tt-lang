@@ -91,6 +91,34 @@ traceTransferHandleSource(mlir::Value value, MatchFn match,
         }
       }
     }
+    // Trace through scf.if results -- both branches must independently
+    // yield a valid source.  Each branch is a separate data-flow path,
+    // so give each its own visited set (avoids false negatives when
+    // both branches yield the same outer value).
+    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(result.getOwner())) {
+      unsigned idx = result.getResultNumber();
+
+      auto thenYield =
+          mlir::cast<mlir::scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+      llvm::SmallPtrSet<mlir::Value, 16> thenSeen(seen.begin(), seen.end());
+      ResultT thenResult = traceTransferHandleSource<ResultT>(
+          thenYield.getOperand(idx), match, thenSeen);
+      if (!thenResult) {
+        return ResultT();
+      }
+
+      if (ifOp.elseBlock()) {
+        auto elseYield =
+            mlir::cast<mlir::scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+        llvm::SmallPtrSet<mlir::Value, 16> elseSeen(seen.begin(), seen.end());
+        ResultT elseResult = traceTransferHandleSource<ResultT>(
+            elseYield.getOperand(idx), match, elseSeen);
+        if (!elseResult) {
+          return ResultT();
+        }
+      }
+      return thenResult;
+    }
   }
   if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
     mlir::Operation *parent = blockArg.getOwner()->getParentOp();
