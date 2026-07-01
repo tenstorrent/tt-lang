@@ -164,7 +164,11 @@ jobs:
       - name: Build light core wheel
         env:
           TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
-        run: .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
+          TTLANG_GIT_COMMIT: ${{ github.sha }}
+        run: |
+          # Submodules aren't checked out here; read tt-metal's commit from the gitlink.
+          export TT_METAL_COMMIT="$(git rev-parse HEAD:third-party/tt-metal)"
+          .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
 
       - name: Build tt-lang-light metapackage
         if: ${{ matrix.python_tag == 'cp312' }}

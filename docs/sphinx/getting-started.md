@@ -122,6 +122,12 @@ Validate that Python resolves both packages from the intended environment:
 python -c 'import ttnn, ttl; print(ttnn.__file__, ttl.__version__)'
 ```
 
+Print the exact source revisions the wheel was built from (include this when filing issues):
+
+```bash
+python -c 'import ttl; print(ttl.build_info())'
+```
+
 Run a tutorial example:
 
 ```bash
