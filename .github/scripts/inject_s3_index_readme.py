@@ -59,7 +59,9 @@ def inject(index_html: str, block: str) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 3:
-        print("Usage: inject_s3_index_readme.py <readme.md> <index.html>", file=sys.stderr)
+        print(
+            "Usage: inject_s3_index_readme.py <readme.md> <index.html>", file=sys.stderr
+        )
         return 2
     readme_path, index_path = argv[1], argv[2]
 
