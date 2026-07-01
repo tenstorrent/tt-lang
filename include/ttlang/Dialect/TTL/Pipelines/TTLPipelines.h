@@ -28,7 +28,7 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> useBlockMatmul{
       *this, "use-block-matmul",
       llvm::cl::desc("Lower matmul to block-level hardware calls "
-                     "(experimental::matmul_block) instead of per-tile loops."),
+                     "(matmul_block) instead of per-tile loops."),
       llvm::cl::init(true)};
   Option<bool> subblockSync{
       *this, "subblock-sync",

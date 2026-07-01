@@ -110,7 +110,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 |---|---|---|---|
 | `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
 | `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
-| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
+| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`matmul_block`). |
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
