@@ -8,10 +8,6 @@ Two senders at (0, 0) and (1, 0) multicast to receivers at (2, 0) and
 (3, 0). Each receiver gets two tiles in two CB blocks and sums them.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

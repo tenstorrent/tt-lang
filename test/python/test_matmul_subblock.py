@@ -11,10 +11,6 @@ prime dimensions), fused patterns (matmul + bias, matmul + relu), and
 boundary cases (exact DST fit).
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v --tb=short
-
 import pytest
 import torch
 

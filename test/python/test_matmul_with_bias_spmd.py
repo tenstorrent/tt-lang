@@ -10,9 +10,6 @@ Each device computes Y_shard = A_shard @ B + C_shard independently.
 Requires >=2 devices.
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 
