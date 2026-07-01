@@ -203,13 +203,6 @@ jobs:
             --version "${{ needs.find-compatible.outputs.winner_version }}" \
             --dist-dir dist
 
-      - name: Build tt-lang-light metapackage
-        if: ${{ steps.gate.outputs.build == 'true' && matrix.python_tag == 'cp312' }}
-        run: |
-          .github/scripts/build-s3-light-metapackage-wheel.sh \
-            --version "${{ needs.find-compatible.outputs.winner_version }}" \
-            --dist-dir dist
-
       - name: Upload per-ABI wheels
         if: ${{ steps.gate.outputs.build == 'true' }}
         uses: actions/upload-artifact@v7
@@ -218,9 +211,47 @@ jobs:
           path: dist/*.whl
           retention-days: 14
 
+  build-metapackage:
+    name: "Build tt-lang-light metapackage"
+    needs: find-compatible
+    if: ${{ needs.find-compatible.outputs.found == 'true' }}
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout winning tt-lang commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.find-compatible.outputs.winner_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Build tt-lang-light metapackage
+        run: |
+          .github/scripts/build-s3-light-metapackage-wheel.sh \
+            --version "${{ needs.find-compatible.outputs.winner_version }}" \
+            --dist-dir dist
+
+      - name: Upload metapackage wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: ttmetal-light-metapackage
+          path: dist/tt_lang_light-*.whl
+          retention-days: 14
+
   device-validate:
     name: "Device-validate light wheel"
-    needs: [find-compatible, build-wheels]
+    needs: [find-compatible, build-wheels, build-metapackage]
     if: ${{ needs.find-compatible.outputs.found == 'true' }}
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
     timeout-minutes: 180
@@ -275,12 +306,12 @@ jobs:
           # shellcheck disable=SC1091
           source /tmp/ttl-venv/bin/activate
           abi="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
-          # Install the core wheel matching this container's ABI; glob avoids
-          # depending on how the local-version label is spelled in the filename.
-          core_wheel=$(ls dist/tt_lang-*+light-"${abi}"-"${abi}"-manylinux_2_34_x86_64.whl)
+          ls dist/tt_lang-*+light-"${abi}"-"${abi}"-manylinux_2_34_x86_64.whl >/dev/null
+          metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)
           pip install \
+            --find-links dist \
             --extra-index-url https://download.pytorch.org/whl/cpu \
-            "$core_wheel"
+            "$metapackage_wheel"
           pip install -r dev-requirements.txt
           eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTMETAL_INSTALL_DIR")"
           echo "TTL_EXTERNAL_TT_METAL_DIR=$TTMETAL_INSTALL_DIR" >> "$GITHUB_ENV"
@@ -302,7 +333,7 @@ jobs:
 
   publish:
     name: "Publish to S3 under per-SHA prefix"
-    needs: [find-compatible, build-wheels, device-validate]
+    needs: [find-compatible, build-wheels, build-metapackage, device-validate]
     if: ${{ needs.find-compatible.outputs.found == 'true' && inputs.dry_run != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30

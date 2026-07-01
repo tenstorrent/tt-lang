@@ -15,7 +15,8 @@
 # tt-metal, and so LLVM is never involved (tt-metal does not depend on it).
 #
 # Idempotent on the scratch dir: an existing clone is reused and re-checked-out;
-# an existing build is reused when its ttnn extension is already present.
+# an existing build is reused only when its recorded source SHA matches the
+# checked-out source tree.
 #
 # Usage: build-ttmetal-at-sha.sh --sha <sha> [--scratch-dir <dir>] [--no-build]
 #
@@ -72,6 +73,7 @@ src_dir="$scratch_dir/src"
 build_dir="$scratch_dir/build"
 install_dir="$scratch_dir/install"
 cpm_cache="${CPM_SOURCE_CACHE:-$scratch_dir/.cpmcache}"
+build_stamp="$build_dir/.ttmetal-source-sha"
 
 emit() {
     printf '%s\n' "$1" >> "${GITHUB_OUTPUT:-/dev/stdout}"
@@ -144,17 +146,35 @@ build_ttmetal() {
     env "${build_env[@]}" cmake --build "$build_dir" --target precompile-fw --parallel 1
 }
 
+source_sha() {
+    git -C "$src_dir" rev-parse HEAD
+}
+
+build_matches_source() {
+    local expected_sha="$1"
+    [[ -f "$build_dir/ttnn/_ttnn.so" ]] || return 1
+    [[ -f "$build_stamp" ]] || return 1
+    [[ "$(cat "$build_stamp")" == "$expected_sha" ]]
+}
+
 build_and_install() {
     if [[ -f "$PYTHON_VENV/bin/activate" ]]; then
         # shellcheck disable=SC1091
         . "$PYTHON_VENV/bin/activate"
     fi
     mkdir -p "$cpm_cache"
-    if [[ ! -f "$build_dir/ttnn/_ttnn.so" ]]; then
+    local checked_out_sha
+    checked_out_sha="$(source_sha)"
+    if build_matches_source "$checked_out_sha"; then
+        echo "Reusing existing tt-metal build at $build_dir for $checked_out_sha" >&2
+    else
+        if [[ -d "$build_dir" ]]; then
+            echo "Discarding tt-metal build at $build_dir; source SHA is $checked_out_sha" >&2
+            rm -rf "$build_dir"
+        fi
         configure_ttmetal
         build_ttmetal
-    else
-        echo "Reusing existing tt-metal build at $build_dir" >&2
+        printf '%s\n' "$checked_out_sha" > "$build_stamp"
     fi
     rm -rf "$install_dir"
     bash "$repo_root/scripts/install-ttmetal.sh" "$src_dir" "$build_dir" "$install_dir"

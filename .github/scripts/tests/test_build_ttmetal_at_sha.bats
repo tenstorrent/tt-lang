@@ -131,6 +131,9 @@ setup() {
     [ -f "$SCRATCH/install/python_packages/ttnn/ttnn/_ttnn.so" ]
     run cat "$SCRATCH/install/python_packages/ttnn/ttnn/_ttnn.so"
     assert_output --partial "fresh ttnn"
+
+    run cat "$SCRATCH/build/.ttmetal-source-sha"
+    assert_output "$SHA"
 }
 
 @test "ttmetal_date is the SHA committer date" {
@@ -150,4 +153,16 @@ setup() {
     GITHUB_OUTPUT="$GH_OUT" run -0 "$SCRIPT" --sha "$SHA" --scratch-dir "$SCRATCH"
     run -0 "$SCRIPT" --sha "$SHA" --scratch-dir "$SCRATCH"
     assert_output --partial "Reusing existing tt-metal build"
+}
+
+@test "different SHA rebuilds an existing scratch build" {
+    GITHUB_OUTPUT="$GH_OUT" run -0 "$SCRIPT" --sha "$SHA" --scratch-dir "$SCRATCH"
+    GITHUB_OUTPUT="$GH_OUT" run -0 "$SCRIPT" --sha "$BASE_SHA" --scratch-dir "$SCRATCH"
+    assert_output --partial "Discarding tt-metal build"
+
+    run cat "$SCRATCH/build/.ttmetal-source-sha"
+    assert_output "$BASE_SHA"
+
+    build_call_count="$(wc -l < "$FAKE_CMAKE_LOG")"
+    [ "$build_call_count" -eq 4 ]
 }
