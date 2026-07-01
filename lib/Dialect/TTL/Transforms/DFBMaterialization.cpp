@@ -126,6 +126,9 @@ materializeComputeResultToDFB(OpResult intermediate, Operation *consumerOp,
   }
   computeOp.erase();
 
+  // The extra output reaches the consumer through the DFB (cb_push below, then
+  // cb_wait/attach_cb before the consumer), not through newCompute's SSA
+  // result, so that last result is intentionally left unused.
   builder.setInsertionPointAfter(newCompute);
   CBPushOp::create(builder, loc, bindDFB.getResult(),
                    /*num_tiles=*/IntegerAttr{});

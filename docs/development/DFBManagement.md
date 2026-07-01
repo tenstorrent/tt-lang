@@ -52,6 +52,13 @@ bind_cb   cb_reserve                cb_wait              L1 buffer held
 
 For compiler-allocated intermediate DFBs, `InsertIntermediateDFBs` creates the DFB and materializes the producer side. For `ttl.compute` results, this means `bind_cb` at function entry, `cb_reserve` before the producing compute, `tile_store` inside the compute body, `cb_push` after the compute, and `cb_wait`/`attach_cb` before the consumer. The later `ttl-auto-sync` run inserts the matching `cb_pop`.
 
+Producer compute formation follows the same publication rule for user DFBs.
+When `ttl-form-producer-compute` or `convert-ttl-to-compute` absorbs a
+block-level `ttl.store` into a `ttl.compute`, any producer release that would
+otherwise precede the new compute is replaced after the compute. This keeps the
+generated DFB lifecycle in write-then-publish order: `cb_reserve`,
+`ttl.compute` with `tile_store`, then `cb_push`.
+
 A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the interval used for index reuse.
 
 ## Single-producer Single-consumer Semantics

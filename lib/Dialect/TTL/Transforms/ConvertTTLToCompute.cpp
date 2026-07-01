@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/STLExtras.h"
 
 #define DEBUG_TYPE "ttl-convert-ttl-to-compute"
 
@@ -100,28 +101,85 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                                  dynDims);
 }
 
-/// Collect all unique output CBs from store users of an op's result.
-/// Preserves first-seen order and deduplicates (same CB stored to twice
-/// produces one output). Returns empty if no stores exist or if any
-/// store's view is not from cb_reserve.
-static SmallVector<Value> collectOutputCBs(Operation *op) {
+struct OutputPublicationInfo {
+  SmallVector<Value> cbs;
+  SmallVector<StoreOp> stores;
+  SmallVector<CBPushOp> pushes;
+
+  bool empty() const { return cbs.empty(); }
+};
+
+/// Collect store users of an op's result in block order.
+static SmallVector<StoreOp> collectStoreUsers(Operation *op) {
   assert(op->getNumResults() > 0 &&
-         "collectOutputCBs requires op with results");
-  SmallVector<Value> result;
-  DenseSet<Value> seen;
+         "collectStoreUsers requires op with results");
+  SmallVector<StoreOp> stores;
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-      auto reserve = findCBReserveForView(storeOp.getView());
-      if (!reserve) {
-        return {};
+      stores.push_back(storeOp);
+    }
+  }
+  if (stores.empty()) {
+    return stores;
+  }
+  Block *block = stores.front()->getBlock();
+  for (StoreOp store : stores) {
+    if (store->getBlock() != block) {
+      return {};
+    }
+  }
+  llvm::sort(stores, [](StoreOp lhs, StoreOp rhs) {
+    return lhs->isBeforeInBlock(rhs);
+  });
+  return stores;
+}
+
+/// Find the producer release for a store being absorbed into a compute.
+static CBPushOp findPushAfterStore(StoreOp storeOp, Value cb) {
+  for (Operation *cursor = storeOp->getNextNode(); cursor;
+       cursor = cursor->getNextNode()) {
+    if (auto push = dyn_cast<CBPushOp>(cursor)) {
+      if (push.getCb() == cb) {
+        return push;
       }
-      Value cb = reserve.getCb();
-      if (seen.insert(cb).second) {
-        result.push_back(cb);
+    }
+    if (auto reserve = dyn_cast<CBReserveOp>(cursor)) {
+      if (reserve.getCb() == cb) {
+        return {};
       }
     }
   }
-  return result;
+  return {};
+}
+
+/// Collect the output DFBs and producer releases absorbed by compute formation.
+static OutputPublicationInfo collectOutputPublicationInfo(Operation *op) {
+  OutputPublicationInfo info;
+  SmallVector<StoreOp> stores = collectStoreUsers(op);
+  DenseSet<Value> seenCbs;
+  DenseSet<Operation *> seenPushes;
+
+  for (StoreOp storeOp : stores) {
+    auto reserve = findCBReserveForView(storeOp.getView());
+    if (!reserve) {
+      return {};
+    }
+    Value cb = reserve.getCb();
+    if (!seenCbs.contains(cb)) {
+      seenCbs.insert(cb);
+      info.cbs.push_back(cb);
+    }
+    info.stores.push_back(storeOp);
+
+    CBPushOp push = findPushAfterStore(storeOp, cb);
+    if (!push) {
+      continue;
+    }
+    if (seenPushes.insert(push).second) {
+      info.pushes.push_back(push);
+    }
+  }
+  return info;
 }
 
 /// Find the last block-level store that uses this op's result.
@@ -131,15 +189,8 @@ static StoreOp findLastStore(Operation *op) {
   if (op->getNumResults() == 0) {
     return {};
   }
-  StoreOp last;
-  for (OpOperand &use : op->getResult(0).getUses()) {
-    if (auto s = dyn_cast<StoreOp>(use.getOwner())) {
-      if (!last || last->isBeforeInBlock(s)) {
-        last = s;
-      }
-    }
-  }
-  return last;
+  SmallVector<StoreOp> stores = collectStoreUsers(op);
+  return stores.empty() ? StoreOp{} : stores.back();
 }
 
 /// Position the rewriter before the last store so that the new compute op
@@ -147,28 +198,20 @@ static StoreOp findLastStore(Operation *op) {
 static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
   StoreOp lastStore = findLastStore(op);
   assert(lastStore && "insertAtLastStore called but op has no store users; "
-                      "callers must verify via collectOutputCBs first");
+                      "callers must verify output stores first");
   rewriter.setInsertionPoint(lastStore);
 }
 
-/// Create tile_store(s) in the compute body for the given tile result and
-/// erase the corresponding block-level stores. Populates tile_store indices
-/// from iter_index ops and the output indexing map.
+/// Create tile_store(s) in the compute body for the absorbed block-level
+/// stores.
 static void emitTileStores(PatternRewriter &rewriter, Location loc,
-                           Value tileResult, Operation *sourceOp) {
-  assert(sourceOp->getNumResults() > 0 &&
-         "emitTileStores requires op with results");
-
-  // Find the parent ComputeOp from the current insertion point.
-  auto *insertBlock = rewriter.getInsertionBlock();
-  auto computeOp = dyn_cast<ComputeOp>(insertBlock->getParentOp());
-  assert(computeOp && "emitTileStores must be called inside a compute body");
-
+                           Value tileResult, ComputeOp computeOp,
+                           const OutputPublicationInfo &outputs) {
   SmallVector<Value> iterIndices = getOrCreateIterIndices(rewriter, computeOp);
   auto indexingMaps = computeOp.getIndexingMapsArray();
   size_t numInputs = computeOp.getNumInputs();
 
-  // Build CB -> output index mapping for multi-output disambiguation.
+  // Multi-output compute stores must use the indexing map for their DFB.
   size_t numOutputs = computeOp.getNumOutputs();
   DenseMap<Value, size_t> cbToOutputIdx;
   if (numOutputs > 1) {
@@ -180,15 +223,7 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     }
   }
 
-  // Collect-then-erase: cannot erase stores while iterating getUses().
-  SmallVector<StoreOp> storesToErase;
-  for (OpOperand &use : sourceOp->getResult(0).getUses()) {
-    auto storeOp = dyn_cast<StoreOp>(use.getOwner());
-    if (!storeOp) {
-      continue;
-    }
-
-    // Determine output index for this store's view CB.
+  for (StoreOp storeOp : outputs.stores) {
     size_t outputIdx = 0;
     if (numOutputs > 1) {
       Value viewCB = getAttachedCB(storeOp.getView());
@@ -205,12 +240,44 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 
     createTileOpWithPlaceholderDstIndex<TileStoreOp>(
         rewriter, loc, tileResult, storeOp.getView(), indices);
-    storesToErase.push_back(storeOp);
   }
-  for (StoreOp s : storesToErase) {
-    assert(s->getBlock() == computeOp->getBlock() &&
+}
+
+static void
+replaceOutputPushesBeforeCompute(PatternRewriter &rewriter, ComputeOp computeOp,
+                                 const OutputPublicationInfo &outputs,
+                                 SmallVectorImpl<CBPushOp> &replacedPushes) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  Operation *insertAfter = computeOp;
+  for (CBPushOp push : outputs.pushes) {
+    assert(push->getBlock() == computeOp->getBlock() &&
+           "pushes absorbed into a compute must be siblings of that compute");
+    // Releases already after the new compute preserve user-visible ordering.
+    if (!push->isBeforeInBlock(computeOp)) {
+      continue;
+    }
+    rewriter.setInsertionPointAfter(insertAfter);
+    CBPushOp replacement =
+        CBPushOp::create(rewriter, push.getLoc(), push.getCb(),
+                         push->getAttrOfType<IntegerAttr>("num_tiles"));
+    insertAfter = replacement;
+    replacedPushes.push_back(push);
+  }
+}
+
+static void eraseAbsorbedOutputOps(PatternRewriter &rewriter,
+                                   const OutputPublicationInfo &outputs,
+                                   ComputeOp computeOp,
+                                   ArrayRef<CBPushOp> replacedPushes) {
+  for (StoreOp store : outputs.stores) {
+    assert(store->getBlock() == computeOp->getBlock() &&
            "stores absorbed into a compute must be siblings of that compute");
-    rewriter.eraseOp(s);
+    rewriter.eraseOp(store);
+  }
+  for (CBPushOp push : replacedPushes) {
+    assert(push->getBlock() == computeOp->getBlock() &&
+           "pushes absorbed into a compute must be siblings of that compute");
+    rewriter.eraseOp(push);
   }
 }
 
@@ -371,8 +438,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   // Find all output CBs via stores on the sink op's result.
-  SmallVector<Value> outCbs = collectOutputCBs(sinkOp);
-  if (outCbs.empty()) {
+  OutputPublicationInfo outputs = collectOutputPublicationInfo(sinkOp);
+  if (outputs.empty()) {
     return rewriter.notifyMatchFailure(
         sinkOp, "no output CB found (missing ttl.store or view not from "
                 "ttl.cb_reserve)");
@@ -436,7 +503,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         maps.push_back(AffineMapAttr::get(map));
       }
     }
-    for (size_t i = 0; i < outCbs.size(); ++i) {
+    for (size_t i = 0; i < outputs.cbs.size(); ++i) {
       maps.push_back(AffineMapAttr::get(parallelMap));
     }
 
@@ -461,7 +528,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         maps.push_back(AffineMapAttr::get(identityMap));
       }
     }
-    for (size_t i = 0; i < outCbs.size(); ++i) {
+    for (size_t i = 0; i < outputs.cbs.size(); ++i) {
       maps.push_back(AffineMapAttr::get(identityMap));
     }
 
@@ -508,7 +575,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // chains with no root inputs, use tensor.empty directly (static shapes).
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
-  for (Value outCb : outCbs) {
+  for (Value outCb : outputs.cbs) {
     Value init =
         trace.rootInputs.empty()
             ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
@@ -544,7 +611,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (Value root : trace.rootInputs) {
     body->addArgument(getInputTileType(root), loc);
   }
-  for (size_t i = 0; i < outCbs.size(); ++i) {
+  for (size_t i = 0; i < outputs.cbs.size(); ++i) {
     body->addArgument(outputTileType, loc);
   }
 
@@ -791,13 +858,17 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     emitSideEffectOp(*it);
   }
 
-  emitTileStores(rewriter, loc, finalResult, sinkOp);
+  emitTileStores(rewriter, loc, finalResult, computeOp, outputs);
 
   for (auto it = firstEndIt; it != trailingOps.end(); ++it) {
     emitSideEffectOp(*it);
   }
 
   YieldOp::create(rewriter, loc);
+  SmallVector<CBPushOp> replacedPushes;
+  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+                                   replacedPushes);
+  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
@@ -835,8 +906,8 @@ static LogicalResult buildComputeFromInputs(
     AffineMap outputMap, ArrayRef<Attribute> iterTypes,
     llvm::function_ref<Value(OpBuilder &, Location, Type, Block *)>
         emitTileOp) {
-  SmallVector<Value> outCbs = collectOutputCBs(op);
-  if (outCbs.empty()) {
+  OutputPublicationInfo outputs = collectOutputPublicationInfo(op);
+  if (outputs.empty()) {
     return rewriter.notifyMatchFailure(
         op, "no output CB found (missing ttl.store, view not from "
             "ttl.cb_reserve, or intermediate value handled by fusion)");
@@ -855,7 +926,7 @@ static LogicalResult buildComputeFromInputs(
   Type outputTileType = ttcore::TileType::get(outputType.getElementType());
 
   SmallVector<Attribute> maps(inputMaps);
-  for (size_t i = 0; i < outCbs.size(); ++i) {
+  for (size_t i = 0; i < outputs.cbs.size(); ++i) {
     maps.push_back(AffineMapAttr::get(outputMap));
   }
 
@@ -863,7 +934,7 @@ static LogicalResult buildComputeFromInputs(
 
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
-  for (Value outCb : outCbs) {
+  for (Value outCb : outputs.cbs) {
     Value init = buildInitTensor(rewriter, loc, outputType, inputs[0]);
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
@@ -880,14 +951,18 @@ static LogicalResult buildComputeFromInputs(
   for (Type inputTileType : inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
-  for (size_t i = 0; i < outCbs.size(); ++i) {
+  for (size_t i = 0; i < outputs.cbs.size(); ++i) {
     body->addArgument(outputTileType, loc);
   }
 
   rewriter.setInsertionPointToStart(body);
   Value result = emitTileOp(rewriter, loc, outputTileType, body);
-  emitTileStores(rewriter, loc, result, op);
+  emitTileStores(rewriter, loc, result, computeOp, outputs);
   YieldOp::create(rewriter, loc);
+  SmallVector<CBPushOp> replacedPushes;
+  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+                                   replacedPushes);
+  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
@@ -1154,16 +1229,9 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
     if (!inputCb) {
       return rewriter.notifyMatchFailure(op, "input not CB-attached");
     }
-    Value outCb;
-    for (OpOperand &use : op.getResult().getUses()) {
-      if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-        if (Value cb = getAttachedCB(storeOp.getView())) {
-          outCb = cb;
-          break;
-        }
-      }
-    }
-    if (!outCb) {
+    OutputPublicationInfo outputs =
+        collectOutputPublicationInfo(op.getOperation());
+    if (outputs.empty()) {
       return rewriter.notifyMatchFailure(
           op, "no direct CB-attached store user (handled by fusion path)");
     }
@@ -1178,8 +1246,10 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
     AffineMap outputMap = AffineMap::getMultiDimIdentityMap(rank, ctx);
     AffineMap inputMap = buildBcastInputMap(ctx, rank, broadcastDims);
 
-    SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
-                                   AffineMapAttr::get(outputMap)};
+    SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap)};
+    for (size_t i = 0; i < outputs.cbs.size(); ++i) {
+      maps.push_back(AffineMapAttr::get(outputMap));
+    }
 
     SmallVector<Attribute> iterTypes(rank, rewriter.getStringAttr("parallel"));
 
@@ -1188,21 +1258,28 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
       insertAtLastStore(rewriter, op);
     }
 
-    Value init = buildInitTensor(rewriter, loc, outputType, op.getInput());
-    Value initAttached =
-        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+    SmallVector<Value> allInitAttached;
+    SmallVector<Type> resultTypes;
+    for (Value outCb : outputs.cbs) {
+      Value init = buildInitTensor(rewriter, loc, outputType, op.getInput());
+      Value initAttached =
+          AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+      allInitAttached.push_back(initAttached);
+      resultTypes.push_back(outputType);
+    }
 
     auto computeOp = ComputeOp::create(
-        rewriter, loc, TypeRange{outputType}, ValueRange{op.getInput()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter, loc, TypeRange(resultTypes), ValueRange{op.getInput()},
+        ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
     Type tileType = ttcore::TileType::get(scalarType);
-    // Body arguments: input tile, init/output tile.
     body->addArgument(tileType, loc);
-    body->addArgument(tileType, loc);
+    for (size_t i = 0; i < outputs.cbs.size(); ++i) {
+      body->addArgument(tileType, loc);
+    }
 
     rewriter.setInsertionPointToStart(body);
     Value bodyResult;
@@ -1219,8 +1296,12 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
       // through DST into the output CB via tile_store.
       bodyResult = body->getArgument(0);
     }
-    emitTileStores(rewriter, loc, bodyResult, op.getOperation());
+    emitTileStores(rewriter, loc, bodyResult, computeOp, outputs);
     YieldOp::create(rewriter, loc);
+    SmallVector<CBPushOp> replacedPushes;
+    replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+                                     replacedPushes);
+    eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
@@ -1545,8 +1626,9 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
       return failure();
     }
 
-    SmallVector<Value> outCbs = collectOutputCBs(op);
-    if (outCbs.empty()) {
+    OutputPublicationInfo outputs =
+        collectOutputPublicationInfo(op.getOperation());
+    if (outputs.empty()) {
       return rewriter.notifyMatchFailure(
           op, "fill requires a store to determine output CB");
     }
@@ -1557,7 +1639,7 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
     AffineMap identityMap =
         AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
     SmallVector<Attribute> maps;
-    for (size_t i = 0; i < outCbs.size(); ++i) {
+    for (size_t i = 0; i < outputs.cbs.size(); ++i) {
       maps.push_back(AffineMapAttr::get(identityMap));
     }
 
@@ -1569,7 +1651,7 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
     // Static shapes only for fill (no exemplar needed for dynamic dims).
     SmallVector<Value> allInitAttached;
     SmallVector<Type> resultTypes;
-    for (Value outCb : outCbs) {
+    for (Value outCb : outputs.cbs) {
       Value init = tensor::EmptyOp::create(rewriter, loc, type.getShape(),
                                            type.getElementType());
       Value initAttached =
@@ -1585,16 +1667,20 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type tileType = ttcore::TileType::get(type.getElementType());
-    for (size_t i = 0; i < outCbs.size(); ++i) {
+    for (size_t i = 0; i < outputs.cbs.size(); ++i) {
       body->addArgument(tileType, loc);
     }
 
     rewriter.setInsertionPointToStart(body);
     auto fillTileOp = createTileOpWithPlaceholderDstIndex<TileFillOp>(
         rewriter, loc, tileType, op.getValueAttr());
-    emitTileStores(rewriter, loc, fillTileOp, op);
+    emitTileStores(rewriter, loc, fillTileOp, computeOp, outputs);
     YieldOp::create(rewriter, loc);
-    rewriter.replaceOp(op, computeOp.getResults());
+    SmallVector<CBPushOp> replacedPushes;
+    replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+                                     replacedPushes);
+    eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
+    rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
 };
