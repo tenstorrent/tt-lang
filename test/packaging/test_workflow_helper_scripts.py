@@ -33,6 +33,9 @@ CALL_BUILD_DOCKER_WORKFLOW = (
 CALL_BUILD_WHEEL_IMAGES_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-build-wheel-images.yml"
 )
+CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-ttmetal-light-wheel.yml"
+)
 MANYLINUX_WHEEL_DOCKERFILE = (
     REPO_ROOT / ".github" / "containers" / "Dockerfile.wheel-manylinux-2-34"
 )
@@ -76,6 +79,23 @@ def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     assert ".github/scripts/build-s3-light-metapackage-wheel.sh" in workflow
     assert ".github/scripts/test-s3-light-wheels.sh" in workflow
     assert "standard_wheel_matrix" in workflow
+
+
+def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
+    workflow = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
+
+    assert "build-metapackage:" in workflow
+    assert "matrix.python_tag == 'cp312'" not in workflow
+    assert "name: ttmetal-light-metapackage" in workflow
+    assert "path: dist/tt_lang_light-*.whl" in workflow
+    assert "needs: [find-compatible, build-wheels, build-metapackage]" in workflow
+    assert (
+        "needs: [find-compatible, build-wheels, build-metapackage, device-validate]"
+        in workflow
+    )
+    assert "metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)" in workflow
+    assert "--find-links dist" in workflow
+    assert '"$metapackage_wheel"' in workflow
 
 
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:

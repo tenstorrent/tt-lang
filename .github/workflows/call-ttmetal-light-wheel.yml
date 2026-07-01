@@ -1,0 +1,390 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Build, device-test, and publish a tt-lang-light wheel for an arbitrary
+# tt-metal SHA. Finds the newest tt-lang commit compatible with that tt-metal,
+# builds the light wheel against it (unmodified build-s3-light-core-wheel.sh
+# with TTLANG_EXTERNAL_TT_METAL_DIR), validates on device, and publishes under
+# the SHA's 7-character prefix so the wheel filename is unchanged.
+
+name: tt-lang-light wheel for a tt-metal SHA
+
+on:
+  workflow_call:
+    inputs:
+      tt_metal_sha:
+        description: "tt-metal commit SHA to build and test against."
+        required: true
+        type: string
+      max_age_days:
+        description: "Max |tt-lang date - tt-metal date| when searching for a compatible commit."
+        required: false
+        type: number
+        default: 14
+      python_tags:
+        description: "Comma-separated CPython ABIs to build (subset of cp310,cp312)."
+        required: false
+        type: string
+        default: "cp310,cp312"
+      docker_tag:
+        description: "Docker image tag for the ird and manylinux builder containers."
+        required: true
+        type: string
+      hw_type:
+        description: "Hardware runner type."
+        required: false
+        type: string
+        default: "n150"
+      dry_run:
+        description: "Build and validate without publishing to S3."
+        required: false
+        type: boolean
+        default: true
+
+# workflow_call only: the nightly orchestrator is the single manual entry point
+# (its workflow_dispatch forces a tt_metal_sha and calls this). A second dispatch
+# block here would duplicate every input, since GitHub Actions cannot share input
+# definitions across triggers.
+
+permissions:
+  contents: read
+
+jobs:
+  find-compatible:
+    name: "Find compatible tt-lang"
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
+      options: --device /dev/tenstorrent
+      volumes:
+        - /dev/hugepages:/dev/hugepages
+        - /dev/hugepages-1G:/dev/hugepages-1G
+        - /etc/udev/rules.d:/etc/udev/rules.d
+        - /lib/modules:/lib/modules
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      found: ${{ steps.search.outputs.found }}
+      winner_sha: ${{ steps.search.outputs.winner_sha }}
+      winner_version: ${{ steps.search.outputs.winner_version }}
+      ttmetal_short: ${{ steps.ttmetal.outputs.ttmetal_short }}
+      ttlang_head: ${{ steps.head.outputs.sha }}
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Record tt-lang HEAD
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build tt-metal at SHA
+        id: ttmetal
+        run: |
+          set -euo pipefail
+          .github/scripts/build-ttmetal-at-sha.sh \
+            --sha "${{ inputs.tt_metal_sha }}" \
+            --scratch-dir /tmp/ttmetal-sha
+          echo "ttmetal_short=${TT_METAL_SHA:0:7}" >> "$GITHUB_OUTPUT"
+        env:
+          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
+
+      - name: Find compatible tt-lang commit
+        id: search
+        run: |
+          set -euo pipefail
+          .github/scripts/find-compatible-ttlang.sh \
+            --ttmetal-install-dir "${{ steps.ttmetal.outputs.install_dir }}" \
+            --ttmetal-date "${{ steps.ttmetal.outputs.ttmetal_date }}" \
+            --max-age-days "${{ inputs.max_age_days }}" \
+            --build-dir build-search
+
+  record-miss:
+    name: "Record no-compatible miss"
+    needs: find-compatible
+    if: ${{ needs.find-compatible.outputs.found == 'false' && inputs.dry_run != true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-tt-s3-credentials
+
+      # Marks this tt-metal SHA so the nightly detector does not re-attempt it
+      # until tt-lang HEAD advances past the history just searched.
+      - name: Record miss
+        run: |
+          .github/scripts/record-ttmetal-miss.sh \
+            --ttmetal-sha "${{ inputs.tt_metal_sha }}" \
+            --ttlang-head "${{ needs.find-compatible.outputs.ttlang_head }}" \
+            --max-age-days "${{ inputs.max_age_days }}"
+
+  build-wheels:
+    name: "Build light wheel (${{ matrix.python_tag }})"
+    needs: find-compatible
+    if: ${{ needs.find-compatible.outputs.found == 'true' }}
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        python_tag: [cp310, cp312]
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}:${{ inputs.docker_tag }}
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Skip unrequested ABI
+        id: gate
+        env:
+          PYTHON_TAGS: ${{ inputs.python_tags }}
+          ABI: ${{ matrix.python_tag }}
+        run: |
+          python_tags="$(printf '%s' "$PYTHON_TAGS" | tr -d '[:space:]')"
+          if [[ ",$python_tags," == *",$ABI,"* ]]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "ABI $ABI not in '$PYTHON_TAGS'; skipping."
+          fi
+
+      - name: Checkout winning tt-lang commit
+        if: ${{ steps.gate.outputs.build == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.find-compatible.outputs.winner_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Git safe directory
+        if: ${{ steps.gate.outputs.build == 'true' }}
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Build tt-metal at SHA
+        if: ${{ steps.gate.outputs.build == 'true' }}
+        id: ttmetal
+        run: |
+          set -euo pipefail
+          .github/scripts/build-ttmetal-at-sha.sh \
+            --sha "${{ inputs.tt_metal_sha }}" \
+            --scratch-dir /tmp/ttmetal-sha
+
+      - name: Build light core wheel
+        if: ${{ steps.gate.outputs.build == 'true' }}
+        env:
+          TTLANG_EXTERNAL_TT_METAL_DIR: ${{ steps.ttmetal.outputs.install_dir }}
+          TTLANG_GIT_COMMIT: ${{ needs.find-compatible.outputs.winner_sha }}
+        run: |
+          .github/scripts/build-s3-light-core-wheel.sh \
+            --python-tag "${{ matrix.python_tag }}" \
+            --version "${{ needs.find-compatible.outputs.winner_version }}" \
+            --dist-dir dist
+
+      - name: Upload per-ABI wheels
+        if: ${{ steps.gate.outputs.build == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ttmetal-light-${{ matrix.python_tag }}
+          path: dist/*.whl
+          retention-days: 14
+
+  build-metapackage:
+    name: "Build tt-lang-light metapackage"
+    needs: find-compatible
+    if: ${{ needs.find-compatible.outputs.found == 'true' }}
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout winning tt-lang commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.find-compatible.outputs.winner_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Build tt-lang-light metapackage
+        run: |
+          .github/scripts/build-s3-light-metapackage-wheel.sh \
+            --version "${{ needs.find-compatible.outputs.winner_version }}" \
+            --dist-dir dist
+
+      - name: Upload metapackage wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: ttmetal-light-metapackage
+          path: dist/tt_lang_light-*.whl
+          retention-days: 14
+
+  device-validate:
+    name: "Device-validate light wheel"
+    needs: [find-compatible, build-wheels, build-metapackage]
+    if: ${{ needs.find-compatible.outputs.found == 'true' }}
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
+      options: --device /dev/tenstorrent
+      volumes:
+        - /dev/hugepages:/dev/hugepages
+        - /dev/hugepages-1G:/dev/hugepages-1G
+        - /etc/udev/rules.d:/etc/udev/rules.d
+        - /lib/modules:/lib/modules
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      packages: read
+    env:
+      PYTHONDONTWRITEBYTECODE: 1
+      TTLANG_TEST_SEED: 42
+    steps:
+      - name: Checkout winning tt-lang commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.find-compatible.outputs.winner_sha }}
+          fetch-depth: 1
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Download light wheels
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ttmetal-light-*
+          path: dist
+          merge-multiple: true
+
+      - name: Build tt-metal at SHA
+        id: ttmetal
+        run: |
+          set -euo pipefail
+          .github/scripts/build-ttmetal-at-sha.sh \
+            --sha "${{ inputs.tt_metal_sha }}" \
+            --scratch-dir /tmp/ttmetal-sha
+
+      - name: Install light wheel and external tt-metal
+        env:
+          TTMETAL_INSTALL_DIR: ${{ steps.ttmetal.outputs.install_dir }}
+        run: |
+          set -euo pipefail
+          python3 -m venv --system-site-packages /tmp/ttl-venv
+          # shellcheck disable=SC1091
+          source /tmp/ttl-venv/bin/activate
+          abi="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
+          ls dist/tt_lang-*+light-"${abi}"-"${abi}"-manylinux_2_34_x86_64.whl >/dev/null
+          metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)
+          pip install \
+            --find-links dist \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            "$metapackage_wheel"
+          pip install -r dev-requirements.txt
+          eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTMETAL_INSTALL_DIR")"
+          echo "TTL_EXTERNAL_TT_METAL_DIR=$TTMETAL_INSTALL_DIR" >> "$GITHUB_ENV"
+
+      - name: Device suite
+        run: |
+          set -eo pipefail
+          # shellcheck disable=SC1091
+          source /tmp/ttl-venv/bin/activate
+          eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTL_EXTERNAL_TT_METAL_DIR")"
+          python3 test/python/smoketest.py
+          python3 test/python/simple_add.py
+          python3 -m pytest test/python -v --tb=short \
+            --timeout=300 --timeout-method=thread
+          python3 -m pytest test/me2e -v --tb=short \
+            --timeout=300 --timeout-method=thread
+          bash .github/scripts/compile-and-run-examples.sh
+          bash .github/scripts/run-tutorials.sh .
+
+  publish:
+    name: "Publish to S3 under per-SHA prefix"
+    needs: [find-compatible, build-wheels, build-metapackage, device-validate]
+    if: ${{ needs.find-compatible.outputs.found == 'true' && inputs.dry_run != true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Download light wheels
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ttmetal-light-*
+          path: wheel-artifacts/light
+          merge-multiple: true
+
+      - name: Prepare publish dist
+        run: |
+          .github/scripts/prepare-s3-publish-dist.sh \
+            "${{ needs.find-compatible.outputs.winner_version }}" \
+            dist \
+            light:no-sim=wheel-artifacts/light
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-tt-s3-credentials
+
+      - name: Install s3pypi
+        run: python3 -m pip install s3pypi markdown
+
+      - name: Publish wheels
+        run: |
+          .github/scripts/publish-s3-wheels.sh --overwrite \
+            --prefix "${{ needs.find-compatible.outputs.ttmetal_short }}" dist
+
+      - name: Inject S3 index README
+        run: |
+          set -euo pipefail
+          key="${{ needs.find-compatible.outputs.ttmetal_short }}/index.html"
+          aws s3 cp "s3://tenstorrent-pypi/$key" ./index.html
+          python3 .github/scripts/inject_s3_index_readme.py \
+            packaging/s3-index/README.md ./index.html
+          aws s3 cp ./index.html "s3://tenstorrent-pypi/$key" \
+            --content-type "text/html; charset=utf-8"
+
+      - name: Report install command
+        run: |
+          .github/scripts/publish-s3-summary.sh \
+            --index-subdir "${{ needs.find-compatible.outputs.ttmetal_short }}" \
+            light \
+            "${{ needs.find-compatible.outputs.winner_version }}"

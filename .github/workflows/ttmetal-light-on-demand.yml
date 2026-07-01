@@ -1,0 +1,122 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# On-demand: build a tt-lang-light wheel for a given (or detected) tt-metal SHA.
+# The scheduled path lives in publish-s3-pypi.yml, which reuses the images it
+# just built; this manual entry point resolves the builder-image tag itself.
+# Force a tt_metal_sha, or leave it empty to detect from tt-mlir's pin.
+
+name: tt-lang-light wheel (on demand)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tt_metal_sha:
+        description: "Force a tt-metal SHA (skips detection). Leave empty to detect from tt-mlir."
+        required: false
+        type: string
+        default: ""
+      docker_tag:
+        description: "Builder image tag. Leave empty to resolve it from the current main (get-version-tag.sh)."
+        required: false
+        type: string
+        default: ""
+      max_age_days:
+        description: "Max |tt-lang date - tt-metal date| when searching for a compatible commit."
+        required: false
+        type: number
+        default: 14
+      python_tags:
+        description: "Comma-separated CPython ABIs to build."
+        required: false
+        type: string
+        default: "cp310,cp312"
+      hw_type:
+        description: "Hardware runner type."
+        required: false
+        type: string
+        default: "n150"
+      dry_run:
+        description: "Build and validate without publishing to S3."
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: ttmetal-light-on-demand
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: "Detect tt-metal uplift"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      uplift: ${{ steps.detect.outputs.uplift }}
+      tt_metal_sha: ${{ steps.detect.outputs.tt_metal_sha }}
+      docker_tag: ${{ steps.docker_tag.outputs.tag }}
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          # get-version-tag.sh needs the full history and version tags; the
+          # tt-mlir submodule holds the TT_METAL_VERSION detection reads.
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: true
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      # Resolve the builder-image tag for the current main. The on-push main
+      # build already pushed the ird and manylinux images at this content tag;
+      # the manylinux images carry no :latest, so a fixed tag will not resolve.
+      - name: Resolve builder image tag
+        id: docker_tag
+        run: echo "tag=$(.github/containers/get-version-tag.sh)" >> "$GITHUB_OUTPUT"
+
+      # Detection reads the published S3 prefix to decide idempotency.
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-tt-s3-credentials
+
+      - name: Detect uplift
+        id: detect
+        env:
+          FORCED_SHA: ${{ inputs.tt_metal_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$FORCED_SHA" ]; then
+            echo "Forced tt-metal SHA: $FORCED_SHA"
+            echo "uplift=true" >> "$GITHUB_OUTPUT"
+            echo "tt_metal_sha=$FORCED_SHA" >> "$GITHUB_OUTPUT"
+          else
+            .github/scripts/detect-ttmlir-ttmetal-uplift.sh
+          fi
+
+  build:
+    name: "Build light wheel for tt-metal SHA"
+    needs: detect
+    if: ${{ needs.detect.outputs.uplift == 'true' }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    uses: ./.github/workflows/call-ttmetal-light-wheel.yml
+    secrets: inherit
+    with:
+      tt_metal_sha: ${{ needs.detect.outputs.tt_metal_sha }}
+      docker_tag: ${{ inputs.docker_tag || needs.detect.outputs.docker_tag }}
+      max_age_days: ${{ inputs.max_age_days }}
+      python_tags: ${{ inputs.python_tags }}
+      hw_type: ${{ inputs.hw_type }}
+      dry_run: ${{ inputs.dry_run }}

@@ -10,3 +10,9 @@ HAS_TT_DEVICE = @TTLANG_HAS_DEVICE_INT@ == 1
 
 # Version string derived from git tags at CMake configure time
 VERSION = "@TTLANG_VERSION@"
+
+# Source revisions this wheel was built from; "unknown" without a git checkout
+# or the CI build-arg overrides.
+TTLANG_COMMIT = "@TTLANG_GIT_COMMIT@"
+TT_METAL_TAG = "@TTLANG_TT_METAL_TAG@"
+TT_METAL_COMMIT = "@TTLANG_TT_METAL_COMMIT@"
