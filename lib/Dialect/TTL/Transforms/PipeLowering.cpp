@@ -326,17 +326,11 @@ buildAddressTableDestinationAddress(Location loc, const AddressTableInfo &info,
 static Value buildComputedReceiverDFBDestinationAddress(
     Location loc, const PipeComputedAddressInfo &info,
     ConversionPatternRewriter &rewriter) {
-  auto i32Ty = rewriter.getI32Type();
   auto baseAddress = ttk::GetCompileArgValOp::create(
-      rewriter, loc, i32Ty, static_cast<int32_t>(info.baseCompileTimeArgIndex));
-  if (info.staticByteOffset != 0) {
-    auto staticByteOffset = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(info.staticByteOffset));
-    return arith::AddIOp::create(rewriter, loc, baseAddress, staticByteOffset)
-        .getResult();
-  }
-  return baseAddress.getResult();
+      rewriter, loc, rewriter.getI32Type(),
+      static_cast<int32_t>(info.baseCompileTimeArgIndex));
+  return addByteOffset(loc, baseAddress.getResult(), info.staticByteOffset,
+                       rewriter);
 }
 
 static void lowerSameDevicePipeCapacityRelease(
@@ -1603,12 +1597,8 @@ getSingleSenderFunc(const PipeTransferAllocationUnit &unit) {
 }
 
 static int64_t getReceiverDFBBlockStrideBytes(const ReceiverDFBInfo &info) {
-  int64_t numTiles = 1;
-  for (int64_t dimension : info.dfbType.getShape()) {
-    numTiles *= dimension;
-  }
   auto tileType = llvm::cast<ttcore::TileType>(info.dfbType.getElementType());
-  return numTiles * tileType.getSizeBytes();
+  return info.dfbType.getElementsPerBlock() * tileType.getSizeBytes();
 }
 
 static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
