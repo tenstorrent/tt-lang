@@ -18,9 +18,9 @@
 // CHECK: arith.addi {{.*}}, %[[SECOND_TABLE_OFF]]
 // CHECK: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.get_semaphore(%[[FIRST_READY_IDX]])
-// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK: ttkernel.experimental.semaphore_wait
 // CHECK: ttkernel.get_semaphore(%[[SECOND_READY_IDX]])
-// CHECK: ttkernel.experimental::semaphore_wait
+// CHECK: ttkernel.experimental.semaphore_wait
 func.func @same_pipe_receive_ahead_across_blocks_allocates_two_slots()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cond = arith.constant true

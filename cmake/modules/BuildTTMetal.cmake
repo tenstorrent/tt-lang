@@ -220,6 +220,12 @@ endif()
 # Sentinel file: if this exists, tt-metal is already built.
 set(_TTNN_SO "${TTMETAL_BUILD_DIR}/ttnn/_ttnn.so")
 
+if((TTLANG_BUILD_TOOLCHAIN OR TTLANG_FORCE_TOOLCHAIN_REBUILD) AND
+   EXISTS "${TTMETAL_BUILD_DIR}")
+  message(STATUS "Forcing tt-metal rebuild: removing ${TTMETAL_BUILD_DIR}")
+  file(REMOVE_RECURSE "${TTMETAL_BUILD_DIR}")
+endif()
+
 if(EXISTS "${_TTNN_SO}")
   message(STATUS "tt-metal already built at ${TTMETAL_BUILD_DIR}, skipping rebuild")
 else()

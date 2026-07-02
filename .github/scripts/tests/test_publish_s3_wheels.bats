@@ -87,6 +87,37 @@ setup() {
     assert_output --partial "--force"
 }
 
+@test "--prefix adds --prefix flag to s3pypi" {
+    dir=$(make_dist_dir "tt_lang-1.0-py3-none-any.whl")
+    run -0 "$SCRIPT" --prefix 2026-06 "$dir"
+
+    run cat "$FAKE_S3PYPI_ARGS"
+    assert_output --partial "--prefix 2026-06"
+    assert_output --partial "--put-root-index"
+    assert_output --partial "--bucket tenstorrent-pypi"
+}
+
+@test "no --prefix keeps the flat-root layout (no --prefix flag)" {
+    dir=$(make_dist_dir "tt_lang-1.0-py3-none-any.whl")
+    run -0 "$SCRIPT" "$dir"
+
+    run cat "$FAKE_S3PYPI_ARGS"
+    refute_output --partial "--prefix"
+}
+
+@test "--prefix composes with --overwrite" {
+    dir=$(make_dist_dir "tt_lang-1.0-py3-none-any.whl")
+    run -0 "$SCRIPT" --overwrite --prefix abc1234 "$dir"
+
+    run cat "$FAKE_S3PYPI_ARGS"
+    assert_output --partial "--prefix abc1234"
+    assert_output --partial "--force"
+}
+
+@test "--prefix without a value -> usage error (exit 2)" {
+    run -2 "$SCRIPT" --prefix
+}
+
 @test "s3pypi failure aborts and propagates" {
     cat > "$BINDIR/s3pypi" <<'EOF'
 #!/usr/bin/env bash

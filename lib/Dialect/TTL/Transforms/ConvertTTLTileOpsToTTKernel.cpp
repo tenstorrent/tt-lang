@@ -538,9 +538,11 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
     // Get the destination DST index from the SSA operand.
     Value dstIdx = adaptor.getDstIndex();
 
-    // Emit copy_dest_values(idst_in, idst_out): copies DST[idst_in] ->
-    // DST[idst_out].
-    ttk::CopyDestValuesOp::create(rewriter, loc, *srcIdx, dstIdx);
+    auto srcTileType =
+        mlir::cast<tt::ttcore::TileType>(op.getSrcTile().getType());
+    auto dataFormat = tt::ttcore::DataTypeAttr::get(rewriter.getContext(),
+                                                    srcTileType.getDataType());
+    ttk::CopyDestValuesOp::create(rewriter, loc, *srcIdx, dstIdx, dataFormat);
 
     // Replace with an unrealized conversion cast to preserve the tile value.
     // The tile is now in DST[dstIdx].
@@ -862,11 +864,12 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       return rewriter.notifyMatchFailure(
           op, "cannot determine operand tensor shapes for block dimensions");
     }
-    // Assumes non-transposed: lhs is [M, K], rhs is [K, N].
-    // TODO(#420): support transpose.
-    int32_t rt = lhsTy.getDimSize(0); // M
-    int32_t ct = rhsTy.getDimSize(1); // N
-    int32_t kt = lhsTy.getDimSize(1); // K
+    // lhs is [M, K]. rhs is [K, N] (non-transposed) or [N, K] when
+    // transpose_rhs is set, so the output column count N comes from rhs[0].
+    bool transposeRhs = op.getTransposeRhs();
+    int32_t rt = lhsTy.getDimSize(0);                                      // M
+    int32_t ct = transposeRhs ? rhsTy.getDimSize(0) : rhsTy.getDimSize(1); // N
+    int32_t kt = lhsTy.getDimSize(1);                                      // K
 
     // Starting DFB tile index: 0 when not subblocked (DFB refilled each
     // K-step), or the slice offset when subblocked.
@@ -876,8 +879,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     Value in1TileIndex =
         utils::addSliceOffset(op.getRhs(), zero, rewriter, loc);
 
-    Value transpose =
-        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(0));
+    Value transpose = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI32IntegerAttr(transposeRhs ? 1 : 0));
     Value ctVal = arith::ConstantOp::create(rewriter, loc,
                                             rewriter.getI32IntegerAttr(ct));
     Value rtVal = arith::ConstantOp::create(rewriter, loc,
@@ -907,17 +910,21 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       }
     }
 
-    // B stride per K step: for non-transposed B [K, N] the stride between
-    // K rows is the full CB N dimension. For transposed B [N, K] (future)
-    // the stride would be 1.
-    // TODO(#420): derive from transpose flag once transpose is supported.
+    // B stride per K step. For non-transposed B [K, N] the stride between
+    // K rows is the full CB N dimension (the innermost CB dim). For
+    // transposed B [N, K] the K tiles are the innermost dimension, so each
+    // K step advances by a single tile.
     int32_t bStridePerK = ct; // default when not subblocked
-    Value rhsCBVal = lookupCBByIndex(op.getRhs(), funcOp);
-    assert(rhsCBVal && "rhs CB lookup failed after prior successful lookup");
-    if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(rhsCBVal.getType())) {
-      auto cbShape = ttlCb.getShape();
-      if (cbShape.size() == 2) {
-        bStridePerK = cbShape[1];
+    if (transposeRhs) {
+      bStridePerK = 1;
+    } else {
+      Value rhsCBVal = lookupCBByIndex(op.getRhs(), funcOp);
+      assert(rhsCBVal && "rhs CB lookup failed after prior successful lookup");
+      if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(rhsCBVal.getType())) {
+        auto cbShape = ttlCb.getShape();
+        if (cbShape.size() == 2) {
+          bStridePerK = cbShape[1];
+        }
       }
     }
 
@@ -925,7 +932,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     // tile; the loop iterates K times. The kt_dim parameter passed to the
     // hardware is the full K dimension, used by the unpacker for address
     // stride setup. Each K step advances A's tile index by 1 (row-major
-    // [M, K]) and B's tile index by bStridePerK (row-major [K, N]).
+    // [M, K]) and B's tile index by bStridePerK (the CB N dimension for
+    // row-major [K, N], or 1 for transposed row-major [N, K]).
     {
       Value ub = arith::ConstantIndexOp::create(rewriter, loc, kt);
       Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);

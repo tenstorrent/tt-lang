@@ -51,9 +51,10 @@ class FusedOpTestBase(ME2ETestBase):
     INPUT_RANGE: Tuple[float, float] = (-1.0, 1.0)
 
     @pytest.fixture(scope="class")
-    def config(self) -> E2EConfig:
+    @classmethod
+    def config(cls) -> E2EConfig:
         """Get test configuration."""
-        return E2EConfig(grid_shape=self.INPUT_SHAPE, dtype=self.INPUT_DTYPE)
+        return E2EConfig(grid_shape=cls.INPUT_SHAPE, dtype=cls.INPUT_DTYPE)
 
     def torch_reference(self, *inputs: Tensor) -> Tensor:
         """

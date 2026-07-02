@@ -13,10 +13,6 @@ guard rather than executing the body with out-of-bounds tensor indices or
 breaking the multicast handshake.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

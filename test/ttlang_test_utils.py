@@ -17,6 +17,7 @@ import glob
 import importlib.util
 import os
 import sys
+from contextlib import contextmanager
 from typing import Any, Sequence
 
 # =============================================================================
@@ -94,6 +95,28 @@ def is_hardware_available() -> bool:
     return _hardware_available
 
 
+def pin_xdist_worker_to_device() -> None:
+    """Restrict a pytest-xdist worker to one chip and cache directory."""
+    if os.environ.get("TTLANG_PIN_XDIST_WORKERS_TO_DEVICES") != "1":
+        return
+    worker_name = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker_name:
+        return
+    worker_index = "".join(
+        character for character in worker_name if character.isdigit()
+    )
+    if not worker_index:
+        return
+    if "TT_VISIBLE_DEVICES" not in os.environ:
+        os.environ["TT_VISIBLE_DEVICES"] = worker_index
+    cache_root = os.environ.get("TTLANG_XDIST_TT_METAL_CACHE_ROOT")
+    if cache_root:
+        cache_root = os.path.abspath(cache_root)
+        cache_dir = os.path.join(cache_root, f"worker-{worker_index}")
+        os.makedirs(cache_dir, exist_ok=True)
+        os.environ["TT_METAL_CACHE"] = cache_dir
+
+
 def require_ttnn():
     """Exit test if TTNN is not available."""
     if not _ttnn_available:
@@ -113,6 +136,46 @@ def require_hardware(message: str = "Skipping test - no hardware available"):
     if not _hardware_available:
         print(message)
         sys.exit(0)
+
+
+# =============================================================================
+# Mesh fabric utilities
+# =============================================================================
+
+
+class FabricMeshUnavailable(RuntimeError):
+    pass
+
+
+@contextmanager
+def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
+    """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
+    control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
+    mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
+    override topology discovery.
+    """
+    ttnn_module = _get_ttnn()
+    if ttnn_module is None:
+        raise FabricMeshUnavailable("TTNN not available")
+
+    if requested_mesh_shape is None:
+        requested_mesh_shape = tuple(
+            ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
+        )
+    else:
+        requested_mesh_shape = tuple(requested_mesh_shape)
+
+    mesh_device = None
+    try:
+        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.FABRIC_1D)
+        mesh_device = ttnn_module.open_mesh_device(
+            ttnn_module.MeshShape(requested_mesh_shape)
+        )
+        yield mesh_device
+    finally:
+        if mesh_device is not None:
+            ttnn_module.close_mesh_device(mesh_device)
+        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
 
 
 # =============================================================================

@@ -1,0 +1,86 @@
+name: Build Wheel-Builder Images
+
+# Builds and pushes the manylinux_2_34 wheel-builder images used to build the S3
+# light wheels. Kept separate from call-build-docker.yml so that hardware tests
+# and standard wheels (which depend on the ird image, not these) do not wait on
+# this build. Callers decide when to invoke it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ttlang_sha_override:
+        description: "tt-lang SHA/branch override (optional, defaults to current commit)"
+        type: string
+        required: false
+  workflow_call:
+    inputs:
+      ttlang_sha_override:
+        description: "tt-lang SHA/branch override (optional, defaults to current commit)"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-manylinux-wheel-images:
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        python_tag: [cp310, cp312]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Free up runner space
+        run: .github/scripts/cleanup-ci-space.sh
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Fix git safe directory for submodules
+        run: git config --global --add safe.directory '*'
+
+      - name: Resolve Docker tag
+        id: docker-tag
+        run: |
+          docker_tag=$(.github/containers/get-version-tag.sh)
+          registry_image="ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}:${docker_tag}"
+          echo "docker-tag=${docker_tag}" >> "$GITHUB_OUTPUT"
+          echo "registry-image=${registry_image}" >> "$GITHUB_OUTPUT"
+          echo "Docker tag: ${docker_tag}"
+          echo "Registry image: ${registry_image}"
+          {
+            echo "### manylinux wheel-builder image"
+            echo ""
+            echo "- Docker tag: \`${docker_tag}\`"
+            echo "- Image: \`${registry_image}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and push manylinux wheel-builder image
+        env:
+          DOCKER_BUILDKIT: 1
+          BUILDKIT_STEP_LOG_MAX_SIZE: -1
+        run: .github/containers/build-wheel-manylinux-images.sh --python-tags "${{ matrix.python_tag }}" --image-tag "${{ steps.docker-tag.outputs.docker-tag }}" --build-parallel-level 2
+
+      - name: Show disk usage on failure
+        if: failure()
+        run: |
+          df -h
+          docker system df || true

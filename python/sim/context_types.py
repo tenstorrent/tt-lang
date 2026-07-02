@@ -11,11 +11,13 @@ separated from the context management functions to avoid import cycles.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, FrozenSet, Optional, Set, Tuple, TypedDict
+from typing import TYPE_CHECKING, Any, Deque, Dict, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
-from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
 from .blockstate import KernelType
+
+if TYPE_CHECKING:
+    from .ttnnsim import Tensor
 
 # Default L1 memory limit per node (simulator)
 # keep in sync with ttl.constants.DEFAULT_L1_CB_BUDGET_BYTES
@@ -31,9 +33,11 @@ class SimulatorConfig:
     default_full_grid: Shape = (8, 8)
     max_l1_bytes: int = DEFAULT_MAX_L1_BYTES
     num_devices: int = 4
-    # Set of event categories to record. Empty means tracing is disabled.
-    # Use trace.ALL_CATEGORIES to enable all categories.
-    trace_set: FrozenSet[str] = field(default_factory=frozenset)
+    # When True, all actual data movement and numerical computation is skipped.
+    # The simulator still exercises DFB sequencing, block state machines,
+    # deadlock detection, and copy-wait injection — only the payload bytes are
+    # not transferred.  Assumes computation results do not affect control flow.
+    dry_run: bool = False
 
 
 @dataclass
@@ -46,6 +50,20 @@ class TraceEvent:
     data: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PipeMessage:
+    """A single message queued on a pipe.
+
+    ``grid_shape`` (the tile-grid shape of the sent block) is always populated
+    so the destination shape check runs identically in dry-run and normal mode.
+    ``data`` holds the backing tile tensor, or is ``None`` in dry-run mode where
+    the payload bytes are not moved.
+    """
+
+    grid_shape: Shape
+    data: Optional[Tensor] = None
+
+
 class PipeEntry(TypedDict):
     """Pipe buffer entry for NoC pipe communication simulation.
 
@@ -53,7 +71,7 @@ class PipeEntry(TypedDict):
     No locking needed because greenlet scheduler is cooperative.
     """
 
-    queue: Deque[Tuple[Tensor, Count, int, set[int]]]
+    queue: Deque[Tuple[PipeMessage, Count, int, set[int]]]
     next_msg_id: int
 
 

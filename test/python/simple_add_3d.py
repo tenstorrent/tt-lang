@@ -113,7 +113,7 @@ def add_3d_kernel(lhs, rhs, out):
 # =============================================================================
 
 # Compute kernel: 3 nested loops over 2x2x2 tile grid
-# CHECK-CPP: // add_compute
+# CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -133,32 +133,32 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP:       pack_tile<true>(
 # CHECK-CPP:       tile_regs_release();
 
-# DM read kernel: 3 nested loops with noc_async_read_tile
-# CHECK-CPP: // dm_read
+# DM read kernel: 3 nested loops with async_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP: [[CB0]].reserve_back(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:     for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
-# CHECK-CPP:       noc_async_read_tile(
+# CHECK-CPP:       async_read(
 
-# DM write kernel: 3 nested loops with noc_async_write_tile
-# CHECK-CPP: // dm_write
+# DM write kernel: 3 nested loops with async_write
+# CHECK-CPP: === dm_write kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP: [[CB2]].wait_front(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:     for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
-# CHECK-CPP:       noc_async_write_tile(
+# CHECK-CPP:       async_write(
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # 2x2x2 = 8 tiles fits in DST (bf16), fully unrolled with FPU binary add
 # =============================================================================
 
-# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP-FPU: void kernel_main()
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

@@ -77,7 +77,9 @@ static bool isDstInputTileComputeOp(Operation *op) {
   if (isFPUEligibleBinaryOp(op)) {
     return false;
   }
-  return op->hasTrait<TTLDSTInputsTrait>() ||
+
+  return op->hasTrait<TTLStrategyDependentBinaryOpTrait>() ||
+         op->hasTrait<TTLDSTInputsTrait>() ||
          isa<TileBcastOp, TileTransposeOp>(op);
 }
 

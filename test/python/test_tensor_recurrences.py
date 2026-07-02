@@ -579,16 +579,23 @@ def _make_aug_outside_loop_kernel():
     @ttl.operation(grid=(1, 1))
     def kernel(a_seed, delta, out):
         a_cb = ttl.make_dataflow_buffer_like(a_seed, shape=(1, 1), block_count=2)
-        delta_cb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=2)
+        delta_fpu_cb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=2)
+        delta_sfpu_cb = ttl.make_dataflow_buffer_like(
+            delta, shape=(1, 1), block_count=2
+        )
         out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
         @ttl.compute()
         def compute():
-            with a_cb.wait() as a, delta_cb.wait() as d:
-                acc = a + d
+            with (
+                a_cb.wait() as a,
+                delta_fpu_cb.wait() as d_fpu,
+                delta_sfpu_cb.wait() as d_sfpu,
+            ):
+                acc = a + d_fpu
                 # `+=` outside any loop: the rewrite produces a plain
                 # `acc = acc + d` with no recurrence machinery involved.
-                acc += d
+                acc += d_sfpu
                 with out_cb.reserve() as o:
                     o.store(acc)
 
@@ -596,7 +603,9 @@ def _make_aug_outside_loop_kernel():
         def reader():
             with a_cb.reserve() as blk:
                 ttl.copy(a_seed[0:1, 0:1], blk).wait()
-            with delta_cb.reserve() as blk:
+            with delta_fpu_cb.reserve() as blk:
+                ttl.copy(delta[0:1, 0:1], blk).wait()
+            with delta_sfpu_cb.reserve() as blk:
                 ttl.copy(delta[0:1, 0:1], blk).wait()
 
         @ttl.datamovement()

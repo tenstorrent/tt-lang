@@ -25,10 +25,6 @@ issue #505 (within-PipeNet multicast destination overlap). The
 per-source PipeNet workaround is sketched in TODO comments.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl
