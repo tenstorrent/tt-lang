@@ -126,6 +126,36 @@ def recurrence_multi_output_intermediates(a, b, out):
                 ttl.copy(out_block, out[0:1, 0:1]).wait()
 
 
+@ttl.operation(grid=(1, 1))
+def same_dfb_store_order(a, b, out):
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=1)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        a_block = a_dfb.wait()
+        b_block = b_dfb.wait()
+        first = out_dfb.reserve()
+        second = out_dfb.reserve()
+        first.store(a_block + b_block)
+        second.store(a_block * b_block)
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as a_block:
+            ttl.copy(a[0:1, 0:1], a_block).wait()
+        with b_dfb.reserve() as b_block:
+            ttl.copy(b[0:1, 0:1], b_block).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as first:
+            ttl.copy(first, out[0:1, 0:1]).wait()
+        with out_dfb.wait() as second:
+            ttl.copy(second, out[0:1, 1:2]).wait()
+
+
 def _expected_sum(a_torch, b_torch):
     a_block = a_torch[0:TILE, 0 : K_TILES * TILE].float()
     b_block = b_torch[0 : M_TILES * TILE, 0 : K_TILES * TILE].float()
@@ -154,3 +184,23 @@ def test_recurrence_multi_output_dfb(kernel, device):
 
     result = ttnn.to_torch(out).float()
     assert_pcc(_expected_sum(a_torch, b_torch), result[:, :1], threshold=0.99)
+
+
+@pytest.mark.requires_device
+def test_same_dfb_store_order(device):
+    torch.manual_seed(1)
+    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out = to_dram(out_torch, device)
+
+    same_dfb_store_order(a, b, out)
+
+    result = ttnn.to_torch(out).float()
+    expected = torch.zeros_like(result)
+    expected[:, :TILE] = a_torch.float() + b_torch.float()
+    expected[:, TILE:] = a_torch.float() * b_torch.float()
+    assert_pcc(expected, result, threshold=0.99)
