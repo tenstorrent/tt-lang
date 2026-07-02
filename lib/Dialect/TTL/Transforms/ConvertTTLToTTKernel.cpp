@@ -103,12 +103,12 @@ public:
 /// Convert ttl.kernel_thread -> ttkernel.thread if present, returning the
 /// resolved thread type from whichever attribute exists.
 static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
-  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread")) {
+  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kTTKernelThreadAttrName)) {
     return a.getValue();
   }
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
     op->removeAttr(kKernelThreadAttrName);
-    op->setAttr("ttkernel.thread", a);
+    op->setAttr(kTTKernelThreadAttrName, a);
     return a.getValue();
   }
   return std::nullopt;
@@ -1250,7 +1250,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
     }
     op->removeAttr(kKernelThreadAttrName);
     op->removeAttr(kNocIndexAttrName);
-    op->setAttr("ttkernel.thread", ttlAttr);
+    op->setAttr(kTTKernelThreadAttrName, ttlAttr);
 
     // If function has arguments, we need to transform them
     if (op.getNumArguments() > 0) {

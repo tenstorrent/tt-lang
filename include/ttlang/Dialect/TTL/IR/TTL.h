@@ -95,6 +95,10 @@ constexpr llvm::StringLiteral
 /// the attribute value is a `ttkernel.thread` enum.
 constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 
+/// TTKernel-side thread tag, set during TTL -> TTKernel conversion and read by
+/// analyses that run after the attr rewrite.
+constexpr llvm::StringLiteral kTTKernelThreadAttrName("ttkernel.thread");
+
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
