@@ -447,16 +447,12 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
                 "TT-Metal NoC multicast requires one destination SRAM address "
                 "for all receivers";
     }
-    int64_t requiredBlocks =
-        *info.receiverSlotIndex + info.receiverSlotSpanBlocks;
-    if (info.blockCount < requiredBlocks) {
-      return emitError(info.loc)
-             << (pk.hasSingleReceiver() ? "gather" : "collective overlap")
-             << " pipe receiver DFB has block_count=" << info.blockCount
-             << " but slot " << *info.receiverSlotIndex
-             << " is assigned to this pipe; "
-             << "block_count must be >= " << requiredBlocks;
-    }
+    // assignReceiverPhysicalSlot only returns a slot with slot + span <=
+    // block_count, and a reused slot shares the reserve op and receiver DFB
+    // (hence the same span and block_count), so this always holds.
+    assert(*info.receiverSlotIndex + info.receiverSlotSpanBlocks <=
+               info.blockCount &&
+           "receiver slot assignment exceeds block_count");
   }
   return success();
 }
