@@ -7,6 +7,9 @@
 The loop-state case is the #666 reproducer. It combines a running maximum
 recurrence with a derived value that is both stored back to the state DFB and
 consumed through a compiler-allocated intermediate DFB.
+
+The branch case covers materialization reuse across incomparable control-flow
+regions.
 """
 
 import os
@@ -30,6 +33,7 @@ TILE = 32
 N_ITERS = 4
 K_TILES = 2
 M_TILES = 2
+N_BRANCH_ITERS = 2
 
 
 @ttl.operation(grid=(1, 1))
@@ -156,6 +160,45 @@ def same_dfb_store_order(a, b, out):
             ttl.copy(second, out[0:1, 1:2]).wait()
 
 
+@ttl.operation(grid=(1, 1))
+def branch_intermediate_consumers(a, b, out):
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    sum_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        for i in range(N_BRANCH_ITERS):
+            a_block = a_dfb.wait()
+            b_block = b_dfb.wait()
+            sum_block = a_block + b_block
+            with sum_dfb.reserve() as sum_out:
+                sum_out.store(sum_block)
+            if i < 1:
+                with out_dfb.reserve() as out_block:
+                    out_block.store(ttl.math.reduce_sum(sum_block, dims=[1]))
+            else:
+                with out_dfb.reserve() as out_block:
+                    out_block.store(ttl.math.reduce_max(sum_block, dims=[1]))
+            _ = sum_dfb.wait()
+
+    @ttl.datamovement()
+    def dm_read():
+        for _ in range(N_BRANCH_ITERS):
+            with a_dfb.reserve() as a_block:
+                ttl.copy(a[0:1, 0:1], a_block).wait()
+            with b_dfb.reserve() as b_block:
+                ttl.copy(b[0:1, 0:1], b_block).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as sum_block:
+            ttl.copy(sum_block, out[0:1, 0:1]).wait()
+        with out_dfb.wait() as max_block:
+            ttl.copy(max_block, out[0:1, 1:2]).wait()
+
+
 def _expected_sum(a_torch, b_torch):
     a_block = a_torch[0:TILE, 0 : K_TILES * TILE].float()
     b_block = b_torch[0 : M_TILES * TILE, 0 : K_TILES * TILE].float()
@@ -204,3 +247,25 @@ def test_same_dfb_store_order(device):
     expected[:, :TILE] = a_torch.float() + b_torch.float()
     expected[:, TILE:] = a_torch.float() * b_torch.float()
     assert_pcc(expected, result, threshold=0.99)
+
+
+@pytest.mark.requires_device
+def test_branch_intermediate_consumers(device):
+    torch.manual_seed(2)
+    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out = to_dram(out_torch, device)
+
+    branch_intermediate_consumers(a, b, out)
+
+    result = ttnn.to_torch(out).float()
+    sum_block = a_torch.float() + b_torch.float()
+    expected = torch.zeros_like(result)
+    expected[:, :1] = torch.sum(sum_block, dim=1, keepdim=True)
+    expected[:, TILE : TILE + 1] = torch.max(sum_block, dim=1, keepdim=True).values
+    assert_pcc(expected[:, :1], result[:, :1], threshold=0.99)
+    assert_pcc(expected[:, TILE : TILE + 1], result[:, TILE : TILE + 1], threshold=0.99)

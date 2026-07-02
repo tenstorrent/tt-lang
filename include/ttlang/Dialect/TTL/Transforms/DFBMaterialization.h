@@ -52,14 +52,14 @@ StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder);
 AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
                                   Location loc, OpBuilder &builder);
 
-/// Routes `intermediate` through a fresh compiler-allocated DFB for
-/// `consumerOp`.
+/// Routes `intermediate` through a fresh compiler-allocated DFB for one
+/// consumer.
 ///
 /// Non-compute producers use the tensor-level fallback: reserve/store at the
 /// definition site, followed by wait/attach. Values produced by `ttl.compute`
 /// are materialized as an extra compute output: reserve before the compute,
 /// tile_store inside the body, push after the compute, and wait/attach before
-/// `consumerOp`.
+/// the consumer.
 FailureOr<DFBMaterializedValue> materializeToDFB(Value intermediate,
                                                  Operation *consumerOp,
                                                  ModuleOp moduleOp,

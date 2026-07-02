@@ -15,7 +15,6 @@ The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
 ```
 ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
 ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
-ttl-auto-sync                  (FuncOp)   Insert/coalesce user and loop-state DFB sync
 ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
 ttl-form-producer-compute      (FuncOp)   Form producer compute regions
 ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
@@ -191,7 +190,7 @@ This ordering is constructed directly by `TTLInsertIntermediateDFBs` for the pro
 
 `TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args before compute lowering.
 
-When multiple `DFBInputOpInterface` operations consume the same non-DFB-attached value, the materialization is shared -- only one DFB is created and the second consumer's operand is rewritten to the existing attached value.
+When multiple `DFBInputOpInterface` operations consume the same non-DFB-attached value, a materialization is shared only when its attached value dominates the later consumer. Consumers in incomparable control-flow regions receive separate compiler DFB outputs.
 
 Each DFB is created with `blockCount=2` (double-buffering) so the packer and unpacker can operate on different halves simultaneously within the same thread.
 

@@ -1554,7 +1554,6 @@ def _compile_kernel(
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-auto-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(ttl-form-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
