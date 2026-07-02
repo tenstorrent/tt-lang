@@ -47,7 +47,6 @@ def compile_ttl_to_ttkernel(
     func_passes = [
         "ttl-materialize-loop-state",
         "ttl-insert-copy-wait",
-        "ttl-auto-sync",
         "ttl-form-producer-compute",
         "ttl-insert-intermediate-dfbs",
         "convert-ttl-to-compute",

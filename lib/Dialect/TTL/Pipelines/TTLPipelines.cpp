@@ -20,7 +20,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLFormProducerCompute());
   {

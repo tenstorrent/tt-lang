@@ -23,6 +23,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -35,6 +36,13 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
+
+static bool materializedValueDominates(Value materialized,
+                                       Operation *consumerOp,
+                                       DominanceInfo &dominanceInfo) {
+  Operation *defOp = materialized.getDefiningOp();
+  return defOp && dominanceInfo.dominates(defOp, consumerOp);
+}
 
 struct TTLInsertIntermediateDFBsPass
     : public impl::TTLInsertIntermediateDFBsBase<
@@ -77,11 +85,12 @@ struct TTLInsertIntermediateDFBsPass
     }
 
     OpBuilder builder(funcOp.getContext());
-    // Deduplicate materialization across consumers of the same value, keyed by
-    // the post-materialization source (see DFBMaterializedValue). When a
-    // producing ttl.compute is rebuilt with an extra output, its results are
-    // RAUW'd, so a later consumer's operand already names the new source value.
-    llvm::DenseMap<Value, Value> materialized;
+    DominanceInfo dominanceInfo(funcOp);
+    // A shared consumer-side acquire is valid only when its attach dominates
+    // the next consumer. Incomparable control-flow regions need separate
+    // compiler DFB outputs so each dynamic execution consumes exactly one
+    // pushed slot.
+    llvm::DenseMap<Value, SmallVector<Value>> materialized;
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();
@@ -96,8 +105,13 @@ struct TTLInsertIntermediateDFBsPass
 
         if (auto iter = materialized.find(operand);
             iter != materialized.end()) {
-          op->setOperand(idx, iter->second);
-          continue;
+          auto replacement = llvm::find_if(iter->second, [&](Value value) {
+            return materializedValueDominates(value, op, dominanceInfo);
+          });
+          if (replacement != iter->second.end()) {
+            op->setOperand(idx, *replacement);
+            continue;
+          }
         }
 
         FailureOr<DFBMaterializedValue> materialization =
@@ -112,7 +126,8 @@ struct TTLInsertIntermediateDFBsPass
         // the producer in a single compute block.
         op->setOperand(idx, materialization->materialized);
 
-        materialized[materialization->source] = materialization->materialized;
+        materialized[materialization->source].push_back(
+            materialization->materialized);
       }
     }
   }

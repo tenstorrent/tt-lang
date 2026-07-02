@@ -1,8 +1,8 @@
 // Tests deferred compiler DFB materialization after initial compute formation.
 // The pass must materialize ttl.compute results as extra compute outputs and
 // leave consumers ready for the final convert-ttl-to-compute pass.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-auto-sync,ttl-form-producer-compute,ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=DEFERRED
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-auto-sync,ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=DEFERRED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
 
 // -----
 
@@ -100,5 +100,72 @@ func.func @state_update_feeds_broadcast()
   %broadcast = ttl.block.broadcast %state_new dims = [-1], shape = [1, 2] : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
   %out_reserve = ttl.cb_reserve %cb_out : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
   ttl.store %broadcast, %out_reserve : tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
+// Branch-local consumers cannot share a materialized value whose attach is
+// defined in the sibling branch. Each branch gets a separate compiler DFB.
+
+// DEFERRED-LABEL: func.func @branch_local_reductions
+// DEFERRED-DAG: %[[THEN_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED-DAG: %[[ELSE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED-DAG: %[[THEN_RESERVE:.*]] = ttl.cb_reserve %[[THEN_DFB]]
+// DEFERRED-DAG: %[[ELSE_RESERVE:.*]] = ttl.cb_reserve %[[ELSE_DFB]]
+// DEFERRED: %{{.*}}:3 = ttl.compute
+// DEFERRED-DAG: ttl.tile_store {{.*}}, %[[THEN_RESERVE]]
+// DEFERRED-DAG: ttl.tile_store {{.*}}, %[[ELSE_RESERVE]]
+// DEFERRED-DAG: ttl.cb_push %[[THEN_DFB]]
+// DEFERRED-DAG: ttl.cb_push %[[ELSE_DFB]]
+// DEFERRED: scf.if
+// DEFERRED: %[[THEN_WAIT:.*]] = ttl.cb_wait %[[THEN_DFB]]
+// DEFERRED: %[[THEN_ATTACH:.*]] = ttl.attach_cb %[[THEN_WAIT]], %[[THEN_DFB]]
+// DEFERRED: ttl.reduce %[[THEN_ATTACH]]
+// DEFERRED: else
+// DEFERRED: %[[ELSE_WAIT:.*]] = ttl.cb_wait %[[ELSE_DFB]]
+// DEFERRED: %[[ELSE_ATTACH:.*]] = ttl.attach_cb %[[ELSE_WAIT]], %[[ELSE_DFB]]
+// DEFERRED: ttl.reduce %[[ELSE_ATTACH]]
+
+// FULL-LABEL: func.func @branch_local_reductions
+// FULL-DAG: %[[THEN_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL-DAG: %[[ELSE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL: scf.if
+// FULL: %[[THEN_WAIT:.*]] = ttl.cb_wait %[[THEN_DFB]]
+// FULL: %[[THEN_ATTACH:.*]] = ttl.attach_cb %[[THEN_WAIT]], %[[THEN_DFB]]
+// FULL: ttl.compute ins(%[[THEN_ATTACH]],
+// FULL: else
+// FULL: %[[ELSE_WAIT:.*]] = ttl.cb_wait %[[ELSE_DFB]]
+// FULL: %[[ELSE_ATTACH:.*]] = ttl.attach_cb %[[ELSE_WAIT]], %[[ELSE_DFB]]
+// FULL: ttl.compute ins(%[[ELSE_ATTACH]],
+func.func @branch_local_reductions(%cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_scaler = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_sum = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_then = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_else = ttl.bind_cb {cb_index = 5, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %a_wait = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %a_wait, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b_wait = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %b_wait, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler_wait = ttl.cb_wait %cb_scaler : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler = ttl.attach_cb %scaler_wait, %cb_scaler : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %sum = ttl.add %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum_reserve = ttl.cb_reserve %cb_sum : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %sum_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  scf.if %cond {
+    %sum_reduce = ttl.reduce %sum, %scaler 0 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %then_reserve = ttl.cb_reserve %cb_then : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %sum_reduce, %then_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %max_reduce = ttl.reduce %sum, %scaler 1 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %else_reserve = ttl.cb_reserve %cb_else : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %max_reduce, %else_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
   return
 }
