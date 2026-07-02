@@ -313,25 +313,25 @@ findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
 static void buildDFBReleaseOwnerMap(
     ArrayRef<Operation *> acquires, ArrayRef<Operation *> releases,
     llvm::DenseMap<Operation *, Operation *> &acquireByRelease) {
+  // Multiple owners indicate invalid or unanalyzable lifecycle structure; store
+  // null so consumers cannot use the release as proof. Same-level and nested
+  // releases follow the same ambiguity rule.
+  auto recordOwner = [&](Operation *release, Operation *acquire) {
+    auto [it, inserted] = acquireByRelease.try_emplace(release, acquire);
+    if (!inserted && it->second != acquire) {
+      it->second = nullptr;
+    }
+  };
   for (Operation *acquire : acquires) {
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
     Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
     DFBReleaseSearch releaseSearch =
         findOwnedDFBReleases(interval, lastOwnedUse, releases);
     for (Operation *release : releaseSearch.sameLevelReleases) {
-      // Multiple owners indicate invalid or unanalyzable lifecycle structure.
-      // Store null so consumers cannot use the release as proof.
-      auto [it, inserted] = acquireByRelease.try_emplace(release, acquire);
-      if (!inserted && it->second != acquire) {
-        it->second = nullptr;
-      }
+      recordOwner(release, acquire);
     }
     for (Operation *release : releaseSearch.nestedReleases) {
-      // Nested releases follow the same ambiguity rule as same-level releases.
-      auto [it, inserted] = acquireByRelease.try_emplace(release, acquire);
-      if (!inserted && it->second != acquire) {
-        it->second = nullptr;
-      }
+      recordOwner(release, acquire);
     }
   }
 }
