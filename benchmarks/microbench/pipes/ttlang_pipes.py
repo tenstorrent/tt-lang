@@ -23,6 +23,7 @@ must equal the source tile exactly.
 """
 
 import os
+import tempfile
 
 os.environ.setdefault("TT_METAL_DEVICE_PROFILER", "1")
 os.environ.setdefault("TT_METAL_PROFILER_MID_RUN_DUMP", "1")
@@ -49,7 +50,10 @@ VARIANTS = {
 COLUMNS = [
     "n",
     "dtype",
+    "send_block_count",
+    "recv_block_count",
     "variant",
+    "uses_computed_address",
     "arch",
     "freq_mhz",
     "sender_brisc_us",
@@ -63,22 +67,64 @@ COLUMNS = [
 ]
 
 
-def build_op(n_transfers, options, block_count=2):
+def begin_protocol_capture(enabled):
+    if not enabled:
+        return None, None
+    final_mlir = tempfile.NamedTemporaryFile(
+        prefix="ttlang_pipe_protocol_", suffix=".mlir", delete=False
+    )
+    final_mlir_path = final_mlir.name
+    final_mlir.close()
+    previous_path = os.environ.get("TTLANG_FINAL_MLIR")
+    os.environ["TTLANG_FINAL_MLIR"] = final_mlir_path
+    return previous_path, final_mlir_path
+
+
+def end_protocol_capture(previous_path):
+    if previous_path is None:
+        os.environ.pop("TTLANG_FINAL_MLIR", None)
+    else:
+        os.environ["TTLANG_FINAL_MLIR"] = previous_path
+
+
+def verify_address_protocol(variant, final_mlir_path):
+    with open(final_mlir_path) as file:
+        final_mlir = file.read()
+    uses_computed = "ttl.pipe_computed_address_dfb_indices" in final_mlir
+    expected_computed = variant == "ttlang_computed"
+    if uses_computed != expected_computed:
+        expected = "computed" if expected_computed else "receiver-published"
+        actual = "computed" if uses_computed else "receiver-published"
+        raise RuntimeError(
+            f"{variant} expected {expected} addressing, "
+            f"but final MLIR selected {actual} addressing"
+        )
+    return int(uses_computed)
+
+
+def build_op(n_transfers, options, send_block_count=2, recv_block_count=1):
     """Build a fresh ``@ttl.operation`` that sends ``n_transfers`` single tiles.
 
     A new operation per N gives each N its own compile; the source read is
     identical across variants, so the computed-vs-published difference is in the
     address protocol alone.
 
-    ``block_count`` is the depth of both dataflow buffers. In the current
+    ``send_block_count`` is the source staging DFB depth. In the current
     lowering, increasing this depth does not make the sender run ahead of the
     receiver because each single-tile transfer waits for completion before its
     staging slot is reused.
 
+    ``recv_block_count`` defaults to one because this benchmark pops each
+    receive before posting the next one. With a larger receiver DFB ring, the
+    same post op would advance through multiple physical slots while computed
+    addressing supplies one static slot address. The compiler must then select
+    the receiver-published fallback, which is not the intended comparison.
+
     Each transfer stages the tile through ``send_dfb`` with two reserve/wait
     contexts (reserve+fill, then wait+send). Filling and sending from a single
-    reserved block compiles but deadlocks for N > block_count (the staging block
-    is never freed without the push/pop cycle), so the cycle is required here.
+    reserved block compiles but deadlocks for N > ``send_block_count`` (the
+    staging block is never freed without the push/pop cycle), so the cycle is
+    required here.
     """
     op_kwargs = {"grid": (2, 1)}
     if options:
@@ -88,10 +134,10 @@ def build_op(n_transfers, options, block_count=2):
     def pipe_unicast(inp, out):
         net = ttl.PipeNet([ttl.Pipe(src=SENDER, dst=RECEIVER)])
         send_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=block_count
+            inp, shape=(1, 1), block_count=send_block_count
         )
         recv_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(1, 1), block_count=block_count
+            out, shape=(1, 1), block_count=recv_block_count
         )
 
         @ttl.compute()
@@ -151,16 +197,36 @@ def make_tensors(device, dtype, seed, n):
 
 
 def run_variant(device, variant, options, n, dtype, args):
-    op = build_op(n, options, args.block_count)
+    op = build_op(n, options, args.send_block_count, args.recv_block_count)
     inp, out, src = make_tensors(device, dtype, args.seed, n)
+    previous_final_mlir, final_mlir_path = begin_protocol_capture(
+        not args.no_verify_protocol
+    )
     try:
-        per_core, arch, freq_mhz, wall_s = ttl_harness.run_operation(
-            device, op, (inp, out), warmup=args.warmup, runs=args.runs, wall=args.wall
-        )
+        try:
+            per_core, arch, freq_mhz, wall_s = ttl_harness.run_operation(
+                device,
+                op,
+                (inp, out),
+                warmup=args.warmup,
+                runs=args.runs,
+                wall=args.wall,
+            )
+        finally:
+            if final_mlir_path is not None:
+                end_protocol_capture(previous_final_mlir)
         got = ttnn.to_torch(out).float()
     finally:
         ttnn.deallocate(inp)
         ttnn.deallocate(out)
+    if final_mlir_path is None:
+        uses_computed_address = None
+    else:
+        try:
+            uses_computed_address = verify_address_protocol(variant, final_mlir_path)
+        finally:
+            if os.path.exists(final_mlir_path):
+                os.unlink(final_mlir_path)
 
     ref = src.float()
     bitexact = torch.equal(ref, got)
@@ -170,7 +236,10 @@ def run_variant(device, variant, options, n, dtype, args):
     row = {
         "n": n,
         "dtype": dtype,
+        "send_block_count": args.send_block_count,
+        "recv_block_count": args.recv_block_count,
         "variant": variant,
+        "uses_computed_address": uses_computed_address,
         "arch": arch,
         "freq_mhz": freq_mhz,
         "sender_brisc_us": sender.get("BRISC"),
@@ -201,10 +270,21 @@ def main():
         "--wall", action="store_true", help="also record host wall time"
     )
     parser.add_argument(
-        "--block-count",
+        "--send-block-count",
         type=int,
         default=2,
-        help="dataflow-buffer depth for the source and destination DFBs",
+        help="dataflow-buffer depth for the source staging DFB",
+    )
+    parser.add_argument(
+        "--recv-block-count",
+        type=int,
+        default=1,
+        help="dataflow-buffer depth for the receiver DFB",
+    )
+    parser.add_argument(
+        "--no-verify-protocol",
+        action="store_true",
+        help="do not check final MLIR for the selected address protocol",
     )
     args = parser.parse_args()
     if args.compile_only:

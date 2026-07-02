@@ -262,8 +262,8 @@ Ratio is relative to cpp_bounded_ring_r8, a modest-depth bounded-ring target:
 | cpp_baseline           | 0.606           | 4.69x     | naive raw NoC write                |
 | cpp_baseline_synced    | 0.637           | 4.93x     | + credit handshake                 |
 | cpp_baseline_dfb       | 0.695           | 5.37x     | + DFB staging                      |
-| ttlang_computed        | 0.857           | 6.63x     | PipeNet, computed address          |
-| ttlang_published       | 0.931           | 7.20x     | PipeNet, published address         |
+| ttlang_computed        | 0.848           | 6.56x     | PipeNet, computed address          |
+| ttlang_published       | 0.936           | 7.24x     | PipeNet, published address         |
 
 Findings:
 
@@ -292,7 +292,7 @@ Findings:
   bit-exact run is the empirical proof.
 - Among the naive variants, flow control is cheap (+0.034 µs/transfer from
   cpp_baseline to synced) and DFB staging costs more (+0.060 from synced to dfb).
-- Computed beats published by 0.074 µs/transfer, in per_transfer_us not fixed_us:
+- Computed beats published by 0.088 µs/transfer, in per_transfer_us not fixed_us:
   the per-transfer receiver-address rendezvous the computed protocol removes.
 - The reserve/push/wait/pop cycle is required for the current per-tile PipeNet
   lowering. A
@@ -300,6 +300,70 @@ Findings:
   block is never freed).
 - All variants are bit-exact on distinct tiles, validating correct per-tile
   delivery.
+
+### Computed addressing at receiver ring depth > 1
+
+Computed addressing was initially valid only at receiver `block_count = 1`: a
+deeper receiver DFB ring advances the physical write pointer through multiple
+slots while a single static computed slot is emitted, so the compiler correctly
+fell back to receiver-published. tt-lang PR #700
+(`bnorris/pipe-static-receiver-addr`,
+https://github.com/tenstorrent/tt-lang/pull/700) now generates computed
+addressing for `recv_block_count > 1`. The benchmark's protocol guard confirms
+it: it reads the final MLIR and fails the run if the selected protocol does not
+match the variant, so a silent fallback cannot be reported as a passing computed
+result.
+
+Per-transfer cost by receiver ring depth (Blackhole, bf16, `--recv-block-count`
+1..8, N=1..64):
+
+| recv_block_count | computed µs/transfer | published µs/transfer | computed advantage |
+|------------------|----------------------|-----------------------|--------------------|
+| 1                | 0.851                | 0.937                 | 0.087 (9%)         |
+| 2                | 0.849                | 0.940                 | 0.091 (10%)        |
+| 4                | 0.851                | 0.934                 | 0.083 (9%)         |
+| 8                | 0.853                | 0.932                 | 0.079 (8%)         |
+
+Computed addressing keeps its ~9% per-transfer advantage over receiver-published
+at every ring depth (the guard passed at recv 2, 4, and 8, which previously
+reverted to published). Per-transfer cost is flat across depth: the per-tile
+`.wait()` completes each transfer before the next, so the deeper ring adds no
+overlap in this workload -- the capability's value is that computed addressing is
+now available with a pipelined receiver, not that depth speeds this benchmark up.
+
+Sweeping transfer count at the maximum-target ring depth (Blackhole, bf16,
+`--send-block-count 2 --recv-block-count 8`, 5 warmups / 50 dispatches) gives the
+absolute sender cost that the depth table's slope summarizes:
+
+| Transfers | computed sender µs | published sender µs | delta/transfer µs | reduction | ratio |
+|-----------|--------------------|---------------------|-------------------|-----------|--------|
+| 64        | 54.403             | 59.658              | 0.082             | 8.81%     | 1.0966x |
+| 256       | 217.342            | 238.922             | 0.084             | 9.03%     | 1.0993x |
+| 1024      | 869.493            | 955.568             | 0.084             | 9.01%     | 1.0990x |
+| 4096      | 3477.623           | 3824.195            | 0.085             | 9.06%     | 1.0997x |
+
+The per-transfer delta is stable across transfer count (0.082-0.085 µs), matching
+the recv=8 row of the depth table; the computed variant reported
+`uses_computed_address=1` at every N, so the guard confirmed the dynamic slot
+index was selected.
+
+At the same ring depth, the hand-optimized bounded ring is ~7x faster:
+
+| ring 8, per-transfer | µs/transfer | vs optimal ring |
+|----------------------|-------------|-----------------|
+| cpp_bounded_ring_r8  | 0.125       | 1.0x            |
+| ttlang_computed      | 0.853       | 6.8x slower     |
+| ttlang_published     | 0.932       | 7.5x slower     |
+
+`cpp_bounded_ring_r8` turns the deeper receiver buffer into sender/receiver
+overlap -- two rings, lookahead 2, so the sender writes the next chunk while the
+receiver drains the current -- and uses stateful NoC writes with one barrier and
+one credit per ring chunk. The tt-lang pipe's per-tile `.wait()` does none of
+that, so at recv=8 it costs the same as recv=1. The deeper ring buys
+computed-address availability with a pipelined receiver, not the overlap the
+optimized ring exploits; closing the ~7x gap is a codegen change (exploit the
+ring for overlap, batch barriers/credits, stateful writes), not a benchmark or
+depth change.
 
 Hardware verification precedes any MLIR lit tests or docs updates.
 
