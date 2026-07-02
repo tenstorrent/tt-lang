@@ -737,9 +737,7 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
 def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     """Read a `DenseI32ArrayAttr` func.func attribute as a list of ints.
 
-    Returns an empty list when the attribute is missing. Used by the runtime
-    bridge to consume the per-CB UnpackToDestFp32 selection emitted by
-    `ttl-set-compute-kernel-config`.
+    Returns an empty list when the attribute is missing.
     """
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)

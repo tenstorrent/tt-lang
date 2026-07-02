@@ -262,9 +262,8 @@ def _allocate_l1_sharded_storage_tensor(core_ranges: Any, num_bytes: int, device
     )
 
 
-def _get_cb_descriptor_rows(cb_configs: List[Any]) -> Tuple[List[Any], int]:
+def _get_cb_descriptor_rows(cb_configs: List[Any]) -> List[Any]:
     rows = []
-    total_cb_bytes = 0
     for cb_index, cb in enumerate(cb_configs):
         if cb is None:
             raise ValueError(
@@ -314,9 +313,7 @@ def _get_cb_descriptor_rows(cb_configs: List[Any]) -> Tuple[List[Any], int]:
                 )
             )
 
-        total_cb_bytes += total_size
-
-    return rows, total_cb_bytes
+    return rows
 
 
 def build_pipe_sram_scratch_tensors(
@@ -386,7 +383,7 @@ def build_pipe_computed_address_dfb_tensors(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    rows, _ = _get_cb_descriptor_rows(cb_configs)
+    rows = _get_cb_descriptor_rows(cb_configs)
     device = device if device is not None else _first_device(tensors)
     backing_tensors = {}
     for dfb_index in dfb_indices:
@@ -514,7 +511,7 @@ def build_cb_descriptors(
         raise RuntimeError("ttnn is not available")
 
     # Compute sizes first so we fail before allocating ttnn descriptors on overflow.
-    rows, _ = _get_cb_descriptor_rows(cb_configs)
+    rows = _get_cb_descriptor_rows(cb_configs)
     backing_tensors = pipe_computed_address_backing_tensors or {}
 
     remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
