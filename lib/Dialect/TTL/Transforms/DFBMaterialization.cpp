@@ -162,7 +162,7 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
 
   SmallVector<int64_t> shape(tensorType.getShape());
   Type elementType = tensorType.getElementType();
-  int64_t blockCount = 2;
+  int64_t blockCount = 1;
   auto dfbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
