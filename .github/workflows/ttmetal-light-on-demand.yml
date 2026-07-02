@@ -69,14 +69,18 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
-          # get-version-tag.sh needs the full history and version tags; the
-          # tt-mlir submodule holds the TT_METAL_VERSION detection reads.
           fetch-depth: 0
           fetch-tags: true
-          submodules: true
 
       - name: Git safe directory
         run: git config --global --add safe.directory "$(pwd)"
+
+      # Detection reads TT_METAL_VERSION from tt-mlir's third_party/CMakeLists.txt,
+      # so fetch only that submodule, and only when auto-detecting. A forced SHA
+      # skips detection entirely; llvm-project and tt-metal are never needed here.
+      - name: Fetch tt-mlir for uplift detection
+        if: ${{ inputs.tt_metal_sha == '' }}
+        run: git submodule update --init --depth 1 third-party/tt-mlir
 
       # Resolve the builder-image tag for the current main. The on-push main
       # build already pushed the ird and manylinux images at this content tag;

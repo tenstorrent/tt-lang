@@ -138,6 +138,15 @@ def test_ttmetal_light_on_demand_detect_skips_s3_for_dry_run() -> None:
     assert "detect-ttmlir-ttmetal-uplift.sh --assume-new" in workflow
 
 
+def test_ttmetal_light_on_demand_detect_avoids_full_submodule_clone() -> None:
+    workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
+    # The detect job must not full-clone submodules (llvm-project and tt-metal
+    # cost ~8 min and are unused); it fetches only tt-mlir, only when detecting.
+    assert "submodules: true" not in workflow
+    assert "git submodule update --init --depth 1 third-party/tt-mlir" in workflow
+    assert "if: ${{ inputs.tt_metal_sha == '' }}" in workflow
+
+
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
     build_docker_workflow = CALL_BUILD_DOCKER_WORKFLOW.read_text()
     wheel_images_workflow = CALL_BUILD_WHEEL_IMAGES_WORKFLOW.read_text()

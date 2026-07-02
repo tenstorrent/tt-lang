@@ -372,11 +372,14 @@ jobs:
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Git safe directory
         run: git config --global --add safe.directory "$(pwd)"
+
+      # Detection reads TT_METAL_VERSION from tt-mlir's third_party/CMakeLists.txt,
+      # so fetch only that submodule; llvm-project and tt-metal are never needed.
+      - name: Fetch tt-mlir for uplift detection
+        run: git submodule update --init --depth 1 third-party/tt-mlir
 
       - name: Configure AWS Credentials
         uses: ./.github/actions/configure-tt-s3-credentials
