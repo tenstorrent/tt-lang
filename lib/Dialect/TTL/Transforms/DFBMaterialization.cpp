@@ -55,9 +55,9 @@ materializeComputeResultToDFB(OpResult intermediate, Operation *consumerOp,
   builder.setInsertionPoint(computeOp);
   auto reserve =
       CBReserveOp::create(builder, loc, tensorType, bindDFB.getResult());
-  Value init = tensor::EmptyOp::create(builder, loc, tensorType.getShape(),
-                                       tensorType.getElementType(),
-                                       ValueRange{});
+  Value init =
+      tensor::EmptyOp::create(builder, loc, tensorType.getShape(),
+                              tensorType.getElementType(), ValueRange{});
   auto initAttached =
       AttachCBOp::create(builder, loc, tensorType, init, bindDFB.getResult());
 
