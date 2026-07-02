@@ -71,11 +71,6 @@ static LaunchNodeCoord getLaunchNodeCoord(PipeReceiverCoord receiver) {
   return {receiver.x, receiver.y};
 }
 
-static bool isReceiverDFB(Value cb, const PipeReceiverDFBKey &receiverDFB) {
-  std::optional<int64_t> dfbIndex = getCBIndex(cb);
-  return dfbIndex && *dfbIndex == receiverDFB.dfbIndex;
-}
-
 static bool isPostForReceiverDFB(
     PipeTransferPostOp postOp, const PipeReceiverDFBKey &receiverDFB,
     const llvm::MapVector<PipeKey, ReceiverDFBInfo> &receiverDFBs,
@@ -157,12 +152,6 @@ static bool hasMatchingReceiveWaitBeforePush(
     }
   }
   return false;
-}
-
-static void printReceiverDFB(llvm::raw_ostream &os,
-                             const PipeReceiverDFBKey &receiverDFB) {
-  os << "receiver(" << receiverDFB.receiver.x << ", " << receiverDFB.receiver.y
-     << ") DFB " << receiverDFB.dfbIndex;
 }
 
 static void debugRejectPipeOnlyStream(const PipeReceiverDFBKey &receiverDFB,

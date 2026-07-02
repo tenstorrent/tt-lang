@@ -12,6 +12,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -19,6 +20,7 @@
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
 #include <optional>
@@ -56,6 +58,18 @@ struct PipeReceiverDFBKey {
     return receiver == other.receiver && dfbIndex == other.dfbIndex;
   }
 };
+
+inline bool isReceiverDFB(mlir::Value cb,
+                          const PipeReceiverDFBKey &receiverDFB) {
+  std::optional<int64_t> dfbIndex = getCBIndex(cb);
+  return dfbIndex && *dfbIndex == receiverDFB.dfbIndex;
+}
+
+inline void printReceiverDFB(llvm::raw_ostream &os,
+                             const PipeReceiverDFBKey &receiverDFB) {
+  os << "receiver(" << receiverDFB.receiver.x << ", " << receiverDFB.receiver.y
+     << ") DFB " << receiverDFB.dfbIndex;
+}
 
 /// Key for identifying a pipe by its source, destination, and PipeNet ID.
 struct PipeKey {

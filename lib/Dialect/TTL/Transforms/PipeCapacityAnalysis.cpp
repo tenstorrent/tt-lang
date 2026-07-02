@@ -106,12 +106,6 @@ static void printPipe(llvm::raw_ostream &os, const PipeKey &pipe) {
      << ", " << pipe.dstEndY << ") net " << pipe.pipeNetId;
 }
 
-static void printReceiverDFB(llvm::raw_ostream &os,
-                             const PipeReceiverDFBKey &receiverDFB) {
-  os << "receiver(" << receiverDFB.receiver.x << ", " << receiverDFB.receiver.y
-     << ") DFB " << receiverDFB.dfbIndex;
-}
-
 static void printEndpoint(llvm::raw_ostream &os,
                           const PipeCapacityEndpoint &endpoint) {
   const PipeCapacitySameDeviceNocTarget &target =
@@ -167,11 +161,6 @@ static std::optional<int64_t> getDFBIndexFromView(Value view) {
     return std::nullopt;
   }
   return getCBIndex(cb);
-}
-
-static bool isReceiverDFB(Value cb, const PipeReceiverDFBKey &receiverDFB) {
-  std::optional<int64_t> dfbIndex = getCBIndex(cb);
-  return dfbIndex && *dfbIndex == receiverDFB.dfbIndex;
 }
 
 static bool isReceiverDFBView(Value view,
