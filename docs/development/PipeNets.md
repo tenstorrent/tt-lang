@@ -59,9 +59,11 @@ Pipe transfers have the following operational semantics:
 
 - A pipe has no hidden in-transit buffer. The destination storage is the
   DFB block the user reserves in the receiver callback.
-- `ttl.copy(pipe, dst_blk)` posts a receive. It makes `dst_blk`'s
-  current write pointer the destination storage for the matching send
-  and returns a transfer handle.
+- `ttl.copy(pipe, dst_blk)` posts a receive. It records receiver
+  readiness and identifies `dst_blk` as the destination storage for the
+  matching send, then returns a transfer handle. The selected address
+  protocol determines whether the receiver writes a runtime destination
+  address or the sender computes the destination address statically.
 - Waiting on that transfer handle waits for the sender's completion
   signal for that posted receive.
 - `ttl.copy(src_blk, pipe)` starts a send. Current TTKernel lowering
@@ -95,7 +97,7 @@ stateDiagram-v2
     state "Receiver may use dst_blk" as ReceiverMayUseBlock
 
     [*] --> NoReceivePosted
-    NoReceivePosted --> ReceivePosted: ttl.copy(pipe, dst_blk) publishes address
+    NoReceivePosted --> ReceivePosted: ttl.copy(pipe, dst_blk) posts receive
     ReceivePosted --> ReceiveComplete: matching send signals completion
     ReceiveComplete --> ReceiverMayUseBlock: recv_tx.wait() returns
     ReceivePosted --> ReceivePosted: recv_tx.wait() blocks
@@ -114,27 +116,27 @@ Current TTKernel lowering executes the send transfer created by
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "labelTextColor": "#cbd5e1", "edgeLabelBackground": "transparent", "fontSize": "14px"}}}%%
 stateDiagram-v2
     state "Send not started" as NoSendPosted
-    state "Inside ttl.copy: waiting for destination addresses" as WaitingForDestinationAddresses
+    state "Inside ttl.copy: waiting for receive posts" as WaitingForReceivePosts
     state "Inside ttl.copy: payload write in progress" as PayloadWriteInProgress
     state "Send complete" as SendComplete
     state "Send handle returned" as SendHandleReturned
     state "send_tx.wait() returned" as SourceBlockMayBeReleased
 
     [*] --> NoSendPosted
-    NoSendPosted --> WaitingForDestinationAddresses: ttl.copy(src_blk, pipe) begins
-    WaitingForDestinationAddresses --> PayloadWriteInProgress: destination addresses are posted
+    NoSendPosted --> WaitingForReceivePosts: ttl.copy(src_blk, pipe) begins
+    WaitingForReceivePosts --> PayloadWriteInProgress: receive posts are visible
     PayloadWriteInProgress --> SendComplete: payload writes complete
     SendComplete --> SendHandleReturned: ttl.copy returns handle
     SendHandleReturned --> SourceBlockMayBeReleased: send_tx.wait() is no op
 
     classDef pipeState fill:#1e3a8a,stroke:#93c5fd,color:#ffffff
-    class NoSendPosted,WaitingForDestinationAddresses,PayloadWriteInProgress,SendComplete,SendHandleReturned,SourceBlockMayBeReleased pipeState
+    class NoSendPosted,WaitingForReceivePosts,PayloadWriteInProgress,SendComplete,SendHandleReturned,SourceBlockMayBeReleased pipeState
 ```
 
 The source thread cannot execute `send_tx.wait()` before `SendComplete`
 because the handle is produced only after the lowered send operation
 returns. The possible stall is inside `ttl.copy(src_blk, pipe)` while it
-waits for destination addresses or payload-write completion.
+waits for receive posts or payload-write completion.
 
 When a single data-movement kernel executes both a send and a receive
 for the same PipeNet, program order in that kernel must satisfy the
@@ -143,7 +145,7 @@ is also one of the destinations; in relay kernels, a node receives from
 one pipe and sends to another.
 
 For example, the loopback schedule below is invalid because the same thread
-tries to send before it posts its own destination address:
+tries to send before it posts its own receive:
 
 ```python
 @ttl.datamovement()
@@ -163,14 +165,14 @@ def transfer():
             net.if_dst(recv)
 ```
 
-The send waits until every destination has published a reserved DFB slot
-address. In this same-thread loopback schedule, that publication is placed
-after the blocking send, so the thread can never reach it:
+The send waits until every destination has posted its receive. In this
+same-thread loopback schedule, that post is placed after the blocking send,
+so the thread can never reach it:
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "fontSize": "14px"}}}%%
 flowchart LR
-    send_wait["1. Send waits for address"]
+    send_wait["1. Send waits for receive post"]
     recv_post["2. Receive post"]
 
     send_wait --> recv_post
@@ -184,7 +186,7 @@ flowchart LR
 
 The solid edge is same-kernel program order. The dashed edge is the
 wait-for dependency: the send started by `ttl.copy(src_blk, pipe)` needs
-the destination address from `ttl.copy(pipe, dst_blk)`.
+the receive post from `ttl.copy(pipe, dst_blk)`.
 
 Valid same-thread loopback schedules post the receive first, run the
 send, then wait for receive completion.
@@ -208,9 +210,8 @@ def transfer():
             net.if_dst(recv)
 ```
 
-The receive post publishes the destination address before the send can
-block on that address. The receive wait runs only after the send
-operation has run:
+The receive post executes before the send can block on that post. The
+receive wait runs only after the send operation has run:
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "fontSize": "14px"}}}%%
