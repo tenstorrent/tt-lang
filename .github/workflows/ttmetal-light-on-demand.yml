@@ -96,10 +96,11 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          if [ -n "$FORCED_SHA" ]; then
-            echo "Forced tt-metal SHA: $FORCED_SHA"
+          forced_sha="$(printf '%s' "$FORCED_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [ -n "$forced_sha" ]; then
+            echo "Forced tt-metal SHA: $forced_sha"
             echo "uplift=true" >> "$GITHUB_OUTPUT"
-            echo "tt_metal_sha=$FORCED_SHA" >> "$GITHUB_OUTPUT"
+            echo "tt_metal_sha=$forced_sha" >> "$GITHUB_OUTPUT"
           elif [ "$DRY_RUN" = "true" ]; then
             .github/scripts/detect-ttmlir-ttmetal-uplift.sh --assume-new
           else

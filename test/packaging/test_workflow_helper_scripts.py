@@ -103,6 +103,8 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)" in workflow
     assert "--find-links dist" in workflow
     assert '"$metapackage_wheel"' in workflow
+    assert "tt_metal_sha=\"$(printf '%s' \"$TT_METAL_SHA\"" in workflow
+    assert "echo \"ttmetal_short=${tt_metal_sha:0:7}\"" in workflow
     assert 'export PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}"' in workflow
     assert (
         '.github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist'
@@ -134,6 +136,8 @@ def test_ttmetal_light_on_demand_detect_skips_s3_for_dry_run() -> None:
     # Dry-run and forced-SHA branch runs do not need S3 credentials.
     assert "if: ${{ inputs.dry_run != true && inputs.tt_metal_sha == '' }}" in workflow
     assert "detect-ttmlir-ttmetal-uplift.sh --assume-new" in workflow
+    assert "forced_sha=\"$(printf '%s' \"$FORCED_SHA\"" in workflow
+    assert "echo \"tt_metal_sha=$forced_sha\" >> \"$GITHUB_OUTPUT\"" in workflow
 
 
 def test_ttmetal_light_on_demand_detect_avoids_full_submodule_clone() -> None:

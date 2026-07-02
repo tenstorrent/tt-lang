@@ -64,6 +64,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+sha="$(printf '%s' "$sha" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
 if [[ -z "$sha" ]]; then
     echo "--sha is required" >&2
     usage

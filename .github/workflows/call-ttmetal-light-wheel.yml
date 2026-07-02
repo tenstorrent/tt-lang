@@ -87,10 +87,11 @@ jobs:
         id: ttmetal
         run: |
           set -euo pipefail
+          tt_metal_sha="$(printf '%s' "$TT_METAL_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           .github/scripts/build-ttmetal-at-sha.sh \
-            --sha "${{ inputs.tt_metal_sha }}" \
+            --sha "$tt_metal_sha" \
             --scratch-dir /tmp/ttmetal-sha
-          echo "ttmetal_short=${TT_METAL_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "ttmetal_short=${tt_metal_sha:0:7}" >> "$GITHUB_OUTPUT"
         env:
           TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
 
