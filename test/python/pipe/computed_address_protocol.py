@@ -160,13 +160,15 @@ def row_all_gather_computed_address(inp, out):
 # DFB address, and the sender uses the capacity protocol.
 # P2P-FINAL-LABEL: func.func @dm
 # P2P-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-# P2P-FINAL: Semaphore({}).down
-# P2P-FINAL: noc.async_write
+# P2P-FINAL: call_opaque "experimental::semaphore_wait_min"
+# P2P-FINAL: literal "get_compile_time_arg_val(2)" : i32
+# P2P-FINAL: noc0.async_write
 # P2P-FINAL-NOT: noc_inline_dw_write
 # P2P-FINAL-NOT: load_from_l1
 
-# P2P-CPP: Semaphore({{.*}}).down(
-# P2P-CPP: noc.async_write(
+# P2P-CPP: experimental::semaphore_wait_min(
+# P2P-CPP: get_compile_time_arg_val(2)
+# P2P-CPP: noc0.async_write(
 # P2P-CPP-NOT: noc_inline_dw_write
 
 # Collective computed address: the sender still waits for receiver readiness,
@@ -182,14 +184,14 @@ def row_all_gather_computed_address(inp, out):
 # ALLGATHER-FINAL: %[[STRIDE_UI:.*]] = cast %[[STRIDE]] : i32 to ui32
 # ALLGATHER-FINAL: %[[ADDR_UI:.*]] = add %[[BASE_UI]], %[[STRIDE_UI]]
 # ALLGATHER-FINAL: %[[ADDR:.*]] = cast %[[ADDR_UI]] : ui32 to i32
-# ALLGATHER-FINAL: async_write_multicast<Noc::McastMode::INCLUDE_SRC>
+# ALLGATHER-FINAL: async_write_multicast<NocOptions::MCAST_INCL_SRC>
 # ALLGATHER-FINAL-NOT: arith.remui
 # ALLGATHER-FINAL-NOT: noc_inline_dw_write
 # ALLGATHER-FINAL-NOT: load_from_l1
 
 # ALLGATHER-CPP: experimental::semaphore_wait(
 # ALLGATHER-CPP: get_compile_time_arg_val(
-# ALLGATHER-CPP: noc0.async_write_multicast<Noc::McastMode::INCLUDE_SRC>(
+# ALLGATHER-CPP: noc0.async_write_multicast<NocOptions::MCAST_INCL_SRC>(
 # ALLGATHER-CPP-NOT: noc_inline_dw_write
 
 

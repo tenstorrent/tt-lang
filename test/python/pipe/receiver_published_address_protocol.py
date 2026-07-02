@@ -81,12 +81,14 @@ def receiver_published_address(inp, out):
 # FINAL-LABEL: func.func @dm
 # FINAL-NOT: ttl.pipe_computed_address_dfb_indices
 # FINAL-NOT: .down(
-# FINAL: noc_inline_dw_write
+# FINAL: experimental::semaphore_wait
+# FINAL: noc_semaphore_set
+# FINAL: noc0.inline_dw_write<NocOptions::INLINE_L1>
 # FINAL: experimental::semaphore_wait_min
 
-# CPP: noc.async_write(
-# CPP: noc_inline_dw_write
-# CPP: noc.async_write_barrier
+# CPP: noc0.async_write(
+# CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
+# CPP: noc0.async_write_barrier
 
 
 def main():

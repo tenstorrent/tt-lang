@@ -458,16 +458,19 @@ DFB block.
 The protocol uses these events:
 
 1. Function entry initializes `%capacity_sem` to the receiver DFB
-   `block_count` with `ttkernel.semaphore_set`.
-2. The sender executes `ttkernel.semaphore_down(%capacity_sem, 1)`
-   before computing `%dst_addr` and issuing the payload NoC write.
+   `block_count` with `ttkernel.noc_semaphore_set` on the local
+   semaphore pointer.
+2. The sender waits until `%capacity_sem >= 1`, reads the local
+   semaphore value, subtracts 1, and stores the decremented value back to
+   the same local semaphore before computing `%dst_addr` and issuing the
+   payload NoC write.
 3. The sender still signals receiver completion after the payload write
    barrier, using the same per-PipeNet receiver-completion counter as
    the receiver-authored address-table protocol.
 4. The receiver executes its normal receive wait, push, wait-front, and
    pop sequence.
-5. Lowering emits `ttkernel.semaphore_up_remote(%capacity_sem, src, 1)`
-   after the proven receiver pop, followed by
+5. Lowering emits `ttkernel.noc_semaphore_inc` to the source-node
+   capacity semaphore after the proven receiver pop, followed by
    `ttkernel.noc_async_atomic_barrier`.
 
 This protocol removes both receiver-side writes to the source-node
@@ -489,6 +492,11 @@ and lowerable computed-address resources. If any endpoint is not proven
 or not lowerable, lowering keeps sender-ready back-pressure for that
 pipe edge. If the address formula itself is not proven, lowering keeps
 the receiver-authored address-table protocol.
+
+The `--ttl-pipe-computed-addresses` option, enabled by default, selects
+computed addressing for eligible transfers.
+`--no-ttl-pipe-computed-addresses` forces the receiver-authored
+address-table protocol for every transfer.
 
 ### Ready-counter allocation
 
@@ -1350,8 +1358,9 @@ rejection contract; it `pytest.skip`s on the simulator runner.
 ## Device API transition notes
 
 PipeNet IR and verifier rules describe receiver-owned payload storage,
-receiver-authored address publication, counted readiness, and completion
-waits. They do not depend on the current TTNN or TTKernel API spelling.
+computed or receiver-authored destination addressing, counted readiness or
+capacity, and completion waits. They do not depend on the current TTNN or
+TTKernel API spelling.
 The current lowering has four API-specific binding points:
 
 - [Device 2.0] Address-table storage is allocated today as host-created
@@ -1370,6 +1379,9 @@ The current lowering has four API-specific binding points:
   semaphore counter. A typed completion object can replace the local
   semaphore binding, but completion remains separate from address
   storage and sender-ready counting.
+- [Device 2.0] Capacity-proven computed-address transfers use local
+  semaphores today. A typed semaphore object API should preserve the same
+  acquire-before-send and release-after-pop protocol.
 
 ## Relation to upstream designs
 
