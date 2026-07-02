@@ -213,10 +213,12 @@ func.func @explicit_pipe_transfer_ir() attributes { "ttl.kernel_thread" = #ttker
 // CHECK: ttkernel.noc_semaphore_inc(%[[RELEASE_ADDR]]
 // CHECK: ttkernel.noc_async_atomic_barrier
 // CHECK: %[[ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%{{.*}})
-// CHECK: ttkernel.experimental.semaphore_wait_min(%[[ACQUIRE_PTR]]
-// CHECK: %[[AVAILABLE:.*]] = ttkernel.load_from_l1(%[[ACQUIRE_PTR]]
-// CHECK: %[[REMAINING:.*]] = arith.subi %[[AVAILABLE]]
-// CHECK: ttkernel.store_to_l1(%[[REMAINING]], %[[ACQUIRE_PTR]]
+// CHECK: %[[OLD_ACQUIRED:.*]] = memref.load %[[CAP_CTR:.*]][%{{.*}}]
+// CHECK: %[[NEW_ACQUIRED:.*]] = arith.addi %[[OLD_ACQUIRED]]
+// CHECK: memref.store %[[NEW_ACQUIRED]], %[[CAP_CTR]][%{{.*}}]
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[ACQUIRE_PTR]], %[[NEW_ACQUIRED]])
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK-NOT: ttkernel.store_to_l1
 // CHECK-NOT: ttkernel.experimental.semaphore_wait(
 // CHECK-NOT: ttkernel.noc_semaphore_set
 // CHECK: ttkernel.noc_async_write
@@ -262,9 +264,10 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // CHECK: %[[CAPACITY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[CAPACITY_SEM]])
 // CHECK: ttkernel.noc_semaphore_set(%[[CAPACITY_PTR]]
 // CHECK: ttkernel.noc_semaphore_inc
+// CHECK: %[[MIXED_OLD:.*]] = memref.load %[[MIXED_CTR:.*]][%{{.*}}]
+// CHECK: %[[MIXED_NEW:.*]] = arith.addi %[[MIXED_OLD]]
+// CHECK: memref.store %[[MIXED_NEW]], %[[MIXED_CTR]][%{{.*}}]
 // CHECK: ttkernel.experimental.semaphore_wait_min
-// CHECK: arith.subi
-// CHECK: ttkernel.store_to_l1
 // CHECK: ttkernel.get_semaphore(%[[READY_SEM]]
 // CHECK: ttkernel.experimental.semaphore_wait
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {

@@ -103,8 +103,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-LABEL: func.func @capacity_pipe
   // COMPUTED: ttkernel.experimental.semaphore_wait_min
-  // COMPUTED: arith.subi
-  // COMPUTED: ttkernel.store_to_l1
+  // COMPUTED-NOT: ttkernel.store_to_l1
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
   // COMPUTED: return
 

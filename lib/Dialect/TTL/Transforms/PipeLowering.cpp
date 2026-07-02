@@ -498,7 +498,8 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
 }
 
 void initializePipeCapacitySemaphores(
-    const PipeCapacityPlan &pipeCapacityPlan) {
+    const PipeCapacityPlan &pipeCapacityPlan,
+    PipeNetCounterMap &senderCapacityCounters) {
   for (const auto &entry : pipeCapacityPlan.getInitializations()) {
     FuncOp func = entry.first;
     const SmallVector<PipeCapacityInitInfo> &initializations = entry.second;
@@ -511,6 +512,10 @@ void initializePipeCapacitySemaphores(
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
+    auto counterMemrefTy = MemRefType::get({1}, builder.getI32Type());
+    Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
+    auto &perFuncCounters = senderCapacityCounters[func];
     for (const PipeCapacityInitInfo &init : sortedInitializations) {
       Value capacitySemaphorePtr =
           buildLocalSemaphorePtr(loc, builder, init.semaphoreIndex);
@@ -518,17 +523,25 @@ void initializePipeCapacitySemaphores(
           arith::ConstantIntOp::create(builder, loc, init.initialCapacity, 32);
       ttk::NocSemaphoreSetOp::create(builder, loc, capacitySemaphorePtr,
                                      initialCapacity);
+      // The sender tracks its cumulative acquired count in a kernel-local
+      // counter and waits for the capacity semaphore to reach it, so the
+      // receiver's remote increment stays the only writer of the shared word.
+      auto counter = memref::AllocaOp::create(builder, loc, counterMemrefTy);
+      memref::StoreOp::create(builder, loc, zeroI32, counter,
+                              ValueRange{zeroIdx});
+      perFuncCounters[init.semaphoreIndex] = counter.getResult();
     }
   }
 }
 
 /// Lower CB -> Pipe copy: write source DFB data to the selected destination
 /// address, then signal arrival.
-LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
-                                    bool isConsumerCB,
-                                    const PipeResourcePlan &pipeResourcePlan,
-                                    const PipeCapacityPlan *pipeCapacityPlan,
-                                    ConversionPatternRewriter &rewriter) {
+LogicalResult
+lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
+                      const PipeResourcePlan &pipeResourcePlan,
+                      const PipeCapacityPlan *pipeCapacityPlan,
+                      const PipeNetCounterMap *senderCapacityCounters,
+                      ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   PipeTransferCreateOp createOp =
       findPipeTransferCreateForTransfer(op.getTransfer());
@@ -574,22 +587,43 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
       pipeCapacityPlan ? pipeCapacityPlan->lookupAcquires(op)
                        : ArrayRef<PipeCapacityAcquireInfo>{};
   if (!capacityAcquires.empty()) {
+    FuncOp senderFunc = op->getParentOfType<FuncOp>();
+    Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
     for (const PipeCapacityAcquireInfo &capacityAcquire : capacityAcquires) {
       Value capacitySemaphorePtr =
           buildLocalSemaphorePtr(loc, rewriter, capacityAcquire.semaphoreIndex);
+      Value senderCapacityCounter;
+      if (senderCapacityCounters) {
+        auto funcIt = senderCapacityCounters->find(senderFunc);
+        if (funcIt != senderCapacityCounters->end()) {
+          auto counterIt = funcIt->second.find(capacityAcquire.semaphoreIndex);
+          if (counterIt != funcIt->second.end()) {
+            senderCapacityCounter = counterIt->second;
+          }
+        }
+      }
+      if (!senderCapacityCounter) {
+        // Counter pre-allocation in initializePipeCapacitySemaphores is a hard
+        // precondition; a missing counter is a pipeline-ordering bug, not a
+        // legalization miss.
+        op.emitError("pipe capacity acquire without sender counter; "
+                     "initializePipeCapacitySemaphores must run before "
+                     "convert-ttl-to-ttkernel");
+        return failure();
+      }
+      // Advance the sender's cumulative acquired count and block until the
+      // capacity semaphore reaches it. The receiver's remote increment is the
+      // only writer of the shared semaphore, so the acquire never writes it.
+      Value previousAcquired = memref::LoadOp::create(
+          rewriter, loc, senderCapacityCounter, ValueRange{zeroIdx});
       Value capacityCount = arith::ConstantIntOp::create(
           rewriter, loc, capacityAcquire.count, 32);
+      Value nextAcquired =
+          arith::AddIOp::create(rewriter, loc, previousAcquired, capacityCount);
+      memref::StoreOp::create(rewriter, loc, nextAcquired,
+                              senderCapacityCounter, ValueRange{zeroIdx});
       ttk::SemaphoreWaitMinOp::create(rewriter, loc, capacitySemaphorePtr,
-                                      capacityCount);
-      Value zeroI32 = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-      Value availableCapacity =
-          ttk::LoadFromL1Op::create(rewriter, loc, i32Ty, capacitySemaphorePtr,
-                                    zeroI32)
-              .getResult();
-      Value remainingCapacity = arith::SubIOp::create(
-          rewriter, loc, availableCapacity, capacityCount);
-      ttk::StoreToL1Op::create(rewriter, loc, remainingCapacity,
-                               capacitySemaphorePtr, zeroI32);
+                                      nextAcquired);
     }
   } else {
     ReadyCounterAddressInfo readyCounterInfo =

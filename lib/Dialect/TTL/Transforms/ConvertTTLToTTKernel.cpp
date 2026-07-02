@@ -1099,10 +1099,11 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
   PipeTransferSendLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
                            const PipeResourcePlan &pipeResourcePlan,
-                           const PipeCapacityPlan &pipeCapacityPlan)
+                           const PipeCapacityPlan &pipeCapacityPlan,
+                           const PipeNetCounterMap *senderCapacityCounters)
       : OpConversionPattern(typeConverter, context),
-        pipeResourcePlan(pipeResourcePlan), pipeCapacityPlan(pipeCapacityPlan) {
-  }
+        pipeResourcePlan(pipeResourcePlan), pipeCapacityPlan(pipeCapacityPlan),
+        senderCapacityCounters(senderCapacityCounters) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
@@ -1119,12 +1120,14 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
                  domInfo.dominates(user, op);
         });
     return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB,
-                                 pipeResourcePlan, &pipeCapacityPlan, rewriter);
+                                 pipeResourcePlan, &pipeCapacityPlan,
+                                 senderCapacityCounters, rewriter);
   }
 
 private:
   const PipeResourcePlan &pipeResourcePlan;
   const PipeCapacityPlan &pipeCapacityPlan;
+  const PipeNetCounterMap *senderCapacityCounters;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
@@ -1642,12 +1645,16 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // are the current host/runtime ABI for pipe resource binding. Keep the
   // allocation decision in this compiler plan so future typed device APIs only
   // change runtime binding code.
-  initializePipeCapacitySemaphores(pipeCapacityPlan);
+  PipeNetCounterMap senderCapacityCounters;
+  initializePipeCapacitySemaphores(pipeCapacityPlan, senderCapacityCounters);
 
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
-  patterns.add<PipeTransferPostLowering, PipeTransferSendLowering>(
-      typeConverter, &ctx, pipeResourcePlan, pipeCapacityPlan);
+  patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, pipeResourcePlan,
+                                         pipeCapacityPlan);
+  patterns.add<PipeTransferSendLowering>(typeConverter, &ctx, pipeResourcePlan,
+                                         pipeCapacityPlan,
+                                         &senderCapacityCounters);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
                                          pipeResourcePlan);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,

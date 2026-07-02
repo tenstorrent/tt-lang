@@ -205,19 +205,26 @@ buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
                       const PipeCapacityPlan *pipeCapacityPlan = nullptr,
                       bool updateComputedAddressAttrs = true);
 
-/// Emit sender-side capacity semaphore initial values at kernel entry.
-void initializePipeCapacitySemaphores(const PipeCapacityPlan &pipeCapacityPlan);
+/// Emit sender-side capacity semaphore initial values at kernel entry, and
+/// allocate one zero-initialized `memref<1xi32>` per capacity semaphore that
+/// tracks the sender's cumulative acquired count (keyed by capacity semaphore
+/// index). The sender waits for the capacity semaphore to reach that count, so
+/// the receiver's remote increment stays the only writer of the shared word.
+void initializePipeCapacitySemaphores(
+    const PipeCapacityPlan &pipeCapacityPlan,
+    PipeNetCounterMap &senderCapacityCounters);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
 /// Lower the sender-side pipe transfer and signal receiver completion.
-LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
-                                    bool isConsumerCB,
-                                    const PipeResourcePlan &pipeResourcePlan,
-                                    const PipeCapacityPlan *pipeCapacityPlan,
-                                    ConversionPatternRewriter &rewriter);
+LogicalResult
+lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
+                      const PipeResourcePlan &pipeResourcePlan,
+                      const PipeCapacityPlan *pipeCapacityPlan,
+                      const PipeNetCounterMap *senderCapacityCounters,
+                      ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
