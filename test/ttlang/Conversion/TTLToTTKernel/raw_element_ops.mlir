@@ -394,7 +394,7 @@ module {
 // -----
 
 // Write f32 value truncated to bf16: materializeIntBits emits an
-// unrealized_conversion_cast for the truncf result; ttl-lower-scalar-fp-types
+// unrealized_conversion_cast for the truncf result; ttkernel-lower-scalar-fp-types
 // resolves it into shrui+trunci later. Here only convert-ttl-to-ttkernel runs,
 // so the cast and truncf remain, and store_to_l1 consumes the cast output.
 // CHECK-LABEL: func.func @write_tiled_bf16_truncf

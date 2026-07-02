@@ -14,7 +14,7 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 namespace mlir::tt::ttl {
-#define GEN_PASS_DEF_TTLLOWERSCALARFPTYPES
+#define GEN_PASS_DEF_TTKERNELLOWERSCALARFPTYPES
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
@@ -123,12 +123,12 @@ struct ConstantOpConversion : OpConversionPattern<arith::ConstantOp> {
   }
 };
 
-struct TTLLowerScalarFpTypesPass
-    : impl::TTLLowerScalarFpTypesBase<TTLLowerScalarFpTypesPass> {
-  using TTLLowerScalarFpTypesBase::TTLLowerScalarFpTypesBase;
+struct TTKernelLowerScalarFpTypesPass
+    : impl::TTKernelLowerScalarFpTypesBase<TTKernelLowerScalarFpTypesPass> {
+  using TTKernelLowerScalarFpTypesBase::TTKernelLowerScalarFpTypesBase;
 
   void runOnOperation() override {
-    ModuleOp mod = getOperation();
+    func::FuncOp func = getOperation();
     MLIRContext &ctx = getContext();
 
     TypeConverter typeConverter;
@@ -179,7 +179,7 @@ struct TTLLowerScalarFpTypesPass
         patterns, typeConverter);
     populateReturnOpTypeConversionPattern(patterns, typeConverter);
 
-    if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
+    if (failed(applyPartialConversion(func, target, std::move(patterns)))) {
       signalPassFailure();
     }
   }

@@ -1,8 +1,8 @@
-// Tests for ttl-lower-scalar-fp-types pass: uses MLIR dialect conversion to
+// Tests for ttkernel-lower-scalar-fp-types pass: uses MLIR dialect conversion to
 // lower scalar float types to integer bit patterns. Covers arith.cmpf -> soft-
 // float ops, arith.truncf -> bit extraction, arith.constant float -> integer
 // bit patterns, and SCF control-flow type propagation.
-// RUN: ttlang-opt --ttl-lower-scalar-fp-types --split-input-file %s | FileCheck %s
+// RUN: ttlang-opt --ttkernel-lower-scalar-fp-types --split-input-file %s | FileCheck %s
 
 // -----
 

@@ -733,8 +733,8 @@ def TTLDumpCBFlowGraph
   ];
 }
 
-def TTLLowerScalarFpTypes
-    : Pass<"ttl-lower-scalar-fp-types", "::mlir::ModuleOp"> {
+def TTKernelLowerScalarFpTypes
+    : Pass<"ttkernel-lower-scalar-fp-types", "::mlir::func::FuncOp"> {
   let summary = "Lower scalar float types to integer bit patterns";
   let description = [{
     Converts all scalar float types to integer bit-pattern types using MLIR

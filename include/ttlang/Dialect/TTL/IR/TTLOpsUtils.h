@@ -91,33 +91,54 @@ traceTransferHandleSource(mlir::Value value, MatchFn match,
         }
       }
     }
-    // Trace through scf.if results -- both branches must independently
-    // yield a valid source.  Each branch is a separate data-flow path,
-    // so give each its own visited set (avoids false negatives when
-    // both branches yield the same outer value).
-    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(result.getOwner())) {
-      unsigned idx = result.getResultNumber();
+    // Trace through region-branch ops (scf.if and other multi-region
+    // control flow) -- every region that can yield to the parent must
+    // independently trace its yield operand (at the result's index) through
+    // match to a non-null ResultT. All branches must agree on the same
+    // source op; divergent sources (e.g. different pipes on then/else) fail
+    // the trace because callers extract metadata (pipe coordinates, resource
+    // plan) from the returned op and would silently use the wrong branch's
+    // data. Each branch gets its own visited set to avoid false negatives
+    // when multiple branches yield the same outer value.
+    // Loops are excluded (handled above via LoopLikeOpInterface).
+    if (!mlir::isa<mlir::LoopLikeOpInterface>(result.getOwner())) {
+      if (auto regionOp = mlir::dyn_cast<mlir::RegionBranchOpInterface>(
+              result.getOwner())) {
+        unsigned idx = result.getResultNumber();
+        ResultT firstResult;
+        for (mlir::Region &region : regionOp->getRegions()) {
+          llvm::SmallVector<mlir::RegionSuccessor> successors;
+          regionOp.getSuccessorRegions(region, successors);
+          bool yieldsToParent =
+              llvm::any_of(successors, [](const mlir::RegionSuccessor &s) {
+                return !s.isRegion();
+              });
+          if (!yieldsToParent) {
+            continue;
+          }
 
-      auto thenYield =
-          mlir::cast<mlir::scf::YieldOp>(ifOp.thenBlock()->getTerminator());
-      llvm::SmallPtrSet<mlir::Value, 16> thenSeen(seen.begin(), seen.end());
-      ResultT thenResult = traceTransferHandleSource<ResultT>(
-          thenYield.getOperand(idx), match, thenSeen);
-      if (!thenResult) {
-        return ResultT();
-      }
+          auto *terminator = region.front().getTerminator();
+          if (idx >= terminator->getNumOperands()) {
+            continue;
+          }
 
-      if (ifOp.elseBlock()) {
-        auto elseYield =
-            mlir::cast<mlir::scf::YieldOp>(ifOp.elseBlock()->getTerminator());
-        llvm::SmallPtrSet<mlir::Value, 16> elseSeen(seen.begin(), seen.end());
-        ResultT elseResult = traceTransferHandleSource<ResultT>(
-            elseYield.getOperand(idx), match, elseSeen);
-        if (!elseResult) {
-          return ResultT();
+          llvm::SmallPtrSet<mlir::Value, 16> branchSeen(seen.begin(),
+                                                        seen.end());
+          ResultT branchResult = traceTransferHandleSource<ResultT>(
+              terminator->getOperand(idx), match, branchSeen);
+          if (!branchResult) {
+            return ResultT();
+          }
+          if (!firstResult) {
+            firstResult = branchResult;
+          } else if (firstResult != branchResult) {
+            return ResultT();
+          }
+        }
+        if (firstResult) {
+          return firstResult;
         }
       }
-      return thenResult;
     }
   }
   if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {

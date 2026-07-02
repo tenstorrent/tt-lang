@@ -1,6 +1,6 @@
-// Negative tests for ttl-lower-scalar-fp-types: unsupported predicates and
+// Negative tests for ttkernel-lower-scalar-fp-types: unsupported predicates and
 // float types cause legalization failure.
-// RUN: ttlang-opt --ttl-lower-scalar-fp-types --verify-diagnostics --split-input-file %s
+// RUN: ttlang-opt --ttkernel-lower-scalar-fp-types --verify-diagnostics --split-input-file %s
 
 // -----
 
