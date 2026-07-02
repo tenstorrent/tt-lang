@@ -196,9 +196,8 @@ getCapacityEndpoint(const PipeGraph &pipeGraph,
       receiverEndpoint.id,
       receiverEndpoint.receiverDFBNode,
       receiverEndpoint.receiverDFB,
-      PipeCapacityReleaseTarget::sameDeviceNoc(
-          PipeCapacitySameDeviceNocTarget{pipeEdge.pipe.srcX,
-                                          pipeEdge.pipe.srcY}),
+      PipeCapacityReleaseTarget::sameDeviceNoc(PipeCapacitySameDeviceNocTarget{
+          pipeEdge.pipe.srcX, pipeEdge.pipe.srcY}),
       pipeEdge.receiverDFBInfo.blockCount,
   };
 }

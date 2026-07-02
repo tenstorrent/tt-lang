@@ -370,12 +370,10 @@ static void lowerSameDevicePipeCapacityRelease(
       arith::ConstantIndexOp::create(rewriter, loc, target.logicalX);
   Value sourceYLogical =
       arith::ConstantIndexOp::create(rewriter, loc, target.logicalY);
-  Value sourceXTranslated =
-      ttk::ConvertLogicalXToTranslatedOp::create(rewriter, loc, indexTy,
-                                                 sourceXLogical);
-  Value sourceYTranslated =
-      ttk::ConvertLogicalYToTranslatedOp::create(rewriter, loc, indexTy,
-                                                 sourceYLogical);
+  Value sourceXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, indexTy, sourceXLogical);
+  Value sourceYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, indexTy, sourceYLogical);
   Value releaseCount =
       arith::ConstantIntOp::create(rewriter, loc, release.count, 32);
   Value remoteCapacityNocAddr =

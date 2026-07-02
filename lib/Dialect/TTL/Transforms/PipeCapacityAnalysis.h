@@ -81,8 +81,8 @@ enum class PipeCapacityReleaseTargetKind {
 struct PipeCapacityReleaseTarget {
   static PipeCapacityReleaseTarget
   sameDeviceNoc(PipeCapacitySameDeviceNocTarget target) {
-    return PipeCapacityReleaseTarget{PipeCapacityReleaseTargetKind::SameDeviceNoc,
-                                     target};
+    return PipeCapacityReleaseTarget{
+        PipeCapacityReleaseTargetKind::SameDeviceNoc, target};
   }
 
   PipeCapacityReleaseTargetKind kind =
