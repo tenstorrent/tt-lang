@@ -68,3 +68,17 @@ run_inject() { python3 "$SCRIPT" "$README" "$INDEX"; }
     assert_line --index 0 "$(grep -m1 . <<<'<!-- ttlang-s3-readme:start -->')"
     assert_output --partial 'href="tt-lang/"'
 }
+
+@test "--create-from-dist builds a missing root index from wheel names" {
+    rm "$INDEX"
+    dist_dir=$(make_wheel_dir \
+        "tt_lang-1.0.0-py3-none-any.whl" \
+        "tt_lang_light-1.0.0-py3-none-any.whl" \
+        "tt_lang_sim-1.0.0-py3-none-any.whl")
+    run -0 python3 "$SCRIPT" --create-from-dist "$dist_dir" "$README" "$INDEX"
+    run cat "$INDEX"
+    assert_output --partial 'href="tt-lang/"'
+    assert_output --partial 'href="tt-lang-light/"'
+    assert_output --partial 'href="tt-lang-sim/"'
+    assert_output --partial 'id="ttlang-s3-readme"'
+}

@@ -24,12 +24,20 @@ from typing import Any, Sequence
 # Feature detection
 # =============================================================================
 
-# Check device availability: env vars first (for simulator), then CMake config.
+# Check device availability: env vars first (for simulator), then runtime device
+# nodes, then CMake config.
 _hardware_available = False
+
+
+def _has_tenstorrent_device_node() -> bool:
+    return bool(glob.glob("/dev/tenstorrent/*") or glob.glob("/dev/tenstorrent[0-9]*"))
+
 
 if os.environ.get("TT_METAL_SIMULATOR"):
     _hardware_available = True
 elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
+    _hardware_available = True
+elif _has_tenstorrent_device_node():
     _hardware_available = True
 else:
     try:
@@ -37,7 +45,7 @@ else:
 
         _hardware_available = HAS_TT_DEVICE
     except ImportError:
-        _hardware_available = bool(glob.glob("/dev/tenstorrent*"))
+        _hardware_available = False
 
 # Set compile-only mode if no hardware.
 if not _hardware_available:

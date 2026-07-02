@@ -81,6 +81,10 @@ def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     assert ".github/scripts/build-s3-light-core-wheel.sh" in workflow
     assert ".github/scripts/build-s3-light-metapackage-wheel.sh" in workflow
     assert ".github/scripts/test-s3-light-wheels.sh" in workflow
+    assert (
+        '.github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist'
+        in workflow
+    )
     assert "standard_wheel_matrix" in workflow
 
 
@@ -99,6 +103,11 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)" in workflow
     assert "--find-links dist" in workflow
     assert '"$metapackage_wheel"' in workflow
+    assert 'export PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}"' in workflow
+    assert (
+        '.github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist'
+        in workflow
+    )
 
 
 def test_ttmetal_light_max_age_crosses_reusable_workflow_as_string() -> None:

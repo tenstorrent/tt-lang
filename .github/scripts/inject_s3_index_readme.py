@@ -12,12 +12,15 @@ inert for pip resolution.
 The injected block is delimited by sentinel comments and replaced in place on
 re-run, so repeated injection never duplicates it.
 
-Usage: inject_s3_index_readme.py <readme.md> <index.html>
+Usage:
+  inject_s3_index_readme.py [--create-from-dist <dist_dir>] <readme.md> <index.html>
 """
 
+import argparse
 import html
 import re
 import sys
+from pathlib import Path
 
 START = "<!-- ttlang-s3-readme:start -->"
 END = "<!-- ttlang-s3-readme:end -->"
@@ -41,6 +44,29 @@ def build_block(readme_md: str) -> str:
     return f'{START}\n<section id="ttlang-s3-readme">\n{fragment}\n</section>\n{END}\n'
 
 
+def normalize_project_name(distribution_name: str) -> str:
+    return re.sub(r"[-_.]+", "-", distribution_name).lower()
+
+
+def project_names_from_wheels(dist_dir: Path) -> list[str]:
+    names = {
+        normalize_project_name(wheel.name.split("-", 1)[0])
+        for wheel in dist_dir.glob("*.whl")
+        if "-" in wheel.name
+    }
+    if not names:
+        raise ValueError(f"No wheel files found under {dist_dir}")
+    return sorted(names)
+
+
+def build_root_index(dist_dir: Path) -> str:
+    anchors = "\n".join(
+        f'<a href="{html.escape(project_name)}/">{html.escape(project_name)}</a>'
+        for project_name in project_names_from_wheels(dist_dir)
+    )
+    return f"<!DOCTYPE html>\n<html>\n<body>\n{anchors}\n</body>\n</html>\n"
+
+
 def inject(index_html: str, block: str) -> str:
     """Return index_html with block placed above the anchor links.
 
@@ -58,17 +84,38 @@ def inject(index_html: str, block: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print(
-            "Usage: inject_s3_index_readme.py <readme.md> <index.html>", file=sys.stderr
-        )
-        return 2
-    readme_path, index_path = argv[1], argv[2]
+    parser = argparse.ArgumentParser(
+        description="Inject the tt-lang S3 README into an index.html file."
+    )
+    parser.add_argument(
+        "--create-from-dist",
+        metavar="DIST_DIR",
+        help=(
+            "Create a minimal root package index from wheel files when "
+            "index.html is absent."
+        ),
+    )
+    parser.add_argument("readme")
+    parser.add_argument("index")
+    args = parser.parse_args(argv[1:])
+
+    readme_path = Path(args.readme)
+    index_path = Path(args.index)
 
     with open(readme_path, encoding="utf-8") as handle:
         readme_md = handle.read()
-    with open(index_path, encoding="utf-8") as handle:
-        index_html = handle.read()
+    if index_path.exists():
+        with open(index_path, encoding="utf-8") as handle:
+            index_html = handle.read()
+    elif args.create_from_dist:
+        try:
+            index_html = build_root_index(Path(args.create_from_dist))
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 1
+    else:
+        print(f"Index file does not exist: {index_path}", file=sys.stderr)
+        return 1
 
     result = inject(index_html, build_block(readme_md))
 

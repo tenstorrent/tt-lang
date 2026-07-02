@@ -334,11 +334,7 @@ jobs:
           if [ -n "$prefix" ]; then
             key="$prefix/index.html"
           fi
-          aws s3 cp "s3://tenstorrent-pypi/$key" ./index.html
-          python3 .github/scripts/inject_s3_index_readme.py \
-            packaging/s3-index/README.md ./index.html
-          aws s3 cp ./index.html "s3://tenstorrent-pypi/$key" \
-            --content-type "text/html; charset=utf-8"
+          .github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist
 
       - name: Report install command
         run: |
