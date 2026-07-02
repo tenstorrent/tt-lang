@@ -1782,6 +1782,30 @@ buildComputedAddressPlan(ModuleOp mod,
   return plan;
 }
 
+// Compact the per-source colors whose units need a resource into a dense
+// 0..N-1 index range, keyed by original color index. Returns the compacted map
+// and the maximum compacted count across sources.
+template <typename PredT>
+static std::pair<
+    llvm::MapVector<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>, int64_t>
+compactColors(const SourceColorMap &colorUsersBySource,
+              PredT unitNeedsResource) {
+  llvm::MapVector<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
+      compactedBySource;
+  int64_t maxPerSource = 0;
+  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
+    int64_t nextColor = 0;
+    llvm::DenseMap<int64_t, int64_t> &compacted = compactedBySource[sourceKey];
+    for (auto indexedColor : llvm::enumerate(colorUsers)) {
+      if (llvm::any_of(indexedColor.value(), unitNeedsResource)) {
+        compacted[static_cast<int64_t>(indexedColor.index())] = nextColor++;
+      }
+    }
+    maxPerSource = std::max(maxPerSource, nextColor);
+  }
+  return {std::move(compactedBySource), maxPerSource};
+}
+
 LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
                                     bool enableComputedAddresses,
@@ -1821,29 +1845,10 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
         firstSourceLocalReadyCounterSemIdx, receiverCompletionSemIdx + 1);
   }
 
-  llvm::MapVector<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
-      readyColorBySourceColor;
-  int64_t maxReadyCountersPerSource = 0;
-  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
-    int64_t nextReadyColor = 0;
-    llvm::DenseMap<int64_t, int64_t> &readyColors =
-        readyColorBySourceColor[sourceKey];
-    for (auto indexedColor : llvm::enumerate(colorUsers)) {
-      bool colorUsesSenderReady = false;
-      for (unsigned unitIndex : indexedColor.value()) {
-        if (usesSenderReadyCounter(units[unitIndex], pipeCapacityPlan)) {
-          colorUsesSenderReady = true;
-          break;
-        }
-      }
-      if (colorUsesSenderReady) {
-        readyColors[static_cast<int64_t>(indexedColor.index())] =
-            nextReadyColor++;
-      }
-    }
-    maxReadyCountersPerSource =
-        std::max(maxReadyCountersPerSource, nextReadyColor);
-  }
+  auto [readyColorBySourceColor, maxReadyCountersPerSource] =
+      compactColors(colorUsersBySource, [&](unsigned unitIndex) {
+        return usesSenderReadyCounter(units[unitIndex], pipeCapacityPlan);
+      });
 
   // Use one ready-counter kind per kernel so host allocation has one compact
   // descriptor layout.
@@ -1864,30 +1869,13 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
     }
   }
 
-  llvm::MapVector<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
-      addressColorBySourceColor;
-  int64_t maxAddressTableBytes = 0;
-  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
-    int64_t nextAddressColor = 0;
-    llvm::DenseMap<int64_t, int64_t> &addressColors =
-        addressColorBySourceColor[sourceKey];
-    for (auto indexedColor : llvm::enumerate(colorUsers)) {
-      bool colorUsesAddressTable = false;
-      for (unsigned unitIndex : indexedColor.value()) {
-        if (computedAddressPlan.infoByUnitIndex.find(unitIndex) ==
-            computedAddressPlan.infoByUnitIndex.end()) {
-          colorUsesAddressTable = true;
-          break;
-        }
-      }
-      if (colorUsesAddressTable) {
-        addressColors[static_cast<int64_t>(indexedColor.index())] =
-            nextAddressColor++;
-      }
-    }
-    maxAddressTableBytes = std::max<int64_t>(
-        maxAddressTableBytes, nextAddressColor * kPipeAddressWordBytes);
-  }
+  auto [addressColorBySourceColor, maxAddressColorsPerSource] =
+      compactColors(colorUsersBySource, [&](unsigned unitIndex) {
+        return computedAddressPlan.infoByUnitIndex.find(unitIndex) ==
+               computedAddressPlan.infoByUnitIndex.end();
+      });
+  int64_t maxAddressTableBytes =
+      maxAddressColorsPerSource * kPipeAddressWordBytes;
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     const PipeTransferAllocationUnit &unit = indexedUnit.value();
