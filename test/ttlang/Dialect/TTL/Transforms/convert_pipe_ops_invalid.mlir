@@ -96,6 +96,63 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// An extra receiver DFB pop after the tracked pipe receive has already been
+// released cannot be mapped to a live pipe slot.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @gather_extra_receiver_pop_rejected()
+      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf = ttl.copy %p, %recv
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf : !ttl.transfer_handle
+    ttl.cb_pop %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    // expected-error @below {{pipe receiver DFB pop releases 1 block(s), but only 0 live pipe receive block(s) are tracked; receiver pops must release only live pipe receive slots}}
+    ttl.cb_pop %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// A receiver pop cannot release blocks that are not tracked as live pipe receive
+// slots. Otherwise the compiler cannot keep static receiver slots synchronized
+// with the hardware DFB ring.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @gather_overlarge_receiver_pop_rejected()
+      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf = ttl.copy %p, %recv
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf : !ttl.transfer_handle
+    // expected-error @below {{pipe receiver DFB pop releases 2 block(s), but only 1 live pipe receive block(s) are tracked; receiver pops must release only live pipe receive slots}}
+    ttl.cb_pop %cb {num_tiles = 2 : i64}
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
 // A collective pipe cannot publish different receiver DFB slice offsets because
 // NoC multicast uses one destination SRAM address for all receivers.
 

@@ -222,9 +222,8 @@ static bool slotRangesOverlap(int64_t lhsSlot, int64_t lhsSpan, int64_t rhsSlot,
 }
 
 // Pops release whole live slots in FIFO order, matching the hardware ring's
-// in-order consumption. A pop that freed only part of the oldest slot would
-// leave the slot's high blocks live while the overlap check treats its low
-// blocks as free, so require each release to drain a whole live slot.
+// in-order consumption. A pop that does not exactly drain tracked pipe receive
+// slots would leave the static slot model out of sync with the DFB ring.
 static LogicalResult releaseReceiverSlots(CBPopOp popOp,
                                           ReceiverSlotState &state,
                                           int64_t releasedBlocks) {
@@ -242,6 +241,13 @@ static LogicalResult releaseReceiverSlots(CBPopOp popOp,
     }
     remainingBlocks -= slot.span;
     ++slotsToRelease;
+  }
+  if (remainingBlocks != 0) {
+    return popOp.emitError()
+           << "pipe receiver DFB pop releases " << releasedBlocks
+           << " block(s), but only " << (releasedBlocks - remainingBlocks)
+           << " live pipe receive block(s) are tracked; receiver pops must "
+              "release only live pipe receive slots";
   }
   state.liveSlots.erase(state.liveSlots.begin(),
                         state.liveSlots.begin() + slotsToRelease);
