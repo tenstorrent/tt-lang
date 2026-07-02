@@ -15,9 +15,6 @@ Parameterized over:
 Total test cases: 13 ops x 5 shapes = 65 tests
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import importlib.util
 import tempfile
 from typing import Callable

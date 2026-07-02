@@ -12,10 +12,6 @@ hardware and simulator.
 https://github.com/tenstorrent/tt-lang/blob/<spec-commit>/docs/sphinx/specs/TTLangSpecification.md#L647
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

@@ -15,7 +15,14 @@ import pytest
 
 # Add test root to path for shared utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from ttlang_test_utils import is_hardware_available, is_ttnn_available
+from ttlang_test_utils import (
+    is_hardware_available,
+    is_ttnn_available,
+    pin_xdist_worker_to_device,
+)
+
+
+pin_xdist_worker_to_device()
 
 TTNN_AVAILABLE = is_ttnn_available()
 _ttnn_import_failed = False  # Set True after first failed import to prevent nanobind re-registration crash
@@ -37,6 +44,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "order(after=...): specify test execution order (requires pytest-order)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "multi_device: needs all chips; excluded from per-chip parallel runs",
     )
 
 

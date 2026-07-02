@@ -10,10 +10,6 @@ Pipe construction uses ttl.grid_size() so it adapts to whatever
 device grid grid="full" resolves to.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

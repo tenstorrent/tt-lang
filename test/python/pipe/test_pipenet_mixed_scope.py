@@ -13,10 +13,6 @@ Pattern mirrors `test_overlapping_pipenets` but with `net_a` moved to
 module scope.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

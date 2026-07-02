@@ -20,11 +20,11 @@
 /packaging/ bnorris@tenstorrent.com phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com
 
 # Core compiler and dialect implementation.
-/include/ bnorris@tenstorrent.com zcarver@tenstorrent.com vtsilytskyi@tenstorrent.com
-/lib/ bnorris@tenstorrent.com zcarver@tenstorrent.com vtsilytskyi@tenstorrent.com
+/include/ bnorris@tenstorrent.com zcarver@tenstorrent.com vtsilytskyi@tenstorrent.com arichins@tenstorrent.com
+/lib/ bnorris@tenstorrent.com zcarver@tenstorrent.com vtsilytskyi@tenstorrent.com arichins@tenstorrent.com
 
 # Python frontend, APIs, and runtime integration.
-/python/ zcarver@tenstorrent.com bnorris@tenstorrent.com
+/python/ zcarver@tenstorrent.com bnorris@tenstorrent.com arichins@tenstorrent.com
 /python/sim/ kfragkiadakis@tenstorrent.com phizalev@tenstorrent.com
 
 # Tests and examples.

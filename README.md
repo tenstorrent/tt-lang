@@ -295,7 +295,11 @@ This project adheres to a [Code of Conduct](CODE_OF_CONDUCT.md). By participatin
 
 ## 5. Support
 
-- [GitHub Issues](https://github.com/tenstorrent/tt-lang/issues) — report bugs or request features
+- [GitHub Issues](https://github.com/tenstorrent/tt-lang/issues) — report bugs or request features. Include the build provenance so issues can be reproduced against the right revisions:
+
+  ```bash
+  python -c 'import ttl; print(ttl.build_info())'
+  ```
 
 ## 6. License
 

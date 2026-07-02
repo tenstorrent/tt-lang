@@ -10,10 +10,6 @@ input data patterns. Covers single-tile, multi-tile non-square grids,
 and double-transpose identity.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import atexit
 import importlib
 import os

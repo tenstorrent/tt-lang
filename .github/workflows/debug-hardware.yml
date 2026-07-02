@@ -1,0 +1,124 @@
+name: Debug Hardware (manual)
+
+# Manually run a chosen subset of hardware tests, repeatedly, with crash capture.
+# This workflow reproduces intermittent or hardware-specific failures (e.g. an
+# architecture-specific segfault) on one runner without running the full suite.
+# Provide a pytest selection; optionally repeat it and run under gdb to capture a
+# native backtrace. Dispatch from the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: 'Hardware type (runner suffix), e.g. n150, n300-llmbox'
+        required: false
+        type: string
+        default: 'n300-llmbox'
+      pytest_args:
+        description: 'Pytest selection, e.g. test/python/test_reduce.py -k "reduce_multi_tile and fp32"'
+        required: true
+        type: string
+      repeat:
+        description: 'Run the selection up to this many times'
+        required: false
+        type: number
+        default: 1
+      stop_on_fail:
+        description: 'Stop at the first failing iteration'
+        required: false
+        type: boolean
+        default: true
+      under_gdb:
+        description: 'Run each iteration under gdb to capture a native backtrace on crash (may perturb timing-sensitive races)'
+        required: false
+        type: boolean
+        default: false
+      timeout:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 120
+      docker_tag:
+        description: 'Docker image tag for the ird container'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    name: "Debug Hardware (${{ inputs.runs-on }})"
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
+      options: --device /dev/tenstorrent
+      volumes:
+        - /dev/hugepages:/dev/hugepages
+        - /dev/hugepages-1G:/dev/hugepages-1G
+        - /etc/udev/rules.d:/etc/udev/rules.d
+        - /lib/modules:/lib/modules
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      RUNS_ON: ${{ inputs.runs-on }}
+      PYTHONDONTWRITEBYTECODE: 1
+      TTLANG_TEST_SEED: 42
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Configure tt-lang
+        run: |
+          cmake -G Ninja -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DTTLANG_USE_TOOLCHAIN=ON \
+              -DTTLANG_ENABLE_PERF_TRACE=ON
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: Linux-ttlang-hw-${{ inputs.runs-on }}
+          max-size: 200M
+
+      - name: Build tt-lang
+        run: |
+          source build/env/activate
+          cmake --build build
+
+      - name: Install test dependencies
+        run: |
+          source build/env/activate
+          pip install -r dev-requirements.txt
+
+      - name: Repeat-run selection with crash capture
+        # Selection is passed through environment variables, not inlined into the
+        # shell, to avoid workflow command injection from the dispatch input.
+        env:
+          PYTEST_ARGS: ${{ inputs.pytest_args }}
+          REPEAT: ${{ inputs.repeat }}
+          STOP_ON_FAIL: ${{ inputs.stop_on_fail }}
+          UNDER_GDB: ${{ inputs.under_gdb }}
+          ARTIFACT_DIR: debug-artifacts
+        run: |
+          source build/env/activate
+          .github/scripts/run-debug-pytests.sh
+
+      - name: Upload debug artifacts
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: debug-hardware-${{ inputs.runs-on }}
+          path: debug-artifacts/
+          retention-days: 7
