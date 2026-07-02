@@ -1,7 +1,7 @@
 // Summary: Pipe capacity analysis debug output reports proven receiver
 // endpoints and rejected receiver endpoints before pipe lowering consumes the
 // facts.
-// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel -debug-only=ttl-pipe-capacity-analysis 2>&1 | FileCheck %s --check-prefix=DEBUG
+// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel -debug-only=ttl-pipe-capacity-analysis 2>&1 >/dev/null | FileCheck %s --check-prefix=DEBUG
 
 // Purpose: a point-to-point computed-address stream with a receiver pop is
 // proven and records one acquire/release pair.
@@ -39,13 +39,14 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // Purpose: without a concrete receiver pop, the release side is not proven.
 // This models running the analysis before automatic DFB sync insertion.
 // DEBUG: PipeCapacity: 1 receiver DFB node(s), 1 receiver endpoint(s)
-// DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(1, 0) DFB 1 capacity 2
-// DEBUG: PipeCapacity: reject src(0, 0) -> receiver(1, 0) DFB 1 capacity 2: no matching receiver pops
+// DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(1, 0) DFB 3 capacity 2
+// DEBUG-NOT: PipeCapacity: accept src(0, 0) -> receiver(1, 0) DFB 3 capacity 2
+// DEBUG: PipeCapacity: reject src(0, 0) -> receiver(1, 0) DFB 3 capacity 2: no matching receiver pops
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @missing_receiver_pop()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
@@ -74,8 +75,10 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // endpoint, the central safety predicate for the capacity protocol.
 // DEBUG: PipeCapacity: 1 receiver DFB node(s), 2 receiver endpoint(s)
 // DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(2, 0) DFB 2 capacity 2
+// DEBUG-NOT: PipeCapacity: accept src(0, 0) -> receiver(2, 0) DFB 2 capacity 2
 // DEBUG: PipeCapacity: reject src(0, 0) -> receiver(2, 0) DFB 2 capacity 2: receiver DFB has 2 writer endpoint(s)
 // DEBUG: PipeCapacity: candidate src(1, 0) -> receiver(2, 0) DFB 2 capacity 2
+// DEBUG-NOT: PipeCapacity: accept src(1, 0) -> receiver(2, 0) DFB 2 capacity 2
 // DEBUG: PipeCapacity: reject src(1, 0) -> receiver(2, 0) DFB 2 capacity 2: receiver DFB has 2 writer endpoint(s)
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @two_writers_one_receiver_dfb()
@@ -124,13 +127,14 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // rejected locally even when the wait/pop pair releases the same multi-block
 // span.
 // DEBUG: PipeCapacity: 1 receiver DFB node(s), 1 receiver endpoint(s)
-// DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(1, 0) DFB 1 capacity 2
-// DEBUG: PipeCapacity: reject src(0, 0) -> receiver(1, 0) DFB 1 capacity 2: receiver reserve spans 2 DFB blocks; capacity accounting assumes one
+// DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(1, 0) DFB 4 capacity 2
+// DEBUG-NOT: PipeCapacity: accept src(0, 0) -> receiver(1, 0) DFB 4 capacity 2
+// DEBUG: PipeCapacity: reject src(0, 0) -> receiver(1, 0) DFB 4 capacity 2: receiver reserve spans 2 DFB blocks; capacity accounting assumes one
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @multi_block_receive_rejected_for_capacity()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer

@@ -9,7 +9,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
   // COMPUTED: ttkernel.noc_async_write
+  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
   // COMPUTED-NOT: ttkernel.load_from_l1
+  // COMPUTED: return
 
   // PUBLISHED-LABEL: func.func @point_to_point_pipe
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
@@ -53,11 +55,15 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED: arith.subi
   // COMPUTED: ttkernel.store_to_l1
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED: return
 
   // PUBLISHED-LABEL: func.func @capacity_pipe
   // PUBLISHED-NOT: arith.subi
   // PUBLISHED-NOT: ttkernel.store_to_l1
   // PUBLISHED: ttkernel.noc_inline_dw_write
+  // PUBLISHED-NOT: arith.subi
+  // PUBLISHED-NOT: ttkernel.store_to_l1
+  // PUBLISHED: return
   func.func @capacity_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>

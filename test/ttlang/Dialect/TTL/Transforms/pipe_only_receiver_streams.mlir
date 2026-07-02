@@ -1,14 +1,14 @@
 // Summary: PipeGraph debug output reports why a receiver DFB stream is or is
 // not proven pipe-only before pipe capacity analysis consumes the graph fact.
-// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel -debug-only=ttl-pipe-graph 2>&1 | FileCheck %s --check-prefix=GRAPH
+// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel -debug-only=ttl-pipe-graph 2>&1 >/dev/null | FileCheck %s --check-prefix=GRAPH
 
-// GRAPH-DAG: PipeGraph: accept pipe-only stream for receiver(1, 0) DFB 1
-// GRAPH-DAG: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: push reserve owns no matching receiver post
-// GRAPH-DAG: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: post has no receive wait before push
-// GRAPH-DAG: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: wait and pop use different block counts
-// GRAPH-DAG: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: post is not consumed by a receiver push
-// GRAPH-DAG: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: pop has no unique receiver wait owner
-// GRAPH-DAG: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: push has no unique receiver reserve owner
+// GRAPH: PipeGraph: accept pipe-only stream for receiver(1, 0) DFB 1
+// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: push reserve owns no matching receiver post
+// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: post has no receive wait before push
+// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: wait and pop use different block counts
+// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: post is not consumed by a receiver push
+// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: pop has no unique receiver wait owner
+// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: push has no unique receiver reserve owner
 
 // Purpose: the canonical one-post, one-push, one-wait, one-pop stream is
 // proven pipe-only.
