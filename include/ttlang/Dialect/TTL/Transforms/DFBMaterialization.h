@@ -58,8 +58,7 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
 /// Non-compute producers use the tensor-level fallback: reserve/store at the
 /// definition site, followed by wait/attach. Values produced by `ttl.compute`
 /// are materialized as an extra compute output: reserve before the compute,
-/// tile_store inside the body, push after the compute, and wait/attach before
-/// the consumer.
+/// tile_store inside the body, then push and wait/attach after the compute.
 FailureOr<DFBMaterializedValue> materializeToDFB(Value intermediate,
                                                  Operation *consumerOp,
                                                  ModuleOp moduleOp,

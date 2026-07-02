@@ -105,39 +105,78 @@ func.func @state_update_feeds_broadcast()
 
 // -----
 
-// Branch-local consumers cannot share a materialized value whose attach is
-// defined in the sibling branch. Each branch gets a separate compiler DFB.
+// A broadcast producer has a different input and output shape. The compiler
+// DFB output must use the broadcast result shape, not the producer input shape.
+
+// DEFERRED-LABEL: func.func @broadcast_result_then_reduce
+// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated} : <[1, 2],
+// DEFERRED: %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]]
+// DEFERRED: tensor.empty() : tensor<1x2x!ttcore.tile<32x32, bf16>>
+// DEFERRED: %{{.*}}:2 = ttl.compute
+// DEFERRED: ttl.tile_bcast
+// DEFERRED: ttl.tile_store {{.*}}, %[[INTERMEDIATE_RESERVE]]
+// DEFERRED: ttl.cb_push %[[INTERMEDIATE_DFB]]
+// DEFERRED: %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
+// DEFERRED: %[[INTERMEDIATE_ATTACHED:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
+// DEFERRED: ttl.reduce %[[INTERMEDIATE_ATTACHED]]
+
+// FULL-LABEL: func.func @broadcast_result_then_reduce
+// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated} : <[1, 2],
+// FULL: ttl.cb_push %[[INTERMEDIATE_DFB]]
+// FULL: %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
+// FULL: %[[INTERMEDIATE_ATTACHED:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
+// FULL: ttl.compute ins(%[[INTERMEDIATE_ATTACHED]],
+// FULL: ttl.cb_pop %[[INTERMEDIATE_DFB]]
+func.func @broadcast_result_then_reduce()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_scaler = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_bcast = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %a_wait = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %a_wait, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler_wait = ttl.cb_wait %cb_scaler : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler = ttl.attach_cb %scaler_wait, %cb_scaler : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %broadcast = ttl.block.broadcast %a dims = [-1], shape = [1, 2] : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %broadcast_reserve = ttl.cb_reserve %cb_bcast : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %broadcast, %broadcast_reserve : tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, bf16>>
+
+  %reduced = ttl.reduce %broadcast, %scaler 0 : i32 [1] : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out_reserve = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %reduced, %out_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
+// Branch-local consumers share one materialized value when the attach is
+// defined before the branch. This keeps the compiler DFB push/wait/pop balanced.
 
 // DEFERRED-LABEL: func.func @branch_local_reductions
-// DEFERRED-DAG: %[[THEN_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
-// DEFERRED-DAG: %[[ELSE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
-// DEFERRED-DAG: %[[THEN_RESERVE:.*]] = ttl.cb_reserve %[[THEN_DFB]]
-// DEFERRED-DAG: %[[ELSE_RESERVE:.*]] = ttl.cb_reserve %[[ELSE_DFB]]
-// DEFERRED: %{{.*}}:3 = ttl.compute
-// DEFERRED-DAG: ttl.tile_store {{.*}}, %[[THEN_RESERVE]]
-// DEFERRED-DAG: ttl.tile_store {{.*}}, %[[ELSE_RESERVE]]
-// DEFERRED-DAG: ttl.cb_push %[[THEN_DFB]]
-// DEFERRED-DAG: ttl.cb_push %[[ELSE_DFB]]
+// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED: %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]]
+// DEFERRED: %{{.*}}:2 = ttl.compute
+// DEFERRED: ttl.tile_store {{.*}}, %[[INTERMEDIATE_RESERVE]]
+// DEFERRED: ttl.cb_push %[[INTERMEDIATE_DFB]]
+// DEFERRED: %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
+// DEFERRED: %[[INTERMEDIATE_ATTACHED:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
 // DEFERRED: scf.if
-// DEFERRED: %[[THEN_WAIT:.*]] = ttl.cb_wait %[[THEN_DFB]]
-// DEFERRED: %[[THEN_ATTACH:.*]] = ttl.attach_cb %[[THEN_WAIT]], %[[THEN_DFB]]
-// DEFERRED: ttl.reduce %[[THEN_ATTACH]]
+// DEFERRED: ttl.reduce %[[INTERMEDIATE_ATTACHED]]
 // DEFERRED: else
-// DEFERRED: %[[ELSE_WAIT:.*]] = ttl.cb_wait %[[ELSE_DFB]]
-// DEFERRED: %[[ELSE_ATTACH:.*]] = ttl.attach_cb %[[ELSE_WAIT]], %[[ELSE_DFB]]
-// DEFERRED: ttl.reduce %[[ELSE_ATTACH]]
+// DEFERRED: ttl.reduce %[[INTERMEDIATE_ATTACHED]]
 
 // FULL-LABEL: func.func @branch_local_reductions
-// FULL-DAG: %[[THEN_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
-// FULL-DAG: %[[ELSE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL: ttl.cb_push %[[INTERMEDIATE_DFB]]
+// FULL: %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
+// FULL: %[[INTERMEDIATE_ATTACHED:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
 // FULL: scf.if
-// FULL: %[[THEN_WAIT:.*]] = ttl.cb_wait %[[THEN_DFB]]
-// FULL: %[[THEN_ATTACH:.*]] = ttl.attach_cb %[[THEN_WAIT]], %[[THEN_DFB]]
-// FULL: ttl.compute ins(%[[THEN_ATTACH]],
+// FULL: ttl.compute ins(%[[INTERMEDIATE_ATTACHED]],
 // FULL: else
-// FULL: %[[ELSE_WAIT:.*]] = ttl.cb_wait %[[ELSE_DFB]]
-// FULL: %[[ELSE_ATTACH:.*]] = ttl.attach_cb %[[ELSE_WAIT]], %[[ELSE_DFB]]
-// FULL: ttl.compute ins(%[[ELSE_ATTACH]],
+// FULL: ttl.compute ins(%[[INTERMEDIATE_ATTACHED]],
+// FULL: ttl.cb_pop %[[INTERMEDIATE_DFB]]
 func.func @branch_local_reductions(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
