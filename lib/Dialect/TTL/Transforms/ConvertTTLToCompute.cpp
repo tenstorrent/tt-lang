@@ -122,6 +122,9 @@ static SmallVector<StoreOp> collectStoreUsers(Operation *op) {
   if (stores.empty()) {
     return stores;
   }
+  // A store set spanning multiple blocks is not a single absorbable output
+  // group; return empty so the caller reports a match failure instead of
+  // forming a compute across blocks.
   Block *block = stores.front()->getBlock();
   for (StoreOp store : stores) {
     if (store->getBlock() != block) {
@@ -257,9 +260,8 @@ replaceOutputPushesBeforeCompute(PatternRewriter &rewriter, ComputeOp computeOp,
       continue;
     }
     rewriter.setInsertionPointAfter(insertAfter);
-    CBPushOp replacement =
-        CBPushOp::create(rewriter, push.getLoc(), push.getCb(),
-                         push->getAttrOfType<IntegerAttr>("num_tiles"));
+    CBPushOp replacement = CBPushOp::create(
+        rewriter, push.getLoc(), push.getCb(), push.getNumTilesAttr());
     insertAfter = replacement;
     replacedPushes.push_back(push);
   }
