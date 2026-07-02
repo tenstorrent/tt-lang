@@ -9,8 +9,7 @@ Provides unified feature detection (ttnn availability, hardware detection),
 tensor creation helpers, and comparison utilities. Used across pytest conftest
 files, lit configuration, and test scripts.
 
-Device availability is determined by checking environment variables and
-/dev/tenstorrent* files, avoiding the slow ttnn.GetNumAvailableDevices() call.
+Device availability is checked without importing ttnn.
 """
 
 import glob
@@ -24,8 +23,7 @@ from typing import Any, Sequence
 # Feature detection
 # =============================================================================
 
-# Check device availability: env vars first (for simulator), then runtime device
-# nodes, then CMake config.
+# Prefer runtime state over the wheel's build-time device flag.
 _hardware_available = False
 
 

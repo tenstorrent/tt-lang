@@ -2,11 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Build, device-test, and publish a tt-lang-light wheel for an arbitrary
-# tt-metal SHA. Finds the newest tt-lang commit compatible with that tt-metal,
-# builds the light wheel against it (unmodified build-s3-light-core-wheel.sh
-# with TTLANG_EXTERNAL_TT_METAL_DIR), validates on device, and publishes under
-# the SHA's 7-character prefix so the wheel filename is unchanged.
+# Build, device-test, and publish a tt-lang-light wheel for a tt-metal SHA.
+# The S3 prefix is the tt-metal short SHA, so wheel filenames stay unchanged.
 
 name: tt-lang-light wheel for a tt-metal SHA
 
@@ -42,10 +39,7 @@ on:
         type: boolean
         default: true
 
-# workflow_call only: the nightly orchestrator is the single manual entry point
-# (its workflow_dispatch forces a tt_metal_sha and calls this). A second dispatch
-# block here would duplicate every input, since GitHub Actions cannot share input
-# definitions across triggers.
+# workflow_call only. The on-demand workflow owns workflow_dispatch input parsing.
 
 permissions:
   contents: read
@@ -129,8 +123,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: ./.github/actions/configure-tt-s3-credentials
 
-      # Marks this tt-metal SHA so the nightly detector does not re-attempt it
-      # until tt-lang HEAD advances past the history just searched.
+      # Retry this SHA only after tt-lang HEAD advances.
       - name: Record miss
         run: |
           .github/scripts/record-ttmetal-miss.sh \

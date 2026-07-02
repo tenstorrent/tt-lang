@@ -295,8 +295,7 @@ jobs:
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: python3 -m pip install s3pypi
 
-      # Nightly dev wheels (X.Y.Z.devYYYYMMDD) publish under a <YYYY-MM>/ subdir;
-      # stable releases (X.Y.Z) publish at the flat root. Publish layout only.
+      # Nightly dev wheels publish under <YYYY-MM>/; stable releases use root.
       - name: Derive publish prefix
         id: publish_prefix
         run: |
@@ -322,8 +321,7 @@ jobs:
           fi
           .github/scripts/publish-s3-wheels.sh "${publish_args[@]}" dist
 
-      # s3pypi rewrites the index it just wrote on every upload, so restore the
-      # human-facing README onto that index after publishing.
+      # s3pypi rewrites the index on upload; restore the README afterward.
       - name: Inject S3 index README
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: |
@@ -351,9 +349,7 @@ jobs:
             "${{ needs.preflight.outputs.wheel_variant }}" \
             "${{ needs.preflight.outputs.version_override }}"
 
-  # Scheduled runs additionally build a per-tt-metal-SHA light wheel. This runs
-  # here (not on its own schedule) so it reuses the ird and manylinux images
-  # this run just pushed; the manylinux images carry no fixed tag to target.
+  # Reuse this run's freshly pushed ird and manylinux images.
   ttmetal-light-detect:
     name: "Detect tt-metal uplift for light wheel"
     needs: preflight
@@ -376,8 +372,7 @@ jobs:
       - name: Git safe directory
         run: git config --global --add safe.directory "$(pwd)"
 
-      # Detection reads TT_METAL_VERSION from tt-mlir's third_party/CMakeLists.txt,
-      # so fetch only that submodule; llvm-project and tt-metal are never needed.
+      # Detection needs only tt-mlir's TT_METAL_VERSION pin.
       - name: Fetch tt-mlir for uplift detection
         run: git submodule update --init --depth 1 third-party/tt-mlir
 

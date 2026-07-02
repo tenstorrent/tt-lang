@@ -2,10 +2,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Restore the human-facing README into an S3 PyPI root index. When publishing
-# under a new prefix, s3pypi may upload package indexes without creating the
-# prefix root index, so create a minimal package root index from the wheel dist
-# only for that missing-key case.
+# Restore the README into an S3 PyPI root index. If s3pypi omitted a prefixed
+# root index, create one from the wheel dist only for that missing-key case.
 
 set -euo pipefail
 

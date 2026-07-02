@@ -2,20 +2,16 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Nightly detection for the per-tt-metal-SHA light wheel. Reads the tt-metal SHA
-# that tt-lang's pinned tt-mlir targets (TT_METAL_VERSION in tt-mlir's
-# third_party/CMakeLists.txt) and decides whether to build a wheel for it,
-# keyed on the SHA's 7-char S3 prefix.
+# Detect whether tt-lang should build a light wheel for tt-mlir's pinned
+# tt-metal SHA, keyed by the SHA's 7-character S3 prefix.
 #
 # A SHA is skipped when a wheel is already published, and also when a prior
 # search recorded no compatible tt-lang AND the tt-lang HEAD it searched is
 # unchanged (re-searching the same history would fail identically). Once tt-lang
 # HEAD advances, a recorded miss is retried because newer commits may now match.
 #
-# --assume-new skips the S3 idempotency check and reports the pinned SHA as
-# buildable. Dry-run builds never publish and run without S3 credentials (OIDC
-# authorizes only main), so reading the published prefix is neither possible nor
-# meaningful.
+# --assume-new treats the pinned SHA as buildable without reading S3. Dry runs
+# do not publish, and branch runs cannot use main-only OIDC credentials.
 #
 # Writes to $GITHUB_OUTPUT (or stdout):
 #   uplift=true|false
@@ -48,13 +44,12 @@ read_target_ttmetal_sha() {
     printf '%s\n' "$sha"
 }
 
-# Object basenames under the SHA's prefix (empty when the prefix does not exist).
-# Overridable in tests.
+# Object basenames under the SHA prefix. Overridable in tests.
 list_prefix_objects() {
     aws s3 ls "s3://$S3_BUCKET/$1/" 2>/dev/null | awk '{print $NF}'
 }
 
-# The tt-lang HEAD recorded by a prior miss marker, or empty. Overridable in tests.
+# tt-lang HEAD from a prior miss marker, or empty. Overridable in tests.
 read_recorded_head() {
     aws s3 cp "s3://$S3_BUCKET/$1/attempt.json" - 2>/dev/null \
         | sed -n -E 's/.*"ttlang_head"[[:space:]]*:[[:space:]]*"([a-f0-9]+)".*/\1/p' \

@@ -2,15 +2,11 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Inject the S3-index README into an s3pypi-generated root index.html.
+"""Inject the S3-index README into an s3pypi root index.html.
 
-s3pypi rewrites the root index.html on every `upload --put-root-index`, so this
-runs after each upload to restore the human-facing README above the package
-anchor links. PEP 503 clients read only the <a> links, so the injected block is
-inert for pip resolution.
-
-The injected block is delimited by sentinel comments and replaced in place on
-re-run, so repeated injection never duplicates it.
+s3pypi rewrites root indexes on upload. This restores the README above package
+anchors without changing pip resolution; repeated runs replace the existing
+sentinel-delimited block.
 
 Usage:
   inject_s3_index_readme.py [--create-from-dist <dist_dir>] <readme.md> <index.html>
@@ -29,8 +25,7 @@ END = "<!-- ttlang-s3-readme:end -->"
 def render_markdown(text: str) -> str:
     """Render Markdown to an HTML fragment, falling back to escaped text.
 
-    The fallback keeps the injection working when the `markdown` package is
-    absent rather than failing the publish.
+    The fallback keeps publishing independent of the optional `markdown` package.
     """
     try:
         import markdown
@@ -70,8 +65,8 @@ def build_root_index(dist_dir: Path) -> str:
 def inject(index_html: str, block: str) -> str:
     """Return index_html with block placed above the anchor links.
 
-    Any previously injected block is removed first (idempotent). The block is
-    inserted immediately after the opening <body> tag so it precedes every <a>.
+    Existing injected content is removed first. Inserting after <body> keeps
+    package anchors below the README.
     """
     existing = re.compile(re.escape(START) + ".*?" + re.escape(END) + r"\n?", re.DOTALL)
     index_html = existing.sub("", index_html)

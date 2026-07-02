@@ -131,17 +131,14 @@ def test_ttmetal_light_max_age_crosses_reusable_workflow_as_string() -> None:
 
 def test_ttmetal_light_on_demand_detect_skips_s3_for_dry_run() -> None:
     workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
-    # S3 credentials are configured only when auto-detecting for a real publish;
-    # a dry-run or forced-SHA run needs none and stays runnable from a branch.
+    # Dry-run and forced-SHA branch runs do not need S3 credentials.
     assert "if: ${{ inputs.dry_run != true && inputs.tt_metal_sha == '' }}" in workflow
-    # Dry-run auto-detect skips the S3 idempotency check.
     assert "detect-ttmlir-ttmetal-uplift.sh --assume-new" in workflow
 
 
 def test_ttmetal_light_on_demand_detect_avoids_full_submodule_clone() -> None:
     workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
-    # The detect job must not full-clone submodules (llvm-project and tt-metal
-    # cost ~8 min and are unused); it fetches only tt-mlir, only when detecting.
+    # The detect job needs tt-mlir only; llvm-project and tt-metal are unused.
     assert "submodules: true" not in workflow
     assert "git submodule update --init --depth 1 third-party/tt-mlir" in workflow
     assert "if: ${{ inputs.tt_metal_sha == '' }}" in workflow
