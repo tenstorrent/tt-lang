@@ -84,6 +84,13 @@ struct PipeKey {
   }
 };
 
+inline PipeKey getPipeKey(PipeType pipeType) {
+  return {pipeType.getSrcX(),      pipeType.getSrcY(),
+          pipeType.getDstStartX(), pipeType.getDstStartY(),
+          pipeType.getDstEndX(),   pipeType.getDstEndY(),
+          pipeType.getPipeNetId()};
+}
+
 } // namespace mlir::tt::ttl
 
 namespace llvm {

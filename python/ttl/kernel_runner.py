@@ -237,6 +237,31 @@ def _first_device(tensors: List[Any]) -> Any:
     raise ValueError("pipe runtime resource allocation requires a device tensor")
 
 
+def _allocate_l1_sharded_storage_tensor(core_ranges: Any, num_bytes: int, device: Any):
+    """Allocate row-major L1 storage with one 4-byte element per storage word."""
+    aligned_bytes = _align_up(num_bytes, 32)
+    elements_per_core = max(1, aligned_bytes // 4)
+    grid_size = core_ranges.bounding_box().grid_size()
+    num_cores = grid_size.x * grid_size.y
+    shard_spec = ttnn.ShardSpec(
+        core_ranges,
+        (1, elements_per_core),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    return ttnn.empty(
+        (num_cores, elements_per_core),
+        dtype=ttnn.float32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=device,
+        memory_config=memory_config,
+    )
+
+
 def _get_cb_descriptor_rows(cb_configs: List[Any]) -> Tuple[List[Any], int]:
     rows = []
     total_cb_bytes = 0
@@ -308,31 +333,10 @@ def build_pipe_sram_scratch_tensors(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    aligned_bytes = _align_up(scratch_bytes, 32)
-    elements_per_core = max(1, aligned_bytes // 4)
-    grid_size = core_ranges.bounding_box().grid_size()
-    num_cores = grid_size.x * grid_size.y
     device = device if device is not None else _first_device(tensors)
     # [Device 2.0] This encodes compiler SRAM as a sharded TTNN tensor because
     # current generic_op has no typed device-side scratch allocation object.
-    shard_spec = ttnn.ShardSpec(
-        core_ranges,
-        (1, elements_per_core),
-        ttnn.ShardOrientation.ROW_MAJOR,
-    )
-    memory_config = ttnn.MemoryConfig(
-        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
-        ttnn.BufferType.L1,
-        shard_spec,
-    )
-    scratch_tensor = ttnn.empty(
-        (num_cores, elements_per_core),
-        dtype=ttnn.float32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=memory_config,
-    )
-    return [scratch_tensor]
+    return [_allocate_l1_sharded_storage_tensor(core_ranges, scratch_bytes, device)]
 
 
 def build_pipe_global_semaphores(
@@ -384,8 +388,6 @@ def build_pipe_computed_address_dfb_tensors(
 
     rows, _ = _get_cb_descriptor_rows(cb_configs)
     device = device if device is not None else _first_device(tensors)
-    grid_size = core_ranges.bounding_box().grid_size()
-    num_cores = grid_size.x * grid_size.y
     backing_tensors = {}
     for dfb_index in dfb_indices:
         if dfb_index < 0 or dfb_index >= len(rows):
@@ -393,24 +395,8 @@ def build_pipe_computed_address_dfb_tensors(
                 f"computed-address receiver DFB index {dfb_index} is invalid"
             )
         total_size = rows[dfb_index][2]
-        aligned_bytes = _align_up(total_size, 32)
-        elements_per_core = max(1, aligned_bytes // 4)
-        shard_spec = ttnn.ShardSpec(
-            core_ranges,
-            (1, elements_per_core),
-            ttnn.ShardOrientation.ROW_MAJOR,
-        )
-        memory_config = ttnn.MemoryConfig(
-            ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
-            ttnn.BufferType.L1,
-            shard_spec,
-        )
-        backing_tensors[dfb_index] = ttnn.empty(
-            (num_cores, elements_per_core),
-            dtype=ttnn.float32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-            memory_config=memory_config,
+        backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
+            core_ranges, total_size, device
         )
     return backing_tensors
 
