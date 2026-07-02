@@ -1604,11 +1604,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
   PipeCapacityPlan preliminaryPipeCapacityPlan;
-  if (failed(buildPipeCapacityPlan(mod, *pipeGraphOrErr,
-                                   preliminaryPipeResourcePlan,
-                                   preliminaryPipeCapacityPlan))) {
-    return failure();
-  }
+  buildPipeCapacityPlan(mod, *pipeGraphOrErr, preliminaryPipeResourcePlan,
+                        preliminaryPipeCapacityPlan);
   PipeResourcePlan pipeResourcePlan;
   if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr, pipeResourcePlan,
                                    pipeComputedAddresses,
@@ -1616,10 +1613,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
   PipeCapacityPlan pipeCapacityPlan;
-  if (failed(buildPipeCapacityPlan(mod, *pipeGraphOrErr, pipeResourcePlan,
-                                   pipeCapacityPlan))) {
-    return failure();
-  }
+  buildPipeCapacityPlan(mod, *pipeGraphOrErr, pipeResourcePlan,
+                        pipeCapacityPlan);
   PipeResourceRequirements pipeResourceRequirements =
       getPipeResourceRequirements(pipeResourcePlan, &pipeCapacityPlan);
   if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan,

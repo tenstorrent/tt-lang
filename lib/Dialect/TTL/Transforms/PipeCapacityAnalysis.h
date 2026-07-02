@@ -125,9 +125,9 @@ private:
   int64_t nextSemaphoreIndex = 0;
 };
 
-LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
-                                    const PipeResourcePlan &resources,
-                                    PipeCapacityPlan &plan);
+void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
+                           const PipeResourcePlan &resources,
+                           PipeCapacityPlan &plan);
 
 } // namespace mlir::tt::ttl
 

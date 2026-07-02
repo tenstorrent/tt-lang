@@ -354,15 +354,15 @@ static void markCapacityTransferCreates(const PipeEdge &pipeEdge,
 
 } // namespace
 
-LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
-                                    const PipeResourcePlan &resources,
-                                    PipeCapacityPlan &plan) {
+void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
+                           const PipeResourcePlan &resources,
+                           PipeCapacityPlan &plan) {
   plan.initializeSemaphoreAllocation(
       getPipeResourceRequirements(resources).syncSemaphoreCount);
   if (!pipeGraph.hasLaunchGrid()) {
     LLVM_DEBUG(llvm::dbgs()
                << "PipeCapacity: skip module without ttl.launch_grid\n");
-    return success();
+    return;
   }
 
   LLVM_DEBUG(llvm::dbgs() << "PipeCapacity: "
@@ -460,8 +460,6 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
     }
     markCapacityTransferCreates(pipeEdge, plan);
   }
-
-  return success();
 }
 
 } // namespace mlir::tt::ttl
