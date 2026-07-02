@@ -21,20 +21,33 @@ namespace {
 
 namespace ttk = mlir::tt::ttkernel;
 
+static Value createGreaterOp(ConversionPatternRewriter &rewriter, Location loc,
+                             unsigned bitWidth, Value lhs, Value rhs) {
+  if (bitWidth == 32) {
+    return ttk::Float32GreaterOp::create(rewriter, loc, rewriter.getI1Type(),
+                                         lhs, rhs);
+  }
+  return ttk::Bfloat16GreaterOp::create(rewriter, loc, rewriter.getI1Type(),
+                                        lhs, rhs);
+}
+
 struct CmpFToSoftFloat : OpConversionPattern<arith::CmpFOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(arith::CmpFOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Type origFloatTy = op.getLhs().getType();
-    unsigned bitWidth = origFloatTy.getIntOrFloatBitWidth();
+    auto floatTy = dyn_cast<FloatType>(op.getLhs().getType());
+    if (!floatTy) {
+      return rewriter.notifyMatchFailure(op, "expected scalar float cmpf");
+    }
 
-    if (!origFloatTy.isF32() && !origFloatTy.isBF16()) {
+    if (!floatTy.isF32() && !floatTy.isBF16()) {
       return rewriter.notifyMatchFailure(
           op, "unsupported float type for scalar comparison");
     }
 
+    unsigned bitWidth = floatTy.getWidth();
     Value lhsInt = adaptor.getLhs();
     Value rhsInt = adaptor.getRhs();
     Location loc = op.getLoc();
@@ -42,22 +55,10 @@ struct CmpFToSoftFloat : OpConversionPattern<arith::CmpFOp> {
     Value result;
     switch (op.getPredicate()) {
     case arith::CmpFPredicate::OGT:
-      if (bitWidth == 32) {
-        result = ttk::Float32GreaterOp::create(
-            rewriter, loc, rewriter.getI1Type(), lhsInt, rhsInt);
-      } else {
-        result = ttk::Bfloat16GreaterOp::create(
-            rewriter, loc, rewriter.getI1Type(), lhsInt, rhsInt);
-      }
+      result = createGreaterOp(rewriter, loc, bitWidth, lhsInt, rhsInt);
       break;
     case arith::CmpFPredicate::OLT:
-      if (bitWidth == 32) {
-        result = ttk::Float32GreaterOp::create(
-            rewriter, loc, rewriter.getI1Type(), rhsInt, lhsInt);
-      } else {
-        result = ttk::Bfloat16GreaterOp::create(
-            rewriter, loc, rewriter.getI1Type(), rhsInt, lhsInt);
-      }
+      result = createGreaterOp(rewriter, loc, bitWidth, rhsInt, lhsInt);
       break;
     default:
       return rewriter.notifyMatchFailure(
@@ -70,21 +71,36 @@ struct CmpFToSoftFloat : OpConversionPattern<arith::CmpFOp> {
   }
 };
 
-/// Convert arith.truncf (e.g. f32 -> bf16) into integer bit extraction.
-/// bf16 is the upper 16 bits of the f32 IEEE-754 encoding, so a truncf
-/// becomes a right shift by (srcWidth - dstWidth) followed by an integer
-/// truncation.
+/// Convert arith.truncf f32 -> bf16 into integer bit extraction.
+/// bf16 is the upper 16 bits of the f32 IEEE-754 encoding, so the truncation
+/// is a right shift by 16 followed by an integer truncation. This is a
+/// truncation toward zero (no rounding bias). Only f32 -> bf16 without an
+/// explicit rounding mode is supported; other type combinations or explicit
+/// rounding should use upstream arith-expand instead.
 struct TruncFToBitExtract : OpConversionPattern<arith::TruncFOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(arith::TruncFOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    unsigned srcWidth = op.getOperand().getType().getIntOrFloatBitWidth();
-    unsigned dstWidth = op.getResult().getType().getIntOrFloatBitWidth();
-    Location loc = op.getLoc();
+    auto srcTy = dyn_cast<FloatType>(op.getOperand().getType());
+    auto dstTy = dyn_cast<FloatType>(op.getResult().getType());
 
+    if (!srcTy || !dstTy || !srcTy.isF32() || !dstTy.isBF16()) {
+      return rewriter.notifyMatchFailure(
+          op, "only f32 -> bf16 truncation is supported");
+    }
+
+    if (op.getRoundingmodeAttr()) {
+      return rewriter.notifyMatchFailure(
+          op, "explicit rounding mode not supported");
+    }
+
+    Location loc = op.getLoc();
     Value src = adaptor.getIn();
+    unsigned srcWidth = 32;
+    unsigned dstWidth = 16;
+
     Value shift = arith::ConstantIntOp::create(rewriter, loc,
                                                srcWidth - dstWidth, srcWidth);
     Value shifted = arith::ShRUIOp::create(rewriter, loc, src, shift);
@@ -96,8 +112,8 @@ struct TruncFToBitExtract : OpConversionPattern<arith::TruncFOp> {
 };
 
 /// Convert arith.constant with a FloatAttr into an integer constant holding
-/// the IEEE-754 bit pattern.  Skip constants consumed by TTKernel ops, which
-/// legitimately operate on scalar floats (e.g. ttkernel.fill_tile).
+/// the IEEE-754 bit pattern.  Skip constants whose users are ALL TTKernel ops,
+/// which legitimately operate on scalar floats (e.g. ttkernel.fill_tile).
 struct ConstantOpConversion : OpConversionPattern<arith::ConstantOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -109,11 +125,11 @@ struct ConstantOpConversion : OpConversionPattern<arith::ConstantOp> {
       return rewriter.notifyMatchFailure(op, "not a float constant");
     }
 
-    for (Operation *user : op.getResult().getUsers()) {
-      if (isa<ttk::TTKernelDialect>(user->getDialect())) {
-        return rewriter.notifyMatchFailure(
-            op, "float constant consumed by TTKernel op");
-      }
+    if (llvm::all_of(op.getResult().getUsers(), [](Operation *user) {
+          return isa<ttk::TTKernelDialect>(user->getDialect());
+        })) {
+      return rewriter.notifyMatchFailure(
+          op, "float constant consumed exclusively by TTKernel ops");
     }
 
     APInt bits = floatAttr.getValue().bitcastToAPInt();
@@ -132,8 +148,14 @@ struct TTKernelLowerScalarFpTypesPass
     MLIRContext &ctx = getContext();
 
     TypeConverter typeConverter;
+    // Identity conversion: marks all non-float types as legal so that
+    // typeConverter.isLegal(op) does not reject operands/results that this
+    // pass does not intend to convert.
     typeConverter.addConversion([](Type t) { return t; });
-    typeConverter.addConversion([](FloatType t) -> Type {
+    typeConverter.addConversion([](FloatType t) -> std::optional<Type> {
+      if (!t.isF32() && !t.isBF16()) {
+        return std::nullopt;
+      }
       return IntegerType::get(t.getContext(), t.getWidth());
     });
     auto materializeCast = [](OpBuilder &builder, Type resultType,
@@ -154,12 +176,9 @@ struct TTKernelLowerScalarFpTypesPass
       if (!mlir::isa<FloatAttr>(op.getValue())) {
         return true;
       }
-      for (Operation *user : op.getResult().getUsers()) {
-        if (isa<ttk::TTKernelDialect>(user->getDialect())) {
-          return true;
-        }
-      }
-      return false;
+      return llvm::all_of(op.getResult().getUsers(), [](Operation *user) {
+        return isa<ttk::TTKernelDialect>(user->getDialect());
+      });
     });
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return typeConverter.isSignatureLegal(op.getFunctionType()) &&
@@ -180,6 +199,50 @@ struct TTKernelLowerScalarFpTypesPass
     populateReturnOpTypeConversionPattern(patterns, typeConverter);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns)))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Erase dead iN <-> fN bridge casts left behind by the conversion
+    // framework. These are harmless but clutter the output and would confuse
+    // downstream passes that inspect uses.
+    auto isHandledFloat = [](Type t) { return t.isF32() || t.isBF16(); };
+    SmallVector<UnrealizedConversionCastOp> deadCasts;
+    func.walk([&](UnrealizedConversionCastOp castOp) {
+      if (castOp.getNumOperands() != 1 || castOp.getNumResults() != 1) {
+        return;
+      }
+      Type inputTy = castOp.getOperand(0).getType();
+      Type outputTy = castOp.getResult(0).getType();
+      bool isBridge = (isa<IntegerType>(inputTy) && isHandledFloat(outputTy)) ||
+                      (isHandledFloat(inputTy) && isa<IntegerType>(outputTy));
+      if (!isBridge) {
+        return;
+      }
+      if (castOp.use_empty()) {
+        deadCasts.push_back(castOp);
+      }
+    });
+    for (auto castOp : deadCasts) {
+      castOp.erase();
+    }
+
+    // Verify no live iN <-> fN bridge casts remain. If any survive with
+    // users, the pass has a gap in its coverage.
+    bool hasBridgeCast = false;
+    func.walk([&](UnrealizedConversionCastOp castOp) {
+      if (castOp.getNumOperands() != 1 || castOp.getNumResults() != 1) {
+        return;
+      }
+      Type inputTy = castOp.getOperand(0).getType();
+      Type outputTy = castOp.getResult(0).getType();
+      if ((isa<IntegerType>(inputTy) && isHandledFloat(outputTy)) ||
+          (isHandledFloat(inputTy) && isa<IntegerType>(outputTy))) {
+        castOp.emitOpError("leftover scalar float bridge cast not eliminated");
+        hasBridgeCast = true;
+      }
+    });
+    if (hasBridgeCast) {
       signalPassFailure();
     }
   }

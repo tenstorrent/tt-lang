@@ -10,6 +10,7 @@
 // CHECK-LABEL: func.func @cmpf_ogt_f32
 // CHECK-SAME: (%[[A:.*]]: i32, %[[B:.*]]: i32) -> i1
 // CHECK-NOT: arith.cmpf
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[CMP:.*]] = ttkernel.float32_greater(%[[A]], %[[B]]) : (i32, i32) -> i1
 // CHECK-NEXT: return %[[CMP]] : i1
 module {
@@ -27,6 +28,7 @@ module {
 // CHECK-LABEL: func.func @cmpf_ogt_bf16
 // CHECK-SAME: (%[[A:.*]]: i16, %[[B:.*]]: i16) -> i1
 // CHECK-NOT: arith.cmpf
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[CMP:.*]] = ttkernel.bfloat16_greater(%[[A]], %[[B]]) : (i16, i16) -> i1
 // CHECK-NEXT: return %[[CMP]] : i1
 module {
@@ -44,6 +46,7 @@ module {
 // CHECK-LABEL: func.func @cmpf_olt_f32
 // CHECK-SAME: (%[[A:.*]]: i32, %[[B:.*]]: i32) -> i1
 // CHECK-NOT: arith.cmpf
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[CMP:.*]] = ttkernel.float32_greater(%[[B]], %[[A]]) : (i32, i32) -> i1
 // CHECK-NEXT: return %[[CMP]] : i1
 module {
@@ -60,6 +63,7 @@ module {
 // Constant float operand: 1.0f (0x3F800000) materialized as integer constant.
 // CHECK-LABEL: func.func @cmpf_ogt_f32_constant
 // CHECK-SAME: (%[[A:.*]]: i32) -> i1
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[BITS:.*]] = arith.constant 1065353216 : i32
 // CHECK: %[[CMP:.*]] = ttkernel.float32_greater(%[[A]], %[[BITS]]) : (i32, i32) -> i1
 // CHECK-NEXT: return %[[CMP]] : i1
@@ -78,6 +82,7 @@ module {
 // CHECK-LABEL: func.func @cmpf_olt_bf16
 // CHECK-SAME: (%[[A:.*]]: i16, %[[B:.*]]: i16) -> i1
 // CHECK-NOT: arith.cmpf
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[CMP:.*]] = ttkernel.bfloat16_greater(%[[B]], %[[A]]) : (i16, i16) -> i1
 // CHECK-NEXT: return %[[CMP]] : i1
 module {
@@ -92,9 +97,11 @@ module {
 // -----
 
 // arith.truncf f32 -> bf16 lowered to bit extraction (shrui + trunci).
+// bf16 is the upper 16 bits of f32, so this is just a shift-right by 16.
 // CHECK-LABEL: func.func @truncf_f32_to_bf16
 // CHECK-SAME: (%[[ARG:.*]]: i32) -> i16
 // CHECK-NOT: arith.truncf
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[SHIFT:.*]] = arith.constant 16 : i32
 // CHECK: %[[SHIFTED:.*]] = arith.shrui %[[ARG]], %[[SHIFT]] : i32
 // CHECK-NEXT: %[[RESULT:.*]] = arith.trunci %[[SHIFTED]] : i32 to i16
@@ -114,6 +121,7 @@ module {
 // CHECK-LABEL: func.func @constant_f32
 // CHECK-SAME: () -> i32
 // CHECK-NOT: arith.constant{{.*}}: f32
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[BITS:.*]] = arith.constant 1065353216 : i32
 // CHECK-NEXT: return %[[BITS]] : i32
 module {
@@ -130,6 +138,7 @@ module {
 // CHECK-LABEL: func.func @constant_bf16
 // CHECK-SAME: () -> i16
 // CHECK-NOT: arith.constant{{.*}}: bf16
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[BITS:.*]] = arith.constant 16416 : i16
 // CHECK-NEXT: return %[[BITS]] : i16
 module {

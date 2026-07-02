@@ -70,6 +70,16 @@ def _collect_assignments(source):
             ["max_val"],
             ["max_val"],
         ),
+        (
+            "if cond:\n    tmp = acc\nelse:\n    tmp = other\nacc = tmp",
+            ["tmp", "acc"],
+            ["acc"],
+        ),
+        (
+            "if c1:\n    x = acc\nelif c2:\n    x = acc + 1\nelse:\n    x = other\nacc = x",
+            ["x", "acc"],
+            ["acc"],
+        ),
     ],
 )
 def test_assignment_collector_detects_loop_carried_recurrences(
