@@ -36,6 +36,9 @@ CALL_BUILD_WHEEL_IMAGES_WORKFLOW = (
 CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-ttmetal-light-wheel.yml"
 )
+TTMETAL_LIGHT_ON_DEMAND_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "ttmetal-light-on-demand.yml"
+)
 MANYLINUX_WHEEL_DOCKERFILE = (
     REPO_ROOT / ".github" / "containers" / "Dockerfile.wheel-manylinux-2-34"
 )
@@ -96,6 +99,25 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)" in workflow
     assert "--find-links dist" in workflow
     assert '"$metapackage_wheel"' in workflow
+
+
+def test_ttmetal_light_max_age_crosses_reusable_workflow_as_string() -> None:
+    on_demand_workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
+    reusable_workflow = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
+    on_demand_max_age = on_demand_workflow.split("      max_age_days:", 1)[1].split(
+        "      python_tags:", 1
+    )[0]
+    reusable_max_age = reusable_workflow.split("      max_age_days:", 1)[1].split(
+        "      python_tags:", 1
+    )[0]
+
+    assert "type: string" in on_demand_max_age
+    assert 'default: "14"' in on_demand_max_age
+    assert (
+        "max_age_days: ${{ format('{0}', inputs.max_age_days) }}" in on_demand_workflow
+    )
+    assert "type: string" in reusable_max_age
+    assert 'default: "14"' in reusable_max_age
 
 
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:

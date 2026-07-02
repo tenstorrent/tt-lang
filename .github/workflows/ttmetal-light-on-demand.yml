@@ -25,8 +25,8 @@ on:
       max_age_days:
         description: "Max |tt-lang date - tt-metal date| when searching for a compatible commit."
         required: false
-        type: number
-        default: 14
+        type: string
+        default: "14"
       python_tags:
         description: "Comma-separated CPython ABIs to build."
         required: false
@@ -116,7 +116,7 @@ jobs:
     with:
       tt_metal_sha: ${{ needs.detect.outputs.tt_metal_sha }}
       docker_tag: ${{ inputs.docker_tag || needs.detect.outputs.docker_tag }}
-      max_age_days: ${{ inputs.max_age_days }}
+      max_age_days: ${{ format('{0}', inputs.max_age_days) }}
       python_tags: ${{ inputs.python_tags }}
       hw_type: ${{ inputs.hw_type }}
       dry_run: ${{ inputs.dry_run }}
