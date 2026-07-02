@@ -196,18 +196,25 @@ func.func @explicit_pipe_transfer_ir() attributes { "ttl.kernel_thread" = #ttker
 // with sender-local capacity released by the receiver pop.
 // CHECK-LABEL: func.func @computed_address_capacity_protocol
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-// CHECK-DAG: %[[CAPACITY_SEM:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[CAPACITY_IDX:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[INITIAL_CAPACITY:.*]] = arith.constant 1 : i32
-// CHECK: ttkernel.semaphore_set(%[[CAPACITY_SEM]], %[[INITIAL_CAPACITY]])
+// CHECK: %[[CAPACITY_SEM:.*]] = ttkernel.get_semaphore(%[[CAPACITY_IDX]])
+// CHECK: %[[CAPACITY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[CAPACITY_SEM]])
+// CHECK: ttkernel.noc_semaphore_set(%[[CAPACITY_PTR]], %[[INITIAL_CAPACITY]])
 // CHECK: ttkernel.cb_reserve_back
 // CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK-NOT: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.cb_push_back
 // CHECK: ttkernel.cb_wait_front
 // CHECK: ttkernel.cb_pop_front
-// CHECK: ttkernel.semaphore_up_remote(%[[CAPACITY_SEM]]
+// CHECK: %[[RELEASE_ADDR:.*]] = ttkernel.get_noc_addr
+// CHECK: ttkernel.noc_semaphore_inc(%[[RELEASE_ADDR]]
 // CHECK: ttkernel.noc_async_atomic_barrier
-// CHECK: ttkernel.semaphore_down(%[[CAPACITY_SEM]]
+// CHECK: %[[ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%{{.*}})
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[ACQUIRE_PTR]]
+// CHECK: %[[AVAILABLE:.*]] = ttkernel.load_from_l1(%[[ACQUIRE_PTR]]
+// CHECK: %[[REMAINING:.*]] = arith.subi %[[AVAILABLE]]
+// CHECK: ttkernel.store_to_l1(%[[REMAINING]], %[[ACQUIRE_PTR]]
 // CHECK-NOT: ttkernel.experimental.semaphore_wait(
 // CHECK-NOT: ttkernel.noc_semaphore_set
 // CHECK: ttkernel.noc_async_write
@@ -248,10 +255,14 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // CHECK-LABEL: func.func @mixed_capacity_and_sender_ready_compact_resources
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1, 2>
 // CHECK: %[[READY_SEM:.*]] = arith.constant 2 : index
-// CHECK: %[[CAPACITY_SEM:.*]] = arith.constant 3 : index
-// CHECK: ttkernel.semaphore_set(%[[CAPACITY_SEM]]
-// CHECK: ttkernel.semaphore_up_remote(%[[CAPACITY_SEM]]
-// CHECK: ttkernel.semaphore_down(%[[CAPACITY_SEM]]
+// CHECK: %[[CAPACITY_IDX:.*]] = arith.constant 3 : index
+// CHECK: %[[CAPACITY_SEM:.*]] = ttkernel.get_semaphore(%[[CAPACITY_IDX]])
+// CHECK: %[[CAPACITY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[CAPACITY_SEM]])
+// CHECK: ttkernel.noc_semaphore_set(%[[CAPACITY_PTR]]
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: arith.subi
+// CHECK: ttkernel.store_to_l1
 // CHECK: ttkernel.get_semaphore(%[[READY_SEM]]
 // CHECK: ttkernel.experimental.semaphore_wait
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {

@@ -169,6 +169,23 @@ static Value buildPipeRuntimeCommonArg(Location loc,
       .getResult();
 }
 
+static Value buildLocalSemaphoreAddress(Location loc, OpBuilder &builder,
+                                        int64_t semaphoreIndex) {
+  Value semaphoreIndexValue =
+      arith::ConstantIndexOp::create(builder, loc, semaphoreIndex);
+  return ttk::GetSemaphoreOp::create(builder, loc, semaphoreIndexValue)
+      .getResult();
+}
+
+static Value buildLocalSemaphorePtr(Location loc, OpBuilder &builder,
+                                    int64_t semaphoreIndex) {
+  auto l1PtrTy = ttk::L1AddrPtrType::get(builder.getContext(), 32);
+  Value semaphoreAddress =
+      buildLocalSemaphoreAddress(loc, builder, semaphoreIndex);
+  return ttk::CastToL1PtrOp::create(builder, loc, l1PtrTy, semaphoreAddress)
+      .getResult();
+}
+
 /// Return the first pipe-resource runtime arg index used for GlobalSemaphore
 /// ready-counter addresses.
 static int64_t
@@ -339,6 +356,48 @@ static Value buildComputedReceiverDFBDestinationAddress(
   return baseAddress.getResult();
 }
 
+static void lowerSameDevicePipeCapacityRelease(
+    Location loc, const PipeCapacityReleaseInfo &release, Value nocVal,
+    ConversionPatternRewriter &rewriter) {
+  assert(release.target.kind == PipeCapacityReleaseTargetKind::SameDeviceNoc &&
+         "expected same-device capacity release target");
+  const PipeCapacitySameDeviceNocTarget &target =
+      release.target.sameDeviceNocTarget;
+  auto indexTy = rewriter.getIndexType();
+  Value semaphoreAddress =
+      buildLocalSemaphoreAddress(loc, rewriter, release.semaphoreIndex);
+  Value sourceXLogical =
+      arith::ConstantIndexOp::create(rewriter, loc, target.logicalX);
+  Value sourceYLogical =
+      arith::ConstantIndexOp::create(rewriter, loc, target.logicalY);
+  Value sourceXTranslated =
+      ttk::ConvertLogicalXToTranslatedOp::create(rewriter, loc, indexTy,
+                                                 sourceXLogical);
+  Value sourceYTranslated =
+      ttk::ConvertLogicalYToTranslatedOp::create(rewriter, loc, indexTy,
+                                                 sourceYLogical);
+  Value releaseCount =
+      arith::ConstantIntOp::create(rewriter, loc, release.count, 32);
+  Value remoteCapacityNocAddr =
+      ttk::GetNocAddrOp::create(rewriter, loc, sourceXTranslated,
+                                sourceYTranslated, semaphoreAddress, nocVal)
+          .getResult();
+  ttk::NocSemaphoreIncOp::create(rewriter, loc, remoteCapacityNocAddr,
+                                 releaseCount, nocVal, /*posted=*/BoolAttr());
+}
+
+static void lowerPipeCapacityRelease(Location loc,
+                                     const PipeCapacityReleaseInfo &release,
+                                     Value nocVal,
+                                     ConversionPatternRewriter &rewriter) {
+  switch (release.target.kind) {
+  case PipeCapacityReleaseTargetKind::SameDeviceNoc:
+    lowerSameDevicePipeCapacityRelease(loc, release, nocVal, rewriter);
+    return;
+  }
+  llvm_unreachable("unknown pipe capacity release target kind");
+}
+
 struct ReceiverPublishedAddressInfo {
   Value receiverDFB;
   ttcore::TileType tileType;
@@ -462,12 +521,12 @@ void initializePipeCapacitySemaphores(
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
     for (const PipeCapacityInitInfo &init : sortedInitializations) {
-      Value semaphoreIndex =
-          arith::ConstantIndexOp::create(builder, loc, init.semaphoreIndex);
+      Value capacitySemaphorePtr =
+          buildLocalSemaphorePtr(loc, builder, init.semaphoreIndex);
       Value initialCapacity =
           arith::ConstantIntOp::create(builder, loc, init.initialCapacity, 32);
-      ttk::SemaphoreSetOp::create(builder, loc, semaphoreIndex,
-                                  initialCapacity);
+      ttk::NocSemaphoreSetOp::create(builder, loc, capacitySemaphorePtr,
+                                     initialCapacity);
     }
   }
 }
@@ -525,12 +584,21 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                        : ArrayRef<PipeCapacityAcquireInfo>{};
   if (!capacityAcquires.empty()) {
     for (const PipeCapacityAcquireInfo &capacityAcquire : capacityAcquires) {
-      Value capacitySemaphoreIndex = arith::ConstantIndexOp::create(
-          rewriter, loc, capacityAcquire.semaphoreIndex);
+      Value capacitySemaphorePtr =
+          buildLocalSemaphorePtr(loc, rewriter, capacityAcquire.semaphoreIndex);
       Value capacityCount = arith::ConstantIntOp::create(
           rewriter, loc, capacityAcquire.count, 32);
-      ttk::SemaphoreDownOp::create(rewriter, loc, capacitySemaphoreIndex,
-                                   capacityCount);
+      ttk::SemaphoreWaitMinOp::create(rewriter, loc, capacitySemaphorePtr,
+                                      capacityCount);
+      Value zeroI32 = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+      Value availableCapacity =
+          ttk::LoadFromL1Op::create(rewriter, loc, i32Ty, capacitySemaphorePtr,
+                                    zeroI32)
+              .getResult();
+      Value remainingCapacity = arith::SubIOp::create(
+          rewriter, loc, availableCapacity, capacityCount);
+      ttk::StoreToL1Op::create(rewriter, loc, remainingCapacity,
+                               capacitySemaphorePtr, zeroI32);
     }
   } else {
     ReadyCounterAddressInfo readyCounterInfo =
@@ -828,25 +896,10 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
                        : ArrayRef<PipeCapacityReleaseInfo>{};
   if (!releases.empty()) {
     int64_t nocIdx = getNocIndex(op);
-    auto indexTy = rewriter.getIndexType();
     Value nocVal = arith::ConstantOp::create(
         rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(nocIdx));
     for (const PipeCapacityReleaseInfo &release : releases) {
-      Value semaphoreIndex =
-          arith::ConstantIndexOp::create(rewriter, loc, release.semaphoreIndex);
-      Value sourceXLogical =
-          arith::ConstantIndexOp::create(rewriter, loc, release.sender.x);
-      Value sourceYLogical =
-          arith::ConstantIndexOp::create(rewriter, loc, release.sender.y);
-      Value sourceXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
-          rewriter, loc, indexTy, sourceXLogical);
-      Value sourceYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
-          rewriter, loc, indexTy, sourceYLogical);
-      Value releaseCount =
-          arith::ConstantIntOp::create(rewriter, loc, release.count, 32);
-      ttk::SemaphoreUpRemoteOp::create(rewriter, loc, semaphoreIndex,
-                                       sourceXTranslated, sourceYTranslated,
-                                       releaseCount, nocVal);
+      lowerPipeCapacityRelease(loc, release, nocVal, rewriter);
     }
     ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
   }

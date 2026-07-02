@@ -90,7 +90,7 @@ struct PipeCapacityEndpoint {
   PipeReceiverEndpointId endpointId = 0;
   PipeReceiverDFBNodeId receiverDFBNode = 0;
   PipeReceiverDFBKey receiverDFB;
-  PipeCapacitySenderCoord source;
+  PipeCapacityReleaseTarget releaseTarget;
   int64_t initialCapacity = 0;
 };
 
@@ -114,7 +114,9 @@ static void printReceiverDFB(llvm::raw_ostream &os,
 
 static void printEndpoint(llvm::raw_ostream &os,
                           const PipeCapacityEndpoint &endpoint) {
-  os << "src(" << endpoint.source.x << ", " << endpoint.source.y << ") -> ";
+  const PipeCapacitySameDeviceNocTarget &target =
+      endpoint.releaseTarget.sameDeviceNocTarget;
+  os << "src(" << target.logicalX << ", " << target.logicalY << ") -> ";
   printReceiverDFB(os, endpoint.receiverDFB);
   os << " capacity " << endpoint.initialCapacity;
 }
@@ -194,7 +196,9 @@ getCapacityEndpoint(const PipeGraph &pipeGraph,
       receiverEndpoint.id,
       receiverEndpoint.receiverDFBNode,
       receiverEndpoint.receiverDFB,
-      PipeCapacitySenderCoord{pipeEdge.pipe.srcX, pipeEdge.pipe.srcY},
+      PipeCapacityReleaseTarget::sameDeviceNoc(
+          PipeCapacitySameDeviceNocTarget{pipeEdge.pipe.srcX,
+                                          pipeEdge.pipe.srcY}),
       pipeEdge.receiverDFBInfo.blockCount,
   };
 }
@@ -239,8 +243,13 @@ static bool collectAndCheckSends(ModuleOp mod,
                                  const PipeCapacityEndpoint &endpoint,
                                  const PipeGraph &pipeGraph,
                                  SmallVectorImpl<PipeTransferSendOp> &sends) {
+  assert(endpoint.releaseTarget.kind ==
+             PipeCapacityReleaseTargetKind::SameDeviceNoc &&
+         "only same-device pipe capacity releases are supported");
+  const PipeCapacitySameDeviceNocTarget &target =
+      endpoint.releaseTarget.sameDeviceNocTarget;
   LaunchNodeDomain sourceDomain =
-      getSingleLaunchNodeDomain({endpoint.source.x, endpoint.source.y});
+      getSingleLaunchNodeDomain({target.logicalX, target.logicalY});
   bool valid = true;
   mod.walk([&](PipeTransferSendOp sendOp) {
     if (!isMatchingTransfer(endpoint, sendOp.getTransfer())) {
@@ -333,7 +342,7 @@ static void recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &facts,
         PipeCapacityInitInfo{capacitySemaphoreIndex, endpoint.initialCapacity});
   }
   for (CBPopOp popOp : facts.pops) {
-    plan.addRelease(popOp, PipeCapacityReleaseInfo{endpoint.source,
+    plan.addRelease(popOp, PipeCapacityReleaseInfo{endpoint.releaseTarget,
                                                    capacitySemaphoreIndex, 1});
   }
 }

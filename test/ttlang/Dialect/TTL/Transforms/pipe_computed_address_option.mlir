@@ -49,15 +49,14 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // no capacity ops.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-LABEL: func.func @capacity_pipe
-  // COMPUTED: ttkernel.semaphore_set
-  // COMPUTED: ttkernel.semaphore_up_remote
-  // COMPUTED: ttkernel.semaphore_down
+  // COMPUTED: ttkernel.experimental.semaphore_wait_min
+  // COMPUTED: arith.subi
+  // COMPUTED: ttkernel.store_to_l1
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
 
   // PUBLISHED-LABEL: func.func @capacity_pipe
-  // PUBLISHED-NOT: ttkernel.semaphore_set
-  // PUBLISHED-NOT: ttkernel.semaphore_down
-  // PUBLISHED-NOT: ttkernel.semaphore_up_remote
+  // PUBLISHED-NOT: arith.subi
+  // PUBLISHED-NOT: ttkernel.store_to_l1
   // PUBLISHED: ttkernel.noc_inline_dw_write
   func.func @capacity_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>

@@ -45,8 +45,8 @@
 //     require every receiver endpoint of pipeEdge to be proven and lowerable
 //     initialize one sender-local capacity semaphore per receiver endpoint to
 //             that endpoint receiver dataflow buffer's block_count
-//     record one semaphore_down per endpoint for each send
-//     record remote semaphore_up releases to the sender for each endpoint pop
+//     record one capacity acquire per endpoint for each send
+//     record one capacity release to the sender for each endpoint pop
 //     mark the transfer creates as using the capacity protocol
 //
 // If an endpoint requirement is not proven, that endpoint has no capacity
@@ -69,9 +69,25 @@ namespace mlir::tt::ttl {
 
 struct PipeResourcePlan;
 
-struct PipeCapacitySenderCoord {
-  int64_t x = 0;
-  int64_t y = 0;
+struct PipeCapacitySameDeviceNocTarget {
+  int64_t logicalX = 0;
+  int64_t logicalY = 0;
+};
+
+enum class PipeCapacityReleaseTargetKind {
+  SameDeviceNoc,
+};
+
+struct PipeCapacityReleaseTarget {
+  static PipeCapacityReleaseTarget
+  sameDeviceNoc(PipeCapacitySameDeviceNocTarget target) {
+    return PipeCapacityReleaseTarget{PipeCapacityReleaseTargetKind::SameDeviceNoc,
+                                     target};
+  }
+
+  PipeCapacityReleaseTargetKind kind =
+      PipeCapacityReleaseTargetKind::SameDeviceNoc;
+  PipeCapacitySameDeviceNocTarget sameDeviceNocTarget;
 };
 
 struct PipeCapacityAcquireInfo {
@@ -80,7 +96,7 @@ struct PipeCapacityAcquireInfo {
 };
 
 struct PipeCapacityReleaseInfo {
-  PipeCapacitySenderCoord sender;
+  PipeCapacityReleaseTarget target;
   int64_t semaphoreIndex = 0;
   int64_t count = 1;
 };
