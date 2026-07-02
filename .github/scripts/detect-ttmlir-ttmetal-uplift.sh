@@ -12,12 +12,17 @@
 # unchanged (re-searching the same history would fail identically). Once tt-lang
 # HEAD advances, a recorded miss is retried because newer commits may now match.
 #
+# --assume-new skips the S3 idempotency check and reports the pinned SHA as
+# buildable. Dry-run builds never publish and run without S3 credentials (OIDC
+# authorizes only main), so reading the published prefix is neither possible nor
+# meaningful.
+#
 # Writes to $GITHUB_OUTPUT (or stdout):
 #   uplift=true|false
 #   tt_metal_sha=<full 40-char sha>   (only when uplift=true)
 #   tt_metal_sha_short=<7-char>       (only when uplift=true)
 #
-# Usage: detect-ttmlir-ttmetal-uplift.sh [--cmakelists <path>] [--ttlang-head <sha>]
+# Usage: detect-ttmlir-ttmetal-uplift.sh [--cmakelists <path>] [--ttlang-head <sha>] [--assume-new]
 
 set -euo pipefail
 
@@ -84,17 +89,20 @@ emit() {
 main() {
     local cmakelists="$repo_root/third-party/tt-mlir/third_party/CMakeLists.txt"
     local ttlang_head=""
+    local assume_new=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --cmakelists)
-                [[ $# -ge 2 ]] || { echo "Usage: $0 [--cmakelists <path>] [--ttlang-head <sha>]" >&2; return 2; }
+                [[ $# -ge 2 ]] || { echo "Usage: $0 [--cmakelists <path>] [--ttlang-head <sha>] [--assume-new]" >&2; return 2; }
                 cmakelists="$2"; shift 2 ;;
             --ttlang-head)
-                [[ $# -ge 2 ]] || { echo "Usage: $0 [--cmakelists <path>] [--ttlang-head <sha>]" >&2; return 2; }
+                [[ $# -ge 2 ]] || { echo "Usage: $0 [--cmakelists <path>] [--ttlang-head <sha>] [--assume-new]" >&2; return 2; }
                 ttlang_head="$2"; shift 2 ;;
+            --assume-new)
+                assume_new=true; shift ;;
             *)
                 echo "Unknown argument: $1" >&2
-                echo "Usage: $0 [--cmakelists <path>] [--ttlang-head <sha>]" >&2
+                echo "Usage: $0 [--cmakelists <path>] [--ttlang-head <sha>] [--assume-new]" >&2
                 return 2 ;;
         esac
     done
@@ -110,7 +118,12 @@ main() {
     short_sha="${target_sha:0:7}"
     echo "tt-mlir targets tt-metal $target_sha (prefix $short_sha); tt-lang HEAD $ttlang_head" >&2
 
-    class="$(classify_target "$short_sha" "$ttlang_head")"
+    if [[ "$assume_new" == true ]]; then
+        echo "Assuming $short_sha is unbuilt (--assume-new); skipping S3 idempotency check." >&2
+        class="new"
+    else
+        class="$(classify_target "$short_sha" "$ttlang_head")"
+    fi
     case "$class" in
         published)
             echo "Wheel already published under $short_sha; skipping." >&2

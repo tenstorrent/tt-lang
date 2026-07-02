@@ -123,6 +123,27 @@ setup() {
     assert_output --partial "uplift=true"
 }
 
+@test "main --assume-new: uplift=true without reading S3" {
+    cml=$(make_cmakelists "$FULL_SHA")
+    # Any S3 read must abort the run; --assume-new must not reach these.
+    list_prefix_objects() { echo "S3 must not be read" >&2; return 1; }
+    read_recorded_head() { echo "S3 must not be read" >&2; return 1; }
+    export GITHUB_OUTPUT="$GH_OUT"
+    run -0 main --cmakelists "$cml" --ttlang-head "$HEAD_A" --assume-new
+    run cat "$GH_OUT"
+    assert_output --partial "uplift=true"
+    assert_output --partial "tt_metal_sha=$FULL_SHA"
+    assert_output --partial "tt_metal_sha_short=$SHORT_SHA"
+}
+
+@test "main --assume-new: unreadable CMakeLists still aborts" {
+    export GITHUB_OUTPUT="$GH_OUT"
+    run main --cmakelists "$BATS_TEST_TMPDIR/missing.txt" --assume-new
+    assert_failure
+    run cat "$GH_OUT"
+    refute_output --partial "uplift="
+}
+
 @test "main: unreadable CMakeLists aborts without emitting uplift" {
     list_prefix_objects() { printf ''; }
     export GITHUB_OUTPUT="$GH_OUT"

@@ -85,20 +85,27 @@ jobs:
         id: docker_tag
         run: echo "tag=$(.github/containers/get-version-tag.sh)" >> "$GITHUB_OUTPUT"
 
-      # Detection reads the published S3 prefix to decide idempotency.
+      # Idempotency detection reads the published S3 prefix, so credentials are
+      # needed only when auto-detecting for a real publish. Dry-run builds never
+      # publish (and OIDC authorizes only main), so they skip S3 entirely and
+      # stay runnable from any branch.
       - name: Configure AWS Credentials
+        if: ${{ inputs.dry_run != true && inputs.tt_metal_sha == '' }}
         uses: ./.github/actions/configure-tt-s3-credentials
 
       - name: Detect uplift
         id: detect
         env:
           FORCED_SHA: ${{ inputs.tt_metal_sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           if [ -n "$FORCED_SHA" ]; then
             echo "Forced tt-metal SHA: $FORCED_SHA"
             echo "uplift=true" >> "$GITHUB_OUTPUT"
             echo "tt_metal_sha=$FORCED_SHA" >> "$GITHUB_OUTPUT"
+          elif [ "$DRY_RUN" = "true" ]; then
+            .github/scripts/detect-ttmlir-ttmetal-uplift.sh --assume-new
           else
             .github/scripts/detect-ttmlir-ttmetal-uplift.sh
           fi

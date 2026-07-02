@@ -129,6 +129,15 @@ def test_ttmetal_light_max_age_crosses_reusable_workflow_as_string() -> None:
     assert 'default: "14"' in reusable_max_age
 
 
+def test_ttmetal_light_on_demand_detect_skips_s3_for_dry_run() -> None:
+    workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
+    # S3 credentials are configured only when auto-detecting for a real publish;
+    # a dry-run or forced-SHA run needs none and stays runnable from a branch.
+    assert "if: ${{ inputs.dry_run != true && inputs.tt_metal_sha == '' }}" in workflow
+    # Dry-run auto-detect skips the S3 idempotency check.
+    assert "detect-ttmlir-ttmetal-uplift.sh --assume-new" in workflow
+
+
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
     build_docker_workflow = CALL_BUILD_DOCKER_WORKFLOW.read_text()
     wheel_images_workflow = CALL_BUILD_WHEEL_IMAGES_WORKFLOW.read_text()
