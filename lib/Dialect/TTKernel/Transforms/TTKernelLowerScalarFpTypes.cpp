@@ -224,36 +224,23 @@ struct TTKernelLowerScalarFpTypesPass
       return;
     }
 
-    // Erase dead iN <-> fN bridge casts left behind by the conversion
-    // framework. These are harmless but clutter the output and would confuse
-    // downstream passes that inspect uses.
-    auto isHandledFloat = [](Type t) { return t.isF32() || t.isBF16(); };
-    SmallVector<UnrealizedConversionCastOp> deadCasts;
-    func.walk([&](UnrealizedConversionCastOp castOp) {
-      if (castOp.getNumOperands() != 1 || castOp.getNumResults() != 1) {
-        return;
-      }
-      Type inputTy = castOp.getOperand(0).getType();
-      Type outputTy = castOp.getResult(0).getType();
-      bool isBridge = (isa<IntegerType>(inputTy) && isHandledFloat(outputTy)) ||
-                      (isHandledFloat(inputTy) && isa<IntegerType>(outputTy));
-      if (!isBridge) {
-        return;
-      }
-      if (castOp.use_empty()) {
-        deadCasts.push_back(castOp);
-      }
-    });
-    for (auto castOp : deadCasts) {
-      castOp.erase();
-    }
+    // Reconcile cast chains (e.g., iN->fN->iN collapses to identity), erase
+    // dead remainders, and verify no live iN<->fN bridges survive.
+    SmallVector<UnrealizedConversionCastOp> allCasts;
+    func.walk([&](UnrealizedConversionCastOp op) { allCasts.push_back(op); });
 
-    // Verify no live iN <-> fN bridge casts remain. If any survive with
-    // users, the pass has a gap in its coverage.
+    SmallVector<UnrealizedConversionCastOp> remainingCasts;
+    reconcileUnrealizedCasts(allCasts, &remainingCasts);
+
+    auto isHandledFloat = [](Type t) { return t.isF32() || t.isBF16(); };
     bool hasBridgeCast = false;
-    func.walk([&](UnrealizedConversionCastOp castOp) {
+    for (auto castOp : remainingCasts) {
+      if (castOp.use_empty()) {
+        castOp.erase();
+        continue;
+      }
       if (castOp.getNumOperands() != 1 || castOp.getNumResults() != 1) {
-        return;
+        continue;
       }
       Type inputTy = castOp.getOperand(0).getType();
       Type outputTy = castOp.getResult(0).getType();
@@ -262,7 +249,7 @@ struct TTKernelLowerScalarFpTypesPass
         castOp.emitOpError("leftover scalar float bridge cast not eliminated");
         hasBridgeCast = true;
       }
-    });
+    }
     if (hasBridgeCast) {
       signalPassFailure();
     }
