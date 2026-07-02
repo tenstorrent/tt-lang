@@ -512,12 +512,8 @@ PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
         reject("push block count is not a whole DFB block count");
         return;
       }
-      auto ownerIt = analysisState.dfbReleaseOwners.reserveByPush.find(
-          pushOp.getOperation());
-      auto reserveOp =
-          ownerIt == analysisState.dfbReleaseOwners.reserveByPush.end()
-              ? CBReserveOp()
-              : dyn_cast_or_null<CBReserveOp>(ownerIt->second);
+      auto reserveOp = lookupOwner<CBReserveOp>(
+          analysisState.dfbReleaseOwners.reserveByPush, pushOp.getOperation());
       if (!reserveOp) {
         reject("push has no unique receiver reserve owner");
         return;
@@ -584,11 +580,8 @@ PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
         reject("pop block count is not a whole DFB block count");
         return;
       }
-      auto ownerIt =
-          analysisState.dfbReleaseOwners.waitByPop.find(popOp.getOperation());
-      auto waitOp = ownerIt == analysisState.dfbReleaseOwners.waitByPop.end()
-                        ? CBWaitOp()
-                        : dyn_cast_or_null<CBWaitOp>(ownerIt->second);
+      auto waitOp = lookupOwner<CBWaitOp>(
+          analysisState.dfbReleaseOwners.waitByPop, popOp.getOperation());
       if (!waitOp) {
         reject("pop has no unique receiver wait owner");
         return;
@@ -831,14 +824,10 @@ static FailureOr<int64_t> getStaticDestinationTileOffset(Value dst) {
 }
 
 static FailureOr<int64_t> getTensorTileCount(RankedTensorType tensorType) {
-  int64_t tileCount = 1;
-  for (int64_t dimension : tensorType.getShape()) {
-    if (dimension == ShapedType::kDynamic) {
-      return failure();
-    }
-    tileCount *= dimension;
+  if (!tensorType.hasStaticShape()) {
+    return failure();
   }
-  return tileCount;
+  return tensorType.getNumElements();
 }
 
 static FailureOr<int64_t>

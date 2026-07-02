@@ -84,6 +84,15 @@ struct DFBReleaseOwnerMaps {
   llvm::DenseMap<Operation *, Operation *> waitByPop;
 };
 
+/// Resolve the recorded owner of `op` to `OpT`, or a null op when `op` has no
+/// owner or its owner is a different op type.
+template <typename OpT>
+OpT lookupOwner(const llvm::DenseMap<Operation *, Operation *> &owners,
+                Operation *op) {
+  auto it = owners.find(op);
+  return it == owners.end() ? OpT() : dyn_cast_or_null<OpT>(it->second);
+}
+
 /// Returns true for DFB acquire ops accepted by this analysis.
 bool isDFBAcquireOp(Operation *op);
 

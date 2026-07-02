@@ -286,10 +286,7 @@ static bool collectAndCheckPops(ModuleOp mod,
       return;
     }
     const DFBReleaseOwnerMaps &owners = pipeGraph.getDFBReleaseOwnerMaps();
-    auto ownerIt = owners.waitByPop.find(popOp.getOperation());
-    auto waitOp = ownerIt == owners.waitByPop.end()
-                      ? CBWaitOp()
-                      : dyn_cast_or_null<CBWaitOp>(ownerIt->second);
+    auto waitOp = lookupOwner<CBWaitOp>(owners.waitByPop, popOp.getOperation());
     if (!waitOp) {
       debugRejectEndpoint(endpoint,
                           "pop is not owned by a matching receiver wait");
