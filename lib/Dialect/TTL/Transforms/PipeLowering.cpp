@@ -1751,11 +1751,10 @@ buildComputedAddressPlan(ModuleOp mod,
     }
     baseCTAByFunc[func] = baseCTA;
 
-    SmallVector<int32_t> dfbAttrs;
-    dfbAttrs.reserve(sortedDFBIndices.size());
-    for (int64_t dfbIndex : sortedDFBIndices) {
-      dfbAttrs.push_back(static_cast<int32_t>(dfbIndex));
-    }
+    SmallVector<int32_t> dfbAttrs =
+        llvm::map_to_vector(sortedDFBIndices, [](int64_t dfbIndex) {
+          return static_cast<int32_t>(dfbIndex);
+        });
     if (updateFunctionAttrs) {
       func->setAttr(kPipeComputedAddressDFBIndicesAttrName,
                     builder.getDenseI32ArrayAttr(dfbAttrs));

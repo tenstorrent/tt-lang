@@ -454,7 +454,7 @@ LogicalResult buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
     for (PipeReceiverEndpointId endpointId :
          pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
       const PipeCapacityEndpointFacts &facts =
-          endpointFacts[factsIndexByEndpoint[endpointId]];
+          endpointFacts[factsIndexByEndpoint.lookup(endpointId)];
       int64_t capacitySemaphoreIndex = plan.allocateSemaphoreIndex();
       recordEndpointCapacityFacts(facts, capacitySemaphoreIndex, plan);
     }
