@@ -252,6 +252,11 @@ public:
     return pipeEdges[id];
   }
 
+  const PipeEdge *getPipeEdgeForPipe(const PipeKey &pipe) const {
+    auto it = pipeEdgeIdByPipe.find(pipe);
+    return it == pipeEdgeIdByPipe.end() ? nullptr : &pipeEdges[it->second];
+  }
+
   ArrayRef<PipeReceiverEndpointId>
   getPipeReceiverEndpoints(PipeEdgeId pipeEdge) const {
     return getPipeEdge(pipeEdge).receiverEndpoints;
@@ -309,6 +314,7 @@ private:
 
   llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
   SmallVector<PipeEdge, 0> pipeEdges;
+  llvm::DenseMap<PipeKey, PipeEdgeId> pipeEdgeIdByPipe;
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
   bool hasAnalyzedLaunchGrid = false;

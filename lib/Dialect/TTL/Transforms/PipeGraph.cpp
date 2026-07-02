@@ -629,6 +629,7 @@ LaunchNodeDomain PipeGraph::getOperationLaunchDomain(Operation *op) const {
 
 void PipeGraph::rebuildEndpointGraph() {
   pipeEdges.clear();
+  pipeEdgeIdByPipe.clear();
   pipeReceiverEndpoints.clear();
   receiverDFBNodes.clear();
 
@@ -643,6 +644,7 @@ void PipeGraph::rebuildEndpointGraph() {
                                  receiverInfo,
                                  receiverInfo.transferCreateOps,
                                  {}});
+    pipeEdgeIdByPipe[pipeKey] = pipeEdgeId;
     PipeEdge &pipeEdge = pipeEdges.back();
 
     pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {

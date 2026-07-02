@@ -1592,16 +1592,6 @@ static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
   return info.staticTileOffset * tileType.getSizeBytes();
 }
 
-static const PipeEdge *lookupPipeEdge(const PipeGraph &pipeGraph,
-                                      const PipeKey &pipe) {
-  for (const PipeEdge &pipeEdge : pipeGraph.getPipeEdges()) {
-    if (pipeEdge.pipe == pipe) {
-      return &pipeEdge;
-    }
-  }
-  return nullptr;
-}
-
 static std::optional<int64_t>
 getUniformReceiverBatchSize(const PipeGraph &pipeGraph,
                             const PipeEdge &pipeEdge) {
@@ -1668,7 +1658,7 @@ static bool isComputedAddressCandidate(const PipeTransferAllocationUnit &unit,
   if (postCount != 1 || sendCount != 1) {
     return false;
   }
-  const PipeEdge *pipeEdge = lookupPipeEdge(pipeGraph, unit.pipe);
+  const PipeEdge *pipeEdge = pipeGraph.getPipeEdgeForPipe(unit.pipe);
   if (!pipeEdge) {
     return false;
   }
