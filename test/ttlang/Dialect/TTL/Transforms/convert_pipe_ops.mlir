@@ -401,8 +401,7 @@ func.func @two_incoming_edges_one_dfb_compute_addresses() attributes { "ttl.kern
 // CHECK-DAG: %[[SECOND_SLOT_OFFSET:.*]] = arith.constant 4 : i32
 // CHECK: ttkernel.noc_inline_dw_write
 // CHECK: %[[SECOND_TABLE_ADDR:.*]] = arith.addi {{.*}}, %[[SECOND_SLOT_OFFSET]]
-// CHECK: ttkernel.get_noc_addr({{.*}}, %[[SECOND_TABLE_ADDR]]
-// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_inline_dw_write(core{{.*}}, %[[SECOND_TABLE_ADDR]]
 func.func @receiver_published_address_slots_ignore_computed_colors(%dynamic_idx: index)
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
