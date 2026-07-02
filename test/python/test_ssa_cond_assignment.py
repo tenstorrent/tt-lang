@@ -244,19 +244,6 @@ def dm_if_else_copy_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
-    # Desired compute -- blocked by ISSUE #683
-    # (convert-ttl-to-compute isBeforeInBlock assert when a value produced
-    # outside scf.if is stored inside both branches):
-    #
-    # @ttl.compute()
-    # def compute():
-    #     node_x, _ = ttl.node(dims=2)
-    #     with inp_dfb.wait() as a, out_dfb.reserve() as o:
-    #         if node_x == 0:
-    #             o.store(ttl.math.exp(a))
-    #         else:
-    #             o.store(ttl.math.tanh(a))
-
     @ttl.compute()
     def compute():
         with inp_dfb.wait() as a, out_dfb.reserve() as o:

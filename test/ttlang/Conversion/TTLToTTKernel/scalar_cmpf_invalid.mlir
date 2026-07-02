@@ -61,7 +61,7 @@ module {
   func.func @cmpf_f16_unsupported(%a_int: i16, %b_int: i16) -> i1 {
     %a = builtin.unrealized_conversion_cast %a_int : i16 to f16
     %b = builtin.unrealized_conversion_cast %b_int : i16 to f16
-    // expected-error @below {{failed to legalize operation 'arith.cmpf'}}
+    // expected-error @below {{'arith.cmpf' op unsupported float type for scalar comparison; only f32 and bf16 are supported}}
     %cmp = arith.cmpf ogt, %a, %b : f16
     return %cmp : i1
   }

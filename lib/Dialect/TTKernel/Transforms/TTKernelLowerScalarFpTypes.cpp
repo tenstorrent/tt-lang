@@ -167,6 +167,27 @@ struct TTKernelLowerScalarFpTypesPass
     typeConverter.addSourceMaterialization(materializeCast);
     typeConverter.addTargetMaterialization(materializeCast);
 
+    // Reject unsupported arith.cmpf ops before running the conversion so that
+    // diagnostics are specific (rather than generic "failed to legalize").
+    bool hasUnsupportedCmpF = false;
+    func.walk([&](arith::CmpFOp op) {
+      auto floatTy = dyn_cast<FloatType>(op.getLhs().getType());
+      if (!floatTy) {
+        op.emitOpError("non-scalar float comparison not supported");
+        hasUnsupportedCmpF = true;
+        return;
+      }
+      if (!floatTy.isF32() && !floatTy.isBF16()) {
+        op.emitOpError("unsupported float type for scalar comparison; "
+                       "only f32 and bf16 are supported");
+        hasUnsupportedCmpF = true;
+      }
+    });
+    if (hasUnsupportedCmpF) {
+      signalPassFailure();
+      return;
+    }
+
     ConversionTarget target(ctx);
     target.addLegalDialect<ttk::TTKernelDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();

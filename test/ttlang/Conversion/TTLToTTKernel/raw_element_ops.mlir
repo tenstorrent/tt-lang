@@ -180,7 +180,8 @@ module {
 // -----
 
 // Write f32 constant (1.0) to tiled block via cb_reserve -> get_write_ptr.
-// The constant stays as f32; materializeIntBits inserts unrealized_conversion_cast.
+// RawElementWriteLowering inserts unrealized_conversion_cast(f32 -> i32);
+// ttkernel-lower-scalar-fp-types removes the scalar bridge in a later pass.
 // CHECK-LABEL: func.func @write_tiled_f32_constant
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[CST:.*]] = arith.constant 1.000000e+00 : f32
@@ -204,7 +205,8 @@ module {
 // -----
 
 // Write bf16 constant (1.0) to tiled block.
-// The constant stays as bf16; materializeIntBits inserts unrealized_conversion_cast.
+// RawElementWriteLowering inserts unrealized_conversion_cast(bf16 -> i16);
+// ttkernel-lower-scalar-fp-types removes the scalar bridge in a later pass.
 // CHECK-LABEL: func.func @write_tiled_bf16_constant
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[CST:.*]] = arith.constant 1.000000e+00 : bf16
@@ -393,7 +395,7 @@ module {
 
 // -----
 
-// Write f32 value truncated to bf16: materializeIntBits emits an
+// Write f32 value truncated to bf16: RawElementWriteLowering inserts an
 // unrealized_conversion_cast for the truncf result; ttkernel-lower-scalar-fp-types
 // resolves it into shrui+trunci later. Here only convert-ttl-to-ttkernel runs,
 // so the cast and truncf remain, and store_to_l1 consumes the cast output.
@@ -419,7 +421,8 @@ module {
 // -----
 
 // Write bf16 constant (2.5) to row-major block at (1, 3) -> offset = 1*8 + 3 = 11.
-// The constant stays as bf16; materializeIntBits inserts unrealized_conversion_cast.
+// RawElementWriteLowering inserts unrealized_conversion_cast(bf16 -> i16);
+// ttkernel-lower-scalar-fp-types removes the scalar bridge in a later pass.
 // CHECK-LABEL: func.func @write_row_major_bf16
 // CHECK-DAG: %[[C11:.*]] = arith.constant 11 : i32
 // CHECK-DAG: %[[CST:.*]] = arith.constant 2.500000e+00 : bf16
@@ -511,7 +514,8 @@ module {
 
 // Write f32 to an attach_cb-wrapped cb_reserve block. Must trace through
 // attach_cb to get_write_ptr.
-// The constant stays as f32; materializeIntBits inserts unrealized_conversion_cast.
+// RawElementWriteLowering inserts unrealized_conversion_cast(f32 -> i32);
+// ttkernel-lower-scalar-fp-types removes the scalar bridge in a later pass.
 // CHECK-LABEL: func.func @write_attach_cb_reserve
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[CST:.*]] = arith.constant 1.000000e+00 : f32
