@@ -28,6 +28,8 @@ GATHER_BLOCK_TILES = 2
 ROW_ALL_GATHER_WIDTH = 4
 COLUMN_ALL_GATHER_WIDTH = 2
 COLUMN_ALL_GATHER_HEIGHT = 3
+DTYPES = [torch.bfloat16, torch.float32]
+DTYPE_IDS = ["bf16", "fp32"]
 
 
 @ttl.operation(grid=(GATHER_SOURCES + 1, 1))
@@ -329,19 +331,16 @@ def column_all_gather_2d_single_slot_batches(inp, out):
         pass
 
 
-def _make_input(shape):
+def _make_input(shape, dtype):
     num_elements = 1
     for extent in shape:
         num_elements *= extent
-    return (
-        torch.arange(num_elements, dtype=torch.float32)
-        .reshape(shape)
-        .to(torch.bfloat16)
-    )
+    return torch.arange(num_elements, dtype=torch.float32).reshape(shape).to(dtype)
 
 
-def test_gather_one_receiver_single_slot(device):
-    inp_torch = _make_input((TILE, GATHER_SOURCES * GATHER_BLOCK_TILES * TILE))
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_gather_one_receiver_single_slot(device, dtype):
+    inp_torch = _make_input((TILE, GATHER_SOURCES * GATHER_BLOCK_TILES * TILE), dtype)
     out_torch = torch.zeros_like(inp_torch)
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
@@ -353,8 +352,9 @@ def test_gather_one_receiver_single_slot(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_row_all_gather_two_slot_batches(device):
-    inp_torch = _make_input((TILE, ROW_ALL_GATHER_WIDTH * TILE))
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_row_all_gather_two_slot_batches(device, dtype):
+    inp_torch = _make_input((TILE, ROW_ALL_GATHER_WIDTH * TILE), dtype)
     out_torch = torch.zeros_like(inp_torch)
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
@@ -366,8 +366,9 @@ def test_row_all_gather_two_slot_batches(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_row_all_gather_single_slot_batches(device):
-    inp_torch = _make_input((TILE, ROW_ALL_GATHER_WIDTH * TILE))
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_row_all_gather_single_slot_batches(device, dtype):
+    inp_torch = _make_input((TILE, ROW_ALL_GATHER_WIDTH * TILE), dtype)
     out_torch = torch.zeros_like(inp_torch)
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
@@ -379,19 +380,21 @@ def test_row_all_gather_single_slot_batches(device):
     assert_pcc(inp_torch.float(), result.float())
 
 
-def test_column_all_gather_2d_single_slot_batches(device):
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_column_all_gather_2d_single_slot_batches(device, dtype):
     inp_torch = _make_input(
         (
             COLUMN_ALL_GATHER_HEIGHT * TILE,
             COLUMN_ALL_GATHER_WIDTH * TILE,
-        )
+        ),
+        dtype,
     )
     out_torch = torch.zeros(
         (
             COLUMN_ALL_GATHER_HEIGHT * TILE,
             COLUMN_ALL_GATHER_WIDTH * COLUMN_ALL_GATHER_HEIGHT * TILE,
         ),
-        dtype=torch.bfloat16,
+        dtype=dtype,
     )
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
