@@ -13,6 +13,11 @@
 // per-tile cost) or re-issued every sub-block (init + op cost) -- both occur in
 // production kernels.
 //
+// An untimed warmup pass runs one full copy->op->pack over the tiles before the
+// measured zone, priming the math/pack pipeline so the zone captures warm steady
+// state. Without it the first in-zone pass pays a one-time spin-up that dominates
+// at low iters (and that the passthrough probe avoids via its out-of-zone seed).
+//
 // Compile-time args: 0 = op, 1 = tiles, 2 = iters, 3 = DST capacity,
 // 4 = init_hoist. op ids: 0 copy, 1 exp, 2 gelu, 3 recip, 4 sqrt, 5 rsqrt.
 
@@ -64,6 +69,32 @@ inline void op_apply(uint32_t op, uint32_t t) {
   // op == 0: copy only (no SFPU), the baseline.
 }
 
+// One chunked copy->op->pack pass over `tiles` tiles in DST-capacity sub-blocks.
+// Shared by the untimed warmup pass and the measured loop so both are identical.
+inline void compute_pass(uint32_t op, uint32_t tiles, uint32_t cap,
+                         uint32_t init_hoist) {
+  for (uint32_t base = 0; base < tiles; base += cap) {
+    uint32_t chunk = (tiles - base < cap) ? (tiles - base) : cap;
+    if (!init_hoist) {
+      copy_tile_init(dfb_in);
+      op_init(op);
+    }
+    tile_regs_acquire();
+    for (uint32_t i = 0; i < chunk; ++i) {
+      copy_tile(dfb_in, base + i, i);
+    }
+    for (uint32_t i = 0; i < chunk; ++i) {
+      op_apply(op, i);
+    }
+    tile_regs_commit();
+    tile_regs_wait();
+    for (uint32_t i = 0; i < chunk; ++i) {
+      pack_tile<true>(i, dfb_out, base + i);
+    }
+    tile_regs_release();
+  }
+}
+
 void kernel_main() {
   const uint32_t op = get_compile_time_arg_val(0);
   const uint32_t tiles = get_compile_time_arg_val(1);
@@ -79,29 +110,17 @@ void kernel_main() {
 
   cb_wait_front(dfb_in, tiles);    // resident input, re-read each iteration
   cb_reserve_back(dfb_out, tiles); // output region, overwritten each iteration
+
+  // Untimed warmup pass: prime the math/pack pipeline before the measured zone
+  // so it captures warm steady state (matching the passthrough probe's
+  // out-of-zone seed). The measured loop re-reads the resident input and
+  // overwrites the output, so this extra pass does not change the final result.
+  compute_pass(op, tiles, cap, init_hoist);
+
   {
     DeviceZoneScopedN("compute_op_loop");
     for (uint32_t it = 0; it < iters; ++it) {
-      for (uint32_t base = 0; base < tiles; base += cap) {
-        uint32_t chunk = (tiles - base < cap) ? (tiles - base) : cap;
-        if (!init_hoist) {
-          copy_tile_init(dfb_in);
-          op_init(op);
-        }
-        tile_regs_acquire();
-        for (uint32_t i = 0; i < chunk; ++i) {
-          copy_tile(dfb_in, base + i, i);
-        }
-        for (uint32_t i = 0; i < chunk; ++i) {
-          op_apply(op, i);
-        }
-        tile_regs_commit();
-        tile_regs_wait();
-        for (uint32_t i = 0; i < chunk; ++i) {
-          pack_tile<true>(i, dfb_out, base + i);
-        }
-        tile_regs_release();
-      }
+      compute_pass(op, tiles, cap, init_hoist);
     }
   }
   cb_pop_front(dfb_in, tiles);

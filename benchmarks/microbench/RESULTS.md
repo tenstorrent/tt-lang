@@ -1176,6 +1176,60 @@ the accumulator. The pre-seed does not change that bigger-is-better, but the
 modeled scratch reservation is the lever that could make a capacity heuristic
 *pick* smaller than optimal.
 
+### MB5.E: Fused SFPU chain (from tt-lang-generated code) -- math-bound, subblock is a non-lever
+
+Unlike MB5.A-D (hand-written probes), this kernel body is **extracted verbatim
+from the tt-lang codegen** for `v = abs(neg(relu(sigmoid(c) + tanh(b))))` (a
+compile of a small `@ttl.operation`), then wrapped in the flat, resident,
+hop-outside microbench style with a configurable subblock (`sub` = output tiles
+per `tile_regs_acquire`). `subblock_fused_chain_sweep.py` /
+`fused_chain_compute.cpp`. Blackhole bf16 half-sync, one pass (no iters loop),
+trisc_max µs; bold = fastest:
+
+| tiles | sub=1 | sub=2 | sub=4 | best |
+|---|---|---|---|---|
+| 8   | 18.32  | **18.28**  | 18.34  | 2 |
+| 16  | 35.57  | **35.47**  | 35.53  | 2 |
+| 32  | 70.11  | **69.81**  | 69.88  | 2 |
+| 64  | 139.13 | **138.50** | 138.63 | 2 |
+| 128 | **277.17** | 278.90 | 279.16 | 1 |
+
+Structure carried from the codegen (informs the sweep): `init_sfpu` once, then per
+op the `*_tile_init` immediately precedes its applies over the chunk (the SFPU is
+reconfigured op-by-op, so these inits cannot be hoisted across ops or subblocks);
+the fused add is `add_binary_tile` (DST->DST). Because that add keeps both operands
+live, **each output tile uses two DST slots** -- so the subblock is bounded by
+`2*sub <= cap` (sub in {1,2,4} at half-sync cap 8), the real cap/2 halving MB5.D
+modeled.
+
+Measured observations:
+- **The chain is math-bound**: `math` is the trisc_max (bottleneck) at every
+  config, and the subblock is a **non-lever -- spread <1%** at every tile count.
+  The chain costs ~**2.16 µs/tile** (tiles=128: 277/128) for its 6 ops
+  (2 copies + sigmoid + tanh + add + relu + neg + abs).
+- **Max-DST (sub=4, the full cap-8 budget) is not the winner** -- `sub=2` is
+  marginally best across sizes (`sub=1` edges it at tiles=128), same signature as
+  single-op exp (MB5.B math-bound end). PCC >= 0.9999.
+- This is the compiler's actual op sequence + DST layout, so it confirms the
+  subblock choice barely matters for a real fused SFPU chain: max-DST (or cap/2)
+  loses <=1%.
+
+Full-sync (cap 16, so `sub` up to 8; trisc_max µs, bold = fastest):
+
+| tiles | sub=1 | sub=2 | sub=4 | sub=8 | best |
+|---|---|---|---|---|---|
+| 8   | 18.50  | 18.45  | 18.41  | **18.38**  | 8 |
+| 16  | 35.95  | 35.76  | 35.76  | **35.74**  | 8 |
+| 32  | 70.79  | 70.44  | **70.42**  | 70.49  | 4 |
+| 64  | 140.55 | 139.81 | **139.80** | 139.99 | 4 |
+| 128 | 280.10 | 281.53 | 281.59 | **279.11** | 8 |
+
+Same math-bound picture (math gates, spread <=~0.7%, PCC >= 0.9999). The only
+change vs half-sync: with the doubled DST budget the winner sits in the
+`sub=4`/`sub=8` (max-DST) region -- max-DST wins at 3 of 5 sizes -- vs half-sync
+where `sub=2` edged it. All noise-level, so the conclusion holds: the subblock is
+immaterial for this chain.
+
 ### Summary (measured)
 
 - **Matmul (MB5.C/D):** a larger subblock is faster; the only clear loser is the
@@ -1189,6 +1243,9 @@ modeled scratch reservation is the lever that could make a capacity heuristic
   a broad plateau with reproducible per-chunk bumps.
 - **Transpose (MB5.B):** the biggest effect in the suite (~1.47x), from both chunk
   size and a thin-vs-blocky shape preference at fixed product.
+- **Fused SFPU chain (MB5.E, from real codegen):** math-bound like exp -- subblock
+  is a non-lever (<1% spread), and max-DST is not the winner (`sub=2` marginally
+  best). Confirms the subblock choice is immaterial for math-bound compute.
 
 We are not proposing a cost model for these yet. Open work toward one: a per-thread
 (unpack / math / pack) timeline to explain the chunk-size curve, non-power-of-two

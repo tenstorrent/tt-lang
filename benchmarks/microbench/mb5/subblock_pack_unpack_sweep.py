@@ -16,9 +16,24 @@ so the subblock effect should be the largest and monotonic (bigger chunk -> fewe
 acquires -> lower per-iter time). Contrast with the matmul/SDPA subblock sweeps,
 where reuse or SFPU math reshape the picture.
 
+`--variant` selects the kernel:
+  self_cycle (default, passthrough_compute.cpp): hop inside the loop, one buffer
+    (dfb_loop -> dfb_loop) -- each iteration carries a cross-iteration
+    pack->unpack dependency.
+  hoisted (passthrough_hoisted.cpp): same one buffer but the hop is moved outside
+    the loop, making the passes independent.
+  twocb (passthrough_twocb.cpp): hop outside, read dfb_loop -> write a distinct
+    dfb_out (two CBs, no self-cycle) -- the real two-CB tt-lang kernel topology.
+self_cycle and hoisted read+write the same dfb_loop (front/back), so they require
+block_count >= 2. At iters=128 the hoisted variant favors the max chunk
+(per-acquire count dominates) while the self-cycle keeps the small-chunk win at
+small tiles.
+
     python -m benchmarks.microbench.mb5.subblock_pack_unpack_sweep --tiles 16 --sub 1,2,4,8
     python -m benchmarks.microbench.mb5.subblock_pack_unpack_sweep --tiles 16 \
         --sub 1,2,4,8,16 --full-sync 0,1
+    python -m benchmarks.microbench.mb5.subblock_pack_unpack_sweep --tiles 16 \
+        --sub 1,2,4,8 --variant twocb
 """
 
 import os
@@ -35,7 +50,17 @@ from benchmarks.microbench.harness import DEFAULT_BLOCK_COUNT, TILE
 from benchmarks.microbench.runner import DFB, MicroBenchmark, Param, Tensor
 
 KERNELS = Path("benchmarks/microbench/kernels")
-COMPUTE_KERNEL = str(KERNELS / "dataflow" / "passthrough_compute.cpp")
+# self_cycle: hop inside the loop (per-iteration DFB handoff, cross-iteration
+# pack->unpack dependency). hoisted: hop outside the loop (independent passes,
+# no cross-iteration dependency). Same same-buffer dfb_loop self-cycle otherwise.
+COMPUTE_KERNELS = {
+    "self_cycle": str(KERNELS / "dataflow" / "passthrough_compute.cpp"),
+    "hoisted": str(KERNELS / "dataflow" / "passthrough_hoisted.cpp"),
+    "twocb": str(KERNELS / "dataflow" / "passthrough_twocb.cpp"),
+}
+# self_cycle/hoisted read+write the same dfb_loop (front/back), so they need
+# dfb_loop >= 2*tiles (block_count >= 2).
+_SAME_BUFFER_VARIANTS = ("self_cycle", "hoisted")
 READER_KERNEL = str(KERNELS / "common" / "seed_reader.cpp")
 WRITER_KERNEL = str(KERNELS / "common" / "drain_writer.cpp")
 
@@ -46,10 +71,10 @@ class PackUnpackChunkSweep(MicroBenchmark):
     DEFAULT_CSV = "benchmarks/microbench/results/subblock_pack_unpack.csv"
     STRATEGIES = ("",)
     PER_UNIT = "iters"
-    CSV_TAG = ("dtype", "full_sync", "fp32_dest_acc")
+    CSV_TAG = ("variant", "dtype", "full_sync", "fp32_dest_acc")
     EXTRA_COLUMNS = ("dst_chunk", "acquires")
     PARAMS = (
-        Param("tiles", "16", help="total tiles per iteration (fixed)"),
+        Param("tiles", "16", sweep=True, help="total tiles per iteration"),
         Param("sub", "1,2,4,8", sweep=True, help="DST chunk moved per acquire"),
         Param("iters", "128", help="measured iterations"),
         Param("dtype", "bf16", sweep=True, help="bf16 and/or fp32"),
@@ -57,6 +82,14 @@ class PackUnpackChunkSweep(MicroBenchmark):
         Param("fp32_dest_acc", "0", sweep=True, help="fp32_dest_acc_en (0/1)"),
         Param(
             "block_count", str(DEFAULT_BLOCK_COUNT), sweep=True, help="DFB block count"
+        ),
+        Param(
+            "variant",
+            "self_cycle",
+            choices=("self_cycle", "hoisted", "twocb"),
+            help="self_cycle (hop inside, one buffer), hoisted (hop outside, one "
+            "buffer), or twocb (hop outside, read dfb_loop -> write dfb_out, two "
+            "distinct CBs)",
         ),
     )
     INPUTS = (Tensor("src", lambda cfg: (TILE, cfg["tiles"] * TILE)),)
@@ -78,6 +111,14 @@ class PackUnpackChunkSweep(MicroBenchmark):
 
     def legal(self, cfg, strategy):
         sub = cfg["sub"]
+        # self_cycle/hoisted read dfb_loop's front (held from cb_wait_front to
+        # cb_pop_front) while reserving its back (held from cb_reserve_back to
+        # cb_push_back), so the two tiles-sized regions coexist and dfb_loop
+        # (block_count*tiles) needs >= 2*tiles, i.e. block_count >= 2. At
+        # block_count == 1 the reserve_back cannot get free space while wait_front
+        # holds the front, so (for sub < tiles) it deadlocks.
+        if cfg["variant"] in _SAME_BUFFER_VARIANTS and cfg["block_count"] < 2:
+            return False
         # an acquire holds at most the DST capacity, and a chunk past `tiles`
         # just duplicates sub == tiles, so cap the useful sweep there.
         return 0 < sub <= self._cap(cfg) and sub <= cfg["tiles"]
@@ -91,7 +132,7 @@ class PackUnpackChunkSweep(MicroBenchmark):
         per_iter = row["trisc_max_us_per_iters"]
         per_iter = "n/a" if per_iter is None else f"{per_iter:.4f}"
         return (
-            f"tiles={cfg['tiles']} chunk={row['dst_chunk']} "
+            f"[{cfg['variant']}] tiles={cfg['tiles']} chunk={row['dst_chunk']} "
             f"acquires={row['acquires']} dtype={cfg['dtype']} "
             f"fullsync={cfg['full_sync']} fp32={cfg['fp32_dest_acc']} "
             f"| trisc_max={row['trisc_max_us']} µs per_iter={per_iter} µs "
@@ -121,7 +162,11 @@ class PackUnpackChunkSweep(MicroBenchmark):
                 ttnn.WriterConfigDescriptor(),
             ),
             harness.file_kernel(
-                COMPUTE_KERNEL, ctx.grid, [tiles, iters, cap], [], compute
+                COMPUTE_KERNELS[cfg["variant"]],
+                ctx.grid,
+                [tiles, iters, cap],
+                [],
+                compute,
             ),
         ]
         return kernels, ctx.torch["src"]
