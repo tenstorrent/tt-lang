@@ -108,8 +108,7 @@ static void printPipe(llvm::raw_ostream &os, const PipeKey &pipe) {
 
 static void printEndpoint(llvm::raw_ostream &os,
                           const PipeCapacityEndpoint &endpoint) {
-  const PipeCapacitySameDeviceNocTarget &target =
-      endpoint.releaseTarget.sameDeviceNocTarget;
+  const PipeCapacityReleaseTarget &target = endpoint.releaseTarget;
   os << "src(" << target.logicalX << ", " << target.logicalY << ") -> ";
   printReceiverDFB(os, endpoint.receiverDFB);
   os << " capacity " << endpoint.initialCapacity;
@@ -185,8 +184,7 @@ getCapacityEndpoint(const PipeGraph &pipeGraph,
       receiverEndpoint.id,
       receiverEndpoint.receiverDFBNode,
       receiverEndpoint.receiverDFB,
-      PipeCapacityReleaseTarget::sameDeviceNoc(PipeCapacitySameDeviceNocTarget{
-          pipeEdge.pipe.srcX, pipeEdge.pipe.srcY}),
+      PipeCapacityReleaseTarget{pipeEdge.pipe.srcX, pipeEdge.pipe.srcY},
       pipeEdge.receiverDFBInfo.blockCount,
   };
 }
@@ -231,11 +229,7 @@ static bool collectAndCheckSends(ModuleOp mod,
                                  const PipeCapacityEndpoint &endpoint,
                                  const PipeGraph &pipeGraph,
                                  SmallVectorImpl<PipeTransferSendOp> &sends) {
-  assert(endpoint.releaseTarget.kind ==
-             PipeCapacityReleaseTargetKind::SameDeviceNoc &&
-         "only same-device pipe capacity releases are supported");
-  const PipeCapacitySameDeviceNocTarget &target =
-      endpoint.releaseTarget.sameDeviceNocTarget;
+  const PipeCapacityReleaseTarget &target = endpoint.releaseTarget;
   LaunchNodeDomain sourceDomain =
       getSingleLaunchNodeDomain({target.logicalX, target.logicalY});
   bool valid = true;

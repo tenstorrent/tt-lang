@@ -333,13 +333,11 @@ static Value buildComputedReceiverDFBDestinationAddress(
                        rewriter);
 }
 
-static void lowerSameDevicePipeCapacityRelease(
-    Location loc, const PipeCapacityReleaseInfo &release, Value nocVal,
-    ConversionPatternRewriter &rewriter) {
-  assert(release.target.kind == PipeCapacityReleaseTargetKind::SameDeviceNoc &&
-         "expected same-device capacity release target");
-  const PipeCapacitySameDeviceNocTarget &target =
-      release.target.sameDeviceNocTarget;
+static void lowerPipeCapacityRelease(Location loc,
+                                     const PipeCapacityReleaseInfo &release,
+                                     Value nocVal,
+                                     ConversionPatternRewriter &rewriter) {
+  const PipeCapacityReleaseTarget &target = release.target;
   auto indexTy = rewriter.getIndexType();
   Value semaphoreAddress =
       buildLocalSemaphoreAddress(loc, rewriter, release.semaphoreIndex);
@@ -359,18 +357,6 @@ static void lowerSameDevicePipeCapacityRelease(
           .getResult();
   ttk::NocSemaphoreIncOp::create(rewriter, loc, remoteCapacityNocAddr,
                                  releaseCount, nocVal, /*posted=*/BoolAttr());
-}
-
-static void lowerPipeCapacityRelease(Location loc,
-                                     const PipeCapacityReleaseInfo &release,
-                                     Value nocVal,
-                                     ConversionPatternRewriter &rewriter) {
-  switch (release.target.kind) {
-  case PipeCapacityReleaseTargetKind::SameDeviceNoc:
-    lowerSameDevicePipeCapacityRelease(loc, release, nocVal, rewriter);
-    return;
-  }
-  llvm_unreachable("unknown pipe capacity release target kind");
 }
 
 struct ReceiverPublishedAddressInfo {

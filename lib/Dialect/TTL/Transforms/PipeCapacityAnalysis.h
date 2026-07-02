@@ -69,25 +69,10 @@ namespace mlir::tt::ttl {
 
 struct PipeResourcePlan;
 
-struct PipeCapacitySameDeviceNocTarget {
+/// Source node that receives a capacity-release increment over the NoC.
+struct PipeCapacityReleaseTarget {
   int64_t logicalX = 0;
   int64_t logicalY = 0;
-};
-
-enum class PipeCapacityReleaseTargetKind {
-  SameDeviceNoc,
-};
-
-struct PipeCapacityReleaseTarget {
-  static PipeCapacityReleaseTarget
-  sameDeviceNoc(PipeCapacitySameDeviceNocTarget target) {
-    return PipeCapacityReleaseTarget{
-        PipeCapacityReleaseTargetKind::SameDeviceNoc, target};
-  }
-
-  PipeCapacityReleaseTargetKind kind =
-      PipeCapacityReleaseTargetKind::SameDeviceNoc;
-  PipeCapacitySameDeviceNocTarget sameDeviceNocTarget;
 };
 
 struct PipeCapacityAcquireInfo {
