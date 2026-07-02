@@ -9,10 +9,6 @@ Tests the dst=(slice(x0,x1), slice(y0,y1)) pattern where one source
 multicasts to a full 2D rectangular region.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

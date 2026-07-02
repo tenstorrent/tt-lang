@@ -13,10 +13,6 @@ Exercises DST subblocking at larger tile domains (4x4 exceeds DST capacity of
 8 tiles for bf16).
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v --tb=short
-
 import pytest
 import torch
 

@@ -14,9 +14,6 @@ Parameterized over:
 - Shapes: Various 2D through 5D configurations
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import importlib.util
 import tempfile
 from typing import Callable, Tuple

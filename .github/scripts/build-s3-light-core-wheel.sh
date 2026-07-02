@@ -116,3 +116,4 @@ auditwheel show "$expected_wheel"
 python "$repo_root/.github/scripts/check-wheel-ttnn-metadata.py" \
     --mode external \
     --dist-dir "$DIST_DIR"
+"$repo_root/.github/scripts/assert-no-gnu-unique.sh" "$expected_wheel"

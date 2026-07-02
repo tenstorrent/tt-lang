@@ -90,7 +90,7 @@ try:
     )
 
     print(f"lhs dtype: {lhs.dtype}")
-    # CHECK: bfloat8_b
+    # CHECK: BFLOAT8_B
 
     add_bfp8_dram(lhs, rhs, out)
     result = ttnn.to_torch(out)

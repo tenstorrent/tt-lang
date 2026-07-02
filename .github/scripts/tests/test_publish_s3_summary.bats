@@ -70,6 +70,28 @@ setup() {
     refute_output --partial "### Published wheels"
 }
 
+@test "--index-subdir points install commands at the subdir index" {
+    run -0 "$SCRIPT" --index-subdir 2026-06 light "$VER"
+    assert_output --partial "https://pypi.eng.aws.tenstorrent.com/2026-06/"
+    assert_output --partial "tt-lang-light==$VER"
+    refute_output --partial "extra-index-url https://pypi.eng.aws.tenstorrent.com/ "
+}
+
+@test "--index-subdir composes with --dry-run" {
+    run -0 "$SCRIPT" --dry-run --index-subdir 13adda8 light "$VER"
+    assert_output --partial "### Wheel publish dry run"
+    assert_output --partial "https://pypi.eng.aws.tenstorrent.com/13adda8/"
+}
+
+@test "--index-subdir without a value -> usage error (exit 2)" {
+    run -2 "$SCRIPT" --index-subdir
+}
+
+@test "no --index-subdir keeps the flat-root index url" {
+    run -0 "$SCRIPT" light "$VER"
+    assert_output --partial "extra-index-url https://pypi.eng.aws.tenstorrent.com/ "
+}
+
 @test "appends to GITHUB_STEP_SUMMARY when set" {
     GITHUB_STEP_SUMMARY="$SUMMARY_FILE" run -0 "$SCRIPT" pypi "$VER"
     # Output to stdout should be empty when redirected.

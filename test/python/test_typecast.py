@@ -21,10 +21,6 @@ defined only for floating-point data formats; issuing an integer typecast
 would require a different hardware path not currently exposed by ttl.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import atexit
 import importlib.util
 import os

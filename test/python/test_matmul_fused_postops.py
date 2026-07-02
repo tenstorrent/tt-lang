@@ -13,9 +13,6 @@ Coverage includes both DFB tile scaling and Python scalar constants that lower
 to `ttl.mul_unary_const`.
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl
