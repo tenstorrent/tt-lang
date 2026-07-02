@@ -45,6 +45,57 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Computed addresses require a receiver DFB stream whose physical ring movement
+// is fully modeled by pipe receives. A non-pipe push on the receiver DFB keeps
+// the receiver-published address protocol even when computed addresses are
+// enabled.
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  // COMPUTED-LABEL: func.func @mixed_receiver_dfb_uses_published_address
+  // COMPUTED-NOT: ttl.pipe_computed_address_dfb_indices
+  // COMPUTED: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.load_from_l1
+  // COMPUTED: ttkernel.noc_async_write
+  // COMPUTED: return
+
+  // PUBLISHED-LABEL: func.func @mixed_receiver_dfb_uses_published_address
+  // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED: ttkernel.noc_inline_dw_write
+  // PUBLISHED: ttkernel.load_from_l1
+  // PUBLISHED: ttkernel.noc_async_write
+  func.func @mixed_receiver_dfb_uses_published_address()
+      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+
+    %local = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+
+    %recv_dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv = ttl.copy %pipe, %recv_dst
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    %send = ttl.copy %src_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %recv : !ttl.transfer_handle
+    ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
 // The capacity protocol requires computed addressing, so disabling the option
 // also disables capacity: the computed case emits the sender-local capacity
 // semaphore handshake, the published case falls back to sender-ready and emits

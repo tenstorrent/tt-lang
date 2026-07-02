@@ -1628,6 +1628,21 @@ getUniformReceiverBatchSize(const PipeGraph &pipeGraph,
   return receiverBatchSize;
 }
 
+static bool hasProvenPipeOnlyReceiverStreams(const PipeGraph &pipeGraph,
+                                             const PipeEdge &pipeEdge) {
+  for (PipeReceiverEndpointId endpointId :
+       pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
+    const PipeReceiverEndpoint &endpoint =
+        pipeGraph.getPipeReceiverEndpoint(endpointId);
+    const PipeReceiverDFBNode &receiverDFBNode =
+        pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+    if (!receiverDFBNode.hasProvenPipeOnlyStream) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static std::optional<int64_t>
 getStaticReceiverByteOffset(const ReceiverDFBInfo &receiverInfo,
                             int64_t receiverBatchSize) {
@@ -1662,6 +1677,13 @@ static bool isComputedAddressCandidate(const PipeTransferAllocationUnit &unit,
   }
   const PipeEdge *pipeEdge = lookupPipeEdge(pipeGraph, unit.pipe);
   if (!pipeEdge) {
+    return false;
+  }
+  // Static receiver addresses are derived from the pipe graph's physical slot
+  // assignment. Non-pipe DFB traffic can advance the hardware ring without a
+  // pipe post, so computed addressing requires the graph to prove that the
+  // receiver stream contains only pipe-delivered blocks.
+  if (!hasProvenPipeOnlyReceiverStreams(pipeGraph, *pipeEdge)) {
     return false;
   }
   std::optional<int64_t> receiverBatchSize =
