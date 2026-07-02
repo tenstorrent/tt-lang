@@ -94,10 +94,6 @@ public:
   /// Report this allocation to a pass-specific observer.
   void observe(PipeReadyCounterObserver &observer) const;
 
-  bool isLocalSemaphore() const;
-
-  int64_t getLocalSemaphoreIndex() const;
-
 private:
   PipeReadyCounterInfo(PipeReadyCounterStorage storage, int64_t index)
       : storage(storage), index(index) {}

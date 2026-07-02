@@ -226,16 +226,6 @@ void PipeReadyCounterInfo::observe(PipeReadyCounterObserver &observer) const {
   llvm_unreachable("unknown pipe ready-counter storage");
 }
 
-bool PipeReadyCounterInfo::isLocalSemaphore() const {
-  return storage == PipeReadyCounterStorage::LocalSemaphore;
-}
-
-int64_t PipeReadyCounterInfo::getLocalSemaphoreIndex() const {
-  assert(isLocalSemaphore() &&
-         "local semaphore index requested for non-local ready counter");
-  return index;
-}
-
 /// Resolve the resource-plan ready-counter allocation to the addressing form
 /// used by TTKernel lowering at this operation site.
 static ReadyCounterAddressInfo
