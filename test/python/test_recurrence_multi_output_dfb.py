@@ -33,7 +33,7 @@ TILE = 32
 N_ITERS = 4
 K_TILES = 2
 M_TILES = 2
-N_BRANCH_ITERS = 2
+N_BRANCH_ITERS = 4
 
 
 @ttl.operation(grid=(1, 1))
@@ -193,10 +193,9 @@ def branch_intermediate_consumers(a, b, out):
 
     @ttl.datamovement()
     def dm_write():
-        with out_dfb.wait() as sum_block:
-            ttl.copy(sum_block, out[0:1, 0:1]).wait()
-        with out_dfb.wait() as max_block:
-            ttl.copy(max_block, out[0:1, 1:2]).wait()
+        for i in range(N_BRANCH_ITERS):
+            with out_dfb.wait() as out_block:
+                ttl.copy(out_block, out[0:1, i : i + 1]).wait()
 
 
 def _expected_sum(a_torch, b_torch):
@@ -254,7 +253,7 @@ def test_branch_intermediate_consumers(device):
     torch.manual_seed(2)
     a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, N_BRANCH_ITERS * TILE, dtype=torch.bfloat16)
 
     a = to_dram(a_torch, device)
     b = to_dram(b_torch, device)
@@ -266,6 +265,13 @@ def test_branch_intermediate_consumers(device):
     sum_block = a_torch.float() + b_torch.float()
     expected = torch.zeros_like(result)
     expected[:, :1] = torch.sum(sum_block, dim=1, keepdim=True)
-    expected[:, TILE : TILE + 1] = torch.max(sum_block, dim=1, keepdim=True).values
+    row_max = torch.max(sum_block, dim=1, keepdim=True).values
+    for i in range(1, N_BRANCH_ITERS):
+        expected[:, i * TILE : i * TILE + 1] = row_max
     assert_pcc(expected[:, :1], result[:, :1], threshold=0.99)
-    assert_pcc(expected[:, TILE : TILE + 1], result[:, TILE : TILE + 1], threshold=0.99)
+    for i in range(1, N_BRANCH_ITERS):
+        assert_pcc(
+            expected[:, i * TILE : i * TILE + 1],
+            result[:, i * TILE : i * TILE + 1],
+            threshold=0.99,
+        )

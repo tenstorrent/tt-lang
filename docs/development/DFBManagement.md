@@ -49,7 +49,7 @@ bind_cb   cb_reserve                cb_wait              L1 buffer held
 
 `cb_reserve` claims a buffer slot for the packer; `cb_push` releases that slot to the unpacker. `cb_wait` blocks until the slot is available; `cb_pop` releases it back to the packer. `bind_cb` allocates the L1 backing storage and is shared by both sides.
 
-For compiler-allocated intermediate DFBs, `InsertIntermediateDFBs` creates the DFB and materializes the producer side. For `ttl.compute` results, this means `bind_cb` at function entry, `cb_reserve` before the producing compute, `tile_store` inside the compute body, `cb_push` after the compute, and `cb_wait`/`attach_cb` before the consumer. The later `ttl-auto-sync` run inserts the matching `cb_pop`.
+For compiler-allocated intermediate DFBs, `InsertIntermediateDFBs` creates the DFB and materializes the producer side. For `ttl.compute` results, this means `bind_cb` at function entry, `cb_reserve` before the producing compute, `tile_store` inside the compute body, `cb_push` after the compute, and `cb_wait`/`attach_cb` immediately after the push. The later `ttl-auto-sync` run inserts the matching `cb_pop` after the final tensor use.
 
 Producer compute formation follows the same publication rule for user DFBs.
 When `ttl-form-producer-compute` or `convert-ttl-to-compute` absorbs a
@@ -190,7 +190,7 @@ This ordering is constructed directly by `TTLInsertIntermediateDFBs` for the pro
 
 `TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args before compute lowering.
 
-When multiple `DFBInputOpInterface` operations consume the same non-DFB-attached value, a materialization is shared only when its attached value dominates the later consumer. Consumers in incomparable control-flow regions receive separate compiler DFB outputs.
+When multiple `DFBInputOpInterface` operations consume the same non-DFB-attached value, a materialization is shared only when its attached value dominates the later consumer. For `ttl.compute` results, the attached value is created immediately after the producer push so branch-local consumers share a single balanced wait/pop interval.
 
 Each DFB is created with `blockCount=2` (double-buffering) so the packer and unpacker can operate on different halves simultaneously within the same thread.
 

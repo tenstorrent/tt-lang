@@ -15,22 +15,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-Value createEmptyTensorLike(RankedTensorType tensorType, Location loc,
-                            ValueRange exemplars, OpBuilder &builder) {
-  SmallVector<Value> dynamicDims;
-  for (auto [dimIndex, dimSize] : llvm::enumerate(tensorType.getShape())) {
-    if (dimSize != ShapedType::kDynamic) {
-      continue;
-    }
-    assert(!exemplars.empty() &&
-           "dynamic DFB materialization requires an exemplar tensor");
-    dynamicDims.push_back(
-        tensor::DimOp::create(builder, loc, exemplars.front(), dimIndex));
-  }
-  return tensor::EmptyOp::create(builder, loc, tensorType.getShape(),
-                                 tensorType.getElementType(), dynamicDims);
-}
-
 FailureOr<DFBMaterializedValue>
 materializeComputeResultToDFB(OpResult intermediate, Operation *consumerOp,
                               ModuleOp moduleOp, OpBuilder &builder) {
@@ -38,6 +22,11 @@ materializeComputeResultToDFB(OpResult intermediate, Operation *consumerOp,
   auto tensorType = cast<RankedTensorType>(intermediate.getType());
   unsigned resultIndex = intermediate.getResultNumber();
   Location loc = intermediate.getLoc();
+
+  // ComputeOp::verify requires static operand shapes, so the materialized
+  // result and its compiler-allocated DFB are always statically sized.
+  assert(tensorType.hasStaticShape() &&
+         "ComputeOp::verify requires static operand shapes");
 
   if (resultIndex >= computeOp.getNumOutputs()) {
     return computeOp.emitOpError()
@@ -66,8 +55,9 @@ materializeComputeResultToDFB(OpResult intermediate, Operation *consumerOp,
   builder.setInsertionPoint(computeOp);
   auto reserve =
       CBReserveOp::create(builder, loc, tensorType, bindDFB.getResult());
-  Value init =
-      createEmptyTensorLike(tensorType, loc, computeOp.getInputs(), builder);
+  Value init = tensor::EmptyOp::create(builder, loc, tensorType.getShape(),
+                                       tensorType.getElementType(),
+                                       ValueRange{});
   auto initAttached =
       AttachCBOp::create(builder, loc, tensorType, init, bindDFB.getResult());
 
@@ -126,14 +116,15 @@ materializeComputeResultToDFB(OpResult intermediate, Operation *consumerOp,
   }
   computeOp.erase();
 
-  // The extra output reaches the consumer through the DFB (cb_push below, then
-  // cb_wait/attach_cb before the consumer), not through newCompute's SSA
-  // result, so that last result is intentionally left unused.
+  // Keep the DFB push and acquisition in the same block; otherwise branch-local
+  // consumers can leave an unconditional push without a matching pop.
+  // TODO(#724): Relax this construction rule when trace-balance analysis can
+  // prove balanced DFB occupancy across structured control flow.
   builder.setInsertionPointAfter(newCompute);
-  CBPushOp::create(builder, loc, bindDFB.getResult(),
-                   /*num_tiles=*/IntegerAttr{});
+  auto push = CBPushOp::create(builder, loc, bindDFB.getResult(),
+                               /*num_tiles=*/IntegerAttr{});
 
-  builder.setInsertionPoint(consumerOp);
+  builder.setInsertionPointAfter(push);
   auto attach =
       createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
   return DFBMaterializedValue{attach.getResult(), remappedSource};
