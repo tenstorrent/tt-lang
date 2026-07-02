@@ -103,7 +103,8 @@ public:
 /// Convert ttl.kernel_thread -> ttkernel.thread if present, returning the
 /// resolved thread type from whichever attribute exists.
 static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
-  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kTTKernelThreadAttrName)) {
+  if (auto a =
+          op->getAttrOfType<ttk::ThreadTypeAttr>(kTTKernelThreadAttrName)) {
     return a.getValue();
   }
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
