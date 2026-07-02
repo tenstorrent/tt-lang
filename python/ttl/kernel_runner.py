@@ -526,12 +526,16 @@ def build_cb_descriptors(
             remaining_bytes = get_min_remaining_l1_for_device(device)
             break
 
-    # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
-    # tile_bytes_from_dtype; see issue #511. Computed-address backing tensors
-    # also consume L1, so they remain part of the same static DFB budget.
-    static_cb_bytes = sum(total_size for _, _, total_size, _ in rows)
+    # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes)
+    # and tile_bytes_from_dtype; see issue #511. Computed-address backing tensors
+    # are allocated separately before this check, so their L1 is already
+    # reflected in remaining_bytes; counting them here would double-charge them.
+    counted_rows = [
+        row for cb_index, row in enumerate(rows) if cb_index not in backing_tensors
+    ]
+    static_cb_bytes = sum(total_size for _, _, total_size, _ in counted_rows)
     if static_cb_bytes > remaining_bytes:
-        breakdown = "\n".join(r[3] for r in rows)
+        breakdown = "\n".join(r[3] for r in counted_rows)
         raise ValueError(
             "Total circular buffer allocation ("
             f"{static_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "

@@ -326,7 +326,7 @@ def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
     assert lifetime == fake_ttnn.create_calls[-2:]
 
 
-def test_build_cb_descriptors_counts_computed_address_backing_tensors(
+def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
     monkeypatch,
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
@@ -334,18 +334,33 @@ def test_build_cb_descriptors_counts_computed_address_backing_tensors(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1024
     )
 
+    cb_configs = [
+        ((1, 1), 1, object(), 512, 512),
+        ((1, 1), 1, object(), 800, 800),
+    ]
+
+    # DFB 1 (800 bytes) is a computed-address backing tensor, already allocated
+    # separately, so it is excluded from the budget; only DFB 0 (512) counts and
+    # stays under 1024.
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensor(object())],
+        cb_configs=cb_configs,
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_backing_tensors={1: object()},
+    )
+    assert len(descriptors) == 2
+
+    # Without the backing exclusion the same DFBs (512 + 800) exceed 1024, so
+    # non-backing DFBs are still charged.
     with pytest.raises(
         ValueError,
         match="Total circular buffer allocation \\(1312 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
     ):
         kernel_runner.build_cb_descriptors(
             tensors=[_FakeTensor(object())],
-            cb_configs=[
-                ((1, 1), 1, object(), 512, 512),
-                ((1, 1), 1, object(), 800, 800),
-            ],
+            cb_configs=cb_configs,
             core_ranges=_FakeCoreRanges(),
-            pipe_computed_address_backing_tensors={1: object()},
+            pipe_computed_address_backing_tensors={},
         )
 
 
