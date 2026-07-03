@@ -13,6 +13,10 @@ on:
         default: false
   workflow_call:
     inputs:
+      ttlang_sha_override:
+        description: "tt-lang SHA/branch override (optional, defaults to current commit)"
+        type: string
+        required: false
       push:
         description: "Push built images to GHCR. Default false so accidental invocations don't upload. Only on-push (main) and publish-pypi (release tag) should set this true."
         type: boolean
