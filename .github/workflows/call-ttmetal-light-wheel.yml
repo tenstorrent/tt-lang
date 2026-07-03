@@ -43,6 +43,11 @@ on:
         required: false
         type: boolean
         default: true
+      soft_fail:
+        description: "Tolerate job failures via continue-on-error so the caller's run is not failed by this build."
+        required: false
+        type: boolean
+        default: false
 
 # workflow_call only. The on-demand workflow owns workflow_dispatch input parsing.
 
@@ -52,6 +57,7 @@ permissions:
 jobs:
   find-compatible:
     name: "Find compatible tt-lang"
+    continue-on-error: ${{ inputs.soft_fail }}
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
     timeout-minutes: 300
     container:
@@ -137,6 +143,7 @@ jobs:
 
   record-miss:
     name: "Record no-compatible miss"
+    continue-on-error: ${{ inputs.soft_fail }}
     needs: find-compatible
     if: ${{ needs.find-compatible.outputs.found == 'false' && inputs.dry_run != true }}
     runs-on: ubuntu-24.04
@@ -164,6 +171,7 @@ jobs:
 
   build-wheels:
     name: "Build light wheel (${{ matrix.python_tag }})"
+    continue-on-error: ${{ inputs.soft_fail }}
     needs: find-compatible
     if: ${{ needs.find-compatible.outputs.found == 'true' }}
     runs-on: mlir-large-runner-lang
@@ -240,6 +248,7 @@ jobs:
 
   build-metapackage:
     name: "Build tt-lang-light metapackage"
+    continue-on-error: ${{ inputs.soft_fail }}
     needs: find-compatible
     if: ${{ needs.find-compatible.outputs.found == 'true' }}
     runs-on: mlir-large-runner-lang
@@ -278,6 +287,7 @@ jobs:
 
   device-validate:
     name: "Device-validate light wheel"
+    continue-on-error: ${{ inputs.soft_fail }}
     needs: [find-compatible, build-wheels, build-metapackage]
     if: ${{ needs.find-compatible.outputs.found == 'true' }}
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
@@ -376,6 +386,7 @@ jobs:
 
   publish:
     name: "Publish to S3 under per-SHA prefix"
+    continue-on-error: ${{ inputs.soft_fail }}
     needs: [find-compatible, build-wheels, build-metapackage, device-validate]
     if: ${{ needs.find-compatible.outputs.found == 'true' && inputs.dry_run != true }}
     runs-on: ubuntu-24.04

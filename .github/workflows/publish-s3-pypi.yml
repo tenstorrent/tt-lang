@@ -44,6 +44,16 @@ on:
         type: boolean
         default: true
         required: true
+      ttlang_ref:
+        description: "tt-lang SHA or tag to build the wheels from. Leave empty to use the triggering commit."
+        type: string
+        default: ""
+        required: false
+      apply_patches:
+        description: "Apply wheel patches from .github/wheel-patches/ before building (e.g., correct the numpy version constraints when rebuilding an older ref)."
+        type: boolean
+        default: false
+        required: false
 
 concurrency:
   group: publish-s3-pypi-${{ github.ref }}
@@ -73,6 +83,7 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ttlang_ref || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -98,6 +109,7 @@ jobs:
     secrets: inherit
     with:
       push: true
+      ttlang_sha_override: ${{ inputs.ttlang_ref }}
 
   build-wheel-images:
     needs: preflight
@@ -107,6 +119,8 @@ jobs:
       packages: write
     uses: ./.github/workflows/call-build-wheel-images.yml
     secrets: inherit
+    with:
+      ttlang_sha_override: ${{ inputs.ttlang_ref }}
 
   build-standard-wheels:
     needs: [preflight, build-docker]
@@ -129,6 +143,8 @@ jobs:
       build_sim_wheel: true
       allow_final_internal_version: ${{ needs.preflight.outputs.allow_final_internal_version == 'true' }}
       artifact_name: tt-lang-wheels-${{ matrix.wheel_variant }}
+      ttlang_sha_override: ${{ inputs.ttlang_ref }}
+      apply_patches: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_patches }}
 
   build-light-wheels:
     needs: [preflight, build-docker, build-wheel-images]
@@ -155,16 +171,21 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ttlang_ref || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
 
+      - name: Apply wheel patches
+        if: ${{ inputs.apply_patches }}
+        run: .github/scripts/apply-wheel-patches.sh
+
       - name: Build light core wheel
         env:
           TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
-          TTLANG_GIT_COMMIT: ${{ github.sha }}
+          TTLANG_GIT_COMMIT: ${{ inputs.ttlang_ref || github.sha }}
         run: |
           # Submodules aren't checked out here; read tt-metal's commit from the gitlink.
           export TT_METAL_COMMIT="$(git rev-parse HEAD:third-party/tt-metal)"
@@ -201,6 +222,8 @@ jobs:
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_ref || github.sha }}
 
       - name: Download per-ABI wheels
         uses: actions/download-artifact@v8
@@ -247,6 +270,8 @@ jobs:
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_ref || github.sha }}
 
       - name: Download bundled wheels
         if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') }}
@@ -349,11 +374,14 @@ jobs:
             "${{ needs.preflight.outputs.wheel_variant }}" \
             "${{ needs.preflight.outputs.version_override }}"
 
-  # Reuse this run's freshly pushed ird and manylinux images.
+  # Reuse this run's freshly pushed ird and manylinux images. Best-effort:
+  # continue-on-error here and soft_fail on the reusable build below keep a
+  # failure in this extra wheel from failing the nightly publish.
   ttmetal-light-detect:
     name: "Detect tt-metal uplift for light wheel"
     needs: preflight
     if: ${{ github.event_name == 'schedule' }}
+    continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
@@ -397,3 +425,4 @@ jobs:
       tt_metal_sha: ${{ needs.ttmetal-light-detect.outputs.tt_metal_sha }}
       docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
       dry_run: false
+      soft_fail: true
