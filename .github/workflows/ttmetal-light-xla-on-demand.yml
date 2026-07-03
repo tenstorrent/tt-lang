@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       docker_tag:
-        description: "IRD builder image tag. Leave empty to resolve it from ttlang_ref."
+        description: "IRD builder image tag. Leave empty to resolve the closest existing tag from ttlang_ref."
         required: false
         type: string
         default: ""
@@ -82,11 +82,14 @@ jobs:
         env:
           DOCKER_TAG: ${{ inputs.docker_tag }}
           VERSION_OVERRIDE: ${{ inputs.version_override }}
+          GH_TOKEN: ${{ github.token }}
+          TTLANG_IRD_DOCKER_OWNER: tenstorrent
         run: |
           .github/scripts/resolve-xla-build-inputs.sh \
             --target-dir target-tt-lang \
             --docker-tag "$DOCKER_TAG" \
-            --version "$VERSION_OVERRIDE"
+            --version "$VERSION_OVERRIDE" \
+            --resolve-existing-docker-tag
 
   build:
     name: "Build Ubuntu tt-lang-light wheel"

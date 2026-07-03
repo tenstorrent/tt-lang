@@ -264,12 +264,22 @@ def test_nightly_light_wheel_soft_fails_without_failing_publish() -> None:
 
 def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
     workflow = TTMETAL_LIGHT_XLA_ON_DEMAND_WORKFLOW.read_text()
+    docker_tag_input = workflow.split("      docker_tag:", 1)[1].split(
+        "      version_override:", 1
+    )[0]
 
     assert "ttlang_ref:" in workflow
     assert "tt_metal_sha:" in workflow
+    assert "Leave empty to resolve the closest existing tag from ttlang_ref" in (
+        docker_tag_input
+    )
     assert "required: true" in workflow
     assert "resolve-xla-build-inputs.sh" in workflow
-    assert "Leave empty to resolve it from ttlang_ref." in workflow
+    assert "required: false" in docker_tag_input
+    assert 'default: ""' in docker_tag_input
+    assert "--resolve-existing-docker-tag" in workflow
+    assert "GH_TOKEN: ${{ github.token }}" in workflow
+    assert "TTLANG_IRD_DOCKER_OWNER: tenstorrent" in workflow
     assert (
         "tt-lang-ird-ubuntu-24-04:${{ needs.resolve.outputs.docker_tag }}" in workflow
     )

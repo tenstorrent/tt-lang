@@ -51,6 +51,41 @@ EOF
     assert_line "version=1.2.3"
 }
 
+@test "resolves missing bare release to unique existing IRD image tag" {
+    cat > "$BATS_TEST_TMPDIR/tags" <<'EOF'
+v1.1.2-uplift-b4f623c2
+EOF
+    cat > "$TARGET/.github/containers/get-version-tag.sh" <<'EOF'
+#!/usr/bin/env bash
+echo v1.1.2
+EOF
+    chmod +x "$TARGET/.github/containers/get-version-tag.sh"
+
+    GITHUB_OUTPUT="$GH_OUT" run -0 "$SCRIPT" \
+        --target-dir "$TARGET" \
+        --resolve-existing-docker-tag \
+        --docker-tags-file "$BATS_TEST_TMPDIR/tags"
+    run cat "$GH_OUT"
+    assert_line "tag=v1.1.2-uplift-b4f623c2"
+    assert_line "version=computed-ver"
+}
+
+@test "explicit docker tag validates exactly when resolving existing images" {
+    cat > "$BATS_TEST_TMPDIR/tags" <<'EOF'
+my-tag
+v1.1.2-uplift-b4f623c2
+EOF
+
+    GITHUB_OUTPUT="$GH_OUT" run -0 "$SCRIPT" \
+        --target-dir "$TARGET" \
+        --docker-tag my-tag \
+        --resolve-existing-docker-tag \
+        --docker-tags-file "$BATS_TEST_TMPDIR/tags"
+    run cat "$GH_OUT"
+    assert_line "tag=my-tag"
+    assert_line "version=computed-ver"
+}
+
 @test "missing --target-dir -> exit 2" {
     run "$SCRIPT" --docker-tag t --version v
     assert_equal "$status" 2

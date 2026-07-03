@@ -689,12 +689,17 @@ ttlang_ref: <tt-lang SHA or tag>
 tt_metal_sha: <tt-metal SHA>
 ```
 
-Leave `docker_tag` and `version_override` empty to resolve them from the pinned
-`ttlang_ref`; the resolver runs that checkout's `get-version-tag.sh` and
-`compute-nightly-version.py` so the build uses the matching IRD image and wheel
-version for the selected tt-lang ref. Set `apply_patches: true` when the pinned
-ref needs the workflow commit's wheel patches. Set `hw_type` to select a device
-validation runner type; it defaults to `n150`.
+Leave `docker_tag` empty to resolve an existing `tt-lang-ird-ubuntu-24-04` image
+from the pinned `ttlang_ref`. The resolver first tries that checkout's
+`get-version-tag.sh` output exactly. If the exact tag is missing and the
+computed tag is a bare release tag such as `v1.1.2`, it uses a single existing
+`v1.1.2-*` image tag. Multiple matching image tags are ambiguous and require an
+explicit `docker_tag`. Leave `version_override` empty to compute the wheel
+version from the pinned `ttlang_ref`; the resolver runs that checkout's
+`compute-nightly-version.py` so the build uses the selected tt-lang ref's
+versioning rules. Set `apply_patches: true` when the pinned ref needs the
+workflow commit's wheel patches. Set `hw_type` to select a device validation
+runner type; it defaults to `n150`.
 
 The XLA workflow uses the Ubuntu IRD image directly, builds the requested
 tt-metal SHA with `.github/scripts/build-ttmetal-at-sha.sh`, and builds the
@@ -706,9 +711,10 @@ uploads that wheel set as the `tt-lang-light-xla-wheels` artifact. It does not
 use the manylinux_2_34 light-wheel builder or publish to S3.
 
 The workflow device-validates the uploaded wheels in a separate hardware job.
-That job rebuilds tt-metal at the same `tt_metal_sha`, installs the downloaded
-`tt-lang-light` wheel with the external tt-metal environment, then runs
-`test/python/smoketest.py` and the tutorial suite.
+The build job uploads the `tt_metal_sha` install as a tar artifact so executable
+bits are preserved. The device job installs the downloaded `tt-lang-light` wheel
+with that external tt-metal environment, then runs `test/python/smoketest.py`
+and the tutorial suite.
 
 #### Local internal wheel testing
 
