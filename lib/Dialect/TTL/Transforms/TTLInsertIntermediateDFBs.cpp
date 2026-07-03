@@ -100,9 +100,11 @@ getOrCreateResultPlan(ComputeMaterializationPlan &plan, unsigned resultIndex) {
   return plan.results.back();
 }
 
+// Non-mutating: validates one result and captures its type and source DFB. Bind
+// allocation is deferred to materializeComputePlan so a rejected plan leaves
+// the IR unchanged.
 static FailureOr<MaterializedOutput>
-createMaterializedOutput(ComputeOp computeOp, unsigned resultIndex,
-                         ModuleOp moduleOp, OpBuilder &builder) {
+planMaterializedOutput(ComputeOp computeOp, unsigned resultIndex) {
   if (resultIndex >= computeOp.getNumOutputs()) {
     return computeOp.emitOpError("materialization requested for result ")
            << resultIndex << ", but compute has only "
@@ -123,18 +125,10 @@ createMaterializedOutput(ComputeOp computeOp, unsigned resultIndex,
            << resultIndex << " must be attached to a dataflow buffer";
   }
 
-  auto funcOp = computeOp->getParentOfType<func::FuncOp>();
-  assert(funcOp && "ttl.compute must be inside a func::FuncOp");
-
-  OpBuilder::InsertionGuard guard(builder);
-  BindCBOp bind = createCompilerAllocatedDFB(tensorType, computeOp.getLoc(),
-                                             funcOp, moduleOp, builder);
-
   MaterializedOutput output;
   output.sourceResultIndex = resultIndex;
   output.tensorType = tensorType;
   output.sourceDFB = sourceDFB;
-  output.bind = bind;
   return output;
 }
 
@@ -196,15 +190,28 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
   });
 
   ComputeOp oldCompute = plan.producer;
+
+  // Validate every result before allocating any DFB, so a rejected plan leaves
+  // the IR unmutated.
   SmallVector<MaterializedOutput> materializedOutputs;
   materializedOutputs.reserve(plan.results.size());
   for (ResultMaterializationPlan &resultPlan : plan.results) {
-    FailureOr<MaterializedOutput> output = createMaterializedOutput(
-        oldCompute, resultPlan.resultIndex, moduleOp, builder);
+    FailureOr<MaterializedOutput> output =
+        planMaterializedOutput(oldCompute, resultPlan.resultIndex);
     if (failed(output)) {
       return failure();
     }
     materializedOutputs.push_back(*output);
+  }
+
+  auto funcOp = oldCompute->getParentOfType<func::FuncOp>();
+  assert(funcOp && "ttl.compute must be inside a func::FuncOp");
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    for (MaterializedOutput &output : materializedOutputs) {
+      output.bind = createCompilerAllocatedDFB(
+          output.tensorType, oldCompute.getLoc(), funcOp, moduleOp, builder);
+    }
   }
 
   SmallVector<Type> resultTypes(oldCompute.getResultTypes().begin(),
@@ -252,6 +259,12 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
   oldCompute->replaceAllUsesWith(originalReplacements);
   oldCompute->erase();
 
+  // Emit each DFB's push and wait/attach in the compute's own block, right
+  // after the rebuilt compute, so the push stays unconditional and paired with
+  // its acquire. Placing them at the consumer could leave an unconditional push
+  // without a matching pop for branch-local consumers.
+  // TODO(#724): relax once trace-balance analysis can prove balanced DFB
+  // occupancy across structured control flow.
   Operation *insertAfter = newCompute;
   for (MaterializedOutput &output : materializedOutputs) {
     builder.setInsertionPointAfter(insertAfter);
