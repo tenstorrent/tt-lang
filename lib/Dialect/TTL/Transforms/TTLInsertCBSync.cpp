@@ -17,13 +17,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "DFBAcquireReleaseAnalysis.h"
-#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -35,139 +32,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-static bool isCompilerAllocatedDFB(Value cb) {
-  auto bind = cb.getDefiningOp<BindCBOp>();
-  return bind && bind->hasAttr(kCompilerAllocatedAttrName);
-}
-
-static bool isTensorLike(Value value) {
-  Type type = value.getType();
-  return isa<RankedTensorType, ttcore::TileType>(type);
-}
-
-static bool valueDependsOnDFBWait(Value value, Value dfb) {
-  DenseSet<Value> visited;
-  SmallVector<Value, 8> worklist{value};
-
-  while (!worklist.empty()) {
-    Value current = worklist.pop_back_val();
-    if (!visited.insert(current).second) {
-      continue;
-    }
-
-    Operation *definingOp = current.getDefiningOp();
-    if (!definingOp) {
-      continue;
-    }
-
-    if (auto wait = dyn_cast<CBWaitOp>(definingOp);
-        wait && wait.getCb() == dfb) {
-      return true;
-    }
-
-    for (Value operand : definingOp->getOperands()) {
-      if (isTensorLike(operand)) {
-        worklist.push_back(operand);
-      }
-    }
-  }
-
-  return false;
-}
-
-static bool hasProjectedUseAfter(Operation *barrier, Value value) {
-  Block *barrierBlock = barrier->getBlock();
-  DenseSet<Value> visitedValues;
-  DenseSet<Operation *> visitedUsers;
-  SmallVector<Value, 8> worklist{value};
-
-  while (!worklist.empty()) {
-    Value current = worklist.pop_back_val();
-    if (!visitedValues.insert(current).second) {
-      continue;
-    }
-
-    for (OpOperand &use : current.getUses()) {
-      Operation *user = use.getOwner();
-      if (!visitedUsers.insert(user).second) {
-        continue;
-      }
-      if (user == barrier) {
-        continue;
-      }
-
-      Operation *projected = user->getBlock() == barrierBlock
-                                 ? user
-                                 : barrierBlock->findAncestorOpInBlock(*user);
-      if (projected && barrier->isBeforeInBlock(projected)) {
-        return true;
-      }
-
-      for (Value result : user->getResults()) {
-        if (isTensorLike(result)) {
-          worklist.push_back(result);
-        }
-      }
-    }
-  }
-
-  return false;
-}
-
-static bool hasSameDFBDependentValueLiveAfter(StoreOp store, Value dfb) {
-  Operation *barrier = store.getOperation();
-  Block *block = barrier->getBlock();
-
-  for (Operation &operation : *block) {
-    if (&operation == barrier) {
-      break;
-    }
-
-    for (Value result : operation.getResults()) {
-      if (!isTensorLike(result)) {
-        continue;
-      }
-      if (valueDependsOnDFBWait(result, dfb) &&
-          hasProjectedUseAfter(barrier, result)) {
-        return true;
-      }
-    }
-  }
-
-  Value storedTensor = store.getTensor();
-  return valueDependsOnDFBWait(storedTensor, dfb) &&
-         hasProjectedUseAfter(barrier, storedTensor);
-}
-
-static LogicalResult
-rejectUnsupportedUserDFBStateSSACrossings(func::FuncOp func) {
-  WalkResult result =
-      func.walk([&](StoreOp store) {
-        auto reserve = findCBReserveForView(store.getView());
-        if (!reserve) {
-          return WalkResult::advance();
-        }
-
-        Value dfb = reserve.getCb();
-        if (isCompilerAllocatedDFB(dfb)) {
-          return WalkResult::advance();
-        }
-
-        if (!hasSameDFBDependentValueLiveAfter(store, dfb)) {
-          return WalkResult::advance();
-        }
-
-        store.emitOpError()
-            << "unsupported same-DFB tensor SSA state update: a tensor derived "
-               "from the same user-declared dataflow buffer remains live after "
-               "the store; materialize the value through a separate dataflow "
-               "buffer before updating this state buffer";
-        return WalkResult::interrupt();
-      });
-
-  return failure(result.wasInterrupted());
-}
 
 template <typename CreateReleaseFn>
 static void insertMissingReleases(ArrayRef<Operation *> acquires,
@@ -202,11 +66,6 @@ struct TTLInsertCBSyncPass
     : public impl::TTLInsertCBSyncBase<TTLInsertCBSyncPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-
-    if (failed(rejectUnsupportedUserDFBStateSSACrossings(func))) {
-      signalPassFailure();
-      return;
-    }
 
     SmallVector<Operation *> reserves;
     SmallVector<Operation *> waits;
