@@ -103,9 +103,25 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)" in workflow
     assert "--find-links dist" in workflow
     assert '"$metapackage_wheel"' in workflow
-    assert "tt_metal_sha=\"$(printf '%s' \"$TT_METAL_SHA\"" in workflow
+    assert "tt-lang-setup" in workflow
+    assert workflow.count("tt_metal_sha=\"$(printf '%s' \"$TT_METAL_SHA\"") == 3
     assert "echo \"ttmetal_short=${tt_metal_sha:0:7}\"" in workflow
-    assert 'export PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}"' in workflow
+    assert 'test_import_root="$(mktemp -d)"' in workflow
+    assert "from ttl.utils.correctness import *" in workflow
+    assert (
+        'export PYTHONPATH="$test_import_root:$PWD/test${PYTHONPATH:+:$PYTHONPATH}"'
+        in workflow
+    )
+    assert (
+        'python3 -m pytest -c /dev/null --rootdir "$PWD" test/python'
+        in workflow
+    )
+    assert (
+        'python3 -m pytest -c /dev/null --rootdir "$PWD" test/me2e'
+        in workflow
+    )
+    assert "python3 -m pytest test/python" not in workflow
+    assert "python3 -m pytest test/me2e" not in workflow
     assert (
         '.github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist'
         in workflow

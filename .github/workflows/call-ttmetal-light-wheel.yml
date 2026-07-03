@@ -182,9 +182,12 @@ jobs:
         id: ttmetal
         run: |
           set -euo pipefail
+          tt_metal_sha="$(printf '%s' "$TT_METAL_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           .github/scripts/build-ttmetal-at-sha.sh \
-            --sha "${{ inputs.tt_metal_sha }}" \
+            --sha "$tt_metal_sha" \
             --scratch-dir /tmp/ttmetal-sha
+        env:
+          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
 
       - name: Build light core wheel
         if: ${{ steps.gate.outputs.build == 'true' }}
@@ -287,9 +290,12 @@ jobs:
         id: ttmetal
         run: |
           set -euo pipefail
+          tt_metal_sha="$(printf '%s' "$TT_METAL_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           .github/scripts/build-ttmetal-at-sha.sh \
-            --sha "${{ inputs.tt_metal_sha }}" \
+            --sha "$tt_metal_sha" \
             --scratch-dir /tmp/ttmetal-sha
+        env:
+          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
 
       - name: Install light wheel and external tt-metal
         env:
@@ -306,6 +312,7 @@ jobs:
             --find-links dist \
             --extra-index-url https://download.pytorch.org/whl/cpu \
             "$metapackage_wheel"
+          tt-lang-setup
           pip install -r dev-requirements.txt
           eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTMETAL_INSTALL_DIR")"
           echo "TTL_EXTERNAL_TT_METAL_DIR=$TTMETAL_INSTALL_DIR" >> "$GITHUB_ENV"
@@ -316,12 +323,23 @@ jobs:
           # shellcheck disable=SC1091
           source /tmp/ttl-venv/bin/activate
           eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTL_EXTERNAL_TT_METAL_DIR")"
-          export PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}"
+          test_import_root="$(mktemp -d)"
+          mkdir -p "$test_import_root/utils"
+          cat > "$test_import_root/utils/__init__.py" <<'PY'
+          from ttl.utils import *  # noqa: F401,F403
+          PY
+          cat > "$test_import_root/utils/correctness.py" <<'PY'
+          from ttl.utils.correctness import *  # noqa: F401,F403
+          PY
+          cat > "$test_import_root/utils/block_allocation.py" <<'PY'
+          from ttl.utils.block_allocation import *  # noqa: F401,F403
+          PY
+          export PYTHONPATH="$test_import_root:$PWD/test${PYTHONPATH:+:$PYTHONPATH}"
           python3 test/python/smoketest.py
           python3 test/python/simple_add.py
-          python3 -m pytest test/python -v --tb=short \
+          python3 -m pytest -c /dev/null --rootdir "$PWD" test/python -v --tb=short \
             --timeout=300 --timeout-method=thread
-          python3 -m pytest test/me2e -v --tb=short \
+          python3 -m pytest -c /dev/null --rootdir "$PWD" test/me2e -v --tb=short \
             --timeout=300 --timeout-method=thread
           bash .github/scripts/compile-and-run-examples.sh
           bash .github/scripts/run-tutorials.sh .
