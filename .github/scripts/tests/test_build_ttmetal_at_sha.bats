@@ -126,6 +126,9 @@ setup() {
     run cat "$GH_OUT"
     assert_output --partial "source_dir=$SCRATCH/src"
     assert_output --partial "ttmetal_date="
+    # The emitted sha is the trimmed value, not the padded input.
+    assert_output --partial "sha=$SHA"
+    assert_output --partial "short=${SHA:0:7}"
 
     run git -C "$SCRATCH/src" rev-parse HEAD
     assert_output "$SHA"

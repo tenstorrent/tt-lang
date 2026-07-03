@@ -42,6 +42,9 @@ CALL_BUILD_WHEELS_WORKFLOW = (
 TTMETAL_LIGHT_ON_DEMAND_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "ttmetal-light-on-demand.yml"
 )
+TTMETAL_LIGHT_XLA_ON_DEMAND_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "ttmetal-light-xla-on-demand.yml"
+)
 MANYLINUX_WHEEL_DOCKERFILE = (
     REPO_ROOT / ".github" / "containers" / "Dockerfile.wheel-manylinux-2-34"
 )
@@ -241,6 +244,43 @@ def test_nightly_light_wheel_soft_fails_without_failing_publish() -> None:
     # continue-on-error is not valid on a reusable-workflow job).
     assert "soft_fail:" in reusable
     assert reusable.count("continue-on-error: ${{ inputs.soft_fail }}") == 6
+
+
+def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
+    workflow = TTMETAL_LIGHT_XLA_ON_DEMAND_WORKFLOW.read_text()
+
+    assert "ttlang_ref:" in workflow
+    assert "tt_metal_sha:" in workflow
+    assert "required: true" in workflow
+    assert "resolve-xla-build-inputs.sh" in workflow
+    assert "Leave empty to resolve it from ttlang_ref." in workflow
+    assert (
+        "tt-lang-ird-ubuntu-24-04:${{ needs.resolve.outputs.docker_tag }}" in workflow
+    )
+    assert ".github/scripts/build-ttmetal-at-sha.sh" in workflow
+    assert "--scratch-dir /tmp/ttmetal-xla-sha" in workflow
+    assert "TTNN_DEP_MODE: external" in workflow
+    assert "TTLANG_TTNN_DEP_MODE: external" in workflow
+    assert (
+        "TTLANG_EXTERNAL_TT_METAL_DIR: ${{ steps.ttmetal.outputs.install_dir }}"
+        in workflow
+    )
+    assert "TT_METAL_COMMIT: ${{ steps.ttmetal.outputs.sha }}" in workflow
+    assert "pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation" in workflow
+    # Standard tt-lang-light wheels: no name/version suffix mechanism at all.
+    assert "EXTERNAL_WHEEL_SUFFIX" not in workflow
+    assert "--package-suffix" not in workflow
+    assert "light.xla" not in workflow
+    # XLA is distinguished by the dist/xla/<ttmetal7> location, not the wheel name.
+    assert "dist/xla/${{ steps.ttmetal.outputs.short }}" in workflow
+    assert "tt-lang-light-xla-wheels" in workflow
+    # The wheel is device-validated against the same tt-metal SHA it was built on.
+    assert "Device-validate XLA light wheel" in workflow
+    assert "options: --device /dev/tenstorrent" in workflow
+    assert "bash .github/scripts/run-tutorials.sh ." in workflow
+    assert "tt-lang-wheel-manylinux-2-34" not in workflow
+    assert "build-s3-light-core-wheel.sh" not in workflow
+    assert "build-s3-light-metapackage-wheel.sh" not in workflow
 
 
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:

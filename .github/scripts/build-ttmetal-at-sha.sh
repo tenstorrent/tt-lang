@@ -8,6 +8,8 @@
 #   install_dir=<path>   (default mode)  -- pass to TTLANG_EXTERNAL_TT_METAL_DIR
 #   source_dir=<path>    (--no-build)    -- checked-out tt-metal source tree
 #   ttmetal_date=<iso>                   -- the SHA's committer date (%cI)
+#   sha=<sha>                            -- the normalized (trimmed) SHA built
+#   short=<sha7>                         -- the SHA's 7-char prefix
 #
 # The tt-metal build is standalone (its own cmake config, mirrored from
 # BuildTTMetal.cmake) rather than tt-lang's build-and-install.sh so that a
@@ -185,6 +187,8 @@ build_and_install() {
 ensure_source
 log_release_tag
 ttmetal_date="$(commit_date)"
+emit "sha=$sha"
+emit "short=${sha:0:7}"
 
 if [[ "$no_build" -eq 1 ]]; then
     emit "source_dir=$src_dir"

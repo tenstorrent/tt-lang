@@ -681,6 +681,35 @@ publishing and needs no S3 credentials, so it can run from a feature branch; the
 scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml` is best-effort and does
 not fail the nightly publish.
 
+`ttmetal-light-xla-on-demand.yml` builds standard `tt-lang-light` wheels for the
+XLA flow from a specific tt-lang ref and tt-metal SHA. Dispatch it with:
+
+```text
+ttlang_ref: <tt-lang SHA or tag>
+tt_metal_sha: <tt-metal SHA>
+```
+
+Leave `docker_tag` and `version_override` empty to resolve them from the pinned
+`ttlang_ref`; the resolver runs that checkout's `get-version-tag.sh` and
+`compute-nightly-version.py` so the build uses the matching IRD image and wheel
+version for the selected tt-lang ref. Set `apply_patches: true` when the pinned
+ref needs the workflow commit's wheel patches. Set `hw_type` to select a device
+validation runner type; it defaults to `n150`.
+
+The XLA workflow uses the Ubuntu IRD image directly, builds the requested
+tt-metal SHA with `.github/scripts/build-ttmetal-at-sha.sh`, and builds the
+tt-lang wheel in `TTLANG_TTNN_DEP_MODE=external` mode. The wheels keep the
+standard package names and versions: `tt-lang==<version>+light` and
+`tt-lang-light==<version>`. The XLA distinction is the index location, not a
+wheel suffix: the build places both wheels under `dist/xla/<ttmetal7>/` and
+uploads that wheel set as the `tt-lang-light-xla-wheels` artifact. It does not
+use the manylinux_2_34 light-wheel builder or publish to S3.
+
+The workflow device-validates the uploaded wheels in a separate hardware job.
+That job rebuilds tt-metal at the same `tt_metal_sha`, installs the downloaded
+`tt-lang-light` wheel with the external tt-metal environment, then runs
+`test/python/smoketest.py` and the tutorial suite.
+
 #### Local internal wheel testing
 
 Use the same environment variables as the reusable workflow when validating the
