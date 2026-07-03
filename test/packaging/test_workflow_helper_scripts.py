@@ -109,17 +109,14 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "tt-lang-setup" in workflow
     assert workflow.count('tt_metal_sha="$(printf \'%s\' "$TT_METAL_SHA"') == 3
     assert 'echo "ttmetal_short=${tt_metal_sha:0:7}"' in workflow
-    assert 'test_import_root="$(mktemp -d)"' in workflow
-    assert "from ttl.utils.correctness import *" in workflow
-    assert (
-        'export PYTHONPATH="$test_import_root:$PWD/test${PYTHONPATH:+:$PYTHONPATH}"'
-        in workflow
-    )
-    # Wheel validation is a device smoke (installed wheel imports and runs real
-    # programs on device); the exhaustive regression runs on the source build.
+    # Wheel validation is a device smoke -- smoketest plus the tutorials, which
+    # import only ttl and ttnn. The exhaustive test/python and test/me2e
+    # regression runs against the source build, so it is not repeated here, and
+    # the test-tree import shim it needed is gone.
     assert "test/python/smoketest.py" in workflow
-    assert ".github/scripts/compile-and-run-examples.sh" in workflow
     assert ".github/scripts/run-tutorials.sh ." in workflow
+    assert "compile-and-run-examples.sh" not in workflow
+    assert "test_import_root" not in workflow
     assert 'pytest -c /dev/null --rootdir "$PWD" test/python' not in workflow
     assert 'pytest -c /dev/null --rootdir "$PWD" test/me2e' not in workflow
     assert "simple_add" not in workflow

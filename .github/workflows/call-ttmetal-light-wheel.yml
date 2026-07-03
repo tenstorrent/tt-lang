@@ -367,24 +367,13 @@ jobs:
           # shellcheck disable=SC1091
           source /tmp/ttl-venv/bin/activate
           eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTL_EXTERNAL_TT_METAL_DIR")"
-          test_import_root="$(mktemp -d)"
-          mkdir -p "$test_import_root/utils"
-          cat > "$test_import_root/utils/__init__.py" <<'PY'
-          from ttl.utils import *  # noqa: F401,F403
-          PY
-          cat > "$test_import_root/utils/correctness.py" <<'PY'
-          from ttl.utils.correctness import *  # noqa: F401,F403
-          PY
-          cat > "$test_import_root/utils/block_allocation.py" <<'PY'
-          from ttl.utils.block_allocation import *  # noqa: F401,F403
-          PY
-          export PYTHONPATH="$test_import_root:$PWD/test${PYTHONPATH:+:$PYTHONPATH}"
           # Wheel validation is a device smoke: confirm the installed wheel
-          # imports and runs real programs on device. Exhaustive test/python and
-          # test/me2e regression and compiler lit coverage run against the source
-          # build in the normal CI, so they are not repeated against the wheel.
+          # imports and runs the tutorial programs on device. Exhaustive
+          # test/python and test/me2e regression and compiler lit coverage run
+          # against the source build in the normal CI, not repeated against the
+          # wheel. smoketest and the tutorials import only ttl and ttnn, so no
+          # test-tree import shim is needed.
           python3 test/python/smoketest.py
-          bash .github/scripts/compile-and-run-examples.sh
           bash .github/scripts/run-tutorials.sh .
 
   publish:
