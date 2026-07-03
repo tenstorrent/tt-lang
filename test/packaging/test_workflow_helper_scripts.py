@@ -191,8 +191,9 @@ def test_ttlang_ref_threads_from_on_demand_to_reusable_workflow() -> None:
 
 def test_pinned_ttlang_ref_skips_search_and_tt_metal_build() -> None:
     reusable = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
-    # A pinned ref is checked out directly and drives the build.
-    assert "ref: ${{ inputs.ttlang_ref }}" in reusable
+    # A pinned ref is checked out directly, falling back to the trigger commit
+    # in search mode, and drives the build.
+    assert "ref: ${{ inputs.ttlang_ref || github.sha }}" in reusable
     # The tt-metal build (the search's device gate) is skipped when pinning.
     assert "if: ${{ inputs.ttlang_ref == '' }}" in reusable
     # The pin path emits the winner without the compatibility search.
