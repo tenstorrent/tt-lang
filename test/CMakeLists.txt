@@ -1,10 +1,12 @@
 # Lit Test configuration
 # (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
 
-# Generate pytest.ini with correct build directory paths.
+# Generate pytest.ini with correct build directory paths. Keep the configured
+# file in the build tree so independent build directories do not overwrite each
+# other's pytest import configuration.
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini.in
-  ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini
+  ${CMAKE_CURRENT_BINARY_DIR}/pytest.ini
   @ONLY
 )
 
@@ -99,6 +101,8 @@ add_custom_target(check-ttlang
 # Pytest tests (test/python/test_*.py files).
 add_custom_target(check-ttlang-pytest
   COMMAND ${Python3_EXECUTABLE} -m pytest
+    -c ${CMAKE_CURRENT_BINARY_DIR}/pytest.ini
+    --rootdir=${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/python
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
@@ -112,6 +116,8 @@ set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 # Middle end to end tests (test/me2e/).
 add_custom_target(check-ttlang-me2e
   COMMAND ${Python3_EXECUTABLE} -m pytest
+    -c ${CMAKE_CURRENT_BINARY_DIR}/pytest.ini
+    --rootdir=${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/me2e
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/me2e-report.xml
