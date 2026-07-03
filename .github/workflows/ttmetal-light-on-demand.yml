@@ -17,7 +17,7 @@ on:
         type: string
         default: ""
       ttlang_ref:
-        description: "tt-lang SHA or tag to build (skips the compatibility search). Empty = newest compatible."
+        description: "tt-lang SHA or tag to build (skips the compatibility search); requires tt_metal_sha. Empty = newest compatible."
         required: false
         type: string
         default: ""
@@ -98,10 +98,17 @@ jobs:
         id: detect
         env:
           FORCED_SHA: ${{ inputs.tt_metal_sha }}
+          TTLANG_REF: ${{ inputs.ttlang_ref }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           forced_sha="$(printf '%s' "$FORCED_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [ -n "$TTLANG_REF" ] && [ -z "$forced_sha" ]; then
+            echo "error: set tt_metal_sha when ttlang_ref is provided. Auto-detection reads" >&2
+            echo "the dispatch ref's third-party/tt-mlir pin, not the pinned ref's, so it" >&2
+            echo "would build the pinned tt-lang ref against the wrong tt-metal." >&2
+            exit 1
+          fi
           if [ -n "$forced_sha" ]; then
             echo "Forced tt-metal SHA: $forced_sha"
             echo "uplift=true" >> "$GITHUB_OUTPUT"

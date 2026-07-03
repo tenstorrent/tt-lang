@@ -190,8 +190,17 @@ def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
     assert "ref: ${{ inputs.ttlang_ref || github.sha }}" in workflow
     # The override threads to the build reusables under their own input name.
     assert "ttlang_sha_override: ${{ inputs.ttlang_ref }}" in workflow
-    # Patches are applied to the checked-out tree before building.
-    assert ".github/scripts/apply-wheel-patches.sh" in workflow
+    # Patches come from the workflow commit (a checkout of github.sha), not the
+    # target ref -- an older ref that needs a patch predates the patch files.
+    assert "ref: ${{ github.sha }}" in workflow
+    assert "path: .wheel-patch-src" in workflow
+    assert (
+        ".wheel-patch-src/.github/scripts/apply-wheel-patches.sh"
+        ' --target-dir "$GITHUB_WORKSPACE"'
+    ) in workflow
+    # TTLANG_GIT_COMMIT records the resolved commit, not a tag/branch name.
+    assert 'export TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"' in workflow
+    assert "TTLANG_GIT_COMMIT: ${{ inputs.ttlang_ref" not in workflow
     # apply_patches stays a valid boolean on push/schedule (no dispatch inputs).
     assert (
         "apply_patches: ${{ github.event_name == 'workflow_dispatch'"
@@ -204,7 +213,20 @@ def test_call_build_wheels_supports_pinned_ref_and_patches() -> None:
     assert "ttlang_sha_override:" in workflow
     assert "apply_patches:" in workflow
     assert "ref: ${{ inputs.ttlang_sha_override || github.sha }}" in workflow
-    assert ".github/scripts/apply-wheel-patches.sh" in workflow
+    # Patches are sourced from the workflow commit and applied to the target tree.
+    assert "path: .wheel-patch-src" in workflow
+    assert (
+        ".wheel-patch-src/.github/scripts/apply-wheel-patches.sh"
+        ' --target-dir "$GITHUB_WORKSPACE"'
+    ) in workflow
+
+
+def test_on_demand_requires_tt_metal_sha_when_ttlang_ref_pinned() -> None:
+    workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
+    # Auto-detect reads the dispatch ref's tt-metal pin, so a pinned tt-lang ref
+    # without an explicit tt_metal_sha would target the wrong tt-metal -- reject it.
+    assert 'if [ -n "$TTLANG_REF" ] && [ -z "$forced_sha" ]; then' in workflow
+    assert "TTLANG_REF: ${{ inputs.ttlang_ref }}" in workflow
 
 
 def test_nightly_light_wheel_soft_fails_without_failing_publish() -> None:

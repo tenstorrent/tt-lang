@@ -178,15 +178,29 @@ jobs:
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
 
+      # The patch runner and patches come from the workflow commit, not the
+      # (possibly older) target ref being rebuilt, which may predate them.
+      - name: Check out wheel patches from the workflow commit
+        if: ${{ inputs.apply_patches }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-patch-src
+          sparse-checkout: |
+            .github/scripts/apply-wheel-patches.sh
+            .github/wheel-patches
+          sparse-checkout-cone-mode: false
+
       - name: Apply wheel patches
         if: ${{ inputs.apply_patches }}
-        run: .github/scripts/apply-wheel-patches.sh
+        run: .wheel-patch-src/.github/scripts/apply-wheel-patches.sh --target-dir "$GITHUB_WORKSPACE"
 
       - name: Build light core wheel
         env:
           TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
-          TTLANG_GIT_COMMIT: ${{ inputs.ttlang_ref || github.sha }}
         run: |
+          # inputs.ttlang_ref may be a tag or branch; record the resolved commit.
+          export TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"
           # Submodules aren't checked out here; read tt-metal's commit from the gitlink.
           export TT_METAL_COMMIT="$(git rev-parse HEAD:third-party/tt-metal)"
           .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist

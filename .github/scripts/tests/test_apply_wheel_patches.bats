@@ -44,6 +44,31 @@ EOF
     assert_line --index 1 "second"
 }
 
+@test "--target-dir patches a separate tree, not the runner's own" {
+    # Patches live with the runner (REPO); the tree to patch is elsewhere and
+    # need not contain the runner or patches -- the older-ref rebuild case.
+    target="$BATS_TEST_TMPDIR/target"
+    mkdir -p "$target"
+    printf 'numpy==1.19.0\n' > "$target/requirements-runtime.txt"
+    printf 'numpy==1.19.0\n' > "$REPO/requirements-runtime.txt"
+    cp "$NUMPY_PATCH" "$REPO/.github/wheel-patches/fix-numpy-requirement.sh"
+
+    run -0 "$DRIVER_IN_REPO" --target-dir "$target"
+
+    run cat "$target/requirements-runtime.txt"
+    assert_output --partial "numpy>=1.20.0"
+    refute_output --partial "numpy==1.19.0"
+    # The runner's own tree is untouched.
+    run cat "$REPO/requirements-runtime.txt"
+    assert_output --partial "numpy==1.19.0"
+    refute_output --partial "numpy>=1.20.0"
+}
+
+@test "unknown argument -> exit 2" {
+    run "$DRIVER_IN_REPO" --bogus
+    assert_equal "$status" 2
+}
+
 @test "numpy patch rewrites a stale pin to the canonical lines" {
     cd "$BATS_TEST_TMPDIR"
     printf 'torch\nnumpy==1.19.0\nfoo>=1\n' > requirements-runtime.txt
