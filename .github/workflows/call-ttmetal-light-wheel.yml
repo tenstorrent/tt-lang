@@ -14,6 +14,11 @@ on:
         description: "tt-metal commit SHA to build and test against."
         required: true
         type: string
+      ttlang_ref:
+        description: "tt-lang SHA or tag to build. Empty = search for the newest compatible commit."
+        required: false
+        type: string
+        default: ""
       max_age_days:
         description: "Max |tt-lang date - tt-metal date| when searching for a compatible commit."
         required: false
@@ -67,12 +72,15 @@ jobs:
       found: ${{ steps.search.outputs.found }}
       winner_sha: ${{ steps.search.outputs.winner_sha }}
       winner_version: ${{ steps.search.outputs.winner_version }}
-      ttmetal_short: ${{ steps.ttmetal.outputs.ttmetal_short }}
+      ttmetal_short: ${{ steps.ttmetal_short.outputs.ttmetal_short }}
       ttlang_head: ${{ steps.head.outputs.sha }}
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
+          # Empty ttlang_ref checks out the caller's ref (search mode); a pinned
+          # ref checks out exactly that SHA or tag to build.
+          ref: ${{ inputs.ttlang_ref }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -83,27 +91,49 @@ jobs:
         id: head
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Build tt-metal at SHA
-        id: ttmetal
+      - name: Normalize tt-metal SHA
+        id: ttmetal_short
+        env:
+          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
         run: |
           set -euo pipefail
           tt_metal_sha="$(printf '%s' "$TT_METAL_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-          .github/scripts/build-ttmetal-at-sha.sh \
-            --sha "$tt_metal_sha" \
-            --scratch-dir /tmp/ttmetal-sha
+          echo "sha=$tt_metal_sha" >> "$GITHUB_OUTPUT"
           echo "ttmetal_short=${tt_metal_sha:0:7}" >> "$GITHUB_OUTPUT"
-        env:
-          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
+
+      # A pinned tt-lang ref is built directly, so the compatibility search and
+      # the tt-metal build that powers its device gate are skipped.
+      - name: Build tt-metal at SHA
+        id: ttmetal
+        if: ${{ inputs.ttlang_ref == '' }}
+        run: |
+          set -euo pipefail
+          .github/scripts/build-ttmetal-at-sha.sh \
+            --sha "${{ steps.ttmetal_short.outputs.sha }}" \
+            --scratch-dir /tmp/ttmetal-sha
 
       - name: Find compatible tt-lang commit
         id: search
+        env:
+          TTLANG_REF: ${{ inputs.ttlang_ref }}
         run: |
           set -euo pipefail
-          .github/scripts/find-compatible-ttlang.sh \
-            --ttmetal-install-dir "${{ steps.ttmetal.outputs.install_dir }}" \
-            --ttmetal-date "${{ steps.ttmetal.outputs.ttmetal_date }}" \
-            --max-age-days "${{ inputs.max_age_days }}" \
-            --build-dir build-search
+          if [ -n "$TTLANG_REF" ]; then
+            winner_sha="$(git rev-parse HEAD)"
+            winner_version="$(python3 .github/scripts/compute-nightly-version.py)"
+            echo "Pinned tt-lang $TTLANG_REF -> $winner_sha (version $winner_version); skipping search." >&2
+            {
+              echo "found=true"
+              echo "winner_sha=$winner_sha"
+              echo "winner_version=$winner_version"
+            } >> "$GITHUB_OUTPUT"
+          else
+            .github/scripts/find-compatible-ttlang.sh \
+              --ttmetal-install-dir "${{ steps.ttmetal.outputs.install_dir }}" \
+              --ttmetal-date "${{ steps.ttmetal.outputs.ttmetal_date }}" \
+              --max-age-days "${{ inputs.max_age_days }}" \
+              --build-dir build-search
+          fi
 
   record-miss:
     name: "Record no-compatible miss"

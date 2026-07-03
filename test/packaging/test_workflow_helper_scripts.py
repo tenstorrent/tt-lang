@@ -158,6 +158,26 @@ def test_ttmetal_light_on_demand_detect_avoids_full_submodule_clone() -> None:
     assert "if: ${{ inputs.tt_metal_sha == '' }}" in workflow
 
 
+def test_ttlang_ref_threads_from_on_demand_to_reusable_workflow() -> None:
+    on_demand = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
+    reusable = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
+    # The on-demand input is declared and passed through to the reusable build.
+    assert "ttlang_ref:" in on_demand
+    assert "ttlang_ref: ${{ inputs.ttlang_ref }}" in on_demand
+    assert "ttlang_ref:" in reusable
+
+
+def test_pinned_ttlang_ref_skips_search_and_tt_metal_build() -> None:
+    reusable = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
+    # A pinned ref is checked out directly and drives the build.
+    assert "ref: ${{ inputs.ttlang_ref }}" in reusable
+    # The tt-metal build (the search's device gate) is skipped when pinning.
+    assert "if: ${{ inputs.ttlang_ref == '' }}" in reusable
+    # The pin path emits the winner without the compatibility search.
+    assert "python3 .github/scripts/compute-nightly-version.py" in reusable
+    assert 'winner_sha="$(git rev-parse HEAD)"' in reusable
+
+
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
     build_docker_workflow = CALL_BUILD_DOCKER_WORKFLOW.read_text()
     wheel_images_workflow = CALL_BUILD_WHEEL_IMAGES_WORKFLOW.read_text()

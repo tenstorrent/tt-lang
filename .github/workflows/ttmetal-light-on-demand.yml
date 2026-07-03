@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: ""
+      ttlang_ref:
+        description: "tt-lang SHA or tag to build (skips the compatibility search). Empty = newest compatible."
+        required: false
+        type: string
+        default: ""
       docker_tag:
         description: "Builder image tag. Leave empty to resolve it from the current main (get-version-tag.sh)."
         required: false
@@ -119,6 +124,7 @@ jobs:
     secrets: inherit
     with:
       tt_metal_sha: ${{ needs.detect.outputs.tt_metal_sha }}
+      ttlang_ref: ${{ inputs.ttlang_ref }}
       docker_tag: ${{ inputs.docker_tag || needs.detect.outputs.docker_tag }}
       max_age_days: ${{ format('{0}', inputs.max_age_days) }}
       python_tags: ${{ inputs.python_tags }}
