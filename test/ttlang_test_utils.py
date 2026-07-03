@@ -93,7 +93,11 @@ def is_hardware_available() -> bool:
     Checks in order:
     1. TT_METAL_SIMULATOR environment variable (simulation mode)
     2. TTLANG_HAS_DEVICE environment variable (set by CMake)
-    3. Physical device files (/dev/tenstorrent*)
+    3. Runtime device nodes (/dev/tenstorrent/* or /dev/tenstorrent[0-9]*)
+    4. ttl.config.HAS_TT_DEVICE, the wheel's build-time value (fallback)
+
+    Step 3 precedes step 4 so an installed light wheel, built with no device
+    and therefore HAS_TT_DEVICE=False, still runs on a host that has a chip.
 
     Returns:
         True if hardware or simulator is available, False otherwise.
