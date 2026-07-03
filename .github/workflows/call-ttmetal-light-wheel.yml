@@ -55,8 +55,60 @@ permissions:
   contents: read
 
 jobs:
+  build-ttmetal:
+    name: "Build tt-metal at SHA"
+    continue-on-error: ${{ inputs.soft_fail }}
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 180
+    # Built once in the oldest glibc (manylinux_2_34, forward-compatible to the
+    # ird runners) at cp312 to match the device jobs' ttnn import ABI.
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      ttmetal_short: ${{ steps.ttmetal.outputs.short }}
+      ttmetal_date: ${{ steps.ttmetal.outputs.ttmetal_date }}
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Build tt-metal at SHA
+        id: ttmetal
+        env:
+          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
+        run: |
+          set -euo pipefail
+          .github/scripts/build-ttmetal-at-sha.sh \
+            --sha "$TT_METAL_SHA" \
+            --scratch-dir /tmp/ttmetal-sha
+
+      # tar preserves the +x bit on the bundled sfpi compiler that JIT needs;
+      # upload-artifact would strip it.
+      - name: Package tt-metal install
+        run: tar -C /tmp/ttmetal-sha -czf /tmp/ttmetal-install.tar.gz install
+
+      - name: Upload tt-metal install
+        uses: actions/upload-artifact@v7
+        with:
+          name: ttmetal-install
+          path: /tmp/ttmetal-install.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
+
   find-compatible:
     name: "Find compatible tt-lang"
+    needs: build-ttmetal
     continue-on-error: ${{ inputs.soft_fail }}
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
     timeout-minutes: 300
@@ -78,7 +130,7 @@ jobs:
       found: ${{ steps.search.outputs.found }}
       winner_sha: ${{ steps.search.outputs.winner_sha }}
       winner_version: ${{ steps.search.outputs.winner_version }}
-      ttmetal_short: ${{ steps.ttmetal_short.outputs.ttmetal_short }}
+      ttmetal_short: ${{ needs.build-ttmetal.outputs.ttmetal_short }}
       ttlang_head: ${{ steps.head.outputs.sha }}
     steps:
       - name: Checkout tt-lang
@@ -97,26 +149,18 @@ jobs:
         id: head
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Normalize tt-metal SHA
-        id: ttmetal_short
-        env:
-          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
-        run: |
-          set -euo pipefail
-          tt_metal_sha="$(printf '%s' "$TT_METAL_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-          echo "sha=$tt_metal_sha" >> "$GITHUB_OUTPUT"
-          echo "ttmetal_short=${tt_metal_sha:0:7}" >> "$GITHUB_OUTPUT"
+      - name: Download tt-metal install
+        if: ${{ inputs.ttlang_ref == '' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ttmetal-install
+          path: /tmp/ttmetal-dl
 
-      # A pinned tt-lang ref is built directly, so the compatibility search and
-      # the tt-metal build that powers its device gate are skipped.
-      - name: Build tt-metal at SHA
-        id: ttmetal
+      - name: Unpack tt-metal install
         if: ${{ inputs.ttlang_ref == '' }}
         run: |
-          set -euo pipefail
-          .github/scripts/build-ttmetal-at-sha.sh \
-            --sha "${{ steps.ttmetal_short.outputs.sha }}" \
-            --scratch-dir /tmp/ttmetal-sha
+          mkdir -p /tmp/ttmetal-install
+          tar -C /tmp/ttmetal-install --strip-components=1 -xzf /tmp/ttmetal-dl/ttmetal-install.tar.gz
 
       - name: Find compatible tt-lang commit
         id: search
@@ -135,8 +179,8 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           else
             .github/scripts/find-compatible-ttlang.sh \
-              --ttmetal-install-dir "${{ steps.ttmetal.outputs.install_dir }}" \
-              --ttmetal-date "${{ steps.ttmetal.outputs.ttmetal_date }}" \
+              --ttmetal-install-dir /tmp/ttmetal-install \
+              --ttmetal-date "${{ needs.build-ttmetal.outputs.ttmetal_date }}" \
               --max-age-days "${{ inputs.max_age_days }}" \
               --build-dir build-search
           fi
@@ -172,7 +216,7 @@ jobs:
   build-wheels:
     name: "Build light wheel (${{ matrix.python_tag }})"
     continue-on-error: ${{ inputs.soft_fail }}
-    needs: find-compatible
+    needs: [build-ttmetal, find-compatible]
     if: ${{ needs.find-compatible.outputs.found == 'true' }}
     runs-on: mlir-large-runner-lang
     timeout-minutes: 180
@@ -215,22 +259,23 @@ jobs:
         if: ${{ steps.gate.outputs.build == 'true' }}
         run: git config --global --add safe.directory "$(pwd)"
 
-      - name: Build tt-metal at SHA
+      - name: Download tt-metal install
         if: ${{ steps.gate.outputs.build == 'true' }}
-        id: ttmetal
+        uses: actions/download-artifact@v8
+        with:
+          name: ttmetal-install
+          path: /tmp/ttmetal-dl
+
+      - name: Unpack tt-metal install
+        if: ${{ steps.gate.outputs.build == 'true' }}
         run: |
-          set -euo pipefail
-          tt_metal_sha="$(printf '%s' "$TT_METAL_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-          .github/scripts/build-ttmetal-at-sha.sh \
-            --sha "$tt_metal_sha" \
-            --scratch-dir /tmp/ttmetal-sha
-        env:
-          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
+          mkdir -p /tmp/ttmetal-install
+          tar -C /tmp/ttmetal-install --strip-components=1 -xzf /tmp/ttmetal-dl/ttmetal-install.tar.gz
 
       - name: Build light core wheel
         if: ${{ steps.gate.outputs.build == 'true' }}
         env:
-          TTLANG_EXTERNAL_TT_METAL_DIR: ${{ steps.ttmetal.outputs.install_dir }}
+          TTLANG_EXTERNAL_TT_METAL_DIR: /tmp/ttmetal-install
           TTLANG_GIT_COMMIT: ${{ needs.find-compatible.outputs.winner_sha }}
         run: |
           .github/scripts/build-s3-light-core-wheel.sh \
@@ -288,7 +333,7 @@ jobs:
   device-validate:
     name: "Device-validate light wheel"
     continue-on-error: ${{ inputs.soft_fail }}
-    needs: [find-compatible, build-wheels, build-metapackage]
+    needs: [build-ttmetal, find-compatible, build-wheels, build-metapackage]
     if: ${{ needs.find-compatible.outputs.found == 'true' }}
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
     timeout-minutes: 180
@@ -326,20 +371,20 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Build tt-metal at SHA
-        id: ttmetal
+      - name: Download tt-metal install
+        uses: actions/download-artifact@v8
+        with:
+          name: ttmetal-install
+          path: /tmp/ttmetal-dl
+
+      - name: Unpack tt-metal install
         run: |
-          set -euo pipefail
-          tt_metal_sha="$(printf '%s' "$TT_METAL_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-          .github/scripts/build-ttmetal-at-sha.sh \
-            --sha "$tt_metal_sha" \
-            --scratch-dir /tmp/ttmetal-sha
-        env:
-          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
+          mkdir -p /tmp/ttmetal-install
+          tar -C /tmp/ttmetal-install --strip-components=1 -xzf /tmp/ttmetal-dl/ttmetal-install.tar.gz
 
       - name: Install light wheel and external tt-metal
         env:
-          TTMETAL_INSTALL_DIR: ${{ steps.ttmetal.outputs.install_dir }}
+          TTMETAL_INSTALL_DIR: /tmp/ttmetal-install
         run: |
           set -euo pipefail
           # Clean venv (no --system-site-packages): the installed light wheel and

@@ -101,7 +101,10 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "matrix.python_tag == 'cp312'" not in workflow
     assert "name: ttmetal-light-metapackage" in workflow
     assert "path: dist/tt_lang_light-*.whl" in workflow
-    assert "needs: [find-compatible, build-wheels, build-metapackage]" in workflow
+    assert (
+        "needs: [build-ttmetal, find-compatible, build-wheels, build-metapackage]"
+        in workflow
+    )
     assert (
         "needs: [find-compatible, build-wheels, build-metapackage, device-validate]"
         in workflow
@@ -110,8 +113,20 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "--find-links dist" in workflow
     assert '"$metapackage_wheel"' in workflow
     assert "tt-lang-setup" in workflow
-    assert workflow.count('tt_metal_sha="$(printf \'%s\' "$TT_METAL_SHA"') == 3
-    assert 'echo "ttmetal_short=${tt_metal_sha:0:7}"' in workflow
+    # tt-metal is built once (build-ttmetal, in the oldest-glibc manylinux
+    # container) and the install is shared as an artifact; find-compatible,
+    # build-wheels, and device-validate download it instead of rebuilding.
+    assert "build-ttmetal:" in workflow
+    assert workflow.count(".github/scripts/build-ttmetal-at-sha.sh") == 1
+    assert "tt-lang-wheel-manylinux-2-34-cp312" in workflow
+    # One upload + three downloads of the shared install.
+    assert workflow.count("name: ttmetal-install") == 4
+    assert "TTLANG_EXTERNAL_TT_METAL_DIR: /tmp/ttmetal-install" in workflow
+    assert "TTMETAL_INSTALL_DIR: /tmp/ttmetal-install" in workflow
+    # tar transfer (not a bare artifact) so the sfpi compiler keeps its +x bit;
+    # unpacked by each of the three consumers.
+    assert "Package tt-metal install" in workflow
+    assert workflow.count("--strip-components=1") == 3
     # Wheel validation is a device smoke -- smoketest plus the tutorials, which
     # import only ttl and ttnn. The exhaustive test/python and test/me2e
     # regression runs against the source build, so it is not repeated here, and
@@ -243,7 +258,7 @@ def test_nightly_light_wheel_soft_fails_without_failing_publish() -> None:
     # Every job in the reusable build honors soft_fail (caller-level
     # continue-on-error is not valid on a reusable-workflow job).
     assert "soft_fail:" in reusable
-    assert reusable.count("continue-on-error: ${{ inputs.soft_fail }}") == 6
+    assert reusable.count("continue-on-error: ${{ inputs.soft_fail }}") == 7
 
 
 def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
@@ -278,6 +293,12 @@ def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
     assert "Device-validate XLA light wheel" in workflow
     assert "options: --device /dev/tenstorrent" in workflow
     assert "bash .github/scripts/run-tutorials.sh ." in workflow
+    # tt-metal built once (build job), shared as a tar artifact preserving the
+    # sfpi +x bit; device-validate downloads and unpacks it, not rebuilds.
+    assert "Package tt-metal install" in workflow
+    assert workflow.count("name: ttmetal-install") == 2
+    assert "TTMETAL_INSTALL_DIR: /tmp/ttmetal-install" in workflow
+    assert "--strip-components=1" in workflow
     assert "tt-lang-wheel-manylinux-2-34" not in workflow
     assert "build-s3-light-core-wheel.sh" not in workflow
     assert "build-s3-light-metapackage-wheel.sh" not in workflow

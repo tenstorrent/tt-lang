@@ -241,6 +241,20 @@ jobs:
           path: dist/xla/${{ steps.ttmetal.outputs.short }}/*.whl
           retention-days: 14
 
+      # tar preserves the +x bit on the bundled sfpi compiler that JIT needs;
+      # device-validate downloads this instead of rebuilding tt-metal.
+      - name: Package tt-metal install
+        run: tar -C /tmp/ttmetal-xla-sha -czf /tmp/ttmetal-install.tar.gz install
+
+      - name: Upload tt-metal install
+        uses: actions/upload-artifact@v7
+        with:
+          name: ttmetal-install
+          path: /tmp/ttmetal-install.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
+
   device-validate:
     name: "Device-validate XLA light wheel"
     needs: [resolve, build]
@@ -273,31 +287,26 @@ jobs:
       - name: Git safe directory
         run: git config --global --add safe.directory '*'
 
-      - name: Check out workflow helpers
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-          path: .workflow-src
-          sparse-checkout: .github/scripts/build-ttmetal-at-sha.sh
-          sparse-checkout-cone-mode: false
-
       - name: Download XLA wheels
         uses: actions/download-artifact@v8
         with:
           name: tt-lang-light-xla-wheels
           path: dist
 
-      - name: Build tt-metal at SHA
-        id: ttmetal
+      - name: Download tt-metal install
+        uses: actions/download-artifact@v8
+        with:
+          name: ttmetal-install
+          path: /tmp/ttmetal-dl
+
+      - name: Unpack tt-metal install
         run: |
-          set -euo pipefail
-          .workflow-src/.github/scripts/build-ttmetal-at-sha.sh \
-            --sha "${{ inputs.tt_metal_sha }}" \
-            --scratch-dir /tmp/ttmetal-xla-sha
+          mkdir -p /tmp/ttmetal-install
+          tar -C /tmp/ttmetal-install --strip-components=1 -xzf /tmp/ttmetal-dl/ttmetal-install.tar.gz
 
       - name: Install light wheel and external tt-metal
         env:
-          TTMETAL_INSTALL_DIR: ${{ steps.ttmetal.outputs.install_dir }}
+          TTMETAL_INSTALL_DIR: /tmp/ttmetal-install
         run: |
           set -euo pipefail
           # Clean venv: the installed wheel and the external tt-metal (built at
