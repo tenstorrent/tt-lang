@@ -342,7 +342,11 @@ jobs:
           TTMETAL_INSTALL_DIR: ${{ steps.ttmetal.outputs.install_dir }}
         run: |
           set -euo pipefail
-          python3 -m venv --system-site-packages /tmp/ttl-venv
+          # Clean venv (no --system-site-packages): the installed light wheel and
+          # the external tt-metal must satisfy the suite on their own, so a
+          # dependency the wheel fails to declare surfaces here instead of being
+          # masked by the ird image's system packages.
+          python3 -m venv /tmp/ttl-venv
           # shellcheck disable=SC1091
           source /tmp/ttl-venv/bin/activate
           abi="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
