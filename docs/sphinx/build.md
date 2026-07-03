@@ -650,6 +650,37 @@ mode-specific artifacts, verifies each artifact with the expected version rules,
 then publishes a single combined directory. The light build does not emit
 `tt-lang-sim`; bundled/public wheel builds keep producing the simulator wheel.
 
+To rebuild a light wheel from a specific older tt-lang commit or tag -- for
+example to reissue a release line whose original wheel no longer runs -- dispatch
+the workflow with a pinned ref, adding wheel patches when that ref's pinned
+dependencies no longer resolve:
+
+```text
+wheel_variant: light
+version_override: <internal-version>
+ttlang_ref: <tt-lang SHA or tag>
+apply_patches: true
+```
+
+`ttlang_ref` checks out that commit or tag for every wheel-building job instead
+of the triggering commit. `apply_patches` runs the scripts in
+`.github/wheel-patches/` against the checkout before building; the first patch
+rewrites a stale `numpy` pin to the current line's constraint so an older ref
+installs cleanly. The patch runner and the patches are taken from the workflow
+commit, not the pinned ref, so a ref that predates them is still patched.
+
+#### Building a light wheel for a specific tt-metal SHA
+
+`ttmetal-light-on-demand.yml` builds and device-tests a light wheel against an
+arbitrary tt-metal commit. Dispatch it with a `tt_metal_sha`; leave `ttlang_ref`
+empty to search for the newest compatible tt-lang commit, or set it to pin the
+tt-lang commit or tag to build. A pinned `ttlang_ref` requires `tt_metal_sha`,
+because auto-detection reads the dispatch ref's tt-mlir pin rather than the
+pinned ref's. With `dry_run: true` the workflow builds and validates without
+publishing and needs no S3 credentials, so it can run from a feature branch; the
+scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml` is best-effort and does
+not fail the nightly publish.
+
 #### Local internal wheel testing
 
 Use the same environment variables as the reusable workflow when validating the
