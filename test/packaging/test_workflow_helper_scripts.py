@@ -104,22 +104,16 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "--find-links dist" in workflow
     assert '"$metapackage_wheel"' in workflow
     assert "tt-lang-setup" in workflow
-    assert workflow.count("tt_metal_sha=\"$(printf '%s' \"$TT_METAL_SHA\"") == 3
-    assert "echo \"ttmetal_short=${tt_metal_sha:0:7}\"" in workflow
+    assert workflow.count('tt_metal_sha="$(printf \'%s\' "$TT_METAL_SHA"') == 3
+    assert 'echo "ttmetal_short=${tt_metal_sha:0:7}"' in workflow
     assert 'test_import_root="$(mktemp -d)"' in workflow
     assert "from ttl.utils.correctness import *" in workflow
     assert (
         'export PYTHONPATH="$test_import_root:$PWD/test${PYTHONPATH:+:$PYTHONPATH}"'
         in workflow
     )
-    assert (
-        'python3 -m pytest -c /dev/null --rootdir "$PWD" test/python'
-        in workflow
-    )
-    assert (
-        'python3 -m pytest -c /dev/null --rootdir "$PWD" test/me2e'
-        in workflow
-    )
+    assert 'python3 -m pytest -c /dev/null --rootdir "$PWD" test/python' in workflow
+    assert 'python3 -m pytest -c /dev/null --rootdir "$PWD" test/me2e' in workflow
     assert "python3 -m pytest test/python" not in workflow
     assert "python3 -m pytest test/me2e" not in workflow
     assert (
@@ -152,8 +146,8 @@ def test_ttmetal_light_on_demand_detect_skips_s3_for_dry_run() -> None:
     # Dry-run and forced-SHA branch runs do not need S3 credentials.
     assert "if: ${{ inputs.dry_run != true && inputs.tt_metal_sha == '' }}" in workflow
     assert "detect-ttmlir-ttmetal-uplift.sh --assume-new" in workflow
-    assert "forced_sha=\"$(printf '%s' \"$FORCED_SHA\"" in workflow
-    assert "echo \"tt_metal_sha=$forced_sha\" >> \"$GITHUB_OUTPUT\"" in workflow
+    assert 'forced_sha="$(printf \'%s\' "$FORCED_SHA"' in workflow
+    assert 'echo "tt_metal_sha=$forced_sha" >> "$GITHUB_OUTPUT"' in workflow
 
 
 def test_ttmetal_light_on_demand_detect_avoids_full_submodule_clone() -> None:
