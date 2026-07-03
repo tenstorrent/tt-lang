@@ -12,7 +12,7 @@
 // entry, the rest of the materialization bundle stays inside the loop.
 
 // CHECK-LABEL: func.func @intermediate_in_scf_for
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
 // CHECK: scf.for
 // CHECK:   ttl.add
 // CHECK:   ttl.cb_reserve
@@ -58,7 +58,7 @@ func.func @intermediate_in_scf_for()
 // function body entry, not inside the if region.
 
 // CHECK-LABEL: func.func @intermediate_in_scf_if
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
 // CHECK: scf.if
 // CHECK-NOT: ttl.compiler_allocated
 // CHECK:   ttl.add
@@ -101,7 +101,7 @@ func.func @intermediate_in_scf_if(%cond: i1)
 // Before the fix, this crashed in TTLFinalizeDFBIndices.
 
 // CHECK-LABEL: func.func @intermediate_in_nested_for_if
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
 // CHECK: scf.for
 // CHECK:   scf.if
 // CHECK-NOT: ttl.compiler_allocated

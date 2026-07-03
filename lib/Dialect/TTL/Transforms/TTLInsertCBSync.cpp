@@ -177,21 +177,15 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
                                   CreateReleaseFn createRelease) {
   for (Operation *acquire : acquires) {
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
-    // Cheap check first: any release inside the strict next-acquire range?
-    DFBReleaseSearch releaseSearch = findOwnedDFBReleases(
-        interval, /*lastOwnedUse=*/nullptr, releases, &erased);
+
+    // The last owned use is the insertion point for a new release; searching
+    // from it also accepts later releases, subsuming the strict-range check.
+    Operation *last = findLastDFBAcquireOwnedUse(interval);
+    DFBReleaseSearch releaseSearch =
+        findOwnedDFBReleases(interval, last, releases, &erased);
+
     if (releaseSearch.hasSameLevelRelease()) {
       continue;
-    }
-
-    // Compute the last owned use; it both bounds the idempotency recheck
-    // and pinpoints the insertion point.
-    Operation *last = findLastDFBAcquireOwnedUse(interval);
-    if (last != interval.acquire) {
-      releaseSearch = findOwnedDFBReleases(interval, last, releases, &erased);
-      if (releaseSearch.hasSameLevelRelease()) {
-        continue;
-      }
     }
 
     for (Operation *nestedRelease : releaseSearch.nestedReleases) {

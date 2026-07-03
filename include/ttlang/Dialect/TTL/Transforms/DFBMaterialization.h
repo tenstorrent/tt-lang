@@ -10,6 +10,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
 
 /// \file
 /// Helpers for materializing tensor SSA values through compiler-managed
@@ -17,16 +19,23 @@
 
 namespace mlir::tt::ttl {
 
+struct DFBMaterializedValue {
+  /// DFB-attached tensor value that should replace the consumer operand.
+  Value materialized;
+
+  /// Source tensor value used to key fallback materialization reuse.
+  Value source;
+};
+
 /// Allocates a fresh compiler-managed dataflow buffer and emits its
 /// `bind_cb` at function entry, where `finalize-dfb-indices` requires every
 /// compiler-allocated bind to live. The assigned DFB index is provisional;
 /// `finalize-dfb-indices` performs physical index reuse and validates the
-/// hardware DFB-index limit. The block count is set to 2, the smallest size
-/// that lets the producer and consumer use different slots concurrently;
-/// larger counts work but waste L1 since no current caller needs more than one
-/// value in flight at a time. The builder's insertion point is left at the new
-/// `bind_cb`; callers that need to emit elsewhere should wrap the call in
-/// `OpBuilder::InsertionGuard`.
+/// hardware DFB-index limit. Compiler-managed intermediates use one slot: they
+/// carry a single SSA value inside one compute thread, not a pipelined transfer
+/// between independently scheduled threads. The builder's insertion point is
+/// left at the new `bind_cb`; callers that need to emit elsewhere should wrap
+/// the call in `OpBuilder::InsertionGuard`.
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
                                     func::FuncOp funcOp, ModuleOp moduleOp,
                                     OpBuilder &builder);
@@ -43,12 +52,11 @@ StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder,
 AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
                                   Location loc, OpBuilder &builder);
 
-/// Routes `intermediate` through a fresh compiler-allocated DFB and returns a
-/// tensor SSA value backed by it. The new `bind_cb` is placed at function entry
-/// (see `createCompilerAllocatedDFB`); the store, wait, and attach are emitted
-/// immediately before `insertBefore`.
-Value materializeToDFB(Value intermediate, Operation *insertBefore,
-                       ModuleOp moduleOp, OpBuilder &builder);
+/// Routes a non-`ttl.compute` tensor value through a fresh compiler-allocated
+/// DFB for one consumer. Compute results are materialized atomically by
+/// `TTLInsertIntermediateDFBs` so one producer compute is rebuilt at most once.
+FailureOr<DFBMaterializedValue>
+materializeToDFB(Value intermediate, ModuleOp moduleOp, OpBuilder &builder);
 
 } // namespace mlir::tt::ttl
 

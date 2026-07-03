@@ -28,11 +28,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
         createTTLLowerAccumulationScopes(std::move(lowerOpts)));
   }
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
-  {
-    TTLInsertIntermediateDFBsOptions dfbOpts;
-    dfbOpts.enable = options.compilerDFBs;
-    pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
-  }
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
   {
@@ -47,7 +42,15 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(
         createTTLLowerAccumulationScopes(std::move(lowerOpts)));
   }
+  pm.addPass(createTTLFormProducerCompute());
+  {
+    TTLInsertIntermediateDFBsOptions dfbOpts;
+    dfbOpts.enable = options.compilerDFBs;
+    pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
+  }
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   pm.addPass(createTTLConvertTTLToCompute());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;

@@ -6,8 +6,36 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 namespace mlir::tt::ttl {
+
+namespace {
+
+FailureOr<DFBMaterializedValue>
+materializeTensorValueToDFB(Value intermediate, ModuleOp moduleOp,
+                            OpBuilder &builder) {
+  auto tensorType = cast<RankedTensorType>(intermediate.getType());
+  Location loc = intermediate.getLoc();
+
+  Operation *defOp = intermediate.getDefiningOp();
+  assert(defOp && "intermediate must have a defining op");
+
+  auto funcOp = defOp->getParentOfType<func::FuncOp>();
+  assert(funcOp && "intermediate must be inside a func::FuncOp");
+
+  BindCBOp bindDFB =
+      createCompilerAllocatedDFB(tensorType, loc, funcOp, moduleOp, builder);
+
+  builder.setInsertionPointAfter(defOp);
+  createDFBStore(intermediate, bindDFB.getResult(), builder);
+
+  auto attach =
+      createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
+  return DFBMaterializedValue{attach.getResult(), intermediate};
+}
+
+} // namespace
 
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
                                     func::FuncOp funcOp, ModuleOp moduleOp,
@@ -16,7 +44,7 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
 
   SmallVector<int64_t> shape(tensorType.getShape());
   Type elementType = tensorType.getElementType();
-  int64_t blockCount = 2;
+  int64_t blockCount = 1;
   auto dfbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
@@ -61,28 +89,13 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-Value materializeToDFB(Value intermediate, Operation *insertBefore,
-                       ModuleOp moduleOp, OpBuilder &builder) {
-  auto tensorType = cast<RankedTensorType>(intermediate.getType());
-  Location loc = intermediate.getLoc();
-
-  Operation *defOp = intermediate.getDefiningOp();
-  assert(defOp && "intermediate must have a defining op");
-  assert(insertBefore && "materialization requires an insertion point");
-
-  auto funcOp = defOp->getParentOfType<func::FuncOp>();
-  assert(funcOp && "intermediate must be inside a func::FuncOp");
-
-  OpBuilder::InsertionGuard guard(builder);
-  BindCBOp bindDFB =
-      createCompilerAllocatedDFB(tensorType, loc, funcOp, moduleOp, builder);
-
-  builder.setInsertionPoint(insertBefore);
-  createDFBStore(intermediate, bindDFB.getResult(), builder);
-
-  auto attach =
-      createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
-  return attach.getResult();
+FailureOr<DFBMaterializedValue>
+materializeToDFB(Value intermediate, ModuleOp moduleOp, OpBuilder &builder) {
+  auto result = dyn_cast<OpResult>(intermediate);
+  assert((!result || !isa<ComputeOp>(result.getOwner())) &&
+         "compute results are materialized atomically by "
+         "TTLInsertIntermediateDFBs");
+  return materializeTensorValueToDFB(intermediate, moduleOp, builder);
 }
 
 } // namespace mlir::tt::ttl

@@ -349,12 +349,19 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       auto collectOutputCB = [&](Value packCB, Operation *packOp) {
         if (!outputCB) {
           outputCB = packCB;
-        } else if (outputCB != packCB &&
-                   outputCB.getType() != packCB.getType()) {
-          packOp->emitOpError(
-              "sync region packs to output CBs with different data formats; "
-              "common init cannot configure multiple PACK formats");
-          hadError = true;
+        } else if (outputCB != packCB) {
+          // PACK format depends on the element type only, not num_elements
+          // (buffering depth), so compare element types, not full CB types.
+          mlir::Type lhsFormat =
+              mlir::cast<ttk::CBType>(outputCB.getType()).getElementType();
+          mlir::Type rhsFormat =
+              mlir::cast<ttk::CBType>(packCB.getType()).getElementType();
+          if (lhsFormat != rhsFormat) {
+            packOp->emitOpError(
+                "sync region packs to output CBs with different data formats; "
+                "common init cannot configure multiple PACK formats");
+            hadError = true;
+          }
         }
       };
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
