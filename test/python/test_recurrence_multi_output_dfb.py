@@ -2,15 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression coverage for loop-carried state plus compiler DFB outputs.
-
-The loop-state case is the #666 reproducer. It combines a running maximum
-recurrence with a derived value that is both stored back to the state DFB and
-consumed through a compiler-allocated intermediate DFB.
-
-The branch case covers materialization reuse across incomparable control-flow
-regions.
-"""
+"""Regression coverage for loop-carried state plus compiler DFB outputs."""
 
 import os
 import sys
@@ -34,6 +26,7 @@ N_ITERS = 4
 K_TILES = 2
 M_TILES = 2
 N_BRANCH_ITERS = 4
+N_MULTI_OUTPUT_USES = 3
 
 
 @ttl.operation(grid=(1, 1))
@@ -81,6 +74,8 @@ def reuse_intermediates(a, b, out):
 
 @ttl.operation(grid=(1, 1))
 def recurrence_multi_output_intermediates(a, b, out):
+    # This is the #666 reproducer: a running maximum recurrence with a derived
+    # value that is stored back to state and consumed through a compiler DFB.
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, K_TILES), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(M_TILES, K_TILES), block_count=2)
     qk_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, M_TILES), block_count=2)
@@ -158,6 +153,46 @@ def same_dfb_store_order(a, b, out):
             ttl.copy(first, out[0:1, 0:1]).wait()
         with out_dfb.wait() as second:
             ttl.copy(second, out[0:1, 1:2]).wait()
+
+
+@ttl.operation(grid=(1, 1))
+def multi_output_out_of_order_consumers(a, b, out):
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=1)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=1)
+    sum_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=1)
+    product_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=1)
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=(1, 1), block_count=N_MULTI_OUTPUT_USES
+    )
+
+    @ttl.compute()
+    def compute():
+        a_block = a_dfb.wait()
+        b_block = b_dfb.wait()
+        sum_block = a_block + b_block
+        product_block = a_block * b_block
+        with sum_dfb.reserve() as sum_out, product_dfb.reserve() as product_out:
+            sum_out.store(sum_block)
+            product_out.store(product_block)
+        with out_dfb.reserve() as first_out:
+            first_out.store(ttl.math.reduce_sum(sum_block, dims=[1]))
+        with out_dfb.reserve() as second_out:
+            second_out.store(ttl.math.reduce_sum(product_block, dims=[1]))
+        with out_dfb.reserve() as third_out:
+            third_out.store(ttl.math.reduce_max(sum_block, dims=[1]))
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as a_block:
+            ttl.copy(a[0:1, 0:1], a_block).wait()
+        with b_dfb.reserve() as b_block:
+            ttl.copy(b[0:1, 0:1], b_block).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        for i in range(N_MULTI_OUTPUT_USES):
+            with out_dfb.wait() as out_block:
+                ttl.copy(out_block, out[0:1, i : i + 1]).wait()
 
 
 @ttl.operation(grid=(1, 1))
@@ -246,6 +281,42 @@ def test_same_dfb_store_order(device):
     expected[:, :TILE] = a_torch.float() + b_torch.float()
     expected[:, TILE:] = a_torch.float() * b_torch.float()
     assert_pcc(expected, result, threshold=0.99)
+
+
+@pytest.mark.requires_device
+def test_multi_output_out_of_order_consumers(device):
+    torch.manual_seed(3)
+    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, N_MULTI_OUTPUT_USES * TILE, dtype=torch.bfloat16)
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out = to_dram(out_torch, device)
+
+    multi_output_out_of_order_consumers(a, b, out)
+
+    result = ttnn.to_torch(out).float()
+    sum_block = a_torch.float() + b_torch.float()
+    product_block = a_torch.float() * b_torch.float()
+    expected = torch.zeros_like(result)
+    expected[:, :1] = torch.sum(sum_block, dim=1, keepdim=True)
+    expected[:, TILE : TILE + 1] = torch.sum(product_block, dim=1, keepdim=True)
+    expected[:, 2 * TILE : 2 * TILE + 1] = torch.max(
+        sum_block, dim=1, keepdim=True
+    ).values
+
+    assert_pcc(expected[:, :1], result[:, :1], threshold=0.99)
+    assert_pcc(
+        expected[:, TILE : TILE + 1],
+        result[:, TILE : TILE + 1],
+        threshold=0.99,
+    )
+    assert_pcc(
+        expected[:, 2 * TILE : 2 * TILE + 1],
+        result[:, 2 * TILE : 2 * TILE + 1],
+        threshold=0.99,
+    )
 
 
 @pytest.mark.requires_device

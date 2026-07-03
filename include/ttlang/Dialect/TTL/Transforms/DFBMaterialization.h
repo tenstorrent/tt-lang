@@ -23,9 +23,7 @@ struct DFBMaterializedValue {
   /// DFB-attached tensor value that should replace the consumer operand.
   Value materialized;
 
-  /// Current SSA value for the original source after materialization. This is
-  /// different from the input value when a producing ttl.compute is replaced
-  /// with an additional output.
+  /// Source tensor value used to key fallback materialization reuse.
   Value source;
 };
 
@@ -51,17 +49,11 @@ StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder);
 AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
                                   Location loc, OpBuilder &builder);
 
-/// Routes `intermediate` through a fresh compiler-allocated DFB for one
-/// consumer.
-///
-/// Non-compute producers use the tensor-level fallback: reserve/store at the
-/// definition site, followed by wait/attach. Values produced by `ttl.compute`
-/// are materialized as an extra compute output: reserve before the compute,
-/// tile_store inside the body, then push and wait/attach after the compute.
-FailureOr<DFBMaterializedValue> materializeToDFB(Value intermediate,
-                                                 Operation *consumerOp,
-                                                 ModuleOp moduleOp,
-                                                 OpBuilder &builder);
+/// Routes a non-`ttl.compute` tensor value through a fresh compiler-allocated
+/// DFB for one consumer. Compute results are materialized atomically by
+/// `TTLInsertIntermediateDFBs` so one producer compute is rebuilt at most once.
+FailureOr<DFBMaterializedValue>
+materializeToDFB(Value intermediate, ModuleOp moduleOp, OpBuilder &builder);
 
 } // namespace mlir::tt::ttl
 
