@@ -22,6 +22,7 @@ source "${SCRIPT_DIR}/hardware-test-common.sh"
 
 TEST_DIR="${1:?usage: run-hardware-pytests.sh <test-dir> <report-prefix>}"
 REPORT_PREFIX="${2:?usage: run-hardware-pytests.sh <test-dir> <report-prefix>}"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 chips="$(resolve_tt_chip_count "${HW_PYTEST_CHIPS:-}")" || {
     echo "run-hardware-pytests.sh: invalid ${chips:-chip count}" >&2
@@ -30,6 +31,10 @@ chips="$(resolve_tt_chip_count "${HW_PYTEST_CHIPS:-}")" || {
 
 # The thread timeout method interrupts C-level device deadlocks; SIGALRM cannot.
 common=(-v --tb=long --timeout=300 --timeout-method=thread)
+pytest_config="$(absolute_path "$(dirname "$REPORT_PREFIX")/pytest.ini")"
+if [ -f "$pytest_config" ]; then
+    common=(-c "$pytest_config" --rootdir="${REPO_ROOT}/test" "${common[@]}")
+fi
 
 selected_phase_count=0
 run_pytest_phase() {
