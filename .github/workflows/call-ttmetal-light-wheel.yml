@@ -138,7 +138,7 @@ jobs:
         with:
           # Empty ttlang_ref checks out the caller's ref (search mode); a pinned
           # ref checks out exactly that SHA or tag to build.
-          ref: ${{ inputs.ttlang_ref }}
+          ref: ${{ inputs.ttlang_ref || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
