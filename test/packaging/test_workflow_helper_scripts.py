@@ -115,10 +115,14 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
         'export PYTHONPATH="$test_import_root:$PWD/test${PYTHONPATH:+:$PYTHONPATH}"'
         in workflow
     )
-    assert 'python3 -m pytest -c /dev/null --rootdir "$PWD" test/python' in workflow
-    assert 'python3 -m pytest -c /dev/null --rootdir "$PWD" test/me2e' in workflow
-    assert "python3 -m pytest test/python" not in workflow
-    assert "python3 -m pytest test/me2e" not in workflow
+    # Wheel validation is a device smoke (installed wheel imports and runs real
+    # programs on device); the exhaustive regression runs on the source build.
+    assert "test/python/smoketest.py" in workflow
+    assert ".github/scripts/compile-and-run-examples.sh" in workflow
+    assert ".github/scripts/run-tutorials.sh ." in workflow
+    assert 'pytest -c /dev/null --rootdir "$PWD" test/python' not in workflow
+    assert 'pytest -c /dev/null --rootdir "$PWD" test/me2e' not in workflow
+    assert "simple_add" not in workflow
     assert (
         '.github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist'
         in workflow

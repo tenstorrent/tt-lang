@@ -379,12 +379,11 @@ jobs:
           from ttl.utils.block_allocation import *  # noqa: F401,F403
           PY
           export PYTHONPATH="$test_import_root:$PWD/test${PYTHONPATH:+:$PYTHONPATH}"
+          # Wheel validation is a device smoke: confirm the installed wheel
+          # imports and runs real programs on device. Exhaustive test/python and
+          # test/me2e regression and compiler lit coverage run against the source
+          # build in the normal CI, so they are not repeated against the wheel.
           python3 test/python/smoketest.py
-          python3 test/python/simple_add.py
-          python3 -m pytest -c /dev/null --rootdir "$PWD" test/python -v --tb=short \
-            --timeout=300 --timeout-method=thread
-          python3 -m pytest -c /dev/null --rootdir "$PWD" test/me2e -v --tb=short \
-            --timeout=300 --timeout-method=thread
           bash .github/scripts/compile-and-run-examples.sh
           bash .github/scripts/run-tutorials.sh .
 
