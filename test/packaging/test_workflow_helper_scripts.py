@@ -36,6 +36,9 @@ CALL_BUILD_WHEEL_IMAGES_WORKFLOW = (
 CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-ttmetal-light-wheel.yml"
 )
+CALL_BUILD_WHEELS_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-build-wheels.yml"
+)
 TTMETAL_LIGHT_ON_DEMAND_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "ttmetal-light-on-demand.yml"
 )
@@ -176,6 +179,45 @@ def test_pinned_ttlang_ref_skips_search_and_tt_metal_build() -> None:
     # The pin path emits the winner without the compatibility search.
     assert "python3 .github/scripts/compute-nightly-version.py" in reusable
     assert 'winner_sha="$(git rev-parse HEAD)"' in reusable
+
+
+def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    # Dispatch inputs to rebuild from a pinned ref and optionally patch it.
+    assert "ttlang_ref:" in workflow
+    assert "apply_patches:" in workflow
+    # Direct checkouts honor the pinned ref, falling back to the trigger commit.
+    assert "ref: ${{ inputs.ttlang_ref || github.sha }}" in workflow
+    # The override threads to the build reusables under their own input name.
+    assert "ttlang_sha_override: ${{ inputs.ttlang_ref }}" in workflow
+    # Patches are applied to the checked-out tree before building.
+    assert ".github/scripts/apply-wheel-patches.sh" in workflow
+    # apply_patches stays a valid boolean on push/schedule (no dispatch inputs).
+    assert (
+        "apply_patches: ${{ github.event_name == 'workflow_dispatch'"
+        " && inputs.apply_patches }}"
+    ) in workflow
+
+
+def test_call_build_wheels_supports_pinned_ref_and_patches() -> None:
+    workflow = CALL_BUILD_WHEELS_WORKFLOW.read_text()
+    assert "ttlang_sha_override:" in workflow
+    assert "apply_patches:" in workflow
+    assert "ref: ${{ inputs.ttlang_sha_override || github.sha }}" in workflow
+    assert ".github/scripts/apply-wheel-patches.sh" in workflow
+
+
+def test_nightly_light_wheel_soft_fails_without_failing_publish() -> None:
+    publish = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    reusable = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
+    # The scheduled detect job tolerates its own failure, and the reusable
+    # build it feeds is invoked in soft-fail mode.
+    assert "continue-on-error: true" in publish
+    assert "soft_fail: true" in publish
+    # Every job in the reusable build honors soft_fail (caller-level
+    # continue-on-error is not valid on a reusable-workflow job).
+    assert "soft_fail:" in reusable
+    assert reusable.count("continue-on-error: ${{ inputs.soft_fail }}") == 6
 
 
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
