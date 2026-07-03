@@ -3,27 +3,54 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Append a Markdown install summary to $GITHUB_STEP_SUMMARY for the S3 PyPI
-# publish workflow. With --dry-run, record that no upload occurred. With no
-# $GITHUB_STEP_SUMMARY set, output goes to stdout for local invocations/tests.
+# publish workflow. With --dry-run, record that no upload occurred. With
+# --index-subdir <subdir>, point the install commands at the .../<subdir>/
+# simple index (year-month <YYYY-MM>/ for nightlies, <ttmetal7>/ for per-SHA
+# light wheels) instead of the flat root. With no $GITHUB_STEP_SUMMARY set,
+# output goes to stdout for local invocations/tests.
 #
-# Usage: publish-s3-summary.sh [--dry-run] <wheel_variant> <version_override>
+# Usage: publish-s3-summary.sh [--dry-run] [--index-subdir <subdir>] <wheel_variant> <version_override>
 
 set -euo pipefail
 
+usage() {
+    echo "Usage: $0 [--dry-run] [--index-subdir <subdir>] <wheel_variant> <version_override>" >&2
+    exit 2
+}
+
 dry_run=0
-if [[ "${1:-}" == "--dry-run" ]]; then
-    dry_run=1
-    shift
-fi
+index_subdir=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        --index-subdir)
+            [[ $# -ge 2 ]] || usage
+            index_subdir="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 [--dry-run] <wheel_variant> <version_override>" >&2
-    exit 2
+    usage
 fi
 
 variant="$1"
 version="$2"
 index_url="https://pypi.eng.aws.tenstorrent.com/"
+if [[ -n "$index_subdir" ]]; then
+    index_url="https://pypi.eng.aws.tenstorrent.com/${index_subdir}/"
+fi
 pytorch_url="https://download.pytorch.org/whl/cpu"
 summary_title="### Published wheels"
 if [[ "$dry_run" -eq 1 ]]; then

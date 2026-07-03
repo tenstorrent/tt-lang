@@ -12,10 +12,6 @@ Fused: `prev + a @ b` lowers to copy_tile(prev) + matmul_block(DST += A*B).
 The add is eliminated. Requires only acc_dfb.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

@@ -18,10 +18,6 @@ Three factories exercising different sync styles on the same kernel shape:
   interacts with `ConvertTTLToCompute`'s `cb_push` relocation.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v --tb=short
-
 import pytest
 import torch
 import ttl

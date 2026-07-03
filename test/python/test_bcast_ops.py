@@ -10,10 +10,6 @@ Also tests composition patterns like (a * b) + bcast(c), and PyTorch-style
 negative ``dims`` (e.g. ``[-2]``, ``[-1]``, ``[-2, -1]``).
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import os
 import subprocess
 import sys

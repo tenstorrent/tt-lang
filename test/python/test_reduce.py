@@ -9,10 +9,6 @@ Uses dynamically generated kernels (string templates + importlib) to
 parameterize over block shapes, reduction dimensions, and reduce functions.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import atexit
 import importlib
 import os
