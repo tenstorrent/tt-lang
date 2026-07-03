@@ -34,7 +34,12 @@ ttkernel-insert-inits          (Module)   Insert hardware init calls
 
 ## DFB Lifecycle
 
-A DFB has two lifecycle halves: the producer (write) side driven by `cb_reserve`/`cb_push`, and the consumer (read) side driven by `cb_wait`/`cb_pop`. For user-declared DFBs these halves span different threads: data movement writes to the CB, compute reads from it, and both threads reference the same CB index. For compiler-allocated intermediate DFBs both halves are in the same compute function.
+A DFB has two lifecycle halves: the producer (write) side driven by
+`cb_reserve`/`cb_push`, and the consumer (read) side driven by
+`cb_wait`/`cb_pop`. For user-declared DFBs these halves span different
+threads: data movement writes to the CB, compute reads from it, and both
+threads reference the same CB index. For compiler-allocated intermediate DFBs
+both halves are in the same compute function.
 
 ```
 |
@@ -47,9 +52,54 @@ bind_cb   cb_reserve                cb_wait              L1 buffer held
           (slot returned) <-------- cb_pop               L1 buffer free
 ```
 
-`cb_reserve` claims a buffer slot for the packer; `cb_push` releases that slot to the unpacker. `cb_wait` blocks until the slot is available; `cb_pop` releases it back to the packer. `bind_cb` allocates the L1 backing storage and is shared by both sides.
+`cb_reserve` claims a buffer slot for the packer; `cb_push` releases that slot
+to the unpacker. `cb_wait` blocks until the slot is available; `cb_pop`
+releases it back to the packer. `bind_cb` allocates the L1 backing storage and
+is shared by both sides.
 
-For compiler-allocated intermediate DFBs, `InsertIntermediateDFBs` creates the DFB and materializes the producer side. For `ttl.compute` results, this means `bind_cb` at function entry, `cb_reserve` before the producing compute, `tile_store` inside the compute body, `cb_push` after the compute, and `cb_wait`/`attach_cb` immediately after the push. The later `ttl-auto-sync` run inserts the matching `cb_pop` after the final tensor use.
+The hardware-visible occupancy of one DFB is the difference between published
+producer slots and released consumer slots. `cb_push` increases that occupancy
+by publishing a filled slot, and `cb_pop` decreases it by acknowledging that
+the consumer is finished with the slot. `cb_reserve` and `cb_wait` are blocking
+guards over that state: reserve requires an unoccupied slot, while wait
+requires an occupied slot. `attach_cb` has no protocol effect; it only turns
+the waited tensor into an SSA value that carries the DFB association for later
+tile-level lowering.
+
+For a compiler-created intermediate, the compiler must construct one balanced
+logical lifecycle for each materialized SSA value:
+
+```
+bind_cb {ttl.compiler_allocated}     // storage, no occupancy change
+cb_reserve                           // producer may claim a free slot
+ttl.compute {
+  tile_store ..., %reserved_slot      // pack writes the tile
+}
+cb_push                              // occupancy: 0 -> 1
+cb_wait                              // consumer may read the occupied slot
+attach_cb                            // tensor SSA view of the waited slot
+... consumers of attached tensor ...
+cb_pop                               // occupancy: 1 -> 0
+```
+
+The producer side is ordered so the slot is reserved before the compute that
+writes it and published only after the compute has packed the materialized
+tile. The consumer side is ordered so every rewritten operand is dominated by
+the attached tensor value, and the pop is placed after the final use of that
+attached value. With `blockCount=1`, this is also the complete capacity proof:
+there is never a second compiler-created push while the previous pushed slot is
+still outstanding.
+
+Every control-flow trace that executes a compiler-created `cb_push` must also
+execute the matching `cb_pop`, and no trace may execute the pop without the
+push. An unconditional push followed by a conditional wait/pop is therefore
+invalid: on traces that skip the condition, the DFB remains occupied and a
+later reserve can block. Until an explicit DFB occupancy dataflow analysis can
+prove more general structured-control-flow placements, compiler-created
+compute-result waits and attaches are emitted in the same straight-line
+sequence immediately after the producer push. This construction gives all
+traces the same occupancy transition and makes the attach dominate all original
+users dominated by the producer result.
 
 Producer compute formation follows the same publication rule for user DFBs.
 When `ttl-form-producer-compute` or `convert-ttl-to-compute` absorbs a
@@ -58,7 +108,8 @@ otherwise precede the new compute is replaced after the compute. This keeps the
 generated DFB lifecycle in write-then-publish order: `cb_reserve`,
 `ttl.compute` with `tile_store`, then `cb_push`.
 
-A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the interval used for index reuse.
+A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the
+interval used for index reuse.
 
 ## Single-producer Single-consumer Semantics
 
@@ -168,31 +219,117 @@ users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
 
 ## Intermediate DFB Insertion
 
-`TTLInsertIntermediateDFBs` walks all operations implementing `DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that the interface marks as requiring a CB-attached value, the pass checks whether the operand traces to an existing DFB via `getAttachedCB`. If not, the pass materializes the value through a fresh compiler-allocated DFB marked with `ttl.compiler_allocated`.
+`TTLInsertIntermediateDFBs` walks all operations implementing
+`DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that
+the interface marks as requiring a CB-attached value, the pass checks whether
+the operand traces to an existing DFB via `getAttachedCB`. If not, the pass
+materializes the value through a fresh compiler-allocated DFB marked with
+`ttl.compiler_allocated`.
 
-The standard pipeline runs this pass after `ttl-form-producer-compute`. Values produced by `ttl.compute` are materialized as extra compute outputs instead of tensor-level stores. The canonical order is:
+The standard pipeline runs this pass after `ttl-form-producer-compute`.
+Values produced by `ttl.compute` are materialized by the compiler-created
+intermediate lifecycle described above: the compute gains extra DFB outputs,
+and consumers receive attached tensor values instead of the original
+non-attached compute results. The final `convert-ttl-to-compute` pass lowers
+consumers that now receive DFB-attached operands. The following `ttl-auto-sync`
+run inserts the consumer `cb_pop`.
+
+Compute-result materialization is planned before rewriting IR. The pass records
+each required consumer operand under its original producer result:
+
+```
+source = (producer ttl.compute, result number)
+use    = (consumer operation, operand number)
+```
+
+For each producer `ttl.compute`, the pass rebuilds the compute exactly once
+using this sequence:
+
+1. Preserve all original results in their existing result order.
+2. Append one compiler-allocated DFB output for each source result that needs
+   materialization, ordered by source result number.
+3. Clone the original compute body.
+4. For each cloned `ttl.tile_store` that writes the original source DFB, emit
+   a matching `ttl.tile_store` to the appended compiler DFB output.
+5. Replace uses of the original compute results with the corresponding results
+   of the replacement compute.
+6. Emit `cb_push`, `cb_wait`, and `attach_cb` for each appended compiler DFB
+   after the replacement compute.
+7. Rewrite all planned consumer operands for a source result to the same
+   attached value.
+
+This producer-centric plan makes materialization independent of consumer order
+and of other results from the same producer. For example:
+
+```python
+a, b = ttl.compute(...)
+ttl.compute(a)
+ttl.compute(b)
+ttl.compute(a)
+```
+
+The source results are `a = (producer, 0)` and `b = (producer, 1)`. The pass
+creates two compiler DFB outputs, not three, and both consumers of `a` use the
+same attached materialization. The producer compute is rebuilt once, so the
+plan is not affected by transient SSA values created while rewriting another
+result of the same producer.
+
+`TTLMaterializeLoopState` uses the same compiler-DFB materialization helper
+(`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove
+ranked-tensor `scf.for` iter_args before compute lowering.
+
+Non-compute producers use the tensor-level fallback:
 
 ```
 bind_cb {ttl.compiler_allocated}
 cb_reserve
-ttl.compute {
-  ...
-  tile_store ..., %reserved_slot
-}
-cb_push
+store
 cb_wait
 attach_cb
 ... consumer ...
 cb_pop
 ```
 
-This ordering is constructed directly by `TTLInsertIntermediateDFBs` for the producer side. The final `convert-ttl-to-compute` pass lowers consumers that now receive DFB-attached operands. The following `ttl-auto-sync` run inserts the consumer `cb_pop`.
+When multiple `DFBInputOpInterface` operations consume the same non-compute
+value, a materialization is shared only when its attached value dominates the
+later consumer. Incomparable consumers receive separate compiler DFBs.
 
-`TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args before compute lowering.
+For `ttl.compute` results, the attached value is created immediately after the
+producer push, so consumers originally dominated by the compute result remain
+dominated by the materialized value. This includes branch-local consumers when
+the producer is outside the branch. General occupancy-balance proofs for
+placing compiler-created waits and pops inside arbitrary structured control
+flow are future work ([#724](https://github.com/tenstorrent/tt-lang/issues/724)).
 
-When multiple `DFBInputOpInterface` operations consume the same non-DFB-attached value, a materialization is shared only when its attached value dominates the later consumer. For `ttl.compute` results, the attached value is created immediately after the producer push so branch-local consumers share a single balanced wait/pop interval.
+Compiler-allocated intermediate DFBs are created with `blockCount=1`. A
+compute kernel's Unpack, Math, and Pack stages are separate RISC-V cores that
+run the same kernel program, compiled once per core and executed concurrently.
+They synchronize through the circular buffer: Pack executes
+`cb_reserve_back`/`cb_push_back`, and Unpack executes
+`cb_wait_front`/`cb_pop_front` ([METALIUM_GUIDE, three-core compilation],
+[annotated compute kernel]).
 
-Compiler-allocated intermediate DFBs are created with `blockCount=1`. A compute kernel's Unpack, Math, and Pack stages are separate RISC-V cores that run the same kernel program -- compiled once per core and executed concurrently -- and synchronize through the circular buffer, with `cb_reserve_back`/`cb_push_back` on Pack and `cb_wait_front`/`cb_pop_front` on Unpack ([METALIUM_GUIDE, three-core compilation](https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L132), [annotated compute kernel](https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L154-L170)). That handshake is correct at any depth >= 1: Pack's `cb_reserve_back` blocks until a slot is free and Unpack's `cb_wait_front` blocks until a tile is available, so one slot never lets Pack overwrite an unread tile or Unpack read an unwritten one. A second slot only lets Pack run ahead of Unpack to overlap data movement with compute -- a throughput optimization with diminishing returns and an L1 cost ([METALIUM_GUIDE, buffer depth](https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L333)). `blockCount=1` is always correct and minimizes L1, so it is the current default for compiler intermediates. Whether a deeper buffer would improve throughput for a given intermediate is workload-dependent -- it turns on how much Pack/Unpack overlap the surrounding computation admits and on `dst_full_sync_en` (single-buffer DST has no overlap to exploit) -- and should be selected per intermediate by benchmarking and a cost model rather than a fixed constant ([#727](https://github.com/tenstorrent/tt-lang/issues/727)). User-declared DFBs, which transfer between the reader/compute/writer kernels, keep their double-buffering.
+That handshake is correct at any depth >= 1. Pack's `cb_reserve_back` blocks
+until a slot is free, and Unpack's `cb_wait_front` blocks until a tile is
+available, so one slot never lets Pack overwrite an unread tile or Unpack read
+an unwritten one. A second slot only lets Pack run ahead of Unpack to overlap
+data movement with compute, which is a throughput optimization with
+diminishing returns and an L1 cost ([METALIUM_GUIDE, buffer depth]).
+
+`blockCount=1` is always correct and minimizes L1, so it is the current default
+for compiler intermediates. Whether a deeper buffer would improve throughput
+for a given intermediate is workload-dependent: it depends on how much
+Pack/Unpack overlap the surrounding computation admits and on
+`dst_full_sync_en`, since single-buffer DST has no overlap to exploit. Deeper
+compiler-created DFBs should be selected per intermediate by benchmarking and
+a cost model rather than a fixed constant ([#727]). User-declared DFBs, which
+transfer between the reader/compute/writer kernels, keep their double
+buffering.
+
+[METALIUM_GUIDE, three-core compilation]: https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L132
+[annotated compute kernel]: https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L154-L170
+[METALIUM_GUIDE, buffer depth]: https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L333
+[#727]: https://github.com/tenstorrent/tt-lang/issues/727
 
 ## DFB Sync Insertion
 

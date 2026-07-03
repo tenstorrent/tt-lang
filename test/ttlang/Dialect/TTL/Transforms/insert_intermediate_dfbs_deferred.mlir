@@ -11,7 +11,7 @@
 // the compiler DFB instead of emitting a tensor-level store after the compute.
 
 // DEFERRED-LABEL: func.func @stored_add_then_reduce
-// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 1], {{.*}}, 1>
 // DEFERRED: %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]]
 // DEFERRED: %{{.*}}:2 = ttl.compute
 // DEFERRED: ttl.tile_store {{.*}}, %[[INTERMEDIATE_RESERVE]]
@@ -21,7 +21,7 @@
 // DEFERRED: ttl.reduce %[[INTERMEDIATE_ATTACHED]]
 
 // FULL-LABEL: func.func @stored_add_then_reduce
-// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 1], {{.*}}, 1>
 // FULL: %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]]
 // FULL: %{{.*}}:2 = ttl.compute
 // FULL: ttl.tile_store {{.*}}, %[[INTERMEDIATE_RESERVE]]
@@ -62,7 +62,7 @@ func.func @stored_add_then_reduce()
 // producing compute and before the broadcast consumer wait.
 
 // DEFERRED-LABEL: func.func @state_update_feeds_broadcast
-// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 1], {{.*}}, 1>
 // DEFERRED: %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]]
 // DEFERRED: %{{.*}}:2 = ttl.compute
 // DEFERRED: ttl.tile_store {{.*}}, %[[INTERMEDIATE_RESERVE]]
@@ -72,7 +72,7 @@ func.func @stored_add_then_reduce()
 // DEFERRED: ttl.block.broadcast %[[INTERMEDIATE_ATTACHED]]
 
 // FULL-LABEL: func.func @state_update_feeds_broadcast
-// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 1], {{.*}}, 1>
 // FULL: %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]]
 // FULL: %{{.*}}:2 = ttl.compute
 // FULL: ttl.tile_store {{.*}}, %[[INTERMEDIATE_RESERVE]]
@@ -109,7 +109,7 @@ func.func @state_update_feeds_broadcast()
 // DFB output must use the broadcast result shape, not the producer input shape.
 
 // DEFERRED-LABEL: func.func @broadcast_result_then_reduce
-// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated} : <[1, 2],
+// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 2], {{.*}}, 1>
 // DEFERRED: %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]]
 // DEFERRED: tensor.empty() : tensor<1x2x!ttcore.tile<32x32, bf16>>
 // DEFERRED: %{{.*}}:2 = ttl.compute
@@ -121,7 +121,7 @@ func.func @state_update_feeds_broadcast()
 // DEFERRED: ttl.reduce %[[INTERMEDIATE_ATTACHED]]
 
 // FULL-LABEL: func.func @broadcast_result_then_reduce
-// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated} : <[1, 2],
+// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 2], {{.*}}, 1>
 // FULL: ttl.cb_push %[[INTERMEDIATE_DFB]]
 // FULL: %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
 // FULL: %[[INTERMEDIATE_ATTACHED:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
@@ -155,7 +155,7 @@ func.func @broadcast_result_then_reduce()
 // defined before the branch. This keeps the compiler DFB push/wait/pop balanced.
 
 // DEFERRED-LABEL: func.func @branch_local_reductions
-// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 1], {{.*}}, 1>
 // DEFERRED: %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]]
 // DEFERRED: %{{.*}}:2 = ttl.compute
 // DEFERRED: ttl.tile_store {{.*}}, %[[INTERMEDIATE_RESERVE]]
@@ -168,7 +168,7 @@ func.func @broadcast_result_then_reduce()
 // DEFERRED: ttl.reduce %[[INTERMEDIATE_ATTACHED]]
 
 // FULL-LABEL: func.func @branch_local_reductions
-// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 1], {{.*}}, 1>
 // FULL: ttl.cb_push %[[INTERMEDIATE_DFB]]
 // FULL: %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
 // FULL: %[[INTERMEDIATE_ATTACHED:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
@@ -206,5 +206,88 @@ func.func @branch_local_reductions(%cond: i1)
     %else_reserve = ttl.cb_reserve %cb_else : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %max_reduce, %else_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   }
+  return
+}
+
+// -----
+
+// Out-of-order consumers of different results from one multi-output compute
+// reuse producer-result materializations planned before rewriting the compute.
+
+// DEFERRED-LABEL: func.func @multi_output_reuse_after_rebuild
+// DEFERRED: %[[A_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 1], {{.*}}, 1>
+// DEFERRED: %[[B_DFB:.*]] = ttl.bind_cb{{.*block_count = 1.*}} {ttl.compiler_allocated} : <[1, 1], {{.*}}, 1>
+// DEFERRED-NOT: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED: %{{.*}}:4 = ttl.compute
+// DEFERRED: ttl.cb_push %[[A_DFB]]
+// DEFERRED: %[[A_WAIT:.*]] = ttl.cb_wait %[[A_DFB]]
+// DEFERRED: %[[A_ATTACHED:.*]] = ttl.attach_cb %[[A_WAIT]], %[[A_DFB]]
+// DEFERRED: ttl.cb_push %[[B_DFB]]
+// DEFERRED: %[[B_WAIT:.*]] = ttl.cb_wait %[[B_DFB]]
+// DEFERRED: %[[B_ATTACHED:.*]] = ttl.attach_cb %[[B_WAIT]], %[[B_DFB]]
+// DEFERRED: ttl.reduce %[[A_ATTACHED]]
+// DEFERRED: ttl.reduce %[[B_ATTACHED]]
+// DEFERRED: ttl.reduce %[[A_ATTACHED]]
+func.func @multi_output_reuse_after_rebuild()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c-1 = arith.constant -1 : index
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_scaler = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_sum = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_prod = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out0 = ttl.bind_cb {cb_index = 5, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out1 = ttl.bind_cb {cb_index = 6, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out2 = ttl.bind_cb {cb_index = 7, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %a_wait = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %a_wait, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b_wait = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %b_wait, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler_wait = ttl.cb_wait %cb_scaler : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler = ttl.attach_cb %scaler_wait, %cb_scaler : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %sum_reserve = ttl.cb_reserve %cb_sum : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %prod_reserve = ttl.cb_reserve %cb_prod : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum_empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum_out = ttl.attach_cb %sum_empty, %cb_sum : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %prod_empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %prod_out = ttl.attach_cb %prod_empty, %cb_prod : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %result:2 = ttl.compute
+      ins(%a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                   tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%sum_out, %prod_out : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                  tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      {indexing_maps = [
+         affine_map<(d0, d1) -> (d0, d1)>,
+         affine_map<(d0, d1) -> (d0, d1)>,
+         affine_map<(d0, d1) -> (d0, d1)>,
+         affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_tile: !ttcore.tile<32x32, bf16>,
+       %b_tile: !ttcore.tile<32x32, bf16>,
+       %sum_tile_out: !ttcore.tile<32x32, bf16>,
+       %prod_tile_out: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %sum_tile = ttl.tile_add %a_tile, %b_tile into dst[%c-1] {ttl.dst_placeholder} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %prod_tile = ttl.tile_mul %a_tile, %b_tile into dst[%c-1] {ttl.dst_placeholder} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum_tile, %sum_reserve[%i, %j] from dst[%c-1] {ttl.dst_placeholder} : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %prod_tile, %prod_reserve[%i, %j] from dst[%c-1] {ttl.dst_placeholder} : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.yield
+  } -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>)
+
+  %reduce_sum0 = ttl.reduce %result#0, %scaler 0 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out0_reserve = ttl.cb_reserve %cb_out0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %reduce_sum0, %out0_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %reduce_prod = ttl.reduce %result#1, %scaler 0 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out1_reserve = ttl.cb_reserve %cb_out1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %reduce_prod, %out1_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %reduce_sum1 = ttl.reduce %result#0, %scaler 1 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out2_reserve = ttl.cb_reserve %cb_out2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %reduce_sum1, %out2_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   return
 }
