@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Manual S3 maintenance for the tt-lang prefixes of tenstorrent-pypi: create or
+# refresh slash-key directory listings, move/copy/delete tt-lang prefixes, and
+# run read-only inspections. Writes require refs/heads/main; dry_run is the
+# default. Never touches other teams' prefixes or the bucket root.
+
+name: S3 PyPI ops (tt-lang)
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Operation to run."
+        required: true
+        type: choice
+        options: [inspect, put-index, move, copy, delete, readonly-cmd]
+      prefix:
+        description: "Bucket-relative prefix (inspect/put-index/delete), e.g. tt-lang/ttmetal/13adda8."
+        required: false
+        type: string
+        default: ""
+      source:
+        description: "Source prefix (move/copy)."
+        required: false
+        type: string
+        default: ""
+      dest:
+        description: "Destination prefix (move/copy)."
+        required: false
+        type: string
+        default: ""
+      confirm:
+        description: "For delete: must equal the prefix."
+        required: false
+        type: string
+        default: ""
+      readonly_args:
+        description: "For readonly-cmd: aws args, e.g. 's3 ls s3://tenstorrent-pypi/tt-lang/'."
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Print the plan without writing (default true)."
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: s3-pypi-ops
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: "Run S3 PyPI op"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Require main ref for writes
+        if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "S3 writes are restricted to refs/heads/main (got ${GITHUB_REF}). Set dry_run=true for non-main validation." >&2
+          exit 1
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-tt-s3-credentials
+
+      - name: Run operation
+        env:
+          OP: ${{ inputs.operation }}
+          PREFIX: ${{ inputs.prefix }}
+          SOURCE: ${{ inputs.source }}
+          DEST: ${{ inputs.dest }}
+          CONFIRM: ${{ inputs.confirm }}
+          READONLY_ARGS: ${{ inputs.readonly_args }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(--operation "$OP" --dry-run "$DRY_RUN")
+          [[ -n "$PREFIX" ]] && args+=(--prefix "$PREFIX")
+          [[ -n "$SOURCE" ]] && args+=(--source "$SOURCE")
+          [[ -n "$DEST" ]] && args+=(--dest "$DEST")
+          [[ -n "$CONFIRM" ]] && args+=(--confirm "$CONFIRM")
+          if [[ "$OP" == "readonly-cmd" ]]; then
+            # shellcheck disable=SC2206
+            read -r -a ro <<< "$READONLY_ARGS"
+            args+=(-- "${ro[@]}")
+          fi
+          .github/scripts/s3-pypi-ops.sh "${args[@]}"

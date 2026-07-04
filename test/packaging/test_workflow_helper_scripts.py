@@ -46,6 +46,7 @@ TTMETAL_LIGHT_ON_DEMAND_WORKFLOW = (
 TTMETAL_LIGHT_XLA_ON_DEMAND_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "ttmetal-light-xla-on-demand.yml"
 )
+S3_PYPI_OPS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "s3-pypi-ops.yml"
 MANYLINUX_WHEEL_DOCKERFILE = (
     REPO_ROOT / ".github" / "containers" / "Dockerfile.wheel-manylinux-2-34"
 )
@@ -390,6 +391,23 @@ def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
         "EXPECTED_TT_METAL_COMMIT: ${{ needs.build.outputs.ttmetal_sha }}" in workflow
     )
     assert "EXPECTED_TT_METAL_COMMIT: ${{ inputs.tt_metal_sha }}" not in workflow
+
+
+def test_s3_pypi_ops_workflow_is_main_gated_and_dry_run_by_default() -> None:
+    workflow = S3_PYPI_OPS_WORKFLOW.read_text()
+
+    assert "name: S3 PyPI ops (tt-lang)" in workflow
+    assert "options: [inspect, put-index, move, copy, delete, readonly-cmd]" in workflow
+    assert "id-token: write" in workflow
+    assert "uses: ./.github/actions/configure-tt-s3-credentials" in workflow
+    assert (
+        "if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}"
+        in workflow
+    )
+    assert ".github/scripts/s3-pypi-ops.sh" in workflow
+    # dry_run input defaults to true
+    dry_run_input = workflow.split("      dry_run:", 1)[1].split("concurrency:", 1)[0]
+    assert "default: true" in dry_run_input
 
 
 def test_light_core_builder_checks_tt_metal_provenance_when_exported() -> None:
