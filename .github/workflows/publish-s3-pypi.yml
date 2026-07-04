@@ -336,7 +336,7 @@ jobs:
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: python3 -m pip install s3pypi
 
-      # Nightly dev wheels publish under <YYYY-MM>/; stable releases use root.
+      # Nightly dev wheels publish under tt-lang/<YYYY-MM>/; stable releases use root.
       - name: Derive publish prefix
         id: publish_prefix
         run: |
