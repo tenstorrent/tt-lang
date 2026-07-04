@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Detect whether tt-lang should build a light wheel for tt-mlir's pinned
-# tt-metal SHA, keyed by the tt-lang/<ttmetal7> S3 prefix.
+# tt-metal SHA, keyed by the tt-lang/ttmetal/<ttmetal7> S3 prefix.
 #
 # A SHA is skipped when a wheel is already published, and also when a prior
 # search recorded no compatible tt-lang AND the tt-lang HEAD it searched is
@@ -46,12 +46,12 @@ read_target_ttmetal_sha() {
 
 # Object basenames under the per-SHA wheel prefix. Overridable in tests.
 list_prefix_objects() {
-    aws s3 ls "s3://$S3_BUCKET/tt-lang/$1/" 2>/dev/null | awk '{print $NF}'
+    aws s3 ls "s3://$S3_BUCKET/tt-lang/ttmetal/$1/" 2>/dev/null | awk '{print $NF}'
 }
 
 # tt-lang HEAD from a prior miss marker, or empty. Overridable in tests.
 read_recorded_head() {
-    aws s3 cp "s3://$S3_BUCKET/tt-lang/$1/attempt.json" - 2>/dev/null \
+    aws s3 cp "s3://$S3_BUCKET/tt-lang/ttmetal/$1/attempt.json" - 2>/dev/null \
         | sed -n -E 's/.*"ttlang_head"[[:space:]]*:[[:space:]]*"([a-f0-9]+)".*/\1/p' \
         | head -n1
 }
@@ -111,7 +111,7 @@ main() {
         return 1
     fi
     short_sha="${target_sha:0:7}"
-    echo "tt-mlir targets tt-metal $target_sha (prefix tt-lang/$short_sha); tt-lang HEAD $ttlang_head" >&2
+    echo "tt-mlir targets tt-metal $target_sha (prefix tt-lang/ttmetal/$short_sha); tt-lang HEAD $ttlang_head" >&2
 
     if [[ "$assume_new" == true ]]; then
         echo "Assuming $short_sha is unbuilt (--assume-new); skipping S3 idempotency check." >&2
@@ -121,10 +121,10 @@ main() {
     fi
     case "$class" in
         published)
-            echo "Wheel already published under tt-lang/$short_sha; skipping." >&2
+            echo "Wheel already published under tt-lang/ttmetal/$short_sha; skipping." >&2
             emit "uplift=false" ;;
         doomed)
-            echo "Recorded miss under tt-lang/$short_sha for the current tt-lang HEAD; skipping." >&2
+            echo "Recorded miss under tt-lang/ttmetal/$short_sha for the current tt-lang HEAD; skipping." >&2
             emit "uplift=false" ;;
         retry|new)
             echo "Building for $short_sha ($class)." >&2

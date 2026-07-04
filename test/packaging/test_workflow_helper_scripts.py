@@ -37,6 +37,8 @@ CALL_BUILD_WHEEL_IMAGES_WORKFLOW = (
 CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-ttmetal-light-wheel.yml"
 )
+DETECT_TTMLIR_TTMETAL_UPLIFT = SCRIPTS_DIR / "detect-ttmlir-ttmetal-uplift.sh"
+RECORD_TTMETAL_MISS = SCRIPTS_DIR / "record-ttmetal-miss.sh"
 CALL_BUILD_WHEELS_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-build-wheels.yml"
 )
@@ -189,6 +191,24 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
         in workflow
     )
     assert "Inject S3 index README" not in workflow
+
+
+def test_per_sha_prefix_is_consistent_across_publish_detect_record() -> None:
+    detect_script = DETECT_TTMLIR_TTMETAL_UPLIFT.read_text()
+    record_script = RECORD_TTMETAL_MISS.read_text()
+    workflow = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
+
+    assert "tt-lang/ttmetal/" in detect_script
+    assert "tt-lang/ttmetal/" in record_script
+    assert "tt-lang/ttmetal/" in workflow
+
+    old_forms = (
+        "s3://$S3_BUCKET/tt-lang/$1/",
+        "s3://$S3_BUCKET/tt-lang/$short/attempt.json",
+    )
+    for script_text in (detect_script, record_script):
+        for old_form in old_forms:
+            assert old_form not in script_text
 
 
 def test_ttmetal_light_workflow_names_are_specific() -> None:

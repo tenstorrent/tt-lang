@@ -61,13 +61,14 @@ S3 package index. A version selector is required because public PyPI also hosts
 `tt-lang`, and pip resolves candidates across all configured indexes. Available
 versions are listed at https://pypi.eng.aws.tenstorrent.com/.
 
-Development and per-SHA wheels use simple sub-indexes. The installed version
-determines the `--extra-index-url`:
+Development wheels use a simple sub-index (`--extra-index-url`); per-SHA light
+wheels are published as browsable directories (`--find-links`):
 
-- Nightly development wheels are under `<YYYY-MM>/`, the year-month of the
-  version's `devYYYYMMDD` suffix (e.g. version `X.Y.Z.dev20260615` -> `2026-06/`).
+- Nightly development wheels are under `tt-lang/<YYYY-MM>/`, the year-month of
+  the version's `devYYYYMMDD` suffix (e.g. version `X.Y.Z.dev20260615` ->
+  `tt-lang/2026-06/`).
 - Light wheels built and device-tested against a specific tt-metal commit are
-  under `<ttmetal7>/`, that commit's 7-character prefix.
+  under `tt-lang/ttmetal/<ttmetal7>/`, that commit's 7-character prefix.
 - Stable release wheels (`X.Y.Z`) stay at the root index.
 
 The bundled-wheel example below installs a nightly development wheel. Stable
@@ -82,7 +83,7 @@ runtime and copies the tutorials:
 ```bash
 TTLANG_VERSION=<published-internal-version>
 pip install \
-  --extra-index-url https://pypi.eng.aws.tenstorrent.com/<YYYY-MM>/ \
+  --extra-index-url https://pypi.eng.aws.tenstorrent.com/tt-lang/<YYYY-MM>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   "tt-lang==$TTLANG_VERSION"
 tt-lang-setup    # downloads sfpi into the bundled ttnn tree + copies tutorials
@@ -94,13 +95,14 @@ metapackage: `tt-lang-light==X` depends on the matching no-ttnn core wheel
 `tt-lang==X+light`. Install either `tt-lang` or `tt-lang-light` in an
 environment, not both.
 
-A per-tt-metal-SHA light wheel resolves from that commit's subdir; a nightly
-light wheel resolves from its `<YYYY-MM>/` subdir instead:
+A per-tt-metal-SHA light wheel resolves from that commit's directory with
+`--find-links`; a nightly light wheel resolves from its `tt-lang/<YYYY-MM>/`
+sub-index with `--extra-index-url` instead:
 
 ```bash
 TTLANG_VERSION=<published-internal-version>
 pip install \
-  --extra-index-url https://pypi.eng.aws.tenstorrent.com/<ttmetal7>/ \
+  --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   "tt-lang-light==$TTLANG_VERSION"
 tt-lang-setup    # copies tutorials only; sfpi is provided by the external tt-metal

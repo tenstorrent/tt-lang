@@ -4,7 +4,7 @@
 #
 # Record that no compatible tt-lang was found for a tt-metal SHA, so the nightly
 # detector skips re-attempting it until tt-lang HEAD advances. Writes a small
-# attempt.json marker under the tt-lang/<ttmetal7> S3 prefix.
+# attempt.json marker under the tt-lang/ttmetal/<ttmetal7> S3 prefix.
 #
 # Usage:
 #   record-ttmetal-miss.sh --ttmetal-sha <sha> --ttlang-head <sha>
@@ -46,7 +46,7 @@ attempt_date="${attempt_date:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 marker="$(printf '{"ttmetal_sha":"%s","ttlang_head":"%s","max_age_days":"%s","attempt_date":"%s","result":"no_compatible"}\n' \
     "$ttmetal_sha" "$ttlang_head" "$max_age_days" "$attempt_date")"
 
-printf '%s' "$marker" | aws s3 cp - "s3://$S3_BUCKET/tt-lang/$short/attempt.json" \
+printf '%s' "$marker" | aws s3 cp - "s3://$S3_BUCKET/tt-lang/ttmetal/$short/attempt.json" \
     --content-type "application/json"
 
-echo "Recorded miss for tt-lang/$short (tt-lang HEAD $ttlang_head)" >&2
+echo "Recorded miss for tt-lang/ttmetal/$short (tt-lang HEAD $ttlang_head)" >&2

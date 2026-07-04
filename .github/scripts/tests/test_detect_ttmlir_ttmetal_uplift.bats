@@ -80,7 +80,7 @@ setup() {
     assert_output "retry"
 }
 
-@test "default S3 object listing reads the tt-lang/<ttmetal7> prefix" {
+@test "default S3 object listing reads the tt-lang/ttmetal/<ttmetal7> prefix" {
     bindir="$BATS_TEST_TMPDIR/bin"
     mkdir -p "$bindir"
     AWS_ARGS="$BATS_TEST_TMPDIR/aws_args"
@@ -95,10 +95,10 @@ EOF
     assert_output "tt_lang-1.0.0+light.whl"
 
     run cat "$AWS_ARGS"
-    assert_output --partial "s3 ls s3://tenstorrent-pypi/tt-lang/$SHORT_SHA/"
+    assert_output --partial "s3 ls s3://tenstorrent-pypi/tt-lang/ttmetal/$SHORT_SHA/"
 }
 
-@test "default miss marker read uses the tt-lang/<ttmetal7> prefix" {
+@test "default miss marker read uses the tt-lang/ttmetal/<ttmetal7> prefix" {
     bindir="$BATS_TEST_TMPDIR/bin"
     mkdir -p "$bindir"
     AWS_ARGS="$BATS_TEST_TMPDIR/aws_args"
@@ -113,7 +113,7 @@ EOF
     assert_output "$HEAD_A"
 
     run cat "$AWS_ARGS"
-    assert_output --partial "s3 cp s3://tenstorrent-pypi/tt-lang/$SHORT_SHA/attempt.json -"
+    assert_output --partial "s3 cp s3://tenstorrent-pypi/tt-lang/ttmetal/$SHORT_SHA/attempt.json -"
 }
 
 # --- main ---

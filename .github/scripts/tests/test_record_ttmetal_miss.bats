@@ -39,12 +39,12 @@ setup() {
     run -2 "$SCRIPT" --ttmetal-sha "$FULL_SHA"
 }
 
-@test "writes attempt.json under tt-lang/<ttmetal7>" {
+@test "writes attempt.json under tt-lang/ttmetal/<ttmetal7>" {
     run -0 "$SCRIPT" --ttmetal-sha "$FULL_SHA" --ttlang-head "$HEAD_SHA" \
         --max-age-days 14 --date "2026-06-30T00:00:00Z"
 
     run cat "$FAKE_AWS_ARGS"
-    assert_output --partial "s3 cp - s3://tenstorrent-pypi/tt-lang/$SHORT_SHA/attempt.json"
+    assert_output --partial "s3 cp - s3://tenstorrent-pypi/tt-lang/ttmetal/$SHORT_SHA/attempt.json"
     assert_output --partial "--content-type application/json"
 }
 
@@ -62,5 +62,5 @@ setup() {
     TTLANG_S3_BUCKET=other-bucket run -0 "$SCRIPT" \
         --ttmetal-sha "$FULL_SHA" --ttlang-head "$HEAD_SHA"
     run cat "$FAKE_AWS_ARGS"
-    assert_output --partial "s3://other-bucket/tt-lang/$SHORT_SHA/attempt.json"
+    assert_output --partial "s3://other-bucket/tt-lang/ttmetal/$SHORT_SHA/attempt.json"
 }
