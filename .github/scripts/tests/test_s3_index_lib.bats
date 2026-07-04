@@ -85,6 +85,16 @@ EOF
     refute_output --partial 'a&b.whl'
 }
 
+@test "s3_child_anchors keeps a literal '+' in a light wheel name (not percent-encoded)" {
+    make_aws_mock "2026-07-04 00:00:00       1234 tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl
+"
+    run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
+    assert_success
+    digest="$(printf 'wheel-bytes' | sha256sum | awk '{print $1}')"
+    assert_line "<a href=\"tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl#sha256=$digest\">tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl</a><br>"
+    refute_output --partial "%2B"
+}
+
 @test "s3_put_index uploads to the slash-key via put-object" {
     make_aws_mock ""
     printf '<html></html>\n' > "$BATS_TEST_TMPDIR/idx.html"

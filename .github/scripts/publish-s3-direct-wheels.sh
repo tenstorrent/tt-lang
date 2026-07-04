@@ -54,6 +54,10 @@ for wheel in "${wheels[@]}"; do
         --content-type "application/octet-stream"
 done
 
+# Wheels are already uploaded at this point; if index regeneration below fails,
+# the wheels are present but the directory is not browsable until
+# s3-pypi-ops.sh --operation put-index is re-run for this prefix.
+#
 # Write the browsable slash-key listing for this prefix and refresh the parent
 # so the SHA appears one level up.
 s3_regenerate_index "$bucket" "$prefix"

@@ -20,7 +20,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 bucket="${TTLANG_S3_BUCKET:-tenstorrent-pypi}"
 ALLOWED_PREFIXES=(tt-lang/)
-READONLY_VERBS=("s3 ls" "s3api head-object" "s3api list-objects-v2" "s3api get-object")
+READONLY_VERBS=("s3 ls" "s3api head-object" "s3api list-objects-v2")
+READONLY_FLAGS=(--bucket --key --prefix --recursive --page-size --max-items --max-keys --delimiter --start-after --human-readable --summarize --no-paginate --output)
 
 operation="" prefix="" src="" dest="" confirm="" dry_run="true"
 readonly_args=()
@@ -39,6 +40,8 @@ while [[ $# -gt 0 ]]; do
         *)           die "Unknown argument: $1" ;;
     esac
 done
+
+[[ "$dry_run" == "true" || "$dry_run" == "false" ]] || die "--dry-run must be true or false: $dry_run"
 
 # Reject anything that is empty, absolute, an s3:// URI, contains "..", contains
 # characters outside a safe set, or does not start with an allowed prefix.
@@ -71,9 +74,17 @@ assert_destructive_ok() {
     die "internal: prefix passed allowlist but matched no root: $path"
 }
 
-# Every S3 target in a read command must resolve under s3://<bucket>/tt-lang/.
+_readonly_flag_ok() {
+    local f
+    for f in "${READONLY_FLAGS[@]}"; do [[ "$1" == "$f" ]] && return 0; done
+    return 1
+}
+
+# Every token in a read command must be a benign flag or a target under
+# s3://<bucket>/tt-lang/. Unknown flags (e.g. --endpoint-url, --profile) are
+# rejected so a read cannot redirect the signed request or leak its credential.
 assert_readonly_targets() {
-    local args=("$@") i=0 tok next verb
+    local args=("$@") i=0 tok flag val verb
     local saw_s3_uri=false saw_bucket=false saw_key=false saw_prefix=false
     verb="${args[0]} ${args[1]}"
     while [[ $i -lt ${#args[@]} ]]; do
@@ -81,44 +92,42 @@ assert_readonly_targets() {
         case "$tok" in
             s3://*)
                 saw_s3_uri=true
-                [[ "$tok" == "s3://$bucket/tt-lang" || "$tok" == "s3://$bucket/tt-lang/"* ]] \
+                [[ "$tok" == "s3://$bucket/tt-lang/"* ]] \
                     || die "read-only target must be under s3://$bucket/tt-lang/: $tok" ;;
-            --bucket)
-                next="${args[$((i+1))]:-}"
-                saw_bucket=true
-                [[ "$next" == "$bucket" ]] || die "read-only --bucket must be $bucket: $next"
-                i=$((i+1)) ;;
-            --bucket=*)
-                next="${tok#--bucket=}"
-                saw_bucket=true
-                [[ "$next" == "$bucket" ]] || die "read-only --bucket must be $bucket: $next" ;;
-            --key|--prefix)
-                next="${args[$((i+1))]:-}"
-                if [[ "$tok" == "--key" ]]; then
-                    saw_key=true
-                else
-                    saw_prefix=true
-                fi
-                [[ "$next" == "tt-lang" || "$next" == "tt-lang/"* ]] \
-                    || die "read-only --key/--prefix must be under tt-lang/: $next"
-                i=$((i+1)) ;;
-            --key=*)
-                next="${tok#--key=}"
-                saw_key=true
-                [[ "$next" == "tt-lang" || "$next" == "tt-lang/"* ]] \
-                    || die "read-only --key/--prefix must be under tt-lang/: $next" ;;
-            --prefix=*)
-                next="${tok#--prefix=}"
-                saw_prefix=true
-                [[ "$next" == "tt-lang" || "$next" == "tt-lang/"* ]] \
-                    || die "read-only --key/--prefix must be under tt-lang/: $next" ;;
+            --*=*)
+                flag="${tok%%=*}"; val="${tok#*=}"
+                _readonly_flag_ok "$flag" || die "read-only flag not allowed: $flag"
+                case "$flag" in
+                    --bucket)
+                        saw_bucket=true
+                        [[ "$val" == "$bucket" ]] || die "read-only --bucket must be $bucket: $val" ;;
+                    --key|--prefix)
+                        [[ "$flag" == "--key" ]] && saw_key=true || saw_prefix=true
+                        [[ "$val" == "tt-lang/"* ]] \
+                            || die "read-only --key/--prefix must be under tt-lang/: $val" ;;
+                esac ;;
+            -*)
+                _readonly_flag_ok "$tok" || die "read-only flag not allowed: $tok"
+                case "$tok" in
+                    --bucket)
+                        val="${args[$((i+1))]:-}"
+                        saw_bucket=true
+                        [[ "$val" == "$bucket" ]] || die "read-only --bucket must be $bucket: $val"
+                        i=$((i+1)) ;;
+                    --key|--prefix)
+                        val="${args[$((i+1))]:-}"
+                        [[ "$tok" == "--key" ]] && saw_key=true || saw_prefix=true
+                        [[ "$val" == "tt-lang/"* ]] \
+                            || die "read-only --key/--prefix must be under tt-lang/: $val"
+                        i=$((i+1)) ;;
+                esac ;;
         esac
         i=$((i+1))
     done
     case "$verb" in
         "s3 ls")
             [[ "$saw_s3_uri" == true ]] || die "read-only s3 ls requires an s3://$bucket/tt-lang/ target" ;;
-        "s3api head-object"|"s3api get-object")
+        "s3api head-object")
             [[ "$saw_bucket" == true ]] || die "read-only $verb requires --bucket $bucket"
             [[ "$saw_key" == true ]] || die "read-only $verb requires --key under tt-lang/" ;;
         "s3api list-objects-v2")
@@ -128,10 +137,10 @@ assert_readonly_targets() {
 }
 
 run_aws() {
-    if [[ "$dry_run" == "true" ]]; then
-        echo "DRY-RUN: aws $*"
-    else
+    if [[ "$dry_run" == "false" ]]; then
         aws "$@"
+    else
+        echo "DRY-RUN: aws $*"
     fi
 }
 
@@ -151,10 +160,10 @@ case "$operation" in
         ;;
     put-index)
         assert_allowed "$prefix"
-        if [[ "$dry_run" == "true" ]]; then
-            echo "DRY-RUN: regenerate slash-key index for $prefix"
-        else
+        if [[ "$dry_run" == "false" ]]; then
             s3_regenerate_index "$bucket" "$prefix"
+        else
+            echo "DRY-RUN: regenerate slash-key index for $prefix"
         fi
         ;;
     copy)

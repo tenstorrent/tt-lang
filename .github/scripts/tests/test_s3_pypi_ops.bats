@@ -202,3 +202,59 @@ EOF
     run cat "$FAKE_AWS_ARGS"
     assert_output --partial "s3api list-objects-v2 --bucket=tenstorrent-pypi --prefix=tt-lang/ttmetal/"
 }
+
+@test "readonly-cmd rejects an unlisted flag (space form)" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3 ls s3://tenstorrent-pypi/tt-lang/ --endpoint-url http://x
+    assert_output --partial "flag not allowed"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "readonly-cmd rejects an unlisted flag (= form)" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3 ls s3://tenstorrent-pypi/tt-lang/ --endpoint-url=http://x
+    assert_output --partial "flag not allowed"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "readonly-cmd rejects --profile" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3 ls s3://tenstorrent-pypi/tt-lang/ --profile evil
+    assert_output --partial "flag not allowed"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "readonly-cmd rejects an s3:// target missing the trailing slash" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3 ls s3://tenstorrent-pypi/tt-lang
+    assert_output --partial "must be under s3://tenstorrent-pypi/tt-lang/"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "readonly-cmd rejects a --prefix missing the trailing slash" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3api list-objects-v2 --bucket tenstorrent-pypi --prefix tt-lang
+    assert_output --partial "must be under tt-lang/"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "readonly-cmd rejects get-object (verb dropped)" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3api get-object --bucket tenstorrent-pypi --key tt-lang/x out
+    assert_output --partial "read-only verbs only"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "dry-run rejects a non-boolean value" {
+    run -2 "$SCRIPT" --operation move --source tt-lang/13adda8 --dest tt-lang/ttmetal/13adda8 --dry-run bogus
+    assert_output --partial "must be true or false"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "dry-run rejects a case-mismatched boolean value" {
+    run -2 "$SCRIPT" --operation move --source tt-lang/13adda8 --dest tt-lang/ttmetal/13adda8 --dry-run FALSE
+    assert_output --partial "must be true or false"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
