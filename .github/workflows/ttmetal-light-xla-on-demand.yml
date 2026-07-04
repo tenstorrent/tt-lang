@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: tt-lang-light XLA wheel (on demand)
+name: Build tt-lang-light XLA per-tt-metal-SHA wheel (on demand)
 
 on:
   workflow_dispatch:
@@ -51,7 +51,7 @@ permissions:
 
 jobs:
   resolve:
-    name: "Resolve build inputs"
+    name: "Resolve tt-lang-light XLA per-tt-metal-SHA inputs"
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -92,7 +92,7 @@ jobs:
             --resolve-existing-docker-tag
 
   build:
-    name: "Build Ubuntu tt-lang-light wheel"
+    name: "Build Ubuntu tt-lang-light XLA per-tt-metal-SHA wheel"
     needs: resolve
     runs-on: mlir-large-runner-lang
     timeout-minutes: 180
@@ -199,7 +199,8 @@ jobs:
           source /opt/ttlang-toolchain/venv/bin/activate
           python .github/scripts/check-wheel-ttnn-metadata.py \
             --mode external \
-            --dist-dir "dist/xla/${{ steps.ttmetal.outputs.short }}"
+            --dist-dir "dist/xla/${{ steps.ttmetal.outputs.short }}" \
+            --expect-tt-metal-commit "${{ steps.ttmetal.outputs.sha }}"
 
       - name: Test tt-lang wheel
         run: |
@@ -259,7 +260,7 @@ jobs:
           compression-level: 0
 
   device-validate:
-    name: "Device-validate XLA light wheel"
+    name: "Device-validate tt-lang-light XLA per-tt-metal-SHA wheel"
     needs: [resolve, build]
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
     timeout-minutes: 180
@@ -310,6 +311,7 @@ jobs:
       - name: Install light wheel and external tt-metal
         env:
           TTMETAL_INSTALL_DIR: /tmp/ttmetal-install
+          EXPECTED_TT_METAL_COMMIT: ${{ inputs.tt_metal_sha }}
         run: |
           set -euo pipefail
           # Clean venv: the installed wheel and the external tt-metal (built at
@@ -323,6 +325,17 @@ jobs:
             --extra-index-url https://download.pytorch.org/whl/cpu \
             "$metapackage_wheel"
           tt-lang-setup
+          python3 - <<'PY'
+          import os
+          import ttl
+
+          expected = os.environ["EXPECTED_TT_METAL_COMMIT"]
+          actual = ttl.build_info()["tt_metal"]
+          if actual != expected:
+              raise SystemExit(
+                  f"tt-lang wheel tt-metal provenance mismatch: expected {expected}, got {actual}"
+              )
+          PY
           eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTMETAL_INSTALL_DIR")"
           echo "TTL_EXTERNAL_TT_METAL_DIR=$TTMETAL_INSTALL_DIR" >> "$GITHUB_ENV"
 

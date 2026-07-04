@@ -6,7 +6,7 @@
 # Scheduled publishes use publish-s3-pypi.yml; this manual workflow resolves
 # the builder image tag itself.
 
-name: tt-lang-light wheel (on demand)
+name: Build tt-lang-light per-tt-metal-SHA wheel (on demand)
 
 on:
   workflow_dispatch:
@@ -56,7 +56,7 @@ permissions:
 
 jobs:
   detect:
-    name: "Detect tt-metal uplift"
+    name: "Detect tt-lang-light per-tt-metal-SHA build"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -120,7 +120,7 @@ jobs:
           fi
 
   build:
-    name: "Build light wheel for tt-metal SHA"
+    name: "Build tt-lang-light per-tt-metal-SHA wheel"
     needs: detect
     if: ${{ needs.detect.outputs.uplift == 'true' }}
     permissions:

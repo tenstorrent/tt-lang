@@ -39,7 +39,7 @@ setup() {
     run -2 "$SCRIPT" --ttmetal-sha "$FULL_SHA"
 }
 
-@test "writes attempt.json under the tt-lang SHA prefix" {
+@test "writes attempt.json under tt-lang/<ttmetal7>" {
     run -0 "$SCRIPT" --ttmetal-sha "$FULL_SHA" --ttlang-head "$HEAD_SHA" \
         --max-age-days 14 --date "2026-06-30T00:00:00Z"
 

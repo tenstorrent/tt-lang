@@ -113,7 +113,14 @@ if [ ! -f "$expected_wheel" ]; then
 fi
 
 auditwheel show "$expected_wheel"
-python "$repo_root/.github/scripts/check-wheel-ttnn-metadata.py" \
-    --mode external \
-    --dist-dir "$DIST_DIR"
+if [ -n "${TT_METAL_COMMIT:-}" ]; then
+    python "$repo_root/.github/scripts/check-wheel-ttnn-metadata.py" \
+        --mode external \
+        --dist-dir "$DIST_DIR" \
+        --expect-tt-metal-commit "$TT_METAL_COMMIT"
+else
+    python "$repo_root/.github/scripts/check-wheel-ttnn-metadata.py" \
+        --mode external \
+        --dist-dir "$DIST_DIR"
+fi
 "$repo_root/.github/scripts/assert-no-gnu-unique.sh" "$expected_wheel"

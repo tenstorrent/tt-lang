@@ -681,9 +681,16 @@ publishing and needs no S3 credentials, so it can run from a feature branch; the
 scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml` is best-effort and does
 not fail the nightly publish.
 
-Successful per-SHA publishes place the wheel files (both tt-lang and tt-lang-light)directly under
+Successful per-SHA publishes place the wheel files (both tt-lang and
+tt-lang-light) directly under
 `https://pypi.eng.aws.tenstorrent.com/tt-lang/<ttmetal7>/`. Install from that
-directory with `--find-links`. The same directory contains a brief `README.txt`.
+directory with `--find-links`. The `tt-lang-light` wheel is a pure metapackage;
+the supported CPython ABIs and glibc floor are carried by the
+`tt_lang-<version>+light-cp310-cp310-manylinux_2_34_x86_64.whl` and
+`tt_lang-<version>+light-cp312-cp312-manylinux_2_34_x86_64.whl` files in the
+same directory. The same directory contains a brief `README.txt`.
+The `ttl.build_info()["tt_metal"]` value in each `tt-lang` wheel must equal
+`<ttmetal7>` expanded to the requested tt-metal commit.
 
 `ttmetal-light-xla-on-demand.yml` builds standard `tt-lang-light` wheels for the
 XLA flow from a specific tt-lang ref and tt-metal SHA. Dispatch it with:

@@ -392,7 +392,7 @@ jobs:
   # continue-on-error here and soft_fail on the reusable build below keep a
   # failure in this extra wheel from failing the nightly publish.
   ttmetal-light-detect:
-    name: "Detect tt-metal uplift for light wheel"
+    name: "Detect tt-lang-light per-tt-metal-SHA build"
     needs: preflight
     if: ${{ github.event_name == 'schedule' }}
     continue-on-error: true
@@ -426,7 +426,7 @@ jobs:
         run: .github/scripts/detect-ttmlir-ttmetal-uplift.sh
 
   ttmetal-light-build:
-    name: "Build light wheel for tt-metal SHA"
+    name: "Build tt-lang-light per-tt-metal-SHA wheel"
     needs: [preflight, build-docker, build-wheel-images, ttmetal-light-detect]
     if: ${{ github.event_name == 'schedule' && needs.ttmetal-light-detect.outputs.uplift == 'true' }}
     permissions:

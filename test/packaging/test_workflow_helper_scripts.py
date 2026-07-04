@@ -21,6 +21,7 @@ from conftest import REPO_ROOT  # noqa: E402
 SCRIPTS_DIR = REPO_ROOT / ".github" / "scripts"
 CHECK_WHEEL_TTNN_METADATA = SCRIPTS_DIR / "check-wheel-ttnn-metadata.py"
 CHECK_LIGHT_METAPACKAGE = SCRIPTS_DIR / "check-light-metapackage.py"
+BUILD_S3_LIGHT_CORE_WHEEL = SCRIPTS_DIR / "build-s3-light-core-wheel.sh"
 COMPUTE_NIGHTLY_VERSION = SCRIPTS_DIR / "compute-nightly-version.py"
 CHECK_INSTALLED_TTNN = SCRIPTS_DIR / "check-installed-ttnn.py"
 CHECK_BUNDLED_PAYLOAD = SCRIPTS_DIR / "check-wheel-bundled-payload.py"
@@ -75,6 +76,11 @@ def _write_wheel(dist_dir: Path, filename: str, metadata: str) -> Path:
     return wheel_path
 
 
+def _add_config_py(wheel_path: Path, *, tt_metal_commit: str) -> None:
+    with zipfile.ZipFile(wheel_path, "a") as wheel:
+        wheel.writestr("ttl/config.py", f'TT_METAL_COMMIT = "{tt_metal_commit}"\n')
+
+
 def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
 
@@ -97,6 +103,7 @@ def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
 def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     workflow = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
 
+    assert "name: Build tt-lang-light per-tt-metal-SHA wheel (reusable)" in workflow
     assert "build-metapackage:" in workflow
     assert "matrix.python_tag == 'cp312'" not in workflow
     assert "name: ttmetal-light-metapackage" in workflow
@@ -123,6 +130,15 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert workflow.count("name: ttmetal-install") == 4
     assert "TTLANG_EXTERNAL_TT_METAL_DIR: /tmp/ttmetal-install" in workflow
     assert "TTMETAL_INSTALL_DIR: /tmp/ttmetal-install" in workflow
+    assert "ttmetal_sha: ${{ steps.ttmetal.outputs.sha }}" in workflow
+    assert "ttmetal_sha: ${{ needs.build-ttmetal.outputs.ttmetal_sha }}" in workflow
+    assert "TT_METAL_COMMIT: ${{ needs.build-ttmetal.outputs.ttmetal_sha }}" in workflow
+    assert "TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}" in workflow
+    assert (
+        "EXPECTED_TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}"
+        in workflow
+    )
+    assert 'actual = ttl.build_info()["tt_metal"]' in workflow
     # tar transfer (not a bare artifact) so the sfpi compiler keeps its +x bit;
     # unpacked by each of the three consumers.
     assert "Package tt-metal install" in workflow
@@ -147,6 +163,35 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
         in workflow
     )
     assert "Inject S3 index README" not in workflow
+
+
+def test_ttmetal_light_workflow_names_are_specific() -> None:
+    on_demand = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
+    reusable = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
+    xla = TTMETAL_LIGHT_XLA_ON_DEMAND_WORKFLOW.read_text()
+    publish = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+
+    assert "name: Build tt-lang-light per-tt-metal-SHA wheel (on demand)" in on_demand
+    assert 'name: "Detect tt-lang-light per-tt-metal-SHA build"' in on_demand
+    assert 'name: "Build tt-lang-light per-tt-metal-SHA wheel"' in on_demand
+    assert "name: Build tt-lang-light per-tt-metal-SHA wheel (reusable)" in reusable
+
+    assert (
+        "name: Build tt-lang-light XLA per-tt-metal-SHA wheel (on demand)" in xla
+    )
+    assert (
+        'name: "Resolve tt-lang-light XLA per-tt-metal-SHA inputs"' in xla
+    )
+    assert (
+        'name: "Build Ubuntu tt-lang-light XLA per-tt-metal-SHA wheel"' in xla
+    )
+    assert (
+        'name: "Device-validate tt-lang-light XLA per-tt-metal-SHA wheel"'
+        in xla
+    )
+
+    assert 'name: "Detect tt-lang-light per-tt-metal-SHA build"' in publish
+    assert 'name: "Build tt-lang-light per-tt-metal-SHA wheel"' in publish
 
 
 def test_ttmetal_light_max_age_crosses_reusable_workflow_as_string() -> None:
@@ -306,7 +351,7 @@ def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
     assert "dist/xla/${{ steps.ttmetal.outputs.short }}" in workflow
     assert "tt-lang-light-xla-wheels" in workflow
     # The wheel is device-validated against the same tt-metal SHA it was built on.
-    assert "Device-validate XLA light wheel" in workflow
+    assert "Device-validate tt-lang-light XLA per-tt-metal-SHA wheel" in workflow
     assert "options: --device /dev/tenstorrent" in workflow
     assert "bash .github/scripts/run-tutorials.sh ." in workflow
     # tt-metal built once (build job), shared as a tar artifact preserving the
@@ -318,6 +363,15 @@ def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
     assert "tt-lang-wheel-manylinux-2-34" not in workflow
     assert "build-s3-light-core-wheel.sh" not in workflow
     assert "build-s3-light-metapackage-wheel.sh" not in workflow
+    assert '--expect-tt-metal-commit "${{ steps.ttmetal.outputs.sha }}"' in workflow
+    assert "EXPECTED_TT_METAL_COMMIT: ${{ inputs.tt_metal_sha }}" in workflow
+
+
+def test_light_core_builder_checks_tt_metal_provenance_when_exported() -> None:
+    script = BUILD_S3_LIGHT_CORE_WHEEL.read_text()
+
+    assert 'if [ -n "${TT_METAL_COMMIT:-}" ]; then' in script
+    assert '--expect-tt-metal-commit "$TT_METAL_COMMIT"' in script
 
 
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
@@ -418,6 +472,30 @@ def test_check_wheel_ttnn_metadata_rejects_external_payload(tmp_path: Path) -> N
     assert "external wheel must not bundle a ttnn payload" in result.stderr
 
 
+def test_check_wheel_ttnn_metadata_checks_tt_metal_commit(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    wheel_path = _write_wheel(
+        dist_dir,
+        "tt_lang-0.71.0.dev20260525+light-py3-none-any.whl",
+        "Metadata-Version: 2.1\n",
+    )
+    _add_config_py(wheel_path, tt_metal_commit="aaaaaaaa")
+
+    result = _run_script(
+        CHECK_WHEEL_TTNN_METADATA,
+        "--mode",
+        "external",
+        "--dist-dir",
+        str(dist_dir),
+        "--expect-tt-metal-commit",
+        "bbbbbbbb",
+    )
+
+    assert result.returncode != 0
+    assert "tt-metal provenance mismatch" in result.stderr
+
+
 def test_check_light_metapackage_parses_requires_dist(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
@@ -426,6 +504,7 @@ def test_check_light_metapackage_parses_requires_dist(tmp_path: Path) -> None:
         "tt_lang_light-0.71.0.dev20260525-py3-none-any.whl",
         (
             "Metadata-Version: 2.1\n"
+            "Requires-Python: >=3.10\n"
             "Requires-Dist: tt-lang == 0.71.0.dev20260525+light ; "
             'python_version >= "3.12"\n'
         ),
@@ -440,6 +519,30 @@ def test_check_light_metapackage_parses_requires_dist(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_check_light_metapackage_requires_python_metadata(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    _write_wheel(
+        dist_dir,
+        "tt_lang_light-0.71.0.dev20260525-py3-none-any.whl",
+        (
+            "Metadata-Version: 2.1\n"
+            "Requires-Dist: tt-lang == 0.71.0.dev20260525+light\n"
+        ),
+    )
+
+    result = _run_script(
+        CHECK_LIGHT_METAPACKAGE,
+        "--dist-dir",
+        str(dist_dir),
+        "--expect-ttlang-version",
+        "0.71.0.dev20260525+light",
+    )
+
+    assert result.returncode != 0
+    assert "Requires-Python: >=3.10" in result.stderr
 
 
 def test_compute_nightly_version_uses_latest_stable_tag(

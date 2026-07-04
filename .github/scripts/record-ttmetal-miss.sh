@@ -4,7 +4,7 @@
 #
 # Record that no compatible tt-lang was found for a tt-metal SHA, so the nightly
 # detector skips re-attempting it until tt-lang HEAD advances. Writes a small
-# attempt.json marker under the tt-lang/<SHA7> S3 prefix.
+# attempt.json marker under the tt-lang/<ttmetal7> S3 prefix.
 #
 # Usage:
 #   record-ttmetal-miss.sh --ttmetal-sha <sha> --ttlang-head <sha>

@@ -59,6 +59,16 @@ EOF
     assert_output --partial "v1.1.2-uplift-cafebabe"
 }
 
+@test "bare release does not match a longer patch sibling" {
+    cat > "$TAGS" <<'EOF'
+v1.1.20-uplift-aaaa
+v1.1.3
+EOF
+    run "$SCRIPT" --candidate v1.1.2 --tags-file "$TAGS" --allow-version-prefix-fallback
+    assert_equal "$status" 1
+    assert_output --partial "no existing IRD image tag matches v1.1.2 or v1.1.2-*"
+}
+
 @test "missing candidate -> exit 2" {
     run "$SCRIPT" --tags-file "$TAGS"
     assert_equal "$status" 2

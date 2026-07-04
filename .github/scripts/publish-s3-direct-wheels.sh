@@ -10,6 +10,9 @@
 
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+
 usage() {
     echo "Usage: $0 --prefix <prefix> [--readme <path>] <dist_dir>" >&2
     exit 2
@@ -17,7 +20,7 @@ usage() {
 
 bucket="${TTLANG_S3_BUCKET:-tenstorrent-pypi}"
 prefix=""
-readme="packaging/s3-index/README.md"
+readme="$repo_root/packaging/s3-index/README.md"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
@@ -67,8 +70,6 @@ from urllib.parse import quote
 dist_dir = Path(sys.argv[1])
 index_path = Path(sys.argv[2])
 wheels = sorted(dist_dir.glob("*.whl"))
-if not wheels:
-    raise SystemExit(f"No wheels found under {dist_dir}")
 
 anchors = ['    <a href="README.txt">README.txt</a><br>']
 for wheel in wheels:
@@ -96,7 +97,7 @@ index_path.write_text(
 )
 PY
 
-python3 .github/scripts/inject_s3_index_readme.py "$readme" "$index_html"
+python3 "$script_dir/inject_s3_index_readme.py" "$readme" "$index_html"
 cp "$readme" "$readme_txt"
 
 aws s3 cp "$readme_txt" "s3://$bucket/$prefix/README.txt" \

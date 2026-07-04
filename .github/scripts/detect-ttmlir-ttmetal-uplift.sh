@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Detect whether tt-lang should build a light wheel for tt-mlir's pinned
-# tt-metal SHA, keyed by the tt-lang/<SHA7> S3 prefix.
+# tt-metal SHA, keyed by the tt-lang/<ttmetal7> S3 prefix.
 #
 # A SHA is skipped when a wheel is already published, and also when a prior
 # search recorded no compatible tt-lang AND the tt-lang HEAD it searched is
@@ -121,11 +121,11 @@ main() {
     fi
     case "$class" in
         published)
-        echo "Wheel already published under tt-lang/$short_sha; skipping." >&2
-        emit "uplift=false" ;;
-    doomed)
-        echo "Recorded miss under tt-lang/$short_sha for the current tt-lang HEAD; skipping." >&2
-        emit "uplift=false" ;;
+            echo "Wheel already published under tt-lang/$short_sha; skipping." >&2
+            emit "uplift=false" ;;
+        doomed)
+            echo "Recorded miss under tt-lang/$short_sha for the current tt-lang HEAD; skipping." >&2
+            emit "uplift=false" ;;
         retry|new)
             echo "Building for $short_sha ($class)." >&2
             emit "uplift=true"

@@ -126,9 +126,21 @@ setup() {
     run cat "$GH_OUT"
     assert_output --partial "source_dir=$SCRATCH/src"
     assert_output --partial "ttmetal_date="
-    # The emitted sha is the trimmed value, not the padded input.
+    # The emitted sha is the full checked-out commit, not the padded input.
     assert_output --partial "sha=$SHA"
     assert_output --partial "short=${SHA:0:7}"
+
+    run git -C "$SCRATCH/src" rev-parse HEAD
+    assert_output "$SHA"
+}
+
+@test "--sha accepts a short SHA but emits the full commit" {
+    short="${SHA:0:7}"
+    GITHUB_OUTPUT="$GH_OUT" run -0 "$SCRIPT" --sha "$short" --scratch-dir "$SCRATCH" --no-build
+
+    run cat "$GH_OUT"
+    assert_output --partial "sha=$SHA"
+    assert_output --partial "short=$short"
 
     run git -C "$SCRATCH/src" rev-parse HEAD
     assert_output "$SHA"

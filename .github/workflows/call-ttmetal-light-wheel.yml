@@ -6,7 +6,7 @@
 # The per-SHA S3 location is tt-lang/<tt-metal-short-SHA>/, so wheel filenames
 # stay unchanged and light/normal wheels live in the same find-links directory.
 
-name: tt-lang-light wheel for a tt-metal SHA
+name: Build tt-lang-light per-tt-metal-SHA wheel (reusable)
 
 on:
   workflow_call:
@@ -72,6 +72,7 @@ jobs:
       contents: read
       packages: read
     outputs:
+      ttmetal_sha: ${{ steps.ttmetal.outputs.sha }}
       ttmetal_short: ${{ steps.ttmetal.outputs.short }}
       ttmetal_date: ${{ steps.ttmetal.outputs.ttmetal_date }}
     steps:
@@ -131,6 +132,7 @@ jobs:
       found: ${{ steps.search.outputs.found }}
       winner_sha: ${{ steps.search.outputs.winner_sha }}
       winner_version: ${{ steps.search.outputs.winner_version }}
+      ttmetal_sha: ${{ needs.build-ttmetal.outputs.ttmetal_sha }}
       ttmetal_short: ${{ needs.build-ttmetal.outputs.ttmetal_short }}
       ttlang_head: ${{ steps.head.outputs.sha }}
     steps:
@@ -167,6 +169,7 @@ jobs:
         id: search
         env:
           TTLANG_REF: ${{ inputs.ttlang_ref }}
+          TT_METAL_COMMIT: ${{ needs.build-ttmetal.outputs.ttmetal_sha }}
         run: |
           set -euo pipefail
           if [ -n "$TTLANG_REF" ]; then
@@ -278,6 +281,7 @@ jobs:
         env:
           TTLANG_EXTERNAL_TT_METAL_DIR: /tmp/ttmetal-install
           TTLANG_GIT_COMMIT: ${{ needs.find-compatible.outputs.winner_sha }}
+          TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}
         run: |
           .github/scripts/build-s3-light-core-wheel.sh \
             --python-tag "${{ matrix.python_tag }}" \
@@ -386,6 +390,7 @@ jobs:
       - name: Install light wheel and external tt-metal
         env:
           TTMETAL_INSTALL_DIR: /tmp/ttmetal-install
+          EXPECTED_TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}
         run: |
           set -euo pipefail
           # Clean venv (no --system-site-packages): the installed light wheel and
@@ -405,6 +410,17 @@ jobs:
           tt-lang-setup
           pip install -r dev-requirements.txt
           eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTMETAL_INSTALL_DIR")"
+          python3 - <<'PY'
+          import os
+          import ttl
+
+          expected = os.environ["EXPECTED_TT_METAL_COMMIT"]
+          actual = ttl.build_info()["tt_metal"]
+          if actual != expected:
+              raise SystemExit(
+                  f"tt-lang wheel tt-metal provenance mismatch: expected {expected}, got {actual}"
+              )
+          PY
           echo "TTL_EXTERNAL_TT_METAL_DIR=$TTMETAL_INSTALL_DIR" >> "$GITHUB_ENV"
 
       - name: Device suite
