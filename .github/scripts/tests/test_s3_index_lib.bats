@@ -31,6 +31,23 @@ EOF
     export PATH="$bindir:$PATH"
 }
 
+# Install a mock `aws` on PATH whose `s3 ls` invocation exits 1 (simulates a
+# transient AWS failure: permissions, throttling, network).
+make_aws_mock_failing() {
+    local bindir="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$bindir"
+    cat > "$bindir/aws" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_AWS_ARGS"
+if [[ "$1 $2" == "s3 ls" ]]; then
+    echo "mock aws error" >&2
+    exit 1
+fi
+EOF
+    chmod +x "$bindir/aws"
+    export PATH="$bindir:$PATH"
+}
+
 @test "s3_render_index wraps anchors in a Package Index document" {
     run bash -c 'source "'"$LIB"'"; printf "%s\n" "<a href=\"a/\">a</a><br>" | s3_render_index "T"'
     assert_output --partial "<!DOCTYPE html>"
@@ -67,4 +84,37 @@ EOF
     run cat "$FAKE_AWS_ARGS"
     assert_output --partial "s3 ls s3://tenstorrent-pypi/tt-lang/ttmetal/"
     assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/"
+}
+
+@test "s3_child_anchors skips the slash-key's own listing line (empty name)" {
+    make_aws_mock "2026-07-04 00:00:00        234
+2026-07-04 00:00:00       1234 tt_lang_light-1.0.0-py3-none-any.whl
+"
+    run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
+    assert_success
+    assert_line '<a href="tt_lang_light-1.0.0-py3-none-any.whl">tt_lang_light-1.0.0-py3-none-any.whl</a><br>'
+    refute_output --partial 'href="234"'
+}
+
+@test "s3_child_anchors fails when aws s3 ls fails" {
+    make_aws_mock_failing
+    run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
+    assert_failure
+}
+
+@test "s3_regenerate_index refuses to write when aws s3 ls fails" {
+    make_aws_mock_failing
+    run s3_regenerate_index tenstorrent-pypi tt-lang/ttmetal
+    assert_failure
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "put-object"
+}
+
+@test "s3_regenerate_index refuses to write when the listing is empty" {
+    make_aws_mock "2026-07-04 00:00:00        234
+"
+    run s3_regenerate_index tenstorrent-pypi tt-lang/ttmetal
+    assert_failure
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "put-object"
 }

@@ -28,19 +28,17 @@ s3_render_index() {
 # `aws s3 ls` prints "PRE name/" for sub-prefixes and "<date> <time> <size> name"
 # for objects. Skip the slash-key object itself (empty name) and legacy index.html.
 s3_child_anchors() {
-    local bucket="$1" prefix="$2"
-    aws s3 ls "s3://${bucket}/${prefix}/" 2>/dev/null | while read -r col1 col2 rest; do
+    local bucket="$1" prefix="$2" listing col1 col2 col3 name
+    listing="$(aws s3 ls "s3://${bucket}/${prefix}/")" || return 1
+    # col3 (object size) is consumed only for field alignment, never read.
+    # shellcheck disable=SC2034
+    while read -r col1 col2 col3 name; do
         if [[ "$col1" == "PRE" ]]; then
-            local name="$col2"
-            printf '<a href="%s">%s</a><br>\n' "$name" "$name"
-        else
-            # object line: <date> <time> <size> <name...>; name is everything
-            # after the size column.
-            local name="${rest#* }"
-            [[ -z "$name" || "$name" == "index.html" ]] && continue
-            printf '<a href="%s">%s</a><br>\n' "$name" "$name"
+            name="$col2"
         fi
-    done
+        [[ -z "$name" || "$name" == "index.html" ]] && continue
+        printf '<a href="%s">%s</a><br>\n' "$name" "$name"
+    done <<< "$listing"
 }
 
 # Upload an HTML file to the slash-key s3://<bucket>/<prefix>/ (trailing slash is
@@ -55,12 +53,20 @@ s3_put_index() {
 }
 
 # Regenerate the slash-key listing for <prefix> from its current S3 children.
+# Refuses to write if the listing fails or comes back empty, so a transient
+# `aws s3 ls` failure can't overwrite a live index with a blank page.
 s3_regenerate_index() {
-    local bucket="$1" prefix="$2"
-    local tmp
+    local bucket="$1" prefix="$2" anchors tmp
+    anchors="$(s3_child_anchors "$bucket" "$prefix")" || {
+        echo "s3_regenerate_index: failed to list s3://${bucket}/${prefix}/" >&2
+        return 1
+    }
+    if [[ -z "$anchors" ]]; then
+        echo "s3_regenerate_index: refusing to write an empty index for ${prefix}" >&2
+        return 1
+    fi
     tmp="$(mktemp)"
-    s3_child_anchors "$bucket" "$prefix" \
-        | s3_render_index "tt-lang: ${prefix}" > "$tmp"
+    printf '%s\n' "$anchors" | s3_render_index "tt-lang: ${prefix}" > "$tmp"
     s3_put_index "$bucket" "$prefix" "$tmp"
     rm -f "$tmp"
 }
