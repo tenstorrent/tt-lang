@@ -71,7 +71,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Require main ref for writes
-        if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}
+        if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' && inputs.operation != 'inspect' && inputs.operation != 'readonly-cmd' }}
         run: |
           echo "S3 writes are restricted to refs/heads/main (got ${GITHUB_REF}). Set dry_run=true for non-main validation." >&2
           exit 1

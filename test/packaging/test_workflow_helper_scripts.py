@@ -429,8 +429,10 @@ def test_s3_pypi_ops_workflow_is_main_gated_and_dry_run_by_default() -> None:
         "if: ${{ inputs.dry_run != true || inputs.operation == 'inspect' "
         "|| inputs.operation == 'readonly-cmd' }}" in workflow
     )
+    # The main-ref gate applies to write ops only; inspect/readonly-cmd are reads.
     assert (
-        "if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}"
+        "if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' "
+        "&& inputs.operation != 'inspect' && inputs.operation != 'readonly-cmd' }}"
         in workflow
     )
     assert ".github/scripts/s3-pypi-ops.sh" in workflow
