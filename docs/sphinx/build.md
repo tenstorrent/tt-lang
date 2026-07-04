@@ -683,10 +683,14 @@ scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml` is best-effort and doe
 not fail the nightly publish.
 
 Successful per-SHA publishes place the wheel files (both tt-lang and
-tt-lang-light) directly under
-`https://pypi.eng.aws.tenstorrent.com/tt-lang/<ttmetal7>/`. Install from that
-directory with `--find-links`. The `tt-lang-light` wheel is a pure metapackage;
-the supported CPython ABIs and glibc floor are carried by the
+tt-lang-light) under `https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/`
+as a browsable directory (the listing is written to the slash-key so the
+directory URL resolves; trailing slash required). Install from that directory
+with `--find-links`. Browse all published SHAs at
+`https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/`.
+
+The `tt-lang-light` wheel is a pure metapackage; the supported CPython ABIs and
+glibc floor are carried by the
 `tt_lang-<version>+light-cp310-cp310-manylinux_2_34_x86_64.whl` and
 `tt_lang-<version>+light-cp312-cp312-manylinux_2_34_x86_64.whl` files in the
 same directory. The same directory contains a brief `README.txt`.
@@ -730,6 +734,16 @@ The build job uploads the `tt_metal_sha` install as a tar artifact so executable
 bits are preserved. The device job installs the downloaded `tt-lang-light` wheel
 with that external tt-metal environment, then runs `test/python/smoketest.py`
 and the tutorial suite.
+
+#### S3 PyPI maintenance
+
+`s3-pypi-ops.yml` is a manual (`workflow_dispatch`) workflow for maintaining the
+tt-lang prefixes of `tenstorrent-pypi`: `inspect`, `put-index` (refresh a
+slash-key listing), `move`, `copy`, `delete`, and a read-only `readonly-cmd`.
+Writes require `refs/heads/main`; `dry_run` defaults to true. Operations are
+restricted to the `tt-lang/`, `tt-lang-light/`, and `tt-lang-sim/` prefixes and
+cannot touch other teams' packages or the bucket root. `delete` requires a
+`confirm` token equal to the prefix.
 
 #### Local internal wheel testing
 
