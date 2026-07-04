@@ -25,6 +25,8 @@ make_aws_mock() {
 printf '%s\n' "$*" >> "$FAKE_AWS_ARGS"
 if [[ "$1 $2" == "s3 ls" ]]; then
     cat "$BATS_TEST_TMPDIR/ls_output"
+elif [[ "$1 $2" == "s3 cp" && "$3" == *.whl && "$4" == "-" ]]; then
+    printf 'wheel-bytes'
 fi
 EOF
     chmod +x "$bindir/aws"
@@ -65,8 +67,9 @@ EOF
 2026-07-04 00:00:00         10 junk.txt
 "
     run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
+    digest="$(printf 'wheel-bytes' | sha256sum | awk '{print $1}')"
     assert_line '<a href="13adda8/">13adda8/</a><br>'
-    assert_line '<a href="tt_lang_light-1.0.0-py3-none-any.whl">tt_lang_light-1.0.0-py3-none-any.whl</a><br>'
+    assert_line "<a href=\"tt_lang_light-1.0.0-py3-none-any.whl#sha256=$digest\">tt_lang_light-1.0.0-py3-none-any.whl</a><br>"
     assert_line '<a href="README.txt">README.txt</a><br>'
     refute_output --partial 'index.html'
     refute_output --partial 'attempt.json'
@@ -77,7 +80,8 @@ EOF
     make_aws_mock "2026-07-04 00:00:00       1234 a&b.whl
 "
     run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
-    assert_line '<a href="a&amp;b.whl">a&amp;b.whl</a><br>'
+    digest="$(printf 'wheel-bytes' | sha256sum | awk '{print $1}')"
+    assert_line "<a href=\"a&amp;b.whl#sha256=$digest\">a&amp;b.whl</a><br>"
     refute_output --partial 'a&b.whl'
 }
 
@@ -104,7 +108,8 @@ EOF
 "
     run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
     assert_success
-    assert_line '<a href="tt_lang_light-1.0.0-py3-none-any.whl">tt_lang_light-1.0.0-py3-none-any.whl</a><br>'
+    digest="$(printf 'wheel-bytes' | sha256sum | awk '{print $1}')"
+    assert_line "<a href=\"tt_lang_light-1.0.0-py3-none-any.whl#sha256=$digest\">tt_lang_light-1.0.0-py3-none-any.whl</a><br>"
     refute_output --partial 'href="234"'
 }
 

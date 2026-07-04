@@ -73,23 +73,58 @@ assert_destructive_ok() {
 
 # Every S3 target in a read command must resolve under s3://<bucket>/tt-lang/.
 assert_readonly_targets() {
-    local args=("$@") i=0 tok next
+    local args=("$@") i=0 tok next verb
+    local saw_s3_uri=false saw_bucket=false saw_key=false saw_prefix=false
+    verb="${args[0]} ${args[1]}"
     while [[ $i -lt ${#args[@]} ]]; do
         tok="${args[$i]}"
         case "$tok" in
             s3://*)
+                saw_s3_uri=true
                 [[ "$tok" == "s3://$bucket/tt-lang" || "$tok" == "s3://$bucket/tt-lang/"* ]] \
                     || die "read-only target must be under s3://$bucket/tt-lang/: $tok" ;;
             --bucket)
                 next="${args[$((i+1))]:-}"
+                saw_bucket=true
+                [[ "$next" == "$bucket" ]] || die "read-only --bucket must be $bucket: $next"
+                i=$((i+1)) ;;
+            --bucket=*)
+                next="${tok#--bucket=}"
+                saw_bucket=true
                 [[ "$next" == "$bucket" ]] || die "read-only --bucket must be $bucket: $next" ;;
             --key|--prefix)
                 next="${args[$((i+1))]:-}"
+                if [[ "$tok" == "--key" ]]; then
+                    saw_key=true
+                else
+                    saw_prefix=true
+                fi
+                [[ "$next" == "tt-lang" || "$next" == "tt-lang/"* ]] \
+                    || die "read-only --key/--prefix must be under tt-lang/: $next"
+                i=$((i+1)) ;;
+            --key=*)
+                next="${tok#--key=}"
+                saw_key=true
+                [[ "$next" == "tt-lang" || "$next" == "tt-lang/"* ]] \
+                    || die "read-only --key/--prefix must be under tt-lang/: $next" ;;
+            --prefix=*)
+                next="${tok#--prefix=}"
+                saw_prefix=true
                 [[ "$next" == "tt-lang" || "$next" == "tt-lang/"* ]] \
                     || die "read-only --key/--prefix must be under tt-lang/: $next" ;;
         esac
         i=$((i+1))
     done
+    case "$verb" in
+        "s3 ls")
+            [[ "$saw_s3_uri" == true ]] || die "read-only s3 ls requires an s3://$bucket/tt-lang/ target" ;;
+        "s3api head-object"|"s3api get-object")
+            [[ "$saw_bucket" == true ]] || die "read-only $verb requires --bucket $bucket"
+            [[ "$saw_key" == true ]] || die "read-only $verb requires --key under tt-lang/" ;;
+        "s3api list-objects-v2")
+            [[ "$saw_bucket" == true ]] || die "read-only $verb requires --bucket $bucket"
+            [[ "$saw_prefix" == true ]] || die "read-only $verb requires --prefix under tt-lang/" ;;
+    esac
 }
 
 run_aws() {

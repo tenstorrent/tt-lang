@@ -165,6 +165,18 @@ EOF
     refute_output --partial "s3"
 }
 
+@test "readonly-cmd rejects bucket-root listing forms" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3 ls
+    assert_output --partial "read-only s3 ls requires"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3api list-objects-v2 --bucket tenstorrent-pypi
+    assert_output --partial "requires --prefix under tt-lang/"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "list-objects-v2"
+}
+
 @test "readonly-cmd rejects a --key outside tt-lang/" {
     run -2 "$SCRIPT" --operation readonly-cmd -- s3api head-object --bucket tenstorrent-pypi --key ttnn/x
     assert_output --partial "read-only --key/--prefix must be under tt-lang/"
@@ -172,8 +184,21 @@ EOF
     refute_output --partial "s3"
 }
 
+@test "readonly-cmd rejects --arg=value targets outside tt-lang/" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3api list-objects-v2 --bucket=tenstorrent-pypi --prefix=ttnn/
+    assert_output --partial "read-only --key/--prefix must be under tt-lang/"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "list-objects-v2"
+}
+
 @test "readonly-cmd allows a --key under tt-lang/" {
     run -0 "$SCRIPT" --operation readonly-cmd -- s3api head-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/README.txt
     run cat "$FAKE_AWS_ARGS"
     assert_output --partial "s3api head-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/README.txt"
+}
+
+@test "readonly-cmd allows a --prefix under tt-lang/" {
+    run -0 "$SCRIPT" --operation readonly-cmd -- s3api list-objects-v2 --bucket=tenstorrent-pypi --prefix=tt-lang/ttmetal/
+    run cat "$FAKE_AWS_ARGS"
+    assert_output --partial "s3api list-objects-v2 --bucket=tenstorrent-pypi --prefix=tt-lang/ttmetal/"
 }
