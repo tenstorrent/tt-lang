@@ -19,7 +19,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$script_dir/lib/s3-index.sh"
 
 bucket="${TTLANG_S3_BUCKET:-tenstorrent-pypi}"
-ALLOWED_PREFIXES=(tt-lang/ tt-lang-light/ tt-lang-sim/)
+ALLOWED_PREFIXES=(tt-lang/)
 READONLY_VERBS=("s3 ls" "s3api head-object" "s3api list-objects-v2" "s3api get-object")
 
 operation="" prefix="" src="" dest="" confirm="" dry_run="true"

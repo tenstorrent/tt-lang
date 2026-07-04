@@ -741,9 +741,9 @@ and the tutorial suite.
 tt-lang prefixes of `tenstorrent-pypi`: `inspect`, `put-index` (refresh a
 slash-key listing), `move`, `copy`, `delete`, and a read-only `readonly-cmd`.
 Writes require `refs/heads/main`; `dry_run` defaults to true. Operations are
-restricted to the `tt-lang/`, `tt-lang-light/`, and `tt-lang-sim/` prefixes and
-cannot touch other teams' packages or the bucket root. `delete` requires a
-`confirm` token equal to the prefix.
+restricted to the `tt-lang/` prefix and cannot touch other teams' packages
+(including the sibling `tt-lang-light/` and `tt-lang-sim/` package indexes) or
+the bucket root. `delete` requires a `confirm` token equal to the prefix.
 
 #### Local internal wheel testing
 

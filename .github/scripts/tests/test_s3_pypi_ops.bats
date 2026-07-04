@@ -28,6 +28,15 @@ EOF
     refute_output --partial "s3"
 }
 
+@test "rejects the sibling tt-lang-light/ and tt-lang-sim/ package prefixes" {
+    run -2 "$SCRIPT" --operation put-index --prefix tt-lang-light/2026-07 --dry-run false
+    assert_output --partial "not in the tt-lang allowlist"
+    run -2 "$SCRIPT" --operation put-index --prefix tt-lang-sim/2026-07 --dry-run false
+    assert_output --partial "not in the tt-lang allowlist"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
 @test "rejects the bucket root and bare allowlist root for delete" {
     run -2 "$SCRIPT" --operation delete --prefix tt-lang/ --confirm tt-lang/ --dry-run false
     assert_output --partial "refusing destructive op"
