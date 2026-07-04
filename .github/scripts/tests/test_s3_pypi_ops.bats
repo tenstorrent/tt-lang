@@ -24,16 +24,53 @@ EOF
 @test "rejects a prefix outside the tt-lang allowlist" {
     run -2 "$SCRIPT" --operation delete --prefix ttnn/foo --confirm ttnn/foo --dry-run false
     assert_output --partial "not in the tt-lang allowlist"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
 }
 
 @test "rejects the bucket root and bare allowlist root for delete" {
     run -2 "$SCRIPT" --operation delete --prefix tt-lang/ --confirm tt-lang/ --dry-run false
     assert_output --partial "refusing destructive op"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
 }
 
 @test "rejects shell metacharacters in a prefix" {
     run -2 "$SCRIPT" --operation inspect --prefix 'tt-lang/x;rm -rf /'
     assert_output --partial "invalid characters"
+}
+
+@test "rejects an absolute path" {
+    run -2 "$SCRIPT" --operation inspect --prefix /etc/passwd
+    assert_output --partial "prefix must be bucket-relative"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "rejects an s3:// URI" {
+    run -2 "$SCRIPT" --operation inspect --prefix s3://tenstorrent-pypi/tt-lang
+    assert_output --partial "prefix must be bucket-relative"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "rejects '..' path traversal" {
+    run -2 "$SCRIPT" --operation inspect --prefix tt-lang/x/../ttnn
+    assert_output --partial ".."
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "rejects a prefix that only shares a leading substring with an allowlist entry" {
+    run -2 "$SCRIPT" --operation inspect --prefix tt-lang-evil/foo
+    assert_output --partial "not in the tt-lang allowlist"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+
+    run -2 "$SCRIPT" --operation inspect --prefix tt-langX/foo
+    assert_output --partial "not in the tt-lang allowlist"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
 }
 
 @test "delete requires a matching confirm token" {
@@ -43,6 +80,13 @@ EOF
     refute_output --partial "rm"
 }
 
+@test "move rejects a bare allowlist root as the source" {
+    run -2 "$SCRIPT" --operation move --source tt-lang --dest tt-lang/ttmetal/x --dry-run false
+    assert_output --partial "refusing destructive op"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
 @test "dry-run prints the plan and performs no writes" {
     run -0 "$SCRIPT" --operation move --source tt-lang/13adda8 --dest tt-lang/ttmetal/13adda8
     assert_output --partial "DRY-RUN"
@@ -50,10 +94,36 @@ EOF
     refute_output --partial "mv"
 }
 
-@test "move (dry-run false) copies+deletes and reindexes" {
+@test "move (dry-run false) runs recursive mv" {
     run -0 "$SCRIPT" --operation move --source tt-lang/13adda8 --dest tt-lang/ttmetal/13adda8 --dry-run false
     run cat "$FAKE_AWS_ARGS"
     assert_output --partial "s3 mv s3://tenstorrent-pypi/tt-lang/13adda8/ s3://tenstorrent-pypi/tt-lang/ttmetal/13adda8/ --recursive"
+}
+
+@test "copy (dry-run false) runs recursive cp" {
+    run -0 "$SCRIPT" --operation copy --source tt-lang/a --dest tt-lang/b --dry-run false
+    run cat "$FAKE_AWS_ARGS"
+    assert_output --partial "s3 cp s3://tenstorrent-pypi/tt-lang/a/ s3://tenstorrent-pypi/tt-lang/b/ --recursive"
+}
+
+@test "inspect runs recursive ls" {
+    run -0 "$SCRIPT" --operation inspect --prefix tt-lang/x
+    run cat "$FAKE_AWS_ARGS"
+    assert_output --partial "s3 ls s3://tenstorrent-pypi/tt-lang/x/ --recursive"
+}
+
+@test "put-index dry-run prints the plan and performs no writes" {
+    run -0 "$SCRIPT" --operation put-index --prefix tt-lang/ttmetal
+    assert_output --partial "DRY-RUN"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "put-object"
+}
+
+@test "rejects an unknown operation" {
+    run -2 "$SCRIPT" --operation bogus
+    assert_output --partial "unknown operation"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
 }
 
 @test "readonly-cmd allows ls but rejects rm" {
@@ -63,4 +133,18 @@ EOF
 
     run -2 "$SCRIPT" --operation readonly-cmd -- s3 rm s3://tenstorrent-pypi/tt-lang/x
     assert_output --partial "read-only"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "rm"
+}
+
+@test "readonly-cmd rejects other write verbs" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3 cp x y
+    assert_output --partial "read-only"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3api put-object --bucket tenstorrent-pypi --key tt-lang/x --body f
+    assert_output --partial "read-only"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
 }

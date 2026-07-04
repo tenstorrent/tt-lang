@@ -22,7 +22,7 @@ bucket="${TTLANG_S3_BUCKET:-tenstorrent-pypi}"
 ALLOWED_PREFIXES=(tt-lang/ tt-lang-light/ tt-lang-sim/)
 READONLY_VERBS=("s3 ls" "s3api head-object" "s3api list-objects-v2" "s3api get-object")
 
-operation="" prefix="" source="" dest="" confirm="" dry_run="true"
+operation="" prefix="" src="" dest="" confirm="" dry_run="true"
 readonly_args=()
 
 die() { echo "$1" >&2; exit 2; }
@@ -31,9 +31,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --operation) operation="$2"; shift 2 ;;
         --prefix)    prefix="${2%/}"; shift 2 ;;
-        --source)    source="${2%/}"; shift 2 ;;
+        --source)    src="${2%/}"; shift 2 ;;
         --dest)      dest="${2%/}"; shift 2 ;;
-        --confirm)   confirm="$2"; shift 2 ;;
+        --confirm)   confirm="${2%/}"; shift 2 ;;
         --dry-run)   dry_run="$2"; shift 2 ;;
         --)          shift; readonly_args=("$@"); break ;;
         *)           die "Unknown argument: $1" ;;
@@ -68,6 +68,7 @@ assert_destructive_ok() {
             return 0
         fi
     done
+    die "internal: prefix passed allowlist but matched no root: $path"
 }
 
 run_aws() {
@@ -100,12 +101,12 @@ case "$operation" in
         fi
         ;;
     copy)
-        assert_allowed "$source"; assert_allowed "$dest"
-        run_aws s3 cp "s3://$bucket/$source/" "s3://$bucket/$dest/" --recursive
+        assert_allowed "$src"; assert_allowed "$dest"
+        run_aws s3 cp "s3://$bucket/$src/" "s3://$bucket/$dest/" --recursive
         ;;
     move)
-        assert_destructive_ok "$source"; assert_allowed "$dest"
-        run_aws s3 mv "s3://$bucket/$source/" "s3://$bucket/$dest/" --recursive
+        assert_destructive_ok "$src"; assert_allowed "$dest"
+        run_aws s3 mv "s3://$bucket/$src/" "s3://$bucket/$dest/" --recursive
         ;;
     delete)
         assert_destructive_ok "$prefix"
