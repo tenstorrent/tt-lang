@@ -101,6 +101,11 @@ def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     assert "standard_wheel_matrix" in workflow
 
 
+def test_nightly_publish_prefix_is_under_tt_lang() -> None:
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    assert 'prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"' in workflow
+
+
 def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     workflow = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
 

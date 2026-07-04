@@ -13,7 +13,7 @@ Nightly development wheels are grouped by year-month:
 
 ```bash
 pip install \
-  --extra-index-url https://pypi.eng.aws.tenstorrent.com/<YYYY-MM>/ \
+  --extra-index-url https://pypi.eng.aws.tenstorrent.com/tt-lang/<YYYY-MM>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   "tt-lang==<version>"
 ```
