@@ -138,10 +138,15 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert 'pytest -c /dev/null --rootdir "$PWD" test/python' not in workflow
     assert 'pytest -c /dev/null --rootdir "$PWD" test/me2e' not in workflow
     assert "simple_add" not in workflow
+    assert ".github/scripts/publish-s3-direct-wheels.sh" in workflow
+    assert '--prefix "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}"' in (
+        workflow
+    )
     assert (
-        '.github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist'
+        '--find-links-subdir "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}"'
         in workflow
     )
+    assert "Inject S3 index README" not in workflow
 
 
 def test_ttmetal_light_max_age_crosses_reusable_workflow_as_string() -> None:

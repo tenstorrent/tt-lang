@@ -5,21 +5,23 @@
 # Append a Markdown install summary to $GITHUB_STEP_SUMMARY for the S3 PyPI
 # publish workflow. With --dry-run, record that no upload occurred. With
 # --index-subdir <subdir>, point the install commands at the .../<subdir>/
-# simple index (year-month <YYYY-MM>/ for nightlies, <ttmetal7>/ for per-SHA
-# light wheels) instead of the flat root. With no $GITHUB_STEP_SUMMARY set,
+# simple index (year-month <YYYY-MM>/ for nightlies) instead of the flat root.
+# --find-links-subdir <subdir> points install commands at a direct wheel
+# directory consumed with pip --find-links. With no $GITHUB_STEP_SUMMARY set,
 # output goes to stdout for local invocations/tests.
 #
-# Usage: publish-s3-summary.sh [--dry-run] [--index-subdir <subdir>] <wheel_variant> <version_override>
+# Usage: publish-s3-summary.sh [--dry-run] [--index-subdir <subdir>] [--find-links-subdir <subdir>] <wheel_variant> <version_override>
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [--dry-run] [--index-subdir <subdir>] <wheel_variant> <version_override>" >&2
+    echo "Usage: $0 [--dry-run] [--index-subdir <subdir>] [--find-links-subdir <subdir>] <wheel_variant> <version_override>" >&2
     exit 2
 }
 
 dry_run=0
 index_subdir=""
+find_links_subdir=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)
@@ -29,6 +31,11 @@ while [[ $# -gt 0 ]]; do
         --index-subdir)
             [[ $# -ge 2 ]] || usage
             index_subdir="$2"
+            shift 2
+            ;;
+        --find-links-subdir)
+            [[ $# -ge 2 ]] || usage
+            find_links_subdir="$2"
             shift 2
             ;;
         -*)
@@ -44,12 +51,23 @@ done
 if [[ $# -ne 2 ]]; then
     usage
 fi
+if [[ -n "$index_subdir" && -n "$find_links_subdir" ]]; then
+    echo "--index-subdir and --find-links-subdir are mutually exclusive" >&2
+    exit 2
+fi
 
 variant="$1"
 version="$2"
 index_url="https://pypi.eng.aws.tenstorrent.com/"
+index_label="Package index"
 if [[ -n "$index_subdir" ]]; then
     index_url="https://pypi.eng.aws.tenstorrent.com/${index_subdir}/"
+fi
+find_links_url=""
+if [[ -n "$find_links_subdir" ]]; then
+    find_links_url="https://pypi.eng.aws.tenstorrent.com/${find_links_subdir}/"
+    index_url="$find_links_url"
+    index_label="Wheel directory"
 fi
 pytorch_url="https://download.pytorch.org/whl/cpu"
 summary_title="### Published wheels"
@@ -85,7 +103,7 @@ No wheels were uploaded.
 EOF
     fi
     emit <<EOF
-Package index: $index_url
+$index_label: $index_url
 
 EOF
 }
@@ -101,6 +119,17 @@ $heading
 
 EOF
     fi
+    if [[ -n "$find_links_url" ]]; then
+        emit <<EOF
+\`\`\`bash
+pip install \\
+  --find-links $find_links_url \\
+  --extra-index-url $pytorch_url \\
+  $package_spec
+\`\`\`
+EOF
+        return
+    fi
     emit <<EOF
 \`\`\`bash
 pip install \\
@@ -112,6 +141,28 @@ EOF
 }
 
 emit_light_install() {
+    if [[ -n "$find_links_url" ]]; then
+        emit <<EOF
+Light install:
+
+\`\`\`bash
+pip install \\
+  --find-links $find_links_url \\
+  --extra-index-url $pytorch_url \\
+  tt-lang-light==$version
+\`\`\`
+
+Underlying light tt-lang wheel:
+
+\`\`\`bash
+pip install \\
+  --find-links $find_links_url \\
+  --extra-index-url $pytorch_url \\
+  tt-lang==$version+light
+\`\`\`
+EOF
+        return
+    fi
     emit <<EOF
 Light install:
 

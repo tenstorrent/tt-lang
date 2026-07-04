@@ -80,6 +80,42 @@ setup() {
     assert_output "retry"
 }
 
+@test "default S3 object listing reads the tt-lang SHA prefix" {
+    bindir="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$bindir"
+    AWS_ARGS="$BATS_TEST_TMPDIR/aws_args"
+    export AWS_ARGS
+    cat > "$bindir/aws" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$AWS_ARGS"
+printf '2026-07-04 00:00:00       1234 tt_lang-1.0.0+light.whl\n'
+EOF
+    chmod +x "$bindir/aws"
+    PATH="$bindir:$PATH" run -0 list_prefix_objects "$SHORT_SHA"
+    assert_output "tt_lang-1.0.0+light.whl"
+
+    run cat "$AWS_ARGS"
+    assert_output --partial "s3 ls s3://tenstorrent-pypi/tt-lang/$SHORT_SHA/"
+}
+
+@test "default miss marker read uses the tt-lang SHA prefix" {
+    bindir="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$bindir"
+    AWS_ARGS="$BATS_TEST_TMPDIR/aws_args"
+    export AWS_ARGS
+    cat > "$bindir/aws" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$AWS_ARGS"
+printf '{"ttlang_head":"%s"}\n' "$HEAD_A"
+EOF
+    chmod +x "$bindir/aws"
+    PATH="$bindir:$PATH" run -0 read_recorded_head "$SHORT_SHA"
+    assert_output "$HEAD_A"
+
+    run cat "$AWS_ARGS"
+    assert_output --partial "s3 cp s3://tenstorrent-pypi/tt-lang/$SHORT_SHA/attempt.json -"
+}
+
 # --- main ---
 
 @test "main: new sha -> uplift=true with sha outputs" {

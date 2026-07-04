@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Build, device-test, and publish a tt-lang-light wheel for a tt-metal SHA.
-# The S3 prefix is the tt-metal short SHA, so wheel filenames stay unchanged.
+# The per-SHA S3 location is tt-lang/<tt-metal-short-SHA>/, so wheel filenames
+# stay unchanged and light/normal wheels live in the same find-links directory.
 
 name: tt-lang-light wheel for a tt-metal SHA
 
@@ -422,7 +423,7 @@ jobs:
           bash .github/scripts/run-tutorials.sh .
 
   publish:
-    name: "Publish to S3 under per-SHA prefix"
+    name: "Publish to S3 under tt-lang/<SHA> prefix"
     continue-on-error: ${{ inputs.soft_fail }}
     needs: [find-compatible, build-wheels, build-metapackage, device-validate]
     if: ${{ needs.find-compatible.outputs.found == 'true' && inputs.dry_run != true }}
@@ -455,23 +456,14 @@ jobs:
       - name: Configure AWS Credentials
         uses: ./.github/actions/configure-tt-s3-credentials
 
-      - name: Install s3pypi
-        run: python3 -m pip install s3pypi markdown
-
       - name: Publish wheels
         run: |
-          .github/scripts/publish-s3-wheels.sh --overwrite \
-            --prefix "${{ needs.find-compatible.outputs.ttmetal_short }}" dist
-
-      - name: Inject S3 index README
-        run: |
-          set -euo pipefail
-          key="${{ needs.find-compatible.outputs.ttmetal_short }}/index.html"
-          .github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist
+          .github/scripts/publish-s3-direct-wheels.sh \
+            --prefix "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}" dist
 
       - name: Report install command
         run: |
           .github/scripts/publish-s3-summary.sh \
-            --index-subdir "${{ needs.find-compatible.outputs.ttmetal_short }}" \
+            --find-links-subdir "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}" \
             light \
             "${{ needs.find-compatible.outputs.winner_version }}"

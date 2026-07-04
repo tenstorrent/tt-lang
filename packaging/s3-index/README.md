@@ -18,13 +18,16 @@ pip install \
   "tt-lang==<version>"
 ```
 
-Light wheels built and device-tested against a specific tt-metal commit are grouped
-by that commit's 7-character prefix. Use these when the environment already provides
-`ttnn` from an external tt-metal at that commit:
+Light wheels built and device-tested against a specific tt-metal commit are
+published as direct wheel directories under `tt-lang/<ttmetal7>/`, where
+`<ttmetal7>` is that commit's 7-character prefix. The directory contains both the
+`tt-lang` `+light` wheel and the `tt-lang-light` metapackage, plus this README as
+`README.txt`. Use these when the environment already provides `ttnn` from an
+external tt-metal at that commit:
 
 ```bash
 pip install \
-  --extra-index-url https://pypi.eng.aws.tenstorrent.com/<ttmetal7>/ \
+  --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang/<ttmetal7>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   "tt-lang-light==<version>"
 ```
