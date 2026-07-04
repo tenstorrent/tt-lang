@@ -10,7 +10,9 @@
 # Escape text for HTML element content and double-quoted attributes.
 _html_escape() {
     local s="$1"
-    s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; s="${s//\"/&quot;}"; s="${s//\'/&#39;}"
+    # Escape & as \& in each replacement: bash 5.2's patsub_replacement treats a
+    # bare & in a ${var//pat/repl} replacement as the matched text.
+    s="${s//&/\&amp;}"; s="${s//</\&lt;}"; s="${s//>/\&gt;}"; s="${s//\"/\&quot;}"; s="${s//\'/\&#39;}"
     printf '%s' "$s"
 }
 
