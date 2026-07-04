@@ -7,9 +7,16 @@
 # only the exact key requested; an object at <prefix>/index.html does not answer
 # a request for <prefix>/.
 
+# Escape text for HTML element content and double-quoted attributes.
+_html_escape() {
+    local s="$1"
+    s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; s="${s//\"/&quot;}"; s="${s//\'/&#39;}"
+    printf '%s' "$s"
+}
+
 # Wrap anchor lines (read from stdin) in the Package-Index HTML skeleton.
 s3_render_index() {
-    local title="$1"
+    local title; title="$(_html_escape "$1")"
     printf '%s\n' \
         '<!DOCTYPE html>' \
         '<html>' \
@@ -24,35 +31,38 @@ s3_render_index() {
         '</html>'
 }
 
-# Emit one anchor line per immediate child of s3://<bucket>/<prefix>/.
-# `aws s3 ls` prints "PRE name/" for sub-prefixes and "<date> <time> <size> name"
-# for objects. Wheel links include #sha256 fragments so pip can verify the
-# downloaded bytes against the directory listing.
+# Anchors for the immediate children of s3://<bucket>/<prefix>/, listed from S3.
+# Sub-prefixes and (wheels + README.txt); no sha256 (the hashed per-SHA listing
+# is generated at publish time from local files by s3_local_wheel_anchors).
 s3_child_anchors() {
-    local bucket="$1" prefix="$2" listing col1 col2 col3 name esc digest href
+    local bucket="$1" prefix="$2" listing col1 col2 col3 name esc
     listing="$(aws s3 ls "s3://${bucket}/${prefix}/")" || return 1
     # shellcheck disable=SC2034
     while read -r col1 col2 col3 name; do
         if [[ "$col1" == "PRE" ]]; then
             name="$col2"
-            esc="${name//&/&amp;}"; esc="${esc//</&lt;}"; esc="${esc//>/&gt;}"
-            printf '<a href="%s">%s</a><br>\n' "$esc" "$esc"
-            continue
-        fi
-        # A find-links directory holds only wheels and the README; skip the
-        # slash-key object itself, index.html, attempt.json markers, etc.
-        [[ "$name" == *.whl || "$name" == "README.txt" ]] || continue
-
-        esc="${name//&/&amp;}"; esc="${esc//</&lt;}"; esc="${esc//>/&gt;}"
-        href="$esc"
-        if [[ "$name" == *.whl ]]; then
-            digest="$(aws s3 cp "s3://${bucket}/${prefix}/${name}" - | sha256sum | awk '{print $1}')" || return 1
-            href="${esc}#sha256=${digest}"
         else
-            href="$esc"
+            # A find-links directory holds only wheels and the README; skip the
+            # slash-key object itself, index.html, attempt.json markers, etc.
+            [[ "$name" == *.whl || "$name" == "README.txt" ]] || continue
         fi
-        printf '<a href="%s">%s</a><br>\n' "$href" "$esc"
+        esc="$(_html_escape "$name")"
+        printf '<a href="%s">%s</a><br>\n' "$esc" "$esc"
     done <<< "$listing"
+}
+
+# Anchors for a local wheel dist: README.txt plus each *.whl with a #sha256
+# fragment computed from the local file (no download).
+s3_local_wheel_anchors() {
+    local dist_dir="$1" f name esc digest
+    esc="$(_html_escape "README.txt")"
+    printf '<a href="%s">%s</a><br>\n' "$esc" "$esc"
+    for f in "$dist_dir"/*.whl; do
+        [[ -e "$f" ]] || continue
+        name="$(basename "$f")"; esc="$(_html_escape "$name")"
+        digest="$(sha256sum "$f" | awk '{print $1}')"
+        printf '<a href="%s#sha256=%s">%s</a><br>\n' "$esc" "$digest" "$esc"
+    done
 }
 
 # Upload an HTML file to the slash-key s3://<bucket>/<prefix>/ (trailing slash is

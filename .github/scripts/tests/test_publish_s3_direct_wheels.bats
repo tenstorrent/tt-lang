@@ -12,13 +12,24 @@ make_aws_mock() {
     cat > "$bindir/aws" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_AWS_ARGS"
-# `s3 ls` is used to regenerate parent/child listings; return the wheels + readme
-# for the SHA prefix, and the SHA dir for the parent prefix.
+# `s3 ls` is used to regenerate the parent listing; return the SHA dir.
 if [[ "$1 $2" == "s3 ls" ]]; then
     case "$3" in
-        *tt-lang/ttmetal/13adda8/) cat "$LS_SHA" ;;
-        *tt-lang/ttmetal/)         cat "$LS_PARENT" ;;
+        *tt-lang/ttmetal/) cat "$LS_PARENT" ;;
     esac
+elif [[ "$1 $2" == "s3api put-object" ]]; then
+    # Capture each uploaded index body under a filename derived from --key so
+    # tests can inspect its HTML content (the script deletes its tmpfile on exit).
+    shift 2
+    key="" body=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --key) key="$2"; shift 2 ;;
+            --body) body="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    cp "$body" "$PUT_BODIES_DIR/${key//\//_}"
 fi
 EOF
     chmod +x "$bindir/aws"
@@ -28,13 +39,12 @@ EOF
 setup() {
     SCRIPT="$SCRIPTS_DIR/publish-s3-direct-wheels.sh"
     FAKE_AWS_ARGS="$BATS_TEST_TMPDIR/aws_args"
-    LS_SHA="$BATS_TEST_TMPDIR/ls_sha"
     LS_PARENT="$BATS_TEST_TMPDIR/ls_parent"
+    PUT_BODIES_DIR="$BATS_TEST_TMPDIR/put_bodies"
+    mkdir -p "$PUT_BODIES_DIR"
     : > "$FAKE_AWS_ARGS"
-    printf '2026-07-04 00:00:00 321 README.txt\n2026-07-04 00:00:00 1 %s\n' \
-        "$(whl_light 1.0.0)" > "$LS_SHA"
     printf '                           PRE 13adda8/\n' > "$LS_PARENT"
-    export FAKE_AWS_ARGS LS_SHA LS_PARENT
+    export FAKE_AWS_ARGS LS_PARENT PUT_BODIES_DIR
     README="$BATS_TEST_TMPDIR/README.md"
     printf '# tt-lang per-SHA wheels\n' > "$README"
     make_aws_mock
@@ -64,6 +74,19 @@ setup() {
     assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/"
     # NEVER writes an index.html object
     refute_output --partial "index.html"
+    # No re-download of an uploaded wheel to compute its hash
+    refute_output --regexp 's3 cp s3://[^[:space:]]*\.whl -'
+}
+
+@test "per-SHA index HTML is hashed from local wheels, not downloaded from S3" {
+    empty_digest="$(sha256sum /dev/null | awk '{print $1}')"
+    dir=$(make_wheel_dir "$(whl_light_core_cp312 1.0.0)" "$(whl_light 1.0.0)")
+    run -0 "$SCRIPT" --prefix tt-lang/ttmetal/13adda8 --readme "$README" "$dir"
+
+    run cat "$PUT_BODIES_DIR/tt-lang_ttmetal_13adda8_"
+    assert_output --partial "<a href=\"README.txt\">README.txt</a><br>"
+    assert_output --partial "<a href=\"$(whl_light_core_cp312 1.0.0)#sha256=$empty_digest\">$(whl_light_core_cp312 1.0.0)</a><br>"
+    assert_output --partial "<a href=\"$(whl_light 1.0.0)#sha256=$empty_digest\">$(whl_light 1.0.0)</a><br>"
 }
 
 @test "bucket is overridable via TTLANG_S3_BUCKET" {

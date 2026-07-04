@@ -54,13 +54,13 @@ for wheel in "${wheels[@]}"; do
         --content-type "application/octet-stream"
 done
 
-# Wheels are already uploaded at this point; if index regeneration below fails,
-# the wheels are present but the directory is not browsable until
-# s3-pypi-ops.sh --operation put-index is re-run for this prefix.
-#
-# Write the browsable slash-key listing for this prefix and refresh the parent
-# so the SHA appears one level up.
-s3_regenerate_index "$bucket" "$prefix"
+# Per-SHA index: hash the local wheels (no re-download) and write the slash-key.
+# (Wheels upload first, so if this fails the wheels are present but the directory
+# is not browsable until s3-pypi-ops.sh --operation put-index is re-run.)
+index_html="$(mktemp)"; trap 'rm -f "$index_html"' EXIT
+s3_local_wheel_anchors "$dist_dir" | s3_render_index "tt-lang: $prefix" > "$index_html"
+s3_put_index "$bucket" "$prefix" "$index_html"
+
 parent="$(dirname "$prefix")"
 if [[ "$parent" != "." && "$parent" != "$prefix" ]]; then
     s3_regenerate_index "$bucket" "$parent"
