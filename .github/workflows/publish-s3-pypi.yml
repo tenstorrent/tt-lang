@@ -5,10 +5,6 @@
 name: Publish S3 PyPI Wheels
 
 on:
-  push:
-    tags:
-      # Publish clean-version internal bundled/light wheels for stable releases.
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   schedule:
     # Nightly S3-only internal wheel publish. GitHub cron uses UTC.
     - cron: "0 8 * * *"
@@ -97,6 +93,12 @@ jobs:
           DISPATCH_WHEEL_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.wheel_variant || '' }}
           EVENT_NAME: ${{ github.event_name }}
         run: .github/scripts/resolve-s3-publish-inputs.sh
+
+      - name: Require main ref for publishing
+        if: ${{ github.ref != 'refs/heads/main' && (steps.resolve.outputs.dry_run != 'true' || steps.resolve.outputs.docker_tag == '') }}
+        run: |
+          echo "Publishing is restricted to refs/heads/main (got ${GITHUB_REF}). Non-main dry runs must provide docker_tag." >&2
+          exit 1
 
   build-docker:
     needs: preflight
@@ -269,7 +271,7 @@ jobs:
   publish:
     name: "Publish wheels to S3 PyPI"
     needs: [preflight, build-standard-wheels, collect-light-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-standard-wheels.result == 'success' || needs.build-standard-wheels.result == 'skipped') && (needs.collect-light-wheels.result == 'success' || needs.collect-light-wheels.result == 'skipped') }}
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-standard-wheels.result == 'success' || needs.build-standard-wheels.result == 'skipped') && (needs.collect-light-wheels.result == 'success' || needs.collect-light-wheels.result == 'skipped') && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 

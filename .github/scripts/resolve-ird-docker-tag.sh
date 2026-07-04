@@ -67,7 +67,13 @@ trap 'rm -f "$tags_tmp"' EXIT
 if ! list_tags > "$tags_tmp"; then
     exit 1
 fi
-mapfile -t tags < <(sort -u "$tags_tmp")
+# Normalize before matching: strip CRLF carriage returns and surrounding
+# whitespace so a tags file with trailing spaces or CRLF still matches the
+# trimmed candidate, then drop any lines left empty.
+mapfile -t tags < <(
+    sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$tags_tmp" \
+        | sort -u
+)
 
 for tag in "${tags[@]}"; do
     if [[ "$tag" == "$candidate" ]]; then

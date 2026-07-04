@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Resolve the inputs of the S3 PyPI publish workflow into a single set of
-# step outputs. Stable tag pushes use the tag version, scheduled runs compute
-# a nightly version, and scheduled runs force `overwrite_releases=true`.
+# step outputs. Scheduled runs compute a nightly version and force
+# `overwrite_releases=true`; workflow_dispatch runs use their explicit inputs.
 #
 # Required env:
 #   DISPATCH_DOCKER_TAG          May be empty (workflow_dispatch input).
@@ -14,7 +14,6 @@
 #   DISPATCH_WHEEL_VARIANT       pypi|light|bundled|bundled-and-light, may be
 #                                empty for non-dispatch events.
 #   EVENT_NAME                   github.event_name.
-#   GITHUB_REF                   github.ref, required for push events.
 #   GITHUB_OUTPUT                Path that receives the resolved outputs.
 #                                Falls back to stdout when unset.
 #
@@ -28,18 +27,6 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/tt-metal-version-utils.sh
 . "$script_dir/lib/tt-metal-version-utils.sh"
-
-stable_tag_version() {
-    local ref="$1"
-
-    if [[ "$ref" =~ ^refs/tags/v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-        printf '%s.%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-        return 0
-    fi
-
-    echo "S3 release-tag publish requires a stable tag like refs/tags/vX.Y.Z (got '$ref')." >&2
-    return 1
-}
 
 is_stable_version() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -63,23 +50,25 @@ overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
 version_override="${DISPATCH_VERSION_OVERRIDE:-}"
 wheel_variant="${DISPATCH_WHEEL_VARIANT:-}"
 
+case "$EVENT_NAME" in
+    workflow_dispatch | schedule)
+        ;;
+    push)
+        echo "S3 PyPI publishing does not run for push events; use workflow_dispatch from refs/heads/main or the scheduled main-branch run." >&2
+        exit 1
+        ;;
+    *)
+        echo "Unsupported S3 PyPI publish event: $EVENT_NAME" >&2
+        exit 1
+        ;;
+esac
+
 if [[ -z "$version_override" ]]; then
-    if [[ "$EVENT_NAME" == "push" ]]; then
-        version_override=$(stable_tag_version "${GITHUB_REF:-}")
-    else
-        version_override=$(python3 "$script_dir/compute-nightly-version.py")
-    fi
+    version_override=$(python3 "$script_dir/compute-nightly-version.py")
 fi
 
 if [[ -z "$wheel_variant" ]]; then
     case "$EVENT_NAME" in
-        push)
-            if pypi_aligned; then
-                wheel_variant=light
-            else
-                wheel_variant=bundled-and-light
-            fi
-            ;;
         schedule)
             wheel_variant=bundled-and-light
             ;;

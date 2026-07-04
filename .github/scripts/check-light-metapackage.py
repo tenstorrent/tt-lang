@@ -67,8 +67,7 @@ def main() -> int:
 
     if not has_requires_python:
         print(
-            "tt-lang-light must declare "
-            f"Requires-Python: {REQUIRES_PYTHON}",
+            "tt-lang-light must declare " f"Requires-Python: {REQUIRES_PYTHON}",
             file=sys.stderr,
         )
         return 1

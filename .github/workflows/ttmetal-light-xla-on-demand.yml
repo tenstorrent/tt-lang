@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       ttlang_ref:
-        description: "tt-lang SHA or tag to build (v1.1.2 or newer; older refs lack the light packaging)."
+        description: "tt-lang SHA or tag with light-wheel packaging and build_info() provenance support."
         required: true
         type: string
       tt_metal_sha:
@@ -101,6 +101,8 @@ jobs:
     defaults:
       run:
         shell: bash
+    outputs:
+      ttmetal_sha: ${{ steps.ttmetal.outputs.sha }}
     steps:
       - name: Checkout target tt-lang
         uses: actions/checkout@v6
@@ -311,7 +313,7 @@ jobs:
       - name: Install light wheel and external tt-metal
         env:
           TTMETAL_INSTALL_DIR: /tmp/ttmetal-install
-          EXPECTED_TT_METAL_COMMIT: ${{ inputs.tt_metal_sha }}
+          EXPECTED_TT_METAL_COMMIT: ${{ needs.build.outputs.ttmetal_sha }}
         run: |
           set -euo pipefail
           # Clean venv: the installed wheel and the external tt-metal (built at

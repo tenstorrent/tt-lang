@@ -26,7 +26,7 @@ on:
         type: string
         default: "14"
       python_tags:
-        description: "Comma-separated CPython ABIs to build (subset of cp310,cp312)."
+        description: "Comma-separated CPython ABIs to build (subset of cp310,cp312; must include cp312 for device validation)."
         required: false
         type: string
         default: "cp310,cp312"
@@ -56,8 +56,45 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    name: "Validate tt-lang-light per-tt-metal-SHA inputs"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      python_tags: ${{ steps.python_tags.outputs.python_tags }}
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Require main ref for S3 publishing
+        if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "S3 publishing is restricted to refs/heads/main (got ${GITHUB_REF}). Set dry_run=true for non-main validation." >&2
+          exit 1
+
+      - name: Validate Python ABI tags
+        id: python_tags
+        env:
+          PYTHON_TAGS: ${{ inputs.python_tags }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/lib/docker-image-utils.sh
+          python_tags="$(ttlang_python_tags "$PYTHON_TAGS" | paste -sd, -)"
+          if [[ ",$python_tags," != *,cp312,* ]]; then
+            echo "python_tags must include cp312 because device validation runs under the cp312 IRD environment." >&2
+            exit 1
+          fi
+          echo "python_tags=$python_tags" >> "$GITHUB_OUTPUT"
+          echo "Python ABI tags: $python_tags"
+
   build-ttmetal:
     name: "Build tt-metal at SHA"
+    needs: preflight
     continue-on-error: ${{ inputs.soft_fail }}
     runs-on: mlir-large-runner-lang
     timeout-minutes: 180
@@ -193,7 +230,7 @@ jobs:
     name: "Record no-compatible miss"
     continue-on-error: ${{ inputs.soft_fail }}
     needs: find-compatible
-    if: ${{ needs.find-compatible.outputs.found == 'false' && inputs.dry_run != true }}
+    if: ${{ needs.find-compatible.outputs.found == 'false' && inputs.dry_run != true && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -220,7 +257,7 @@ jobs:
   build-wheels:
     name: "Build light wheel (${{ matrix.python_tag }})"
     continue-on-error: ${{ inputs.soft_fail }}
-    needs: [build-ttmetal, find-compatible]
+    needs: [preflight, build-ttmetal, find-compatible]
     if: ${{ needs.find-compatible.outputs.found == 'true' }}
     runs-on: mlir-large-runner-lang
     timeout-minutes: 180
@@ -240,7 +277,7 @@ jobs:
       - name: Skip unrequested ABI
         id: gate
         env:
-          PYTHON_TAGS: ${{ inputs.python_tags }}
+          PYTHON_TAGS: ${{ needs.preflight.outputs.python_tags }}
           ABI: ${{ matrix.python_tag }}
         run: |
           python_tags="$(printf '%s' "$PYTHON_TAGS" | tr -d '[:space:]')"
@@ -441,8 +478,8 @@ jobs:
   publish:
     name: "Publish to S3 under tt-lang/<SHA> prefix"
     continue-on-error: ${{ inputs.soft_fail }}
-    needs: [find-compatible, build-wheels, build-metapackage, device-validate]
-    if: ${{ needs.find-compatible.outputs.found == 'true' && inputs.dry_run != true }}
+    needs: [preflight, find-compatible, build-wheels, build-metapackage, device-validate]
+    if: ${{ needs.find-compatible.outputs.found == 'true' && inputs.dry_run != true && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -465,6 +502,7 @@ jobs:
       - name: Prepare publish dist
         run: |
           .github/scripts/prepare-s3-publish-dist.sh \
+            --light-python-tags "${{ needs.preflight.outputs.python_tags }}" \
             "${{ needs.find-compatible.outputs.winner_version }}" \
             dist \
             light:no-sim=wheel-artifacts/light

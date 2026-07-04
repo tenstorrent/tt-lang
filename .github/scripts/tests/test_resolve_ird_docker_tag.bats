@@ -59,6 +59,12 @@ EOF
     assert_output --partial "v1.1.2-uplift-cafebabe"
 }
 
+@test "tolerates trailing whitespace and CRLF in the tags file" {
+    printf 'v1.1.3  \r\n  v1.1.4-6746fe2e\r\n' > "$TAGS"
+    run -0 "$SCRIPT" --candidate v1.1.3 --tags-file "$TAGS"
+    assert_output "v1.1.3"
+}
+
 @test "bare release does not match a longer patch sibling" {
     cat > "$TAGS" <<'EOF'
 v1.1.20-uplift-aaaa

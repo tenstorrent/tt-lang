@@ -32,7 +32,7 @@ on:
         type: string
         default: "14"
       python_tags:
-        description: "Comma-separated CPython ABIs to build."
+        description: "Comma-separated CPython ABIs to build; must include cp312 for device validation."
         required: false
         type: string
         default: "cp310,cp312"
@@ -78,6 +78,12 @@ jobs:
 
       - name: Git safe directory
         run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Require main ref for S3 publishing
+        if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "S3 publishing is restricted to refs/heads/main (got ${GITHUB_REF}). Set dry_run=true for non-main validation." >&2
+          exit 1
 
       # Detection needs only tt-mlir's TT_METAL_VERSION pin.
       - name: Fetch tt-mlir for uplift detection

@@ -104,6 +104,12 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     workflow = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
 
     assert "name: Build tt-lang-light per-tt-metal-SHA wheel (reusable)" in workflow
+    assert "preflight:" in workflow
+    assert 'name: "Validate tt-lang-light per-tt-metal-SHA inputs"' in workflow
+    assert "S3 publishing is restricted to refs/heads/main" in workflow
+    assert "python_tags must include cp312" in workflow
+    assert "python_tags: ${{ steps.python_tags.outputs.python_tags }}" in workflow
+    assert "needs: preflight" in workflow
     assert "build-metapackage:" in workflow
     assert "matrix.python_tag == 'cp312'" not in workflow
     assert "name: ttmetal-light-metapackage" in workflow
@@ -113,7 +119,15 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
         in workflow
     )
     assert (
-        "needs: [find-compatible, build-wheels, build-metapackage, device-validate]"
+        "needs: [preflight, find-compatible, build-wheels, build-metapackage, device-validate]"
+        in workflow
+    )
+    assert (
+        "needs.find-compatible.outputs.found == 'false' && inputs.dry_run != true && github.ref == 'refs/heads/main'"
+        in workflow
+    )
+    assert (
+        "needs.find-compatible.outputs.found == 'true' && inputs.dry_run != true && github.ref == 'refs/heads/main'"
         in workflow
     )
     assert "metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)" in workflow
@@ -133,7 +147,9 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert "ttmetal_sha: ${{ steps.ttmetal.outputs.sha }}" in workflow
     assert "ttmetal_sha: ${{ needs.build-ttmetal.outputs.ttmetal_sha }}" in workflow
     assert "TT_METAL_COMMIT: ${{ needs.build-ttmetal.outputs.ttmetal_sha }}" in workflow
-    assert "TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}" in workflow
+    assert (
+        "TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}" in workflow
+    )
     assert (
         "EXPECTED_TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}"
         in workflow
@@ -155,6 +171,9 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert 'pytest -c /dev/null --rootdir "$PWD" test/me2e' not in workflow
     assert "simple_add" not in workflow
     assert ".github/scripts/publish-s3-direct-wheels.sh" in workflow
+    assert (
+        '--light-python-tags "${{ needs.preflight.outputs.python_tags }}"' in workflow
+    )
     assert '--prefix "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}"' in (
         workflow
     )
@@ -176,19 +195,10 @@ def test_ttmetal_light_workflow_names_are_specific() -> None:
     assert 'name: "Build tt-lang-light per-tt-metal-SHA wheel"' in on_demand
     assert "name: Build tt-lang-light per-tt-metal-SHA wheel (reusable)" in reusable
 
-    assert (
-        "name: Build tt-lang-light XLA per-tt-metal-SHA wheel (on demand)" in xla
-    )
-    assert (
-        'name: "Resolve tt-lang-light XLA per-tt-metal-SHA inputs"' in xla
-    )
-    assert (
-        'name: "Build Ubuntu tt-lang-light XLA per-tt-metal-SHA wheel"' in xla
-    )
-    assert (
-        'name: "Device-validate tt-lang-light XLA per-tt-metal-SHA wheel"'
-        in xla
-    )
+    assert "name: Build tt-lang-light XLA per-tt-metal-SHA wheel (on demand)" in xla
+    assert 'name: "Resolve tt-lang-light XLA per-tt-metal-SHA inputs"' in xla
+    assert 'name: "Build Ubuntu tt-lang-light XLA per-tt-metal-SHA wheel"' in xla
+    assert 'name: "Device-validate tt-lang-light XLA per-tt-metal-SHA wheel"' in xla
 
     assert 'name: "Detect tt-lang-light per-tt-metal-SHA build"' in publish
     assert 'name: "Build tt-lang-light per-tt-metal-SHA wheel"' in publish
@@ -217,6 +227,11 @@ def test_ttmetal_light_on_demand_detect_skips_s3_for_dry_run() -> None:
     workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
     # Dry-run and forced-SHA branch runs do not need S3 credentials.
     assert "if: ${{ inputs.dry_run != true && inputs.tt_metal_sha == '' }}" in workflow
+    assert (
+        "if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}"
+        in workflow
+    )
+    assert "S3 publishing is restricted to refs/heads/main" in workflow
     assert "detect-ttmlir-ttmetal-uplift.sh --assume-new" in workflow
     assert 'forced_sha="$(printf \'%s\' "$FORCED_SHA"' in workflow
     assert 'echo "tt_metal_sha=$forced_sha" >> "$GITHUB_OUTPUT"' in workflow
@@ -319,6 +334,7 @@ def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
     )[0]
 
     assert "ttlang_ref:" in workflow
+    assert "light-wheel packaging and build_info() provenance support" in workflow
     assert "tt_metal_sha:" in workflow
     assert "Leave empty to resolve the closest existing tag from ttlang_ref" in (
         docker_tag_input
@@ -364,7 +380,15 @@ def test_ttmetal_light_xla_workflow_uses_ubuntu_external_builder() -> None:
     assert "build-s3-light-core-wheel.sh" not in workflow
     assert "build-s3-light-metapackage-wheel.sh" not in workflow
     assert '--expect-tt-metal-commit "${{ steps.ttmetal.outputs.sha }}"' in workflow
-    assert "EXPECTED_TT_METAL_COMMIT: ${{ inputs.tt_metal_sha }}" in workflow
+    # Device-validate must compare against the resolved full SHA embedded in the
+    # wheel (exported as a build-job output), not the raw dispatch input: a short
+    # SHA, tag, or branch would not equal build_info()["tt_metal"] and would fail
+    # the provenance check spuriously.
+    assert "ttmetal_sha: ${{ steps.ttmetal.outputs.sha }}" in workflow
+    assert (
+        "EXPECTED_TT_METAL_COMMIT: ${{ needs.build.outputs.ttmetal_sha }}" in workflow
+    )
+    assert "EXPECTED_TT_METAL_COMMIT: ${{ inputs.tt_metal_sha }}" not in workflow
 
 
 def test_light_core_builder_checks_tt_metal_provenance_when_exported() -> None:
@@ -428,12 +452,21 @@ def test_setup_py_removes_stale_native_payloads_before_wheel_install() -> None:
     )
 
 
-def test_s3_stable_tags_publish_clean_version_wheels() -> None:
+def test_s3_workflow_publishes_only_from_main_ref() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    trigger_block = workflow.split("\nconcurrency:", maxsplit=1)[0]
 
-    assert "push:" in workflow
-    assert "tags:" in workflow
-    assert "- 'v[0-9]+.[0-9]+.[0-9]+'" in workflow
+    assert "push:" not in trigger_block
+    assert "tags:" not in trigger_block
+    assert "- 'v[0-9]+.[0-9]+.[0-9]+'" not in trigger_block
+    assert "github.ref != 'refs/heads/main'" in workflow
+    assert "steps.resolve.outputs.docker_tag == ''" in workflow
+    assert "Publishing is restricted to refs/heads/main" in workflow
+    assert "Non-main dry runs must provide docker_tag" in workflow
+    assert (
+        "needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main'"
+        in workflow
+    )
 
 
 def test_check_wheel_ttnn_metadata_matches_requirement_name(tmp_path: Path) -> None:

@@ -560,25 +560,27 @@ ird image tag):
 #### Publishing to S3 PyPI
 
 `publish-s3-pypi.yml` publishes internal wheels to the Tenstorrent S3 PyPI
-index at `https://pypi.eng.aws.tenstorrent.com/`. It runs on stable release tag
-pushes, runs nightly on a GitHub schedule, and can also be dispatched manually.
-It uses GitHub OIDC for AWS access, then uploads with
+index at `https://pypi.eng.aws.tenstorrent.com/`. It runs nightly on a GitHub
+schedule and can also be dispatched manually. Publishing is restricted to
+workflow runs on `refs/heads/main` because the AWS OIDC role is limited to
+main-branch refs; a manual dispatch from another ref can only perform a dry run.
+The workflow uses
+GitHub OIDC for AWS access, then uploads with
 `s3pypi upload --put-root-index --bucket tenstorrent-pypi`.
+Non-main dry runs must provide an existing `docker_tag`. If `docker_tag` is
+empty, the workflow builds and pushes GHCR IRD and manylinux wheel-builder images
+before the wheel build; that image publication is also restricted to
+`refs/heads/main`.
 
 The workflow prevents publishing a bundled internal `tt-lang` wheel with the
 same package name and version as the public PyPI wheel when public PyPI
 publishing is already valid for that tt-metal tag. This avoids having two
 indexes expose `tt-lang==X.Y.Z` artifacts with different dependency metadata.
 
-Automatic S3 publishing should use this policy:
+S3 publishing uses this policy:
 
-- Stable release tags (`vX.Y.Z`) publish clean-version bundled and light wheels
-  to S3 only when public PyPI publishing is blocked because
-  `TTNN_PYPI_TT_METAL_TAG` and `TT_METAL_TAG` have different `vX.Y.Z`
-  components.
-- Stable release tags publish only light wheels to S3 when public PyPI
-  publishing is aligned. In that case public PyPI owns `tt-lang==X.Y.Z`, and S3
-  owns `tt-lang==X.Y.Z+light` plus `tt-lang-light==X.Y.Z`.
+- Tag pushes are not S3 publishing triggers. Stable internal publishes use
+  manual dispatch from `refs/heads/main` with an explicit `version_override`.
 - Manual stable-version S3 publishes that include the bundled variant are
   rejected when public PyPI publishing is aligned for the same tt-metal tag.
 - The S3 resolver passes `TTLANG_ALLOW_FINAL_INTERNAL_VERSION=true` to the wheel
@@ -595,11 +597,10 @@ Automatic S3 publishing should use this policy:
   keeps nightly versions readable, but existing local pip caches may still hold
   the older wheel for that version.
 
-Stable tag pushes derive `version_override` from the tag (`v1.1.2` -> `1.1.2`),
-build and push the matching IRD image, build the selected wheel variants from
-that image, verify the wheel versions, and publish the result to S3 PyPI. The
-selected variant set is `bundled-and-light` when public PyPI publishing is
-blocked, and `light` when public PyPI publishing is aligned.
+Manual stable-version publishes set `version_override` explicitly, build and
+push the matching IRD image when `docker_tag` is empty, build the selected wheel
+variants from that image, verify the wheel versions, and publish the result to
+S3 PyPI.
 
 The scheduled workflow defaults to `wheel_variant: bundled-and-light`. It keeps
 building the complete bundled wheel from the IRD image, and also builds and
@@ -693,7 +694,10 @@ The `ttl.build_info()["tt_metal"]` value in each `tt-lang` wheel must equal
 `<ttmetal7>` expanded to the requested tt-metal commit.
 
 `ttmetal-light-xla-on-demand.yml` builds standard `tt-lang-light` wheels for the
-XLA flow from a specific tt-lang ref and tt-metal SHA. Dispatch it with:
+XLA flow from a specific tt-lang ref and tt-metal SHA. The selected tt-lang ref
+must include the light-wheel packaging and `ttl.build_info()` provenance support,
+because the workflow verifies that the built wheel records the requested
+tt-metal commit. Dispatch it with:
 
 ```text
 ttlang_ref: <tt-lang SHA or tag>
