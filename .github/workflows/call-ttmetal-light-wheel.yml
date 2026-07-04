@@ -513,11 +513,11 @@ jobs:
       - name: Publish wheels
         run: |
           .github/scripts/publish-s3-direct-wheels.sh \
-            --prefix "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}" dist
+            --prefix "tt-lang/ttmetal/${{ needs.find-compatible.outputs.ttmetal_short }}" dist
 
       - name: Report install command
         run: |
           .github/scripts/publish-s3-summary.sh \
-            --find-links-subdir "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}" \
+            --find-links-subdir "tt-lang/ttmetal/${{ needs.find-compatible.outputs.ttmetal_short }}" \
             light \
             "${{ needs.find-compatible.outputs.winner_version }}"

@@ -174,11 +174,12 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert (
         '--light-python-tags "${{ needs.preflight.outputs.python_tags }}"' in workflow
     )
-    assert '--prefix "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}"' in (
-        workflow
+    assert (
+        '--prefix "tt-lang/ttmetal/${{ needs.find-compatible.outputs.ttmetal_short }}"'
+        in (workflow)
     )
     assert (
-        '--find-links-subdir "tt-lang/${{ needs.find-compatible.outputs.ttmetal_short }}"'
+        '--find-links-subdir "tt-lang/ttmetal/${{ needs.find-compatible.outputs.ttmetal_short }}"'
         in workflow
     )
     assert "Inject S3 index README" not in workflow
