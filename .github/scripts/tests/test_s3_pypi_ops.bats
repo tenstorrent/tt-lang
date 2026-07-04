@@ -157,3 +157,23 @@ EOF
     run cat "$FAKE_AWS_ARGS"
     refute_output --partial "s3"
 }
+
+@test "readonly-cmd rejects an s3:// target outside tt-lang/" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3 ls s3://tenstorrent-pypi/ttnn/
+    assert_output --partial "read-only target must be under s3://tenstorrent-pypi/tt-lang/"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "readonly-cmd rejects a --key outside tt-lang/" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3api head-object --bucket tenstorrent-pypi --key ttnn/x
+    assert_output --partial "read-only --key/--prefix must be under tt-lang/"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "readonly-cmd allows a --key under tt-lang/" {
+    run -0 "$SCRIPT" --operation readonly-cmd -- s3api head-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/README.txt
+    run cat "$FAKE_AWS_ARGS"
+    assert_output --partial "s3api head-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/README.txt"
+}

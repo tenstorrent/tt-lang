@@ -26,18 +26,21 @@ s3_render_index() {
 
 # Emit one anchor line per immediate child of s3://<bucket>/<prefix>/.
 # `aws s3 ls` prints "PRE name/" for sub-prefixes and "<date> <time> <size> name"
-# for objects. Skip the slash-key object itself (empty name) and legacy index.html.
+# for objects. Names are HTML-escaped before being interpolated into anchor text/href.
 s3_child_anchors() {
-    local bucket="$1" prefix="$2" listing col1 col2 col3 name
+    local bucket="$1" prefix="$2" listing col1 col2 col3 name esc
     listing="$(aws s3 ls "s3://${bucket}/${prefix}/")" || return 1
-    # col3 (object size) is consumed only for field alignment, never read.
     # shellcheck disable=SC2034
     while read -r col1 col2 col3 name; do
         if [[ "$col1" == "PRE" ]]; then
             name="$col2"
+        else
+            # A find-links directory holds only wheels and the README; skip the
+            # slash-key object itself, index.html, attempt.json markers, etc.
+            [[ "$name" == *.whl || "$name" == "README.txt" ]] || continue
         fi
-        [[ -z "$name" || "$name" == "index.html" ]] && continue
-        printf '<a href="%s">%s</a><br>\n' "$name" "$name"
+        esc="${name//&/&amp;}"; esc="${esc//</&lt;}"; esc="${esc//>/&gt;}"
+        printf '<a href="%s">%s</a><br>\n' "$esc" "$esc"
     done <<< "$listing"
 }
 

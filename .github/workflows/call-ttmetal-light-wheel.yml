@@ -476,7 +476,7 @@ jobs:
           bash .github/scripts/run-tutorials.sh .
 
   publish:
-    name: "Publish to S3 under tt-lang/<SHA> prefix"
+    name: "Publish to S3 under tt-lang/ttmetal/<SHA> prefix"
     continue-on-error: ${{ inputs.soft_fail }}
     needs: [preflight, find-compatible, build-wheels, build-metapackage, device-validate]
     if: ${{ needs.find-compatible.outputs.found == 'true' && inputs.dry_run != true && github.ref == 'refs/heads/main' }}

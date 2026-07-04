@@ -61,12 +61,24 @@ EOF
 2026-07-04 00:00:00       1234 tt_lang_light-1.0.0-py3-none-any.whl
 2026-07-04 00:00:00        321 README.txt
 2026-07-04 00:00:00        200 index.html
+2026-07-04 00:00:00         42 attempt.json
+2026-07-04 00:00:00         10 junk.txt
 "
     run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
     assert_line '<a href="13adda8/">13adda8/</a><br>'
     assert_line '<a href="tt_lang_light-1.0.0-py3-none-any.whl">tt_lang_light-1.0.0-py3-none-any.whl</a><br>'
     assert_line '<a href="README.txt">README.txt</a><br>'
     refute_output --partial 'index.html'
+    refute_output --partial 'attempt.json'
+    refute_output --partial 'junk.txt'
+}
+
+@test "s3_child_anchors HTML-escapes names containing '&'" {
+    make_aws_mock "2026-07-04 00:00:00       1234 a&b.whl
+"
+    run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
+    assert_line '<a href="a&amp;b.whl">a&amp;b.whl</a><br>'
+    refute_output --partial 'a&b.whl'
 }
 
 @test "s3_put_index uploads to the slash-key via put-object" {

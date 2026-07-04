@@ -71,6 +71,27 @@ assert_destructive_ok() {
     die "internal: prefix passed allowlist but matched no root: $path"
 }
 
+# Every S3 target in a read command must resolve under s3://<bucket>/tt-lang/.
+assert_readonly_targets() {
+    local args=("$@") i=0 tok next
+    while [[ $i -lt ${#args[@]} ]]; do
+        tok="${args[$i]}"
+        case "$tok" in
+            s3://*)
+                [[ "$tok" == "s3://$bucket/tt-lang" || "$tok" == "s3://$bucket/tt-lang/"* ]] \
+                    || die "read-only target must be under s3://$bucket/tt-lang/: $tok" ;;
+            --bucket)
+                next="${args[$((i+1))]:-}"
+                [[ "$next" == "$bucket" ]] || die "read-only --bucket must be $bucket: $next" ;;
+            --key|--prefix)
+                next="${args[$((i+1))]:-}"
+                [[ "$next" == "tt-lang" || "$next" == "tt-lang/"* ]] \
+                    || die "read-only --key/--prefix must be under tt-lang/: $next" ;;
+        esac
+        i=$((i+1))
+    done
+}
+
 run_aws() {
     if [[ "$dry_run" == "true" ]]; then
         echo "DRY-RUN: aws $*"
@@ -90,6 +111,7 @@ case "$operation" in
         allowed=false
         for v in "${READONLY_VERBS[@]}"; do [[ "$verb" == "$v" ]] && allowed=true; done
         [[ "$allowed" == true ]] || die "read-only verbs only: ${READONLY_VERBS[*]}"
+        assert_readonly_targets "${readonly_args[@]}"
         aws "${readonly_args[@]}"
         ;;
     put-index)
