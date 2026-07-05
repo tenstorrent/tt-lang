@@ -85,9 +85,12 @@ setup() {
     run -0 "$SCRIPT" --prefix tt-lang/ttmetal/13adda8 --readme "$README" "$dir"
 
     run cat "$PUT_BODIES_DIR/tt-lang_ttmetal_13adda8_"
-    assert_output --partial "<a href=\"README.html\">README.html</a><br>"
-    assert_output --partial "<a href=\"$(whl_light_core_cp312 1.0.0)#sha256=$empty_digest\">$(whl_light_core_cp312 1.0.0)</a><br>"
-    assert_output --partial "<a href=\"$(whl_light 1.0.0)#sha256=$empty_digest\">$(whl_light 1.0.0)</a><br>"
+    assert_output --partial "<a href=\"https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/13adda8/README.html\">README.html</a><br>"
+    assert_output --partial "<a href=\"https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/13adda8/$(whl_light_core_cp312 1.0.0)#sha256=$empty_digest\">$(whl_light_core_cp312 1.0.0)</a><br>"
+    assert_output --partial "<a href=\"https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/13adda8/$(whl_light 1.0.0)#sha256=$empty_digest\">$(whl_light 1.0.0)</a><br>"
+    # No-slash alias resolution: absolute href is pip-resolvable without the
+    # trailing slash on the base URL.
+    assert_output --partial 'href="https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/13adda8/'
 }
 
 @test "bucket is overridable via TTLANG_S3_BUCKET" {

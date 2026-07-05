@@ -67,7 +67,7 @@ done
 # until re-run. Re-running this script with the local dist restores the hashed
 # index; `s3-pypi-ops.sh --operation put-index` instead regenerates from S3
 # (s3_child_anchors), which produces a valid but hash-less index.
-s3_local_wheel_anchors "$dist_dir" | s3_render_index "tt-lang: $prefix" > "$index_html"
+s3_local_wheel_anchors "$prefix" "$dist_dir" | s3_render_index "tt-lang: $prefix" > "$index_html"
 s3_put_index "$bucket" "$prefix" "$index_html"
 
 parent="$(dirname "$prefix")"

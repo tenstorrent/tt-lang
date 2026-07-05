@@ -89,28 +89,33 @@ s3_child_anchors() {
             [[ "$name" == *.whl ]] || _s3_is_readme_name "$name" || continue
         fi
         esc="$(_html_escape "$name")"
-        printf '<a href="%s">%s</a><br>\n' "$esc" "$esc"
+        if [[ "$col1" == "PRE" ]]; then
+            printf '<a href="%s">%s</a><br>\n' "$esc" "$esc"
+        else
+            printf '<a href="%s/%s/%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$esc" "$esc"
+        fi
     done <<< "$listing"
 }
 
 # Anchors for a local wheel dist: optional README plus each *.whl with a
-# #sha256 fragment computed from the local file (no download).
+# #sha256 fragment computed from the local file (no download). Absolute hrefs
+# under <prefix>: relative would 404 from the no-slash root alias.
 s3_local_wheel_anchors() {
     local include_readme=true
     if [[ "${1:-}" == "--no-readme" ]]; then
         include_readme=false
         shift
     fi
-    local dist_dir="$1" f name esc digest
+    local prefix="$1" dist_dir="$2" f name esc digest
     if [[ "$include_readme" == true ]]; then
         esc="$(_html_escape "$S3_INDEX_README_NAME")"
-        printf '<a href="%s">%s</a><br>\n' "$esc" "$esc"
+        printf '<a href="%s/%s/%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$esc" "$esc"
     fi
     for f in "$dist_dir"/*.whl; do
         [[ -e "$f" ]] || continue
         name="$(basename "$f")"; esc="$(_html_escape "$name")"
         digest="$(sha256sum "$f" | awk '{print $1}')"
-        printf '<a href="%s#sha256=%s">%s</a><br>\n' "$esc" "$digest" "$esc"
+        printf '<a href="%s/%s/%s#sha256=%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$esc" "$digest" "$esc"
     done
 }
 
