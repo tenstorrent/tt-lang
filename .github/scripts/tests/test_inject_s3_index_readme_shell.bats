@@ -6,6 +6,9 @@
 
 load test_helper
 
+# Mock aws stores objects in a flat key->file map under $S3_ROOT (a key ending
+# in "/" is a valid S3 key but not a valid directory-free file path, so the
+# map replaces "/" with "__" rather than mkdir -p'ing the key).
 setup() {
     SCRIPT="$SCRIPTS_DIR/inject-s3-index-readme.sh"
     README="$BATS_TEST_TMPDIR/README.md"
@@ -14,7 +17,7 @@ setup() {
         "tt_lang_light-1.0.0-py3-none-any.whl")
     AWS_LOG="$BATS_TEST_TMPDIR/aws.log"
     S3_ROOT="$BATS_TEST_TMPDIR/s3"
-    mkdir -p "$S3_ROOT/2026-07"
+    mkdir -p "$S3_ROOT"
     cat > "$README" <<'EOF'
 # tt-lang internal index
 EOF
@@ -24,25 +27,57 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$AWS_LOG"
-if [[ "$1 $2" != "s3 cp" ]]; then
-    echo "unexpected aws command" >&2
-    exit 2
-fi
-src="$3"
-dst="$4"
-if [[ "$src" == s3://* ]]; then
-    key="${src#s3://tenstorrent-pypi/}"
-    source_path="$S3_ROOT/$key"
-    if [[ ! -f "$source_path" ]]; then
-        echo "fatal error: An error occurred (404) when calling the HeadObject operation: Key \"$key\" does not exist" >&2
-        exit 1
-    fi
-    cp "$source_path" "$dst"
-else
-    key="${dst#s3://tenstorrent-pypi/}"
-    mkdir -p "$(dirname "$S3_ROOT/$key")"
-    cp "$src" "$S3_ROOT/$key"
-fi
+verb="$1 $2"
+shift 2
+bucket=""
+key=""
+body=""
+outfile=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --bucket)
+            bucket="$2"
+            shift 2
+            ;;
+        --key)
+            key="$2"
+            shift 2
+            ;;
+        --body)
+            body="$2"
+            shift 2
+            ;;
+        --content-type)
+            shift 2
+            ;;
+        -*)
+            shift
+            ;;
+        *)
+            outfile="$1"
+            shift
+            ;;
+    esac
+done
+keyfile="$S3_ROOT/$(printf '%s' "$key" | sed 's#/#__#g')"
+case "$verb" in
+    "s3api get-object")
+        if [[ -f "$keyfile" ]]; then
+            cp "$keyfile" "$outfile"
+            echo '{"ContentLength":0}'
+        else
+            echo "An error occurred (NoSuchKey) when calling the GetObject operation: The specified key does not exist." >&2
+            exit 1
+        fi
+        ;;
+    "s3api put-object")
+        cp "$body" "$keyfile"
+        ;;
+    *)
+        echo "unexpected aws command: $verb" >&2
+        exit 2
+        ;;
+esac
 EOF
     chmod +x "$bindir/aws"
     export PATH="$bindir:$PATH"
@@ -50,16 +85,19 @@ EOF
 }
 
 @test "missing prefixed root index is created from dist and uploaded" {
-    run -0 "$SCRIPT" --key 2026-07/index.html --readme "$README" --dist-dir "$DIST_DIR"
+    run -0 "$SCRIPT" --key tt-lang/2026-07/ --readme "$README" --dist-dir "$DIST_DIR"
 
-    run cat "$S3_ROOT/2026-07/index.html"
+    run cat "$S3_ROOT/tt-lang__2026-07__"
     assert_output --partial 'href="tt-lang/"'
     assert_output --partial 'href="tt-lang-light/"'
     assert_output --partial 'id="ttlang-s3-readme"'
+
+    run cat "$AWS_LOG"
+    assert_output --partial 's3api put-object --bucket tenstorrent-pypi --key tt-lang/2026-07/'
 }
 
 @test "existing root index is preserved and uploaded" {
-    cat > "$S3_ROOT/2026-07/index.html" <<'EOF'
+    cat > "$S3_ROOT/tt-lang__2026-07__" <<'EOF'
 <!DOCTYPE html>
 <html>
 <body>
@@ -68,14 +106,14 @@ EOF
 </html>
 EOF
 
-    run -0 "$SCRIPT" --key 2026-07/index.html --readme "$README" --dist-dir "$DIST_DIR"
+    run -0 "$SCRIPT" --key tt-lang/2026-07/ --readme "$README" --dist-dir "$DIST_DIR"
 
-    run cat "$S3_ROOT/2026-07/index.html"
+    run cat "$S3_ROOT/tt-lang__2026-07__"
     assert_output --partial 'href="existing-package/"'
     assert_output --partial 'id="ttlang-s3-readme"'
 }
 
-@test "non-404 aws download failure is propagated" {
+@test "non-404 aws failure is propagated" {
     cat > "$BATS_TEST_TMPDIR/bin/aws" <<'EOF'
 #!/usr/bin/env bash
 echo "AccessDenied" >&2
@@ -83,7 +121,19 @@ exit 1
 EOF
     chmod +x "$BATS_TEST_TMPDIR/bin/aws"
 
-    run "$SCRIPT" --key 2026-07/index.html --readme "$README" --dist-dir "$DIST_DIR"
+    run "$SCRIPT" --key tt-lang/2026-07/ --readme "$README" --dist-dir "$DIST_DIR"
     assert_equal "$status" 1
     assert_output --partial "AccessDenied"
+}
+
+@test "no-prefix stable index round-trips at the exact index.html key" {
+    run -0 "$SCRIPT" --key index.html --readme "$README" --dist-dir "$DIST_DIR"
+
+    run cat "$S3_ROOT/index.html"
+    assert_output --partial 'href="tt-lang/"'
+    assert_output --partial 'href="tt-lang-light/"'
+    assert_output --partial 'id="ttlang-s3-readme"'
+
+    run cat "$AWS_LOG"
+    assert_output --partial 's3api put-object --bucket tenstorrent-pypi --key index.html'
 }

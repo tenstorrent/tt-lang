@@ -108,6 +108,14 @@ def test_nightly_publish_prefix_is_under_tt_lang() -> None:
     assert 'prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"' in workflow
 
 
+def test_prefixed_index_injection_targets_the_slash_key() -> None:
+    # s3pypi writes a prefixed root index to the slash-key "<prefix>/", not
+    # "<prefix>/index.html"; the injection step must upload to the same key.
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    assert 'key="$prefix/"' in workflow
+    assert 'key="$prefix/index.html"' not in workflow
+
+
 def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     workflow = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
 

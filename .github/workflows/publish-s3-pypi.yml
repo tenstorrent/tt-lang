@@ -371,7 +371,7 @@ jobs:
           prefix="${{ steps.publish_prefix.outputs.prefix }}"
           key="index.html"
           if [ -n "$prefix" ]; then
-            key="$prefix/index.html"
+            key="$prefix/"
           fi
           .github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist
 
