@@ -76,8 +76,9 @@ jobs:
           echo "S3 writes are restricted to refs/heads/main (got ${GITHUB_REF}). Set dry_run=true for non-main validation." >&2
           exit 1
 
-      # Creds are configured only on main; a non-main run never assumes the
-      # shared-bucket role, even for reads or dry-run write operations.
+      # workflow_dispatch runs the selected ref's code; gating creds to main stops
+      # a branch-edited run from assuming the shared-bucket role and bypassing the
+      # tt-lang/ allowlist.
       - name: Configure AWS Credentials
         if: ${{ github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/configure-tt-s3-credentials

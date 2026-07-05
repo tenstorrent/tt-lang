@@ -61,10 +61,8 @@ trap 'rm -rf "$tmpdir"' EXIT
 index_html="$tmpdir/index.html"
 aws_error="$tmpdir/aws-get.err"
 
-# Use s3api get-object/put-object rather than `s3 cp`: a key ending in "/"
-# (the s3pypi root index key for a prefixed publish) is a valid exact S3 key,
-# but `s3 cp` treats a trailing-slash destination as a directory and
-# re-appends the source basename, writing to the wrong key.
+# The key may end in "/" (s3pypi's prefixed root index is a slash-key); s3api
+# uses the exact key, whereas `s3 cp` treats a trailing slash as a directory.
 if ! aws s3api get-object --bucket "$bucket" --key "$key" "$index_html" >/dev/null 2>"$aws_error"; then
     if grep -Eq 'NoSuchKey|Not Found|404|does not exist' "$aws_error"; then
         echo "S3 index s3://$bucket/$key does not exist; creating a root index from $dist_dir." >&2
