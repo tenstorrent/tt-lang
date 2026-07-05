@@ -124,6 +124,7 @@ jobs:
             .github/scripts/build-ttmetal-at-sha.sh
             .github/wheel-patches
             scripts/install-ttmetal.sh
+            scripts/copy-ttmetal-runtime-artifacts.sh
           sparse-checkout-cone-mode: false
 
       - name: Apply wheel patches

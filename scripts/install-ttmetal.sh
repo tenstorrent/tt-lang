@@ -107,7 +107,8 @@ if [ -x "$COPY_SCRIPT" ]; then
     fi
     bash "$COPY_SCRIPT" --restore "$SRC" "$INSTALL"
 else
-    echo "WARNING: copy-ttmetal-runtime-artifacts.sh not found at $COPY_SCRIPT"
+    echo "ERROR: required helper not found at $COPY_SCRIPT; the install would ship without sfpi and other runtime artifacts, failing at device init." >&2
+    exit 1
 fi
 
 # --- JIT source trees (headers and firmware .cc files) ---
