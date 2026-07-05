@@ -30,12 +30,12 @@ die() { echo "$1" >&2; exit 2; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --operation) operation="$2"; shift 2 ;;
-        --prefix)    prefix="${2%/}"; shift 2 ;;
-        --source)    src="${2%/}"; shift 2 ;;
-        --dest)      dest="${2%/}"; shift 2 ;;
-        --confirm)   confirm="${2%/}"; shift 2 ;;
-        --dry-run)   dry_run="$2"; shift 2 ;;
+        --operation) [[ $# -ge 2 ]] || die "--operation requires a value"; operation="$2"; shift 2 ;;
+        --prefix)    [[ $# -ge 2 ]] || die "--prefix requires a value"; prefix="${2%/}"; shift 2 ;;
+        --source)    [[ $# -ge 2 ]] || die "--source requires a value"; src="${2%/}"; shift 2 ;;
+        --dest)      [[ $# -ge 2 ]] || die "--dest requires a value"; dest="${2%/}"; shift 2 ;;
+        --confirm)   [[ $# -ge 2 ]] || die "--confirm requires a value"; confirm="${2%/}"; shift 2 ;;
+        --dry-run)   [[ $# -ge 2 ]] || die "--dry-run requires a value"; dry_run="$2"; shift 2 ;;
         --)          shift; readonly_args=("$@"); break ;;
         *)           die "Unknown argument: $1" ;;
     esac
@@ -92,6 +92,7 @@ assert_readonly_targets() {
         case "$tok" in
             s3://*)
                 saw_s3_uri=true
+                [[ "$tok" != *..* ]] || die "read-only target must not contain '..': $tok"
                 [[ "$tok" == "s3://$bucket/tt-lang/"* ]] \
                     || die "read-only target must be under s3://$bucket/tt-lang/: $tok" ;;
             --*=*)
@@ -103,6 +104,8 @@ assert_readonly_targets() {
                         [[ "$val" == "$bucket" ]] || die "read-only --bucket must be $bucket: $val" ;;
                     --key|--prefix)
                         [[ "$flag" == "--key" ]] && saw_key=true || saw_prefix=true
+                        [[ "$val" != *..* ]] \
+                            || die "read-only --key/--prefix must not contain '..': $val"
                         [[ "$val" == "tt-lang/"* ]] \
                             || die "read-only --key/--prefix must be under tt-lang/: $val" ;;
                 esac ;;
@@ -117,6 +120,8 @@ assert_readonly_targets() {
                     --key|--prefix)
                         val="${args[$((i+1))]:-}"
                         [[ "$tok" == "--key" ]] && saw_key=true || saw_prefix=true
+                        [[ "$val" != *..* ]] \
+                            || die "read-only --key/--prefix must not contain '..': $val"
                         [[ "$val" == "tt-lang/"* ]] \
                             || die "read-only --key/--prefix must be under tt-lang/: $val"
                         i=$((i+1)) ;;
@@ -167,7 +172,7 @@ case "$operation" in
         fi
         ;;
     copy)
-        assert_allowed "$src"; assert_allowed "$dest"
+        assert_destructive_ok "$src"; assert_allowed "$dest"
         run_aws s3 cp "s3://$bucket/$src/" "s3://$bucket/$dest/" --recursive
         ;;
     move)

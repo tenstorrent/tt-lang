@@ -55,8 +55,10 @@ for wheel in "${wheels[@]}"; do
 done
 
 # Per-SHA index: hash the local wheels (no re-download) and write the slash-key.
-# (Wheels upload first, so if this fails the wheels are present but the directory
-# is not browsable until s3-pypi-ops.sh --operation put-index is re-run.)
+# Wheels upload first, so if this write fails the directory is not browsable
+# until re-run. Re-running this script with the local dist restores the hashed
+# index; `s3-pypi-ops.sh --operation put-index` instead regenerates from S3
+# (s3_child_anchors), which produces a valid but hash-less index.
 index_html="$(mktemp)"; trap 'rm -f "$index_html"' EXIT
 s3_local_wheel_anchors "$dist_dir" | s3_render_index "tt-lang: $prefix" > "$index_html"
 s3_put_index "$bucket" "$prefix" "$index_html"

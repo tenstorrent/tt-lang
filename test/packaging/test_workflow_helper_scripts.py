@@ -425,10 +425,9 @@ def test_s3_pypi_ops_workflow_is_main_gated_and_dry_run_by_default() -> None:
     assert "options: [inspect, put-index, move, copy, delete, readonly-cmd]" in workflow
     assert "id-token: write" in workflow
     assert "uses: ./.github/actions/configure-tt-s3-credentials" in workflow
-    assert (
-        "if: ${{ inputs.dry_run != true || inputs.operation == 'inspect' "
-        "|| inputs.operation == 'readonly-cmd' }}" in workflow
-    )
+    # Creds are configured only on main, so a non-main run never assumes the
+    # shared-bucket role, for any operation (read or write, dry-run or not).
+    assert "if: ${{ github.ref == 'refs/heads/main' }}" in workflow
     assert (
         "if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}"
         in workflow

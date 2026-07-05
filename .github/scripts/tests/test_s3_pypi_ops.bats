@@ -96,6 +96,27 @@ EOF
     refute_output --partial "s3"
 }
 
+@test "copy rejects a bare allowlist root as the source" {
+    run -2 "$SCRIPT" --operation copy --source tt-lang --dest tt-lang/x --dry-run false
+    assert_output --partial "refusing destructive op"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "move rejects a dest outside the tt-lang allowlist" {
+    run -2 "$SCRIPT" --operation move --source tt-lang/x --dest ttnn/x --dry-run false
+    assert_output --partial "not in the tt-lang allowlist"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "copy rejects a dest outside the tt-lang allowlist" {
+    run -2 "$SCRIPT" --operation copy --source tt-lang/x --dest ttnn/x --dry-run false
+    assert_output --partial "not in the tt-lang allowlist"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
 @test "dry-run prints the plan and performs no writes" {
     run -0 "$SCRIPT" --operation move --source tt-lang/13adda8 --dest tt-lang/ttmetal/13adda8
     assert_output --partial "DRY-RUN"
@@ -238,6 +259,20 @@ EOF
     refute_output --partial "s3"
 }
 
+@test "readonly-cmd rejects '..' in an s3:// target" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3 ls s3://tenstorrent-pypi/tt-lang/../ttnn/
+    assert_output --partial ".."
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "readonly-cmd rejects '..' in a --prefix value" {
+    run -2 "$SCRIPT" --operation readonly-cmd -- s3api list-objects-v2 --bucket tenstorrent-pypi --prefix tt-lang/../ttnn
+    assert_output --partial ".."
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "list-objects-v2"
+}
+
 @test "readonly-cmd rejects get-object (verb dropped)" {
     run -2 "$SCRIPT" --operation readonly-cmd -- s3api get-object --bucket tenstorrent-pypi --key tt-lang/x out
     assert_output --partial "read-only verbs only"
@@ -255,6 +290,13 @@ EOF
 @test "dry-run rejects a case-mismatched boolean value" {
     run -2 "$SCRIPT" --operation move --source tt-lang/13adda8 --dest tt-lang/ttmetal/13adda8 --dry-run FALSE
     assert_output --partial "must be true or false"
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3"
+}
+
+@test "rejects a value-taking flag with no value" {
+    run -2 "$SCRIPT" --operation
+    assert_output --partial "--operation requires a value"
     run cat "$FAKE_AWS_ARGS"
     refute_output --partial "s3"
 }

@@ -76,8 +76,10 @@ jobs:
           echo "S3 writes are restricted to refs/heads/main (got ${GITHUB_REF}). Set dry_run=true for non-main validation." >&2
           exit 1
 
+      # Creds are configured only on main; a non-main run never assumes the
+      # shared-bucket role, even for reads or dry-run write operations.
       - name: Configure AWS Credentials
-        if: ${{ inputs.dry_run != true || inputs.operation == 'inspect' || inputs.operation == 'readonly-cmd' }}
+        if: ${{ github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/configure-tt-s3-credentials
 
       - name: Run operation

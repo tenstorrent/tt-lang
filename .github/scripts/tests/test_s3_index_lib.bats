@@ -109,6 +109,41 @@ EOF
     assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/"
 }
 
+@test "s3_regenerate_index writes a hash-less body from an S3-sourced listing" {
+    CAPTURED_BODY="$BATS_TEST_TMPDIR/captured_body.html"
+    export CAPTURED_BODY
+    local bindir="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$bindir"
+    printf '%s' "                           PRE 13adda8/
+2026-07-04 00:00:00       1234 tt_lang_light-1.0.0-py3-none-any.whl
+2026-07-04 00:00:00        321 README.txt
+" > "$BATS_TEST_TMPDIR/ls_output"
+    cat > "$bindir/aws" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_AWS_ARGS"
+if [[ "$1 $2" == "s3 ls" ]]; then
+    cat "$BATS_TEST_TMPDIR/ls_output"
+elif [[ "$1 $2" == "s3api put-object" ]]; then
+    args=("$@")
+    for ((i = 0; i < ${#args[@]}; i++)); do
+        if [[ "${args[$i]}" == "--body" ]]; then
+            cp "${args[$((i + 1))]}" "$CAPTURED_BODY"
+        fi
+    done
+fi
+EOF
+    chmod +x "$bindir/aws"
+    export PATH="$bindir:$PATH"
+
+    run s3_regenerate_index tenstorrent-pypi tt-lang/ttmetal
+    assert_success
+    [ -f "$CAPTURED_BODY" ]
+    run cat "$CAPTURED_BODY"
+    assert_output --partial "tt_lang_light-1.0.0-py3-none-any.whl"
+    assert_output --partial "README.txt"
+    refute_output --partial "#sha256="
+}
+
 @test "s3_child_anchors skips the slash-key's own listing line (empty name)" {
     make_aws_mock "2026-07-04 00:00:00        234
 2026-07-04 00:00:00       1234 tt_lang_light-1.0.0-py3-none-any.whl
