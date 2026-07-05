@@ -127,13 +127,13 @@ EOF
 @test "move (dry-run false) runs recursive mv" {
     run -0 "$SCRIPT" --operation move --source tt-lang/13adda8 --dest tt-lang/ttmetal/13adda8 --dry-run false
     run cat "$FAKE_AWS_ARGS"
-    assert_output --partial "s3 mv s3://tenstorrent-pypi/tt-lang/13adda8/ s3://tenstorrent-pypi/tt-lang/ttmetal/13adda8/ --recursive"
+    assert_output --partial "s3 mv s3://tenstorrent-pypi/tt-lang/13adda8/ s3://tenstorrent-pypi/tt-lang/ttmetal/13adda8/ --recursive --copy-props metadata-directive"
 }
 
 @test "copy (dry-run false) runs recursive cp" {
     run -0 "$SCRIPT" --operation copy --source tt-lang/a --dest tt-lang/b --dry-run false
     run cat "$FAKE_AWS_ARGS"
-    assert_output --partial "s3 cp s3://tenstorrent-pypi/tt-lang/a/ s3://tenstorrent-pypi/tt-lang/b/ --recursive"
+    assert_output --partial "s3 cp s3://tenstorrent-pypi/tt-lang/a/ s3://tenstorrent-pypi/tt-lang/b/ --recursive --copy-props metadata-directive"
 }
 
 @test "inspect runs recursive ls" {

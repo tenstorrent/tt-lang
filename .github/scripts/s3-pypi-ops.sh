@@ -173,11 +173,14 @@ case "$operation" in
         ;;
     copy)
         assert_destructive_ok "$src"; assert_allowed "$dest"
-        run_aws s3 cp "s3://$bucket/$src/" "s3://$bucket/$dest/" --recursive
+        # --copy-props metadata-directive keeps content-type but skips the tag
+        # copy; the multipart path's s3:GetObjectTagging is not granted to the
+        # role, so without it mv/cp of objects over the multipart threshold fails.
+        run_aws s3 cp "s3://$bucket/$src/" "s3://$bucket/$dest/" --recursive --copy-props metadata-directive
         ;;
     move)
         assert_destructive_ok "$src"; assert_allowed "$dest"
-        run_aws s3 mv "s3://$bucket/$src/" "s3://$bucket/$dest/" --recursive
+        run_aws s3 mv "s3://$bucket/$src/" "s3://$bucket/$dest/" --recursive --copy-props metadata-directive
         ;;
     delete)
         assert_destructive_ok "$prefix"
