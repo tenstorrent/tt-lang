@@ -330,7 +330,8 @@ def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
         ' --target-dir "$GITHUB_WORKSPACE"'
     ) in workflow
     # TTLANG_GIT_COMMIT records the resolved commit, not a tag/branch name.
-    assert 'export TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"' in workflow
+    assert 'TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"' in workflow
+    assert "export TTLANG_GIT_COMMIT" in workflow
     assert "TTLANG_GIT_COMMIT: ${{ inputs.ttlang_ref" not in workflow
     # apply_patches stays a valid boolean on push/schedule (no dispatch inputs).
     assert (

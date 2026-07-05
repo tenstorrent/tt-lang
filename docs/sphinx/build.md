@@ -448,9 +448,9 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-For a dated dev release (preview of an in-flight version, typically used
-after a toolchain uplift lands on `main` and before the next final tag),
-follow the tt-metal convention: SemVer pre-release identifier of the form
+For a dated dev release (preview of an in-flight version, typically used after a
+toolchain uplift lands on `main` and before the next final tag), follow the
+tt-metal convention: a hyphenated development identifier of the form
 `-dev<YYYYMMDD>`:
 
 ```bash

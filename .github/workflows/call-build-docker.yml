@@ -90,13 +90,13 @@ jobs:
           fi
           .github/containers/build-docker-images.sh --image-type base "${FLAGS[@]}" | tee docker.log
 
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          DOCKER_IMAGE_BASE=$(cat .docker-image-base)
-          echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
+          DOCKER_IMAGE_BASE="$(cat .docker-image-base)"
+          echo "docker-image-base=$DOCKER_IMAGE_BASE" >> "$GITHUB_OUTPUT"
           echo "Base image built successfully: $DOCKER_IMAGE_BASE"
 
   # Builds LLVM + tt-metal on the host (via docker run with base image),
@@ -135,12 +135,12 @@ jobs:
       - name: Extract Docker tag
         id: docker-tag
         run: |
-          DOCKER_TAG=$(.github/containers/get-version-tag.sh)
-          echo "docker-tag=$DOCKER_TAG" >> $GITHUB_OUTPUT
+          DOCKER_TAG="$(.github/containers/get-version-tag.sh)"
+          echo "docker-tag=$DOCKER_TAG" >> "$GITHUB_OUTPUT"
           echo "Docker tag: $DOCKER_TAG"
 
       - name: Prepare toolchain directory
-        run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/ttlang-toolchain
 
       - name: Restore toolchain cache
         uses: actions/cache/restore@v5
@@ -160,13 +160,13 @@ jobs:
           # runs when the resolved tag already points at an existing image).
           BASE_IMAGE="ghcr.io/${{ github.repository }}/tt-lang-base-ubuntu-24-04:${{ steps.docker-tag.outputs.docker-tag }}"
           .github/scripts/pull-image-retry.sh "$BASE_IMAGE"
-          echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
+          echo "BASE_IMAGE=$BASE_IMAGE" >> "$GITHUB_ENV"
 
       - name: Configure tt-lang
         run: |
           df -h
           docker run --rm \
-            -v ${{ github.workspace }}:/workspace \
+            -v "${{ github.workspace }}:/workspace" \
             -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
@@ -178,7 +178,7 @@ jobs:
       - name: Normalize toolchain
         run: |
           docker run --rm \
-            -v ${{ github.workspace }}:/workspace \
+            -v "${{ github.workspace }}:/workspace" \
             -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             "$BASE_IMAGE" \
@@ -199,7 +199,7 @@ jobs:
           echo "=== Building tt-lang ==="
           df -h
           docker run --rm \
-            -v ${{ github.workspace }}:/workspace \
+            -v "${{ github.workspace }}:/workspace" \
             -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
@@ -211,7 +211,7 @@ jobs:
       - name: Cleanup dist toolchain
         run: |
           docker run --rm \
-            -v ${{ github.workspace }}:/workspace \
+            -v "${{ github.workspace }}:/workspace" \
             -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             "$BASE_IMAGE" \
@@ -240,15 +240,15 @@ jobs:
           set -x
           .github/containers/build-docker-images.sh --image-type dist --no-push | tee docker.log
 
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          LOCAL_IMAGE=$(cat .docker-image-name)
+          LOCAL_IMAGE="$(cat .docker-image-name)"
           REGISTRY_IMAGE="ghcr.io/tenstorrent/tt-lang/${LOCAL_IMAGE}"
-          echo "local-image=$LOCAL_IMAGE" >> $GITHUB_OUTPUT
-          echo "docker-image=$REGISTRY_IMAGE" >> $GITHUB_OUTPUT
+          echo "local-image=$LOCAL_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "docker-image=$REGISTRY_IMAGE" >> "$GITHUB_OUTPUT"
           echo "Dist image built locally: $LOCAL_IMAGE"
           df -h
 
@@ -298,15 +298,15 @@ jobs:
           set -x
           .github/containers/build-docker-images.sh --image-type ird --no-push | tee docker-ird.log
 
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          LOCAL_IMAGE=$(cat .docker-image-ird)
+          LOCAL_IMAGE="$(cat .docker-image-ird)"
           REGISTRY_IMAGE="ghcr.io/tenstorrent/tt-lang/${LOCAL_IMAGE}"
-          echo "local-image=$LOCAL_IMAGE" >> $GITHUB_OUTPUT
-          echo "docker-image=$REGISTRY_IMAGE" >> $GITHUB_OUTPUT
+          echo "local-image=$LOCAL_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "docker-image=$REGISTRY_IMAGE" >> "$GITHUB_OUTPUT"
           echo "IRD image built locally: $LOCAL_IMAGE"
           df -h
 

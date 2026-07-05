@@ -21,7 +21,7 @@ Options:
   --build-dir <dir>               CMake build directory. Default: build-<python-tag>.
   --raw-dir <dir>                 Unrepaired wheel directory. Default: dist-raw-<python-tag>.
   --dist-dir <dir>                Final wheel directory. Default: dist.
-  --allow-final-internal-version  Allow final release versions for internal light wheels.
+  --allow-final-internal-version  Allow final release versions for S3 light wheels.
 EOF
     exit 2
 }

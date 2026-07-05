@@ -6,7 +6,7 @@ name: Publish S3 PyPI Wheels
 
 on:
   schedule:
-    # Nightly S3-only internal wheel publish. GitHub cron uses UTC.
+    # Nightly S3-only wheel publish. GitHub cron uses UTC.
     - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
@@ -16,7 +16,7 @@ on:
         default: ""
         required: false
       version_override:
-        description: "PEP 440 version for the internal wheel. Leave empty to compute a nightly dev version."
+        description: "PEP 440 version for the S3 wheel. Leave empty to compute a nightly dev version."
         type: string
         default: ""
         required: false
@@ -202,9 +202,11 @@ jobs:
           TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
         run: |
           # inputs.ttlang_ref may be a tag or branch; record the resolved commit.
-          export TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"
+          TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"
+          export TTLANG_GIT_COMMIT
           # Submodules aren't checked out here; read tt-metal's commit from the gitlink.
-          export TT_METAL_COMMIT="$(git rev-parse HEAD:third-party/tt-metal)"
+          TT_METAL_COMMIT="$(git rev-parse HEAD:third-party/tt-metal)"
+          export TT_METAL_COMMIT
           .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
 
       - name: Build tt-lang-light metapackage

@@ -108,7 +108,7 @@ esac
 
 if is_stable_version "$version_override" && variant_includes_bundled "$wheel_variant" && pypi_aligned; then
     echo "Refusing to publish bundled tt-lang==$version_override to S3 because public PyPI publishing is aligned for this tt-metal tag." >&2
-    echo "Use the light or pypi S3 variant, or use a distinct internal version." >&2
+    echo "Use the light or pypi S3 variant, or use a distinct S3 version." >&2
     exit 1
 fi
 
