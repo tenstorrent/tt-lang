@@ -19,7 +19,7 @@ setup() {
     S3_ROOT="$BATS_TEST_TMPDIR/s3"
     mkdir -p "$S3_ROOT"
     cat > "$README" <<'EOF'
-# tt-lang internal index
+# tt-lang S3 index
 EOF
     bindir="$BATS_TEST_TMPDIR/bin"
     mkdir -p "$bindir"
@@ -92,8 +92,13 @@ EOF
     assert_output --partial 'href="tt-lang-light/"'
     assert_output --partial 'id="ttlang-s3-readme"'
 
+    run cat "$S3_ROOT/tt-lang__2026-07"
+    assert_output --partial 'href="tt-lang/"'
+    assert_output --partial 'id="ttlang-s3-readme"'
+
     run cat "$AWS_LOG"
     assert_output --partial 's3api put-object --bucket tenstorrent-pypi --key tt-lang/2026-07/'
+    assert_output --partial 's3api put-object --bucket tenstorrent-pypi --key tt-lang/2026-07 --body'
 }
 
 @test "existing root index is preserved and uploaded" {
@@ -111,6 +116,10 @@ EOF
     run cat "$S3_ROOT/tt-lang__2026-07__"
     assert_output --partial 'href="existing-package/"'
     assert_output --partial 'id="ttlang-s3-readme"'
+
+    run cat "$S3_ROOT/tt-lang__2026-07"
+    assert_output --partial 'href="existing-package/"'
+    assert_output --partial 'id="ttlang-s3-readme"'
 }
 
 @test "non-404 aws failure is propagated" {
@@ -124,6 +133,12 @@ EOF
     run "$SCRIPT" --key tt-lang/2026-07/ --readme "$README" --dist-dir "$DIST_DIR"
     assert_equal "$status" 1
     assert_output --partial "AccessDenied"
+}
+
+@test "--require-existing fails instead of creating a missing index" {
+    run "$SCRIPT" --key tt-lang/ --require-existing --readme "$README" --dist-dir "$DIST_DIR"
+    assert_equal "$status" 1
+    assert_output --partial "does not exist"
 }
 
 @test "no-prefix stable index round-trips at the exact index.html key" {

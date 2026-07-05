@@ -149,6 +149,95 @@ EOF
     refute_output --partial "put-object"
 }
 
+@test "top-level put-index hides stable root wheels and keeps README" {
+    S3_BODY="$BATS_TEST_TMPDIR/tt-lang-index.html"
+    export S3_BODY
+    cat > "$BATS_TEST_TMPDIR/bin/aws" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_AWS_ARGS"
+if [[ "$1 $2" == "s3 ls" ]]; then
+    printf '                           PRE 2026-07/\n'
+    printf '                           PRE releases/\n'
+    printf '                           PRE ttmetal/\n'
+    printf '2026-07-04 00:00:00       1234 tt_lang-0.0.1-py3-none-any.whl\n'
+    printf '2026-07-04 00:00:00       1234 tt_lang-0.0.1.dev20260704-py3-none-any.whl\n'
+elif [[ "$1 $2" == "s3api get-object" ]]; then
+    cp "$S3_BODY" "${@: -1}"
+elif [[ "$1 $2" == "s3api put-object" ]]; then
+    shift 2
+    body=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --body) body="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    cp "$body" "$S3_BODY"
+fi
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/bin/aws"
+
+    run -0 "$SCRIPT" --operation put-index --prefix tt-lang --dry-run false
+
+    run cat "$FAKE_AWS_ARGS"
+    assert_output --partial "s3 ls s3://tenstorrent-pypi/tt-lang/"
+    assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang/"
+    assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang --body"
+    assert_output --partial "s3api get-object --bucket tenstorrent-pypi --key tt-lang/"
+
+    run cat "$S3_BODY"
+    assert_output --partial 'id="ttlang-s3-readme"'
+    assert_output --partial '<a href="2026-07/">2026-07/</a><br>'
+    assert_output --partial '<a href="releases/">releases/</a><br>'
+    assert_output --partial '<a href="ttmetal/">ttmetal/</a><br>'
+    assert_output --partial '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/tt_lang-0.0.1-py3-none-any.whl" style="display:none" data-ttlang-hidden-stable-wheel="true">tt_lang-0.0.1-py3-none-any.whl</a>'
+    refute_output --partial "tt_lang-0.0.1.dev20260704-py3-none-any.whl"
+}
+
+@test "releases put-index rebuilds the stable release view" {
+    S3_RELEASE_BODY="$BATS_TEST_TMPDIR/tt-lang-releases-index.html"
+    export S3_RELEASE_BODY
+    cat > "$BATS_TEST_TMPDIR/bin/aws" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_AWS_ARGS"
+if [[ "$1 $2" == "s3 ls" ]]; then
+    printf '                           PRE 2026-07/\n'
+    printf '                           PRE releases/\n'
+    printf '2026-07-04 00:00:00       1234 tt_lang-0.0.1-py3-none-any.whl\n'
+    printf '2026-07-04 00:00:00       1234 tt_lang_light-0.0.1-py3-none-any.whl\n'
+    printf '2026-07-04 00:00:00       1234 tt_lang-0.0.1.dev20260704-py3-none-any.whl\n'
+elif [[ "$1 $2" == "s3api put-object" ]]; then
+    shift 2
+    key="" body=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --key) key="$2"; shift 2 ;;
+            --body) body="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    case "$key" in
+        tt-lang/releases | tt-lang/releases/) cp "$body" "$S3_RELEASE_BODY" ;;
+    esac
+fi
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/bin/aws"
+
+    run -0 "$SCRIPT" --operation put-index --prefix tt-lang/releases --dry-run false
+
+    run cat "$FAKE_AWS_ARGS"
+    assert_output --partial "s3 ls s3://tenstorrent-pypi/tt-lang/"
+    assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang/releases/"
+    assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang/releases --body"
+
+    run cat "$S3_RELEASE_BODY"
+    assert_output --partial "https://pypi.eng.aws.tenstorrent.com/tt-lang/tt_lang-0.0.1-py3-none-any.whl"
+    assert_output --partial "https://pypi.eng.aws.tenstorrent.com/tt-lang/tt_lang_light-0.0.1-py3-none-any.whl"
+    refute_output --partial "dev20260704"
+}
+
 @test "rejects an unknown operation" {
     run -2 "$SCRIPT" --operation bogus
     assert_output --partial "unknown operation"
@@ -213,9 +302,9 @@ EOF
 }
 
 @test "readonly-cmd allows a --key under tt-lang/" {
-    run -0 "$SCRIPT" --operation readonly-cmd -- s3api head-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/README.txt
+    run -0 "$SCRIPT" --operation readonly-cmd -- s3api head-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/README.html
     run cat "$FAKE_AWS_ARGS"
-    assert_output --partial "s3api head-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/README.txt"
+    assert_output --partial "s3api head-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/README.html"
 }
 
 @test "readonly-cmd allows a --prefix under tt-lang/" {

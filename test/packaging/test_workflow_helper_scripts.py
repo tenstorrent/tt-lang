@@ -96,24 +96,34 @@ def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     assert ".github/scripts/build-s3-light-core-wheel.sh" in workflow
     assert ".github/scripts/build-s3-light-metapackage-wheel.sh" in workflow
     assert ".github/scripts/test-s3-light-wheels.sh" in workflow
+    assert ".github/scripts/inject-s3-index-readme.sh" in workflow
+    assert '--key "$key"' in workflow
+    assert "--require-existing" in workflow
     assert (
-        '.github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist'
-        in workflow
+        '--find-links-subdir "${{ steps.publish_prefix.outputs.prefix }}"' in workflow
     )
+    assert "python3 -m pip install s3pypi" not in workflow
     assert "standard_wheel_matrix" in workflow
 
 
-def test_nightly_publish_prefix_is_under_tt_lang() -> None:
+def test_regular_s3_publish_prefix_routes_dev_to_month_and_final_to_releases() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    assert 'prefix="tt-lang/releases"' in workflow
     assert 'prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"' in workflow
+    assert (
+        'publish_args+=(--prefix "${{ steps.publish_prefix.outputs.prefix }}")'
+        in workflow
+    )
 
 
-def test_prefixed_index_injection_targets_the_slash_key() -> None:
-    # s3pypi writes a prefixed root index to the slash-key "<prefix>/", not
-    # "<prefix>/index.html"; the injection step must upload to the same key.
+def test_regular_s3_index_injection_targets_parent_slash_key() -> None:
+    # Regular direct publishing regenerates the top tt-lang/ slash-key listing;
+    # the README injection must target that parent listing, not the month dir.
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
-    assert 'key="$prefix/"' in workflow
+    assert 'parent="$(dirname "$prefix")"' in workflow
+    assert 'key="$parent/"' in workflow
     assert 'key="$prefix/index.html"' not in workflow
+    assert 'key="$prefix/"' not in workflow
 
 
 def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
@@ -187,6 +197,7 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
     assert 'pytest -c /dev/null --rootdir "$PWD" test/me2e' not in workflow
     assert "simple_add" not in workflow
     assert ".github/scripts/publish-s3-direct-wheels.sh" in workflow
+    assert "Install Markdown renderer" in workflow
     assert (
         '--light-python-tags "${{ needs.preflight.outputs.python_tags }}"' in workflow
     )
@@ -430,6 +441,10 @@ def test_s3_pypi_ops_workflow_is_main_gated_and_dry_run_by_default() -> None:
     workflow = S3_PYPI_OPS_WORKFLOW.read_text()
 
     assert "name: S3 PyPI ops (tt-lang)" in workflow
+    assert (
+        'run-name: "S3 PyPI ops: ${{ inputs.operation }} '
+        '(dry_run=${{ inputs.dry_run }})"'
+    ) in workflow
     assert "options: [inspect, put-index, move, copy, delete, readonly-cmd]" in workflow
     assert "id-token: write" in workflow
     assert "uses: ./.github/actions/configure-tt-s3-credentials" in workflow
@@ -440,6 +455,20 @@ def test_s3_pypi_ops_workflow_is_main_gated_and_dry_run_by_default() -> None:
         "if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}"
         in workflow
     )
+    assert "### S3 PyPI operation" in workflow
+    assert "GITHUB_STEP_SUMMARY" in workflow
+    assert "printf 'operation=%s\\n' \"$OP\"" in workflow
+    assert "printf 'dry_run=%s\\n' \"$DRY_RUN\"" in workflow
+    assert "printf 'ref=%s\\n' \"$GITHUB_REF\"" in workflow
+    assert "printf 'actor=%s\\n' \"$GITHUB_ACTOR\"" in workflow
+    assert workflow.index("- name: Summarize operation") < workflow.index(
+        "- name: Require main ref for writes"
+    )
+    assert "Install Markdown renderer" in workflow
+    assert (
+        "inputs.operation == 'put-index' && inputs.dry_run != true && "
+        "(inputs.prefix == 'tt-lang' || inputs.prefix == 'tt-lang/')"
+    ) in workflow
     assert ".github/scripts/s3-pypi-ops.sh" in workflow
     # dry_run input defaults to true
     dry_run_input = workflow.split("      dry_run:", 1)[1].split("concurrency:", 1)[0]

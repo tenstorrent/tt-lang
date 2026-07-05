@@ -328,26 +328,23 @@ jobs:
             dist \
             "${prepare_args[@]}"
 
-      - name: Configure AWS Credentials
-        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
-        uses: ./.github/actions/configure-tt-s3-credentials
-
-      - name: Install s3pypi
-        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
-        run: python3 -m pip install s3pypi
-
-      # Nightly dev wheels publish under tt-lang/<YYYY-MM>/; stable releases use root.
+      # Regular S3 publishes upload wheel objects under tt-lang/. Dev versions
+      # use a generated year-month view; final versions use the releases view.
       - name: Derive publish prefix
         id: publish_prefix
         run: |
           set -euo pipefail
           version="${{ needs.preflight.outputs.version_override }}"
-          prefix=""
+          prefix="tt-lang/releases"
           if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev([0-9]{4})([0-9]{2})[0-9]{2} ]]; then
             prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
           fi
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-          echo "Publish prefix: ${prefix:-<root>}"
+          echo "Publish prefix: $prefix"
+
+      - name: Configure AWS Credentials
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
+        uses: ./.github/actions/configure-tt-s3-credentials
 
       - name: Publish wheels
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
@@ -357,23 +354,23 @@ jobs:
           if [ "${{ needs.preflight.outputs.overwrite_releases }}" = "true" ]; then
             publish_args+=(--overwrite)
           fi
-          if [ -n "${{ steps.publish_prefix.outputs.prefix }}" ]; then
-            publish_args+=(--prefix "${{ steps.publish_prefix.outputs.prefix }}")
-          fi
+          publish_args+=(--prefix "${{ steps.publish_prefix.outputs.prefix }}")
           .github/scripts/publish-s3-wheels.sh "${publish_args[@]}" dist
 
-      # s3pypi rewrites the index on upload; restore the README afterward.
+      # Direct monthly publishes regenerate the tt-lang/ slash-key listing.
+      # Restore the README afterward.
       - name: Inject S3 index README
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: |
           set -euo pipefail
           python3 -m pip install markdown
           prefix="${{ steps.publish_prefix.outputs.prefix }}"
-          key="index.html"
-          if [ -n "$prefix" ]; then
-            key="$prefix/"
-          fi
-          .github/scripts/inject-s3-index-readme.sh --key "$key" --dist-dir dist
+          parent="$(dirname "$prefix")"
+          key="$parent/"
+          .github/scripts/inject-s3-index-readme.sh \
+            --key "$key" \
+            --require-existing \
+            --dist-dir dist
 
       - name: Report install command
         run: |
@@ -382,9 +379,7 @@ jobs:
           if [ "${{ needs.preflight.outputs.dry_run }}" = "true" ]; then
             summary_args+=(--dry-run)
           fi
-          if [ -n "${{ steps.publish_prefix.outputs.prefix }}" ]; then
-            summary_args+=(--index-subdir "${{ steps.publish_prefix.outputs.prefix }}")
-          fi
+          summary_args+=(--find-links-subdir "${{ steps.publish_prefix.outputs.prefix }}")
           .github/scripts/publish-s3-summary.sh \
             "${summary_args[@]}" \
             "${{ needs.preflight.outputs.wheel_variant }}" \

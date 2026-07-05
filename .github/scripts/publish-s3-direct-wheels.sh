@@ -4,7 +4,7 @@
 #
 # Publish a per-tt-metal-SHA wheel set to a browsable slash-key directory under
 # <prefix> (e.g. tt-lang/ttmetal/<sha7>), consumed with pip --find-links. Wheels
-# and README.txt are uploaded as objects; the directory listing is written to the
+# and README.html are uploaded as objects; the directory listing is written to the
 # slash-key <prefix>/ and the parent listing is regenerated so the new entry
 # shows up when browsing.
 #
@@ -46,9 +46,17 @@ if [[ "${#wheels[@]}" -eq 0 ]]; then
     exit 1
 fi
 
-# Upload the README (as README.txt) and each wheel as plain objects.
-aws s3 cp "$readme" "s3://$bucket/$prefix/README.txt" \
-    --content-type "text/plain; charset=utf-8"
+readme_html="$(mktemp)"
+index_html="$(mktemp)"
+trap 'rm -f "$readme_html" "$index_html"' EXIT
+
+# Upload the README and each wheel as plain objects.
+python3 "$script_dir/inject_s3_index_readme.py" \
+    --render-readme-html \
+    "$readme" \
+    "$readme_html"
+aws s3 cp "$readme_html" "s3://$bucket/$prefix/$S3_INDEX_README_NAME" \
+    --content-type "text/html; charset=utf-8"
 for wheel in "${wheels[@]}"; do
     aws s3 cp "$wheel" "s3://$bucket/$prefix/$(basename "$wheel")" \
         --content-type "application/octet-stream"
@@ -59,7 +67,6 @@ done
 # until re-run. Re-running this script with the local dist restores the hashed
 # index; `s3-pypi-ops.sh --operation put-index` instead regenerates from S3
 # (s3_child_anchors), which produces a valid but hash-less index.
-index_html="$(mktemp)"; trap 'rm -f "$index_html"' EXIT
 s3_local_wheel_anchors "$dist_dir" | s3_render_index "tt-lang: $prefix" > "$index_html"
 s3_put_index "$bucket" "$prefix" "$index_html"
 

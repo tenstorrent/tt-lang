@@ -256,7 +256,7 @@ TT_METAL_TAG="<tt-metal-tag>"
 `TTNN_PYPI_TT_METAL_TAG` records the tt-metal tag used to build the public
 `ttnn` wheel. `TT_METAL_TAG` records the tt-metal tag used to build TT-Lang.
 Public PyPI publishing requires these tags to have the same `vX.Y.Z` component;
-internal S3 bundled wheels can use a newer `TT_METAL_TAG` before a compatible
+S3-hosted bundled wheels can use a newer `TT_METAL_TAG` before a compatible
 public `ttnn` wheel is available.
 
 Background: `third-party/tt-metal-version` is the single source of truth for
@@ -559,36 +559,41 @@ ird image tag):
 (publishing-to-s3-pypi)=
 #### Publishing to S3 PyPI
 
-`publish-s3-pypi.yml` publishes internal wheels to the Tenstorrent S3 PyPI
+`publish-s3-pypi.yml` publishes S3-hosted wheels to the Tenstorrent S3 PyPI
 index at `https://pypi.eng.aws.tenstorrent.com/`. It runs nightly on a GitHub
 schedule and can also be dispatched manually. Publishing is restricted to
 workflow runs on `refs/heads/main` because the AWS OIDC role is limited to
 main-branch refs; a manual dispatch from another ref can only perform a dry run.
-The workflow uses
-GitHub OIDC for AWS access, then uploads with
-`s3pypi upload --put-root-index --bucket tenstorrent-pypi`.
+The workflow uses GitHub OIDC for AWS access. Regular publishes upload wheel
+objects directly under `tt-lang/` and write generated slash-key views consumed
+with `pip --find-links`: development wheels use `tt-lang/<YYYY-MM>/`, and final
+S3 release wheels use `tt-lang/releases/`.
+The top-level `tt-lang/` listing shows only the README and subdirectories in a
+browser, but it keeps hidden anchors for final-release root wheels so
+`pip --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang` remains
+backward-compatible for `X.Y.Z` S3 releases.
 Non-main dry runs must provide an existing `docker_tag`. If `docker_tag` is
 empty, the workflow builds and pushes GHCR IRD and manylinux wheel-builder images
 before the wheel build; that image publication is also restricted to
 `refs/heads/main`.
 
-The workflow prevents publishing a bundled internal `tt-lang` wheel with the
+The workflow prevents publishing a bundled S3 `tt-lang` wheel with the
 same package name and version as the public PyPI wheel when public PyPI
 publishing is already valid for that tt-metal tag. This avoids having two
 indexes expose `tt-lang==X.Y.Z` artifacts with different dependency metadata.
 
 S3 publishing uses this policy:
 
-- Tag pushes are not S3 publishing triggers. Stable internal publishes use
+- Tag pushes are not S3 publishing triggers. Stable S3 publishes use
   manual dispatch from `refs/heads/main` with an explicit `version_override`.
 - Manual stable-version S3 publishes that include the bundled variant are
   rejected when public PyPI publishing is aligned for the same tt-metal tag.
 - The S3 resolver passes `TTLANG_ALLOW_FINAL_INTERNAL_VERSION=true` to the wheel
-  builder only after this conflict check has passed, so final-version internal
+  builder only after this conflict check has passed, so final-version S3
   wheels cannot bypass the release guard.
 - Do not mix public PyPI and S3 indexes for a `tt-lang` version whose artifacts
   have different dependency semantics. Use the S3 install command emitted by the
-  workflow summary for internal release wheels.
+  workflow summary for S3 release wheels.
 - Nightly builds do not create Git tags. The scheduled workflow computes a
   PEP 440 development version of the form `<MAJOR.MINOR.PATCH>.dev<YYYYMMDD>`,
   where the base version matches the latest stable tag reachable from `HEAD`,
@@ -608,13 +613,13 @@ pushes the matching manylinux_2_34 wheel-builder images for Python 3.10 and
 Python 3.12 light wheels. The workflow verifies all wheel versions before
 publishing the combined result to S3 PyPI.
 
-For a manual bundled internal wheel with an existing IRD image, dispatch the
+For a manual bundled S3 wheel with an existing IRD image, dispatch the
 workflow with:
 
 ```text
 docker_tag: <existing-ird-tag>
 wheel_variant: bundled
-version_override: <internal-version>
+version_override: <s3-version>
 ```
 
 The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=bundled`,
@@ -629,7 +634,7 @@ bundled or public `ttnn` wheel, dispatch the workflow with:
 
 ```text
 wheel_variant: light
-version_override: <internal-version>
+version_override: <s3-version>
 ```
 
 The workflow maps this publish selection to the manylinux_2_34 light wheel
@@ -643,7 +648,7 @@ To publish bundled and light wheels from the same workflow run, dispatch with:
 
 ```text
 wheel_variant: bundled-and-light
-version_override: <internal-version>
+version_override: <s3-version>
 ```
 
 The workflow builds the bundled and light wheel sets separately, uploads
@@ -658,7 +663,7 @@ dependencies no longer resolve:
 
 ```text
 wheel_variant: light
-version_override: <internal-version>
+version_override: <s3-version>
 ttlang_ref: <tt-lang SHA or tag>
 apply_patches: true
 ```
@@ -693,7 +698,7 @@ The `tt-lang-light` wheel is a pure metapackage; the supported CPython ABIs and
 glibc floor are carried by the
 `tt_lang-<version>+light-cp310-cp310-manylinux_2_34_x86_64.whl` and
 `tt_lang-<version>+light-cp312-cp312-manylinux_2_34_x86_64.whl` files in the
-same directory. The same directory contains a brief `README.txt`.
+same directory. The same directory contains a brief `README.html`.
 The `ttl.build_info()["tt_metal"]` value in each `tt-lang` wheel must equal
 `<ttmetal7>` expanded to the requested tt-metal commit.
 
@@ -745,7 +750,7 @@ restricted to the `tt-lang/` prefix and cannot touch other teams' packages
 (including the sibling `tt-lang-light/` and `tt-lang-sim/` package indexes) or
 the bucket root. `delete` requires a `confirm` token equal to the prefix.
 
-#### Local internal wheel testing
+#### Local S3 wheel testing
 
 Use the same environment variables as the reusable workflow when validating the
 wheel build locally.
@@ -754,7 +759,7 @@ Bundled wheel:
 
 ```bash
 source /opt/ttlang-toolchain/venv/bin/activate
-TTLANG_VERSION=<internal-version>
+TTLANG_VERSION=<s3-version>
 
 TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
 cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DTTLANG_USE_TOOLCHAIN=ON
@@ -772,7 +777,7 @@ Light wheels:
 
 ```bash
 scripts/build-s3-light-wheels-local.sh \
-  --version <internal-version> \
+  --version <s3-version> \
   --build-images
 ```
 
@@ -781,7 +786,7 @@ copies tutorials into `./tutorials/` and skips sfpi installation for light
 installs because the external tt-metal tree provides sfpi:
 
 ```bash
-TTLANG_VERSION=<internal-version>
+TTLANG_VERSION=<s3-version>
 python3.12 -m venv /tmp/ttlang-light-test
 source /tmp/ttlang-light-test/bin/activate
 pip install --find-links=/tmp/ttlang-s3-light-wheels/dist \

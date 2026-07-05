@@ -510,6 +510,9 @@ jobs:
       - name: Configure AWS Credentials
         uses: ./.github/actions/configure-tt-s3-credentials
 
+      - name: Install Markdown renderer
+        run: python3 -m pip install markdown
+
       - name: Publish wheels
         run: |
           .github/scripts/publish-s3-direct-wheels.sh \

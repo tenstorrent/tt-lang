@@ -1,22 +1,34 @@
-# tt-lang internal S3 PyPI index
+# tt-lang Tenstorrent S3 PyPI index
 
-This is Tenstorrent's internal PyPI index for pre-release `tt-lang` wheels. Public
-releases are on [PyPI](https://pypi.org/project/tt-lang/); this index hosts the
-more frequently updated development builds.
+This is Tenstorrent's S3 PyPI index for `tt-lang` wheels. Public releases are
+on [PyPI](https://pypi.org/project/tt-lang/); this index hosts more frequently
+updated development builds and selected S3 release wheels.
 
 ## Install
 
-Pick a published version from the workflow summary or the package list below, then
-select it explicitly (public PyPI also hosts `tt-lang`):
+Pick a published version from the workflow summary or the directory listing
+below, then select it explicitly (public PyPI also hosts `tt-lang`):
 
-Nightly development wheels are grouped by year-month:
+Development wheels are grouped by year-month:
 
 ```bash
 pip install \
-  --extra-index-url https://pypi.eng.aws.tenstorrent.com/tt-lang/<YYYY-MM>/ \
+  --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang/<YYYY-MM>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   "tt-lang==<version>"
 ```
+
+Final S3 release wheels are in the releases view:
+
+```bash
+pip install \
+  --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang/releases/ \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  "tt-lang==<version>"
+```
+
+The top-level `tt-lang/` URL remains installable for existing final-release root
+wheels, but new documentation should use `tt-lang/releases/`.
 
 Light wheels built and device-tested against a specific tt-metal commit are
 published as browsable directories under `tt-lang/ttmetal/<ttmetal7>/`, where
@@ -58,5 +70,5 @@ the getting-started guide linked below.
 ## More
 
 - [Getting started](https://github.com/tenstorrent/tt-lang/blob/main/docs/sphinx/getting-started.md)
-  (internal S3 wheels section)
+  (Tenstorrent S3 wheels section)
 - [Documentation](https://docs.tenstorrent.com/tt-lang/)

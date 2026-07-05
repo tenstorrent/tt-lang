@@ -166,7 +166,19 @@ case "$operation" in
     put-index)
         assert_allowed "$prefix"
         if [[ "$dry_run" == "false" ]]; then
-            s3_regenerate_index "$bucket" "$prefix"
+            if [[ "$prefix" == "tt-lang" ]]; then
+                s3_regenerate_index --directories-only --hidden-stable-wheels "$bucket" "$prefix"
+                "$script_dir/inject-s3-index-readme.sh" \
+                    --bucket "$bucket" \
+                    --key "$prefix/" \
+                    --require-existing
+            elif [[ "$prefix" == "tt-lang/releases" ]]; then
+                s3_regenerate_release_view "$bucket"
+            elif [[ "$prefix" =~ ^tt-lang/[0-9]{4}-[0-9]{2}$ ]]; then
+                s3_regenerate_month_view "$bucket" "$prefix"
+            else
+                s3_regenerate_index "$bucket" "$prefix"
+            fi
         else
             echo "DRY-RUN: regenerate slash-key index for $prefix"
         fi

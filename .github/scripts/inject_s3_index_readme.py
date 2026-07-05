@@ -2,11 +2,11 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Inject the S3-index README into an s3pypi root index.html.
+"""Inject the S3-index README into a slash-key or root index.
 
-s3pypi rewrites root indexes on upload. This restores the README above package
-anchors without changing pip resolution; repeated runs replace the existing
-sentinel-delimited block.
+Direct S3 wheel-directory publishes regenerate slash-key listings. This restores
+the README above anchors without changing pip resolution; repeated runs replace
+the existing sentinel-delimited block.
 
 Usage:
   inject_s3_index_readme.py [--create-from-dist <dist_dir>] <readme.md> <index.html>
@@ -37,6 +37,24 @@ def render_markdown(text: str) -> str:
 def build_block(readme_md: str) -> str:
     fragment = render_markdown(readme_md)
     return f'{START}\n<section id="ttlang-s3-readme">\n{fragment}\n</section>\n{END}\n'
+
+
+def build_standalone_readme(readme_md: str) -> str:
+    fragment = render_markdown(readme_md)
+    return (
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        '<meta charset="UTF-8">\n'
+        "<title>tt-lang Tenstorrent S3 PyPI index</title>\n"
+        "</head>\n"
+        "<body>\n"
+        '<section id="ttlang-s3-readme">\n'
+        f"{fragment}\n"
+        "</section>\n"
+        "</body>\n"
+        "</html>\n"
+    )
 
 
 def normalize_project_name(distribution_name: str) -> str:
@@ -90,6 +108,11 @@ def main(argv: list[str]) -> int:
             "index.html is absent."
         ),
     )
+    parser.add_argument(
+        "--render-readme-html",
+        action="store_true",
+        help="Render the README as a standalone HTML file at the index path.",
+    )
     parser.add_argument("readme")
     parser.add_argument("index")
     args = parser.parse_args(argv[1:])
@@ -99,6 +122,11 @@ def main(argv: list[str]) -> int:
 
     with open(readme_path, encoding="utf-8") as handle:
         readme_md = handle.read()
+    if args.render_readme_html:
+        with open(index_path, "w", encoding="utf-8") as handle:
+            handle.write(build_standalone_readme(readme_md))
+        return 0
+
     if index_path.exists():
         with open(index_path, encoding="utf-8") as handle:
             index_html = handle.read()

@@ -6,8 +6,8 @@
 
 load test_helper
 
-# Write a minimal s3pypi-style root index (a <body> with two package anchors)
-# to $INDEX and a short README to $README.
+# Write a minimal root index (a <body> with two package anchors) to $INDEX and
+# a short README to $README.
 setup() {
     SCRIPT="$SCRIPTS_DIR/inject_s3_index_readme.py"
     INDEX="$BATS_TEST_TMPDIR/index.html"
@@ -22,7 +22,7 @@ setup() {
 </html>
 EOF
     cat > "$README" <<'EOF'
-# tt-lang internal index
+# tt-lang S3 index
 
 Install with `pip install tt-lang`.
 EOF
@@ -38,7 +38,7 @@ run_inject() { python3 "$SCRIPT" "$README" "$INDEX"; }
     run -0 run_inject
     run cat "$INDEX"
     assert_output --partial 'id="ttlang-s3-readme"'
-    assert_output --partial "tt-lang internal index"
+    assert_output --partial "tt-lang S3 index"
     # The injected section must appear before the first package anchor.
     section_line=$(grep -n 'ttlang-s3-readme' "$INDEX" | head -1 | cut -d: -f1)
     anchor_line=$(grep -n 'href="tt-lang/"' "$INDEX" | head -1 | cut -d: -f1)
@@ -81,4 +81,14 @@ run_inject() { python3 "$SCRIPT" "$README" "$INDEX"; }
     assert_output --partial 'href="tt-lang-light/"'
     assert_output --partial 'href="tt-lang-sim/"'
     assert_output --partial 'id="ttlang-s3-readme"'
+}
+
+@test "--render-readme-html writes a standalone HTML README" {
+    rm "$INDEX"
+    run -0 python3 "$SCRIPT" --render-readme-html "$README" "$INDEX"
+    run cat "$INDEX"
+    assert_output --partial "<!DOCTYPE html>"
+    assert_output --partial '<section id="ttlang-s3-readme">'
+    assert_output --partial "tt-lang S3 index"
+    refute_output --partial 'href="tt-lang/"'
 }

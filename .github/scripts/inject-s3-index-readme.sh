@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Restore the README into an S3 PyPI root index. If s3pypi omitted a prefixed
-# root index, create one from the wheel dist only for that missing-key case.
+# Restore the README into an S3 PyPI index. If allowed and the target index is
+# missing, create one from the wheel dist only for that missing-key case.
 
 set -euo pipefail
 
@@ -15,6 +15,7 @@ Options:
   --bucket <bucket>      S3 bucket. Default: tenstorrent-pypi.
   --readme <path>        README markdown path. Default: packaging/s3-index/README.md.
   --dist-dir <path>      Wheel dist dir used to create a missing root index. Default: dist.
+  --require-existing     Fail if the target index key does not already exist.
 EOF
     exit 2
 }
@@ -23,6 +24,7 @@ bucket=tenstorrent-pypi
 readme=packaging/s3-index/README.md
 dist_dir=dist
 key=""
+create_from_dist=true
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -46,6 +48,10 @@ while [[ $# -gt 0 ]]; do
             key="$2"
             shift 2
             ;;
+        --require-existing)
+            create_from_dist=false
+            shift
+            ;;
         *)
             usage
             ;;
@@ -61,10 +67,14 @@ trap 'rm -rf "$tmpdir"' EXIT
 index_html="$tmpdir/index.html"
 aws_error="$tmpdir/aws-get.err"
 
-# The key may end in "/" (s3pypi's prefixed root index is a slash-key); s3api
-# uses the exact key, whereas `s3 cp` treats a trailing slash as a directory.
+# The key may end in "/" (the directory listing is a slash-key); s3api uses the
+# exact key, whereas `s3 cp` treats a trailing slash as a directory.
 if ! aws s3api get-object --bucket "$bucket" --key "$key" "$index_html" >/dev/null 2>"$aws_error"; then
     if grep -Eq 'NoSuchKey|Not Found|404|does not exist' "$aws_error"; then
+        if [[ "$create_from_dist" == false ]]; then
+            echo "S3 index s3://$bucket/$key does not exist." >&2
+            exit 1
+        fi
         echo "S3 index s3://$bucket/$key does not exist; creating a root index from $dist_dir." >&2
         rm -f "$index_html"
     else
@@ -79,3 +89,10 @@ python3 .github/scripts/inject_s3_index_readme.py \
     "$index_html"
 aws s3api put-object --bucket "$bucket" --key "$key" --body "$index_html" \
     --content-type "text/html; charset=utf-8" >/dev/null
+if [[ "$key" == */ ]]; then
+    alias_key="${key%/}"
+    if [[ -n "$alias_key" ]]; then
+        aws s3api put-object --bucket "$bucket" --key "$alias_key" --body "$index_html" \
+            --content-type "text/html; charset=utf-8" >/dev/null
+    fi
+fi

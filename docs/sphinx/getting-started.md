@@ -51,7 +51,7 @@ tt-lang-setup                     # copy bundled tutorials to ./tutorials/
 For finer control, `tt-lang-setup-sfpi` runs only the sfpi step and
 `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 
-### Internal S3 wheels
+### Tenstorrent S3 wheels
 
 More frequently updated development versions of `tt-lang` are available from
 Tenstorrent's S3 PyPI index.
@@ -59,31 +59,30 @@ Tenstorrent's S3 PyPI index.
 Set `TTLANG_VERSION` to a published version from the workflow summary or the
 S3 package index. A version selector is required because public PyPI also hosts
 `tt-lang`, and pip resolves candidates across all configured indexes. Available
-versions are listed at https://pypi.eng.aws.tenstorrent.com/.
+versions are listed at https://pypi.eng.aws.tenstorrent.com/tt-lang/.
 
-Development wheels use a simple sub-index (`--extra-index-url`); per-SHA light
-wheels are published as browsable directories (`--find-links`):
+Tenstorrent S3 wheels use browsable wheel views (`--find-links`):
 
 - Nightly development wheels are under `tt-lang/<YYYY-MM>/`, the year-month of
   the version's `devYYYYMMDD` suffix (e.g. version `X.Y.Z.dev20260615` ->
   `tt-lang/2026-06/`).
+- Stable S3 release wheels are under `tt-lang/releases/`.
 - Light wheels built and device-tested against a specific tt-metal commit are
   under `tt-lang/ttmetal/<ttmetal7>/`, that commit's 7-character prefix.
-- Stable release wheels (`X.Y.Z`) stay at the root index.
 
 The bundled-wheel example below installs a nightly development wheel. Stable
-internal releases use `TTLANG_VERSION=X.Y.Z` and the root index URL
-`https://pypi.eng.aws.tenstorrent.com/`.
+S3 releases use `TTLANG_VERSION=X.Y.Z` and
+`https://pypi.eng.aws.tenstorrent.com/tt-lang/releases/`.
 
-The default internal `tt-lang` wheel bundles the `ttnn` artifacts from the
+The default S3-hosted `tt-lang` wheel bundles the `ttnn` artifacts from the
 toolchain used to build the wheel, so `pip install` does not pull `ttnn` from
 PyPI. As with the public wheel, `tt-lang-setup` then installs the matching sfpi
 runtime and copies the tutorials:
 
 ```bash
-TTLANG_VERSION=<published-internal-version>
+TTLANG_VERSION=<published-s3-version>
 pip install \
-  --extra-index-url https://pypi.eng.aws.tenstorrent.com/tt-lang/<YYYY-MM>/ \
+  --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang/<YYYY-MM>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   "tt-lang==$TTLANG_VERSION"
 tt-lang-setup    # downloads sfpi into the bundled ttnn tree + copies tutorials
@@ -97,10 +96,10 @@ environment, not both.
 
 A per-tt-metal-SHA light wheel resolves from that commit's directory with
 `--find-links`; a nightly light wheel resolves from its `tt-lang/<YYYY-MM>/`
-sub-index with `--extra-index-url` instead:
+directory with `--find-links` as well:
 
 ```bash
-TTLANG_VERSION=<published-internal-version>
+TTLANG_VERSION=<published-s3-version>
 pip install \
   --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/ \
   --extra-index-url https://download.pytorch.org/whl/cpu \

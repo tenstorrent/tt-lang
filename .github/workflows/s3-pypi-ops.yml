@@ -8,6 +8,7 @@
 # default. Never touches other teams' prefixes or the bucket root.
 
 name: S3 PyPI ops (tt-lang)
+run-name: "S3 PyPI ops: ${{ inputs.operation }} (dry_run=${{ inputs.dry_run }})"
 
 on:
   workflow_dispatch:
@@ -70,6 +71,33 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
 
+      - name: Summarize operation
+        env:
+          OP: ${{ inputs.operation }}
+          PREFIX: ${{ inputs.prefix }}
+          SOURCE: ${{ inputs.source }}
+          DEST: ${{ inputs.dest }}
+          CONFIRM: ${{ inputs.confirm }}
+          READONLY_ARGS: ${{ inputs.readonly_args }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### S3 PyPI operation"
+            echo
+            echo '```text'
+            printf 'operation=%s\n' "$OP"
+            printf 'dry_run=%s\n' "$DRY_RUN"
+            printf 'ref=%s\n' "$GITHUB_REF"
+            printf 'actor=%s\n' "$GITHUB_ACTOR"
+            [[ -n "$PREFIX" ]] && printf 'prefix=%s\n' "$PREFIX"
+            [[ -n "$SOURCE" ]] && printf 'source=%s\n' "$SOURCE"
+            [[ -n "$DEST" ]] && printf 'dest=%s\n' "$DEST"
+            [[ -n "$CONFIRM" ]] && printf 'confirm=%s\n' "$CONFIRM"
+            [[ -n "$READONLY_ARGS" ]] && printf 'readonly_args=%s\n' "$READONLY_ARGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Require main ref for writes
         if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}
         run: |
@@ -82,6 +110,10 @@ jobs:
       - name: Configure AWS Credentials
         if: ${{ github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/configure-tt-s3-credentials
+
+      - name: Install Markdown renderer
+        if: ${{ inputs.operation == 'put-index' && inputs.dry_run != true && (inputs.prefix == 'tt-lang' || inputs.prefix == 'tt-lang/') }}
+        run: python3 -m pip install markdown
 
       - name: Run operation
         env:

@@ -68,7 +68,8 @@ setup() {
     run cat "$FAKE_AWS_ARGS"
     # wheels + README uploaded as objects
     assert_output --partial "s3 cp $dir/$(whl_light 1.0.0) s3://tenstorrent-pypi/tt-lang/ttmetal/13adda8/$(whl_light 1.0.0)"
-    assert_output --partial "s3://tenstorrent-pypi/tt-lang/ttmetal/13adda8/README.txt"
+    assert_output --partial "s3://tenstorrent-pypi/tt-lang/ttmetal/13adda8/README.html"
+    assert_output --partial "--content-type text/html; charset=utf-8"
     # slash-key listing for the SHA prefix and the parent, via put-object
     assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/13adda8/"
     assert_output --partial "s3api put-object --bucket tenstorrent-pypi --key tt-lang/ttmetal/"
@@ -84,7 +85,7 @@ setup() {
     run -0 "$SCRIPT" --prefix tt-lang/ttmetal/13adda8 --readme "$README" "$dir"
 
     run cat "$PUT_BODIES_DIR/tt-lang_ttmetal_13adda8_"
-    assert_output --partial "<a href=\"README.txt\">README.txt</a><br>"
+    assert_output --partial "<a href=\"README.html\">README.html</a><br>"
     assert_output --partial "<a href=\"$(whl_light_core_cp312 1.0.0)#sha256=$empty_digest\">$(whl_light_core_cp312 1.0.0)</a><br>"
     assert_output --partial "<a href=\"$(whl_light 1.0.0)#sha256=$empty_digest\">$(whl_light 1.0.0)</a><br>"
 }

@@ -4,11 +4,11 @@
 #
 # Append a Markdown install summary to $GITHUB_STEP_SUMMARY for the S3 PyPI
 # publish workflow. With --dry-run, record that no upload occurred. With
-# --index-subdir <subdir>, point the install commands at the .../<subdir>/
-# simple index (`tt-lang/<YYYY-MM>/` for nightlies) instead of the flat root.
-# --find-links-subdir <subdir> points install commands at a direct wheel
-# directory consumed with pip --find-links. With no $GITHUB_STEP_SUMMARY set,
-# output goes to stdout for local invocations/tests.
+# --index-subdir <subdir> points install commands at a simple index. Use
+# --find-links-subdir <subdir> for generated wheel views consumed with
+# pip --find-links, including `tt-lang/<YYYY-MM>/` and `tt-lang/releases/`.
+# With no $GITHUB_STEP_SUMMARY set, output goes to stdout for local
+# invocations/tests.
 #
 # Usage: publish-s3-summary.sh [--dry-run] [--index-subdir <subdir>] [--find-links-subdir <subdir>] <wheel_variant> <version_override>
 
