@@ -33,12 +33,10 @@ The current compiler lowering recognizes these accumulation forms:
   prior-pack value rather than overwriting it. `precededByNonAccumulatingPack`
   detects the preceding non-accumulating pack.
 
-- A loop-carried additive tensor recurrence (`acc = acc + contribution`
-  across an `scf.for`) that fits one DST register lifetime is lowered to a
-  reduction compute that accumulates in DST across the loop, via
-  `ttl.tile_accumulate`. Recurrences outside the DST eligibility constraints
-  fall back to compiler-managed DFB state (see Loop-Carried Tensor State and
-  Tensor Recurrence DST Accumulation).
+- A loop-carried additive tensor recurrence (`acc = acc + contribution`)
+  can be accumulated in DST when the loop has a single coalescible
+  contribution stream. Other loop-carried tensor state uses compiler-managed
+  DFB state.
 
 The accumulation-scope IR declares which destination tensor views participate
 in an accumulation region, plus the initial-state policy for each output. Later
@@ -146,55 +144,49 @@ The pass preserves non-tensor loop iter_args. It also preserves zero-trip
 loop semantics because the initial value is stored before the rewritten loop
 and the final value is read after the loop.
 
-## Tensor Recurrence DST Accumulation
+## Tensor Recurrence Accumulation
 
-An additive tensor recurrence is loop-carried tensor state whose value is
-updated only by `acc = acc + contribution` and read once after the loop. When
-it fits one DST register lifetime, accumulating in DST across the loop and
-packing once avoids the per-iteration L1 round-trip of general DFB-state
-materialization.
+A tensor recurrence is an `scf.for` iter_arg whose value is computed in one
+iteration and read in a later iteration. General tensor recurrences are lowered
+through compiler-managed DFB state, as described above. The compiler has a
+specialized DST lowering for the additive recurrence:
 
-Two `func.func` passes run before `ttl-materialize-loop-state`:
+```
+acc = acc + contribution
+```
 
-- `ttl-form-accumulation-scopes{kind=tensor}` wraps an eligible recurrence (the
-  `scf.for` and its final store) in `ttl.accumulation_scope` with `init`
-  initial mode. Formation is conservative and non-diagnostic: it forms a scope
-  only for recurrences the DST lowering can consume, using the same predicate
-  as lowering so the two cannot drift.
-- `ttl-lower-accumulation-scopes{kind=tensor}` rewrites each formed scope into
-  one reduction `ttl.compute`. It scans every scope and rejects an invalid one
-  with an op error and `signalPassFailure()` before mutating IR, so
-  hand-written scoped IR is diagnosed rather than silently left behind.
+The DST form keeps the accumulator in the destination register file for the
+full source loop and packs the final value once. This avoids the per-iteration
+pack, wait, and reload required by general DFB-state materialization.
 
-A recurrence that is not formed keeps its `scf.for` and is materialized through
-compiler-managed DFB state, unchanged.
+The pipeline recognizes eligible recurrences before `ttl-materialize-loop-state`.
+It represents the recurrence with `ttl.accumulation_scope` using `init`
+initial mode, then lowers that scope to one reduction `ttl.compute`. A
+recurrence that is not represented as an accumulation scope remains an ordinary
+loop-carried tensor value and uses the general DFB-state lowering.
 
 ### Eligibility
 
-Formation and lowering share one predicate. A recurrence is DST-eligible only
-when all hold:
+The DST recurrence form requires all of the following:
 
-- one tensor loop-carried accumulator updated by `ttl.add(acc, contribution)`
-  or the commuted form, with the loop result used only by one final
-  non-accumulating `ttl.store`;
+- one tensor loop-carried accumulator, updated only by
+  `ttl.add(acc, contribution)` or the commuted form;
+- one final non-accumulating `ttl.store` of the loop result;
 - the loop body contains only the update, the contribution `ttl.cb_wait`
-  (optionally attached), and one matching `ttl.cb_pop`; it has no loop-local
-  stores or other side effects;
-- the contribution is a single-tensor wait independent of the accumulator,
-  with no explicit `num_tiles`;
-- accumulator and contribution share one tensor type, and the init is
-  dataflow-buffer backed;
-- a positive static trip count representable in 64 bits;
-- `trip_count * tile_count <= producer_dfb_capacity`.
+  and optional attachment, and one matching `ttl.cb_pop`;
+- no loop-local stores or other side effects;
+- one contribution tensor type, matching the accumulator type;
+- a DFB-backed init value;
+- a positive static trip count;
+- enough contribution DFB capacity for `trip_count * tiles_per_contribution`.
 
-The last constraint is a liveness precondition: coalescing the per-iteration
-contribution waits into one pre-loop wait of `trip_count * tile_count` tiles
-would block forever if the producer buffer cannot hold them.
+The capacity condition is required because the DST form replaces per-iteration
+waits with one coalesced wait for the complete contribution window.
 
 ### Lowering
 
-The reduction compute has one parallel iterator per output tile dimension and
-one trailing reduction iterator over the trip count:
+The lowered compute has one parallel iterator per output tile dimension and
+one trailing reduction iterator over the source-loop trip count:
 
 ```mlir
 ttl.compute ins(%init, %coalesced_contribution) outs(%out) {
@@ -204,14 +196,15 @@ ttl.compute ins(%init, %coalesced_contribution) outs(%out) {
 }
 ```
 
-`ttl.tile_accumulate` is an in-DST tile op whose accumulator operand and result
-share one DST slot; `add` lowers to the tt-metal `binary_dest_reuse_tiles` LLK,
-which reads the contribution directly from its dataflow buffer.
-`ttl-lower-to-loops` seeds the slot with the init tile once before the reduction
-loop and accumulates the contribution in place each iteration, and
-`ttl-assign-dst` keeps the accumulator and result in the same slot. One
-coalesced `ttl.cb_wait` before the compute and a matching `ttl.cb_pop` after it
-replace the per-iteration wait and pop.
+The coalesced contribution tensor has shape
+`[trip_count] + contribution_shape`. The reduction iterator indexes the leading
+dimension; the parallel iterators index the original output tile dimensions.
+
+`ttl.tile_accumulate` denotes in-place accumulation in DST. The accumulator
+operand and result share one DST slot, and the contribution remains
+dataflow-buffer backed. Lowering initializes the DST slot from `%init` before
+the reduction loop, applies `tile_accumulate` for each contribution tile, then
+stores the final DST value once after the reduction loop.
 
 ## DstSectionOp
 
