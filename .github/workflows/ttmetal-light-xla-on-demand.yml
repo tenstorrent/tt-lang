@@ -1,0 +1,352 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build tt-lang-light XLA per-tt-metal-SHA wheel (on demand)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ttlang_ref:
+        description: "tt-lang SHA or tag with light-wheel packaging and build_info() provenance support."
+        required: true
+        type: string
+      tt_metal_sha:
+        description: "tt-metal commit SHA to build and link against."
+        required: true
+        type: string
+      docker_tag:
+        description: "IRD builder image tag. Leave empty to resolve the closest existing tag from ttlang_ref."
+        required: false
+        type: string
+        default: ""
+      version_override:
+        description: "PEP 440 base version. Leave empty to compute a nightly version from ttlang_ref."
+        required: false
+        type: string
+        default: ""
+      apply_patches:
+        description: "Apply wheel patches from the workflow commit before building."
+        required: false
+        type: boolean
+        default: false
+      allow_final_internal_version:
+        description: "Allow final internal versions."
+        required: false
+        type: boolean
+        default: false
+      hw_type:
+        description: "Hardware runner type for device validation."
+        required: false
+        type: string
+        default: "n150"
+
+concurrency:
+  group: ttmetal-light-xla-on-demand
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  resolve:
+    name: "Resolve tt-lang-light XLA per-tt-metal-SHA inputs"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      docker_tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout workflow commit
+        uses: actions/checkout@v6
+
+      - name: Checkout target tt-lang
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_ref }}
+          path: target-tt-lang
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory '*'
+
+      # Tag and version are computed from the pinned checkout so an older ref
+      # builds against its matching builder image, not the current commit's.
+      - name: Resolve build inputs
+        id: resolve
+        env:
+          DOCKER_TAG: ${{ inputs.docker_tag }}
+          VERSION_OVERRIDE: ${{ inputs.version_override }}
+          GH_TOKEN: ${{ github.token }}
+          TTLANG_IRD_DOCKER_OWNER: tenstorrent
+        run: |
+          .github/scripts/resolve-xla-build-inputs.sh \
+            --target-dir target-tt-lang \
+            --docker-tag "$DOCKER_TAG" \
+            --version "$VERSION_OVERRIDE" \
+            --resolve-existing-docker-tag
+
+  build:
+    name: "Build Ubuntu tt-lang-light XLA per-tt-metal-SHA wheel"
+    needs: resolve
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ needs.resolve.outputs.docker_tag }}
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      ttmetal_sha: ${{ steps.ttmetal.outputs.sha }}
+    steps:
+      - name: Checkout target tt-lang
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory '*'
+
+      - name: Check out workflow helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-src
+          sparse-checkout: |
+            .github/scripts/apply-wheel-patches.sh
+            .github/scripts/build-ttmetal-at-sha.sh
+            .github/wheel-patches
+            scripts/install-ttmetal.sh
+            scripts/copy-ttmetal-runtime-artifacts.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Apply wheel patches
+        if: ${{ inputs.apply_patches }}
+        run: .workflow-src/.github/scripts/apply-wheel-patches.sh --target-dir "$GITHUB_WORKSPACE"
+
+      - name: Record tt-lang HEAD
+        id: ttlang
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build tt-metal at SHA
+        id: ttmetal
+        run: |
+          set -euo pipefail
+          .workflow-src/.github/scripts/build-ttmetal-at-sha.sh \
+            --sha "${{ inputs.tt_metal_sha }}" \
+            --scratch-dir /tmp/ttmetal-xla-sha
+
+      - name: Validate wheel inputs and resolve versions
+        id: versions
+        env:
+          TTNN_DEP_MODE: external
+          VERSION_OVERRIDE: ${{ needs.resolve.outputs.version }}
+        run: .github/scripts/resolve-wheel-versions.sh
+
+      - name: Configure tt-lang
+        env:
+          TTLANG_VERSION_OVERRIDE: ${{ steps.versions.outputs.core_version }}
+          TTLANG_EXTERNAL_TT_METAL_DIR: ${{ steps.ttmetal.outputs.install_dir }}
+          TTLANG_PYTHON_VENV: /opt/ttlang-toolchain/venv
+          TTLANG_GIT_COMMIT: ${{ steps.ttlang.outputs.sha }}
+          TT_METAL_COMMIT: ${{ steps.ttmetal.outputs.sha }}
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          .github/scripts/configure-ttlang-build.sh build
+
+      - name: Install wheel build tools
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip install auditwheel packaging patchelf
+
+      - name: Build tt-lang wheel
+        env:
+          TTLANG_TTNN_DEP_MODE: external
+          TTLANG_VERSION_OVERRIDE: ${{ steps.versions.outputs.core_version }}
+          TTLANG_EXTERNAL_TT_METAL_DIR: ${{ steps.ttmetal.outputs.install_dir }}
+          TTLANG_PYTHON_VENV: /opt/ttlang-toolchain/venv
+          TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ inputs.allow_final_internal_version }}
+          TTLANG_GIT_COMMIT: ${{ steps.ttlang.outputs.sha }}
+          TT_METAL_COMMIT: ${{ steps.ttmetal.outputs.sha }}
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation
+
+      - name: Test CMake-installed launchers
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          cmake --build build
+          cmake --install build --prefix /tmp/ttlang-prefix
+          /tmp/ttlang-prefix/bin/tt-lang-sim --help
+          /tmp/ttlang-prefix/bin/tt-lang-sim-stats --help
+
+      # Standard tt-lang-light wheels (no name/version suffix). The XLA build is
+      # distinguished by location: dist/xla/<ttmetal7> mirrors the per-tt-metal-SHA
+      # index layout under an xla prefix, so a consumer points --extra-index-url at
+      # xla/<ttmetal7>/ the same way it does for the normal per-SHA wheels.
+      - name: Repair tt-lang wheel
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          mkdir -p "dist/xla/${{ steps.ttmetal.outputs.short }}"
+          auditwheel repair dist-raw/*.whl --wheel-dir="dist/xla/${{ steps.ttmetal.outputs.short }}"
+
+      - name: Check tt-lang wheel metadata
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          python .github/scripts/check-wheel-ttnn-metadata.py \
+            --mode external \
+            --dist-dir "dist/xla/${{ steps.ttmetal.outputs.short }}" \
+            --expect-tt-metal-commit "${{ steps.ttmetal.outputs.sha }}"
+
+      - name: Test tt-lang wheel
+        run: |
+          python3.12 -m venv /tmp/test-venv-hw
+          source /tmp/test-venv-hw/bin/activate
+          pip install \
+            --no-cache-dir \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            dist/xla/${{ steps.ttmetal.outputs.short }}/tt_lang-*.whl
+          python .github/scripts/check-installed-ttnn.py --mode external
+          python .github/scripts/smoke-test-wheel.py
+
+      - name: Free disk space before metapackage build
+        run: |
+          rm -rf /tmp/test-venv-hw /tmp/ttlang-prefix build dist-raw
+          python3.12 -m pip cache purge || true
+          df -h
+
+      - name: Build tt-lang-light metapackage
+        env:
+          TTLANG_VERSION_OVERRIDE: ${{ needs.resolve.outputs.version }}
+          TTLANG_LIGHT_TTLANG_VERSION: ${{ steps.versions.outputs.light_version }}
+          TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ inputs.allow_final_internal_version }}
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip wheel packaging/light --wheel-dir="dist/xla/${{ steps.ttmetal.outputs.short }}" --no-deps --no-build-isolation
+
+      - name: Check metapackage metadata
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          python .github/scripts/check-light-metapackage.py \
+            --dist-dir "dist/xla/${{ steps.ttmetal.outputs.short }}" \
+            --expect-ttlang-version "${{ steps.versions.outputs.light_version }}"
+
+      - name: Report wheel sizes
+        run: ls -lh dist/xla/${{ steps.ttmetal.outputs.short }}/*.whl
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: tt-lang-light-xla-wheels
+          path: dist/xla/${{ steps.ttmetal.outputs.short }}/*.whl
+          retention-days: 14
+
+      # tar preserves the +x bit on the bundled sfpi compiler that JIT needs;
+      # device-validate downloads this instead of rebuilding tt-metal.
+      - name: Package tt-metal install
+        run: tar -C /tmp/ttmetal-xla-sha -czf /tmp/ttmetal-install.tar.gz install
+
+      - name: Upload tt-metal install
+        uses: actions/upload-artifact@v7
+        with:
+          name: ttmetal-install
+          path: /tmp/ttmetal-install.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
+
+  device-validate:
+    name: "Device-validate tt-lang-light XLA per-tt-metal-SHA wheel"
+    needs: [resolve, build]
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.hw_type) }}
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ needs.resolve.outputs.docker_tag }}
+      options: --device /dev/tenstorrent
+      volumes:
+        - /dev/hugepages:/dev/hugepages
+        - /dev/hugepages-1G:/dev/hugepages-1G
+        - /etc/udev/rules.d:/etc/udev/rules.d
+        - /lib/modules:/lib/modules
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      packages: read
+    env:
+      PYTHONDONTWRITEBYTECODE: 1
+      TTLANG_TEST_SEED: 42
+    steps:
+      - name: Checkout target tt-lang
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_ref }}
+          fetch-depth: 1
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory '*'
+
+      - name: Download XLA wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: tt-lang-light-xla-wheels
+          path: dist
+
+      - name: Download tt-metal install
+        uses: actions/download-artifact@v8
+        with:
+          name: ttmetal-install
+          path: /tmp/ttmetal-dl
+
+      - name: Unpack tt-metal install
+        run: |
+          mkdir -p /tmp/ttmetal-install
+          tar -C /tmp/ttmetal-install --strip-components=1 -xzf /tmp/ttmetal-dl/ttmetal-install.tar.gz
+
+      - name: Install light wheel and external tt-metal
+        env:
+          TTMETAL_INSTALL_DIR: /tmp/ttmetal-install
+          EXPECTED_TT_METAL_COMMIT: ${{ needs.build.outputs.ttmetal_sha }}
+        run: |
+          set -euo pipefail
+          # Clean venv: the installed wheel and the external tt-metal (built at
+          # the requested tt_metal_sha) must satisfy the suite on their own.
+          python3 -m venv /tmp/ttl-venv
+          # shellcheck disable=SC1091
+          source /tmp/ttl-venv/bin/activate
+          metapackage_wheel=$(ls dist/tt_lang_light-*-py3-none-any.whl)
+          pip install \
+            --find-links dist \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            "$metapackage_wheel"
+          tt-lang-setup
+          python3 - <<'PY'
+          import os
+          import ttl
+
+          expected = os.environ["EXPECTED_TT_METAL_COMMIT"]
+          actual = ttl.build_info()["tt_metal"]
+          if actual != expected:
+              raise SystemExit(
+                  f"tt-lang wheel tt-metal provenance mismatch: expected {expected}, got {actual}"
+              )
+          PY
+          eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTMETAL_INSTALL_DIR")"
+          echo "TTL_EXTERNAL_TT_METAL_DIR=$TTMETAL_INSTALL_DIR" >> "$GITHUB_ENV"
+
+      - name: Device suite
+        run: |
+          set -eo pipefail
+          # shellcheck disable=SC1091
+          source /tmp/ttl-venv/bin/activate
+          eval "$(tt-lang-setup-external-tt-metal --tt-metal-dir "$TTL_EXTERNAL_TT_METAL_DIR")"
+          python3 test/python/smoketest.py
+          bash .github/scripts/run-tutorials.sh .

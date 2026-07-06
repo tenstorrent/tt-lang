@@ -80,6 +80,42 @@ setup() {
     assert_output "retry"
 }
 
+@test "default S3 object listing reads the tt-lang/ttmetal/<ttmetal7> prefix" {
+    bindir="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$bindir"
+    AWS_ARGS="$BATS_TEST_TMPDIR/aws_args"
+    export AWS_ARGS
+    cat > "$bindir/aws" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$AWS_ARGS"
+printf '2026-07-04 00:00:00       1234 tt_lang-1.0.0+light.whl\n'
+EOF
+    chmod +x "$bindir/aws"
+    PATH="$bindir:$PATH" run -0 list_prefix_objects "$SHORT_SHA"
+    assert_output "tt_lang-1.0.0+light.whl"
+
+    run cat "$AWS_ARGS"
+    assert_output --partial "s3 ls s3://tenstorrent-pypi/tt-lang/ttmetal/$SHORT_SHA/"
+}
+
+@test "default miss marker read uses the tt-lang/ttmetal/<ttmetal7> prefix" {
+    bindir="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$bindir"
+    AWS_ARGS="$BATS_TEST_TMPDIR/aws_args"
+    export AWS_ARGS
+    cat > "$bindir/aws" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$AWS_ARGS"
+printf '{"ttlang_head":"%s"}\n' "$HEAD_A"
+EOF
+    chmod +x "$bindir/aws"
+    PATH="$bindir:$PATH" run -0 read_recorded_head "$SHORT_SHA"
+    assert_output "$HEAD_A"
+
+    run cat "$AWS_ARGS"
+    assert_output --partial "s3 cp s3://tenstorrent-pypi/tt-lang/ttmetal/$SHORT_SHA/attempt.json -"
+}
+
 # --- main ---
 
 @test "main: new sha -> uplift=true with sha outputs" {
@@ -121,6 +157,27 @@ setup() {
     run -0 main --cmakelists "$cml" --ttlang-head "$HEAD_B"
     run cat "$GH_OUT"
     assert_output --partial "uplift=true"
+}
+
+@test "main --assume-new: uplift=true without reading S3" {
+    cml=$(make_cmakelists "$FULL_SHA")
+    # Any S3 read must abort the run; --assume-new must not reach these.
+    list_prefix_objects() { echo "S3 must not be read" >&2; return 1; }
+    read_recorded_head() { echo "S3 must not be read" >&2; return 1; }
+    export GITHUB_OUTPUT="$GH_OUT"
+    run -0 main --cmakelists "$cml" --ttlang-head "$HEAD_A" --assume-new
+    run cat "$GH_OUT"
+    assert_output --partial "uplift=true"
+    assert_output --partial "tt_metal_sha=$FULL_SHA"
+    assert_output --partial "tt_metal_sha_short=$SHORT_SHA"
+}
+
+@test "main --assume-new: unreadable CMakeLists still aborts" {
+    export GITHUB_OUTPUT="$GH_OUT"
+    run main --cmakelists "$BATS_TEST_TMPDIR/missing.txt" --assume-new
+    assert_failure
+    run cat "$GH_OUT"
+    refute_output --partial "uplift="
 }
 
 @test "main: unreadable CMakeLists aborts without emitting uplift" {

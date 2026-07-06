@@ -36,7 +36,7 @@ jobs:
           LLVM_SHA=$(git ls-tree HEAD third-party/llvm-project | awk '{print substr($3,1,7)}')
           TTMETAL_SHA=$(git ls-tree HEAD third-party/tt-metal | awk '{print substr($3,1,7)}')
           CACHE_KEY="Linux-toolchain_llvm-${LLVM_SHA}_ttmetal-${TTMETAL_SHA}"
-          echo "cache-key=$CACHE_KEY" >> $GITHUB_OUTPUT
+          echo "cache-key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
           echo "Cache key: $CACHE_KEY"
 
       - name: Look up toolchain cache (no download)
@@ -133,7 +133,7 @@ jobs:
 
       - name: Prepare toolchain directory
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
-        run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/ttlang-toolchain
 
       - name: Configure (builds LLVM + tt-metal)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'

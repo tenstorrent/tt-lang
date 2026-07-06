@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+self-hosted-runner:
+  labels:
+    - mlir-large-runner-lang
+    - n150
+    - n300-llmbox
+    - tt-ubuntu-2204-*-stable
