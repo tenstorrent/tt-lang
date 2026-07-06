@@ -31,10 +31,26 @@ struct PipeSramAddressTableInfo {
   int64_t byteOffset;
 };
 
+/// Sender-side recipe for computing a receiver DFB address. The graph assigns
+/// `receiverSlotIndex`; a dynamic counter is needed only when repeated
+/// executions revisit the same receiver batch at a different physical slot.
 struct PipeComputedAddressInfo {
   int64_t receiverDFBIndex = 0;
   int64_t baseCompileTimeArgIndex = 0;
-  int64_t staticByteOffset = 0;
+  /// Initial physical receiver DFB block assigned to this transfer.
+  int64_t receiverSlotIndex = 0;
+  /// Number of receiver DFB blocks reserved by one statically proven batch.
+  int64_t receiverBatchSize = 1;
+  int64_t blockCount = 1;
+  int64_t blockStrideBytes = 0;
+  /// Byte offset for the destination tile within the selected DFB block.
+  int64_t staticTileByteOffset = 0;
+  std::optional<int64_t> dynamicSlotCounterIndex;
+
+  /// Return whether the sender must track physical slot progress at runtime.
+  bool usesDynamicSlotCounter() const {
+    return dynamicSlotCounterIndex.has_value();
+  }
 };
 
 enum class PipeAddressMode {
@@ -148,6 +164,18 @@ struct PipeResourceInfo {
 using PipeNetCounterMap =
     llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
 
+/// Initial value for one sender-local computed-address slot counter.
+struct PipeComputedAddressCounterInitInfo {
+  int64_t counterIndex = 0;
+  int64_t initialSlot = 0;
+};
+
+/// Per-function map: computed-address slot counter index -> kernel-local i32
+/// counter used by senders whose receiver DFB ring position advances at
+/// runtime.
+using PipeComputedAddressCounterMap =
+    llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
+
 /// pipeNetId -> deduplicated list of pipes in that net. Built once
 /// before lowering so is_src/is_dst/is_active patterns avoid walking the
 /// module per match.
@@ -165,6 +193,10 @@ struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
+  /// Entry-block counter initializers are part of the resource plan so all
+  /// computed-address sends sharing one allocation unit share one slot state.
+  llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
+      computedAddressCounterInitializations;
 };
 
 /// Resource totals consumed by TTKernel lowering and runtime setup.
@@ -210,17 +242,24 @@ void initializePipeCapacitySemaphores(
     const PipeCapacityPlan &pipeCapacityPlan,
     PipeNetCounterMap &senderCapacityCounters);
 
+/// Emit sender-local slot counters for computed receiver addresses whose
+/// physical receiver DFB slot advances at runtime.
+void initializePipeComputedAddressCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeComputedAddressCounterMap &computedAddressCounters);
+
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
 /// pipeNetId used by a pipe receive.
 void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
 
 /// Lower the sender-side pipe transfer and signal receiver completion.
-LogicalResult
-lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
-                      const PipeResourcePlan &pipeResourcePlan,
-                      const PipeCapacityPlan *pipeCapacityPlan,
-                      const PipeNetCounterMap *senderCapacityCounters,
-                      ConversionPatternRewriter &rewriter);
+LogicalResult lowerPipeTransferSend(
+    PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
+    const PipeResourcePlan &pipeResourcePlan,
+    const PipeCapacityPlan *pipeCapacityPlan,
+    const PipeNetCounterMap *senderCapacityCounters,
+    const PipeComputedAddressCounterMap *computedAddressCounters,
+    ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,

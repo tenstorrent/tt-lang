@@ -7,9 +7,9 @@
 One sender multicasts a tile to N receivers, each of which reserves, receives,
 and writes the tile to its own output column. Because a single ``net.if_dst``
 callback spans the whole receiver range, the pop's static domain is the union of
-receiver nodes, so lowering uses the receiver-published address protocol rather
-than sender-local capacity. recv_block_count > 1 exercises that multicast
-fallback with the receiver running several blocks deep.
+receiver nodes, so lowering keeps receiver-ready synchronization rather than
+sender-local capacity. recv_block_count > 1 exercises dynamic computed multicast
+addresses with the receiver running several blocks deep.
 """
 
 import pytest

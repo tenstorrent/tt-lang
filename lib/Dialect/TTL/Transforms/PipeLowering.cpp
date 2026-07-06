@@ -322,15 +322,67 @@ buildAddressTableDestinationAddress(Location loc, const AddressTableInfo &info,
       .getResult();
 }
 
-/// Compute the statically assigned receiver DFB address.
+/// Find the slot counter allocated during resource planning. Missing state is
+/// a pass-ordering bug because computed-address sends are planned before
+/// conversion patterns mutate the IR.
+static Value lookupComputedAddressCounter(
+    PipeTransferSendOp op, int64_t counterIndex,
+    const PipeComputedAddressCounterMap *computedAddressCounters) {
+  assert(computedAddressCounters &&
+         "computed-address counter allocation must run before pipe lowering");
+  FuncOp senderFunc = op->getParentOfType<FuncOp>();
+  auto funcIt = computedAddressCounters->find(senderFunc);
+  assert(funcIt != computedAddressCounters->end() &&
+         "sender function missing computed-address counters");
+  auto counterIt = funcIt->second.find(counterIndex);
+  assert(counterIt != funcIt->second.end() &&
+         "computed-address counter missing from sender function");
+  return counterIt->second;
+}
+
+/// Compute the receiver DFB destination address selected for this send. Static
+/// cases use only the graph-assigned slot; dynamic cases add sender-local ring
+/// progress for repeated executions of the same transfer allocation unit.
 static Value buildComputedReceiverDFBDestinationAddress(
-    Location loc, const PipeComputedAddressInfo &info,
+    PipeTransferSendOp op, Location loc, const PipeComputedAddressInfo &info,
+    const PipeComputedAddressCounterMap *computedAddressCounters,
     ConversionPatternRewriter &rewriter) {
   auto baseAddress = ttk::GetCompileArgValOp::create(
       rewriter, loc, rewriter.getI32Type(),
       static_cast<int32_t>(info.baseCompileTimeArgIndex));
-  return addByteOffset(loc, baseAddress.getResult(), info.staticByteOffset,
-                       rewriter);
+  if (!info.usesDynamicSlotCounter()) {
+    int64_t byteOffset = info.receiverSlotIndex * info.blockStrideBytes +
+                         info.staticTileByteOffset;
+    return addByteOffset(loc, baseAddress.getResult(), byteOffset, rewriter);
+  }
+
+  Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value slotCounter = lookupComputedAddressCounter(
+      op, *info.dynamicSlotCounterIndex, computedAddressCounters);
+  Value currentSlot =
+      memref::LoadOp::create(rewriter, loc, slotCounter, ValueRange{zeroIdx});
+  Value blockStrideBytes =
+      arith::ConstantIntOp::create(rewriter, loc, info.blockStrideBytes, 32);
+  Value blockByteOffset =
+      arith::MulIOp::create(rewriter, loc, currentSlot, blockStrideBytes);
+  Value receiverAddress = arith::AddIOp::create(
+      rewriter, loc, baseAddress.getResult(), blockByteOffset);
+  receiverAddress =
+      addByteOffset(loc, receiverAddress, info.staticTileByteOffset, rewriter);
+
+  Value receiverBatchSize =
+      arith::ConstantIntOp::create(rewriter, loc, info.receiverBatchSize, 32);
+  Value blockCount =
+      arith::ConstantIntOp::create(rewriter, loc, info.blockCount, 32);
+  // Advance by one proven receiver batch so the next execution predicts the
+  // same physical slot sequence as the receiver DFB ring.
+  Value nextSlotUnwrapped =
+      arith::AddIOp::create(rewriter, loc, currentSlot, receiverBatchSize);
+  Value nextSlot =
+      arith::RemUIOp::create(rewriter, loc, nextSlotUnwrapped, blockCount);
+  memref::StoreOp::create(rewriter, loc, nextSlot, slotCounter,
+                          ValueRange{zeroIdx});
+  return receiverAddress;
 }
 
 static void lowerPipeCapacityRelease(Location loc,
@@ -504,14 +556,51 @@ void initializePipeCapacitySemaphores(
   }
 }
 
+void initializePipeComputedAddressCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeComputedAddressCounterMap &computedAddressCounters) {
+  for (const auto &entry :
+       pipeResourcePlan.computedAddressCounterInitializations) {
+    FuncOp func = entry.first;
+    const SmallVector<PipeComputedAddressCounterInitInfo> &initializations =
+        entry.second;
+    SmallVector<PipeComputedAddressCounterInitInfo> sortedInitializations(
+        initializations);
+    llvm::sort(sortedInitializations,
+               [](const PipeComputedAddressCounterInitInfo &lhs,
+                  const PipeComputedAddressCounterInitInfo &rhs) {
+                 return lhs.counterIndex < rhs.counterIndex;
+               });
+
+    OpBuilder builder(func.getContext());
+    builder.setInsertionPointToStart(&func.getBody().front());
+    Location loc = func.getLoc();
+    auto counterMemrefTy = MemRefType::get({1}, builder.getI32Type());
+    Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+    auto &perFuncCounters = computedAddressCounters[func];
+    for (const PipeComputedAddressCounterInitInfo &init :
+         sortedInitializations) {
+      // Entry-block allocation dominates loop-carried sends while keeping the
+      // slot state private to the sender kernel.
+      auto counter = memref::AllocaOp::create(builder, loc, counterMemrefTy);
+      Value initialSlot =
+          arith::ConstantIntOp::create(builder, loc, init.initialSlot, 32);
+      memref::StoreOp::create(builder, loc, initialSlot, counter,
+                              ValueRange{zeroIdx});
+      perFuncCounters[init.counterIndex] = counter.getResult();
+    }
+  }
+}
+
 /// Lower CB -> Pipe copy: write source DFB data to the selected destination
 /// address, then signal arrival.
-LogicalResult
-lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
-                      const PipeResourcePlan &pipeResourcePlan,
-                      const PipeCapacityPlan *pipeCapacityPlan,
-                      const PipeNetCounterMap *senderCapacityCounters,
-                      ConversionPatternRewriter &rewriter) {
+LogicalResult lowerPipeTransferSend(
+    PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
+    const PipeResourcePlan &pipeResourcePlan,
+    const PipeCapacityPlan *pipeCapacityPlan,
+    const PipeNetCounterMap *senderCapacityCounters,
+    const PipeComputedAddressCounterMap *computedAddressCounters,
+    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   PipeTransferCreateOp createOp =
       findPipeTransferCreateForTransfer(op.getTransfer());
@@ -676,7 +765,8 @@ lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
     assert(pipeResource.addressStorage.computedAddress.has_value() &&
            "computed pipe missing computed-address info");
     dstAddr = buildComputedReceiverDFBDestinationAddress(
-        loc, *pipeResource.addressStorage.computedAddress, rewriter);
+        op, loc, *pipeResource.addressStorage.computedAddress,
+        computedAddressCounters, rewriter);
   } else {
     AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
     dstAddr =
@@ -1626,65 +1716,80 @@ static bool hasProvenPipeOnlyReceiverStreams(const PipeGraph &pipeGraph,
   return true;
 }
 
-static std::optional<int64_t>
-getStaticReceiverByteOffset(const ReceiverDFBInfo &receiverInfo,
-                            int64_t receiverBatchSize) {
-  // Static receiver addresses use one compile-time base per receiver DFB.
-  // This is exact only when the physical DFB ring period equals the receiver
-  // batch; otherwise the sender would need dynamic batch-iteration state to
-  // distinguish repeated visits to the same physical slot.
-  if (receiverInfo.blockCount != receiverBatchSize) {
+/// Return metadata for receiver addresses the sender can compute without
+/// receiver publication. Rejections preserve the receiver-published protocol.
+static std::optional<PipeComputedAddressInfo>
+getComputedAddressInfo(const PipeTransferAllocationUnit &unit,
+                       const ReceiverDFBInfo &receiverInfo,
+                       const PipeGraph &pipeGraph) {
+  if (!receiverInfo.hasStaticTileOffset) {
     return std::nullopt;
   }
-  int64_t blockOffsetBytes = *receiverInfo.receiverSlotIndex *
-                             getReceiverDFBBlockStrideBytes(receiverInfo);
-  return blockOffsetBytes + getReceiverDFBStaticByteOffset(receiverInfo);
-}
-
-static bool isComputedAddressCandidate(const PipeTransferAllocationUnit &unit,
-                                       const ReceiverDFBInfo &receiverInfo,
-                                       const PipeGraph &pipeGraph,
-                                       int64_t &staticByteOffset) {
-  if (!receiverInfo.hasStaticTileOffset) {
-    return false;
-  }
   if (!llvm::isa<ttcore::TileType>(receiverInfo.dfbType.getElementType())) {
-    return false;
+    return std::nullopt;
   }
   if (!receiverInfo.receiverSlotIndex.has_value()) {
-    return false;
+    return std::nullopt;
   }
   auto [postCount, sendCount] = countPostAndSendEvents(unit);
   if (postCount != 1 || sendCount != 1) {
-    return false;
+    return std::nullopt;
   }
   const PipeEdge *pipeEdge = pipeGraph.getPipeEdgeForPipe(unit.pipe);
   if (!pipeEdge) {
-    return false;
+    return std::nullopt;
   }
   // Static receiver addresses are derived from the pipe graph's physical slot
   // assignment. Non-pipe DFB traffic can advance the hardware ring without a
   // pipe post, so computed addressing requires the graph to prove that the
   // receiver stream contains only pipe-delivered blocks.
   if (!hasProvenPipeOnlyReceiverStreams(pipeGraph, *pipeEdge)) {
-    return false;
+    return std::nullopt;
   }
   std::optional<int64_t> receiverBatchSize =
       getUniformReceiverBatchSize(pipeGraph, *pipeEdge);
   if (!receiverBatchSize) {
-    return false;
+    return std::nullopt;
   }
-  std::optional<int64_t> offset =
-      getStaticReceiverByteOffset(receiverInfo, *receiverBatchSize);
-  if (!offset) {
-    return false;
+  if (*receiverBatchSize <= 0 || receiverInfo.blockCount <= 0) {
+    return std::nullopt;
   }
-  staticByteOffset = *offset;
-  return true;
+  // The dynamic-slot lowering emits one contiguous NOC write. If the repeating
+  // receiver batch does not divide the physical DFB ring, a later batch can
+  // straddle the ring boundary and would require split-write lowering.
+  if (receiverInfo.blockCount % *receiverBatchSize != 0) {
+    return std::nullopt;
+  }
+  int64_t blockStrideBytes = getReceiverDFBBlockStrideBytes(receiverInfo);
+  int64_t staticTileByteOffset = getReceiverDFBStaticByteOffset(receiverInfo);
+  if (blockStrideBytes <= 0 || !llvm::isInt<32>(blockStrideBytes) ||
+      !llvm::isInt<32>(staticTileByteOffset) ||
+      !llvm::isInt<32>(*receiverInfo.receiverSlotIndex) ||
+      !llvm::isInt<32>(*receiverBatchSize) ||
+      !llvm::isInt<32>(receiverInfo.blockCount)) {
+    return std::nullopt;
+  }
+  int64_t maxBlockByteOffset =
+      (receiverInfo.blockCount - 1) * blockStrideBytes + staticTileByteOffset;
+  if (!llvm::isInt<32>(maxBlockByteOffset)) {
+    return std::nullopt;
+  }
+  return PipeComputedAddressInfo{receiverInfo.dfbIndex,
+                                 /*baseCompileTimeArgIndex=*/0,
+                                 *receiverInfo.receiverSlotIndex,
+                                 *receiverBatchSize,
+                                 receiverInfo.blockCount,
+                                 blockStrideBytes,
+                                 staticTileByteOffset,
+                                 std::nullopt};
 }
 
+/// Temporary computed-address allocation before the final resource plan is
+/// copied onto each transfer-create op in an allocation unit.
 struct ComputedAddressPlan {
   llvm::DenseMap<unsigned, PipeComputedAddressInfo> infoByUnitIndex;
+  llvm::MapVector<FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
+      counterInitializations;
 };
 
 static ComputedAddressPlan
@@ -1696,8 +1801,7 @@ buildComputedAddressPlan(ModuleOp mod,
   struct Candidate {
     unsigned unitIndex = 0;
     FuncOp senderFunc;
-    const ReceiverDFBInfo *receiverInfo = nullptr;
-    int64_t staticByteOffset = 0;
+    PipeComputedAddressInfo computedAddress;
   };
   SmallVector<Candidate> candidates;
   llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesByFunc;
@@ -1706,10 +1810,12 @@ buildComputedAddressPlan(ModuleOp mod,
     PipeTransferAllocationUnit &unit = indexedUnit.value();
     const ReceiverDFBInfo *receiverInfo =
         pipeGraph.lookupReceiverDFB(unit.pipe);
-    int64_t staticByteOffset = 0;
-    if (!receiverInfo ||
-        !isComputedAddressCandidate(unit, *receiverInfo, pipeGraph,
-                                    staticByteOffset)) {
+    if (!receiverInfo) {
+      continue;
+    }
+    std::optional<PipeComputedAddressInfo> computedAddress =
+        getComputedAddressInfo(unit, *receiverInfo, pipeGraph);
+    if (!computedAddress) {
       continue;
     }
     std::optional<FuncOp> senderFunc = getSingleSenderFunc(unit);
@@ -1717,8 +1823,7 @@ buildComputedAddressPlan(ModuleOp mod,
       continue;
     }
     candidates.push_back(Candidate{static_cast<unsigned>(indexedUnit.index()),
-                                   *senderFunc, receiverInfo,
-                                   staticByteOffset});
+                                   *senderFunc, *computedAddress});
     dfbIndicesByFunc[*senderFunc].insert(receiverInfo->dfbIndex);
   }
 
@@ -1754,19 +1859,24 @@ buildComputedAddressPlan(ModuleOp mod,
     }
   }
 
+  llvm::MapVector<FuncOp, int64_t> nextDynamicSlotCounterIndexByFunc;
   for (const Candidate &candidate : candidates) {
     FuncOp senderFunc = candidate.senderFunc;
     const SmallVector<int64_t> &dfbIndices = sortedDFBIndicesByFunc[senderFunc];
-    auto dfbIt = llvm::find(dfbIndices, candidate.receiverInfo->dfbIndex);
+    PipeComputedAddressInfo computedAddress = candidate.computedAddress;
+    auto dfbIt = llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
     assert(dfbIt != dfbIndices.end() && "candidate DFB missing from func list");
-    int64_t baseCompileTimeArgIndex =
+    computedAddress.baseCompileTimeArgIndex =
         baseCTAByFunc[senderFunc] + std::distance(dfbIndices.begin(), dfbIt);
 
-    assert(llvm::isInt<32>(candidate.staticByteOffset) &&
-           "computed receiver byte offset must fit the i32 NoC address space");
-    plan.infoByUnitIndex[candidate.unitIndex] = PipeComputedAddressInfo{
-        candidate.receiverInfo->dfbIndex, baseCompileTimeArgIndex,
-        candidate.staticByteOffset};
+    if (computedAddress.blockCount != computedAddress.receiverBatchSize) {
+      int64_t counterIndex = nextDynamicSlotCounterIndexByFunc[senderFunc]++;
+      computedAddress.dynamicSlotCounterIndex = counterIndex;
+      plan.counterInitializations[senderFunc].push_back(
+          PipeComputedAddressCounterInitInfo{
+              counterIndex, computedAddress.receiverSlotIndex});
+    }
+    plan.infoByUnitIndex[candidate.unitIndex] = computedAddress;
   }
 
   return plan;
@@ -1816,6 +1926,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
     computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph,
                                                    updateComputedAddressAttrs);
   }
+  info.computedAddressCounterInitializations =
+      computedAddressPlan.counterInitializations;
 
   llvm::SmallSetVector<int64_t, 4> activePipeNetIds;
   for (const PipeTransferAllocationUnit &unit : units) {

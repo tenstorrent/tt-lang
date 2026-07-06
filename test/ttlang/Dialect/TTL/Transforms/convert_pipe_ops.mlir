@@ -195,11 +195,13 @@ func.func @explicit_pipe_transfer_ir() attributes { "ttl.kernel_thread" = #ttker
 // -----
 
 // A proven single-edge receiver DFB stream replaces sender-ready rendezvous
-// with sender-local capacity released by the receiver pop.
+// with sender-local capacity released by the receiver pop. Receiver
+// block_count=2 exercises computed receiver addresses with dynamic slot
+// tracking.
 // CHECK-LABEL: func.func @computed_address_capacity_protocol
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK-DAG: %[[CAPACITY_IDX:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[INITIAL_CAPACITY:.*]] = arith.constant 1 : i32
+// CHECK-DAG: %[[INITIAL_CAPACITY:.*]] = arith.constant 2 : i32
 // CHECK: %[[CAPACITY_SEM:.*]] = ttkernel.get_semaphore(%[[CAPACITY_IDX]])
 // CHECK: %[[CAPACITY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[CAPACITY_SEM]])
 // CHECK: ttkernel.noc_semaphore_set(%[[CAPACITY_PTR]], %[[INITIAL_CAPACITY]])
@@ -221,24 +223,26 @@ func.func @explicit_pipe_transfer_ir() attributes { "ttl.kernel_thread" = #ttker
 // CHECK-NOT: ttkernel.store_to_l1
 // CHECK-NOT: ttkernel.experimental.semaphore_wait(
 // CHECK-NOT: ttkernel.noc_semaphore_set
+// CHECK: arith.muli
+// CHECK: arith.remui
 // CHECK: ttkernel.noc_async_write
 // CHECK-NOT: ttkernel.experimental.semaphore_wait(
 // CHECK-NOT: ttkernel.noc_semaphore_set
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @computed_address_capacity_protocol() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
     ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
       %token = ttl.pipe_transfer.post %transfer, %recv
           : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
       ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
-      ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-      %ready = ttl.cb_wait %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %ready = ttl.cb_wait %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     }
     ttl.if_src %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send = ttl.pipe_transfer.send %transfer, %src_cb
@@ -1310,7 +1314,7 @@ func.func @loopback_multicast_aggregate_ready_counting() attributes { "ttl.kerne
 
 // -----
 
-// Non-loopback multicast computes one destination address and uses one
+// Non-loopback multicast computes one dynamic destination address and uses one
 // aggregate ready count.
 // CHECK-LABEL: func.func @non_loopback_multicast_computed_address
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
@@ -1321,23 +1325,24 @@ func.func @loopback_multicast_aggregate_ready_counting() attributes { "ttl.kerne
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
-// CHECK: %[[DST_ADDR:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: %[[BASE:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: %[[BLOCK_OFFSET:.*]] = arith.muli
+// CHECK: %[[DST_ADDR:.*]] = arith.addi %[[BASE]], %[[BLOCK_OFFSET]]
+// CHECK: arith.remui
 // CHECK: ttkernel.noc_async_write_multicast(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[{{.*}}, {{.*}}], end_xy[{{.*}}, {{.*}}], %[[DST_ADDR]], {{.*}})
 // CHECK-NOT: ttkernel.noc_async_write_multicast_loopback_src
-// CHECK-NOT: arith.remui
-// CHECK-NOT: arith.muli
 // CHECK-NOT: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 4, 1>} {
 func.func @non_loopback_multicast_computed_address() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-  %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   %send = ttl.copy %src_cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send : !ttl.transfer_handle<write>
   ttl.wait %post : !ttl.transfer_handle
-  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+  ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
 }

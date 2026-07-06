@@ -18,10 +18,10 @@
 
 """Computed receiver-address protocol coverage for PipeNet lowering.
 
-The point-to-point case covers computed addresses with sender-local capacity
-release. The all-gather case covers computed addresses for a collective
-multicast transfer where receiver-ready counters remain required. Both cases
-execute on device and compare the result with torch expected values.
+The point-to-point case covers dynamic computed addresses with sender-local
+capacity release. The all-gather case covers dynamic computed addresses for a
+collective multicast transfer where receiver-ready counters remain required.
+Both cases execute on device and compare the result with torch expected values.
 """
 
 import os
@@ -35,6 +35,7 @@ from utils.correctness import assert_allclose  # noqa: E402
 
 TILE = 32
 ALL_GATHER_WIDTH = 4
+ALL_GATHER_ITERS = 2
 
 
 def _make_input(shape, dtype):
@@ -56,7 +57,7 @@ def point_to_point_computed_address(inp, out):
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
 
     send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    recv_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+    recv_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -97,7 +98,7 @@ def row_all_gather_computed_address(inp, out):
     all_gather_net = ttl.PipeNet([pipe0, pipe1, pipe2, pipe3])
 
     send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    recv_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    recv_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=8)
 
     @ttl.compute()
     def compute():
@@ -106,50 +107,51 @@ def row_all_gather_computed_address(inp, out):
     @ttl.datamovement()
     def dm():
         node_x, _node_y = ttl.node(dims=2)
-        if all_gather_net.is_dst():
-            with recv_dfb.reserve() as recv_blk:
-                recv_tx = ttl.copy(pipe0, recv_blk)
-                if node_x == 0:
-                    with send_dfb.reserve() as send_blk:
-                        ttl.copy(inp[0, 0], send_blk).wait()
-                    with send_dfb.wait() as send_blk:
-                        ttl.copy(send_blk, pipe0).wait()
-                recv_tx.wait()
-            with recv_dfb.reserve() as recv_blk:
-                recv_tx = ttl.copy(pipe1, recv_blk)
-                if node_x == 1:
-                    with send_dfb.reserve() as send_blk:
-                        ttl.copy(inp[0, 1], send_blk).wait()
-                    with send_dfb.wait() as send_blk:
-                        ttl.copy(send_blk, pipe1).wait()
-                recv_tx.wait()
+        for _iter_idx in range(ALL_GATHER_ITERS):
+            if all_gather_net.is_dst():
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe0, recv_blk)
+                    if node_x == 0:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 0], send_blk).wait()
+                        with send_dfb.wait() as send_blk:
+                            ttl.copy(send_blk, pipe0).wait()
+                    recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe1, recv_blk)
+                    if node_x == 1:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 1], send_blk).wait()
+                        with send_dfb.wait() as send_blk:
+                            ttl.copy(send_blk, pipe1).wait()
+                    recv_tx.wait()
 
-            with recv_dfb.wait() as recv_blk:
-                ttl.copy(recv_blk, out[0, 0]).wait()
-            with recv_dfb.wait() as recv_blk:
-                ttl.copy(recv_blk, out[0, 1]).wait()
+                with recv_dfb.wait() as recv_blk:
+                    ttl.copy(recv_blk, out[0, 0]).wait()
+                with recv_dfb.wait() as recv_blk:
+                    ttl.copy(recv_blk, out[0, 1]).wait()
 
-            with recv_dfb.reserve() as recv_blk:
-                recv_tx = ttl.copy(pipe2, recv_blk)
-                if node_x == 2:
-                    with send_dfb.reserve() as send_blk:
-                        ttl.copy(inp[0, 2], send_blk).wait()
-                    with send_dfb.wait() as send_blk:
-                        ttl.copy(send_blk, pipe2).wait()
-                recv_tx.wait()
-            with recv_dfb.reserve() as recv_blk:
-                recv_tx = ttl.copy(pipe3, recv_blk)
-                if node_x == 3:
-                    with send_dfb.reserve() as send_blk:
-                        ttl.copy(inp[0, 3], send_blk).wait()
-                    with send_dfb.wait() as send_blk:
-                        ttl.copy(send_blk, pipe3).wait()
-                recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe2, recv_blk)
+                    if node_x == 2:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 2], send_blk).wait()
+                        with send_dfb.wait() as send_blk:
+                            ttl.copy(send_blk, pipe2).wait()
+                    recv_tx.wait()
+                with recv_dfb.reserve() as recv_blk:
+                    recv_tx = ttl.copy(pipe3, recv_blk)
+                    if node_x == 3:
+                        with send_dfb.reserve() as send_blk:
+                            ttl.copy(inp[0, 3], send_blk).wait()
+                        with send_dfb.wait() as send_blk:
+                            ttl.copy(send_blk, pipe3).wait()
+                    recv_tx.wait()
 
-            with recv_dfb.wait() as recv_blk:
-                ttl.copy(recv_blk, out[0, 2]).wait()
-            with recv_dfb.wait() as recv_blk:
-                ttl.copy(recv_blk, out[0, 3]).wait()
+                with recv_dfb.wait() as recv_blk:
+                    ttl.copy(recv_blk, out[0, 2]).wait()
+                with recv_dfb.wait() as recv_blk:
+                    ttl.copy(recv_blk, out[0, 3]).wait()
 
     @ttl.datamovement()
     def dm_brisc():
@@ -157,40 +159,44 @@ def row_all_gather_computed_address(inp, out):
 
 
 # Point-to-point computed address: the receiver does not publish its reserved
-# DFB address, and the sender uses the capacity protocol.
+# DFB address, and the sender uses the capacity protocol. recv_block_count=2
+# forces dynamic sender-side receiver slot tracking.
 # P2P-FINAL-LABEL: func.func @dm
 # P2P-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 # P2P-FINAL: call_opaque "experimental::semaphore_wait_min"
 # P2P-FINAL: literal "get_compile_time_arg_val(2)" : i32
+# P2P-FINAL: = rem {{.*}} : (ui32, ui32) -> ui32
 # P2P-FINAL: noc0.async_write
 # P2P-FINAL-NOT: noc_inline_dw_write
 # P2P-FINAL-NOT: load_from_l1
 
 # P2P-CPP: experimental::semaphore_wait_min(
 # P2P-CPP: get_compile_time_arg_val(2)
+# P2P-CPP: {{.*}} % {{.*}};
 # P2P-CPP: noc0.async_write(
 # P2P-CPP-NOT: noc_inline_dw_write
 
 # Collective computed address: the sender still waits for receiver readiness,
 # but the destination DFB address is computed instead of loaded from SRAM.
+# recv_block_count=8 and two iterations force dynamic sender-side receiver slot
+# tracking across all four multicast sends.
 # ALLGATHER-FINAL-LABEL: func.func @dm
 # ALLGATHER-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 # ALLGATHER-BF16-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 2048 : i32}>
 # ALLGATHER-FP32-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 4096 : i32}>
 # ALLGATHER-FINAL: experimental::semaphore_wait
 # ALLGATHER-FINAL: get_compile_time_arg_val
-# ALLGATHER-FINAL: %[[BASE:.*]] = literal "get_compile_time_arg_val(2)" : i32
-# ALLGATHER-FINAL: %[[BASE_UI:.*]] = cast %[[BASE]] : i32 to ui32
+# ALLGATHER-FINAL: literal "get_compile_time_arg_val(2)" : i32
 # ALLGATHER-FINAL: %[[STRIDE_UI:.*]] = cast %[[STRIDE]] : i32 to ui32
-# ALLGATHER-FINAL: %[[ADDR_UI:.*]] = add %[[BASE_UI]], %[[STRIDE_UI]]
-# ALLGATHER-FINAL: %[[ADDR:.*]] = cast %[[ADDR_UI]] : ui32 to i32
+# ALLGATHER-FINAL: mul {{.*}}, %[[STRIDE_UI]]
+# ALLGATHER-FINAL: = rem {{.*}} : (ui32, ui32) -> ui32
 # ALLGATHER-FINAL: async_write_multicast<NocOptions::MCAST_INCL_SRC>
-# ALLGATHER-FINAL-NOT: arith.remui
 # ALLGATHER-FINAL-NOT: noc_inline_dw_write
 # ALLGATHER-FINAL-NOT: load_from_l1
 
 # ALLGATHER-CPP: experimental::semaphore_wait(
 # ALLGATHER-CPP: get_compile_time_arg_val(
+# ALLGATHER-CPP: {{.*}} % {{.*}};
 # ALLGATHER-CPP: noc0.async_write_multicast<NocOptions::MCAST_INCL_SRC>(
 # ALLGATHER-CPP-NOT: noc_inline_dw_write
 

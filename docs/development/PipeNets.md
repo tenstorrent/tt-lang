@@ -430,17 +430,35 @@ statically, the sender computes the destination address directly from
 compile-time arguments:
 
 ```mlir
+%receiver_slot = %static_receiver_slot_index
 %dst_addr = %receiver_dfb_base
-          + %receiver_slot_index * %receiver_block_stride_bytes
+          + %receiver_slot * %receiver_block_stride_bytes
           + %static_byte_offset
 ```
 
-For ordinary point-to-point transfers, `%receiver_slot_index` is 0.
-For gather or allgather-style receivers, `PipeGraph` assigns a physical
-receiver slot to each receive post from the receiver DFB reserve order.
+For ordinary point-to-point transfers, `%static_receiver_slot_index` is
+0. For gather or allgather-style receivers, `PipeGraph` assigns a
+physical receiver slot to each receive post from the receiver DFB
+reserve order.
 Receiver DFB pops release physical slots, so a later batch can reuse the
 same slot after the compiler has observed the pop. Static tensor
 subviews add `%static_byte_offset` inside the selected DFB block.
+
+When the receiver DFB `block_count` is larger than one proven receiver
+batch, the sender uses a local slot counter instead of a single constant
+slot. The counter is initialized to the graph-assigned slot for that
+transfer and advances after each send:
+
+```mlir
+%receiver_slot = load %sender_slot_counter
+%next_slot = (%receiver_slot + %receiver_batch_size) mod %block_count
+store %next_slot, %sender_slot_counter
+```
+
+The current lowering emits one contiguous NOC write per send, so dynamic
+computed addressing requires the receiver batch size to divide
+`block_count`. Otherwise a later repeated batch could straddle the DFB
+ring boundary and require split-write lowering.
 
 Computed addressing is independent of back-pressure selection. If the
 compiler can compute the address but cannot prove a receiver pop maps to
@@ -450,21 +468,27 @@ write and read are removed, while the existing ready counter remains the
 proof that the receiver has reserved the slot.
 
 When the compiler also proves capacity ownership, lowering replaces the
-sender-ready rendezvous with a sender-local capacity counter. The
-counter is initialized to the receiver DFB `block_count`. Each send
-decrements the counter before issuing the payload write. Each receiver
-pop increments the same counter remotely after the receiver releases one
-DFB block.
+sender-ready rendezvous with a sender-local capacity protocol. The
+capacity semaphore is initialized to the receiver DFB `block_count`, and
+the receiver's remote increment after a pop is its only writer. The
+sender tracks its own cumulative acquired count in a kernel-local counter
+and waits for the capacity semaphore to reach that count before each
+payload write; it never writes the semaphore. Because the receiver
+increment is the only writer, a release cannot be lost to a concurrent
+sender update.
 
 The protocol uses these events:
 
 1. Function entry initializes `%capacity_sem` to the receiver DFB
    `block_count` with `ttkernel.noc_semaphore_set` on the local
-   semaphore pointer.
-2. The sender waits until `%capacity_sem >= 1`, reads the local
-   semaphore value, subtracts 1, and stores the decremented value back to
-   the same local semaphore before computing `%dst_addr` and issuing the
-   payload NoC write.
+   semaphore pointer, and allocates a zero-initialized kernel-local
+   cumulative-acquire counter for the sender.
+2. Before each payload write, the sender loads its cumulative-acquire
+   counter, adds the acquire count, stores the incremented value back,
+   and waits until `%capacity_sem` reaches that value with
+   `ttkernel.experimental.semaphore_wait_min`. The sender never writes
+   `%capacity_sem` before computing `%dst_addr` and issuing the payload
+   NoC write.
 3. The sender still signals receiver completion after the payload write
    barrier, using the same per-PipeNet receiver-completion counter as
    the receiver-authored address-table protocol.
@@ -493,6 +517,17 @@ and lowerable computed-address resources. If any endpoint is not proven
 or not lowerable, lowering keeps sender-ready back-pressure for that
 pipe edge. If the address formula itself is not proven, lowering keeps
 the receiver-authored address-table protocol.
+
+Multicast receivers keep sender-ready back-pressure. When one sender
+writes to a receiver rectangle, each receiver pops independently, so a
+single logical ring slot is released by all N receivers rather than one.
+The capacity counter's one-release-per-slot accounting does not hold, and
+a summed release count is unsafe when receivers drain at different rates,
+so multicast transfers keep the receiver-ready counter. Computed
+multicast addressing still applies; only the capacity back-pressure is
+withheld. Generalizing capacity to multicast requires per-receiver,
+minimum-gated release accounting, tracked in
+https://github.com/tenstorrent/tt-lang/issues/728.
 
 The `--ttl-pipe-computed-addresses` option, enabled by default, selects
 computed addressing for eligible transfers.
@@ -743,9 +778,12 @@ pops a batch, later receive posts can reuse those physical slots.
 
 Each receive post identifies one concrete DFB write pointer. When the
 static slot proof succeeds, the sender computes the same address from
-the receiver DFB base and graph-assigned physical slot index. Otherwise
-the receiver writes the concrete address to a sender-visible SRAM
-address-table entry before incrementing the sender-ready counter.
+the receiver DFB base and graph-assigned physical slot index. If the
+same transfer allocation unit can execute again after the receiver DFB
+ring has advanced, the sender tracks that slot progress in a local
+counter. Otherwise the receiver writes the concrete address to a
+sender-visible SRAM address-table entry before incrementing the
+sender-ready counter.
 Uniform collective uses one destination address per live transfer
 interval because TT-Metal NoC multicast writes to the same destination
 SRAM address on every receiver. If receivers would use different
@@ -804,9 +842,10 @@ collective. The proof tracks four points in the lowered IR:
    receiver DFB slot index, releases slots when a receiver DFB pop is
    proven, and verifies that every multicast receiver uses the same slot
    for that pipe. When the computed-address predicate succeeds, sends
-   use that slot index in the address formula. Otherwise sends use the
-   receiver-published DFB write pointer recorded in the source node's
-   SRAM address table.
+   use that slot index directly or use a sender-local slot counter that
+   advances by one receiver batch per repeated execution. Otherwise
+   sends use the receiver-published DFB write pointer recorded in the
+   source node's SRAM address table.
 2. No inter-sender wait. Each sender waits only for its own receivers to
    publish readiness or for its own proven capacity counter, performs
    its own NoC write, then increments the receiver completion semaphore.
@@ -1335,7 +1374,7 @@ compile-time properties not runtime-observable.
 | 62 | Lowering: loopback collective uses `noc_async_write_multicast_loopback_src` + local receiver-completion increment |  |  |  X  |
 | 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"collective overlap"` (and `"gather"` for point-to-point) |  |  |  X  |
 | 64 | Lowering: aggregate collective receive posts increment one sender-ready count when capacity is not proven |  |  |  X  |
-| 65 | Lowering: non-loopback collective uses a computed receiver address when the static slot proof succeeds | X | | X |
+| 65 | Lowering: non-loopback collective uses a computed receiver address when the static or dynamic slot proof succeeds | X | | X |
 | 66 | Semaphore counting: collective address storage does not allocate semaphore ids | | X | |
 | 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
 | 68 | Schedule verifier rejects same-thread send before destination address publication | X | | X |

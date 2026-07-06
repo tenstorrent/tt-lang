@@ -1097,14 +1097,16 @@ private:
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
-  PipeTransferSendLowering(const TypeConverter &typeConverter,
-                           MLIRContext *context,
-                           const PipeResourcePlan &pipeResourcePlan,
-                           const PipeCapacityPlan &pipeCapacityPlan,
-                           const PipeNetCounterMap *senderCapacityCounters)
+  PipeTransferSendLowering(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      const PipeResourcePlan &pipeResourcePlan,
+      const PipeCapacityPlan &pipeCapacityPlan,
+      const PipeNetCounterMap *senderCapacityCounters,
+      const PipeComputedAddressCounterMap *computedAddressCounters)
       : OpConversionPattern(typeConverter, context),
         pipeResourcePlan(pipeResourcePlan), pipeCapacityPlan(pipeCapacityPlan),
-        senderCapacityCounters(senderCapacityCounters) {}
+        senderCapacityCounters(senderCapacityCounters),
+        computedAddressCounters(computedAddressCounters) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
@@ -1120,15 +1122,16 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
                  user->getOperand(0) == op.getSrc() &&
                  domInfo.dominates(user, op);
         });
-    return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB,
-                                 pipeResourcePlan, &pipeCapacityPlan,
-                                 senderCapacityCounters, rewriter);
+    return lowerPipeTransferSend(
+        op, adaptor.getSrc(), isConsumerCB, pipeResourcePlan, &pipeCapacityPlan,
+        senderCapacityCounters, computedAddressCounters, rewriter);
   }
 
 private:
   const PipeResourcePlan &pipeResourcePlan;
   const PipeCapacityPlan &pipeCapacityPlan;
   const PipeNetCounterMap *senderCapacityCounters;
+  const PipeComputedAddressCounterMap *computedAddressCounters;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
@@ -1643,14 +1646,17 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // change runtime binding code.
   PipeNetCounterMap senderCapacityCounters;
   initializePipeCapacitySemaphores(pipeCapacityPlan, senderCapacityCounters);
+  PipeComputedAddressCounterMap computedAddressCounters;
+  initializePipeComputedAddressCounters(pipeResourcePlan,
+                                        computedAddressCounters);
 
   RewritePatternSet patterns(&ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
   patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, pipeResourcePlan,
                                          pipeCapacityPlan);
-  patterns.add<PipeTransferSendLowering>(typeConverter, &ctx, pipeResourcePlan,
-                                         pipeCapacityPlan,
-                                         &senderCapacityCounters);
+  patterns.add<PipeTransferSendLowering>(
+      typeConverter, &ctx, pipeResourcePlan, pipeCapacityPlan,
+      &senderCapacityCounters, &computedAddressCounters);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
                                          pipeResourcePlan);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
