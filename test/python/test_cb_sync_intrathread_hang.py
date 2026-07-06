@@ -21,10 +21,6 @@ Expected post-fix behavior: cb_push on the outer reserve is placed before
 the scf.for, not after it, so the first iteration's wait sees the data.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v --tb=short
-
 import os
 import sys
 

@@ -10,9 +10,6 @@ Each device computes Y_shard = A_shard @ B + C_shard independently.
 Requires >=2 devices.
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 
@@ -20,6 +17,9 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import ttl
 
 from ttlang_test_utils import open_fabric_mesh
+
+# Opens a fabric mesh across all chips; run serially, not in the per-chip pool.
+pytestmark = pytest.mark.multi_device
 
 TILE_SIZE = 32
 M_GRANULARITY = 4

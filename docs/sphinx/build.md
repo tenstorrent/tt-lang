@@ -256,7 +256,7 @@ TT_METAL_TAG="<tt-metal-tag>"
 `TTNN_PYPI_TT_METAL_TAG` records the tt-metal tag used to build the public
 `ttnn` wheel. `TT_METAL_TAG` records the tt-metal tag used to build TT-Lang.
 Public PyPI publishing requires these tags to have the same `vX.Y.Z` component;
-internal S3 bundled wheels can use a newer `TT_METAL_TAG` before a compatible
+S3-hosted bundled wheels can use a newer `TT_METAL_TAG` before a compatible
 public `ttnn` wheel is available.
 
 Background: `third-party/tt-metal-version` is the single source of truth for
@@ -448,9 +448,9 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-For a dated dev release (preview of an in-flight version, typically used
-after a toolchain uplift lands on `main` and before the next final tag),
-follow the tt-metal convention: SemVer pre-release identifier of the form
+For a dated dev release (preview of an in-flight version, typically used after a
+toolchain uplift lands on `main` and before the next final tag), follow the
+tt-metal convention: a hyphenated development identifier of the form
 `-dev<YYYYMMDD>`:
 
 ```bash
@@ -559,34 +559,41 @@ ird image tag):
 (publishing-to-s3-pypi)=
 #### Publishing to S3 PyPI
 
-`publish-s3-pypi.yml` publishes internal wheels to the Tenstorrent S3 PyPI
-index at `https://pypi.eng.aws.tenstorrent.com/`. It runs on stable release tag
-pushes, runs nightly on a GitHub schedule, and can also be dispatched manually.
-It uses GitHub OIDC for AWS access, then uploads with
-`s3pypi upload --put-root-index --bucket tenstorrent-pypi`.
+`publish-s3-pypi.yml` publishes S3-hosted wheels to the Tenstorrent S3 PyPI
+index at `https://pypi.eng.aws.tenstorrent.com/`. It runs nightly on a GitHub
+schedule and can also be dispatched manually. Publishing is restricted to
+workflow runs on `refs/heads/main` because the AWS OIDC role is limited to
+main-branch refs; a manual dispatch from another ref can only perform a dry run.
+The workflow uses GitHub OIDC for AWS access. Regular publishes upload wheel
+objects directly under `tt-lang/` and write generated slash-key views consumed
+with `pip --find-links`: development wheels use `tt-lang/<YYYY-MM>/`, and final
+S3 release wheels use `tt-lang/releases/`.
+The top-level `tt-lang/` listing shows only the README and subdirectories in a
+browser, but it keeps hidden anchors for final-release root wheels so
+`pip --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang` remains
+backward-compatible for `X.Y.Z` S3 releases.
+Non-main dry runs must provide an existing `docker_tag`. If `docker_tag` is
+empty, the workflow builds and pushes GHCR IRD and manylinux wheel-builder images
+before the wheel build; that image publication is also restricted to
+`refs/heads/main`.
 
-The workflow prevents publishing a bundled internal `tt-lang` wheel with the
+The workflow prevents publishing a bundled S3 `tt-lang` wheel with the
 same package name and version as the public PyPI wheel when public PyPI
 publishing is already valid for that tt-metal tag. This avoids having two
 indexes expose `tt-lang==X.Y.Z` artifacts with different dependency metadata.
 
-Automatic S3 publishing should use this policy:
+S3 publishing uses this policy:
 
-- Stable release tags (`vX.Y.Z`) publish clean-version bundled and light wheels
-  to S3 only when public PyPI publishing is blocked because
-  `TTNN_PYPI_TT_METAL_TAG` and `TT_METAL_TAG` have different `vX.Y.Z`
-  components.
-- Stable release tags publish only light wheels to S3 when public PyPI
-  publishing is aligned. In that case public PyPI owns `tt-lang==X.Y.Z`, and S3
-  owns `tt-lang==X.Y.Z+light` plus `tt-lang-light==X.Y.Z`.
+- Tag pushes are not S3 publishing triggers. Stable S3 publishes use
+  manual dispatch from `refs/heads/main` with an explicit `version_override`.
 - Manual stable-version S3 publishes that include the bundled variant are
   rejected when public PyPI publishing is aligned for the same tt-metal tag.
 - The S3 resolver passes `TTLANG_ALLOW_FINAL_INTERNAL_VERSION=true` to the wheel
-  builder only after this conflict check has passed, so final-version internal
+  builder only after this conflict check has passed, so final-version S3
   wheels cannot bypass the release guard.
 - Do not mix public PyPI and S3 indexes for a `tt-lang` version whose artifacts
   have different dependency semantics. Use the S3 install command emitted by the
-  workflow summary for internal release wheels.
+  workflow summary for S3 release wheels.
 - Nightly builds do not create Git tags. The scheduled workflow computes a
   PEP 440 development version of the form `<MAJOR.MINOR.PATCH>.dev<YYYYMMDD>`,
   where the base version matches the latest stable tag reachable from `HEAD`,
@@ -595,11 +602,10 @@ Automatic S3 publishing should use this policy:
   keeps nightly versions readable, but existing local pip caches may still hold
   the older wheel for that version.
 
-Stable tag pushes derive `version_override` from the tag (`v1.1.2` -> `1.1.2`),
-build and push the matching IRD image, build the selected wheel variants from
-that image, verify the wheel versions, and publish the result to S3 PyPI. The
-selected variant set is `bundled-and-light` when public PyPI publishing is
-blocked, and `light` when public PyPI publishing is aligned.
+Manual stable-version publishes set `version_override` explicitly, build and
+push the matching IRD image when `docker_tag` is empty, build the selected wheel
+variants from that image, verify the wheel versions, and publish the result to
+S3 PyPI.
 
 The scheduled workflow defaults to `wheel_variant: bundled-and-light`. It keeps
 building the complete bundled wheel from the IRD image, and also builds and
@@ -607,13 +613,13 @@ pushes the matching manylinux_2_34 wheel-builder images for Python 3.10 and
 Python 3.12 light wheels. The workflow verifies all wheel versions before
 publishing the combined result to S3 PyPI.
 
-For a manual bundled internal wheel with an existing IRD image, dispatch the
+For a manual bundled S3 wheel with an existing IRD image, dispatch the
 workflow with:
 
 ```text
 docker_tag: <existing-ird-tag>
 wheel_variant: bundled
-version_override: <internal-version>
+version_override: <s3-version>
 ```
 
 The reusable wheel build sets `TTLANG_TTNN_DEP_MODE=bundled`,
@@ -628,7 +634,7 @@ bundled or public `ttnn` wheel, dispatch the workflow with:
 
 ```text
 wheel_variant: light
-version_override: <internal-version>
+version_override: <s3-version>
 ```
 
 The workflow maps this publish selection to the manylinux_2_34 light wheel
@@ -642,7 +648,7 @@ To publish bundled and light wheels from the same workflow run, dispatch with:
 
 ```text
 wheel_variant: bundled-and-light
-version_override: <internal-version>
+version_override: <s3-version>
 ```
 
 The workflow builds the bundled and light wheel sets separately, uploads
@@ -650,7 +656,101 @@ mode-specific artifacts, verifies each artifact with the expected version rules,
 then publishes a single combined directory. The light build does not emit
 `tt-lang-sim`; bundled/public wheel builds keep producing the simulator wheel.
 
-#### Local internal wheel testing
+To rebuild a light wheel from a specific older tt-lang commit or tag -- for
+example to reissue a release line whose original wheel no longer runs -- dispatch
+the workflow with a pinned ref, adding wheel patches when that ref's pinned
+dependencies no longer resolve:
+
+```text
+wheel_variant: light
+version_override: <s3-version>
+ttlang_ref: <tt-lang SHA or tag>
+apply_patches: true
+```
+
+`ttlang_ref` checks out that commit or tag for every wheel-building job instead
+of the triggering commit. `apply_patches` runs the scripts in
+`.github/wheel-patches/` against the checkout before building; the first patch
+rewrites a stale `numpy` pin to the current line's constraint so an older ref
+installs cleanly. The patch runner and the patches are taken from the workflow
+commit, not the pinned ref, so a ref that predates them is still patched.
+
+#### Building a light wheel for a specific tt-metal SHA
+
+`ttmetal-light-on-demand.yml` builds and device-tests a light wheel against an
+arbitrary tt-metal commit. Dispatch it with a `tt_metal_sha`; leave `ttlang_ref`
+empty to search for the newest compatible tt-lang commit, or set it to pin the
+tt-lang commit or tag to build. A pinned `ttlang_ref` requires `tt_metal_sha`,
+because auto-detection reads the dispatch ref's tt-mlir pin rather than the
+pinned ref's. With `dry_run: true` the workflow builds and validates without
+publishing and needs no S3 credentials, so it can run from a feature branch; the
+scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml` is best-effort and does
+not fail the nightly publish.
+
+Successful per-SHA publishes place the wheel files (both tt-lang and
+tt-lang-light) under `https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/`
+as a browsable directory (the listing is written to the slash-key so the
+directory URL resolves; trailing slash required). Install from that directory
+with `--find-links`. Browse all published SHAs at
+`https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/`.
+
+The `tt-lang-light` wheel is a pure metapackage; the supported CPython ABIs and
+glibc floor are carried by the
+`tt_lang-<version>+light-cp310-cp310-manylinux_2_34_x86_64.whl` and
+`tt_lang-<version>+light-cp312-cp312-manylinux_2_34_x86_64.whl` files in the
+same directory. The same directory contains a brief `README.html`.
+The `ttl.build_info()["tt_metal"]` value in each `tt-lang` wheel must equal
+`<ttmetal7>` expanded to the requested tt-metal commit.
+
+`ttmetal-light-xla-on-demand.yml` builds standard `tt-lang-light` wheels for the
+XLA flow from a specific tt-lang ref and tt-metal SHA. The selected tt-lang ref
+must include the light-wheel packaging and `ttl.build_info()` provenance support,
+because the workflow verifies that the built wheel records the requested
+tt-metal commit. Dispatch it with:
+
+```text
+ttlang_ref: <tt-lang SHA or tag>
+tt_metal_sha: <tt-metal SHA>
+```
+
+Leave `docker_tag` empty to resolve an existing `tt-lang-ird-ubuntu-24-04` image
+from the pinned `ttlang_ref`. The resolver first tries that checkout's
+`get-version-tag.sh` output exactly. If the exact tag is missing and the
+computed tag is a bare release tag such as `v1.1.2`, it uses a single existing
+`v1.1.2-*` image tag. Multiple matching image tags are ambiguous and require an
+explicit `docker_tag`. Leave `version_override` empty to compute the wheel
+version from the pinned `ttlang_ref`; the resolver runs that checkout's
+`compute-nightly-version.py` so the build uses the selected tt-lang ref's
+versioning rules. Set `apply_patches: true` when the pinned ref needs the
+workflow commit's wheel patches. Set `hw_type` to select a device validation
+runner type; it defaults to `n150`.
+
+The XLA workflow uses the Ubuntu IRD image directly, builds the requested
+tt-metal SHA with `.github/scripts/build-ttmetal-at-sha.sh`, and builds the
+tt-lang wheel in `TTLANG_TTNN_DEP_MODE=external` mode. The wheels keep the
+standard package names and versions: `tt-lang==<version>+light` and
+`tt-lang-light==<version>`. The XLA distinction is the index location, not a
+wheel suffix: the build places both wheels under `dist/xla/<ttmetal7>/` and
+uploads that wheel set as the `tt-lang-light-xla-wheels` artifact. It does not
+use the manylinux_2_34 light-wheel builder or publish to S3.
+
+The workflow device-validates the uploaded wheels in a separate hardware job.
+The build job uploads the `tt_metal_sha` install as a tar artifact so executable
+bits are preserved. The device job installs the downloaded `tt-lang-light` wheel
+with that external tt-metal environment, then runs `test/python/smoketest.py`
+and the tutorial suite.
+
+#### S3 PyPI maintenance
+
+`s3-pypi-ops.yml` is a manual (`workflow_dispatch`) workflow for maintaining the
+tt-lang prefixes of `tenstorrent-pypi`: `inspect`, `put-index` (refresh a
+slash-key listing), `move`, `copy`, `delete`, and a read-only `readonly-cmd`.
+Writes require `refs/heads/main`; `dry_run` defaults to true. Operations are
+restricted to the `tt-lang/` prefix and cannot touch other teams' packages
+(including the sibling `tt-lang-light/` and `tt-lang-sim/` package indexes) or
+the bucket root. `delete` requires a `confirm` token equal to the prefix.
+
+#### Local S3 wheel testing
 
 Use the same environment variables as the reusable workflow when validating the
 wheel build locally.
@@ -659,7 +759,7 @@ Bundled wheel:
 
 ```bash
 source /opt/ttlang-toolchain/venv/bin/activate
-TTLANG_VERSION=<internal-version>
+TTLANG_VERSION=<s3-version>
 
 TTLANG_VERSION_OVERRIDE="$TTLANG_VERSION" \
 cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DTTLANG_USE_TOOLCHAIN=ON
@@ -677,7 +777,7 @@ Light wheels:
 
 ```bash
 scripts/build-s3-light-wheels-local.sh \
-  --version <internal-version> \
+  --version <s3-version> \
   --build-images
 ```
 
@@ -686,7 +786,7 @@ copies tutorials into `./tutorials/` and skips sfpi installation for light
 installs because the external tt-metal tree provides sfpi:
 
 ```bash
-TTLANG_VERSION=<internal-version>
+TTLANG_VERSION=<s3-version>
 python3.12 -m venv /tmp/ttlang-light-test
 source /tmp/ttlang-light-test/bin/activate
 pip install --find-links=/tmp/ttlang-s3-light-wheels/dist \

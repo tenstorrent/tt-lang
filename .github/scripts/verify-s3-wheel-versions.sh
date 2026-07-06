@@ -5,7 +5,7 @@
 # Verify the wheel versions produced by the S3 PyPI publish workflow. The light
 # variant publishes cp310/cp312 tt-lang wheels with a +light local version plus
 # the tt-lang-light metapackage; bundled and pypi variants publish all wheels at
-# the requested internal version.
+# the requested S3 version.
 #
 # Usage: verify-s3-wheel-versions.sh [--no-sim] [--python-tags cp310,cp312] <wheel_variant> <version_override> <dist_dir>
 

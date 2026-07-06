@@ -56,11 +56,20 @@ RUN dnf install -y \
 # AlmaLinux clang 21 crashes while compiling generated MLIR bytecode sources in
 # this image. Keep the override local to this wheel-builder image.
 #
-# LLVM_ENABLE_ZSTD=OFF drops LLVM's libzstd dependency (unused by the
-# tt-lang -> ttkernel -> emitc pipeline). Otherwise auditwheel vendors libzstd
-# and rewrites MLIR/tt-lang shared libraries via patchelf --replace-needed; that
-# rewrite corrupts the large libraries and makes `import ttl` segfault.
-ENV TTLANG_LLVM_EXTRA_CMAKE_ARGS="-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON;-DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc;-DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++;-DLLVM_ENABLE_ZSTD=OFF"
+# GCC emits LLVM's singletons as STB_GNU_UNIQUE, which glibc merges process-wide
+# even under RTLD_LOCAL; importing tt-lang and a standalone tt-mlir together then
+# aborts ("Option 'greedy' already exists!"). -fno-gnu-unique keeps them weak, as
+# clang does (clang can't build LLVM on this image, above).
+#
+# LLVM_ENABLE_ZSTD=OFF drops LLVM's libzstd dependency, which the
+# tt-lang -> ttkernel -> emitc pipeline never uses. With zstd enabled the
+# MLIR/tt-lang .so files link the system libzstd, so `auditwheel repair`
+# bundles a renamed copy of libzstd into the wheel and runs
+# `patchelf --replace-needed` on every library to repoint it at that copy.
+# patchelf corrupts the very large MLIR/tt-lang libraries (hundreds of MB)
+# during that rewrite, producing a broken ELF that segfaults on `import ttl`.
+# Dropping the dependency leaves auditwheel nothing to vendor or patch.
+ENV TTLANG_LLVM_EXTRA_CMAKE_ARGS="-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON;-DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc;-DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++;-DCMAKE_CXX_FLAGS=-fno-gnu-unique;-DLLVM_ENABLE_ZSTD=OFF"
 
 COPY . /workspace
 WORKDIR /workspace

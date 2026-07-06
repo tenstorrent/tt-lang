@@ -5,10 +5,6 @@
 """Tests for store patterns: passthrough, double store, multi-output, and
 store-then-forward (one producer fans out to two per-consumer DFBs)."""
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 

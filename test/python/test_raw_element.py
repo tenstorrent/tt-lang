@@ -23,10 +23,6 @@ Covers seven access patterns:
      Includes a ttnn.max comparison.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

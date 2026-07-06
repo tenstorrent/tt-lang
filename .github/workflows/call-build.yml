@@ -56,11 +56,18 @@ jobs:
 
             - name: Configure tt-lang
               run: |
-                  cmake -G Ninja -B build \
-                      -DCMAKE_BUILD_TYPE=Release \
-                      -DTTLANG_USE_TOOLCHAIN=ON \
-                      -DTTLANG_ENABLE_PERF_TRACE=ON \
-                      $CMAKE_EXTRA_CONFIG_OPTIONS
+                  cmake_args=(
+                      -G Ninja
+                      -B build
+                      -DCMAKE_BUILD_TYPE=Release
+                      -DTTLANG_USE_TOOLCHAIN=ON
+                      -DTTLANG_ENABLE_PERF_TRACE=ON
+                  )
+                  if [ -n "${CMAKE_EXTRA_CONFIG_OPTIONS:-}" ]; then
+                      read -r -a extra_cmake_options <<< "$CMAKE_EXTRA_CONFIG_OPTIONS"
+                      cmake_args+=("${extra_cmake_options[@]}")
+                  fi
+                  cmake "${cmake_args[@]}"
 
             - name: Setup ccache
               uses: hendrikmuhs/ccache-action@v1.2

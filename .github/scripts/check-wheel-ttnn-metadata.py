@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
-"""Verify the tt-lang wheel METADATA Requires-Dist matches the ttnn dep mode.
+"""Verify the tt-lang wheel metadata matches the requested build mode.
 
 The "pypi" mode must declare a Requires-Dist on ttnn. The "external" and
-"bundled" modes must not.
+"bundled" modes must not. When --expect-tt-metal-commit is passed, the generated
+ttl/config.py file must record the same tt-metal commit.
 
-Usage: check-wheel-ttnn-metadata.py --mode {pypi,external,bundled} --dist-dir <dir>
+Usage: check-wheel-ttnn-metadata.py --mode {pypi,external,bundled}
+    --dist-dir <dir> [--expect-tt-metal-commit <sha>]
 """
 
 import argparse
 import glob
+import re
 import sys
 import zipfile
 
 from packaging.requirements import InvalidRequirement, Requirement
 
 MODES = ("pypi", "external", "bundled")
+TT_METAL_COMMIT_RE = re.compile(r'^TT_METAL_COMMIT = "([^"]*)"$', re.MULTILINE)
 
 
 def _read_metadata(wheel_path: str) -> str:
@@ -33,6 +37,18 @@ def _read_metadata(wheel_path: str) -> str:
 def _has_bundled_ttnn_payload(wheel_path: str) -> bool:
     with zipfile.ZipFile(wheel_path) as wheel:
         return any(name.startswith("ttnn/") for name in wheel.namelist())
+
+
+def _tt_metal_commit(wheel_path: str) -> str:
+    with zipfile.ZipFile(wheel_path) as wheel:
+        try:
+            config_py = wheel.read("ttl/config.py").decode()
+        except KeyError as error:
+            raise ValueError(f"{wheel_path} has no ttl/config.py entry") from error
+    match = TT_METAL_COMMIT_RE.search(config_py)
+    if not match:
+        raise ValueError(f"{wheel_path} ttl/config.py has no TT_METAL_COMMIT")
+    return match.group(1)
 
 
 def _requires_ttnn(metadata: str) -> bool:
@@ -52,6 +68,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", required=True, choices=MODES)
     parser.add_argument("--dist-dir", required=True)
+    parser.add_argument("--expect-tt-metal-commit")
     args = parser.parse_args()
 
     wheels = glob.glob(f"{args.dist_dir}/tt_lang-*.whl")
@@ -77,6 +94,19 @@ def main() -> int:
     if args.mode == "pypi" and not has_ttnn:
         print("default wheel metadata must require ttnn", file=sys.stderr)
         return 1
+    if args.expect_tt_metal_commit is not None:
+        try:
+            tt_metal_commit = _tt_metal_commit(wheels[0])
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        if tt_metal_commit != args.expect_tt_metal_commit:
+            print(
+                "tt-lang wheel tt-metal provenance mismatch: "
+                f"expected {args.expect_tt_metal_commit}, got {tt_metal_commit}",
+                file=sys.stderr,
+            )
+            return 1
 
     print(f"{wheels[0]}: ttnn dependency present={has_ttnn}")
     return 0

@@ -14,10 +14,6 @@ binary+unary, op-chains, subblocked elementwise, mixed FPU/matmul
 transitions, and the `.store()` followed by `+=` accumulate pattern.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v --tb=short
-
 import pytest
 import torch
 import ttl

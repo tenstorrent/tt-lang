@@ -5,12 +5,8 @@
 name: Publish S3 PyPI Wheels
 
 on:
-  push:
-    tags:
-      # Publish clean-version internal bundled/light wheels for stable releases.
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   schedule:
-    # Nightly S3-only internal wheel publish. GitHub cron uses UTC.
+    # Nightly S3-only wheel publish. GitHub cron uses UTC.
     - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
@@ -20,7 +16,7 @@ on:
         default: ""
         required: false
       version_override:
-        description: "PEP 440 version for the internal wheel. Leave empty to compute a nightly dev version."
+        description: "PEP 440 version for the S3 wheel. Leave empty to compute a nightly dev version."
         type: string
         default: ""
         required: false
@@ -44,6 +40,16 @@ on:
         type: boolean
         default: true
         required: true
+      ttlang_ref:
+        description: "tt-lang SHA or tag to build the wheels from. Leave empty to use the triggering commit."
+        type: string
+        default: ""
+        required: false
+      apply_patches:
+        description: "Apply wheel patches from .github/wheel-patches/ before building (e.g., correct the numpy version constraints when rebuilding an older ref)."
+        type: boolean
+        default: false
+        required: false
 
 concurrency:
   group: publish-s3-pypi-${{ github.ref }}
@@ -73,6 +79,7 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ttlang_ref || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -87,6 +94,12 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: .github/scripts/resolve-s3-publish-inputs.sh
 
+      - name: Require main ref for publishing
+        if: ${{ github.ref != 'refs/heads/main' && (steps.resolve.outputs.dry_run != 'true' || steps.resolve.outputs.docker_tag == '') }}
+        run: |
+          echo "Publishing is restricted to refs/heads/main (got ${GITHUB_REF}). Non-main dry runs must provide docker_tag." >&2
+          exit 1
+
   build-docker:
     needs: preflight
     if: ${{ needs.preflight.outputs.docker_tag == '' }}
@@ -98,6 +111,7 @@ jobs:
     secrets: inherit
     with:
       push: true
+      ttlang_sha_override: ${{ inputs.ttlang_ref }}
 
   build-wheel-images:
     needs: preflight
@@ -107,6 +121,8 @@ jobs:
       packages: write
     uses: ./.github/workflows/call-build-wheel-images.yml
     secrets: inherit
+    with:
+      ttlang_sha_override: ${{ inputs.ttlang_ref }}
 
   build-standard-wheels:
     needs: [preflight, build-docker]
@@ -129,6 +145,8 @@ jobs:
       build_sim_wheel: true
       allow_final_internal_version: ${{ needs.preflight.outputs.allow_final_internal_version == 'true' }}
       artifact_name: tt-lang-wheels-${{ matrix.wheel_variant }}
+      ttlang_sha_override: ${{ inputs.ttlang_ref }}
+      apply_patches: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_patches }}
 
   build-light-wheels:
     needs: [preflight, build-docker, build-wheel-images]
@@ -155,16 +173,41 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ttlang_ref || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
 
+      # The patch runner and patches come from the workflow commit, not the
+      # (possibly older) target ref being rebuilt, which may predate them.
+      - name: Check out wheel patches from the workflow commit
+        if: ${{ inputs.apply_patches }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-patch-src
+          sparse-checkout: |
+            .github/scripts/apply-wheel-patches.sh
+            .github/wheel-patches
+          sparse-checkout-cone-mode: false
+
+      - name: Apply wheel patches
+        if: ${{ inputs.apply_patches }}
+        run: .wheel-patch-src/.github/scripts/apply-wheel-patches.sh --target-dir "$GITHUB_WORKSPACE"
+
       - name: Build light core wheel
         env:
           TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
-        run: .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
+        run: |
+          # inputs.ttlang_ref may be a tag or branch; record the resolved commit.
+          TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"
+          export TTLANG_GIT_COMMIT
+          # Submodules aren't checked out here; read tt-metal's commit from the gitlink.
+          TT_METAL_COMMIT="$(git rev-parse HEAD:third-party/tt-metal)"
+          export TT_METAL_COMMIT
+          .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
 
       - name: Build tt-lang-light metapackage
         if: ${{ matrix.python_tag == 'cp312' }}
@@ -197,6 +240,8 @@ jobs:
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_ref || github.sha }}
 
       - name: Download per-ABI wheels
         uses: actions/download-artifact@v8
@@ -228,7 +273,7 @@ jobs:
   publish:
     name: "Publish wheels to S3 PyPI"
     needs: [preflight, build-standard-wheels, collect-light-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-standard-wheels.result == 'success' || needs.build-standard-wheels.result == 'skipped') && (needs.collect-light-wheels.result == 'success' || needs.collect-light-wheels.result == 'skipped') }}
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-standard-wheels.result == 'success' || needs.build-standard-wheels.result == 'skipped') && (needs.collect-light-wheels.result == 'success' || needs.collect-light-wheels.result == 'skipped') && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -243,6 +288,8 @@ jobs:
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_ref || github.sha }}
 
       - name: Download bundled wheels
         if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') }}
@@ -283,26 +330,49 @@ jobs:
             dist \
             "${prepare_args[@]}"
 
+      # Regular S3 publishes upload wheel objects under tt-lang/. Dev versions
+      # use a generated year-month view; final versions use the releases view.
+      - name: Derive publish prefix
+        id: publish_prefix
+        run: |
+          set -euo pipefail
+          version="${{ needs.preflight.outputs.version_override }}"
+          prefix="tt-lang/releases"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev([0-9]{4})([0-9]{2})[0-9]{2} ]]; then
+            prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+          fi
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "Publish prefix: $prefix"
+
       - name: Configure AWS Credentials
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::767397912691:role/GitHubActionsS3AccessRole
-          aws-region: us-east-2
-
-      - name: Install s3pypi
-        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
-        run: python3 -m pip install s3pypi
+        uses: ./.github/actions/configure-tt-s3-credentials
 
       - name: Publish wheels
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         run: |
           set -euo pipefail
+          publish_args=()
           if [ "${{ needs.preflight.outputs.overwrite_releases }}" = "true" ]; then
-            .github/scripts/publish-s3-wheels.sh --overwrite dist
-          else
-            .github/scripts/publish-s3-wheels.sh dist
+            publish_args+=(--overwrite)
           fi
+          publish_args+=(--prefix "${{ steps.publish_prefix.outputs.prefix }}")
+          .github/scripts/publish-s3-wheels.sh "${publish_args[@]}" dist
+
+      # Direct monthly publishes regenerate the tt-lang/ slash-key listing.
+      # Restore the README afterward.
+      - name: Inject S3 index README
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install markdown
+          prefix="${{ steps.publish_prefix.outputs.prefix }}"
+          parent="$(dirname "$prefix")"
+          key="$parent/"
+          .github/scripts/inject-s3-index-readme.sh \
+            --key "$key" \
+            --require-existing \
+            --dist-dir dist
 
       - name: Report install command
         run: |
@@ -311,7 +381,61 @@ jobs:
           if [ "${{ needs.preflight.outputs.dry_run }}" = "true" ]; then
             summary_args+=(--dry-run)
           fi
+          summary_args+=(--find-links-subdir "${{ steps.publish_prefix.outputs.prefix }}")
           .github/scripts/publish-s3-summary.sh \
             "${summary_args[@]}" \
             "${{ needs.preflight.outputs.wheel_variant }}" \
             "${{ needs.preflight.outputs.version_override }}"
+
+  # Reuse this run's freshly pushed ird and manylinux images. Best-effort:
+  # continue-on-error here and soft_fail on the reusable build below keep a
+  # failure in this extra wheel from failing the nightly publish.
+  ttmetal-light-detect:
+    name: "Detect tt-lang-light per-tt-metal-SHA build"
+    needs: preflight
+    if: ${{ github.event_name == 'schedule' }}
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      uplift: ${{ steps.detect.outputs.uplift }}
+      tt_metal_sha: ${{ steps.detect.outputs.tt_metal_sha }}
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      # Detection needs only tt-mlir's TT_METAL_VERSION pin.
+      - name: Fetch tt-mlir for uplift detection
+        run: git submodule update --init --depth 1 third-party/tt-mlir
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-tt-s3-credentials
+
+      - name: Detect uplift
+        id: detect
+        run: .github/scripts/detect-ttmlir-ttmetal-uplift.sh
+
+  ttmetal-light-build:
+    name: "Build tt-lang-light per-tt-metal-SHA wheel"
+    needs: [preflight, build-docker, build-wheel-images, ttmetal-light-detect]
+    if: ${{ github.event_name == 'schedule' && needs.ttmetal-light-detect.outputs.uplift == 'true' }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    uses: ./.github/workflows/call-ttmetal-light-wheel.yml
+    secrets: inherit
+    with:
+      tt_metal_sha: ${{ needs.ttmetal-light-detect.outputs.tt_metal_sha }}
+      docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
+      dry_run: false
+      soft_fail: true

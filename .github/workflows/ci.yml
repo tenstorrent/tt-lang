@@ -214,6 +214,11 @@ jobs:
     needs: build-docs
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
+    # Serialize Pages deployments across runs so a second one waits instead of
+    # failing with "Deployment failed, try again later".
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       contents: read
       pages: write

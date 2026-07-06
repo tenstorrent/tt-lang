@@ -43,6 +43,10 @@ setup() {
     assert_output --partial ":no-sim is only valid for the light variant"
 }
 
+@test "--light-python-tags without value -> usage error (exit 2)" {
+    run -2 "$SCRIPT" --light-python-tags
+}
+
 @test "missing artifact dir -> error" {
     run -1 "$SCRIPT" "$VER" "$PUBLISH_DIR" bundled="$BATS_TEST_TMPDIR/missing"
     assert_output --partial "Wheel artifact directory not found"
@@ -77,6 +81,23 @@ setup() {
     assert_output --partial "$(whl_light_core_cp310 "$VER")"
     assert_output --partial "$(whl_light_core_cp312 "$VER")"
     assert_output --partial "$(whl_light "$VER")"
+}
+
+@test "light no-sim artifact honors requested Python tag subset" {
+    light_dir=$(make_wheel_dir \
+        "$(whl_light_core_cp312 "$VER")" \
+        "$(whl_light "$VER")")
+
+    run -0 "$SCRIPT" \
+        --light-python-tags cp312 \
+        "$VER" \
+        "$PUBLISH_DIR" \
+        "light:no-sim=$light_dir"
+
+    run ls "$PUBLISH_DIR"
+    assert_output --partial "$(whl_light_core_cp312 "$VER")"
+    assert_output --partial "$(whl_light "$VER")"
+    refute_output --partial "$(whl_light_core_cp310 "$VER")"
 }
 
 @test "light no-sim spec rejects unexpected sim wheel" {

@@ -23,10 +23,6 @@ The bug caused incorrect register operands for the second multiply,
 computing (a*x) * b instead of b * y, resulting in 30 instead of 26.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl
