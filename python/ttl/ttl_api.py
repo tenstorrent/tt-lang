@@ -1807,6 +1807,8 @@ def _lower_program_to_kernel(
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
+            "func.func(ttl-form-accumulation-scopes)",
+            "func.func(ttl-lower-accumulation-scopes)",
             "func.func(ttl-materialize-loop-state)",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-annotate-l1-acc-loops)",

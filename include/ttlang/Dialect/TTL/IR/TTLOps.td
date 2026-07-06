@@ -1017,6 +1017,29 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
   let assemblyFormat = "$input `into` `dst` `[` $dst_index `]` attr-dict `:` type($input) `->` type($result)";
 }
 
+def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate",
+    [TTL_TileBinaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_AccumulatingOpTrait, TTL_DstResultOpTrait,
+     AllTypesMatch<["accumulator", "contribution", "result"]>]> {
+  let summary = "In-DST tile recurrence";
+  let description = [{
+    Applies `combiner` to `accumulator` and `contribution`, then writes the
+    result back to the accumulator DST register. The accumulator operand and
+    result use the same DST slot.
+
+    This operation represents recurrence semantics explicitly. It is distinct
+    from ordinary binary tile operations, whose result may use a different DST
+    slot.
+  }];
+  let arguments = (ins TTL_TileType:$accumulator,
+                       TTL_TileType:$contribution,
+                       TTL_AccumulationCombinerAttr:$combiner,
+                       Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//

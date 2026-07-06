@@ -117,6 +117,51 @@ def TTLInsertCopyWait
   let dependentDialects = [];
 }
 
+def TTLFormAccumulationScopes
+    : Pass<"ttl-form-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Form semantic accumulation scopes around tensor recurrences";
+  let description = [{
+    Wraps canonical loop-carried additive tensor recurrences in
+    `ttl.accumulation_scope`. The tensor form requires an init-backed
+    recurrence, one final non-accumulating store to a dataflow buffer
+    reservation, a loop-local contribution wait, and a statically coalescible
+    contribution window.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Accumulation scope form to create. Only `tensor` is supported.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLLowerAccumulationScopes
+    : Pass<"ttl-lower-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Lower semantic accumulation scopes to concrete storage";
+  let description = [{
+    Lowers tensor `ttl.accumulation_scope` operations to DST-resident reduction
+    computes. The pass first validates every scope before mutating IR, then
+    rewrites each valid scope to a `ttl.compute` with output-parallel iterators
+    and one trailing reduction iterator.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Accumulation scope form to lower. Only `tensor` is supported.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLMaterializeLoopState
     : Pass<"ttl-materialize-loop-state", "::mlir::func::FuncOp"> {
   let summary = "Materialize loop-carried tensor state";

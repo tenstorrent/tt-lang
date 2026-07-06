@@ -1,0 +1,272 @@
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//===----------------------------------------------------------------------===//
+// TTL Lower Accumulation Scopes
+//===----------------------------------------------------------------------===//
+//
+// Lowers semantic tensor accumulation scopes to DST-resident computes.
+//
+//===----------------------------------------------------------------------===//
+
+#include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/STLExtras.h"
+
+#define DEBUG_TYPE "ttl-lower-accumulation-scopes"
+
+namespace mlir::tt::ttl {
+
+#define GEN_PASS_DEF_TTLLOWERACCUMULATIONSCOPES
+#include "ttlang/Dialect/TTL/Passes.h.inc"
+
+namespace {
+
+/// Check the structural policy encoded by tensor accumulation scopes. The
+/// scope lowerer relies on this policy before it looks through the contained
+/// loop recurrence.
+static LogicalResult verifySingleAddInitTensorScope(AccumulationScopeOp scope) {
+  if (scope.getOutputs().size() != 1) {
+    return scope.emitOpError(
+        "tensor accumulation lowering supports exactly one output; split "
+        "multiple accumulators into separate scopes");
+  }
+  if (scope.getInits().size() != 1) {
+    return scope.emitOpError(
+        "tensor accumulation lowering requires one init operand");
+  }
+
+  SmallVector<AccumulationInitialMode> initialModes =
+      scope.getAccumulationInitialModes();
+  if (initialModes.front() != AccumulationInitialMode::Init) {
+    return scope.emitOpError(
+        "tensor accumulation lowering requires init initial mode");
+  }
+
+  if (!scope.getOutputs().front().getDefiningOp<CBReserveOp>()) {
+    return scope.emitOpError(
+        "tensor accumulation lowering requires output from ttl.cb_reserve");
+  }
+  return success();
+}
+
+/// Return the normalized loop/store pair from a tensor accumulation scope.
+/// Extra top-level operations cannot be reordered across the loop or final
+/// store without changing side-effect ordering, so they are rejected.
+static FailureOr<scf::ForOp>
+getSingleTensorAccumulationLoop(AccumulationScopeOp scope,
+                                StoreOp &finalStore) {
+  scf::ForOp loop;
+  Block &body = scope.getBody().front();
+  for (Operation &operation : body.without_terminator()) {
+    if (auto candidateLoop = dyn_cast<scf::ForOp>(&operation)) {
+      if (loop) {
+        return failure();
+      }
+      loop = candidateLoop;
+      continue;
+    }
+
+    if (auto candidateStore = dyn_cast<StoreOp>(&operation)) {
+      if (finalStore) {
+        return failure();
+      }
+      finalStore = candidateStore;
+      continue;
+    }
+
+    return failure();
+  }
+
+  if (!loop || !finalStore || !loop->isBeforeInBlock(finalStore) ||
+      finalStore.getView() != scope.getOutputs().front()) {
+    return failure();
+  }
+  return loop;
+}
+
+/// Reuse the shared recurrence matcher so scope formation and scope lowering
+/// accept the same tensor recurrence. The block argument is compared first,
+/// then replaced with the external init operand used by the lowered compute.
+static FailureOr<TensorAccumulationMatch>
+matchTensorAccumulationScope(AccumulationScopeOp scope) {
+  if (failed(verifySingleAddInitTensorScope(scope))) {
+    return failure();
+  }
+
+  StoreOp finalStore;
+  FailureOr<scf::ForOp> loop =
+      getSingleTensorAccumulationLoop(scope, finalStore);
+  if (failed(loop)) {
+    (void)scope.emitOpError(
+        "tensor accumulation lowering requires a normalized scope body with "
+        "one top-level scf.for followed by the final ttl.store; run "
+        "ttl-form-accumulation-scopes or split other operations outside the "
+        "scope");
+    return failure();
+  }
+
+  FailureOr<TensorAccumulationMatch> match = matchAdditiveTensorAccumulation(
+      *loop, /*resultIndex=*/0,
+      TensorAccumulationReservePlacement::ExternalAllowed,
+      ArrayRef<Operation *>{scope.getOperation()},
+      ArrayRef<Operation *>{scope.getBody().front().getTerminator()});
+  if (failed(match)) {
+    (void)scope.emitOpError(
+        "tensor accumulation lowering requires a loop-carried additive "
+        "recurrence of the form acc = acc + contribution");
+    return failure();
+  }
+
+  if (match->finalStore != finalStore ||
+      match->initialValue != scope.getBody().front().getArgument(0)) {
+    (void)scope.emitOpError(
+        "tensor accumulation scope policy must match the loop recurrence");
+    return failure();
+  }
+  match->initialValue = scope.getInits().front();
+  return match;
+}
+
+/// Compute replacements for inlining the scope body after the contained loop
+/// has been rewritten. Init-mode outputs use the explicit init operand; other
+/// modes keep the output value itself.
+static SmallVector<Value>
+getScopeBlockArgumentReplacements(AccumulationScopeOp scope) {
+  SmallVector<Value> replacements;
+  SmallVector<AccumulationInitialMode> initialModes =
+      scope.getAccumulationInitialModes();
+  unsigned initIndex = 0;
+  for (auto [outputIndex, output] : llvm::enumerate(scope.getOutputs())) {
+    if (initialModes[outputIndex] == AccumulationInitialMode::Init) {
+      replacements.push_back(scope.getInits()[initIndex++]);
+      continue;
+    }
+    replacements.push_back(output);
+  }
+  return replacements;
+}
+
+/// Remove the region wrapper after its contents no longer depend on region
+/// isolation. The caller provides block argument replacements because MLIR
+/// region inlining must preserve SSA dominance for remaining users.
+static void
+eraseAccumulationScopeWrapper(AccumulationScopeOp scope, RewriterBase &rewriter,
+                              ValueRange blockArgReplacements = ValueRange()) {
+  Block &body = scope.getBody().front();
+  rewriter.eraseOp(body.getTerminator());
+  rewriter.inlineBlockBefore(&body, scope, blockArgReplacements);
+  rewriter.eraseOp(scope);
+}
+
+/// Disconnect the terminator from loop results before the loop is erased.
+/// This keeps the wrapper body valid until it is inlined into the parent block.
+static void replaceYieldOperandsWithStateArguments(AccumulationScopeOp scope) {
+  Block &body = scope.getBody().front();
+  auto yield = cast<YieldOp>(body.getTerminator());
+  for (auto [index, stateArgument] : llvm::enumerate(body.getArguments())) {
+    yield->setOperand(index, stateArgument);
+  }
+}
+
+/// Verify every condition that the mutating rewrite depends on. Diagnostics
+/// are emitted here, before any scope is rewritten, to avoid partially lowered
+/// IR when one scope is invalid.
+static LogicalResult
+verifyTensorScopeLoweringPrecondition(AccumulationScopeOp scope) {
+  FailureOr<TensorAccumulationMatch> match =
+      matchTensorAccumulationScope(scope);
+  if (failed(match)) {
+    return failure();
+  }
+
+  scf::ForOp loop = match->add->getParentOfType<scf::ForOp>();
+  assert(loop && "matched add must be inside an scf.for");
+  if (failed(analyzeTensorAccumulationForDst(*match, loop))) {
+    return scope.emitOpError(
+        "tensor accumulation lowering requires a DST-compatible same-type "
+        "additive recurrence with a static positive trip count, an attached "
+        "init tensor, one loop-local contribution ttl.cb_wait, and a "
+        "coalesced contribution window that fits in its dataflow buffer");
+  }
+  return success();
+}
+
+/// Rewrite one verified tensor accumulation scope to a DST-resident reduction
+/// compute and remove the now-empty scope wrapper.
+static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
+                                                  RewriterBase &rewriter) {
+  FailureOr<TensorAccumulationMatch> match =
+      matchTensorAccumulationScope(scope);
+  assert(succeeded(match) && "precondition scan must reject invalid scopes");
+  if (failed(match)) {
+    return failure();
+  }
+
+  scf::ForOp loop = match->add->getParentOfType<scf::ForOp>();
+  assert(loop && "matched add must be inside an scf.for");
+
+  replaceYieldOperandsWithStateArguments(scope);
+  LogicalResult lowered = lowerTensorAccumulationToDst(*match, loop, rewriter);
+  assert(succeeded(lowered) && "precondition scan must prove DST lowering");
+  if (failed(lowered)) {
+    return failure();
+  }
+
+  eraseAccumulationScopeWrapper(scope, rewriter,
+                                getScopeBlockArgumentReplacements(scope));
+  return success();
+}
+
+/// Lowers only verified tensor accumulation scopes. The pass scans first and
+/// mutates second because MLIR diagnostics from `runOnOperation` must coincide
+/// with pass failure, not leave mixed old/new IR.
+struct TTLLowerAccumulationScopesPass
+    : public impl::TTLLowerAccumulationScopesBase<
+          TTLLowerAccumulationScopesPass> {
+  using impl::TTLLowerAccumulationScopesBase<
+      TTLLowerAccumulationScopesPass>::TTLLowerAccumulationScopesBase;
+
+  void runOnOperation() override {
+    func::FuncOp func = getOperation();
+    if (kind != "tensor") {
+      func.emitOpError() << "invalid accumulation scope lowering kind `" << kind
+                         << "`; expected `tensor`";
+      signalPassFailure();
+      return;
+    }
+
+    SmallVector<AccumulationScopeOp> scopes;
+    func.walk([&](AccumulationScopeOp scope) { scopes.push_back(scope); });
+
+    bool hasInvalidScope = false;
+    for (AccumulationScopeOp scope : scopes) {
+      if (failed(verifyTensorScopeLoweringPrecondition(scope))) {
+        hasInvalidScope = true;
+      }
+    }
+    if (hasInvalidScope) {
+      signalPassFailure();
+      return;
+    }
+
+    IRRewriter rewriter(&getContext());
+    for (AccumulationScopeOp scope : scopes) {
+      if (failed(lowerTensorAccumulationScope(scope, rewriter))) {
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+};
+
+} // namespace
+
+} // namespace mlir::tt::ttl

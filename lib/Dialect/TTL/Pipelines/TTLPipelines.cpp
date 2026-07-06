@@ -18,6 +18,8 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createTTLFormAccumulationScopes());
+  pm.addNestedPass<func::FuncOp>(createTTLLowerAccumulationScopes());
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   pm.addPass(createTTLAnnotateL1AccLoops());
