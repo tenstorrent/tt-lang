@@ -439,6 +439,159 @@ def test_multi_tile_block_recurrence(device, dtype):
     assert_allclose(result, expected.float(), **_DTYPE_TOL[dtype])
 
 
+def _make_distinct_contribution_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(initial, deltas, out):
+        initial_dfb = ttl.make_dataflow_buffer_like(
+            initial, shape=(1, 1), block_count=2
+        )
+        delta_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(1, 1), block_count=N_ITERS
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with initial_dfb.wait() as acc:
+                for _ in range(N_ITERS):
+                    with delta_dfb.wait() as delta_blk:
+                        acc = acc + delta_blk
+                with out_dfb.reserve() as out_blk:
+                    out_blk.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with initial_dfb.reserve() as initial_blk:
+                ttl.copy(initial[0:1, 0:1], initial_blk).wait()
+            # Each iteration reads a DIFFERENT source tile.
+            for i in range(N_ITERS):
+                with delta_dfb.reserve() as delta_blk:
+                    ttl.copy(deltas[i : i + 1, 0:1], delta_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as out_blk:
+                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_distinct_per_iteration_contributions(device, dtype):
+    """Each iteration adds a distinct contribution tile, so a wrong
+    coalesced-window reduction index (e.g. reading the same tile every
+    iteration) changes the result. The all-equal-contribution tests above
+    cannot catch such an indexing error."""
+    initial = torch.full((TILE, TILE), 5.0, dtype=dtype)
+    deltas = torch.zeros((N_ITERS * TILE, TILE), dtype=dtype)
+    for i in range(N_ITERS):
+        deltas[i * TILE : (i + 1) * TILE, :] = float(i + 1)
+    expected = initial.float() + sum(float(i + 1) for i in range(N_ITERS))
+    _run_io_kernel(
+        _make_distinct_contribution_kernel(),
+        in_tensors=[initial, deltas],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+    )
+
+
+def _fill_tile_block(tile_values, dtype):
+    """Build a MULTI_TILE_SHAPE block whose tile (r, c) is filled with the
+    constant `tile_values[r][c]`."""
+    rows, cols = MULTI_TILE_SHAPE
+    block = torch.zeros((rows * TILE, cols * TILE), dtype=dtype)
+    for r in range(rows):
+        for c in range(cols):
+            block[r * TILE : (r + 1) * TILE, c * TILE : (c + 1) * TILE] = float(
+                tile_values[r][c]
+            )
+    return block
+
+
+def _make_multi_tile_distinct_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(a_seed, deltas, out):
+        a_cb = ttl.make_dataflow_buffer_like(
+            a_seed, shape=MULTI_TILE_SHAPE, block_count=2
+        )
+        delta_cb = ttl.make_dataflow_buffer_like(
+            out, shape=MULTI_TILE_SHAPE, block_count=N_ITERS
+        )
+        out_cb = ttl.make_dataflow_buffer_like(
+            out, shape=MULTI_TILE_SHAPE, block_count=2
+        )
+
+        @ttl.compute()
+        def compute():
+            with a_cb.wait() as a:
+                for _ in range(N_ITERS):
+                    with delta_cb.wait() as d:
+                        a = a + d
+                with out_cb.reserve() as o:
+                    o.store(a)
+
+        @ttl.datamovement()
+        def reader():
+            with a_cb.reserve() as blk:
+                ttl.copy(
+                    a_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                ).wait()
+            # The reader loop is traced (scf.for); the tracer resolves only the
+            # loop var and integer literals in a traced slice bound, so the
+            # per-iteration tile-row offset uses literals (MULTI_TILE_SHAPE is
+            # (2, 2)), not MULTI_TILE_SHAPE.
+            for i in range(N_ITERS):
+                with delta_cb.reserve() as blk:
+                    ttl.copy(deltas[2 * i : 2 * i + 2, 0:2], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_cb.wait() as blk:
+                ttl.copy(
+                    blk, out[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                ).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_multi_tile_distinct_per_iteration_contributions(device, dtype):
+    """Multi-tile recurrence whose contribution differs per tile position and
+    per iteration, exercising the full coalesced-window index
+    `reduction_iv * tile_count + linearize(output_tile)`. Values are small
+    integers so bf16 represents them exactly."""
+    # The kernel reader hard-codes the (2, 2) tile-row stride as literals.
+    assert MULTI_TILE_SHAPE == (2, 2)
+    rows, cols = MULTI_TILE_SHAPE
+    a_vals = [[2 * r + c for c in range(cols)] for r in range(rows)]
+    a_seed = _fill_tile_block(a_vals, dtype)
+    delta_blocks = []
+    for i in range(N_ITERS):
+        vals = [[(i + 1) + 4 * (2 * r + c) for c in range(cols)] for r in range(rows)]
+        delta_blocks.append(_fill_tile_block(vals, dtype))
+    deltas = torch.cat(delta_blocks, dim=0)
+    exp_vals = [
+        [
+            a_vals[r][c] + sum((i + 1) + 4 * (2 * r + c) for i in range(N_ITERS))
+            for c in range(cols)
+        ]
+        for r in range(rows)
+    ]
+    expected = _fill_tile_block(exp_vals, torch.float32)
+    _run_io_kernel(
+        _make_multi_tile_distinct_kernel(),
+        in_tensors=[a_seed, deltas],
+        out_zeros=[torch.zeros((rows * TILE, cols * TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+    )
+
+
 def _make_aug_assign_non_block_kernel():
     @ttl.operation(grid=(1, 1))
     def kernel(a_seed, delta, out):

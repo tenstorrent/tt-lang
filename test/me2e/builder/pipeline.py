@@ -46,6 +46,8 @@ def compile_ttl_to_ttkernel(
     # Finalize DFB indices before compute configuration copies them into
     # function attributes.
     dfb_func_passes = [
+        "ttl-form-accumulation-scopes",
+        "ttl-lower-accumulation-scopes",
         "ttl-materialize-loop-state",
         "ttl-insert-copy-wait",
         "ttl-form-producer-compute",

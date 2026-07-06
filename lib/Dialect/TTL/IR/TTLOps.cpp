@@ -1015,6 +1015,82 @@ mlir::LogicalResult mlir::tt::ttl::YieldOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// TileAccumulateOp
+//===----------------------------------------------------------------------===//
+
+mlir::ParseResult
+mlir::tt::ttl::TileAccumulateOp::parse(mlir::OpAsmParser &parser,
+                                       mlir::OperationState &result) {
+  mlir::OpAsmParser::UnresolvedOperand accumulator;
+  mlir::OpAsmParser::UnresolvedOperand contribution;
+  mlir::OpAsmParser::UnresolvedOperand dstIndex;
+  mlir::Type accumulatorType;
+  mlir::Type contributionType;
+  mlir::Type resultType;
+  llvm::StringRef combinerKeyword;
+  llvm::SMLoc combinerLoc;
+
+  if (parser.parseOperand(accumulator) || parser.parseComma() ||
+      parser.parseOperand(contribution)) {
+    return mlir::failure();
+  }
+
+  combinerLoc = parser.getCurrentLocation();
+  if (parser.parseKeyword(&combinerKeyword)) {
+    return mlir::failure();
+  }
+  std::optional<mlir::tt::ttl::AccumulationCombiner> combiner =
+      mlir::tt::ttl::symbolizeAccumulationCombiner(combinerKeyword);
+  if (!combiner) {
+    return parser.emitError(combinerLoc)
+           << "expected accumulation combiner `add`";
+  }
+  result.addAttribute("combiner", mlir::tt::ttl::AccumulationCombinerAttr::get(
+                                      parser.getContext(), *combiner));
+
+  if (parser.parseKeyword("into") || parser.parseKeyword("dst") ||
+      parser.parseLSquare() || parser.parseOperand(dstIndex) ||
+      parser.parseRSquare() ||
+      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
+      parser.parseType(accumulatorType) || parser.parseComma() ||
+      parser.parseType(contributionType) || parser.parseArrow() ||
+      parser.parseType(resultType)) {
+    return mlir::failure();
+  }
+
+  if (parser.resolveOperand(accumulator, accumulatorType, result.operands) ||
+      parser.resolveOperand(contribution, contributionType, result.operands) ||
+      parser.resolveOperand(dstIndex, parser.getBuilder().getIndexType(),
+                            result.operands)) {
+    return mlir::failure();
+  }
+  result.addTypes(resultType);
+  return mlir::success();
+}
+
+void mlir::tt::ttl::TileAccumulateOp::print(mlir::OpAsmPrinter &p) {
+  p << ' ' << getAccumulator() << ", " << getContribution() << ' '
+    << mlir::tt::ttl::stringifyAccumulationCombiner(getCombiner())
+    << " into dst[" << getDstIndex() << "]";
+  llvm::SmallVector<llvm::StringRef> elidedAttrs = {"combiner"};
+  p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
+  p << " : " << getAccumulator().getType() << ", "
+    << getContribution().getType() << " -> " << getResult().getType();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileAccumulateOp::verify() {
+  if (getAccumulator().getType() != getResult().getType()) {
+    return emitOpError("requires accumulator and result to have the same type");
+  }
+  if (getCombiner() == AccumulationCombiner::Add &&
+      getContribution().getType() != getAccumulator().getType()) {
+    return emitOpError(
+        "requires contribution and accumulator to have the same type for add");
+  }
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // AccumulationScopeOp - AccumulationScopeOpInterface implementations
 //===----------------------------------------------------------------------===//
 
