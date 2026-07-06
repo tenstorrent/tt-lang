@@ -11,12 +11,12 @@
 // LOOPS-LABEL: func.func @tile_accumulate_reduction
 // LOOPS: ttl.dst_section {
 // LOOPS: %[[INIT_TILE:.*]] = tensor.extract %{{.*}}[%{{.*}}, %{{.*}}]
-// LOOPS: %{{.*}}, %[[INIT_COPY:.*]] = ttl.copy_tile %[[INIT_TILE]]
+// LOOPS: %{{.*}}, %[[INIT_COPY:.*]] = ttl.copy_tile %[[INIT_TILE]]{{.*}} into dst[%[[ACC:.*]]]
 // LOOPS: scf.for %[[K:.*]] =
 // LOOPS: %[[CONTRIB_TILE:.*]] = tensor.extract %{{.*}}[%[[K]], %{{.*}}, %{{.*}}]
 // LOOPS: %{{.*}}, %[[CONTRIB_COPY:.*]] = ttl.copy_tile %[[CONTRIB_TILE]]
-// LOOPS: ttl.tile_accumulate %[[INIT_COPY]], %[[CONTRIB_COPY]] add into dst[%{{.*}}]
-// LOOPS: ttl.tile_store
+// LOOPS: ttl.tile_accumulate %[[INIT_COPY]], %[[CONTRIB_COPY]] add into dst[%[[ACC]]]
+// LOOPS: ttl.tile_store %{{.*}} from dst[%[[ACC]]]
 
 // TTK-LABEL: func.func @tile_accumulate_reduction
 // TTK: ttkernel.binary_dest_reuse_tiles_init

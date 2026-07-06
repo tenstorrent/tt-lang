@@ -1096,9 +1096,9 @@ void mlir::tt::ttl::TileAccumulateOp::print(mlir::OpAsmPrinter &p) {
 }
 
 mlir::LogicalResult mlir::tt::ttl::TileAccumulateOp::verify() {
-  if (getAccumulator().getType() != getResult().getType()) {
-    return emitOpError("requires accumulator and result to have the same type");
-  }
+  // Accumulator/result type equality is structural (AllTypesMatch); only the
+  // combiner-specific contribution constraint is checked here. `add` reads the
+  // contribution through SRCB, so it must match the accumulator type.
   if (getCombiner() == AccumulationCombiner::Add &&
       getContribution().getType() != getAccumulator().getType()) {
     return emitOpError(

@@ -415,10 +415,6 @@ struct TTLTileAccumulateToTTKernel : OpConversionPattern<TileAccumulateOp> {
         ttk::EltwiseBinaryType::Add, ttk::BinaryDestReuseType::DestToSrcA);
 
     rewriter.replaceOp(op, adaptor.getAccumulator());
-    if (contributionCopy && contributionCopy.getDstToken().use_empty() &&
-        contributionCopy.getDstTile().use_empty()) {
-      rewriter.eraseOp(contributionCopy);
-    }
     return success();
   }
 };

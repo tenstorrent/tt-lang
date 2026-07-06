@@ -1020,7 +1020,7 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate",
     [TTL_TileBinaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
      TTL_AccumulatingOpTrait, TTL_DstResultOpTrait,
-     AllTypesMatch<["accumulator", "contribution", "result"]>]> {
+     AllTypesMatch<["accumulator", "result"]>]> {
   let summary = "In-DST tile recurrence";
   let description = [{
     Applies `combiner` to `accumulator` and `contribution`, then writes the
