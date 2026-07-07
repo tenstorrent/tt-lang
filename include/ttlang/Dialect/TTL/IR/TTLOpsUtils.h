@@ -361,6 +361,10 @@ FusionTraceResult traceFusionToRoots(mlir::Value value);
 /// Return true if fusing `value` into `consumer` would read from a root DFB
 /// after its release. The check prevents fusion from extending an attached
 /// value past the lifetime established by the wait/pop pair.
+///
+/// This proves only same-block, top-level releases between the root definition
+/// and consumer. Region-aware release reasoning belongs in the DFB
+/// acquire/release analysis.
 bool fusableValueCrossesDFBRelease(mlir::Value value,
                                    mlir::Operation *consumer);
 
