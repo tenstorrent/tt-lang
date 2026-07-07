@@ -88,6 +88,11 @@ class KernelSpec:
             common_runtime_args, in order.
         config: Kernel config descriptor (ComputeConfigDescriptor,
             ReaderConfigDescriptor, WriterConfigDescriptor, or EthernetConfigDescriptor).
+        pipe_computed_address_dfb_indices: Receiver DFB indices whose computed
+            L1 bases are passed as compile-time args for this kernel.
+        extra_common_runtime_args: Per-kernel runtime args appended after
+            shared compiler-managed args. Fabric connection args use this so
+            kernels that do not emit fabric calls do not receive unused args.
     """
 
     path: str
@@ -95,6 +100,7 @@ class KernelSpec:
     tensor_indices: List[int]
     config: Any
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
+    extra_common_runtime_args: Optional[List[int]] = None
 
 
 @dataclass
@@ -200,6 +206,7 @@ def build_kernel_descriptors(
             tensors[idx].buffer_address() for idx in spec.tensor_indices
         ]
         common_runtime_args.extend(extra_args)
+        common_runtime_args.extend(spec.extra_common_runtime_args or [])
 
         computed_address_base_args = []
         for dfb_index in spec.pipe_computed_address_dfb_indices:
@@ -921,6 +928,13 @@ def emit_runner_source(
     lines.append("]")
     lines.append("")
 
+    lines.append("KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [")
+    for spec in kernel_specs:
+        extra_args = list(spec.extra_common_runtime_args or [])
+        lines.append(f"    {extra_args!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
     lines.append("CB_CONFIGS = [")
     for i, cb in enumerate(cb_configs):
         if cb is None:
@@ -995,6 +1009,10 @@ def emit_runner_source(
     lines.append("                config=config,")
     lines.append(
         "                pipe_computed_address_dfb_indices=KERNEL_PIPE_COMPUTED_ADDRESS_DFB_INDICES[kernel_idx],"
+    )
+    lines.append(
+        "                extra_common_runtime_args="
+        "KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx],"
     )
     lines.append("            )")
     lines.append("        )")
