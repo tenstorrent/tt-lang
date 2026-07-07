@@ -34,6 +34,10 @@ CONTRIBUTION_BLOCK_COUNT = 2
 MULTI_TILE_SHAPE = (2, 2)
 MULTI_TILE_ROWS = MULTI_TILE_SHAPE[0] * TILE
 MULTI_TILE_COLS = MULTI_TILE_SHAPE[1] * TILE
+DTYPE_CASES = (
+    (torch.bfloat16, "BF16", 0.98),
+    (torch.float32, "F32", 0.999),
+)
 
 
 @ttl.operation(grid=(1, 1))
@@ -169,15 +173,18 @@ def resident_delta_acc_recurrence(initial, delta, out):
 # CHECK-CPP-NOT: pack_reconfig_l1_acc
 # CHECK-CPP-NOT: llk_pack_reconfig_l1_acc
 
-# CHECK-RESULT: SINGLE PASS
-# CHECK-RESULT: MULTI PASS
-# CHECK-RESULT: RESIDENT PASS
+# CHECK-RESULT: SINGLE BF16 PASS
+# CHECK-RESULT: MULTI BF16 PASS
+# CHECK-RESULT: RESIDENT BF16 PASS
+# CHECK-RESULT: SINGLE F32 PASS
+# CHECK-RESULT: MULTI F32 PASS
+# CHECK-RESULT: RESIDENT F32 PASS
 # CHECK-RESULT: PASS
 
 
-def run_single_tile(device):
-    initial = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    delta = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+def run_single_tile(device, dtype, dtype_label, threshold):
+    initial = torch.randn(TILE, TILE, dtype=dtype)
+    delta = torch.randn(TILE, TILE, dtype=dtype)
     golden = initial.float() + N_ITERS * delta.float()
     out_dev = to_dram(torch.zeros_like(initial), device)
 
@@ -186,26 +193,26 @@ def run_single_tile(device):
     )
 
     result = ttnn.to_torch(out_dev).float()
-    assert_pcc(golden.float(), result.float(), threshold=0.98)
-    print("SINGLE PASS")
+    assert_pcc(golden.float(), result.float(), threshold=threshold)
+    print(f"SINGLE {dtype_label} PASS")
 
 
-def run_multi_tile(device):
-    initial = torch.randn(MULTI_TILE_ROWS, MULTI_TILE_COLS, dtype=torch.bfloat16)
-    delta = torch.randn(MULTI_TILE_ROWS, MULTI_TILE_COLS, dtype=torch.bfloat16)
+def run_multi_tile(device, dtype, dtype_label, threshold):
+    initial = torch.randn(MULTI_TILE_ROWS, MULTI_TILE_COLS, dtype=dtype)
+    delta = torch.randn(MULTI_TILE_ROWS, MULTI_TILE_COLS, dtype=dtype)
     golden = initial.float() + N_ITERS * delta.float()
     out_dev = to_dram(torch.zeros_like(initial), device)
 
     multi_tile_acc_recurrence(to_dram(initial, device), to_dram(delta, device), out_dev)
 
     result = ttnn.to_torch(out_dev).float()
-    assert_pcc(golden.float(), result.float(), threshold=0.98)
-    print("MULTI PASS")
+    assert_pcc(golden.float(), result.float(), threshold=threshold)
+    print(f"MULTI {dtype_label} PASS")
 
 
-def run_resident_delta(device):
-    initial = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    delta = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+def run_resident_delta(device, dtype, dtype_label, threshold):
+    initial = torch.randn(TILE, TILE, dtype=dtype)
+    delta = torch.randn(TILE, TILE, dtype=dtype)
     golden = initial.float() + N_ITERS * delta.float()
     out_dev = to_dram(torch.zeros_like(initial), device)
 
@@ -214,17 +221,18 @@ def run_resident_delta(device):
     )
 
     result = ttnn.to_torch(out_dev).float()
-    assert_pcc(golden.float(), result.float(), threshold=0.98)
-    print("RESIDENT PASS")
+    assert_pcc(golden.float(), result.float(), threshold=threshold)
+    print(f"RESIDENT {dtype_label} PASS")
 
 
 if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
     try:
         torch.manual_seed(0)
-        run_single_tile(device)
-        run_multi_tile(device)
-        run_resident_delta(device)
+        for dtype, dtype_label, threshold in DTYPE_CASES:
+            run_single_tile(device, dtype, dtype_label, threshold)
+            run_multi_tile(device, dtype, dtype_label, threshold)
+            run_resident_delta(device, dtype, dtype_label, threshold)
         print("PASS")
     finally:
         ttnn.close_device(device)

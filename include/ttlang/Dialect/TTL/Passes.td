@@ -124,8 +124,8 @@ def TTLFormAccumulationScopes
     Wraps canonical loop-carried additive tensor recurrences in
     `ttl.accumulation_scope`. The tensor form requires an init-backed
     recurrence, one final non-accumulating store to a dataflow buffer
-    reservation, a loop-local contribution wait/pop pair, and an output tile
-    count that fits in one streaming DST section.
+    reservation, a streamed or resident dataflow-buffer-backed contribution,
+    and an output tile count that fits in one streaming DST section.
   }];
 
   let options = [

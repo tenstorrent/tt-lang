@@ -173,22 +173,27 @@ The DST recurrence form requires all of the following:
 - one tensor loop-carried accumulator, updated only by
   `ttl.add(acc, contribution)` or the commuted form;
 - one final non-accumulating `ttl.store` of the loop result;
-- the loop body contains only the update, the contribution `ttl.cb_wait`
-  and optional attachment, and one matching `ttl.cb_pop`;
+- one dataflow-buffer-backed contribution matching the accumulator type;
+- the contribution is either streamed through a loop-local `ttl.cb_wait` and
+  matching `ttl.cb_pop`, or acquired before the loop and reused as a resident
+  loop-invariant value;
 - no loop-local stores or other side effects;
-- one contribution tensor type, matching the accumulator type;
 - a DFB-backed init value;
 - no explicit `num_tiles` on the contribution wait/pop;
 - a static nonzero output tile count that fits the logical DST capacity.
 
-The source-loop trip count may be static, dynamic, or zero. It does not affect
-contribution DFB capacity because the lowering preserves the source loop's
-per-iteration wait/pop pair.
+The source-loop trip count may be static, dynamic, or zero. Streamed
+contributions keep capacity independent of the trip count by preserving the
+per-iteration wait/pop pair. Resident contributions hold one contribution block
+across the loop and release it after its final use.
 
 ### Lowering
 
 The lowered section keeps every output tile's accumulator slot resident in DST
 for the source loop:
+
+For a streamed contribution, the source loop still acquires and releases one
+contribution block per iteration:
 
 ```mlir
 ttl.dst_section {
@@ -204,6 +209,28 @@ ttl.dst_section {
 
   ttl.tile_store %placeholder, %out_view[%i, %j] from dst[%idx]
 }
+```
+
+For a resident contribution, the contribution is acquired before the section and
+read directly inside the loop. If the source IR does not already contain an
+owned release after the final use, lowering emits one after the section:
+
+```mlir
+%contribution = ttl.cb_wait %contribution_dfb
+
+ttl.dst_section {
+  %init_tile = tensor.extract %init[%i, %j]
+  %token, %acc = ttl.copy_tile %init_tile[%i, %j] into dst[%idx]
+
+  scf.for ... {
+    %contribution_tile = tensor.extract %contribution[%i, %j]
+    ttl.tile_accumulate %acc, %contribution_tile add into dst[%idx]
+  }
+
+  ttl.tile_store %placeholder, %out_view[%i, %j] from dst[%idx]
+}
+
+ttl.cb_pop %contribution_dfb
 ```
 
 For multi-tile output blocks, the section contains one stable DST index per
