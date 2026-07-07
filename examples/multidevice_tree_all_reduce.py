@@ -88,15 +88,13 @@ def make_tree_all_reduce_operation(
     )
 
     def device(column: int):
-        return ttl.DeviceRef(row=0, col=column)
+        return (0, column)
 
     def graph(edges):
         return ttl.TransferGraph.edges(device_domain, edges=edges)
 
     reduce_stage_edges = _make_reduce_stage_edges(num_devices, device)
-    reduce_nets = [
-        ttl.PipeNet(graph=graph(edges)) for edges in reduce_stage_edges
-    ]
+    reduce_nets = [ttl.PipeNet(graph=graph(edges)) for edges in reduce_stage_edges]
     broadcast_nets = [
         ttl.PipeNet(graph=graph(_reverse_edges(edges)))
         for edges in reversed(reduce_stage_edges)
@@ -242,8 +240,9 @@ def make_tree_all_reduce_operation(
                                             input_dfb.wait() as local_blk,
                                             recv_dfb.wait() as remote_blk,
                                             value_dfb.reserve() as value_blk,
-                                            broadcast_value_dfbs[0].reserve()
-                                            as broadcast_blk,
+                                            broadcast_value_dfbs[
+                                                0
+                                            ].reserve() as broadcast_blk,
                                             final_dfb.reserve() as final_blk,
                                         ):
                                             total = local_blk + remote_blk
