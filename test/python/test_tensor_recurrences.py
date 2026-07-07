@@ -26,6 +26,7 @@ TILE = 32
 
 
 N_ITERS = 3
+CONTRIBUTION_BLOCK_COUNT = 2
 
 
 def _make_loop_carried_add_kernel():
@@ -80,7 +81,7 @@ def _make_direct_loop_carried_add_kernel():
             initial, shape=(1, 1), block_count=2
         )
         delta_dfb = ttl.make_dataflow_buffer_like(
-            delta, shape=(1, 1), block_count=N_ITERS
+            delta, shape=(1, 1), block_count=CONTRIBUTION_BLOCK_COUNT
         )
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
@@ -383,7 +384,7 @@ def _make_multi_tile_block_kernel():
             a_seed, shape=MULTI_TILE_SHAPE, block_count=2
         )
         delta_cb = ttl.make_dataflow_buffer_like(
-            delta, shape=MULTI_TILE_SHAPE, block_count=N_ITERS
+            delta, shape=MULTI_TILE_SHAPE, block_count=CONTRIBUTION_BLOCK_COUNT
         )
         out_cb = ttl.make_dataflow_buffer_like(
             out, shape=MULTI_TILE_SHAPE, block_count=2

@@ -9,35 +9,21 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Utils/StaticValueUtils.h"
-#include "mlir/IR/AffineExpr.h"
-#include "mlir/IR/AffineMap.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+#include <cstdint>
 #include <limits>
-#include <optional>
 
 namespace mlir::tt::ttl {
 
 namespace {
 
-/// Return a constant integer through index casts produced by frontend code.
-/// `scf::ForOp::getStaticTripCount` does not fold these casts, but the tensor
-/// recurrence rewrite requires the exact contribution window size.
-static std::optional<int64_t> getConstantIntThroughIndexCast(Value value) {
-  if (auto constantValue = getConstantIntValue(value)) {
-    return *constantValue;
-  }
-  if (auto indexCast = value.getDefiningOp<arith::IndexCastOp>()) {
-    return getConstantIntThroughIndexCast(indexCast.getIn());
-  }
-  return std::nullopt;
-}
-
 /// Return the dataflow buffer wait that provides the loop-local contribution.
-/// DST lowering consumes all contributions with one coalesced wait; accepting
-/// any derived tensor here would delete work that must execute per iteration.
+/// The streaming DST lowering preserves one wait/pop pair per source
+/// iteration, so the contribution must be acquired inside the source loop.
 static CBWaitOp getLoopLocalContributionWait(TensorAccumulationMatch &match,
                                              scf::ForOp loop,
                                              AttachCBOp &attachedContribution) {
@@ -59,7 +45,7 @@ static CBWaitOp getLoopLocalContributionWait(TensorAccumulationMatch &match,
 
 /// Check that deleting the source loop will not drop work other than the
 /// additive recurrence itself. The only permitted side effect is the pop that
-/// releases the matched contribution window after the add consumes it.
+/// releases the matched contribution block after the add consumes it.
 static bool onlyContainsDstReductionOps(scf::ForOp loop,
                                         TensorAccumulationMatch &match,
                                         CBWaitOp contributionWait,
@@ -85,86 +71,68 @@ static bool onlyContainsDstReductionOps(scf::ForOp loop,
     }
     foundContributionPop = true;
   }
-  return true;
+  return foundContributionPop;
 }
 
-/// Add the folded loop trip count as the leading tensor dimension. The
-/// reduction compute indexes this dimension with the reduction IV and indexes
-/// the original tensor dimensions with the parallel IVs.
-static RankedTensorType
-buildCoalescedContributionType(RankedTensorType unitType, int64_t tripCount) {
-  SmallVector<int64_t> coalescedShape;
-  coalescedShape.push_back(tripCount);
-  llvm::append_range(coalescedShape, unitType.getShape());
-  return RankedTensorType::get(coalescedShape, unitType.getElementType());
+/// Return the logical DST capacity for a resident accumulator tensor. Scope
+/// lowering uses the default double-buffered DST mode because no pass option in
+/// PR4 changes the recurrence section to full-sync mode.
+static FailureOr<std::uint32_t>
+getDefaultDstCapacityForTensor(RankedTensorType tensorType) {
+  std::optional<Type> elementType =
+      getTileElementType(tensorType.getElementType());
+  if (!elementType) {
+    return failure();
+  }
+  return getDstCapacity(elementType->isF32(), /*fullSyncEn=*/false);
 }
 
-/// Build maps for operands `[initial, coalescedContribution]` and the single
-/// output. The initial value and output ignore the reduction dimension; the
-/// contribution uses it as the leading coordinate.
-static SmallVector<Attribute>
-buildDstReductionIndexingMaps(MLIRContext *context, int64_t outputRank) {
-  int64_t domainRank = outputRank + 1;
-  SmallVector<AffineExpr> parallelExprs;
-  for (int64_t dim = 0; dim < outputRank; ++dim) {
-    parallelExprs.push_back(getAffineDimExpr(dim, context));
+static void
+enumerateTileCoordinates(ArrayRef<int64_t> shape,
+                         SmallVectorImpl<int64_t> &current,
+                         SmallVectorImpl<SmallVector<int64_t>> &coordinates) {
+  if (current.size() == shape.size()) {
+    SmallVector<int64_t> coordinate;
+    llvm::append_range(coordinate, current);
+    coordinates.push_back(std::move(coordinate));
+    return;
   }
 
-  SmallVector<AffineExpr> contributionExprs;
-  contributionExprs.push_back(getAffineDimExpr(outputRank, context));
-  llvm::append_range(contributionExprs, parallelExprs);
-
-  AffineMap outputMap = AffineMap::get(domainRank, 0, parallelExprs, context);
-  AffineMap contributionMap =
-      AffineMap::get(domainRank, 0, contributionExprs, context);
-  return {AffineMapAttr::get(outputMap), AffineMapAttr::get(contributionMap),
-          AffineMapAttr::get(outputMap)};
+  int64_t dim = current.size();
+  for (int64_t index = 0; index < shape[dim]; ++index) {
+    current.push_back(index);
+    enumerateTileCoordinates(shape, current, coordinates);
+    current.pop_back();
+  }
 }
 
-/// Use one trailing reduction iterator so the later loop lowering can keep DST
-/// live across all contribution tiles for the same output coordinate.
-static SmallVector<Attribute>
-buildDstReductionIteratorTypes(RewriterBase &rewriter, int64_t outputRank) {
-  SmallVector<Attribute> iteratorTypes;
-  for (int64_t dim = 0; dim < outputRank; ++dim) {
-    iteratorTypes.push_back(rewriter.getStringAttr("parallel"));
+static SmallVector<SmallVector<int64_t>>
+enumerateTileCoordinates(RankedTensorType tensorType) {
+  SmallVector<SmallVector<int64_t>> coordinates;
+  SmallVector<int64_t> current;
+  enumerateTileCoordinates(tensorType.getShape(), current, coordinates);
+  return coordinates;
+}
+
+static SmallVector<Value> createIndexConstants(RewriterBase &rewriter,
+                                               Location loc,
+                                               ArrayRef<int64_t> coordinates) {
+  SmallVector<Value> values;
+  values.reserve(coordinates.size());
+  for (int64_t coordinate : coordinates) {
+    values.push_back(arith::ConstantIndexOp::create(rewriter, loc, coordinate));
   }
-  iteratorTypes.push_back(rewriter.getStringAttr("reduction"));
-  return iteratorTypes;
+  return values;
+}
+
+static Value createTilePlaceholder(RewriterBase &rewriter, Location loc,
+                                   Type tileType) {
+  return UnrealizedConversionCastOp::create(rewriter, loc, tileType,
+                                            ValueRange{})
+      .getResult(0);
 }
 
 } // namespace
-
-std::optional<int64_t> getStaticAccumulationTripCount(scf::ForOp loop) {
-  if (std::optional<llvm::APInt> tripCount = loop.getStaticTripCount()) {
-    if (tripCount->getActiveBits() > 63) {
-      return std::nullopt;
-    }
-    return static_cast<int64_t>(tripCount->getZExtValue());
-  }
-
-  std::optional<int64_t> lowerBound =
-      getConstantIntThroughIndexCast(loop.getLowerBound());
-  std::optional<int64_t> upperBound =
-      getConstantIntThroughIndexCast(loop.getUpperBound());
-  std::optional<int64_t> step = getConstantIntThroughIndexCast(loop.getStep());
-  if (!lowerBound || !upperBound || !step || *step <= 0) {
-    return std::nullopt;
-  }
-
-  if (*upperBound <= *lowerBound) {
-    return 0;
-  }
-
-  uint64_t distance =
-      static_cast<uint64_t>(*upperBound) - static_cast<uint64_t>(*lowerBound);
-  uint64_t stepValue = static_cast<uint64_t>(*step);
-  uint64_t tripCount = 1 + (distance - 1) / stepValue;
-  if (tripCount > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-    return std::nullopt;
-  }
-  return static_cast<int64_t>(tripCount);
-}
 
 FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType) {
   if (!tensorType.hasStaticShape()) {
@@ -213,7 +181,7 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
   }
 
   // The yielded add must be the only producer of the carried state so the
-  // rewrite can replace the loop with a single reduction compute.
+  // rewrite can replace the loop-carried tensor with DST state.
   auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
   auto add = yield.getOperand(resultIndex).getDefiningOp<AddOp>();
   if (!add || add->getBlock() != loop.getBody() ||
@@ -291,12 +259,6 @@ analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
     return failure();
   }
 
-  std::optional<int64_t> tripCount = getStaticAccumulationTripCount(loop);
-  if (!tripCount || *tripCount == 0) {
-    return failure();
-  }
-  int64_t tripCountValue = *tripCount;
-
   AttachCBOp attachedContribution;
   CBWaitOp contributionWait =
       getLoopLocalContributionWait(match, loop, attachedContribution);
@@ -316,22 +278,19 @@ analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
   }
 
   FailureOr<int64_t> unitTileCount = getStaticTensorTileCount(contributionType);
-  if (failed(unitTileCount) || *unitTileCount <= 0 ||
-      tripCountValue > std::numeric_limits<int64_t>::max() / *unitTileCount) {
-    return failure();
-  }
-  int64_t totalContributionTiles = tripCountValue * *unitTileCount;
-  auto contributionCBType =
-      cast<CircularBufferType>(contributionWait.getCb().getType());
-  // The coalesced wait spans the full recurrence, so the dataflow buffer must
-  // already contain the complete contribution window.
-  if (totalContributionTiles > contributionCBType.getTotalElements()) {
+  if (failed(unitTileCount) || *unitTileCount <= 0) {
     return failure();
   }
 
-  return TensorDstAccumulationInfo{tripCountValue,         *unitTileCount,
-                                   totalContributionTiles, contributionWait,
-                                   attachedContribution,   contributionType};
+  FailureOr<std::uint32_t> dstCapacity =
+      getDefaultDstCapacityForTensor(contributionType);
+  if (failed(dstCapacity) ||
+      *unitTileCount > static_cast<int64_t>(*dstCapacity)) {
+    return failure();
+  }
+
+  return TensorDstAccumulationInfo{*unitTileCount, contributionWait,
+                                   attachedContribution, contributionType};
 }
 
 LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
@@ -351,64 +310,79 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
   }
 
   rewriter.setInsertionPoint(loop);
-  IntegerAttr totalTilesAttr =
-      rewriter.getI64IntegerAttr(info->totalContributionTiles);
-  RankedTensorType coalescedType =
-      buildCoalescedContributionType(info->contributionType, info->tripCount);
-  CBWaitOp coalescedWait =
-      CBWaitOp::create(rewriter, loc, coalescedType,
-                       info->contributionWait.getCb(), totalTilesAttr);
-  AttachCBOp coalescedContribution = AttachCBOp::create(
-      rewriter, loc, coalescedType, coalescedWait.getResult(),
-      info->contributionWait.getCb());
+  auto dstSection = DstSectionOp::create(rewriter, loc);
+  Block &sectionBody = dstSection.getBody().front();
 
-  // The output value exists only to carry the dataflow buffer attachment into
-  // ttl.compute. Tile stores use the reserved dataflow buffer directly.
-  Value outputInit =
-      tensor::EmptyOp::create(rewriter, loc, match.tensorType.getShape(),
-                              match.tensorType.getElementType());
-  Value output = AttachCBOp::create(rewriter, loc, match.tensorType, outputInit,
-                                    outputReserve.getCb());
+  OpBuilder::InsertionGuard sectionGuard(rewriter);
+  rewriter.setInsertionPoint(sectionBody.getTerminator());
 
-  SmallVector<Attribute> indexingMaps = buildDstReductionIndexingMaps(
-      rewriter.getContext(), match.tensorType.getRank());
-  SmallVector<Attribute> iteratorTypes =
-      buildDstReductionIteratorTypes(rewriter, match.tensorType.getRank());
-
-  auto compute = ComputeOp::create(
-      rewriter, loc, TypeRange{match.tensorType},
-      ValueRange{match.initialValue, coalescedContribution.getResult()},
-      ValueRange{output}, rewriter.getArrayAttr(indexingMaps),
-      rewriter.getArrayAttr(iteratorTypes));
-
-  Block *body = rewriter.createBlock(&compute.getBody());
   Type tileType = match.tensorType.getElementType();
-  body->addArgument(tileType, loc);
-  body->addArgument(tileType, loc);
-  body->addArgument(tileType, loc);
+  MLIRContext *context = rewriter.getContext();
+  AccumulationCombinerAttr addCombiner =
+      AccumulationCombinerAttr::get(context, AccumulationCombiner::Add);
+  SmallVector<SmallVector<int64_t>> tileCoordinates =
+      enumerateTileCoordinates(match.tensorType);
+  assert(static_cast<int64_t>(tileCoordinates.size()) == info->unitTileCount &&
+         "analysis tile count must match coordinate enumeration");
 
-  rewriter.setInsertionPointToStart(body);
-  SmallVector<Value> outputIndices;
-  for (int64_t dim = 0; dim < match.tensorType.getRank(); ++dim) {
-    outputIndices.push_back(
-        IterIndexOp::create(rewriter, loc, rewriter.getI64IntegerAttr(dim)));
+  SmallVector<Value> accumulatorTiles;
+  SmallVector<Value> dstIndices;
+  accumulatorTiles.reserve(tileCoordinates.size());
+  dstIndices.reserve(tileCoordinates.size());
+  for (auto [linearIndex, coordinates] : llvm::enumerate(tileCoordinates)) {
+    Value dstIndex = arith::ConstantIndexOp::create(rewriter, loc, linearIndex);
+    SmallVector<Value> coordinateValues =
+        createIndexConstants(rewriter, loc, coordinates);
+    Value initTile = tensor::ExtractOp::create(
+        rewriter, loc, match.initialValue, coordinateValues);
+    auto copy = CopyTileOp::create(
+        rewriter, loc, TypeRange{DSTRegisterType::get(context), tileType},
+        initTile, coordinateValues, dstIndex);
+    accumulatorTiles.push_back(copy.getDstTile());
+    dstIndices.push_back(dstIndex);
   }
 
-  // tile_accumulate models the in-place DST recurrence. The contribution tile
-  // remains dataflow-buffer backed and is consumed directly during TTKernel
-  // lowering.
-  auto accumulated = createTileOpWithPlaceholderDstIndex<TileAccumulateOp>(
-      rewriter, loc, body->getArgument(0), body->getArgument(1),
-      AccumulationCombinerAttr::get(rewriter.getContext(),
-                                    AccumulationCombiner::Add));
-  createTileOpWithPlaceholderDstIndex<TileStoreOp>(
-      rewriter, loc, accumulated.getResult(), outputReserve.getResult(),
-      outputIndices);
-  YieldOp::create(rewriter, loc);
+  auto newLoop = scf::ForOp::create(rewriter, loc, loop.getLowerBound(),
+                                    loop.getUpperBound(), loop.getStep());
+  for (NamedAttribute attr : loop->getAttrs()) {
+    newLoop->setAttr(attr.getName(), attr.getValue());
+  }
 
-  rewriter.setInsertionPointAfter(compute);
-  CBPopOp::create(rewriter, loc, info->contributionWait.getCb(),
-                  totalTilesAttr);
+  {
+    OpBuilder::InsertionGuard loopGuard(rewriter);
+    rewriter.setInsertionPointToStart(newLoop.getBody());
+    CBWaitOp contributionWait = CBWaitOp::create(
+        rewriter, loc, info->contributionType, info->contributionWait.getCb(),
+        /*num_tiles=*/IntegerAttr{});
+    Value contributionTensor = contributionWait.getResult();
+    if (info->attachedContribution) {
+      contributionTensor =
+          AttachCBOp::create(rewriter, loc, info->contributionType,
+                             contributionTensor, info->contributionWait.getCb())
+              .getResult();
+    }
+
+    for (auto [linearIndex, coordinates] : llvm::enumerate(tileCoordinates)) {
+      SmallVector<Value> coordinateValues =
+          createIndexConstants(rewriter, loc, coordinates);
+      Value contributionTile = tensor::ExtractOp::create(
+          rewriter, loc, contributionTensor, coordinateValues);
+      TileAccumulateOp::create(rewriter, loc, tileType,
+                               accumulatorTiles[linearIndex], contributionTile,
+                               addCombiner, dstIndices[linearIndex]);
+    }
+    CBPopOp::create(rewriter, loc, info->contributionWait.getCb(),
+                    /*num_tiles=*/IntegerAttr{});
+  }
+
+  rewriter.setInsertionPoint(sectionBody.getTerminator());
+  for (auto [linearIndex, coordinates] : llvm::enumerate(tileCoordinates)) {
+    SmallVector<Value> coordinateValues =
+        createIndexConstants(rewriter, loc, coordinates);
+    Value placeholder = createTilePlaceholder(rewriter, loc, tileType);
+    TileStoreOp::create(rewriter, loc, placeholder, outputReserve.getResult(),
+                        coordinateValues, dstIndices[linearIndex]);
+  }
 
   rewriter.eraseOp(match.finalStore);
   for (AttachCBOp attach : match.deadReserveAttachOps) {

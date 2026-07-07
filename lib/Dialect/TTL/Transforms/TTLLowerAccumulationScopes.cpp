@@ -6,7 +6,8 @@
 // TTL Lower Accumulation Scopes
 //===----------------------------------------------------------------------===//
 //
-// Lowers semantic tensor accumulation scopes to DST-resident computes.
+// Lowers semantic tensor accumulation scopes to streaming DST-resident
+// recurrence sections.
 //
 //===----------------------------------------------------------------------===//
 
@@ -192,15 +193,15 @@ verifyTensorScopeLoweringPrecondition(AccumulationScopeOp scope) {
   if (failed(analyzeTensorAccumulationForDst(*match, loop))) {
     return scope.emitOpError(
         "tensor accumulation lowering requires a DST-compatible same-type "
-        "additive recurrence with a static positive trip count, an attached "
-        "init tensor, one loop-local contribution ttl.cb_wait, and a "
-        "coalesced contribution window that fits in its dataflow buffer");
+        "additive recurrence with an attached init tensor, one loop-local "
+        "contribution ttl.cb_wait/pop pair, no explicit contribution "
+        "num_tiles, and a static output tile count that fits in DST");
   }
   return success();
 }
 
-/// Rewrite one verified tensor accumulation scope to a DST-resident reduction
-/// compute and remove the now-empty scope wrapper.
+/// Rewrite one verified tensor accumulation scope to a streaming DST section
+/// and remove the now-empty scope wrapper.
 static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
                                                   RewriterBase &rewriter) {
   FailureOr<TensorAccumulationMatch> match =

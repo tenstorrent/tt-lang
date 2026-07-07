@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Inserts accumulation regions around tensor recurrences that can be lowered
-// to DST-resident reduction computes.
+// to streaming DST-resident recurrence sections.
 //
 //===----------------------------------------------------------------------===//
 

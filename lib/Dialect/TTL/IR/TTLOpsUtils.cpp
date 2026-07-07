@@ -52,6 +52,10 @@ SmallVector<DstFootprint, 2> getDefaultDstReadFootprints(Operation *op) {
     appendDstOperandFootprint(footprints, store.getTile());
     return footprints;
   }
+  if (auto accumulate = dyn_cast<TileAccumulateOp>(op)) {
+    appendDstOperandFootprint(footprints, accumulate.getAccumulator());
+    return footprints;
+  }
   if (op->hasTrait<TTLDSTInputsTrait>() ||
       (op->hasTrait<TTLStrategyDependentBinaryOpTrait>() &&
        !isFPUEligibleBinaryOp(op))) {

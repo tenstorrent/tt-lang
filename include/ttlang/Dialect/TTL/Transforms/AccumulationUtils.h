@@ -12,8 +12,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LLVM.h"
 
-#include <optional>
-
 namespace mlir::tt::ttl {
 
 /// Connected operations that define one loop-carried additive tensor
@@ -46,16 +44,10 @@ struct TensorAccumulationMatch {
 };
 
 /// Properties that must remain stable between the precondition scan and the
-/// rewrite to a DST-resident reduction compute.
+/// rewrite to a streaming DST-resident recurrence.
 struct TensorDstAccumulationInfo {
-  /// Number of source loop iterations folded into the reduction dimension.
-  int64_t tripCount;
-
-  /// Number of tiles in one per-iteration contribution tensor.
+  /// Number of accumulator tiles resident for the whole DST section.
   int64_t unitTileCount;
-
-  /// Total number of contribution tiles consumed by the coalesced wait.
-  int64_t totalContributionTiles;
 
   /// Loop-local wait that provides the per-iteration contribution tensor.
   CBWaitOp contributionWait;
@@ -89,10 +81,6 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     ArrayRef<Operation *> allowedReserveUsers = {},
     ArrayRef<Operation *> allowedLoopResultUsers = {});
 
-/// Return the static trip count, accepting constant bounds that have been cast
-/// to index. scf::ForOp::getStaticTripCount does not fold arith.index_cast.
-std::optional<int64_t> getStaticAccumulationTripCount(scf::ForOp loop);
-
 /// Return the number of tiles represented by a statically ranked tensor.
 FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType);
 
@@ -102,8 +90,8 @@ FailureOr<TensorDstAccumulationInfo>
 analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
                                 scf::ForOp loop);
 
-/// Lower a matched additive tensor recurrence to one reduction compute whose
-/// DST acquisition spans all reduction iterations. Callers must either run the
+/// Lower a matched additive tensor recurrence to a streaming DST section whose
+/// DST acquisition spans the original source loop. Callers must either run the
 /// same analysis before mutation or handle failure without leaving partial IR.
 LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
                                            scf::ForOp loop,

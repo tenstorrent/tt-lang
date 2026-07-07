@@ -4,27 +4,27 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes))' --split-input-file | FileCheck %s --check-prefix=DST
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state))' --split-input-file | FileCheck %s --check-prefix=FALLBACK
 
-// Multi-tile additive recurrence is lowered into one reduction compute over the
-// coalesced loop contributions.
+// Multi-tile additive recurrence lowers to one streaming DST section. The
+// contribution DFB holds one 2x2 block, not the full three-iteration window.
 func.func @multitile_tensor_recurrence_scope() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c3 = arith.constant 3 : index
-  %initial_cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 4>
-  %contribution_cb = ttl.bind_cb {cb_index = 1, block_count = 12} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 12>
-  %output_cb = ttl.bind_cb {cb_index = 16, block_count = 4} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 4>
+  %initial_cb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 1>
+  %contribution_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 1>
+  %output_cb = ttl.bind_cb {cb_index = 16, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 1>
 
-  %initial_wait = ttl.cb_wait %initial_cb : <[2, 2], !ttcore.tile<32x32, bf16>, 4> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-  %initial = ttl.attach_cb %initial_wait, %initial_cb : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 4>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-  %output = ttl.cb_reserve %output_cb : <[2, 2], !ttcore.tile<32x32, bf16>, 4> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %initial_wait = ttl.cb_wait %initial_cb : <[2, 2], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %initial = ttl.attach_cb %initial_wait, %initial_cb : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 1>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_cb : <[2, 2], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 
   %result = scf.for %iv = %c0 to %c3 step %c1
       iter_args(%accumulator = %initial)
       -> (tensor<2x2x!ttcore.tile<32x32, bf16>>) {
-    %contribution_wait = ttl.cb_wait %contribution_cb : <[2, 2], !ttcore.tile<32x32, bf16>, 12> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-    %contribution = ttl.attach_cb %contribution_wait, %contribution_cb : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 12>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+    %contribution_wait = ttl.cb_wait %contribution_cb : <[2, 2], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+    %contribution = ttl.attach_cb %contribution_wait, %contribution_cb : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 1>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
     %next = ttl.add %accumulator, %contribution : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %contribution_cb : <[2, 2], !ttcore.tile<32x32, bf16>, 12>
+    ttl.cb_pop %contribution_cb : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
     scf.yield %next : tensor<2x2x!ttcore.tile<32x32, bf16>>
   }
   ttl.store %result, %output : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>
@@ -33,10 +33,14 @@ func.func @multitile_tensor_recurrence_scope() {
 
 // DST-LABEL: func.func @multitile_tensor_recurrence_scope
 // DST: %[[CONTRIB_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
-// DST: ttl.cb_wait %[[CONTRIB_CB]] {num_tiles = 12 : i64} : <[2, 2], !ttcore.tile<32x32, bf16>, 12> -> tensor<3x2x2x!ttcore.tile<32x32, bf16>>
-// DST: iterator_types = ["parallel", "parallel", "reduction"]
-// DST: ttl.tile_accumulate
-// DST: ttl.cb_pop %[[CONTRIB_CB]] {num_tiles = 12 : i64}
+// DST: ttl.dst_section
+// DST-COUNT-4: ttl.copy_tile
+// DST: scf.for
+// DST: ttl.cb_wait %[[CONTRIB_CB]] : <[2, 2], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+// DST-COUNT-4: ttl.tile_accumulate
+// DST: ttl.cb_pop %[[CONTRIB_CB]] : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
+// DST-COUNT-4: ttl.tile_store
+// DST-NOT: ttl.compute
 
 // -----
 
