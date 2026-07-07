@@ -833,6 +833,43 @@ def TTKernelInsertInits
   ];
 }
 
+def TTLSpecializeCores
+    : Pass<"ttl-specialize-cores", "::mlir::ModuleOp"> {
+  let summary = "Clone each kernel function per launch coordinate and const-fold "
+                "ttl.core_x / ttl.core_y";
+  let description = [{
+    SKETCH / WORK-IN-PROGRESS. Not yet wired into the default pipeline.
+
+    Every kernel `func.func` is written once but launched once per coordinate
+    of its operation grid, so `ttl.core_x` / `ttl.core_y` are runtime values in
+    the shared body. This pass specializes that shared body: for each function
+    carrying a `ttl.operation_grid` attribute (an i64 array `[gridX, gridY]`),
+    it clones the function once per launch coordinate, tags each clone with a
+    `ttl.core_coord` attribute (`[x, y]`), and replaces every `ttl.core_x` /
+    `ttl.core_y` result inside the clone with the corresponding
+    `arith.constant`.
+
+    With the coordinates turned into constants, the standard upstream passes
+    (`sccp`, `canonicalize`, `cse`, and dead-code / symbol elimination) fold
+    coordinate-dependent predicates and delete the branches that do not apply
+    to that core, yielding a distinct, minimized program per coordinate.
+
+    Current limitations (see the epic ticket):
+    - Emits one clone per coordinate (no domain de-duplication yet). The number
+      of unique programs should later be reduced by grouping coordinates whose
+      control flow is identical (e.g. via `LaunchNodeDomainAnalysis`).
+    - Assumes kernel-thread functions are standalone (no inter-function
+      `SymbolRefAttr` uses to fix up on rename).
+    - Does not yet resolve per-core compile-time / runtime args.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::func::FuncDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTKernelCombinePackTiles
     : Pass<"ttkernel-combine-pack-tiles", "::mlir::func::FuncOp"> {
   let summary = "Combine consecutive pack_tile ops into pack_tile_block";
