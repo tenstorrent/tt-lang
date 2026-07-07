@@ -18,7 +18,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.h.inc"
 

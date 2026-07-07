@@ -14,7 +14,6 @@ extern "C" {
 
 MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(TT, tt);
 MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(TTKernel, ttkernel);
-MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(TTMetal, ttmetal);
 
 /// Register the minimal set of tt-mlir dialects into a registry.
 MLIR_CAPI_EXPORTED void

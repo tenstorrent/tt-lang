@@ -8,11 +8,10 @@
 // dialect that we don't build. tt-lang never produces TTIR ops, so the
 // dialect is unnecessary for translation.
 
-#include "ttmlir/Target/TTKernel/TTKernelToCpp.h"
+#include "ttlang/Target/TTKernel/TTKernelToCpp.h"
 
-#include "ttmlir/Dialect/TTCore/IR/TTCore.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
+#include "ttlang/Dialect/TTCore/IR/TTCore.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -32,7 +31,6 @@ void registerTTKernelToCpp() {
       [](DialectRegistry &registry) {
         registry
             .insert<mlir::tt::ttkernel::TTKernelDialect,
-                    mlir::tt::ttmetal::TTMetalDialect,
                     mlir::tt::ttcore::TTCoreDialect, mlir::emitc::EmitCDialect,
                     mlir::memref::MemRefDialect, mlir::func::FuncDialect>();
       });

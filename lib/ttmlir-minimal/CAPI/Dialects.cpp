@@ -8,12 +8,10 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCore.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
-#include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
-#include "ttmlir/Target/TTKernel/TTKernelToCpp.h"
+#include "ttlang/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
+#include "ttlang/Dialect/TTCore/IR/TTCore.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Target/TTKernel/TTKernelToCpp.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -21,18 +19,14 @@
 MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(TT, tt, mlir::tt::ttcore::TTCoreDialect)
 MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(TTKernel, ttkernel,
                                       mlir::tt::ttkernel::TTKernelDialect)
-MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(TTMetal, ttmetal,
-                                      mlir::tt::ttmetal::TTMetalDialect)
 
 void ttmlirMinimalRegisterAllDialects(MlirDialectRegistry registry) {
   mlir::DialectRegistry *reg = unwrap(registry);
   reg->insert<mlir::tt::ttcore::TTCoreDialect>();
   reg->insert<mlir::tt::ttkernel::TTKernelDialect>();
-  reg->insert<mlir::tt::ttmetal::TTMetalDialect>();
 }
 
 void ttmlirMinimalRegisterPasses() {
-  mlir::tt::ttkernel::registerPasses();
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return mlir::tt::createConvertTTKernelToEmitC();
   });

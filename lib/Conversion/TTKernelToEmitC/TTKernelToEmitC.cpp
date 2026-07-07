@@ -497,8 +497,7 @@ public:
         return {};
       }
 
-      return emitc::ArrayType::get(memRefType.getShape(),
-                                   convertedElementType);
+      return emitc::ArrayType::get(memRefType.getShape(), convertedElementType);
     });
     addSourceMaterialization(materializeAsUnrealizedCast);
     addTargetMaterialization(materializeAsUnrealizedCast);
