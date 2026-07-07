@@ -61,7 +61,7 @@ def make_tree_all_reduce_operation() -> Callable[[ttnn.Tensor, ttnn.Tensor], Non
     )
 
     def device(column: int):
-        return ttl.DeviceRef(row=0, col=column)
+        return (0, column)
 
     def graph(edges):
         return ttl.TransferGraph.edges(device_domain, edges=edges)
