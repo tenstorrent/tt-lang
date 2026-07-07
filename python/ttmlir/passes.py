@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from ._mlir_libs._ttmlir.passes import *
+from ._mlir_libs._ttlang.passes import *

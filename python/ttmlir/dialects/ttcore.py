@@ -4,4 +4,4 @@
 
 from ._ttcore_ops_gen import *
 from ._ttcore_enum_gen import *
-from .._mlir_libs._ttmlir import tt_ir as ir
+from .._mlir_libs._ttlang import tt_ir as ir

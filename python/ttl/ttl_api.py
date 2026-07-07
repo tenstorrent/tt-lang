@@ -1656,7 +1656,7 @@ def _compile_kernel(
         pm.enable_verifier(verify)
 
         try:
-            from ttl._mlir_libs._ttmlir import enable_pretty_stack_traces
+            from ttl._mlir_libs._ttlang import enable_pretty_stack_traces
 
             enable_pretty_stack_traces(pm._CAPIPtr)
         except Exception:
