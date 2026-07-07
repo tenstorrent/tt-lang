@@ -490,6 +490,14 @@ class TTCompilerBase(PyKernelAstBase):
             for var_name, value in zip(carried_var_names, carried_initial_values)
         ]
 
+        # TODO(arichins, #380): Variables first assigned in *all* branches
+        # (but absent from enclosing scope) should also become scf.if results
+        # so they are visible after the block. With the current approach we can identify
+        # such names at the AST level, but scf.IfOp requires the MLIR result types at
+        # construction time. Since MLIR types are only known
+        # after visiting (they emerge from op construction, not from the AST),
+        # the regions of the IfOp need to be constructed before the parent IfOp is created.
+
         if_exp = scf.IfOp(
             cond=if_cond,
             results_=carried_types,
