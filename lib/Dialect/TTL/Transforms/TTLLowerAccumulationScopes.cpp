@@ -193,9 +193,10 @@ verifyTensorScopeLoweringPrecondition(AccumulationScopeOp scope) {
   if (failed(analyzeTensorAccumulationForDst(*match, loop))) {
     return scope.emitOpError(
         "tensor accumulation lowering requires a DST-compatible same-type "
-        "additive recurrence with an attached init tensor, one loop-local "
-        "contribution ttl.cb_wait/pop pair, no explicit contribution "
-        "num_tiles, and a static output tile count that fits in DST");
+        "additive recurrence with an attached init tensor, a streamed or "
+        "resident contribution ttl.cb_wait, no explicit contribution "
+        "num_tiles, balanced contribution releases, and a static output tile "
+        "count that fits in DST");
   }
   return success();
 }

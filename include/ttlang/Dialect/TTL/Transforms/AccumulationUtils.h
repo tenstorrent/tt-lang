@@ -14,6 +14,17 @@
 
 namespace mlir::tt::ttl {
 
+/// Describes how the contribution operand is acquired relative to the source
+/// recurrence loop.
+enum class TensorAccumulationContributionResidency {
+  /// Each loop iteration acquires and releases one contribution block.
+  Streamed,
+
+  /// One contribution block is acquired before the loop and reused by every
+  /// iteration.
+  Resident,
+};
+
 /// Connected operations that define one loop-carried additive tensor
 /// recurrence and its final dataflow buffer store.
 struct TensorAccumulationMatch {
@@ -49,7 +60,11 @@ struct TensorDstAccumulationInfo {
   /// Number of accumulator tiles resident for the whole DST section.
   int64_t unitTileCount;
 
-  /// Loop-local wait that provides the per-iteration contribution tensor.
+  /// Whether the contribution is acquired per iteration or held across the
+  /// recurrence loop.
+  TensorAccumulationContributionResidency contributionResidency;
+
+  /// Wait that provides the contribution tensor.
   CBWaitOp contributionWait;
 
   /// Optional attachment between `contributionWait` and the add operand.
@@ -57,6 +72,9 @@ struct TensorDstAccumulationInfo {
 
   /// Tensor type returned by `contributionWait`.
   RankedTensorType contributionType;
+
+  /// Existing owned resident release, when one is already present.
+  CBPopOp residentContributionPop;
 };
 
 /// Placement constraint for the output reservation associated with a matched
