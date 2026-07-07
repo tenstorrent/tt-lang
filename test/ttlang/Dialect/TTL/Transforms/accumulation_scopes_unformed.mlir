@@ -1,4 +1,5 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes))' --split-input-file | FileCheck %s --implicit-check-not='ttl.accumulation_scope'
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state, ttl-insert-copy-wait, ttl-annotate-l1-acc-loops, ttl-form-producer-compute, ttl-insert-intermediate-dfbs, convert-ttl-to-compute, ttl-auto-sync))' --split-input-file | FileCheck %s --check-prefix=MAT
 
 // Summary: Additive recurrences that are structurally matched but DST-illegal
 // must be left unformed for ttl-materialize-loop-state. Formation is
@@ -79,5 +80,48 @@ func.func @resident_dst_capacity_overflow() {
     scf.yield %next : tensor<3x3x!ttcore.tile<32x32, bf16>>
   }
   ttl.store %result, %out : tensor<3x3x!ttcore.tile<32x32, bf16>>, tensor<3x3x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
+// Two loop-local updates cannot lower to one streaming tile_accumulate without
+// preserving both contribution waits, so this remains regular loop state.
+// CHECK-LABEL: func.func @two_streamed_updates
+// CHECK: scf.for
+// MAT-LABEL: func.func @two_streamed_updates
+// MAT: %[[CONTRIB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
+// MAT: %[[STATE:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
+// MAT: %[[MID:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
+// MAT: scf.for
+// MAT: ttl.cb_wait %[[CONTRIB]]
+// MAT: ttl.compute
+// MAT: ttl.cb_push %[[MID]]
+// MAT: ttl.cb_wait %[[MID]]
+// MAT: ttl.cb_pop %[[CONTRIB]]
+// MAT: ttl.cb_wait %[[CONTRIB]]
+// MAT: ttl.compute
+func.func @two_streamed_updates() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c40 = arith.constant 40 : index
+  %init_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %contrib_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %out_cb = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %init_wait = ttl.cb_wait %init_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init = ttl.attach_cb %init_wait, %init_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out = ttl.cb_reserve %out_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result = scf.for %iv = %c0 to %c40 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %pos_wait = ttl.cb_wait %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %pos = ttl.attach_cb %pos_wait, %contrib_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %mid = ttl.add %acc, %pos : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %neg_wait = ttl.cb_wait %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %neg = ttl.attach_cb %neg_wait, %contrib_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %next = ttl.add %mid, %neg : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  ttl.store %result, %out : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   return
 }

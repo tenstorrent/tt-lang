@@ -27,6 +27,7 @@ TILE = 32
 
 N_ITERS = 3
 CONTRIBUTION_BLOCK_COUNT = 2
+LONG_STREAMING_N_ITERS = 40
 
 
 def _make_loop_carried_add_kernel():
@@ -102,6 +103,47 @@ def _make_direct_loop_carried_add_kernel():
             for _ in range(N_ITERS):
                 with delta_dfb.reserve() as delta_blk:
                     ttl.copy(delta[0:1, 0:1], delta_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as out_blk:
+                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+def _make_two_update_streamed_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(initial, delta, out):
+        initial_dfb = ttl.make_dataflow_buffer_like(
+            initial, shape=(1, 1), block_count=2
+        )
+        delta_dfb = ttl.make_dataflow_buffer_like(
+            delta, shape=(1, 1), block_count=CONTRIBUTION_BLOCK_COUNT
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with initial_dfb.wait() as acc:
+                for _ in range(LONG_STREAMING_N_ITERS // 2):
+                    with delta_dfb.wait() as pos:
+                        acc = acc + pos
+                    with delta_dfb.wait() as neg:
+                        acc = acc + neg
+
+                with out_dfb.reserve() as out_blk:
+                    out_blk.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with initial_dfb.reserve() as initial_blk:
+                ttl.copy(initial[0:1, 0:1], initial_blk).wait()
+            for _ in range(LONG_STREAMING_N_ITERS // 2):
+                with delta_dfb.reserve() as pos_blk:
+                    ttl.copy(delta[0:1, 0:1], pos_blk).wait()
+                with delta_dfb.reserve() as neg_blk:
+                    ttl.copy(delta[1:2, 0:1], neg_blk).wait()
 
         @ttl.datamovement()
         def writer():
@@ -210,6 +252,26 @@ def test_direct_loop_carried_add(device, dtype):
     expected = initial.float() + N_ITERS * delta.float()
     _run_io_kernel(
         _make_direct_loop_carried_add_kernel(),
+        in_tensors=[initial, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+    )
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_two_streamed_updates_per_iteration_are_preserved(device, dtype):
+    """A loop with two streamed updates must preserve both waits each pass."""
+    initial = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE) / 64
+    initial = initial.to(dtype)
+    delta = torch.empty((2 * TILE, TILE), dtype=dtype)
+    delta[0:TILE, :] = 0.25
+    delta[TILE : 2 * TILE, :] = -0.25
+    expected = initial.float()
+    _run_io_kernel(
+        _make_two_update_streamed_kernel(),
         in_tensors=[initial, delta],
         out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
         expected_list=[expected],

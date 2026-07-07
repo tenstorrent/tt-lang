@@ -330,6 +330,12 @@ struct FusionTraceResult {
 /// `failedValue` are set.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
 
+/// Return true if fusing `value` into `consumer` would read from a root DFB
+/// after its release. The check prevents fusion from extending an attached
+/// value past the lifetime established by the wait/pop pair.
+bool fusableValueCrossesDFBRelease(mlir::Value value,
+                                   mlir::Operation *consumer);
+
 /// Return a human-readable description of a trace failure reason.
 llvm::StringRef describeTraceFailure(TraceFailureReason reason);
 
