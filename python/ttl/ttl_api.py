@@ -1020,9 +1020,16 @@ def _compile_ttnn_kernel(
             # path.
             noc_role = _get_kernel_noc_index(module, name)
             if noc_role is None:
-                key = coords[0] if coords else None
-                noc_role = noc_role_per_core.get(key, 0)
-                noc_role_per_core[key] = noc_role + 1
+                # A clone may serve several cores (control-flow de-dup). Assign
+                # one role for the whole clone from the highest count among the
+                # cores it covers, then advance every covered core so a later
+                # per-core clone on any of them lands on the next role. This
+                # keeps roles correct even when a de-duplicated whole-grid clone
+                # coexists with per-core clones.
+                covered = coords if coords else [None]
+                noc_role = max(noc_role_per_core.get(c, 0) for c in covered)
+                for c in covered:
+                    noc_role_per_core[c] = noc_role + 1
             if noc_role == 0:
                 config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name  # Reader
@@ -1648,7 +1655,7 @@ def _compile_kernel(
             compiled_threads.append(ct)
             thread_tensor_indices.append(ct._tensor_accessor_global_indices)
 
-            # Record the per-function operation grid so the (sketch)
+            # Record the per-function operation grid so the
             # ttl-specialize-cores pass can clone the body per launch
             # coordinate and const-fold ttl.core_x / ttl.core_y.
             ct.func_entry.attributes["ttl.operation_grid"] = ArrayAttr.get(
@@ -1806,13 +1813,13 @@ def _compile_kernel(
                 cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
-        # (sketch) Per-core specialization: clone each kernel per launch
-        # coordinate, const-fold ttl.core_x / ttl.core_y to the concrete
-        # coordinate, then let canonicalize/cse/DCE prune each clone. Must run
-        # while ttl.core_x / ttl.core_y still exist, i.e. before
+        # Per-core specialization: clone each kernel per launch coordinate,
+        # const-fold ttl.core_x / ttl.core_y to the concrete coordinate, then
+        # let canonicalize/cse/DCE prune each clone. Must run while
+        # ttl.core_x / ttl.core_y still exist, i.e. before
         # convert-ttl-to-ttkernel. Each clone is tagged with ttl.core_coord,
         # which the runtime bridge turns into a per-kernel core range.
-        if os.environ.get("TTLANG_SPECIALIZE_CORES") == "1":
+        if compiler_options.specialize_cores:
             pipeline_passes += [
                 "ttl-specialize-cores",
                 "canonicalize",

@@ -5,8 +5,6 @@
 //===----------------------------------------------------------------------===//
 // TTLSpecializeCores
 //
-// SKETCH / WORK-IN-PROGRESS (see the per-core-dispatch epic).
-//
 // Specializes every kernel function that carries a `ttl.operation_grid`
 // attribute for the launch grid it runs on. Each emitted clone is tagged with
 // `ttl.core_coord` (a list of `[x, y]` launch coordinates the clone serves) and

@@ -91,6 +91,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
     )
     p.add_argument(
+        "--ttl-specialize-cores",
+        default=None,
+        dest="specialize_cores",
+        action=argparse.BooleanOptionalAction,
+        help="Specialize each kernel per launch coordinate, const-folding "
+        "core_x / core_y and de-duplicating clones by control flow. Opt-in; not "
+        "yet compatible with PipeNet collectives or L1 accumulation "
+        "(default: disabled).",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -145,6 +155,9 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    # Opt-in: per-core specialization is not yet compatible with PipeNet
+    # collectives or L1 accumulation, so it defaults off.
+    specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

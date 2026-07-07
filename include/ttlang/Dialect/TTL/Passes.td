@@ -835,32 +835,40 @@ def TTKernelInsertInits
 
 def TTLSpecializeCores
     : Pass<"ttl-specialize-cores", "::mlir::ModuleOp"> {
-  let summary = "Clone each kernel function per launch coordinate and const-fold "
-                "ttl.core_x / ttl.core_y";
+  let summary = "Specialize each kernel function per launch coordinate and "
+                "const-fold ttl.core_x / ttl.core_y";
   let description = [{
-    SKETCH / WORK-IN-PROGRESS. Not yet wired into the default pipeline.
-
     Every kernel `func.func` is written once but launched once per coordinate
     of its operation grid, so `ttl.core_x` / `ttl.core_y` are runtime values in
     the shared body. This pass specializes that shared body: for each function
     carrying a `ttl.operation_grid` attribute (an i64 array `[gridX, gridY]`),
-    it clones the function once per launch coordinate, tags each clone with a
-    `ttl.core_coord` attribute (`[x, y]`), and replaces every `ttl.core_x` /
-    `ttl.core_y` result inside the clone with the corresponding
+    it emits specialized clones, tags each clone with a `ttl.core_coord`
+    attribute (an array of `[x, y]` coordinates it serves), and replaces every
+    `ttl.core_x` / `ttl.core_y` result inside the clone with the corresponding
     `arith.constant`.
 
     With the coordinates turned into constants, the standard upstream passes
     (`sccp`, `canonicalize`, `cse`, and dead-code / symbol elimination) fold
     coordinate-dependent predicates and delete the branches that do not apply
-    to that core, yielding a distinct, minimized program per coordinate.
+    to that core, yielding a distinct, minimized program per clone.
 
-    Current limitations (see the epic ticket):
-    - Emits one clone per coordinate (no domain de-duplication yet). The number
-      of unique programs should later be reduced by grouping coordinates whose
-      control flow is identical (e.g. via `LaunchNodeDomainAnalysis`).
+    To avoid emitting one near-identical binary per core, the pass groups
+    coordinates whose control flow is identical (computed with
+    `LaunchNodeDomainAnalysis`) and emits a single clone per group. This
+    de-duplication is only sound when the coordinate is used purely to drive
+    control flow; if `ttl.core_x` / `ttl.core_y` feed a data value (e.g. a
+    tensor address), folding a group to one representative would bake that
+    coordinate's constants into every core, so the pass falls back to one clone
+    per coordinate.
+
+    Current limitations (see the epic ticket). The pass is therefore opt-in
+    (compiler option `specialize_cores`, disabled by default):
+    - Not yet compatible with PipeNet collectives (per-core cloning breaks pipe
+      transfer lowering) or L1 accumulation (produces wrong numerics).
     - Assumes kernel-thread functions are standalone (no inter-function
       `SymbolRefAttr` uses to fix up on rename).
-    - Does not yet resolve per-core compile-time / runtime args.
+    - Does not yet resolve per-core compile-time / runtime args, so coordinates
+      used as data values are not de-duplicated.
   }];
 
   let dependentDialects = [

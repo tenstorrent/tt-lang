@@ -2,13 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end test for the (sketch) per-core specialization path.
+"""End-to-end test for the per-core specialization path.
 
-Exercises `TTLANG_SPECIALIZE_CORES=1`, which inserts `ttl-specialize-cores`
-into the pipeline. That pass specializes each kernel function for its launch
-grid: it tags every clone with `ttl.core_coord` (the coordinates it serves)
-and const-folds `ttl.core_x` / `ttl.core_y` to a representative coordinate.
-The runtime bridge (`_compile_ttnn_kernel`) turns each `ttl.core_coord` into a
+`ttl-specialize-cores` is exposed as the opt-in compiler option
+`specialize_cores` (enable with `--ttl-specialize-cores`; disabled by default
+because it is not yet compatible with PipeNet collectives or L1 accumulation).
+That pass specializes each kernel function for its launch grid: it tags every
+clone with `ttl.core_coord` (the coordinates it serves) and const-folds
+`ttl.core_x` / `ttl.core_y` to a representative coordinate. The runtime bridge
+(`_compile_ttnn_kernel`) turns each `ttl.core_coord` into a
 `KernelSpec.core_ranges` so every specialized binary is dispatched only to the
 cores it serves.
 
@@ -20,7 +22,7 @@ de-duplicates to a single whole-grid clone; the data-movement kernels address
 
 What is checked:
   * The specialized result matches a torch reference (numerical correctness).
-  * The specialized result matches the default (non-specialized) path.
+  * The specialized result matches the default (unspecialized) path.
   * The dumped final MLIR shows specialization actually happened: coordinates
     are const-folded away, the coordinate-free compute kernel de-duplicates to
     one clone, and each data-movement kernel stays per-core.
@@ -80,10 +82,10 @@ def add_kernel_default(a, b, out):
 
 
 # Separate op object so its compilation cache is independent from the default
-# op. This one is only ever invoked with TTLANG_SPECIALIZE_CORES=1 set.
+# op. This one is always invoked with options="--ttl-specialize-cores".
 @ttl.operation(grid=(GRID_X, GRID_Y))
 def add_kernel_specialized(a, b, out):
-    """Identical body to add_kernel_default; compiled with specialization on."""
+    """Identical body to add_kernel_default; invoked with specialization on."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -151,21 +153,20 @@ def _assert_specialized_mlir(final_mlir_path, compute_prefix):
 
 
 def test_specialize_cores_matches_reference(device, monkeypatch, tmp_path):
-    """Specialized per-core dispatch matches torch and the default path."""
+    """Specialized per-core dispatch matches torch and the unspecialized path."""
     a, b, expected = _make_inputs(device)
     out_default = to_dram(torch.zeros_like(expected), device)
     out_spec = to_dram(torch.zeros_like(expected), device)
 
-    # Default path (specialization explicitly off).
-    monkeypatch.delenv("TTLANG_SPECIALIZE_CORES", raising=False)
+    # Unspecialized baseline (specialization off by default).
     add_kernel_default(a, b, out_default)
     default_result = ttnn.to_torch(out_default)
 
-    # Specialized path. Dump the final MLIR so we can confirm the pass ran.
+    # Specialized path (opt in). Dump the final MLIR so we can confirm the
+    # pass ran.
     final_mlir = tmp_path / "specialized_final.mlir"
-    monkeypatch.setenv("TTLANG_SPECIALIZE_CORES", "1")
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
-    add_kernel_specialized(a, b, out_spec)
+    add_kernel_specialized(a, b, out_spec, options="--ttl-specialize-cores")
     spec_result = ttnn.to_torch(out_spec)
 
     # Numerical correctness vs torch, and equivalence to the default path.
@@ -217,10 +218,10 @@ def matmul_default(a, b, out):
 
 
 # Separate op object so its compilation cache is independent from the default
-# matmul. This one is only ever invoked with TTLANG_SPECIALIZE_CORES=1 set.
+# matmul. This one is always invoked with options="--ttl-specialize-cores".
 @ttl.operation(grid=(GRID_X, GRID_Y))
 def matmul_specialized(a, b, out):
-    """Identical body to matmul_default; compiled with specialization on."""
+    """Identical body to matmul_default; invoked with specialization on."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -265,21 +266,20 @@ def _make_matmul_inputs(device):
 
 
 def test_specialize_cores_matmul_matches_reference(device, monkeypatch, tmp_path):
-    """Specialized per-core matmul matches torch and the default path."""
+    """Specialized per-core matmul matches torch and the unspecialized path."""
     a, b, expected = _make_matmul_inputs(device)
     out_default = to_dram(torch.zeros_like(expected), device)
     out_spec = to_dram(torch.zeros_like(expected), device)
 
-    # Default path (specialization explicitly off).
-    monkeypatch.delenv("TTLANG_SPECIALIZE_CORES", raising=False)
+    # Unspecialized baseline (specialization off by default).
     matmul_default(a, b, out_default)
     default_result = ttnn.to_torch(out_default)
 
-    # Specialized path. Dump the final MLIR so we can confirm the pass ran.
+    # Specialized path (opt in). Dump the final MLIR so we can confirm the
+    # pass ran.
     final_mlir = tmp_path / "matmul_specialized_final.mlir"
-    monkeypatch.setenv("TTLANG_SPECIALIZE_CORES", "1")
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
-    matmul_specialized(a, b, out_spec)
+    matmul_specialized(a, b, out_spec, options="--ttl-specialize-cores")
     spec_result = ttnn.to_torch(out_spec)
 
     # Numerical correctness vs torch, and equivalence to the default path.
@@ -298,7 +298,6 @@ if __name__ == "__main__":
     print("=== Per-core specialization repro ===")
     require_hardware()
 
-    os.environ["TTLANG_SPECIALIZE_CORES"] = "1"
     final_mlir = "/tmp/specialize_cores_final.mlir"
     os.environ["TTLANG_FINAL_MLIR"] = final_mlir
 
@@ -313,7 +312,7 @@ if __name__ == "__main__":
             f"(expect 1 deduped compute + {2 * n_cores} per-core "
             f"data-movement kernels)"
         )
-        add_kernel_specialized(a, b, out)
+        add_kernel_specialized(a, b, out, options="--ttl-specialize-cores")
 
         result = ttnn.to_torch(out)
         assert_pcc(expected, result)
