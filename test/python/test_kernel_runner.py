@@ -315,6 +315,41 @@ def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
     assert descriptors[0].common_runtime_args == [0x2000] + pipe_dfb_bases + [0xA000]
 
 
+def test_build_kernel_descriptors_appends_per_kernel_runtime_args(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x2000)
+    specs = [
+        kernel_runner.KernelSpec(
+            path="/tmp/reader.cpp",
+            thread_type="noc",
+            tensor_indices=[0],
+            config=object(),
+            extra_common_runtime_args=[0x4000, 0x4004],
+        ),
+        kernel_runner.KernelSpec(
+            path="/tmp/compute.cpp",
+            thread_type="compute",
+            tensor_indices=[0],
+            config=object(),
+        ),
+    ]
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=specs,
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+        extra_common_runtime_args=[0x3000],
+        expected_extra_common_runtime_args=1,
+    )
+
+    assert descriptors[0].common_runtime_args == [0x2000, 0x3000, 0x4000, 0x4004]
+    assert descriptors[1].common_runtime_args == [0x2000, 0x3000]
+
+
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     tensor = _FakeTensorWithoutDevice()
@@ -514,7 +549,15 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():
     source = kernel_runner.emit_runner_source(
-        kernel_specs=[],
+        kernel_specs=[
+            kernel_runner.KernelSpec(
+                path="/tmp/reader.cpp",
+                thread_type="noc",
+                tensor_indices=[],
+                config=object(),
+                extra_common_runtime_args=[7, 9],
+            )
+        ],
         cb_configs=[],
         grid_cols=1,
         grid_rows=1,
@@ -532,6 +575,12 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
     assert "build_pipe_sync_semaphore_descriptors(" in source
     assert "build_generic_op_io_tensors(" in source
     assert "program_descriptor.custom_program_hash = PROGRAM_HASH" in source
+    assert "KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [" in source
+    assert "    [7, 9],  # noc" in source
+    assert (
+        "extra_common_runtime_args=KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx]"
+        in source
+    )
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
 
 

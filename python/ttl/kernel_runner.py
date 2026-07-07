@@ -101,6 +101,9 @@ class KernelSpec:
         core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
+        extra_common_runtime_args: Per-kernel runtime args appended after
+            shared compiler-managed args. Fabric connection args use this so
+            kernels that do not emit fabric calls do not receive unused args.
     """
 
     path: str
@@ -109,6 +112,7 @@ class KernelSpec:
     config: Any
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
     core_ranges: Optional[Any] = None
+    extra_common_runtime_args: Optional[List[int]] = None
 
 
 @dataclass
@@ -225,6 +229,7 @@ def build_kernel_descriptors(
             )
         common_runtime_args.extend(computed_address_base_args)
         common_runtime_args.extend(extra_args)
+        common_runtime_args.extend(spec.extra_common_runtime_args or [])
 
         # Compile-time args are DFB indices followed by TensorAccessorArgs for
         # data-movement kernels. Allocation-dependent DFB bases remain runtime
@@ -996,6 +1001,13 @@ def emit_runner_source(
         lines.append(f"    {_serialize_noc_role(spec)!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
+
+    lines.append("KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [")
+    for spec in kernel_specs:
+        extra_args = list(spec.extra_common_runtime_args or [])
+        lines.append(f"    {extra_args!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
     lines.append("CB_CONFIGS = [")
     for i, cb in enumerate(cb_configs):
         if cb is None:
@@ -1078,6 +1090,10 @@ def emit_runner_source(
     lines.append(
         "                core_ranges=_core_ranges_from_spec("
         "KERNEL_CORE_RANGES[kernel_idx]),"
+    )
+    lines.append(
+        "                extra_common_runtime_args="
+        "KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx],"
     )
     lines.append("            )")
     lines.append("        )")
