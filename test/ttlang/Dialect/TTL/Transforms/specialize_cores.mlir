@@ -84,3 +84,44 @@ module {
     return %r : index
   }
 }
+
+// -----
+
+// -- Test 3: folding eliminates the untaken control-flow path. ---------------
+// Each branch holds a uniquely identifiable op that cannot be constant-folded
+// (it depends on the runtime %arg): `arith.muli` in the "then" path and
+// `arith.addi` in the "else" path. This isolates dead-path elimination from
+// constant folding of the yielded values. After ttl-specialize-cores const-
+// folds the coordinate, canonicalize proves the scf.if condition constant and
+// deletes the untaken region (and the now-unused op), and cse cleans up.
+//
+// Grid is 1x3, so the corner (y == 0) is one clone and the interior nodes
+// (y in {1, 2}) de-duplicate into a second clone; the interior clone is
+// emitted first. Only the taken branch's op survives in each clone, and no
+// scf.if remains.
+
+// FOLDED-LABEL: func.func @sel_c0_1
+// FOLDED:         arith.addi
+// FOLDED-NOT:     arith.muli
+// FOLDED-NOT:     scf.if
+
+// FOLDED-LABEL: func.func @sel_c0_0
+// FOLDED:         arith.muli
+// FOLDED-NOT:     arith.addi
+// FOLDED-NOT:     scf.if
+
+module {
+  func.func @sel(%arg: index) -> index attributes {ttl.operation_grid = [1 : i64, 3 : i64]} {
+    %c0 = arith.constant 0 : index
+    %y = ttl.core_y : index
+    %pred = arith.cmpi eq, %y, %c0 : index
+    %r = scf.if %pred -> (index) {
+      %hot = arith.muli %arg, %arg : index
+      scf.yield %hot : index
+    } else {
+      %cold = arith.addi %arg, %arg : index
+      scf.yield %cold : index
+    }
+    return %r : index
+  }
+}
