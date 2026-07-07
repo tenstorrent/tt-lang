@@ -10,12 +10,12 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
-#include "ttlang/Dialect/TTL/Passes.h"
-#include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 #include "ttlang/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 #include "llvm/Support/CommandLine.h"
 
 int main(int argc, char **argv) {

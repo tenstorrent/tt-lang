@@ -8,10 +8,10 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLLOWERDPRINTTOEMITC
