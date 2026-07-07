@@ -413,10 +413,6 @@ jobs:
       - name: Git safe directory
         run: git config --global --add safe.directory "$(pwd)"
 
-      # Detection needs only tt-mlir's TT_METAL_VERSION pin.
-      - name: Fetch tt-mlir for uplift detection
-        run: git submodule update --init --depth 1 third-party/tt-mlir
-
       - name: Configure AWS Credentials
         uses: ./.github/actions/configure-tt-s3-credentials
 
