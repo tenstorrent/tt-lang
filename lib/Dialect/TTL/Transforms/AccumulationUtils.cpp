@@ -4,10 +4,12 @@
 
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/DenseSet.h"
@@ -21,26 +23,18 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Return the dataflow buffer wait that provides the loop-local contribution.
-/// The streaming DST lowering preserves one wait/pop pair per source
-/// iteration, so the contribution must be acquired inside the source loop.
-static CBWaitOp getLoopLocalContributionWait(TensorAccumulationMatch &match,
-                                             scf::ForOp loop,
-                                             AttachCBOp &attachedContribution) {
+/// Return the wait that provides the matched contribution value, peeling the
+/// optional attach operation that preserves dataflow buffer identity for tile
+/// extraction.
+static CBWaitOp getContributionWait(TensorAccumulationMatch &match,
+                                    AttachCBOp &attachedContribution) {
   Value contribution = match.contribution;
   if (auto attach = contribution.getDefiningOp<AttachCBOp>()) {
-    if (attach->getParentOp() != loop) {
-      return {};
-    }
     attachedContribution = attach;
     contribution = attach.getTensor();
   }
 
-  auto wait = contribution.getDefiningOp<CBWaitOp>();
-  if (!wait || wait->getParentOp() != loop) {
-    return {};
-  }
-  return wait;
+  return contribution.getDefiningOp<CBWaitOp>();
 }
 
 /// Check that deleting the source loop will not drop work other than the
@@ -74,9 +68,77 @@ static bool onlyContainsDstReductionOps(scf::ForOp loop,
   return foundContributionPop;
 }
 
+/// Resident contributions have no per-iteration dataflow buffer protocol
+/// operations. The loop body can be removed only when the additive recurrence
+/// is the whole body aside from the terminator.
+static bool
+onlyContainsResidentDstReductionOps(scf::ForOp loop,
+                                    TensorAccumulationMatch &match) {
+  for (Operation &bodyOp : loop.getBody()->without_terminator()) {
+    if (&bodyOp != match.add.getOperation()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Accept resident contribution setup only when it precedes the loop in the
+/// same linear sequence, either directly or through the scope op that contains
+/// the loop during lowering.
+static bool dominatesLoopInLinearSequence(Operation *operation,
+                                          scf::ForOp loop) {
+  Block *block = operation->getBlock();
+  Operation *projectedLoop = block == loop->getBlock()
+                                 ? loop.getOperation()
+                                 : block->findAncestorOpInBlock(*loop);
+  return projectedLoop && operation->isBeforeInBlock(projectedLoop);
+}
+
+struct ResidentContributionReleaseInfo {
+  CBPopOp existingPop;
+};
+
+/// Classify the resident wait's release with the same ownership computation
+/// used by auto-sync so lowering and sync insertion agree on explicit pops.
+static FailureOr<ResidentContributionReleaseInfo>
+analyzeResidentContributionRelease(CBWaitOp contributionWait) {
+  auto func = contributionWait->getParentOfType<func::FuncOp>();
+  if (!func) {
+    return failure();
+  }
+
+  SmallVector<Operation *> reserves;
+  SmallVector<Operation *> waits;
+  SmallVector<Operation *> pushes;
+  SmallVector<Operation *> pops;
+  collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
+
+  DFBAcquireInterval interval =
+      makeDFBAcquireInterval(contributionWait.getOperation(), waits);
+  Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
+  DFBReleaseSearch releaseSearch =
+      findOwnedDFBReleases(interval, lastOwnedUse, pops);
+
+  if (!releaseSearch.nestedReleases.empty()) {
+    return failure();
+  }
+
+  CBPopOp existingPop;
+  for (Operation *release : releaseSearch.sameLevelReleases) {
+    auto pop = cast<CBPopOp>(release);
+    if (pop.getNumTiles() || pop->isBeforeInBlock(lastOwnedUse) ||
+        existingPop) {
+      return failure();
+    }
+    existingPop = pop;
+  }
+
+  return ResidentContributionReleaseInfo{existingPop};
+}
+
 /// Return the logical DST capacity for a resident accumulator tensor. Scope
-/// lowering uses the default double-buffered DST mode because no pass option in
-/// PR4 changes the recurrence section to full-sync mode.
+/// recurrence lowering uses the default double-buffered mode to match the
+/// surrounding DST allocation model.
 static FailureOr<std::uint32_t>
 getDefaultDstCapacityForTensor(RankedTensorType tensorType) {
   std::optional<Type> elementType =
@@ -260,20 +322,48 @@ analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
   }
 
   AttachCBOp attachedContribution;
-  CBWaitOp contributionWait =
-      getLoopLocalContributionWait(match, loop, attachedContribution);
+  CBWaitOp contributionWait = getContributionWait(match, attachedContribution);
   if (!contributionWait || contributionWait.getNumTiles().has_value()) {
     return failure();
   }
-  if (!onlyContainsDstReductionOps(loop, match, contributionWait,
-                                   attachedContribution)) {
-    return failure();
+
+  TensorAccumulationContributionResidency contributionResidency;
+  CBPopOp residentContributionPop;
+  if (contributionWait->getParentOp() == loop) {
+    if (attachedContribution && attachedContribution->getParentOp() != loop) {
+      return failure();
+    }
+    if (!onlyContainsDstReductionOps(loop, match, contributionWait,
+                                     attachedContribution)) {
+      return failure();
+    }
+    contributionResidency = TensorAccumulationContributionResidency::Streamed;
+  } else {
+    if (!dominatesLoopInLinearSequence(contributionWait.getOperation(), loop) ||
+        (attachedContribution &&
+         !dominatesLoopInLinearSequence(attachedContribution.getOperation(),
+                                        loop)) ||
+        !onlyContainsResidentDstReductionOps(loop, match)) {
+      return failure();
+    }
+
+    FailureOr<ResidentContributionReleaseInfo> releaseInfo =
+        analyzeResidentContributionRelease(contributionWait);
+    if (failed(releaseInfo)) {
+      return failure();
+    }
+    residentContributionPop = releaseInfo->existingPop;
+    contributionResidency = TensorAccumulationContributionResidency::Resident;
   }
 
   auto contributionType =
       dyn_cast<RankedTensorType>(contributionWait.getResult().getType());
   if (!contributionType || contributionType != match.tensorType ||
       !contributionType.hasStaticShape()) {
+    return failure();
+  }
+
+  if (match.contribution.getType() != contributionType) {
     return failure();
   }
 
@@ -289,8 +379,9 @@ analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
     return failure();
   }
 
-  return TensorDstAccumulationInfo{*unitTileCount, contributionWait,
-                                   attachedContribution, contributionType};
+  return TensorDstAccumulationInfo{*unitTileCount,   contributionResidency,
+                                   contributionWait, attachedContribution,
+                                   contributionType, residentContributionPop};
 }
 
 LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
@@ -348,18 +439,31 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
     newLoop->setAttr(attr.getName(), attr.getValue());
   }
 
+  Value residentContributionTensor;
+  if (info->contributionResidency ==
+      TensorAccumulationContributionResidency::Resident) {
+    residentContributionTensor = info->attachedContribution
+                                     ? info->attachedContribution.getResult()
+                                     : info->contributionWait.getResult();
+  }
+
   {
     OpBuilder::InsertionGuard loopGuard(rewriter);
     rewriter.setInsertionPointToStart(newLoop.getBody());
-    CBWaitOp contributionWait = CBWaitOp::create(
-        rewriter, loc, info->contributionType, info->contributionWait.getCb(),
-        /*num_tiles=*/IntegerAttr{});
-    Value contributionTensor = contributionWait.getResult();
-    if (info->attachedContribution) {
-      contributionTensor =
-          AttachCBOp::create(rewriter, loc, info->contributionType,
-                             contributionTensor, info->contributionWait.getCb())
-              .getResult();
+    Value contributionTensor = residentContributionTensor;
+    if (info->contributionResidency ==
+        TensorAccumulationContributionResidency::Streamed) {
+      CBWaitOp contributionWait = CBWaitOp::create(
+          rewriter, loc, info->contributionType, info->contributionWait.getCb(),
+          /*num_tiles=*/IntegerAttr{});
+      contributionTensor = contributionWait.getResult();
+      if (info->attachedContribution) {
+        contributionTensor =
+            AttachCBOp::create(rewriter, loc, info->contributionType,
+                               contributionTensor,
+                               info->contributionWait.getCb())
+                .getResult();
+      }
     }
 
     for (auto [linearIndex, coordinates] : llvm::enumerate(tileCoordinates)) {
@@ -371,8 +475,11 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
                                accumulatorTiles[linearIndex], contributionTile,
                                addCombiner, dstIndices[linearIndex]);
     }
-    CBPopOp::create(rewriter, loc, info->contributionWait.getCb(),
-                    /*num_tiles=*/IntegerAttr{});
+    if (info->contributionResidency ==
+        TensorAccumulationContributionResidency::Streamed) {
+      CBPopOp::create(rewriter, loc, info->contributionWait.getCb(),
+                      /*num_tiles=*/IntegerAttr{});
+    }
   }
 
   rewriter.setInsertionPoint(sectionBody.getTerminator());
@@ -382,6 +489,14 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
     Value placeholder = createTilePlaceholder(rewriter, loc, tileType);
     TileStoreOp::create(rewriter, loc, placeholder, outputReserve.getResult(),
                         coordinateValues, dstIndices[linearIndex]);
+  }
+
+  if (info->contributionResidency ==
+          TensorAccumulationContributionResidency::Resident &&
+      !info->residentContributionPop) {
+    rewriter.setInsertionPointAfter(dstSection);
+    CBPopOp::create(rewriter, loc, info->contributionWait.getCb(),
+                    /*num_tiles=*/IntegerAttr{});
   }
 
   rewriter.eraseOp(match.finalStore);

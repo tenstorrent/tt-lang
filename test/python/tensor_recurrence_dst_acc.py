@@ -11,8 +11,8 @@
 """Additive tensor recurrence lowers to DST-resident accumulation.
 
 `acc = acc + delta` over a compute loop seeds DST once, accumulates in place
-with `binary_dest_reuse_tiles`, and packs the result once. The contribution DFB
-has fewer blocks than the loop trip count.
+with `binary_dest_reuse_tiles`, and packs the result once. The contribution
+dataflow buffer has fewer blocks than the loop trip count.
 """
 
 import ttl
@@ -108,13 +108,42 @@ def multi_tile_acc_recurrence(initial, delta, out):
             ).wait()
 
 
-# Initial IR check: the 2x2 contribution DFB has fewer blocks than the loop
-# trip count.
-# CHECK-INITIAL-LABEL: func.func @multi_tile_compute
-# CHECK-INITIAL: ttl.bind_cb{{.*}}cb_index = 1{{.*}}block_count = 2
+@ttl.operation(grid=(1, 1))
+def resident_delta_acc_recurrence(initial, delta, out):
+    initial_dfb = ttl.make_dataflow_buffer_like(initial, shape=(1, 1), block_count=2)
+    delta_dfb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def resident_delta_compute():
+        with delta_dfb.wait() as delta_blk:
+            with initial_dfb.wait() as acc:
+                for _ in range(N_ITERS):
+                    acc = acc + delta_blk
+                with out_dfb.reserve() as out_blk:
+                    out_blk.store(acc)
+
+    @ttl.datamovement()
+    def resident_delta_reader():
+        with initial_dfb.reserve() as initial_blk:
+            ttl.copy(initial[0:1, 0:1], initial_blk).wait()
+        with delta_dfb.reserve() as delta_blk:
+            ttl.copy(delta[0:1, 0:1], delta_blk).wait()
+
+    @ttl.datamovement()
+    def resident_delta_writer():
+        with out_dfb.wait() as out_blk:
+            ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+
+# Initial IR check: the resident contribution is acquired once before the loop
+# with a dataflow buffer capacity independent of the trip count.
+# CHECK-INITIAL-LABEL: func.func @resident_delta_compute
+# CHECK-INITIAL: ttl.bind_cb{{.*}}cb_index = 1{{.*}}block_count = 1
 # CHECK-INITIAL: arith.constant 400 : i64
 # CHECK-INITIAL: scf.for
-# CHECK-INITIAL: ttl.cb_wait %{{.*}} : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+# CHECK-INITIAL-NOT: ttl.cb_wait
+# CHECK-INITIAL: ttl.add
 
 # Generated C++ checks DST seeding, in-place accumulation, and final packing.
 # CHECK-CPP-LABEL: === single_tile_compute kernel written to {{.*}} ===
@@ -125,9 +154,24 @@ def multi_tile_acc_recurrence(initial, delta, out):
 # CHECK-CPP-COUNT-4: copy_tile(
 # CHECK-CPP-COUNT-4: binary_dest_reuse_tiles<
 # CHECK-CPP: pack_tile_block
+# CHECK-CPP-LABEL: === resident_delta_compute kernel written to {{.*}} ===
+# CHECK-CPP-NOT: add_binary_tile
+# CHECK-CPP-NOT: pack_reconfig_l1_acc
+# CHECK-CPP-NOT: llk_pack_reconfig_l1_acc
+# CHECK-CPP-COUNT-2: wait_front
+# CHECK-CPP: for
+# CHECK-CPP-NOT: wait_front
+# CHECK-CPP: binary_dest_reuse_tiles<
+# CHECK-CPP-NOT: pop_front
+# CHECK-CPP: }
+# CHECK-CPP: pack_tile
+# CHECK-CPP-NOT: add_binary_tile
+# CHECK-CPP-NOT: pack_reconfig_l1_acc
+# CHECK-CPP-NOT: llk_pack_reconfig_l1_acc
 
 # CHECK-RESULT: SINGLE PASS
 # CHECK-RESULT: MULTI PASS
+# CHECK-RESULT: RESIDENT PASS
 # CHECK-RESULT: PASS
 
 
@@ -159,12 +203,28 @@ def run_multi_tile(device):
     print("MULTI PASS")
 
 
+def run_resident_delta(device):
+    initial = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    delta = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    golden = initial.float() + N_ITERS * delta.float()
+    out_dev = to_dram(torch.zeros_like(initial), device)
+
+    resident_delta_acc_recurrence(
+        to_dram(initial, device), to_dram(delta, device), out_dev
+    )
+
+    result = ttnn.to_torch(out_dev).float()
+    assert_pcc(golden.float(), result.float(), threshold=0.98)
+    print("RESIDENT PASS")
+
+
 if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
     try:
         torch.manual_seed(0)
         run_single_tile(device)
         run_multi_tile(device)
+        run_resident_delta(device)
         print("PASS")
     finally:
         ttnn.close_device(device)

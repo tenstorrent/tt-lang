@@ -112,6 +112,110 @@ def _make_direct_loop_carried_add_kernel():
     return kernel
 
 
+def _make_resident_contribution_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(initial, delta, out):
+        initial_dfb = ttl.make_dataflow_buffer_like(
+            initial, shape=(1, 1), block_count=2
+        )
+        delta_dfb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=1)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with delta_dfb.wait() as delta_blk:
+                with initial_dfb.wait() as acc:
+                    for _ in range(LONG_STREAMING_N_ITERS):
+                        acc = acc + delta_blk
+
+                    with out_dfb.reserve() as out_blk:
+                        out_blk.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with initial_dfb.reserve() as initial_blk:
+                ttl.copy(initial[0:1, 0:1], initial_blk).wait()
+            with delta_dfb.reserve() as delta_blk:
+                ttl.copy(delta[0:1, 0:1], delta_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as out_blk:
+                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+def _make_resident_contribution_explicit_pop_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(initial, delta, out):
+        initial_dfb = ttl.make_dataflow_buffer_like(
+            initial, shape=(1, 1), block_count=2
+        )
+        delta_dfb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=1)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            delta_blk = delta_dfb.wait()
+            with initial_dfb.wait() as acc:
+                for _ in range(LONG_STREAMING_N_ITERS):
+                    acc = acc + delta_blk
+
+                with out_dfb.reserve() as out_blk:
+                    out_blk.store(acc)
+            delta_blk.pop()
+
+        @ttl.datamovement()
+        def reader():
+            with initial_dfb.reserve() as initial_blk:
+                ttl.copy(initial[0:1, 0:1], initial_blk).wait()
+            with delta_dfb.reserve() as delta_blk:
+                ttl.copy(delta[0:1, 0:1], delta_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as out_blk:
+                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+def _make_resident_contribution_early_pop_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(initial, delta, out):
+        initial_dfb = ttl.make_dataflow_buffer_like(
+            initial, shape=(1, 1), block_count=2
+        )
+        delta_dfb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=1)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            delta_blk = delta_dfb.wait()
+            delta_blk.pop()
+            with initial_dfb.wait() as acc:
+                for _ in range(LONG_STREAMING_N_ITERS):
+                    acc = acc + delta_blk
+
+                with out_dfb.reserve() as out_blk:
+                    out_blk.store(acc)
+
+        @ttl.datamovement()
+        def reader():
+            with initial_dfb.reserve() as initial_blk:
+                ttl.copy(initial[0:1, 0:1], initial_blk).wait()
+            with delta_dfb.reserve() as delta_blk:
+                ttl.copy(delta[0:1, 0:1], delta_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as out_blk:
+                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
 def _make_two_update_streamed_kernel():
     @ttl.operation(grid=(1, 1))
     def kernel(initial, delta, out):
@@ -215,6 +319,69 @@ def _run_io_kernel(
         assert_allclose(result, expected.float(), **_DTYPE_TOL[dtype])
 
 
+def _run_io_kernel_with_ir_capture(
+    kernel,
+    in_tensors,
+    out_zeros,
+    expected_list,
+    dtype,
+    device,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    final_mlir = tmp_path / "final.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
+    _run_io_kernel(kernel, in_tensors, out_zeros, expected_list, dtype, device)
+    return capsys.readouterr().out, final_mlir.read_text()
+
+
+def _run_compile_only_kernel(
+    kernel,
+    in_tensors,
+    out_zeros,
+    device,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    initial_mlir = tmp_path / "initial.mlir"
+    final_mlir = tmp_path / "final.mlir"
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    monkeypatch.setenv("TTLANG_INITIAL_MLIR", str(initial_mlir))
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
+    in_devs = [to_dram(tensor, device) for tensor in in_tensors]
+    out_devs = [to_dram(tensor, device) for tensor in out_zeros]
+    kernel(*in_devs, *out_devs)
+    return capsys.readouterr().out, initial_mlir.read_text(), final_mlir.read_text()
+
+
+def _extract_generated_kernel_source(output, kernel_name):
+    marker = f"=== {kernel_name} kernel written to "
+    start = output.index(marker)
+    next_marker = output.find("=== reader kernel written to ", start + len(marker))
+    if next_marker == -1:
+        next_marker = output.find("=== writer kernel written to ", start + len(marker))
+    assert next_marker != -1
+    return output[start:next_marker]
+
+
+def _assert_resident_dst_compute(output, final_ir):
+    compute_source = _extract_generated_kernel_source(output, "compute")
+    assert "binary_dest_reuse_tiles<" in compute_source
+    assert "add_binary_tile" not in compute_source
+    assert "pack_reconfig_l1_acc" not in compute_source
+    assert "llk_pack_reconfig_l1_acc" not in compute_source
+    assert "ttl.compiler_allocated" not in final_ir
+
+    loop_start = compute_source.index("for (")
+    loop_end = compute_source.index("tile_regs_commit", loop_start)
+    loop_source = compute_source[loop_start:loop_end]
+    assert "wait_front" not in loop_source
+    assert "pop_front" not in loop_source
+    assert compute_source.count("pop_front") == 2
+
+
 @pytest.mark.requires_device
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 def test_self_rebound_add_result_is_carried_out_of_loop(device, dtype):
@@ -258,6 +425,76 @@ def test_direct_loop_carried_add(device, dtype):
         dtype=dtype,
         device=device,
     )
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_resident_contribution_is_dst_resident(
+    device, dtype, tmp_path, monkeypatch, capsys
+):
+    initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 0.5, dtype=dtype)
+    expected = initial.float() + LONG_STREAMING_N_ITERS * delta.float()
+    output, final_ir = _run_io_kernel_with_ir_capture(
+        _make_resident_contribution_kernel(),
+        in_tensors=[initial, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+    )
+    _assert_resident_dst_compute(output, final_ir)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_resident_contribution_explicit_pop_is_not_duplicated(
+    device, dtype, tmp_path, monkeypatch, capsys
+):
+    initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 0.5, dtype=dtype)
+    expected = initial.float() + LONG_STREAMING_N_ITERS * delta.float()
+    output, final_ir = _run_io_kernel_with_ir_capture(
+        _make_resident_contribution_explicit_pop_kernel(),
+        in_tensors=[initial, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[expected],
+        dtype=dtype,
+        device=device,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+    )
+    _assert_resident_dst_compute(output, final_ir)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_resident_contribution_early_pop_does_not_form_dst(
+    device, dtype, tmp_path, monkeypatch, capsys
+):
+    initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 0.5, dtype=dtype)
+    output, initial_ir, final_ir = _run_compile_only_kernel(
+        _make_resident_contribution_early_pop_kernel(),
+        in_tensors=[initial, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        device=device,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+    )
+    compute_ir = initial_ir.split("func.func @compute", 1)[1].split(
+        "func.func @reader", 1
+    )[0]
+    assert compute_ir.index("ttl.cb_pop") < compute_ir.index("scf.for")
+    assert "binary_dest_reuse_tiles<" not in _extract_generated_kernel_source(
+        output, "compute"
+    )
+    assert "ttl.compiler_allocated" in final_ir
 
 
 @pytest.mark.requires_device
