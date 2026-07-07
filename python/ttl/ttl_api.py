@@ -1486,6 +1486,17 @@ def _compile_kernel(
             compiled_threads.append(ct)
             thread_tensor_indices.append(ct._tensor_accessor_global_indices)
 
+            # Record the per-function operation grid so the (sketch)
+            # ttl-specialize-cores pass can clone the body per launch
+            # coordinate and const-fold ttl.core_x / ttl.core_y.
+            ct.func_entry.attributes["ttl.operation_grid"] = ArrayAttr.get(
+                [
+                    IntegerAttr.get(IntegerType.get_signless(64, ctx), dim)
+                    for dim in launch_grid
+                ],
+                ctx,
+            )
+
             # Set TensorAccessor indexing attributes for C++ lowering
             base_cta = get_cb_count()
             ct.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
