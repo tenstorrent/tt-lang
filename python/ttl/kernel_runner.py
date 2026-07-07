@@ -201,7 +201,9 @@ def build_kernel_descriptors(
 
         # A specialized clone carries its own sub-range; otherwise the kernel
         # runs across the whole-grid core_ranges (current default).
-        spec_core_ranges = spec.core_ranges if spec.core_ranges is not None else core_ranges
+        spec_core_ranges = (
+            spec.core_ranges if spec.core_ranges is not None else core_ranges
+        )
 
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,

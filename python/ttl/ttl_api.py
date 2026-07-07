@@ -754,22 +754,38 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     return list(attr)
 
 
-def _get_kernel_core_coord(module, kernel_name: str):
+def _get_kernel_core_coords(module, kernel_name: str):
     """Read the `ttl.core_coord` attribute set by `ttl-specialize-cores`.
 
-    Returns the `(x, y)` launch coordinate for a specialized clone, or None
-    when the kernel was not specialized (the whole-grid default path).
+    The attribute is an array of length-2 `[x, y]` arrays: the launch
+    coordinates a specialized clone serves. `ttl-specialize-cores` groups
+    coordinates with identical control flow into a single clone, so a clone may
+    serve more than one coordinate.
+
+    Returns the list of `(x, y)` launch coordinates for a specialized clone, or
+    None when the kernel was not specialized (the whole-grid default path).
     """
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get("ttl.core_coord", None)
     if attr is None:
         return None
-    if not isinstance(attr, ArrayAttr) or len(attr) != 2:
+    if not isinstance(attr, ArrayAttr):
         raise ValueError(
-            f"Expected a length-2 array for 'ttl.core_coord' on kernel "
+            f"Expected an array for 'ttl.core_coord' on kernel "
             f"'{kernel_name}', got {attr}"
         )
-    return int(IntegerAttr(attr[0]).value), int(IntegerAttr(attr[1]).value)
+    coords = []
+    for pair in attr:
+        pair = ArrayAttr(pair)
+        if len(pair) != 2:
+            raise ValueError(
+                f"Expected length-2 [x, y] entries in 'ttl.core_coord' on "
+                f"kernel '{kernel_name}', got {pair}"
+            )
+        coords.append(
+            (int(IntegerAttr(pair[0]).value), int(IntegerAttr(pair[1]).value))
+        )
+    return coords
 
 
 def _get_kernel_noc_index(module, kernel_name: str):
@@ -868,12 +884,11 @@ def _compile_ttnn_kernel(
                 )
 
     # Detect the per-core specialization path: ttl-specialize-cores tags each
-    # clone with ttl.core_coord. When present, get_ttkernel_names returns one
-    # (compute + reader + writer) triple per launch coordinate rather than a
-    # single triple.
-    specialize_cores = any(
-        _get_kernel_core_coord(module, name) is not None for name, _ in kernel_info
-    )
+    # clone with ttl.core_coord (the list of coordinates the clone serves).
+    # When present, get_ttkernel_names returns per-coordinate clones instead of
+    # a single (compute + reader + writer) triple.
+    kernel_coords = [_get_kernel_core_coords(module, name) for name, _ in kernel_info]
+    specialize_cores = any(coords is not None for coords in kernel_coords)
 
     compute_count = sum(1 for _, t in kernel_info if t == "compute")
     dm_count = sum(1 for _, t in kernel_info if t == "noc")
@@ -888,14 +903,30 @@ def _compile_ttnn_kernel(
                 f"Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts."
             )
     else:
-        # Specialized path: one (compute + 2 data movement) triple per core, so
-        # data-movement kernels must come in pairs with the compute kernels.
-        if compute_count == 0 or dm_count != 2 * compute_count:
-            raise ValueError(
-                f"Per-core specialization expects one compute + two data movement "
-                f"kernels per core, got {compute_count} compute and {dm_count} data "
-                f"movement kernels. Each core still has only 2 NOCs."
-            )
+        # Specialized path: clones dispatch to disjoint sets of cores, but each
+        # physical core still has one compute (three TRISCs) and two NOCs. A
+        # clone may serve several coordinates (control-flow de-duplication), so
+        # validate the hardware budget per core rather than by total count.
+        per_core_counts = {}
+        for (name, thread_type), coords in zip(kernel_info, kernel_coords):
+            if coords is None:
+                raise ValueError(
+                    f"Specialized module mixes specialized and unspecialized "
+                    f"kernels: '{name}' has no ttl.core_coord."
+                )
+            for coord in coords:
+                counts = per_core_counts.setdefault(coord, [0, 0])
+                if thread_type == "compute":
+                    counts[0] += 1
+                elif thread_type == "noc":
+                    counts[1] += 1
+        for coord, (n_compute, n_noc) in per_core_counts.items():
+            if n_compute > 1 or n_noc > 2:
+                raise ValueError(
+                    f"Per-core specialization assigned {n_compute} compute and "
+                    f"{n_noc} data movement kernels to core {coord}. Each core "
+                    f"supports at most one compute and two NOC kernels."
+                )
 
     if verbose:
         print("=" * 60)
@@ -933,7 +964,9 @@ def _compile_ttnn_kernel(
     # not present on the final module. Keying by core coordinate (rather than a
     # single global counter) keeps roles correct on the specialization path,
     # where get_ttkernel_names returns all reader clones followed by all writer
-    # clones instead of interleaving them per core.
+    # clones instead of interleaving them per core. Data-movement clones use the
+    # coordinate as a data value, so they are never de-duplicated and always
+    # serve a single core; the representative coordinate identifies that core.
     noc_role_per_core = {}
     kernel_config_attrs = {
         name: {
@@ -950,15 +983,15 @@ def _compile_ttnn_kernel(
     # Maps RISC thread names to kernel names
     thread_to_kernel = {}
 
-    for name, thread_type in kernel_info:
+    for idx, (name, thread_type) in enumerate(kernel_info):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
 
-        # The specialized clone's launch coordinate (None on the default,
+        # The specialized clone's launch coordinates (None on the default,
         # whole-grid path). Used both for the per-core reader/writer fallback
-        # below and to build the single-core dispatch range further down.
-        coord = _get_kernel_core_coord(module, name)
+        # below and to build the dispatch range further down.
+        coords = kernel_coords[idx]
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
@@ -987,8 +1020,9 @@ def _compile_ttnn_kernel(
             # path.
             noc_role = _get_kernel_noc_index(module, name)
             if noc_role is None:
-                noc_role = noc_role_per_core.get(coord, 0)
-                noc_role_per_core[coord] = noc_role + 1
+                key = coords[0] if coords else None
+                noc_role = noc_role_per_core.get(key, 0)
+                noc_role_per_core[key] = noc_role + 1
             if noc_role == 0:
                 config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name  # Reader
@@ -999,14 +1033,16 @@ def _compile_ttnn_kernel(
             config = ttnn.ReaderConfigDescriptor()
         kernel_configs.append(config)
 
-        # Turn the specialized clone's coordinate into a single-core range so
-        # this binary is dispatched only to its core. None keeps the whole-grid
-        # default in build_kernel_descriptors.
-        if coord is not None:
-            cx, cy = coord
+        # Turn the specialized clone's coordinates into a CoreRangeSet so this
+        # binary is dispatched only to the cores it serves. None keeps the
+        # whole-grid default in build_kernel_descriptors.
+        if coords is not None:
             kernel_core_ranges.append(
                 ttnn.CoreRangeSet(
-                    [ttnn.CoreRange(ttnn.CoreCoord(cx, cy), ttnn.CoreCoord(cx, cy))]
+                    [
+                        ttnn.CoreRange(ttnn.CoreCoord(cx, cy), ttnn.CoreCoord(cx, cy))
+                        for (cx, cy) in coords
+                    ]
                 )
             )
         else:
