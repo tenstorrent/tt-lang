@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCore_IR_TTCOREOPSTYPES_TD
-#define TTMLIR_DIALECT_TTCore_IR_TTCOREOPSTYPES_TD
+#ifndef TTLANG_DIALECT_TTCore_IR_TTCOREOPSTYPES_TD
+#define TTLANG_DIALECT_TTCore_IR_TTCOREOPSTYPES_TD
 
 include "ttlang/Dialect/TTCore/IR/TTCoreBase.td"
 include "ttlang/Dialect/TTCore/IR/TTCoreOpsEnums.td"
@@ -816,4 +816,4 @@ def TTCore_CoreRangeAttr: TTCore_Attr<"CoreRange", "core_range"> {
 def TTCore_CoreRangeArrayAttr : TypedArrayAttrBase<
     TTCore_CoreRangeAttr, "ordered array of ttcore core_range attributes">;
 
-#endif // TTMLIR_DIALECT_TTCore_IR_TTCOREOPSTYPES_TD
+#endif // TTLANG_DIALECT_TTCore_IR_TTCOREOPSTYPES_TD

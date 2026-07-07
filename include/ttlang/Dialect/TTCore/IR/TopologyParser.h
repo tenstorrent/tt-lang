@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCORE_IR_TOPOLOGYPARSER_H
-#define TTMLIR_DIALECT_TTCORE_IR_TOPOLOGYPARSER_H
+#ifndef TTLANG_DIALECT_TTCORE_IR_TOPOLOGYPARSER_H
+#define TTLANG_DIALECT_TTCORE_IR_TOPOLOGYPARSER_H
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "llvm/Support/CommandLine.h"
@@ -55,4 +55,4 @@ public:
 
 } // namespace llvm::cl
 
-#endif // TTMLIR_DIALECT_TTCORE_IR_TOPOLOGYPARSER_H
+#endif // TTLANG_DIALECT_TTCORE_IR_TOPOLOGYPARSER_H

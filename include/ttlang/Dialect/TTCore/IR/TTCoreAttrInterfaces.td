@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCORE_IR_TTCOREATTRINTERFACES_TD
-#define TTMLIR_DIALECT_TTCORE_IR_TTCOREATTRINTERFACES_TD
+#ifndef TTLANG_DIALECT_TTCORE_IR_TTCOREATTRINTERFACES_TD
+#define TTLANG_DIALECT_TTCORE_IR_TTCOREATTRINTERFACES_TD
 
 include "mlir/IR/Interfaces.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
@@ -61,4 +61,4 @@ def TTCore_DeviceLayoutInterface : AttrInterface<"DeviceLayoutInterface"> {
   ];
 }
 
-#endif // TTMLIR_DIALECT_TTCORE_IR_TTCOREATTRINTERFACES_TD
+#endif // TTLANG_DIALECT_TTCORE_IR_TTCOREATTRINTERFACES_TD

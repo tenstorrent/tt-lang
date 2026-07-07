@@ -8,7 +8,7 @@ function(generate_raw_string_header INPUT_FILE OUTPUT_FILE VARIABLE_NAME)
   file(READ "${INPUT_FILE}" FILE_CONTENT)
 
   # Use a unique raw string delimiter that is unlikely to conflict with content
-  set(DELIM "TTMLIR_STR_DELIM")
+  set(DELIM "TTLANG_STR_DELIM")
 
   # Write the header file content
   file(WRITE "${OUTPUT_FILE}" "// Auto-generated from ${INPUT_FILE} - Do not edit directly\n")

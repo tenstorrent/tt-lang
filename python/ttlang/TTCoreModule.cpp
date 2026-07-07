@@ -2,8 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "TTMLIRMinimalModule.h"
-
+#include "ttlang/Bindings/Python/TTLangModule.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 #include "mlir/CAPI/AffineMap.h"
@@ -14,7 +13,8 @@
 #include <optional>
 #include <vector>
 
-namespace mlir::ttmlir::python {
+using namespace mlir;
+
 namespace {
 
 template <typename Range>
@@ -606,4 +606,3 @@ void populateTTModule(nb::module_ &m) {
                                     attr.getLocalShape().getShape().end());
       });
 }
-} // namespace mlir::ttmlir::python

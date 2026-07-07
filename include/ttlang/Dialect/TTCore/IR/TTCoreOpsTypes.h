@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCORE_IR_TTCOREOPSTYPES_H
-#define TTMLIR_DIALECT_TTCORE_IR_TTCOREOPSTYPES_H
+#ifndef TTLANG_DIALECT_TTCORE_IR_TTCOREOPSTYPES_H
+#define TTLANG_DIALECT_TTCORE_IR_TTCOREOPSTYPES_H
 
 #include "mlir/Dialect/Quant/IR/QuantTypes.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -268,8 +268,8 @@ inline Type dataTypeToElementType(mlir::MLIRContext *context, DataType dtype) {
   }
 }
 
-// Convenience function to convert any type to TTMLIR supported type.
-inline mlir::Type toTTMLIRSupportedDataType(Type elementType) {
+// Convenience function to convert any type to a tt-lang supported type.
+inline mlir::Type toTTLangSupportedDataType(Type elementType) {
   std::optional<DataType> dataType = elementTypeToDataTypeImpl(elementType);
 
   if (dataType) {

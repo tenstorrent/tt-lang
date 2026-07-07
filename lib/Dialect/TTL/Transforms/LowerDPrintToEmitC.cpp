@@ -560,10 +560,9 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
 //===----------------------------------------------------------------------===//
 
 /// Add a hidden emitc.call_opaque "ttmlir::dprint" trigger to cause
-/// ScopedModuleHelper (in tt-mlir's TTKernelToCpp) to emit the dprint
-/// include and helpers at file scope. Wrapped in #if 0/#endif so it
-/// compiles away. Created via OperationState to avoid EmitC C++ type
-/// dependencies (different binary from tt-mlir).
+/// ScopedModuleHelper to emit the dprint include and helpers at file scope.
+/// Wrapped in #if 0/#endif so it compiles away. Created via OperationState to
+/// avoid EmitC C++ type dependencies.
 static void addDPrintIncludeTrigger(func::FuncOp func, OpBuilder &builder) {
   builder.setInsertionPointToStart(&func.getBody().front());
   auto loc = func.getLoc();

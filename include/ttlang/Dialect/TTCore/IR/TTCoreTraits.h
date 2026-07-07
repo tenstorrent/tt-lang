@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCORE_IR_TTCORETRAITS_H
-#define TTMLIR_DIALECT_TTCORE_IR_TTCORETRAITS_H
+#ifndef TTLANG_DIALECT_TTCORE_IR_TTCORETRAITS_H
+#define TTLANG_DIALECT_TTCORE_IR_TTCORETRAITS_H
 
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Support/LLVM.h"

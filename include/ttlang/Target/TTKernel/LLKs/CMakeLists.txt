@@ -3,19 +3,19 @@ include(GenerateRawStringHeader)
 
 # Define the LLK header files to convert to hex
 set(LLK_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_tilize_llks.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_untilize_llks.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_pack_untilize_llks.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_invoke_sfpi_llks.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_matmul_llks.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_padding_llks.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_coord_translation.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_topology_info.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_1d_routing.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_2d_routing.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_reg_api.h
-    ${CMAKE_SOURCE_DIR}/include/ttmlir/Target/TTKernel/LLKs/experimental_semaphore.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_tilize_llks.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_untilize_llks.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_pack_untilize_llks.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_invoke_sfpi_llks.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_matmul_llks.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_padding_llks.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_coord_translation.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_fabric_topology_info.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_fabric_1d_routing.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_fabric_2d_routing.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_fabric_api.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_reg_api.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_semaphore.h
 )
 
 # Set the output directory for generated headers

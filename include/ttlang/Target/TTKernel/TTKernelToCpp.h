@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_TARGET_TTKERNEL_TTKERNELTOCPP_H
-#define TTMLIR_TARGET_TTKERNEL_TTKERNELTOCPP_H
+#ifndef TTLANG_TARGET_TTKERNEL_TTKERNELTOCPP_H
+#define TTLANG_TARGET_TTKERNEL_TTKERNELTOCPP_H
 
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"

@@ -30,15 +30,9 @@
 #      to check out third-party/tt-metal at the matching commit.
 #   4. Commit the version file and the submodule update together.
 #
-# Mismatch warning: the build verifies that third-party/tt-metal's SHA
-# matches tt-mlir's TT_METAL_VERSION value. When a tt-mlir uplift requires
-# a newer tt-metal than the released ttnn wheel was built from, the
-# generated kernel may fail to compile (moved headers, renamed
-# namespaces, etc.). Resolve by either: (a) carrying a patch under
-# third-party/patches/ttmlir-*.patch that adapts the emission to the
-# older tt-metal, or (b) passing -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON to
-# CMake to develop against a newer tt-metal locally (releases must
-# still align with the ttnn PyPI wheel).
+# Public PyPI publish requires TTNN_PYPI_TT_METAL_TAG and TT_METAL_TAG to
+# share the same vX.Y.Z component. S3-hosted development wheels can use a newer
+# TT_METAL_TAG before a matching public ttnn wheel is available.
 
 TTNN_PYPI="0.73.1"
 TTNN_PYPI_TT_METAL_TAG="v0.73.1-rc5"

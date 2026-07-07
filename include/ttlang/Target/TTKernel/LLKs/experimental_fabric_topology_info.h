@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_FABRIC_TOPOLOGY_INFO_H
-#define TTMLIR_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_FABRIC_TOPOLOGY_INFO_H
+#ifndef TTLANG_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_FABRIC_TOPOLOGY_INFO_H
+#define TTLANG_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_FABRIC_TOPOLOGY_INFO_H
 
 /////////////////// Topology Info Struct and Functions ////////////////////
 #include "tt_metal/fabric/hw/inc/edm_fabric/routing_plane_connection_manager.hpp"

@@ -165,9 +165,6 @@ include(BuildLLVM)
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 
-# ---------------------------------------------------------------------------
-# Minimal tt-mlir build (from submodule)
-# ---------------------------------------------------------------------------
 include(BuildTTLangDialects)
 
 # Detect Python dev packages (Python3, pybind11, nanobind) using MLIR's

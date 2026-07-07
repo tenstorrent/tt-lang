@@ -200,8 +200,8 @@ static MemRefType getMemRefType(Type type, bool isView,
     // shape/strides/volume.
     hostLayout = HostLayoutAttr::get(
         ctx, tensorType.getShape(),
-        ttmlir::utils::calculateStrides(tensorType.getShape()),
-        ttmlir::utils::volume(tensorType.getShape()), tensorMeshAttr);
+        ttlang::utils::calculateStrides(tensorType.getShape()),
+        ttlang::utils::volume(tensorType.getShape()), tensorMeshAttr);
   }
 
   // If there is no encoding or encoding with TensorMesh info, return with the

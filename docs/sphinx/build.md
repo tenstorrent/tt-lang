@@ -222,11 +222,9 @@ recorded commits are not derived from one another.
 - tt-lang owns its MLIR dialects, conversion, and translation in-tree, so the
   LLVM commit in `third-party/llvm-project` and the tt-metal commit are chosen
   directly by tt-lang. tt-metal is typically on a release tag.
-- Because a pre-built toolchain's LLVM and tt-metal may differ from the
-  submodule pins, an uplift build must bypass cmake's SHA-match checks. Pass
-  `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` and `-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON`
-  to cmake. `scripts/build-and-install.sh` accepts the equivalent
-  `--accept-ttmetal-mismatch` flag.
+- Because a pre-built toolchain's LLVM may differ from the submodule pin, an
+  uplift build may need to bypass cmake's LLVM SHA-match check. Pass
+  `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` to cmake.
 - The tt-metal and public `ttnn` provenance versions are recorded in
   `third-party/tt-metal-version`. See
   [Updating tt-metal](#updating-tt-metal).
@@ -286,7 +284,7 @@ Build the toolchain (LLVM + tt-metal) into the parallel locations:
 ```bash
 CMAKE_BINARY_DIR=build-uplift-toolchain \
 TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
-  scripts/build-and-install.sh --toolchain-only --accept-ttmetal-mismatch
+  scripts/build-and-install.sh --toolchain-only
 ```
 
 Then build tt-lang against that toolchain and run the test suites to
@@ -312,7 +310,7 @@ re-running without the overrides (so `CMAKE_BINARY_DIR=build-toolchain` and
 pointer changes together:
 
 ```bash
-git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
+git add third-party/llvm-project third-party/tt-metal \
         third-party/tt-metal-version pyproject.toml
 git commit -m "Uplift submodules"
 git push
@@ -670,11 +668,11 @@ commit, not the pinned ref, so a ref that predates them is still patched.
 arbitrary tt-metal commit. Dispatch it with a `tt_metal_sha`; leave `ttlang_ref`
 empty to search for the newest compatible tt-lang commit, or set it to pin the
 tt-lang commit or tag to build. A pinned `ttlang_ref` requires `tt_metal_sha`,
-because auto-detection reads the dispatch ref's tt-mlir pin rather than the
-pinned ref's. With `dry_run: true` the workflow builds and validates without
-publishing and needs no S3 credentials, so it can run from a feature branch; the
-scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml` is best-effort and does
-not fail the nightly publish.
+because auto-detection reads the dispatch ref's `third-party/tt-metal-version`
+rather than the pinned ref's. With `dry_run: true` the workflow builds and
+validates without publishing and needs no S3 credentials, so it can run from a
+feature branch; the scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml`
+is best-effort and does not fail the nightly publish.
 
 Successful per-SHA publishes place the wheel files (both tt-lang and
 tt-lang-light) under `https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/`
@@ -816,7 +814,6 @@ python tutorials/elementwise/step_4_multinode_grid_full.py
 | `TTLANG_EXTERNAL_TT_METAL_BUILD_DIR` | —       | Existing native tt-metal build directory                                             |
 | `MLIR_PREFIX`                    | —          | Path to pre-built LLVM/MLIR install                                                  |
 | `TTLANG_ACCEPT_LLVM_MISMATCH`    | `OFF`     | Allow LLVM SHA mismatch with pre-built installs                                      |
-| `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF`     | Allow tt-metal SHA mismatch with pre-built installs                                  |
 | `TTLANG_ENABLE_PERF_TRACE`       | `ON`      | Enable tt-metal performance tracing support                                          |
 | `TTLANG_SIM_ONLY`                | `OFF`     | Set up Python environment for [simulator](simulator.md) only; skip compiler build       |
 | `TTLANG_ENABLE_DOCS`             | `OFF`     | Enable Sphinx documentation build (`ttlang-docs` target)                           |
@@ -833,7 +830,7 @@ conversion, and the `TTKernelToCpp` translation in its own tree
 `lib/Target/TTKernel`), compiled by the normal `add_subdirectory(include)` /
 `add_subdirectory(lib)` MLIR CMake tree wired by
 `cmake/modules/BuildTTLangDialects.cmake`. The system-descriptor flatbuffer
-loader is compiled out (`TTMLIR_NO_FLATBUFFERS`).
+loader is compiled out (`TTLANG_NO_FLATBUFFERS`).
 
 ### tt-metal runtime
 

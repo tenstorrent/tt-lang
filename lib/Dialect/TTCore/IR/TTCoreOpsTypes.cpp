@@ -10,7 +10,7 @@
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
 #include "ttlang/Utils.h"
 
-#ifndef TTMLIR_NO_FLATBUFFERS
+#ifndef TTLANG_NO_FLATBUFFERS
 #include "ttlang/Target/Common/Target.h"
 #include "ttlang/Target/Common/system_desc_bfbs_hash_generated.h"
 #include "ttlang/Target/Common/types_generated.h"
@@ -331,9 +331,9 @@ SystemDescAttr::getDefault(MLIRContext *context, Arch arch,
 mlir::FailureOr<SystemDescAttr> SystemDescAttr::getFromPath(
     MLIRContext *context, StringRef path,
     llvm::function_ref<mlir::InFlightDiagnostic()> diagFn) {
-#ifdef TTMLIR_NO_FLATBUFFERS
+#ifdef TTLANG_NO_FLATBUFFERS
   return diagFn() << "loading system descriptor from file requires flatbuffers "
-                     "support (disabled by TTMLIR_NO_FLATBUFFERS)";
+                     "support (disabled by TTLANG_NO_FLATBUFFERS)";
 #else
   if (path.empty()) {
     diagFn() << "system desc path must not be empty";
@@ -357,10 +357,10 @@ mlir::FailureOr<SystemDescAttr> SystemDescAttr::getFromPath(
 mlir::FailureOr<SystemDescAttr> SystemDescAttr::getFromBuffer(
     MLIRContext *context, void *systemDesc,
     llvm::function_ref<mlir::InFlightDiagnostic()> diagFn) {
-#ifdef TTMLIR_NO_FLATBUFFERS
+#ifdef TTLANG_NO_FLATBUFFERS
   return diagFn()
          << "loading system descriptor from buffer requires flatbuffers "
-            "support (disabled by TTMLIR_NO_FLATBUFFERS)";
+            "support (disabled by TTLANG_NO_FLATBUFFERS)";
 #else
   // Read relevant information from binary
   const auto *binarySystemDescRoot =
@@ -567,7 +567,7 @@ mlir::FailureOr<SystemDescAttr> SystemDescAttr::getFromBuffer(
       chipCoordinateList, chipChannelList);
 
   return systemDescAttr;
-#endif // TTMLIR_NO_FLATBUFFERS
+#endif // TTLANG_NO_FLATBUFFERS
 }
 
 ChipDescAttr SystemDescAttr::getChipDesc(unsigned chipIndex) const {
@@ -629,7 +629,7 @@ ShardLayoutAttr ShardLayoutAttr::get(mlir::MLIRContext *context,
                                      uint64_t elementSize, uint32_t buffers) {
   return get(
       context,
-      ttmlir::utils::calculateStrides(shape, static_cast<int64_t>(elementSize)),
+      ttlang::utils::calculateStrides(shape, static_cast<int64_t>(elementSize)),
       buffers);
 }
 
@@ -650,7 +650,7 @@ ShardLayoutAttr ShardLayoutAttr::get(mlir::MemRefType memrefType,
 }
 
 mlir::AffineMap ShardLayoutAttr::getAffineMap() const {
-  return ttmlir::utils::generateAffineMapFromShardStrides(getStride(),
+  return ttlang::utils::generateAffineMapFromShardStrides(getStride(),
                                                           getContext());
 }
 
@@ -658,7 +658,7 @@ CBLayoutAttr CBLayoutAttr::get(mlir::MLIRContext *context,
                                ArrayRef<int64_t> shape, uint64_t elementSize,
                                uint32_t buffers) {
   auto strides =
-      ttmlir::utils::calculateStrides(shape, static_cast<int64_t>(elementSize));
+      ttlang::utils::calculateStrides(shape, static_cast<int64_t>(elementSize));
   return get(context, strides, buffers);
 }
 
@@ -680,7 +680,7 @@ mlir::AffineMap CBLayoutAttr::getAffineMap() const {
 InterleavedLayoutAttr InterleavedLayoutAttr::get(mlir::MLIRContext *context,
                                                  ArrayRef<int64_t> shape,
                                                  uint64_t elementSize) {
-  return get(context, ttmlir::utils::calculateStrides(
+  return get(context, ttlang::utils::calculateStrides(
                           shape, static_cast<int64_t>(elementSize)));
 }
 
@@ -699,7 +699,7 @@ InterleavedLayoutAttr InterleavedLayoutAttr::get(mlir::MemRefType memrefType) {
 }
 
 mlir::AffineMap InterleavedLayoutAttr::getAffineMap() const {
-  return ttmlir::utils::generateAffineMapFromShardStrides(getStride(),
+  return ttlang::utils::generateAffineMapFromShardStrides(getStride(),
                                                           getContext());
 }
 
@@ -736,7 +736,7 @@ HostLayoutAttr::getStridesAndOffset(ArrayRef<int64_t> shape,
 }
 
 bool HostLayoutAttr::isPadded() const {
-  return getHostVolume() > ttmlir::utils::volume(getLogicalShape());
+  return getHostVolume() > ttlang::utils::volume(getLogicalShape());
 }
 
 bool MetalLayoutAttr::hasNonTrivialCollapsedDims(
@@ -794,7 +794,7 @@ mlir::AffineMap collapsedLinearAffineMap(
   auto map = mlir::AffineMap::getMinorIdentityMap(shape.size(),
                                                   numResultsClamped, context);
 
-  if (ttmlir::utils::volume(shape) == 0u) {
+  if (ttlang::utils::volume(shape) == 0u) {
     while (map.getNumResults() < gridShape.size()) {
       map = map.insertResult(getAffineConstantExpr(0, context), 0);
     }
@@ -849,7 +849,7 @@ calculateLogicalShardShape(mlir::ArrayRef<int64_t> tensorShape,
                            mlir::AffineMap linear, GridAttr grid) {
   assert(linear.getNumResults() == grid.getShape().size());
   mlir::SmallVector<std::int64_t> logicalShape =
-      ttmlir::utils::evalShape(linear, tensorShape);
+      ttlang::utils::evalShape(linear, tensorShape);
   mlir::SmallVector<std::int64_t> shardShape(linear.getNumResults());
   for (unsigned i = 0; i < linear.getNumResults(); ++i) {
     shardShape[i] =
@@ -892,11 +892,11 @@ static llvm::SmallVector<int64_t> applyCollapsedIntervalsAndAlignments(
     if (end - start == 1) {
       // Single dimension - apply alignment.
       resultShape.push_back(
-          ttmlir::utils::alignUp(shape[start], alignments[start]));
+          ttlang::utils::alignUp(shape[start], alignments[start]));
     } else if (end > start) {
       // Start by aligning the innermost dimension.
       int64_t collapsedDim =
-          ttmlir::utils::alignUp(shape[end - 1], alignments[end - 1]);
+          ttlang::utils::alignUp(shape[end - 1], alignments[end - 1]);
 
       // Process remaining dimensions from inner to outer w/ multiplication.
       for (int64_t j = end - 2; j >= start; --j) {
@@ -904,7 +904,7 @@ static llvm::SmallVector<int64_t> applyCollapsedIntervalsAndAlignments(
         // intentionally imposed alignment for the current collapse stage of the
         // current collapsed interval.
         collapsedDim =
-            ttmlir::utils::alignUp(shape[j] * collapsedDim, alignments[j]);
+            ttlang::utils::alignUp(shape[j] * collapsedDim, alignments[j]);
       }
 
       resultShape.push_back(collapsedDim);
@@ -914,7 +914,7 @@ static llvm::SmallVector<int64_t> applyCollapsedIntervalsAndAlignments(
 
   // Handle remaining dimensions with alignment.
   for (int64_t i = shape.size() - 1; i >= currentIdx; --i) {
-    resultShape.push_back(ttmlir::utils::alignUp(shape[i], alignments[i]));
+    resultShape.push_back(ttlang::utils::alignUp(shape[i], alignments[i]));
   }
 
   return resultShape;
@@ -1133,7 +1133,7 @@ llvm::SmallVector<int64_t> MetalLayoutAttr::computeGridAwareDimAlignments(
     const int64_t gridDim = deviceGridShape[1];
     const int64_t gridAlignmentThreshold = gridDim * tileDim;
     const int64_t alignedSize =
-        ttmlir::utils::alignUp(logicalShape[0], tileDim);
+        ttlang::utils::alignUp(logicalShape[0], tileDim);
     alignments[0] =
         alignedSize > gridAlignmentThreshold ? gridAlignmentThreshold : tileDim;
     return alignments;
@@ -1161,7 +1161,7 @@ llvm::SmallVector<int64_t> MetalLayoutAttr::computeGridAwareDimAlignments(
     int64_t collapsedSize = 1;
     for (int64_t i = intervalEnd; i >= intervalStart; i--) {
       if (i >= logicalRank - 2) {
-        collapsedSize *= ttmlir::utils::alignUp(logicalShape[i], tileDim);
+        collapsedSize *= ttlang::utils::alignUp(logicalShape[i], tileDim);
       } else {
         collapsedSize *= logicalShape[i];
       }
@@ -1426,7 +1426,7 @@ MetalLayoutAttr::getHostStrideAndVolume() const {
 
       // Update stride calculation.
       currentStride /= collapsedSize;
-      collapsedSize = ttmlir::utils::alignUp(collapsedSize * logicalShape[j],
+      collapsedSize = ttlang::utils::alignUp(collapsedSize * logicalShape[j],
                                              alignments[j]);
       currentStride *= collapsedSize;
     }
@@ -1436,9 +1436,9 @@ MetalLayoutAttr::getHostStrideAndVolume() const {
   if (logicalShape.size() == 1) {
     currentStride *= TileType::getDefaultShape()[0];
   }
-  TT_assertv(currentStride >= ttmlir::utils::volume(logicalShape),
+  TT_assertv(currentStride >= ttlang::utils::volume(logicalShape),
              "Final stride ({}) less than volume ({})", currentStride,
-             ttmlir::utils::volume(logicalShape));
+             ttlang::utils::volume(logicalShape));
 
   return {strides, currentStride};
 }
@@ -1678,7 +1678,7 @@ DeviceAttr DeviceAttr::get(::mlir::MLIRContext *context,
                            SystemDescAttr systemDesc,
                            ArrayRef<int64_t> meshShape,
                            ArrayRef<Topology> meshTopology) {
-  int64_t numChips = ttmlir::utils::volume(meshShape);
+  int64_t numChips = ttlang::utils::volume(meshShape);
   assert(systemDesc.getChipDescIndices().size() >=
              static_cast<size_t>(numChips) &&
          "expected at least one chip");
@@ -1722,8 +1722,8 @@ size_t DeviceAttr::getShardSizeInBytes(MemRefType memrefType, size_t alignSize,
   auto elementSizeBytes = getElementSizeBytes(memrefType.getElementType());
   int64_t bytesPerElem = elementSizeBytes * numBuffers;
 
-  return ttmlir::utils::alignUp(
-      static_cast<size_t>(ttmlir::utils::volume(shardShape, bytesPerElem)),
+  return ttlang::utils::alignUp(
+      static_cast<size_t>(ttlang::utils::volume(shardShape, bytesPerElem)),
       alignSize);
 }
 
@@ -1779,7 +1779,7 @@ DeviceAttr::verify(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     return ::mlir::failure();
   }
 
-  std::int64_t meshVolume = ttmlir::utils::volume(meshShape);
+  std::int64_t meshVolume = ttlang::utils::volume(meshShape);
   if (chipIds.size() != static_cast<size_t>(meshVolume)) {
     emitError() << "expected chipIds size to match the volume of meshShape";
     return ::mlir::failure();

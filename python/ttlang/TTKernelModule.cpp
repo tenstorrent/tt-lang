@@ -4,29 +4,29 @@
 
 #include <vector>
 
-#include "TTMLIRMinimalModule.h"
-
 #include "mlir/CAPI/IR.h"
-#include "ttmlir-c/TTKernelTypes.h"
+#include "ttlang-c/TTKernelTypes.h"
 
+#include "ttlang/Bindings/Python/TTLangModule.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
-namespace mlir::ttmlir::python {
+using namespace mlir;
+
 void populateTTKernelModule(nb::module_ &m) {
   tt_type_class<tt::ttkernel::CBType>(m, "CBType")
       .def_static("get",
                   [](MlirContext ctx, MlirType memrefType) {
-                    return ttmlirTTKernelCBTypeGet(ctx, memrefType);
+                    return ttlangTTKernelCBTypeGet(ctx, memrefType);
                   })
       .def_static("cast", [](MlirType &ty) {
         return mlir::cast<tt::ttkernel::CBType>(unwrap(ty));
       });
 
   tt_type_class<tt::ttkernel::LocalSemaphoreType>(m, "LocalSemaphoreType")
-      .def_static("get", &ttmlirTTKernelLocalSemaphoreTypeGet);
+      .def_static("get", &ttlangTTKernelLocalSemaphoreTypeGet);
 
   tt_type_class<tt::ttkernel::NocAddrType>(m, "NocAddrType")
-      .def_static("get", &ttmlirTTKernelNocAddrTypeGet);
+      .def_static("get", &ttlangTTKernelNocAddrTypeGet);
 
   tt_attribute_class<tt::ttkernel::ThreadTypeAttr>(m, "ThreadTypeAttr")
       .def_prop_ro_static("name",
@@ -44,38 +44,38 @@ void populateTTKernelModule(nb::module_ &m) {
           throw std::runtime_error("Unknown thread type " + threadTypeStr);
         }
 
-        return ttmlirTTKernelThreadTypeAttrGet(
+        return ttlangTTKernelThreadTypeAttrGet(
             ctx, static_cast<std::underlying_type_t<tt::ttkernel::ThreadType>>(
                      threadType));
       });
 
   tt_attribute_class<tt::ttkernel::ReduceTypeAttr>(m, "ReduceTypeAttr")
-      .def_static("get", &ttmlirTTKernelReduceTypeAttrGet)
+      .def_static("get", &ttlangTTKernelReduceTypeAttrGet)
       .def_prop_ro("value", &tt::ttkernel::ReduceTypeAttr::getValue);
 
   tt_attribute_class<tt::ttkernel::ReduceDimAttr>(m, "ReduceDimAttr")
-      .def_static("get", &ttmlirTTKernelReduceDimAttrGet)
+      .def_static("get", &ttlangTTKernelReduceDimAttrGet)
       .def_prop_ro("value", &tt::ttkernel::ReduceDimAttr::getValue);
 
   tt_type_class<tt::ttkernel::L1AddrType>(m, "L1AddrType")
-      .def_static("get", &ttmlirTTKernelL1AddrTypeGet);
+      .def_static("get", &ttlangTTKernelL1AddrTypeGet);
 
   tt_type_class<tt::ttkernel::L1AddrPtrType>(m, "L1AddrPtrType")
-      .def_static("get", &ttmlirTTKernelL1AddrPtrTypeGet);
+      .def_static("get", &ttlangTTKernelL1AddrPtrTypeGet);
 
   tt_type_class<tt::ttkernel::DataFormatType>(m, "DataFormatType")
-      .def_static("get", &ttmlirTTKernelDataFormatTypeGet);
+      .def_static("get", &ttlangTTKernelDataFormatTypeGet);
 
   tt_type_class<tt::ttkernel::TensorAccessorArgsType>(m,
                                                       "TensorAccessorArgsType")
-      .def_static("get", &ttmlirTTKernelTensorAccessorArgsTypeGet);
+      .def_static("get", &ttlangTTKernelTensorAccessorArgsTypeGet);
 
   tt_type_class<tt::ttkernel::TensorAccessorType>(m, "TensorAccessorType")
-      .def_static("get", &ttmlirTTKernelTensorAccessorTypeGet);
+      .def_static("get", &ttlangTTKernelTensorAccessorTypeGet);
 
   tt_type_class<tt::ttkernel::TensorAccessorPageMappingType>(
       m, "TensorAccessorPageMappingType")
-      .def_static("get", &ttmlirTTKernelTensorAccessorPageMappingTypeGet);
+      .def_static("get", &ttlangTTKernelTensorAccessorPageMappingTypeGet);
 
   tt_attribute_class<tt::ttkernel::ArgAttr>(m, "ArgAttr")
       .def_static(
@@ -133,4 +133,3 @@ void populateTTKernelModule(nb::module_ &m) {
         return result;
       });
 }
-} // namespace mlir::ttmlir::python

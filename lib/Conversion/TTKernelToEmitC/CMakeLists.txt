@@ -1,18 +1,18 @@
 add_compile_options(-Wno-deprecated-declarations -Wno-switch -Wno-covered-switch-default)
-add_mlir_conversion_library(TTMLIRTTKernelToEmitC
+add_mlir_conversion_library(TTLangTTKernelToEmitC
   TTKernelToEmitC.cpp
   RemoveDeadEmitCExpressions.cpp
 
   DEPENDS
-  TTMLIRConversionPassIncGen
+  TTLangConversionPassIncGen
 
   LINK_LIBS PUBLIC
-  MLIRIR
-  MLIRPass
   MLIRArithToEmitC
-  MLIRMemRefToEmitC
-  MLIRSCFToEmitC
   MLIREmitCDialect
+  MLIRIR
+  MLIRMemRefToEmitC
+  MLIRPass
+  MLIRSCFToEmitC
   MLIRTargetCpp
   MLIRTransformUtils
   MLIRTTKernelDialect

@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_TTMLIR_DIALECT_TTKERNEL_TTKERNELDIALECT_TD
-#define TTMLIR_TTMLIR_DIALECT_TTKERNEL_TTKERNELDIALECT_TD
+#ifndef TTLANG_DIALECT_TTKERNEL_TTKERNELDIALECT_TD
+#define TTLANG_DIALECT_TTKERNEL_TTKERNELDIALECT_TD
 
 include "mlir/IR/OpBase.td"
 
@@ -13,11 +13,10 @@ include "mlir/IR/OpBase.td"
 
 def TTKernel_Dialect : Dialect {
     let name = "ttkernel";
-    let summary = "A TTKernel out-of-tree MLIR dialect.";
+    let summary = "Tenstorrent kernel-level operations.";
     let description = [{
-        This dialect is an example of an out-of-tree MLIR dialect designed to
-        illustrate the basic setup required to develop MLIR-based tools without
-        working inside of the LLVM source tree.
+        This dialect models Tenstorrent kernel-level operations and types used
+        by tt-lang lowering and C++ emission.
     }];
     let cppNamespace = "::mlir::tt::ttkernel";
 

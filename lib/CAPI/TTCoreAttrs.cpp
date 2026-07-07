@@ -2,37 +2,38 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "mlir/CAPI/IR.h"
-#include "ttmlir-c/TTAttrs.h"
+#include "ttlang-c/TTAttrs.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/CAPI/IR.h"
+
 using namespace mlir::tt::ttcore;
 
-MlirAttribute ttmlirTTGridAttrGet(MlirContext ctx, int64_t *shape,
-                                  int shapeSize) {
+MlirAttribute ttlangTTGridAttrGet(MlirContext ctx, int64_t *shape,
+                                  size_t shapeSize) {
   return wrap(GridAttr::get(unwrap(ctx), {shape, shape + shapeSize},
                             mlir::AffineMap::get(unwrap(ctx)),
                             mlir::AffineMap::get(unwrap(ctx))));
 }
 
-MlirAttribute ttmlirTTChipCapabilityAttrGet(MlirContext ctx,
+MlirAttribute ttlangTTChipCapabilityAttrGet(MlirContext ctx,
                                             uint32_t chipCapability) {
   return wrap(ChipCapabilityAttr::get(
       unwrap(ctx), static_cast<ChipCapability>(chipCapability)));
 }
 
-MlirAttribute ttmlirTTArchAttrGet(MlirContext ctx, uint32_t arch) {
+MlirAttribute ttlangTTArchAttrGet(MlirContext ctx, uint32_t arch) {
   return wrap(ArchAttr::get(unwrap(ctx), static_cast<Arch>(arch)));
 }
 
-MlirAttribute ttmlirTTDataTypeAttrGet(MlirContext ctx,
+MlirAttribute ttlangTTDataTypeAttrGet(MlirContext ctx,
                                       uint16_t *supportedDataTypes) {
   return wrap(DataTypeAttr::get(unwrap(ctx),
                                 static_cast<DataType>(*supportedDataTypes)));
 }
 
-MlirAttribute ttmlirTTChipDescAttrGet(
+MlirAttribute ttlangTTChipDescAttrGet(
     MlirContext ctx, MlirAttribute arch, int64_t *grid, size_t gridSize,
     int64_t *coordTranslationOffsets, size_t coordTranslationOffsetsSize,
     unsigned l1Size, unsigned numDramChannels, unsigned dramChannelSize,
@@ -76,12 +77,12 @@ MlirAttribute ttmlirTTChipDescAttrGet(
       dramGridVec, dramBankNoc0Vec, dramBankNoc1Vec));
 }
 
-MlirAttribute ttmlirTTChipCoordAttrGet(MlirContext ctx, unsigned rack,
+MlirAttribute ttlangTTChipCoordAttrGet(MlirContext ctx, unsigned rack,
                                        unsigned shelf, unsigned y, unsigned x) {
   return wrap(ChipCoordAttr::get(unwrap(ctx), rack, shelf, y, x));
 }
 
-MlirAttribute ttmlirTTChipChannelAttrGet(MlirContext ctx, unsigned deviceId0,
+MlirAttribute ttlangTTChipChannelAttrGet(MlirContext ctx, unsigned deviceId0,
                                          int64_t *ethernetCoreCoord0,
                                          size_t ethernetCoreCoord0Size,
                                          unsigned deviceId1,
@@ -95,7 +96,7 @@ MlirAttribute ttmlirTTChipChannelAttrGet(MlirContext ctx, unsigned deviceId0,
                                    deviceId1, ethCoord1Vec));
 }
 
-MlirAttribute ttmlirTTSystemDescAttrGet(
+MlirAttribute ttlangTTSystemDescAttrGet(
     MlirContext ctx, MlirAttribute *cpuDescs, size_t cpuDescsSize,
     MlirAttribute *chipDescs, size_t chipDescsSize, unsigned *chipDescIndices,
     size_t chipDescIndicesSize, MlirAttribute *chipCapabilities,
@@ -143,7 +144,7 @@ MlirAttribute ttmlirTTSystemDescAttrGet(
       chipCapabilitiesUnwrapped, chipCoordsUnwrapped, chipChannelsUnwrapped));
 }
 
-MlirAttribute ttmlirTTMetalLayoutAttrGet(MlirContext ctx, intptr_t logicalRank,
+MlirAttribute ttlangTTMetalLayoutAttrGet(MlirContext ctx, intptr_t logicalRank,
                                          const int64_t *logicalShape, intptr_t,
                                          const int64_t *, MlirType, intptr_t,
                                          const int64_t *, unsigned,
@@ -158,23 +159,23 @@ MlirAttribute ttmlirTTMetalLayoutAttrGet(MlirContext ctx, intptr_t logicalRank,
                                    TensorMemoryLayout::Sharded));
 }
 
-MlirAttribute ttmlirTTMemorySpaceAttrGet(MlirContext ctx,
+MlirAttribute ttlangTTMemorySpaceAttrGet(MlirContext ctx,
                                          uint32_t memorySpace) {
   return wrap(
       MemorySpaceAttr::get(unwrap(ctx), static_cast<MemorySpace>(memorySpace)));
 }
 
-MlirAttribute ttmlirTTOOBValAttrGet(MlirContext ctx, uint32_t oobVal) {
+MlirAttribute ttlangTTOOBValAttrGet(MlirContext ctx, uint32_t oobVal) {
   return wrap(OOBValAttr::get(unwrap(ctx), static_cast<OOBVal>(oobVal)));
 }
 
-MlirAttribute ttmlirTTIteratorTypeAttrGet(MlirContext ctx,
+MlirAttribute ttlangTTIteratorTypeAttrGet(MlirContext ctx,
                                           uint32_t iteratorType) {
   return wrap(IteratorTypeAttr::get(unwrap(ctx),
                                     static_cast<IteratorType>(iteratorType)));
 }
 
-MlirAttribute ttmlirTTIteratorTypeArrayAttrGet(MlirContext ctx,
+MlirAttribute ttlangTTIteratorTypeArrayAttrGet(MlirContext ctx,
                                                uint32_t *iteratorTypes,
                                                size_t iteratorTypesSize) {
   std::vector<uint32_t> iteratorTypesEnumArray(
@@ -189,10 +190,10 @@ MlirAttribute ttmlirTTIteratorTypeArrayAttrGet(MlirContext ctx,
   return wrap(mlir::ArrayAttr::get(unwrap(ctx), iteratorTypesArray));
 }
 
-MlirAttribute ttmlirTTTileSizeAttrGet(MlirContext ctx, int64_t y, int64_t x) {
+MlirAttribute ttlangTTTileSizeAttrGet(MlirContext ctx, int64_t y, int64_t x) {
   return wrap(TileSizeAttr::get(unwrap(ctx), y, x));
 }
 
-MlirAttribute ttmlirTTCoreCoordAttrGet(MlirContext ctx, int64_t y, int64_t x) {
+MlirAttribute ttlangTTCoreCoordAttrGet(MlirContext ctx, int64_t y, int64_t x) {
   return wrap(CoreCoordAttr::get(unwrap(ctx), y, x));
 }

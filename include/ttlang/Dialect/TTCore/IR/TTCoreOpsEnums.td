@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCORE_IR_TTCOREOPSENUMS_TD
-#define TTMLIR_DIALECT_TTCORE_IR_TTCOREOPSENUMS_TD
+#ifndef TTLANG_DIALECT_TTCORE_IR_TTCOREOPSENUMS_TD
+#define TTLANG_DIALECT_TTCORE_IR_TTCOREOPSENUMS_TD
 
 include "mlir/IR/EnumAttr.td"
 
@@ -290,4 +290,4 @@ def TTCore_RoutingMode : I32EnumAttr<"RoutingMode", "TT RoutingMode",
   let cppNamespace = "::mlir::tt::ttcore";
 }
 
-#endif // TTMLIR_DIALECT_TTCORE_IR_TTCOREOPSENUMS_TD
+#endif // TTLANG_DIALECT_TTCORE_IR_TTCOREOPSENUMS_TD

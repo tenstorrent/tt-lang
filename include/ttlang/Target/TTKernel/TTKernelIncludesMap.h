@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_TARGET_TTKERNEL_TTKERNELINCLUDESMAP_H
-#define TTMLIR_TARGET_TTKERNEL_TTKERNELINCLUDESMAP_H
+#ifndef TTLANG_TARGET_TTKERNEL_TTKERNELINCLUDESMAP_H
+#define TTLANG_TARGET_TTKERNEL_TTKERNELINCLUDESMAP_H
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
@@ -282,4 +282,4 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
 
 } // namespace mlir::tt::ttkernel
 
-#endif // TTMLIR_TARGET_TTKERNEL_TTKERNELINCLUDESMAP_H
+#endif // TTLANG_TARGET_TTKERNEL_TTKERNELINCLUDESMAP_H

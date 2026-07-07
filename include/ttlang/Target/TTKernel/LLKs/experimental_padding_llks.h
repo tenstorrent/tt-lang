@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_PADDING_LLKS_H
-#define TTMLIR_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_PADDING_LLKS_H
+#ifndef TTLANG_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_PADDING_LLKS_H
+#define TTLANG_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_PADDING_LLKS_H
 
 // Include CB API for pack-side functions (llk_wait_for_free_tiles,
 // llk_push_tiles) and get_local_cb_interface
@@ -196,4 +196,4 @@ ALWI void fill_arange_tile(uint32_t cb_id) {
 
 } // namespace experimental
 
-#endif // TTMLIR_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_PADDING_LLKS_H
+#endif // TTLANG_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_PADDING_LLKS_H

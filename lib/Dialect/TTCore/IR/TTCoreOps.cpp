@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
+#include "ttlang/Dialect/TTCore/IR/TTCore.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"

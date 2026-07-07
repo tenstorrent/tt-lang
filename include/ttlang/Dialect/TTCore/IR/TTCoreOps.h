@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCORE_IR_TTCOREOPS_H
-#define TTMLIR_DIALECT_TTCORE_IR_TTCOREOPS_H
+#ifndef TTLANG_DIALECT_TTCORE_IR_TTCOREOPS_H
+#define TTLANG_DIALECT_TTCORE_IR_TTCOREOPS_H
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreTraits.h"

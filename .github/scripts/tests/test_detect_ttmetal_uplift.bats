@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Tests for .github/scripts/detect-ttmlir-ttmetal-uplift.sh. The script is
+# Tests for .github/scripts/detect-ttmetal-uplift.sh. The script is
 # sourced (its main() is guarded) so the S3 lookups can be overridden without
 # real AWS access.
 
@@ -13,29 +13,28 @@ SHORT_SHA="13adda8"
 HEAD_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 HEAD_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-make_cmakelists() {
-    local sha="$1"
-    local file="$BATS_TEST_TMPDIR/CMakeLists.$RANDOM.txt"
-    cat > "$file" <<EOF
-include(ExternalProject)
-set(TT_METAL_VERSION "$sha")
-ExternalProject_Add(tt-metal)
-EOF
+make_version_file() {
+    local file="$BATS_TEST_TMPDIR/tt-metal-version.$RANDOM"
+    write_tt_metal_version_file "$file" \
+        "$TEST_TTNN_PYPI_VERSION" \
+        "$TEST_TT_METAL_TAG" \
+        "$TEST_TT_METAL_TAG"
     echo "$file"
 }
 
 setup() {
-    SCRIPT="$SCRIPTS_DIR/detect-ttmlir-ttmetal-uplift.sh"
+    SCRIPT="$SCRIPTS_DIR/detect-ttmetal-uplift.sh"
     GH_OUT="$BATS_TEST_TMPDIR/gh_out"
     : > "$GH_OUT"
     source "$SCRIPT"
+    resolve_ttmetal_tag_sha() { printf '%s\n' "$FULL_SHA"; }
 }
 
 # --- read_target_ttmetal_sha ---
 
-@test "read_target_ttmetal_sha extracts the pinned sha" {
-    cml=$(make_cmakelists "$FULL_SHA")
-    run -0 read_target_ttmetal_sha "$cml"
+@test "read_target_ttmetal_sha resolves the pinned tag" {
+    version_file=$(make_version_file)
+    run -0 read_target_ttmetal_sha "$version_file"
     assert_output "$FULL_SHA"
 }
 
@@ -45,11 +44,13 @@ setup() {
     assert_output --partial "not found"
 }
 
-@test "read_target_ttmetal_sha fails without a version line" {
-    f="$BATS_TEST_TMPDIR/empty.txt"; echo "set(X 1)" > "$f"
+@test "read_target_ttmetal_sha fails without TT_METAL_TAG" {
+    f="$BATS_TEST_TMPDIR/empty.txt"
+    echo 'TTNN_PYPI="0.0.0"' > "$f"
+    echo 'TTNN_PYPI_TT_METAL_TAG="v0.0.0"' >> "$f"
     run read_target_ttmetal_sha "$f"
     assert_failure
-    assert_output --partial "No 'set(TT_METAL_VERSION"
+    assert_output --partial "TT_METAL_TAG not set"
 }
 
 # --- classify_target ---
@@ -119,10 +120,10 @@ EOF
 # --- main ---
 
 @test "main: new sha -> uplift=true with sha outputs" {
-    cml=$(make_cmakelists "$FULL_SHA")
+    version_file=$(make_version_file)
     list_prefix_objects() { printf ''; }
     export GITHUB_OUTPUT="$GH_OUT"
-    run -0 main --cmakelists "$cml" --ttlang-head "$HEAD_A"
+    run -0 main --version-file "$version_file" --ttlang-head "$HEAD_A"
     run cat "$GH_OUT"
     assert_output --partial "uplift=true"
     assert_output --partial "tt_metal_sha=$FULL_SHA"
@@ -130,60 +131,60 @@ EOF
 }
 
 @test "main: published sha -> uplift=false" {
-    cml=$(make_cmakelists "$FULL_SHA")
+    version_file=$(make_version_file)
     list_prefix_objects() { printf 'tt_lang-1+light.whl\n'; }
     export GITHUB_OUTPUT="$GH_OUT"
-    run -0 main --cmakelists "$cml" --ttlang-head "$HEAD_A"
+    run -0 main --version-file "$version_file" --ttlang-head "$HEAD_A"
     run cat "$GH_OUT"
     assert_output --partial "uplift=false"
     refute_output --partial "tt_metal_sha="
 }
 
 @test "main: doomed sha (miss at same HEAD) -> uplift=false" {
-    cml=$(make_cmakelists "$FULL_SHA")
+    version_file=$(make_version_file)
     list_prefix_objects() { printf 'attempt.json\n'; }
     read_recorded_head() { printf '%s' "$HEAD_A"; }
     export GITHUB_OUTPUT="$GH_OUT"
-    run -0 main --cmakelists "$cml" --ttlang-head "$HEAD_A"
+    run -0 main --version-file "$version_file" --ttlang-head "$HEAD_A"
     run cat "$GH_OUT"
     assert_output --partial "uplift=false"
 }
 
 @test "main: recorded miss but tt-lang HEAD advanced -> uplift=true" {
-    cml=$(make_cmakelists "$FULL_SHA")
+    version_file=$(make_version_file)
     list_prefix_objects() { printf 'attempt.json\n'; }
     read_recorded_head() { printf '%s' "$HEAD_A"; }
     export GITHUB_OUTPUT="$GH_OUT"
-    run -0 main --cmakelists "$cml" --ttlang-head "$HEAD_B"
+    run -0 main --version-file "$version_file" --ttlang-head "$HEAD_B"
     run cat "$GH_OUT"
     assert_output --partial "uplift=true"
 }
 
 @test "main --assume-new: uplift=true without reading S3" {
-    cml=$(make_cmakelists "$FULL_SHA")
+    version_file=$(make_version_file)
     # Any S3 read must abort the run; --assume-new must not reach these.
     list_prefix_objects() { echo "S3 must not be read" >&2; return 1; }
     read_recorded_head() { echo "S3 must not be read" >&2; return 1; }
     export GITHUB_OUTPUT="$GH_OUT"
-    run -0 main --cmakelists "$cml" --ttlang-head "$HEAD_A" --assume-new
+    run -0 main --version-file "$version_file" --ttlang-head "$HEAD_A" --assume-new
     run cat "$GH_OUT"
     assert_output --partial "uplift=true"
     assert_output --partial "tt_metal_sha=$FULL_SHA"
     assert_output --partial "tt_metal_sha_short=$SHORT_SHA"
 }
 
-@test "main --assume-new: unreadable CMakeLists still aborts" {
+@test "main --assume-new: unreadable version file still aborts" {
     export GITHUB_OUTPUT="$GH_OUT"
-    run main --cmakelists "$BATS_TEST_TMPDIR/missing.txt" --assume-new
+    run main --version-file "$BATS_TEST_TMPDIR/missing.txt" --assume-new
     assert_failure
     run cat "$GH_OUT"
     refute_output --partial "uplift="
 }
 
-@test "main: unreadable CMakeLists aborts without emitting uplift" {
+@test "main: unreadable version file aborts without emitting uplift" {
     list_prefix_objects() { printf ''; }
     export GITHUB_OUTPUT="$GH_OUT"
-    run main --cmakelists "$BATS_TEST_TMPDIR/missing.txt" --ttlang-head "$HEAD_A"
+    run main --version-file "$BATS_TEST_TMPDIR/missing.txt" --ttlang-head "$HEAD_A"
     assert_failure
     run cat "$GH_OUT"
     refute_output --partial "uplift="

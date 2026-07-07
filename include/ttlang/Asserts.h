@@ -41,8 +41,8 @@
 /// @see test/unittests/Support/DeathTestAsserts.cpp for usage examples
 //===---------------------------------------------------------------------===//
 
-#ifndef TTMLIR_ASSERTS_H
-#define TTMLIR_ASSERTS_H
+#ifndef TTLANG_ASSERTS_H
+#define TTLANG_ASSERTS_H
 
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
@@ -52,7 +52,7 @@
 #include <string>
 #include <type_traits>
 
-namespace ttmlir::utils::asserts {
+namespace ttlang::utils::asserts {
 
 // This assert facility can be disabled by defining TT_ASSERT_DISABLE_ASSERTS
 // which will result in void-valued definitions of all assert macros. This
@@ -384,18 +384,18 @@ decltype(auto) unsigned_cast(T x) {
 
 // Single-branch `a <= x < b` check.
 #define in_open_range(x, a, b)                                                 \
-  (::ttmlir::utils::asserts::unsigned_cast((x) - (a)) <                        \
-   ::ttmlir::utils::asserts::unsigned_cast((b) - (a)))
+  (::ttlang::utils::asserts::unsigned_cast((x) - (a)) <                        \
+   ::ttlang::utils::asserts::unsigned_cast((b) - (a)))
 
 // Single-branch `a < x < b` check.
 #define in_exclusive_range(x, a, b)                                            \
-  (::ttmlir::utils::asserts::unsigned_cast((x) - (a) - 1) <                    \
-   ::ttmlir::utils::asserts::unsigned_cast((b) - (a) - 1))
+  (::ttlang::utils::asserts::unsigned_cast((x) - (a) - 1) <                    \
+   ::ttlang::utils::asserts::unsigned_cast((b) - (a) - 1))
 
 // Single-branch `a <= x <= b` check.
 #define in_inclusive_range(x, a, b)                                            \
-  (::ttmlir::utils::asserts::unsigned_cast((x) - (a)) <=                       \
-   ::ttmlir::utils::asserts::unsigned_cast((b) - (a)))
+  (::ttlang::utils::asserts::unsigned_cast((x) - (a)) <=                       \
+   ::ttlang::utils::asserts::unsigned_cast((b) - (a)))
 
 //===---------------------------------------------------------------------===//
 // TT_assert*.
@@ -406,7 +406,7 @@ decltype(auto) unsigned_cast(T x) {
 # define TT_assert(condition)                                                  \
     do {                                                                       \
       if (TT_ASSERT_UNLIKELY(!(condition))) {                                  \
-        (::ttmlir::utils::asserts::ExprDecomposer { } <= condition )           \
+        (::ttlang::utils::asserts::ExprDecomposer { } <= condition )           \
           .report(TT_ASSERT_REPORT_STREAM(), TT_IMPL_ASSERT_LOC_INFO, #condition); \
         TT_ASSERT_FAILURE();                                                   \
       }                                                                        \
@@ -421,7 +421,7 @@ decltype(auto) unsigned_cast(T x) {
 # define TT_assertv(condition, /* message[, args...] */...)                    \
     do {                                                                       \
       if (TT_ASSERT_UNLIKELY(!(condition))) {                                  \
-        (::ttmlir::utils::asserts::ExprDecomposer { } <= condition )           \
+        (::ttlang::utils::asserts::ExprDecomposer { } <= condition )           \
           .report(TT_ASSERT_REPORT_STREAM(), TT_IMPL_ASSERT_LOC_INFO, #condition, \
                   llvm::formatv(__VA_ARGS__).str());                           \
         TT_ASSERT_FAILURE();                                                   \
@@ -485,5 +485,5 @@ decltype(auto) unsigned_cast(T x) {
 
 // clang-format off
 
-} // namespace ttmlir::utils::asserts
-#endif // TTMLIR_ASSERTS_H
+} // namespace ttlang::utils::asserts
+#endif // TTLANG_ASSERTS_H

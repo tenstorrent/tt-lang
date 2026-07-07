@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_AFFINEMAPUTILS_H
-#define TTMLIR_AFFINEMAPUTILS_H
+#ifndef TTLANG_AFFINEMAPUTILS_H
+#define TTLANG_AFFINEMAPUTILS_H
 
 #include "ttlang/Asserts.h"
 #include "ttlang/Utils.h"
@@ -19,7 +19,7 @@
 
 #include <numeric>
 
-namespace ttmlir::utils {
+namespace ttlang::utils {
 
 /// Returns a new shape by applying `map` to the input shape.
 template <typename Vector>
@@ -216,7 +216,7 @@ applyMapToGrid(mlir::ArrayRef<int64_t> gridShape, mlir::AffineMap map,
       map.getNumResults(), std::numeric_limits<int64_t>::max());
   llvm::SmallVector<int64_t> resultGridShape =
       llvm::SmallVector<int64_t>(map.getNumResults(), 0);
-  ttmlir::utils::sample(gridShape, [&](llvm::SmallVector<int64_t, 8> point) {
+  ttlang::utils::sample(gridShape, [&](llvm::SmallVector<int64_t, 8> point) {
     llvm::SmallVector<int64_t> virtualPoint = map.compose(point);
     for (size_t i = 0; i < virtualPoint.size(); ++i) {
       resultGridShape[i] = std::max(resultGridShape[i], virtualPoint[i] + 1);
@@ -831,6 +831,6 @@ inline size_t calculateCoalescingFactor(mlir::AffineMap map,
   return static_cast<size_t>(coalescingFactor);
 }
 
-} // namespace ttmlir::utils
+} // namespace ttlang::utils
 
-#endif // TTMLIR_AFFINEMAPUTILS_H
+#endif // TTLANG_AFFINEMAPUTILS_H

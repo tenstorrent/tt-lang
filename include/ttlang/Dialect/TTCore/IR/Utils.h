@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCORE_IR_UTILS_H
-#define TTMLIR_DIALECT_TTCORE_IR_UTILS_H
+#ifndef TTLANG_DIALECT_TTCORE_IR_UTILS_H
+#define TTLANG_DIALECT_TTCORE_IR_UTILS_H
 
 #include "ttlang/Asserts.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -97,9 +97,9 @@ getConstsAndParams(mlir::func::FuncOp funcOp) {
 // performed only between  block arguments in which have been marked as
 // consteval-able (Parameter or Constant ArgumentType).
 inline bool valueTracesToConstantArgs(const mlir::Value &value) {
-  auto useDefChain = ttmlir::utils::getUseDefChain(value);
+  auto useDefChain = ttlang::utils::getUseDefChain(value);
   auto subgraphBlockArgs =
-      ttmlir::utils::filterBlockArguments(useDefChain.getArrayRef());
+      ttlang::utils::filterBlockArguments(useDefChain.getArrayRef());
   mlir::func::FuncOp funcOp = nullptr;
 
   if (!subgraphBlockArgs.empty()) {
@@ -228,4 +228,4 @@ inline bool isKVCacheArgument(func::FuncOp op, size_t argIndex) {
 
 } // namespace mlir::tt::ttcore
 
-#endif // TTMLIR_DIALECT_TTCORE_IR_UTILS_H
+#endif // TTLANG_DIALECT_TTCORE_IR_UTILS_H

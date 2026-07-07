@@ -1,14 +1,11 @@
 // SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 
-// Minimal pass functions for tt-lang Python API.
-// Provides ttkernel_to_cpp_by_name and related helpers.
-
-#include "Dialects.h"
-#include "TTMLIRMinimalModule.h"
-
 #include "mlir/CAPI/IR.h"
 #include "mlir/IR/BuiltinOps.h"
+
+#include "ttlang-c/Dialects.h"
+#include "ttlang/Bindings/Python/TTLangModule.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
@@ -16,21 +13,18 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
-namespace mlir::ttmlir::python {
+using namespace mlir;
 
 void populatePassesModule(nb::module_ &m) {
 
   m.def(
       "ttkernel_to_cpp_by_name",
       [](MlirModule module, const std::string &kernelName) -> std::string {
-        // Convert to EmitC first
-        if (!ttmlirMinimalRunTTKernelToEmitC(module)) {
+        if (!ttlangRunTTKernelToEmitC(module)) {
           throw std::runtime_error("Failed to run TTKernelToEmitC pass");
         }
 
-        // Translate single kernel to C++
-        char *result =
-            ttmlirMinimalTranslateKernelToCpp(module, kernelName.c_str());
+        char *result = ttlangTranslateKernelToCpp(module, kernelName.c_str());
         if (!result) {
           throw std::runtime_error("Failed to translate kernel '" + kernelName +
                                    "' to C++");
@@ -92,5 +86,3 @@ void populatePassesModule(nb::module_ &m) {
       nb::arg("module"), nb::arg("kernel_name"),
       "Get the ArgSpecAttr for a named TTKernel function.");
 }
-
-} // namespace mlir::ttmlir::python

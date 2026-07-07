@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTCORE_IR_TTCOREBASE_TD
-#define TTMLIR_DIALECT_TTCORE_IR_TTCOREBASE_TD
+#ifndef TTLANG_DIALECT_TTCORE_IR_TTCOREBASE_TD
+#define TTLANG_DIALECT_TTCORE_IR_TTCOREBASE_TD
 
 include "mlir/IR/OpBase.td"
 
@@ -50,4 +50,4 @@ def TTCore_CreationOpTrait : TTCore_Trait<"TTCoreCreationOpTrait">;
 // Trait for ops which should not be cached/hoisted for const-eval (e.g., rand, empty).
 def TTCore_NonCacheableTrait : TTCore_Trait<"TTCoreNonCacheableTrait">;
 
-#endif // TTMLIR_DIALECT_TTCORE_IR_TTCOREBASE_TD
+#endif // TTLANG_DIALECT_TTCORE_IR_TTCOREBASE_TD

@@ -2,9 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "TTMLIRMinimalModule.h"
-#include "ttlang-c/Dialects.h"
 #include "ttlang/Bindings/Python/TTLangModule.h"
+#include "ttlang-c/Dialects.h"
 
 #include "mlir-c/Pass.h"
 
@@ -12,18 +11,10 @@ namespace nb = nanobind;
 using namespace mlir;
 using namespace mlir::python::nanobind_adaptors;
 
-// ttcore/ttkernel dialect and pass registration, provided by the dialect CAPI.
-extern "C" {
-void ttmlirMinimalRegisterAllDialects(MlirDialectRegistry registry);
-void ttmlirMinimalRegisterPasses(void);
-}
-
 NB_MODULE(_ttlang, m) {
   m.doc() = "tt-lang Python bindings (ttl, ttcore, ttkernel dialects)";
 
-  // Register tt-lang passes: TTL plus the ttkernel-to-emitc conversion.
   ttlangRegisterPasses();
-  ttmlirMinimalRegisterPasses();
 
   // Register the TTL dialect with any Context that loads this module.
   m.def(
@@ -44,8 +35,9 @@ NB_MODULE(_ttlang, m) {
       "register_dialects",
       [](MlirDialectRegistry registry) {
         ttlangRegisterTTLDialect(registry);
+        ttlangRegisterTTCoreDialect(registry);
+        ttlangRegisterTTKernelDialect(registry);
         ttlangRegisterUpstreamDialects(registry);
-        ttmlirMinimalRegisterAllDialects(registry);
       },
       nb::arg("dialectRegistry"),
       "Register all tt-lang dialects into the given dialect registry");
@@ -68,13 +60,13 @@ NB_MODULE(_ttlang, m) {
 
   // TTCore dialect submodule.
   auto tt_ir = m.def_submodule("tt_ir", "TTCore IR bindings");
-  mlir::ttmlir::python::populateTTModule(tt_ir);
+  populateTTModule(tt_ir);
 
   // TTKernel dialect submodule.
   auto ttkernel_ir = m.def_submodule("ttkernel_ir", "TTKernel IR bindings");
-  mlir::ttmlir::python::populateTTKernelModule(ttkernel_ir);
+  populateTTKernelModule(ttkernel_ir);
 
   // Passes submodule (ttkernel-to-cpp helpers).
   auto passes = m.def_submodule("passes", "Python-bound passes and transforms");
-  mlir::ttmlir::python::populatePassesModule(passes);
+  populatePassesModule(passes);
 }

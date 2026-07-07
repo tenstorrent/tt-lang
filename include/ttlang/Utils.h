@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_UTILS_H
-#define TTMLIR_UTILS_H
+#ifndef TTLANG_UTILS_H
+#define TTLANG_UTILS_H
 
 #include "mlir-c/IR.h"
 #include "mlir/CAPI/IR.h"
@@ -24,7 +24,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace ttmlir::utils {
+namespace ttlang::utils {
 
 constexpr inline llvm::StringLiteral g_conv2dWeightAttrName =
     "ttir.conv2d_weight";
@@ -134,7 +134,7 @@ llvm::SmallVector<std::string> iterableToStrings(Range &&iterable) {
 template <typename Range>
 std::string formatIterable(Range &&iterable, llvm::StringRef separator = ",") {
   auto stringVec = iterableToStrings(iterable);
-  std::string content = ttmlir::utils::join(stringVec, separator);
+  std::string content = ttlang::utils::join(stringVec, separator);
   return "(" + content + ")";
 }
 
@@ -216,7 +216,7 @@ computeCartesianProduct(llvm::ArrayRef<llvm::SmallVector<T>> possibilities) {
 //         })
 //     .def_static("get", [](MlirContext ctx,
 //                           std::vector<MlirAttribute> attributesArray) {
-//       return ::ttmlir::utils::wrapArrayOfMlirAttributesAsAttribute(ctx,
+//       return ::ttlang::utils::wrapArrayOfMlirAttributesAsAttribute(ctx,
 //           attributesArray);
 //     });
 inline MlirAttribute wrapArrayOfMlirAttributesAsAttribute(
@@ -819,6 +819,6 @@ inline mlir::Operation *findFirstUserInBlock(mlir::Operation *op) {
   return firstUser;
 }
 
-} // namespace ttmlir::utils
+} // namespace ttlang::utils
 
-#endif // TTMLIR_UTILS_H
+#endif // TTLANG_UTILS_H

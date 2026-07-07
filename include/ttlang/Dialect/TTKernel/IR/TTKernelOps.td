@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_TTMLIR_DIALECT_TTKERNEL_TTKERNELOPS_TD
-#define TTMLIR_TTMLIR_DIALECT_TTKERNEL_TTKERNELOPS_TD
+#ifndef TTLANG_DIALECT_TTKERNEL_TTKERNELOPS_TD
+#define TTLANG_DIALECT_TTKERNEL_TTKERNELOPS_TD
 
 include "ttlang/Dialect/TTKernel/IR/TTKernelBase.td"
 include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.td"

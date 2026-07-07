@@ -37,7 +37,7 @@ CALL_BUILD_WHEEL_IMAGES_WORKFLOW = (
 CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-ttmetal-light-wheel.yml"
 )
-DETECT_TTMLIR_TTMETAL_UPLIFT = SCRIPTS_DIR / "detect-ttmlir-ttmetal-uplift.sh"
+DETECT_TTLANG_TTMETAL_UPLIFT = SCRIPTS_DIR / "detect-ttmetal-uplift.sh"
 RECORD_TTMETAL_MISS = SCRIPTS_DIR / "record-ttmetal-miss.sh"
 CALL_BUILD_WHEELS_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-build-wheels.yml"
@@ -213,7 +213,7 @@ def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
 
 
 def test_per_sha_prefix_is_consistent_across_publish_detect_record() -> None:
-    detect_script = DETECT_TTMLIR_TTMETAL_UPLIFT.read_text()
+    detect_script = DETECT_TTLANG_TTMETAL_UPLIFT.read_text()
     record_script = RECORD_TTMETAL_MISS.read_text()
     workflow = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
 
@@ -278,17 +278,16 @@ def test_ttmetal_light_on_demand_detect_skips_s3_for_dry_run() -> None:
         in workflow
     )
     assert "S3 publishing is restricted to refs/heads/main" in workflow
-    assert "detect-ttmlir-ttmetal-uplift.sh --assume-new" in workflow
+    assert "detect-ttmetal-uplift.sh --assume-new" in workflow
     assert 'forced_sha="$(printf \'%s\' "$FORCED_SHA"' in workflow
     assert 'echo "tt_metal_sha=$forced_sha" >> "$GITHUB_OUTPUT"' in workflow
 
 
-def test_ttmetal_light_on_demand_detect_avoids_full_submodule_clone() -> None:
+def test_ttmetal_light_on_demand_detect_uses_version_file() -> None:
     workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
-    # The detect job needs tt-mlir only; llvm-project and tt-metal are unused.
     assert "submodules: true" not in workflow
-    assert "git submodule update --init --depth 1 third-party/tt-mlir" in workflow
-    assert "if: ${{ inputs.tt_metal_sha == '' }}" in workflow
+    assert "git submodule update --init" not in workflow
+    assert "third-party/tt-metal-version" in workflow
 
 
 def test_ttlang_ref_threads_from_on_demand_to_reusable_workflow() -> None:

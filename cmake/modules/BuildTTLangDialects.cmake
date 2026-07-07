@@ -17,14 +17,14 @@ endif()
 
 # tt-lang does not use flatbuffers; keep the system-descriptor flatbuffer loader
 # compiled out (preserves the previous behavior).
-add_compile_definitions(TTMLIR_NO_FLATBUFFERS)
+add_compile_definitions(TTLANG_NO_FLATBUFFERS)
 
 # Dialect/conversion/translation libraries linked by ttlang-opt and
 # ttlang-translate. Defined later under add_subdirectory(lib); listed here by
 # name so the tool CMakeLists (added at this scope) can reference them.
-set(TTMLIR_MINIMAL_LIBS
+set(TTLANG_DIALECT_LIBS
   MLIRTTCoreDialect
   MLIRTTKernelDialect
-  TTMLIRTTKernelToEmitC
   TTKernelTargetCpp
+  TTLangTTKernelToEmitC
 )

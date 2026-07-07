@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTMLIR_DIALECT_TTKERNEL_IR_TTKERNELTRAITS_H
-#define TTMLIR_DIALECT_TTKERNEL_IR_TTKERNELTRAITS_H
+#ifndef TTLANG_DIALECT_TTKERNEL_IR_TTKERNELTRAITS_H
+#define TTLANG_DIALECT_TTKERNEL_IR_TTKERNELTRAITS_H
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/OpDefinition.h"

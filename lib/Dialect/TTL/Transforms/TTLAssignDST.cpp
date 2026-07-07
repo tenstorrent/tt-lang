@@ -387,9 +387,9 @@ static void buildLiveIntervals(
   //
   // TODO(#343): This wastes DST capacity. The proper fix is to pass
   // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
-  // tt-mlir's TTKernel dialect (currently has a FIXME in TTKernelOps.td).
-  // With explicit overwrite mode, DST reuse between FPU binary ops would be
-  // safe and this interval extension could be removed.
+  // TTKernel (currently a FIXME in TTKernelOps.td). With explicit overwrite
+  // mode, DST reuse between FPU binary ops would be safe and this interval
+  // extension could be removed.
   {
     // Include TileMatmulBlockOp alongside FPU binary ops: matmul_block also
     // accumulates into DST and its slot must not be reused by another
