@@ -79,7 +79,7 @@ ComputeKernelHWStartupOp::parse(::mlir::OpAsmParser &parser,
   return success();
 }
 
-static bool insideEnqueueProgramOpRegion(mlir::Operation *op) {
+static bool insideKernelFunction(mlir::Operation *op) {
   mlir::Operation *parentOp = op->getParentOp();
 
   if (!parentOp) {
@@ -90,37 +90,33 @@ static bool insideEnqueueProgramOpRegion(mlir::Operation *op) {
       dyn_cast_if_present<mlir::ModuleOp>(parentOp->getParentOp())) {
     return true;
   }
-  return insideEnqueueProgramOpRegion(parentOp);
+  return insideKernelFunction(parentOp);
 }
 
 ::mlir::LogicalResult CBPushBackOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "CBPushBackOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("CBPushBackOp must be inside a kernel function");
   }
   return success();
 }
 
 ::mlir::LogicalResult CBPopFrontOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "CBPopFrontOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("CBPopFrontOp must be inside a kernel function");
   }
   return success();
 }
 
 ::mlir::LogicalResult CBReserveBackOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "CBReserveBackOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("CBReserveBackOp must be inside a kernel function");
   }
   return success();
 }
 
 ::mlir::LogicalResult CBWaitFrontOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "CBWaitFrontOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("CBWaitFrontOp must be inside a kernel function");
   }
   return success();
 }
@@ -151,9 +147,8 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult TilizeInitOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "TilizeInitOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("TilizeInitOp must be inside a kernel function");
   }
   std::string err =
       verifyTilizeUntilizeCBs(getCbOut().getType(), getCbIn().getType());
@@ -164,9 +159,8 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult UntilizeInitOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "UntilizeInitOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("UntilizeInitOp must be inside a kernel function");
   }
   auto inputCBType = getCbIn().getType();
   if (!mlir::isa<ttcore::TileType>(inputCBType.getElementType())) {
@@ -176,9 +170,8 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult TilizeBlockOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "TilizeBlockOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("TilizeBlockOp must be inside a kernel function");
   }
   std::string err =
       verifyTilizeUntilizeCBs(getCbOut().getType(), getCbIn().getType());
@@ -189,9 +182,9 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult ExperimentalTilizeBlockOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError("ExperimentalTilizeBlockOp must be inside of a "
-                       "EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError(
+        "ExperimentalTilizeBlockOp must be inside a kernel function");
   }
   std::string err =
       verifyTilizeUntilizeCBs(getCbOut().getType(), getCbIn().getType());
@@ -202,9 +195,8 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult UntilizeBlockOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "UntilizeBlockOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("UntilizeBlockOp must be inside a kernel function");
   }
   std::string err =
       verifyTilizeUntilizeCBs(getCbIn().getType(), getCbOut().getType());
@@ -215,9 +207,9 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult ExperimentalUntilizeBlockOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError("ExperimentalUntilizeBlockOp must be inside of a "
-                       "EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError(
+        "ExperimentalUntilizeBlockOp must be inside a kernel function");
   }
   std::string err =
       verifyTilizeUntilizeCBs(getCbIn().getType(), getCbOut().getType());
@@ -228,9 +220,8 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult PackUntilizeInitOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "PackUntilizeInitOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("PackUntilizeInitOp must be inside a kernel function");
   }
   std::string err =
       verifyTilizeUntilizeCBs(getCbIn().getType(), getCbOut().getType());
@@ -245,9 +236,9 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult ExperimentalPackUntilizeBlockOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError("ExperimentalPackUntilizeBlockOp must be inside of a "
-                       "EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError(
+        "ExperimentalPackUntilizeBlockOp must be inside a kernel function");
   }
   std::string err =
       verifyTilizeUntilizeCBs(getCbIn().getType(), getCbOut().getType());
@@ -274,9 +265,8 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult TransposeInitOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError(
-        "TransposeInitOp must be inside of a EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("TransposeInitOp must be inside a kernel function");
   }
 
   // Both input and output should have tile element types for transpose.
@@ -295,9 +285,8 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
 }
 
 ::mlir::LogicalResult TransposeTileOp::verify() {
-  if (!insideEnqueueProgramOpRegion(getOperation())) {
-    return emitOpError("TransposeWHTileOp must be inside of a "
-                       "EnqueueProgramOp region");
+  if (!insideKernelFunction(getOperation())) {
+    return emitOpError("TransposeWHTileOp must be inside a kernel function");
   }
 
   // Only need to check the input CB since this is a single-tile operation

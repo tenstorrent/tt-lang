@@ -4303,17 +4303,8 @@ def TTKernel_CreateFabricConnectionManagerOp : TTKernel_Op<"experimental.create_
 def TTKernel_SetupFabricConnectionsOp : TTKernel_Op<"experimental.setup_fabric_connections"> {
   let summary = "SetupFabricConnections";
   let description = [{
-    Setup fabric connections for inter-device communication. The connection scheme
-    is derived from the attribute `TTMetal_FabricConnectionConfigAttr` in the
-    `EnqueueProgramOp`.
-
-   `TTMetal_FabricConnectionConfigAttr` specifies:
-      - `noc_index`: Which NOC the fabric uses (must match kernel's NocConfig)
-      - `topology`: The routing scheme to use for the mesh device (e.g. Line, Ring)
-      - `cluster_axis`: The axis along which the to route for 1D topologies
-      - `num_links`: Number of routing planes (connections to fabric routers)
-
-    After setup, the `FabricConnectionManager` can be used with ops like
+    Setup fabric connections for inter-device communication. After setup, the
+    `FabricConnectionManager` can be used with ops like
     `fabric_fast_write_any_len` to send data to other devices in the mesh.
   }];
 

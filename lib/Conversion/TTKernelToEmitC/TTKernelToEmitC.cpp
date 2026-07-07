@@ -335,9 +335,8 @@ static std::string getResultVariableName(Value result,
 // temporary `Noc({})`.
 //
 // When the NoC index is not statically known and the operand is not present,
-// fail the conversion. D2M-generated TTKernel IR should materialize this
-// operand explicitly, and hand-authored TTKernel IR must do the same before
-// EmitC.
+// fail the conversion. TTKernel IR must materialize this operand explicitly
+// before EmitC.
 static FailureOr<std::string>
 ensureNocDeclaration(Operation *useOp, ConversionPatternRewriter &rewriter,
                      TTKernelToEmitCConversionState &state,
@@ -437,7 +436,7 @@ emitNocEndpoint(Operation *useOp, ConversionPatternRewriter &rewriter,
           ".addr = static_cast<uint32_t>({})}"};
 }
 
-// Type converter used for TTKernel/TTMetal conversions:
+// Type converter used for TTKernel-to-EmitC conversion.
 namespace {
 class TTKernelToEmitCTypeConverter : public TypeConverter {
 public:

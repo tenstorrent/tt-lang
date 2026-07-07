@@ -16,19 +16,6 @@ NB_MODULE(_ttlang, m) {
 
   ttlangRegisterPasses();
 
-  // Register the TTL dialect with any Context that loads this module.
-  m.def(
-      "register_ttl_dialect",
-      [](MlirContext context) {
-        MlirDialectRegistry registry = mlirDialectRegistryCreate();
-        ttlangRegisterTTLDialect(registry);
-        mlirContextAppendDialectRegistry(context, registry);
-        mlirDialectRegistryDestroy(registry);
-        mlirContextLoadAllAvailableDialects(context);
-      },
-      nb::arg("context"),
-      "Register and load the TTL dialect into the given context");
-
   // Register every tt-lang dialect (ttl, ttcore, ttkernel) plus the minimal
   // upstream MLIR dialects the pipeline uses.
   m.def(
@@ -56,7 +43,6 @@ NB_MODULE(_ttlang, m) {
   // TTL dialect submodule.
   auto ttlIrModule = m.def_submodule("ttl_ir", "TTL dialect bindings");
   populateTTLModule(ttlIrModule);
-  m.attr("ttl") = ttlIrModule;
 
   // TTCore dialect submodule.
   auto tt_ir = m.def_submodule("tt_ir", "TTCore IR bindings");

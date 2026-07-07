@@ -44,9 +44,8 @@ DeviceAttr lookupDevice(Operation *op,
 
 ChipDescAttr getOpChipDescAttr(Operation *op);
 
-// Default DM core -> NoC mapping, acts as the single source of truth for the
-// ScheduleDMA & D2M->{TTMetal,TTKernel,TTNN} passes to pick a NoC for a given
-// DM core when the user has not overridden it.
+// Default DM core -> NoC mapping used when the user has not overridden the NoC
+// for a given DM core.
 NocIndex getDmCoreDefaultNoc(const Arch arch, const int32_t dmCoreIndex);
 
 // Create a global memref in the top-level module's symbol table.

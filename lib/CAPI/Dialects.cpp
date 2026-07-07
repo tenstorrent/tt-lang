@@ -104,6 +104,9 @@ char *ttlangTranslateKernelToCpp(MlirModule module, const char *kernelName) {
     return nullptr;
   }
   char *result = static_cast<char *>(malloc(output.size() + 1));
+  if (!result) {
+    return nullptr;
+  }
   memcpy(result, output.c_str(), output.size() + 1);
   return result;
 }

@@ -11,6 +11,6 @@ add_mlir_dialect_library(MLIRTTKernelDialect
   MLIRTTCoreOpsIncGen
 
   LINK_LIBS PUBLIC
-  MLIRTTCoreDialect
   MLIRSCFDialect
+  MLIRTTCoreDialect
 )
