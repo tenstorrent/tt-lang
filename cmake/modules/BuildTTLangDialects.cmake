@@ -5,7 +5,6 @@
 # TTKernelToEmitC conversion, and the TTKernelToCpp translation. Their sources
 # live under include/ttlang, lib/Dialect, lib/Conversion, and lib/Target and are
 # compiled by the normal add_subdirectory(include)/add_subdirectory(lib) tree.
-# This replaces the former minimal build compiled from third-party/tt-mlir.
 
 # add_mlir_dialect/add_mlir_doc reference these aggregate targets; create them
 # when building against a pre-built MLIR install (find_package) that lacks them.
