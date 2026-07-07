@@ -199,7 +199,11 @@ def test_self_rebound_add_result_is_carried_out_of_loop(device, dtype):
 @pytest.mark.requires_device
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 def test_direct_loop_carried_add(device, dtype):
-    """Direct additive recurrences are materialized through DFB state."""
+    """Direct additive recurrence, lowered to DST-resident accumulation.
+
+    The generated-code check that this stays in DST (rather than
+    L1-materialized DFB state) is in tensor_recurrence_dst_acc.py.
+    """
     initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
     delta = torch.full((TILE, TILE), 2.0, dtype=dtype)
     expected = initial.float() + N_ITERS * delta.float()
