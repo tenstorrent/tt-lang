@@ -187,6 +187,13 @@ contributions keep capacity independent of the trip count by preserving the
 per-iteration wait/pop pair. Resident contributions hold one contribution block
 across the loop and release it after its final use.
 
+A recurrence that fails any condition is not diagnosed: formation leaves it as an
+ordinary loop-carried value for general DFB-state materialization, which is
+correct but pays the per-iteration pack and reload. In particular, a resident
+contribution released before the loop's final use (an early pop) falls back this
+way instead of forming a DST section, because the block must stay live for every
+iteration.
+
 ### Lowering
 
 The lowered section keeps every output tile's accumulator slot resident in DST
