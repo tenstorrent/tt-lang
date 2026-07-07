@@ -5,58 +5,8 @@
 // conservative and non-diagnostic: each case keeps its scf.for and forms no
 // ttl.accumulation_scope (enforced by --implicit-check-not).
 
-// A zero trip count has no contributions to accumulate in DST.
-// CHECK-LABEL: func.func @zero_trip
-// CHECK: scf.for
-func.func @zero_trip() {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %init_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %contrib_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
-  %out_cb = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %init_wait = ttl.cb_wait %init_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %init = ttl.attach_cb %init_wait, %init_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %out = ttl.cb_reserve %out_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %result = scf.for %iv = %c0 to %c0 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-    %contrib_wait = ttl.cb_wait %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %contrib = ttl.attach_cb %contrib_wait, %contrib_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %next = ttl.add %acc, %contrib : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
-    scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  }
-  ttl.store %result, %out : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-  return
-}
-
-// -----
-
-// A dynamic trip count cannot size the coalesced contribution wait.
-// CHECK-LABEL: func.func @dynamic_trip
-// CHECK: scf.for
-func.func @dynamic_trip(%n: index) {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %init_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %contrib_cb = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
-  %out_cb = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %init_wait = ttl.cb_wait %init_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %init = ttl.attach_cb %init_wait, %init_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %out = ttl.cb_reserve %out_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %result = scf.for %iv = %c0 to %n step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-    %contrib_wait = ttl.cb_wait %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %contrib = ttl.attach_cb %contrib_wait, %contrib_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %next = ttl.add %acc, %contrib : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
-    scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  }
-  ttl.store %result, %out : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-  return
-}
-
-// -----
-
 // An explicit num_tiles on the contribution wait is not the canonical
-// one-tile-per-iteration form the coalescing rewrite expects.
+// one-block-per-iteration form the streaming DST rewrite expects.
 // CHECK-LABEL: func.func @explicit_num_tiles
 // CHECK: scf.for
 func.func @explicit_num_tiles() {
@@ -107,27 +57,27 @@ func.func @non_dfb_init() {
 
 // -----
 
-// The coalesced contribution window (trip_count * tile_count = 5) exceeds the
-// producer dataflow buffer capacity (block_count = 2), which would deadlock.
-// CHECK-LABEL: func.func @capacity_overflow
+// A 3x3 bf16 accumulator block requires nine DST slots, exceeding the default
+// double-buffered bf16 capacity of eight slots.
+// CHECK-LABEL: func.func @resident_dst_capacity_overflow
 // CHECK: scf.for
-func.func @capacity_overflow() {
+func.func @resident_dst_capacity_overflow() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
-  %c5 = arith.constant 5 : index
-  %init_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %contrib_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %out_cb = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %init_wait = ttl.cb_wait %init_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %init = ttl.attach_cb %init_wait, %init_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %out = ttl.cb_reserve %out_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %result = scf.for %iv = %c0 to %c5 step %c1 iter_args(%acc = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
-    %contrib_wait = ttl.cb_wait %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %contrib = ttl.attach_cb %contrib_wait, %contrib_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %next = ttl.add %acc, %contrib : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %c3 = arith.constant 3 : index
+  %init_cb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 1>
+  %contrib_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 1>
+  %out_cb = ttl.bind_cb {cb_index = 16, block_count = 1} : !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 1>
+  %init_wait = ttl.cb_wait %init_cb : <[3, 3], !ttcore.tile<32x32, bf16>, 1> -> tensor<3x3x!ttcore.tile<32x32, bf16>>
+  %init = ttl.attach_cb %init_wait, %init_cb : (tensor<3x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 1>) -> tensor<3x3x!ttcore.tile<32x32, bf16>>
+  %out = ttl.cb_reserve %out_cb : <[3, 3], !ttcore.tile<32x32, bf16>, 1> -> tensor<3x3x!ttcore.tile<32x32, bf16>>
+  %result = scf.for %iv = %c0 to %c3 step %c1 iter_args(%acc = %init) -> (tensor<3x3x!ttcore.tile<32x32, bf16>>) {
+    %contrib_wait = ttl.cb_wait %contrib_cb : <[3, 3], !ttcore.tile<32x32, bf16>, 1> -> tensor<3x3x!ttcore.tile<32x32, bf16>>
+    %contrib = ttl.attach_cb %contrib_wait, %contrib_cb : (tensor<3x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 1>) -> tensor<3x3x!ttcore.tile<32x32, bf16>>
+    %next = ttl.add %acc, %contrib : tensor<3x3x!ttcore.tile<32x32, bf16>>, tensor<3x3x!ttcore.tile<32x32, bf16>> -> tensor<3x3x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %contrib_cb : <[3, 3], !ttcore.tile<32x32, bf16>, 1>
+    scf.yield %next : tensor<3x3x!ttcore.tile<32x32, bf16>>
   }
-  ttl.store %result, %out : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %result, %out : tensor<3x3x!ttcore.tile<32x32, bf16>>, tensor<3x3x!ttcore.tile<32x32, bf16>>
   return
 }

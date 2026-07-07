@@ -41,6 +41,20 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
   });
 }
 
+static bool hasF32TileOperandOrResult(Operation *op) {
+  auto isF32TileType = [](Type type) {
+    std::optional<mlir::Type> elementType = getTileElementType(type);
+    return elementType && elementType->isF32();
+  };
+
+  return llvm::any_of(op->getOperandTypes(), isF32TileType) ||
+         llvm::any_of(op->getResultTypes(), isF32TileType);
+}
+
+static bool isDirectDstTileOp(Operation *op) {
+  return isTileComputeOp(op) || isa<CopyTileOp, CopyDstOp, TileStoreOp>(op);
+}
+
 /// Resolve the CB index of `value` when it is an f32 input block argument of
 /// `computeOp` that is consumed directly from a circular buffer.
 static std::optional<int64_t>
@@ -210,6 +224,19 @@ struct TTLSetComputeKernelConfigPass
             fp32FromMatmul = true;
             return WalkResult::interrupt();
           }
+        }
+        return WalkResult::advance();
+      });
+    }
+
+    if (!needsFp32) {
+      funcOp->walk([&](Operation *op) {
+        if (needsFp32) {
+          return WalkResult::interrupt();
+        }
+        if (isDirectDstTileOp(op) && hasF32TileOperandOrResult(op)) {
+          needsFp32 = true;
+          return WalkResult::interrupt();
         }
         return WalkResult::advance();
       });

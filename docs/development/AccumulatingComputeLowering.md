@@ -161,9 +161,10 @@ pack, wait, and reload required by general DFB-state materialization.
 
 The pipeline recognizes eligible recurrences before `ttl-materialize-loop-state`.
 It represents the recurrence with `ttl.accumulation_scope` using `init`
-initial mode, then lowers that scope to one reduction `ttl.compute`. A
-recurrence that is not represented as an accumulation scope remains an ordinary
-loop-carried tensor value and uses the general DFB-state lowering.
+initial mode, then lowers that scope directly to one streaming
+`ttl.dst_section`. A recurrence that is not represented as an accumulation
+scope remains an ordinary loop-carried tensor value and uses the general
+DFB-state lowering.
 
 ### Eligibility
 
@@ -177,34 +178,44 @@ The DST recurrence form requires all of the following:
 - no loop-local stores or other side effects;
 - one contribution tensor type, matching the accumulator type;
 - a DFB-backed init value;
-- a positive static trip count;
-- enough contribution DFB capacity for `trip_count * tiles_per_contribution`.
+- no explicit `num_tiles` on the contribution wait/pop;
+- a static nonzero output tile count that fits the logical DST capacity.
 
-The capacity condition is required because the DST form replaces per-iteration
-waits with one coalesced wait for the complete contribution window.
+The source-loop trip count may be static, dynamic, or zero. It does not affect
+contribution DFB capacity because the lowering preserves the source loop's
+per-iteration wait/pop pair.
 
 ### Lowering
 
-The lowered compute has one parallel iterator per output tile dimension and
-one trailing reduction iterator over the source-loop trip count:
+The lowered section keeps every output tile's accumulator slot resident in DST
+for the source loop:
 
 ```mlir
-ttl.compute ins(%init, %coalesced_contribution) outs(%out) {
-^bb0(%init_tile, %contribution_tile, %out_tile):
-  %acc = ttl.tile_accumulate %init_tile, %contribution_tile add into dst[%idx]
-  ttl.tile_store %acc, %out_view[...] from dst[%idx]
+ttl.dst_section {
+  %init_tile = tensor.extract %init[%i, %j]
+  %token, %acc = ttl.copy_tile %init_tile[%i, %j] into dst[%idx]
+
+  scf.for ... {
+    %contribution = ttl.cb_wait %contribution_dfb
+    %contribution_tile = tensor.extract %contribution[%i, %j]
+    ttl.tile_accumulate %acc, %contribution_tile add into dst[%idx]
+    ttl.cb_pop %contribution_dfb
+  }
+
+  ttl.tile_store %placeholder, %out_view[%i, %j] from dst[%idx]
 }
 ```
 
-The coalesced contribution tensor has shape
-`[trip_count] + contribution_shape`. The reduction iterator indexes the leading
-dimension; the parallel iterators index the original output tile dimensions.
+For multi-tile output blocks, the section contains one stable DST index per
+output tile. Each init copy, per-iteration `ttl.tile_accumulate`, and final
+store for a tile use that same index. This requires the output tile count to fit
+the logical DST capacity: f32 uses four slots and bf16 uses eight slots in the
+default double-buffered mode.
 
 `ttl.tile_accumulate` denotes in-place accumulation in DST. The accumulator
 operand and result share one DST slot, and the contribution remains
-dataflow-buffer backed. Lowering initializes the DST slot from `%init` before
-the reduction loop, applies `tile_accumulate` for each contribution tile, then
-stores the final DST value once after the reduction loop.
+dataflow-buffer backed. TTKernel lowering maps the add combiner to
+`binary_dest_reuse_tiles(..., Add, DestToSrcA)`.
 
 ## DstSectionOp
 
@@ -220,8 +231,10 @@ Three placement modes:
 
 - **Non-subblocked**: one `dst_section` per tile loop iteration
 - **Subblocked**: one `dst_section` wrapping the unrolled tile sequence
-- **Accumulating**: one `dst_section` per parallel iteration, with
+- **Accumulating compute**: one `dst_section` per parallel iteration, with
   the reduction loop inside
+- **Streaming tensor recurrence**: one `dst_section` for the resident output
+  block, with the source recurrence loop inside
 
 All computes use `DstSectionOp`, including matmul (`LowerMatmulBlock`).
 

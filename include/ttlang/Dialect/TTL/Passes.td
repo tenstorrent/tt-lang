@@ -124,8 +124,8 @@ def TTLFormAccumulationScopes
     Wraps canonical loop-carried additive tensor recurrences in
     `ttl.accumulation_scope`. The tensor form requires an init-backed
     recurrence, one final non-accumulating store to a dataflow buffer
-    reservation, a loop-local contribution wait, and a statically coalescible
-    contribution window.
+    reservation, a loop-local contribution wait/pop pair, and an output tile
+    count that fits in one streaming DST section.
   }];
 
   let options = [
@@ -143,10 +143,11 @@ def TTLLowerAccumulationScopes
     : Pass<"ttl-lower-accumulation-scopes", "::mlir::func::FuncOp"> {
   let summary = "Lower semantic accumulation scopes to concrete storage";
   let description = [{
-    Lowers tensor `ttl.accumulation_scope` operations to DST-resident reduction
-    computes. The pass first validates every scope before mutating IR, then
-    rewrites each valid scope to a `ttl.compute` with output-parallel iterators
-    and one trailing reduction iterator.
+    Lowers tensor `ttl.accumulation_scope` operations to streaming
+    DST-resident recurrence sections. The pass first validates every scope
+    before mutating IR, then rewrites each valid scope to one `ttl.dst_section`
+    that seeds the accumulator tiles, preserves the source recurrence loop, and
+    packs the final tiles once after the loop.
   }];
 
   let options = [
