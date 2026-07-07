@@ -14,7 +14,7 @@ set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttl")
 
 # Root directories for Python source declarations
 set(TTLANG_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl")
-set(TTMLIR_PYTHON_ROOT_DIR "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/python/ttmlir")
+set(TTMLIR_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttmlir")
 
 # ###############################################################################
 # ttmlir Python Sources (minimal tt-mlir dialects)
@@ -77,8 +77,8 @@ declare_mlir_python_extension(TTMLIRMinPythonExtensions.Main
   SOURCES
     ttmlir/TT_MLIRMinimalExtension.cpp
     ttmlir/TT_MLIRMinimalPasses.cpp
-    ttmlir/TT_MLIRMinimalTTModule.cpp
-    ttmlir/TT_MLIRMinimalTTKernelModule.cpp
+    ttmlir/TTCoreModule.cpp
+    ttmlir/TTKernelModule.cpp
   EMBED_CAPI_LINK_LIBS
     MLIRCAPIIR
     MLIRCAPITransforms
@@ -317,7 +317,6 @@ add_dependencies(TTLangPythonModules PykernelPythonModules)
 # TTKernelModule.cpp) that get #included from our wrappers.
 target_include_directories(TTLangPythonModules.extension._ttmlir.dso PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ttmlir"
-  "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/python"
   "${CMAKE_SOURCE_DIR}/lib/ttmlir-minimal/CAPI"
 )
 

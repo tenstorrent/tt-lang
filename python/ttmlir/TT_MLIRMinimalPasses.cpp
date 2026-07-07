@@ -9,8 +9,8 @@
 
 #include "mlir/CAPI/IR.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
