@@ -98,6 +98,7 @@ from .dtype_utils import (
 )
 from .kernel_runner import (
     KernelSpec,
+    MeshProgramPlacement,
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
@@ -370,6 +371,18 @@ def _is_mesh_tensor(tensor) -> bool:
     from math import prod
 
     return prod(shape) > 1
+
+
+def _default_mesh_program_placements(args: tuple):
+    """Return a full-mesh placement for mesh tensor execution."""
+    for arg in args:
+        if not _is_mesh_tensor(arg):
+            continue
+        mesh_shape = tuple(int(dim) for dim in arg.device().shape)
+        start = tuple(0 for _ in mesh_shape)
+        end = tuple(dim - 1 for dim in mesh_shape)
+        return [MeshProgramPlacement(start, end)]
+    return None
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -861,6 +874,7 @@ def _compile_ttnn_kernel(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
+    mesh_program_placements=None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1091,6 +1105,7 @@ def _compile_ttnn_kernel(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        mesh_program_placements=mesh_program_placements,
     )
 
     if verbose:
@@ -1133,6 +1148,7 @@ def _compile_ttnn_kernel(
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
+            mesh_program_placements=mesh_program_placements,
         )
 
     return compiled_kernel
@@ -1591,6 +1607,9 @@ def _compile_kernel(
     # dimensions, so no wrapping is needed.
     is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
     compile_args = args
+    mesh_program_placements = (
+        _default_mesh_program_placements(args) if is_mesh else None
+    )
 
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
@@ -2019,6 +2038,7 @@ def _lower_program_to_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,
+            mesh_program_placements=mesh_program_placements,
         )
         return compiled_kernel
 

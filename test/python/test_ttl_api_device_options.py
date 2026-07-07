@@ -19,6 +19,37 @@ class _TensorWithDevice:
         return self._device
 
 
+class _GridSize:
+    x = 1
+    y = 1
+
+
+class _BoundingBox:
+    @staticmethod
+    def grid_size():
+        return _GridSize()
+
+
+class _CoreRanges:
+    @staticmethod
+    def bounding_box():
+        return _BoundingBox()
+
+
+class _DeviceGrid:
+    x = 8
+    y = 8
+
+
+class _DeviceWithMeshShape:
+    def __init__(self, shape):
+        self.shape = shape
+
+    @staticmethod
+    def compute_with_storage_grid_size():
+        return _DeviceGrid()
+
+
 class _DeviceWithArchMethod:
     def __init__(self, arch):
         self._arch = arch
@@ -80,3 +111,50 @@ class TestDeviceTargetArch:
             ttl_api._device_target_arch((_TensorWithDevice(_DeviceWithRaisingArch()),))
             is None
         )
+
+
+class TestMeshProgramPlacement:
+    @pytest.fixture(autouse=True)
+    def _patch_tensor_detection(self):
+        with mock.patch.object(
+            ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _TensorWithDevice)
+        ):
+            yield
+
+    def test_default_mesh_program_placement_covers_mesh(self):
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((2, 4)))
+
+        placements = ttl_api._default_mesh_program_placements((tensor,))
+
+        assert len(placements) == 1
+        assert placements[0].start == (0, 0)
+        assert placements[0].end == (1, 3)
+
+    def test_default_mesh_program_placement_skips_single_device(self):
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 1)))
+
+        assert ttl_api._default_mesh_program_placements((tensor,)) is None
+
+    def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
+        placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))
+        calls = []
+
+        def fake_run_kernel_on_device(**kwargs):
+            calls.append(kwargs)
+            return "result"
+
+        monkeypatch.setattr(ttl_api, "run_kernel_on_device", fake_run_kernel_on_device)
+        compiled_kernel = ttl_api.CompiledTTNNKernel(
+            kernel_paths=[],
+            kernel_configs=[],
+            kernel_arg_specs=[],
+            num_tensors=1,
+            core_ranges=_CoreRanges(),
+            kernel_tensor_indices=[],
+            mesh_program_placements=[placement],
+        )
+
+        result = compiled_kernel(_TensorWithDevice(_DeviceWithMeshShape((1, 4))))
+
+        assert result == "result"
+        assert calls[0]["mesh_program_placements"] == [placement]
