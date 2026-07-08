@@ -43,6 +43,10 @@ setup() {
     assert_output --partial ":no-sim is only valid for the light variant"
 }
 
+@test "--light-python-tags without value -> usage error (exit 2)" {
+    run -2 "$SCRIPT" --light-python-tags
+}
+
 @test "missing artifact dir -> error" {
     run -1 "$SCRIPT" "$VER" "$PUBLISH_DIR" bundled="$BATS_TEST_TMPDIR/missing"
     assert_output --partial "Wheel artifact directory not found"
@@ -60,7 +64,10 @@ setup() {
 
 @test "combined bundled and light artifacts copy unique wheel set" {
     bundled_dir=$(make_wheel_dir "$(whl "$VER")" "$(whl_sim "$VER")")
-    light_dir=$(make_wheel_dir "$(whl "$VER+light")" "$(whl_light "$VER")")
+    light_dir=$(make_wheel_dir \
+        "$(whl_light_core_cp310 "$VER")" \
+        "$(whl_light_core_cp312 "$VER")" \
+        "$(whl_light "$VER")")
 
     run -0 "$SCRIPT" \
         "$VER" \
@@ -71,19 +78,38 @@ setup() {
     run ls "$PUBLISH_DIR"
     assert_output --partial "$(whl "$VER")"
     assert_output --partial "$(whl_sim "$VER")"
-    assert_output --partial "$(whl "$VER+light")"
+    assert_output --partial "$(whl_light_core_cp310 "$VER")"
+    assert_output --partial "$(whl_light_core_cp312 "$VER")"
     assert_output --partial "$(whl_light "$VER")"
+}
+
+@test "light no-sim artifact honors requested Python tag subset" {
+    light_dir=$(make_wheel_dir \
+        "$(whl_light_core_cp312 "$VER")" \
+        "$(whl_light "$VER")")
+
+    run -0 "$SCRIPT" \
+        --light-python-tags cp312 \
+        "$VER" \
+        "$PUBLISH_DIR" \
+        "light:no-sim=$light_dir"
+
+    run ls "$PUBLISH_DIR"
+    assert_output --partial "$(whl_light_core_cp312 "$VER")"
+    assert_output --partial "$(whl_light "$VER")"
+    refute_output --partial "$(whl_light_core_cp310 "$VER")"
 }
 
 @test "light no-sim spec rejects unexpected sim wheel" {
     light_dir=$(make_wheel_dir \
-        "$(whl "$VER+light")" \
+        "$(whl_light_core_cp310 "$VER")" \
+        "$(whl_light_core_cp312 "$VER")" \
         "$(whl_light "$VER")" \
         "$(whl_sim "$VER")")
 
     run -1 "$SCRIPT" "$VER" "$PUBLISH_DIR" "light:no-sim=$light_dir"
 
-    assert_output --partial "No expected version configured for distribution 'tt_lang_sim'"
+    assert_output --partial "Unexpected tt-lang-sim wheel"
 }
 
 @test "duplicate wheel filename across artifacts -> error" {

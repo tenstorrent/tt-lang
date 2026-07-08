@@ -10,14 +10,16 @@ Each device computes Y_shard = A_shard @ B + C_shard independently.
 Requires >=2 devices.
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import ttl
+
+from ttlang_test_utils import open_fabric_mesh
+
+# Opens a fabric mesh across all chips; run serially, not in the per-chip pool.
+pytestmark = pytest.mark.multi_device
 
 TILE_SIZE = 32
 M_GRANULARITY = 4
@@ -171,14 +173,12 @@ MIN_DEVICES = 2
 
 @pytest.fixture
 def mesh_device():
-    n_devices = ttnn.GetNumAvailableDevices()
+    n_devices = ttnn.get_num_devices()
     if n_devices < MIN_DEVICES:
         pytest.skip(f"need >={MIN_DEVICES} devices, have {n_devices}")
 
-    ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D)
-    mesh = ttnn.open_mesh_device(ttnn.MeshShape(1, n_devices))
-    yield mesh, n_devices
-    ttnn.close_mesh_device(mesh)
+    with open_fabric_mesh() as mesh:
+        yield mesh, n_devices
 
 
 def test_matmul_with_bias_spmd(mesh_device):
@@ -230,7 +230,7 @@ def test_matmul_with_bias_spmd(mesh_device):
         mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0),
     )
 
-    expected = A_torch @ B_torch + C_torch
+    expected = (A_torch.float() @ B_torch.float() + C_torch.float()).to(torch.bfloat16)
 
     pcc = torch.corrcoef(
         torch.stack([result.flatten().float(), expected.flatten().float()])

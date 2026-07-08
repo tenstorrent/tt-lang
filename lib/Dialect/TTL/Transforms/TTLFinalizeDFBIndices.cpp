@@ -19,14 +19,17 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/MapVector.h"
-#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Support/Debug.h"
+
+#include <algorithm>
+#include <functional>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
@@ -68,7 +71,7 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
   };
 
   // Build intervals grouped by CircularBufferType.
-  llvm::MapVector<Type, SmallVector<Interval>> typeToIntervals;
+  llvm::MapVector<Type, SmallVector<ValueLiveInterval>> typeToIntervals;
   DenseMap<Value, BindCBOp> valueToBindOp;
 
   for (BindCBOp bindOp : dfbOps) {
@@ -107,7 +110,10 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
       end = lastOpIdx;
     }
 
-    typeToIntervals[cbVal.getType()].push_back({start, end, cbVal});
+    SmallVector<ValueLiveInterval> &intervals =
+        typeToIntervals[cbVal.getType()];
+    int64_t ordinal = static_cast<int64_t>(intervals.size());
+    intervals.push_back({start, end, cbVal, ordinal});
     valueToBindOp[cbVal] = bindOp;
   }
 
@@ -124,41 +130,30 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
   MLIRContext *ctx = funcOp.getContext();
   int32_t nextSlotOffset = 0;
 
-  for (auto &[type, intervals] : typeToIntervals) {
-    llvm::sort(intervals, [](const Interval &lhs, const Interval &rhs) {
-      return lhs.start < rhs.start;
-    });
+  for (auto &entry : typeToIntervals) {
+    SmallVector<ValueLiveInterval> &intervals = entry.second;
 
-    SmallVector<Interval *> active;
-    llvm::SmallBitVector freeSlots(intervals.size());
-    freeSlots.set();
+    SmallVector<SmallVector<ValueLiveInterval>> colorUsers =
+        assignGreedyIntervalColors<ValueLiveInterval>(
+            intervals, std::less<ValueLiveInterval>(),
+            [](const ValueLiveInterval &lhs, const ValueLiveInterval &rhs) {
+              return intervalsOverlap(lhs, rhs);
+            });
+
     DenseMap<Value, int32_t> slotAssignment;
     int32_t maxSlot = -1;
 
-    for (Interval &interval : intervals) {
-      // Expire intervals whose lifetime ended before this one starts.
-      SmallVector<Interval *> expired;
-      for (Interval *act : active) {
-        if (act->end <= interval.start) {
-          freeSlots.set(slotAssignment[act->value]);
-          expired.push_back(act);
-        }
-      }
-      for (Interval *exp : expired) {
-        llvm::erase(active, exp);
-      }
+    for (auto indexedColor : llvm::enumerate(colorUsers)) {
+      int32_t slotIndex = static_cast<int32_t>(indexedColor.index());
+      maxSlot = std::max(maxSlot, slotIndex);
+      for (const ValueLiveInterval &interval : indexedColor.value()) {
+        slotAssignment[interval.value] = slotIndex;
 
-      int freeSlot = freeSlots.find_first();
-      assert(freeSlot >= 0 && "DFB slot allocation always succeeds");
-      freeSlots.reset(freeSlot);
-      slotAssignment[interval.value] = freeSlot;
-      maxSlot = std::max(maxSlot, static_cast<int32_t>(freeSlot));
-      active.push_back(&interval);
-
-      LLVM_DEBUG({
-        llvm::dbgs() << "DFB reuse: [" << interval.start << ", " << interval.end
-                     << "] -> slot " << freeSlot << "\n";
-      });
+        LLVM_DEBUG({
+          llvm::dbgs() << "DFB reuse: [" << interval.start << ", "
+                       << interval.end << "] -> slot " << slotIndex << "\n";
+        });
+      }
     }
 
     // Rewrite BindCBOp indices to the assigned physical slot.

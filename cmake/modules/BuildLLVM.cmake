@@ -201,6 +201,12 @@ else()
     set(_LLVM_CCACHE_BUILD OFF)
   endif()
 
+  set(_TTLANG_LLVM_EXTRA_CMAKE_ARGS)
+  if(DEFINED ENV{TTLANG_LLVM_EXTRA_CMAKE_ARGS} AND
+     NOT "$ENV{TTLANG_LLVM_EXTRA_CMAKE_ARGS}" STREQUAL "")
+    set(_TTLANG_LLVM_EXTRA_CMAKE_ARGS "$ENV{TTLANG_LLVM_EXTRA_CMAKE_ARGS}")
+  endif()
+
   ttlang_get_submodule_sha("${LLVM_SUBMODULE_DIR}" _LLVM_SUBMODULE_SHA)
   string(SUBSTRING "${_LLVM_SUBMODULE_SHA}" 0 7 _LLVM_SHORT_SHA)
 
@@ -210,6 +216,9 @@ else()
   message(STATUS "  Build dir:     ${LLVM_BUILD_DIR}")
   message(STATUS "  Install dir:   ${LLVM_INSTALL_DIR}")
   message(STATUS "  ccache:        ${_LLVM_CCACHE_BUILD}")
+  if(_TTLANG_LLVM_EXTRA_CMAKE_ARGS)
+    message(STATUS "  Extra args:    ${_TTLANG_LLVM_EXTRA_CMAKE_ARGS}")
+  endif()
 
   # Install LLVM-specific Python build dependencies (nanobind, PyYAML, etc.
   # for MLIR Python bindings) and lit for test execution.
@@ -263,6 +272,10 @@ else()
       -DMLIR_ENABLE_BINDINGS_PYTHON=ON
       -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
     )
+
+    if(_TTLANG_LLVM_EXTRA_CMAKE_ARGS)
+      list(APPEND _LLVM_CMAKE_ARGS ${_TTLANG_LLVM_EXTRA_CMAKE_ARGS})
+    endif()
 
     # --- Configure ---
     message(STATUS "Configuring LLVM/MLIR...")

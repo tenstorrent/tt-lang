@@ -69,6 +69,7 @@ require_non_final_internal_version("tt-lang-light", VERSION)
 setup(
     name="tt-lang-light",
     version=VERSION,
+    python_requires=">=3.10",
     install_requires=[_ttlang_requirement(VERSION)],
     packages=[],
     cmdclass={"sdist": NoSdist},

@@ -72,3 +72,24 @@ func.func @tile_typecast_result_consumed_by_sfpu(
   ttkernel.tile_regs_release() : () -> ()
   return
 }
+
+// -----
+
+// Same-type tile typecasts are no-ops during TTKernel conversion, even without
+// a prior canonicalization pass.
+// CHECK-LABEL: func.func @tile_typecast_identity_is_noop
+// CHECK: ttkernel.tile_regs_acquire
+// CHECK-NOT: ttkernel.typecast_tile
+// CHECK: ttkernel.exp_tile_init
+// CHECK-NEXT: ttkernel.exp_tile
+// CHECK: ttkernel.tile_regs_release
+func.func @tile_typecast_identity_is_noop(%a: !ttcore.tile<32x32, f32>) {
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  %0 = ttl.tile_typecast %a into dst[%c0]
+       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %1 = ttl.tile_exp %0 into dst[%c0]
+       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  ttkernel.tile_regs_release() : () -> ()
+  return
+}

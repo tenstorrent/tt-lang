@@ -17,9 +17,6 @@ Coverage matrix:
   - Multi-node grid: fused post-ops with grid="full"
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

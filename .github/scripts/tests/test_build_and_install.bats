@@ -141,12 +141,6 @@ setup() {
     grep -q '^-DTTLANG_BUILD_TOOLCHAIN=ON$' "$(cmake_log)"
 }
 
-@test "--accept-ttmetal-mismatch sets the cmake flag" {
-    run run_configure --accept-ttmetal-mismatch
-    assert_success
-    grep -q '^-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON$' "$(cmake_log)"
-}
-
 @test "external tt-metal source and build directories are forwarded to cmake" {
     run run_configure \
         --external-tt-metal-dir "$BATS_TEST_TMPDIR/external-metal" \

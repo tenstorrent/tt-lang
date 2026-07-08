@@ -53,6 +53,13 @@ def is_acceptable_module_attribute(name: str, obj: Any) -> tuple[bool, str]:
     if inspect.isfunction(obj) or inspect.ismethod(obj):
         return True, "function/method"
 
+    # functools.cache / functools.lru_cache wrappers are acceptable.  They are
+    # callable, expose the standard cache_info/cache_clear interface, and back
+    # an append-only memoisation table whose entries are pure-function results.
+    # Treated as a function-equivalent idiom rather than a mutable global.
+    if callable(obj) and hasattr(obj, "cache_info") and hasattr(obj, "cache_clear"):
+        return True, "functools cache wrapper"
+
     # Classes (including dataclasses, enums, protocols) are acceptable
     if inspect.isclass(obj):
         return True, "class/type"
@@ -127,6 +134,10 @@ def test_no_mutable_module_globals():
             "python.sim.ttnnsim",
             "_float32_promotion_enabled",
         ),  # Mutable flag toggled by set_disable_float32_promotion()
+        (
+            "python.sim.context",
+            "_current_context",
+        ),  # Single per-process SimulatorContext, swapped by reset_context() / set_context() at the start of each run
     }
 
     for module_name in simulator_modules:

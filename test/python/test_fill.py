@@ -10,10 +10,6 @@ Tests:
 - Fill fused with elementwise add (fill(1.0) + input)
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

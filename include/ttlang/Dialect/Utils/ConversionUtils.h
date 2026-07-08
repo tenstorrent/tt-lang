@@ -8,17 +8,16 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/Twine.h"
 
 namespace mlir::tt::ttl::utils {

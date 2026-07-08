@@ -136,6 +136,8 @@ for env_var in [
     "TT_METAL_HOME",
     "TT_METAL_BUILD_HOME",
     "TT_METAL_RUNTIME_ROOT",
+    "TT_VISIBLE_DEVICES",
+    "TT_MESH_GRAPH_DESC_PATH",
     "TT_MLIR_HOME",
     "TTLANG_COMPILE_ONLY",
 ]:
@@ -172,3 +174,17 @@ if _ttnn_check.returncode == 0:
 # Also enable if TT_METAL_SIMULATOR is set (allows running tests in simulation mode)
 if getattr(config, "ttlang_has_device", False) or os.environ.get("TT_METAL_SIMULATOR"):
     config.available_features.add("tt-device")
+
+# Add multi-device feature when >= 4 Tenstorrent chips are physically present.
+# Count /dev/tenstorrent device nodes (cheap, no cluster open) instead of probing
+# ttnn, which would open the device at config time for every lit run. Tests that
+# need a fabric mesh expose all chips via `env -u TT_VISIBLE_DEVICES`, so the
+# physical chip count is what they will see.
+try:
+    _tt_chip_count = sum(
+        1 for entry in os.listdir("/dev/tenstorrent") if entry.isdigit()
+    )
+except OSError:
+    _tt_chip_count = 0
+if _tt_chip_count >= 4:
+    config.available_features.add("multi-device")

@@ -260,6 +260,12 @@ class CMakeBuild(build_ext):
             if package_dir.exists():
                 shutil.rmtree(package_dir)
 
+    def _remove_stale_native_payloads(self, install_dir):
+        """Remove previously staged native extension files before CMake install."""
+        mlir_libs_dir = install_dir / "ttl" / "_mlir_libs"
+        if mlir_libs_dir.exists():
+            shutil.rmtree(mlir_libs_dir)
+
     def _sanitize_env_for_cmake(self):
         """Remove pip build-isolation env vars that break cmake's nested pip calls.
 
@@ -331,7 +337,6 @@ class CMakeBuild(build_ext):
             for env_var in (
                 "TTLANG_EXTERNAL_TT_METAL_DIR",
                 "TTLANG_EXTERNAL_TT_METAL_BUILD_DIR",
-                "TTLANG_ACCEPT_TTMETAL_MISMATCH",
                 "TTLANG_PYTHON_VENV",
             ):
                 value = os.environ.get(env_var, "")
@@ -353,6 +358,8 @@ class CMakeBuild(build_ext):
         self.spawn(
             ["cmake", "--build", str(build_dir), "--target", "TTLangPythonModules"]
         )
+
+        self._remove_stale_native_payloads(install_dir)
 
         # Use --prefix to override the install location at install time.
         # This avoids reconfiguring the build just to change
@@ -410,11 +417,53 @@ if _ttnn_dep_mode() == "bundled":
     _bundled_packages = _bundled_metadata.packages
     _bundled_package_dir = _bundled_metadata.package_dir
 
+
+def _git_head_sha():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            cwd=str(REPO_ROOT),
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return "unknown"
+
+
+def _git_gitlink_sha(path):
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", f"HEAD:{path}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            cwd=str(REPO_ROOT),
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return "unknown"
+
+
+def _build_provenance_footer():
+    """Provenance footer for the wheel's long description (env overrides from CI,
+    git fallback locally)."""
+    ttlang = os.environ.get("TTLANG_GIT_COMMIT", "").strip() or _git_head_sha()
+    metal_tag = _read_tt_metal_version_var("TT_METAL_TAG")
+    metal = (
+        os.environ.get("TT_METAL_COMMIT", "").strip()
+        or os.environ.get("TT_METAL_SHORT_SHA", "").strip()
+        or _git_gitlink_sha("third-party/tt-metal")
+    )
+    return (
+        f"\n\n---\n**Build provenance:** tt-lang `{ttlang}`, "
+        f"tt-metal `{metal_tag}` (`{metal}`)\n"
+    )
+
+
 readme_path = REPO_ROOT / "README.md"
 with open(str(readme_path), "r", encoding="utf-8") as readme_file:
     readme = absolutize_readme_images(
         readme_file.read(), ref_for_version(_version), REPO_ROOT
     )
+readme = readme + _build_provenance_footer()
 
 setup(
     version=_version,

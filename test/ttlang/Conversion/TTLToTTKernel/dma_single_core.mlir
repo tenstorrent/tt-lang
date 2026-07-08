@@ -8,13 +8,14 @@
 
 // TTKERNEL-LABEL: func.func @dma_single_tile_single_copy
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // TTKERNEL: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, f32>>
 // TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
 // TTKERNEL: %[[SRC_ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}})
 // TTKERNEL: %[[SRC_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC_ARGS]], %[[BANK_BASE]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_write_ptr(%[[CB]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>) -> i32
-// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, %[[SRC_ACC]], %[[CB_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, %[[SRC_ACC]], %[[CB_PTR]], %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
   func.func @dma_single_tile_single_copy(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -34,16 +35,17 @@ module {
 
 // TTKERNEL-LABEL: func.func @cb_to_tensor
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 1 : i8
 // TTKERNEL: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, f32>>
 // TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
 // TTKERNEL: %[[DST_ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}})
 // TTKERNEL: %[[DST_ACC:.*]] = ttkernel.TensorAccessor(%[[DST_ARGS]], %[[BANK_BASE]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_read_ptr(%[[CB]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>) -> i32
-// TTKERNEL: ttkernel.noc_async_write_tile({{.*}}, %[[DST_ACC]], %[[CB_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL: ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL: ttkernel.noc_async_write_tile({{.*}}, %[[DST_ACC]], %[[CB_PTR]], %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
+// TTKERNEL: ttkernel.noc_async_write_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_read_barrier
 module {
-  func.func @cb_to_tensor(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @cb_to_tensor(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 1 : i64} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #layout>
@@ -62,18 +64,19 @@ module {
 // Mirrors TT-Metal kernels that batch NOC async operations for throughput.
 // Each tensor arg maps to a runtime arg at its index.
 // TTKERNEL-LABEL: func.func @dma_batched
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // First tensor: runtime arg, accessor, CB write ptr, tile read.
 // TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL: ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL: ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>) -> i32
-// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
 // Second tensor: runtime arg, accessor, CB write ptr, tile read.
 // TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL: ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL: ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>) -> i32
-// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
 // Consecutive barriers are deduplicated to a single barrier.
-// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_read_barrier
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
@@ -101,14 +104,15 @@ module {
 // from the copy in time while staying in SSA form.
 
 // TTKERNEL-LABEL: func.func @dma_pipelined_loop
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // TTKERNEL: ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>) -> i32
-// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, {{.*}}, {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
 // TTKERNEL: scf.for {{.*}} {
 // TTKERNEL:   ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>) -> i32
-// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, {{.*}}, {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL:   ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
+// TTKERNEL:   ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL: }
-// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
   func.func @dma_pipelined_loop(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -139,17 +143,18 @@ module {
 // block on a barrier after issuing the batch.
 //
 // TTKERNEL-LABEL: func.func @dma_single_tile_two_phase_loops
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // TTKERNEL: %[[HANDLES0:.*]] = tensor.empty() : tensor<4x!ttl.transfer_handle<read>>
 // TTKERNEL: %[[CAST:.*]] = tensor.cast %[[HANDLES0]] : tensor<4x!ttl.transfer_handle<read>> to tensor<?x!ttl.transfer_handle<read>>
 // TTKERNEL: %[[HANDLES:.*]] = scf.for {{.*}} iter_args(%[[H:.*]] = %[[CAST]]) -> (tensor<?x!ttl.transfer_handle<read>>) {
 // TTKERNEL:   ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>) -> i32
-// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, {{.*}}, {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
 // TTKERNEL:   %[[XF:.*]] = builtin.unrealized_conversion_cast {{.*}} : i32 to !ttl.transfer_handle<read>
 // TTKERNEL:   %[[INS:.*]] = tensor.insert %[[XF]] into %[[H]]{{\[}}{{.*}}{{\]}} : tensor<?x!ttl.transfer_handle<read>>
 // TTKERNEL:   scf.yield %[[INS]] : tensor<?x!ttl.transfer_handle<read>>
 // TTKERNEL: }
 // TTKERNEL: scf.for {{.*}} {
-// TTKERNEL:   ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL:   ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL: }
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
@@ -184,7 +189,8 @@ module {
 // consecutive barriers are deduplicated to a single barrier.
 //
 // TTKERNEL-LABEL: func.func @dma_single_tile_double_wait
-// TTKERNEL:      ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
+// TTKERNEL:      ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_read_barrier
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
@@ -208,8 +214,9 @@ module {
 // outside of a loop.
 //
 // TTKERNEL-LABEL: func.func @dma_single_tile_single_element_container
-// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, {{.*}}, {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
+// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 // TTKERNEL: return
 module {
@@ -248,6 +255,7 @@ module {
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
 // TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 4096 : index
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}})
 // TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
@@ -264,8 +272,8 @@ module {
 // Cast to i32 for NOC operation
 // TTKERNEL:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
 // TTKERNEL:     %[[CB_ADDR:.*]] = arith.index_cast %[[CB_ADDR_IDX]] : index to i32
-// TTKERNEL:     ttkernel.noc_async_read_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[CB_ADDR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL:     ttkernel.noc_async_read_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[CB_ADDR]], %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
   func.func @dma_multi_tile_read(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout_tile>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -294,6 +302,7 @@ module {
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
 // TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 4096 : index
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}})
 // TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
@@ -310,8 +319,8 @@ module {
 // Cast to i32 for NOC operation
 // TTKERNEL:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
 // TTKERNEL:     %[[CB_ADDR:.*]] = arith.index_cast %[[CB_ADDR_IDX]] : index to i32
-// TTKERNEL:     ttkernel.noc_async_write_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[CB_ADDR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL: ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL:     ttkernel.noc_async_write_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[CB_ADDR]], %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
+// TTKERNEL: ttkernel.noc_async_write_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_read_barrier
 module {
   func.func @dma_multi_tile_write(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout_tile>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -339,6 +348,7 @@ module {
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
 // TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 4096 : index
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}})
 // TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
@@ -355,8 +365,8 @@ module {
 // Cast to i32 for NOC operation
 // TTKERNEL:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
 // TTKERNEL:     %[[CB_ADDR:.*]] = arith.index_cast %[[CB_ADDR_IDX]] : index to i32
-// TTKERNEL:     ttkernel.noc_async_read_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[CB_ADDR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL:     ttkernel.noc_async_read_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[CB_ADDR]], %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
   func.func @dma_multi_tile_read_cb_shape(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -385,6 +395,7 @@ module {
 // TTKERNEL-DAG: %[[TILES_Y_BOUND:.*]] = arith.constant 3 : index
 // TTKERNEL-DAG: %[[TILES_X_BOUND:.*]] = arith.constant 2 : index
 // TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 4096 : index
+// TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}})
 // TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
@@ -401,8 +412,8 @@ module {
 // Cast to i32 for NOC operation
 // TTKERNEL:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
 // TTKERNEL:     %[[CB_ADDR:.*]] = arith.index_cast %[[CB_ADDR_IDX]] : index to i32
-// TTKERNEL:     ttkernel.noc_async_write_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[CB_ADDR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL: ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL:     ttkernel.noc_async_write_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[CB_ADDR]], %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
+// TTKERNEL: ttkernel.noc_async_write_barrier(%[[NOC]]) : (i8) -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_read_barrier
 module {
   func.func @dma_multi_tile_write_rect(%arg0: tensor<3x2x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {

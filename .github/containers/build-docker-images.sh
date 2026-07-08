@@ -89,7 +89,7 @@ DOCKER_TAG=$("${SCRIPT_DIR}/get-version-tag.sh")
 echo "Docker tag: $DOCKER_TAG"
 echo ""
 
-echo "Note: LLVM and tt-metal are pre-built into the image; tt-mlir and tt-lang are built fresh against them by call-build.yml."
+echo "Note: LLVM and tt-metal are pre-built into the image; tt-lang is built fresh against them by call-build.yml."
 echo ""
 
 # Compute image names up front (used by both build and check-only paths).

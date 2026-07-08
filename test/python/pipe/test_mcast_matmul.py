@@ -14,10 +14,6 @@ Tests: multi-tile 8x8 blocks, mcast and balanced (two-NOC) patterns
 with PipeNet named-function callbacks.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

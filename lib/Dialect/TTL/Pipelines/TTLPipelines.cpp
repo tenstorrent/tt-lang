@@ -4,8 +4,8 @@
 
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
+#include "ttlang/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
@@ -18,6 +18,7 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
     dfbOpts.enable = options.compilerDFBs;
@@ -69,7 +70,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createCSEPass());
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
-    pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
+    pm.addNestedPass<func::FuncOp>(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }

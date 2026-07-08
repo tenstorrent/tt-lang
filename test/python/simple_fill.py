@@ -64,7 +64,7 @@ def fill_kernel(out):
 # C++ Kernel Checks - Verify generated compute kernel
 # =============================================================================
 
-# CHECK-CPP: // fill_compute
+# CHECK-CPP: === fill_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 

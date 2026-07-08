@@ -14,7 +14,7 @@
 pl<br>
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
-![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
+![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue.svg)
 ![Build Status](https://github.com/tenstorrent/tt-lang/actions/workflows/ci.yml/badge.svg)
 
 A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current simulator and compiler support.
@@ -44,7 +44,9 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.
 
-First, create an isolated Python environment (venv, conda, etc.) with Python 3.11 or later (python3.12 recommended). For example:
+First, create an isolated Python environment (venv, conda, etc.) with Python
+matching the selected wheel. Public PyPI hardware wheels currently use Python
+3.12; S3 light wheels are built for Python 3.10 and Python 3.12. For example:
 
 ```bash
 python3 -m venv --prompt ttlang ttlang-venv
@@ -223,48 +225,7 @@ We welcome contributions. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 See the Sphinx [contributor guide](docs/sphinx/contributor-guide.md) and [code style guidelines](docs/sphinx/guidelines.md) for coding standards, dialect design patterns, and testing practices.
 
-### 4.2 Updating Submodule Versions
-
-tt-mlir defines the compatible versions of LLVM and tt-metal. When updating tt-mlir, the other submodules should be updated to match.
-
-Update tt-mlir (and read the versions it expects):
-
-```bash
-cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
-
-# Read the LLVM and tt-metal commits that this tt-mlir version expects:
-grep LLVM_PROJECT_VERSION third-party/tt-mlir/env/CMakeLists.txt
-grep TT_METAL_VERSION third-party/tt-mlir/third_party/CMakeLists.txt
-```
-
-Update LLVM to the compatible version:
-
-```bash
-cd third-party/llvm-project && git fetch && git checkout <llvm-sha> && cd ../..
-```
-
-Update tt-metal to the compatible version. The canonical tt-metal version
-lives in `third-party/tt-metal-version` (a tt-metal release tag, e.g.
-`v0.69.0`); see [build.md](docs/sphinx/build.md#updating-tt-metal) for the
-full list of artifacts derived from it. Edit the file and run the verifier
-in update mode to check out the submodule at the matching commit:
-
-```bash
-echo v0.69.0 > third-party/tt-metal-version
-.github/scripts/check-tt-metal-version.sh --update
-```
-
-Commit all submodule updates together:
-
-```bash
-git add third-party/tt-mlir third-party/llvm-project third-party/tt-metal \
-        third-party/tt-metal-version pyproject.toml
-git commit -m "Update submodules to tt-mlir <commit>"
-```
-
-The build system verifies SHA compatibility during configure. If submodule versions are intentionally mismatched, pass `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` or `-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON` to suppress the check.
-
-### 4.3 Code Formatting with Pre-commit
+### 4.2 Code Formatting with Pre-commit
 
 tt-lang uses [pre-commit](https://pre-commit.com/) to format code and enforce style guidelines before commits.
 
@@ -287,13 +248,17 @@ git commit -m "Your commit message"
 
 To run manually on all files: `pre-commit run --all-files`
 
-### 4.4 Code of Conduct
+### 4.3 Code of Conduct
 
 This project adheres to a [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code and treat all community members with respect.
 
 ## 5. Support
 
-- [GitHub Issues](https://github.com/tenstorrent/tt-lang/issues) — report bugs or request features
+- [GitHub Issues](https://github.com/tenstorrent/tt-lang/issues) — report bugs or request features. Include the build provenance so issues can be reproduced against the right revisions:
+
+  ```bash
+  python -c 'import ttl; print(ttl.build_info())'
+  ```
 
 ## 6. License
 

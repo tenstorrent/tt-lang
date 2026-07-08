@@ -59,8 +59,7 @@ def signpost_test_kernel(inp, out):
 # =============================================================================
 
 # Check compute kernel has profiler header and signposts
-# CHECK: === compute kernel written to
-# CHECK: // compute
+# CHECK: === compute kernel written to {{.*}} ===
 # CHECK: #include "tools/profiler/kernel_profiler.hpp"
 # CHECK: void kernel_main()
 
@@ -81,15 +80,13 @@ def signpost_test_kernel(inp, out):
 # CHECK: .pop_front(
 
 # Check dm_read kernel has signposts
-# CHECK: === dm_read kernel written to
-# CHECK: // dm_read
+# CHECK: === dm_read kernel written to {{.*}} ===
 # CHECK: #include "tools/profiler/kernel_profiler.hpp"
 # CHECK: void kernel_main()
 # CHECK: DeviceZoneScopedN("dm_read_L{{[0-9]+}}_cb_reserve")
 
 # Check dm_write kernel has signposts
-# CHECK: === dm_write kernel written to
-# CHECK: // dm_write
+# CHECK: === dm_write kernel written to {{.*}} ===
 # CHECK: #include "tools/profiler/kernel_profiler.hpp"
 # CHECK: void kernel_main()
 # CHECK: DeviceZoneScopedN("dm_write_L{{[0-9]+}}_cb_wait")

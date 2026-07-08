@@ -84,12 +84,12 @@ def scatter(inp, out):
 # =============================================================================
 
 # Multicast sender: wait for receivers ready, reset sem, write data, signal receivers
-# CHECK-CPP: // dm_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
-# CHECK-CPP: noc0.async_write_multicast<Noc::McastMode::EXCLUDE_SRC>(
-# CHECK-CPP: noc0.async_write_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: noc0.async_write_multicast(
+# CHECK-CPP: noc0.async_write_barrier();
 # CHECK-CPP: noc_semaphore_inc_multicast(
 # CHECK-CPP: noc0.async_atomic_barrier();
 
