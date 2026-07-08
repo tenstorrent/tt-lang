@@ -3,91 +3,16 @@ include(AddMLIRPython)
 # Disables generation of "version soname" (i.e. libFoo.so.<version>)
 set(CMAKE_PLATFORM_NO_VERSIONED_SONAME ON)
 
-# Package prefix: all MLIR Python modules (upstream + tt-mlir + ttlang) are
-# installed under the single `ttl` top-level package, following the
-# industry convention (IREE uses iree.compiler., torch-mlir uses torch_mlir.).
+# Package prefix: all MLIR Python modules are installed under the single `ttl`
+# top-level package.
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ttl.")
 
-# Nanobind domain shared by _ttmlir and _ttlang extensions so bound C types
-# are compatible across modules.
 set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttl")
 
-# Root directories for Python source declarations
 set(TTLANG_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl")
-set(TTMLIR_PYTHON_ROOT_DIR "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/python/ttmlir")
 
 # ###############################################################################
-# ttmlir Python Sources (minimal tt-mlir dialects)
-# ###############################################################################
-declare_mlir_python_sources(TTMLIRMinPythonSources)
-
-declare_mlir_python_sources(TTMLIRMinPythonSources.Dialects
-  ROOT_DIR "${TTMLIR_PYTHON_ROOT_DIR}"
-  ADD_TO_PARENT TTMLIRMinPythonSources
-)
-
-# TTCore dialect Python bindings (ODS-generated from tt-mlir submodule)
-declare_mlir_dialect_python_bindings(
-  ADD_TO_PARENT TTMLIRMinPythonSources.Dialects
-  ROOT_DIR "${TTMLIR_PYTHON_ROOT_DIR}"
-  TD_FILE dialects/TTCoreBinding.td
-  GEN_ENUM_BINDINGS ON
-  GEN_ENUM_BINDINGS_TD_FILE dialects/TTCoreEnumBinding.td
-  SOURCES dialects/ttcore.py
-  DIALECT_NAME ttcore
-)
-
-# TTKernel dialect Python bindings (ODS-generated from tt-mlir submodule)
-declare_mlir_dialect_python_bindings(
-  ADD_TO_PARENT TTMLIRMinPythonSources.Dialects
-  ROOT_DIR "${TTMLIR_PYTHON_ROOT_DIR}"
-  TD_FILE dialects/TTKernelBinding.td
-  GEN_ENUM_BINDINGS ON
-  GEN_ENUM_BINDINGS_TD_FILE dialects/TTKernelEnumBinding.td
-  SOURCES dialects/ttkernel.py
-  DIALECT_NAME ttkernel
-)
-
-# passes.py re-export
-declare_mlir_python_sources(TTMLIRMinPythonSources.TopLevel
-  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttmlir"
-  ADD_TO_PARENT TTMLIRMinPythonSources
-  SOURCES
-    passes.py
-)
-
-# Site initialization for tt-mlir dialects (suffix _0, loaded before TTL's _1).
-# Must be under _mlir_libs/ so the MLIR site-init chain finds it.
-declare_mlir_python_sources(TTMLIRMinPythonSources.SiteInit
-  ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
-  ADD_TO_PARENT TTMLIRMinPythonSources
-  SOURCES
-    _mlir_libs/_site_initialize_0.py
-)
-
-# ###############################################################################
-# ttmlir Python Extensions (_ttmlir nanobind module)
-# ###############################################################################
-declare_mlir_python_sources(TTMLIRMinPythonExtensions)
-
-declare_mlir_python_extension(TTMLIRMinPythonExtensions.Main
-  MODULE_NAME _ttmlir
-  ADD_TO_PARENT TTMLIRMinPythonExtensions
-  PYTHON_BINDINGS_LIBRARY nanobind
-  SOURCES
-    ttmlir/TT_MLIRMinimalExtension.cpp
-    ttmlir/TT_MLIRMinimalPasses.cpp
-    ttmlir/TT_MLIRMinimalTTModule.cpp
-    ttmlir/TT_MLIRMinimalTTKernelModule.cpp
-  EMBED_CAPI_LINK_LIBS
-    MLIRCAPIIR
-    MLIRCAPITransforms
-    TTMLIRMinimalCAPI
-)
-
-
-# ###############################################################################
-# ttlang Python Sources (TTL dialect)
+# tt-lang Python Sources (TTL, TTCore, and TTKernel dialects)
 # ###############################################################################
 declare_mlir_python_sources(TTLangPythonSources)
 
@@ -98,7 +23,16 @@ declare_mlir_python_sources(TTLangPythonSources.Dialects
   ADD_TO_PARENT TTLangPythonSources
 )
 
-# TTL dialect Python bindings (ODS-generated)
+declare_mlir_dialect_python_bindings(
+  ADD_TO_PARENT TTLangPythonSources.Dialects
+  ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
+  TD_FILE dialects/TTCoreBinding.td
+  GEN_ENUM_BINDINGS ON
+  GEN_ENUM_BINDINGS_TD_FILE dialects/TTCoreEnumBinding.td
+  SOURCES dialects/ttcore.py
+  DIALECT_NAME ttcore
+)
+
 declare_mlir_dialect_python_bindings(
   ADD_TO_PARENT TTLangPythonSources.Dialects
   ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
@@ -109,13 +43,32 @@ declare_mlir_dialect_python_bindings(
   DIALECT_NAME ttl
 )
 
-# Site initialization for TTL dialect (suffix _1, loaded after ttmlir's _0).
+declare_mlir_dialect_python_bindings(
+  ADD_TO_PARENT TTLangPythonSources.Dialects
+  ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
+  TD_FILE dialects/TTKernelBinding.td
+  GEN_ENUM_BINDINGS ON
+  GEN_ENUM_BINDINGS_TD_FILE dialects/TTKernelEnumBinding.td
+  SOURCES dialects/ttkernel.py
+  DIALECT_NAME ttkernel
+)
+
+declare_mlir_python_sources(TTLangPythonSources.TopLevel
+  ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
+  ADD_TO_PARENT TTLangPythonSources
+  SOURCES
+    passes.py
+)
+
+# Site initialization for all tt-lang dialects. Must be suffix _0: MLIR's
+# site-init loader iterates _site_initialize_{0,1,...} and stops at the first
+# missing index, so the single hook has to start at 0.
 # Note: _mlir_libs/__init__.py is provided by MLIRPythonSources.
 declare_mlir_python_sources(TTLangPythonSiteInitialize
   ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
   ADD_TO_PARENT TTLangPythonSources
   SOURCES
-    _mlir_libs/_site_initialize_1.py
+    _mlir_libs/_site_initialize_0.py
 )
 
 # ###############################################################################
@@ -130,6 +83,9 @@ declare_mlir_python_extension(TTLangPythonExtensions.Main
   SOURCES
     ttlang/TTLangModule.cpp
     ttlang/TTLModule.cpp
+    ttlang/TTCoreModule.cpp
+    ttlang/TTKernelModule.cpp
+    ttlang/PassesModule.cpp
   EMBED_CAPI_LINK_LIBS
     TTLangCAPI
 )
@@ -250,21 +206,19 @@ declare_mlir_python_sources(PykernelPythonSources
 # Common CAPI library and module aggregation
 # ###############################################################################
 
-# Build a single common CAPI shared library that includes upstream MLIR,
-# our minimal tt-mlir dialects, and ttlang dialects.
+# Build a single common CAPI shared library that includes upstream MLIR and
+# tt-lang dialects.
 add_mlir_python_common_capi_library(TTLangPythonCAPI
   INSTALL_DESTINATION python_packages/ttl/_mlir_libs
   OUTPUT_DIRECTORY "${TTLANG_PYTHON_PACKAGES_DIR}/ttl/_mlir_libs"
+  EMBED_LIBS
+    MLIRCAPITransforms
   DECLARED_SOURCES
     # Upstream MLIR sources (.Core + sub-packages). RegisterEverything is
     # intentionally omitted; tt-lang registers only the upstream dialects and
     # passes its pipeline uses (see lib/CAPI/Dialects.cpp) so the Python CAPI
     # library does not statically link all of MLIR.
     MLIRPythonSources
-    # Minimal tt-mlir
-    TTMLIRMinPythonSources
-    TTMLIRMinPythonExtensions
-    # ttlang
     TTLangPythonSources
     TTLangPythonExtensions
 )
@@ -277,8 +231,7 @@ add_mlir_python_modules(PykernelPythonModules
     PykernelPythonSources
 )
 
-# Main ttl Python package — includes upstream MLIR, tt-mlir subset, ttlang
-# dialect bindings, and ttl runtime code, all under a single `ttl` package.
+# Main ttl Python package.
 add_mlir_python_modules(TTLangPythonModules
   ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttl"
   INSTALL_PREFIX "python_packages/ttl"
@@ -288,10 +241,6 @@ add_mlir_python_modules(TTLangPythonModules
     # passes its pipeline uses (see lib/CAPI/Dialects.cpp) so the Python CAPI
     # library does not statically link all of MLIR.
     MLIRPythonSources
-    # Minimal tt-mlir
-    TTMLIRMinPythonSources
-    TTMLIRMinPythonExtensions
-    # ttlang dialect bindings
     TTLangPythonSources
     TTLangPythonExtensions
     # ttl runtime Python files (ttl_api.py, layouts.py, etc.)
@@ -312,13 +261,8 @@ add_custom_target(pyext DEPENDS TTLangPythonModules)
 # producing ModuleNotFoundError at test time.
 add_dependencies(TTLangPythonModules PykernelPythonModules)
 
-# Add include paths for the _ttmlir extension so wrapper .cpp files can find
-# TTMLIRMinimalModule.h and the upstream tt-mlir Python sources (TTModule.cpp,
-# TTKernelModule.cpp) that get #included from our wrappers.
-target_include_directories(TTLangPythonModules.extension._ttmlir.dso PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/ttmlir"
-  "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/python"
-  "${CMAKE_SOURCE_DIR}/lib/ttmlir-minimal/CAPI"
+target_include_directories(TTLangPythonModules.extension._ttlang.dso PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/ttlang"
 )
 
 # ###############################################################################

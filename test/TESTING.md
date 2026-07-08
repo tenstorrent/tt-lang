@@ -354,7 +354,7 @@ TTLANG_KEEP_GENERATED_KERNELS=1 pytest -v test/python/test_uneven_grids.py
 
 | Variable | Description |
 |----------|-------------|
-| `TTLANG_AUTO_PROFILE` | Enable automatic profiling with signposts (requires tt-mlir configured with performance tracing). |
+| `TTLANG_AUTO_PROFILE` | Enable automatic profiling with signposts (requires performance tracing). |
 | `TTLANG_PERF_DUMP` | Print NOC traffic and per-thread wall time summary after kernel execution. Requires `TT_METAL_DEVICE_PROFILER=1` and related Metal env vars. |
 | `TTLANG_PROFILE_CSV` | Path to save profiling data as CSV. |
 

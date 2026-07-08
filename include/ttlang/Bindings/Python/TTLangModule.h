@@ -56,4 +56,13 @@ nb::class_<T> tt_type_class(nb::module_ &m, const char *class_name) {
 /// Populates the TTL dialect Python bindings.
 void populateTTLModule(nb::module_ &m);
 
+/// Populates the TTCore dialect Python bindings.
+void populateTTModule(nb::module_ &m);
+
+/// Populates the TTKernel dialect Python bindings.
+void populateTTKernelModule(nb::module_ &m);
+
+/// Populates Python-bound passes and transforms.
+void populatePassesModule(nb::module_ &m);
+
 #endif // TTLANG_BINDINGS_PYTHON_TTLANGMODULE_H

@@ -164,24 +164,6 @@ if(NOT TTLANG_USE_TOOLCHAIN)
   endif()
 endif()
 
-# ---------------------------------------------------------------------------
-# Verify tt-metal submodule matches the version expected by tt-mlir.
-# ---------------------------------------------------------------------------
-set(_TTMLIR_THIRD_PARTY_CMAKELISTS "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/third_party/CMakeLists.txt")
-
-if(EXISTS "${_TTMLIR_THIRD_PARTY_CMAKELISTS}")
-  file(STRINGS "${_TTMLIR_THIRD_PARTY_CMAKELISTS}" _ttmetal_version_line
-    REGEX "set\\(TT_METAL_VERSION")
-
-  if(_ttmetal_version_line)
-    string(REGEX MATCH "\"([a-f0-9]+)\"" _match "${_ttmetal_version_line}")
-
-    if(_match)
-      ttlang_verify_ttmetal_sha("${TT_METAL_SOURCE_DIR}" "${CMAKE_MATCH_1}")
-    endif()
-  endif()
-endif()
-
 option(TTLANG_ENABLE_PERF_TRACE "Enable performance tracing (Tracy) in tt-metal" ON)
 
 ttlang_get_submodule_sha("${TT_METAL_SOURCE_DIR}" _TTMETAL_SUBMODULE_SHA)
