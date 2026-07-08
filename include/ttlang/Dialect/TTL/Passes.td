@@ -121,11 +121,44 @@ def TTLFormAccumulationScopes
     : Pass<"ttl-form-accumulation-scopes", "::mlir::func::FuncOp"> {
   let summary = "Form semantic accumulation scopes around tensor recurrences";
   let description = [{
-    Wraps canonical loop-carried additive tensor recurrences in
-    `ttl.accumulation_scope`. The tensor form requires an init-backed
-    recurrence, one final non-accumulating store to a dataflow buffer
-    reservation, a streamed or resident dataflow-buffer-backed contribution,
-    and an output tile count that fits in one streaming DST section.
+    Wraps loop-carried additive tensor recurrences in
+    `ttl.accumulation_scope` so later passes can lower the recurrence from an
+    explicit accumulation policy instead of recovering it from ordinary tensor
+    stores.
+
+    Before:
+
+    ```mlir
+    %result = scf.for %iv = %lb to %ub step %step
+        iter_args(%acc = %init) -> (tensor<...>) {
+      %contribution = ...
+      %next = ttl.add %acc, %contribution : tensor<...>
+      scf.yield %next : tensor<...>
+    }
+    ttl.store %result, %out : tensor<...>, tensor<...>
+    ```
+
+    After:
+
+    ```mlir
+    ttl.accumulation_scope outs(%out : tensor<...>)
+        inits(%init : tensor<...>) {
+    ^bb0(%scope_acc: tensor<...>):
+      %result = scf.for %iv = %lb to %ub step %step
+          iter_args(%acc = %scope_acc) -> (tensor<...>) {
+        %contribution = ...
+        %next = ttl.add %acc, %contribution : tensor<...>
+        scf.yield %next : tensor<...>
+      }
+      ttl.store %result, %out : tensor<...>, tensor<...>
+      ttl.yield %result : tensor<...>
+    } initial_modes([init])
+    ```
+
+    The tensor form requires an init-backed recurrence, one final
+    non-accumulating store to a dataflow buffer reservation, a streamed or
+    resident dataflow-buffer-backed contribution, and an output tile count that
+    fits in one streaming DST section.
   }];
 
   let options = [

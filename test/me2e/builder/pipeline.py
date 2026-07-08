@@ -44,11 +44,15 @@ def compile_ttl_to_ttkernel(
     )
 
     # Finalize DFB indices before compute configuration copies them into
-    # function attributes.
-    dfb_func_passes = [
+    # function attributes. Tensor recurrence formation must run before
+    # loop-state materialization removes tensor iter_args.
+    tensor_recurrence_passes = [
         "ttl-form-accumulation-scopes",
         "ttl-lower-accumulation-scopes",
         "ttl-materialize-loop-state",
+    ]
+    dfb_func_passes = [
+        *tensor_recurrence_passes,
         "ttl-insert-copy-wait",
         "ttl-form-producer-compute",
         "ttl-insert-intermediate-dfbs",

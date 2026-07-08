@@ -313,9 +313,9 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         }
       } else if (auto binaryDestReuseOp =
                      dyn_cast<ttk::BinaryDestReuseTilesOp>(inner)) {
-        // Treat destination reuse as an FPU binary consumer for common init
-        // placement. The destination supplies the second operand, but the LLK
-        // init still belongs with other binary FPU work.
+        // binary_dest_reuse_tiles uses the FPU binary unpack path for its DFB
+        // operand even though the accumulator operand is already in DST, so
+        // binary_op_init_common must be selected for the sync region.
         result.hasFPUBinary = true;
         if (!in0CB) {
           in0CB = binaryDestReuseOp.getInCb();
