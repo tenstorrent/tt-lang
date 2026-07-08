@@ -3,9 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang-c/Dialects.h"
+#include "ttlang/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
+#include "ttlang/Dialect/TTCore/IR/TTCore.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
+#include "ttlang/Target/TTKernel/TTKernelToCpp.h"
 
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Registration.h"
@@ -21,27 +25,44 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstdlib>
+#include <cstring>
 
 using namespace mlir;
-using namespace mlir::tt::ttl;
 
 //===----------------------------------------------------------------------===//
-// TTL Dialect Registration
+// Dialect Registration
 //===----------------------------------------------------------------------===//
 
-MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(TTL, ttl, TTLDialect)
+MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(TTL, ttl, tt::ttl::TTLDialect)
+MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(TTCore, ttcore, tt::ttcore::TTCoreDialect)
+MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(TTKernel, ttkernel,
+                                      tt::ttkernel::TTKernelDialect)
 
 void ttlangRegisterAllDialects(MlirContext context) {
   MLIRContext *ctx = unwrap(context);
   DialectRegistry registry;
-  registry.insert<TTLDialect>();
+  registry.insert<tt::ttl::TTLDialect, tt::ttcore::TTCoreDialect,
+                  tt::ttkernel::TTKernelDialect>();
   ctx->appendDialectRegistry(registry);
 }
 
 void ttlangRegisterTTLDialect(MlirDialectRegistry registry) {
-  unwrap(registry)->insert<TTLDialect>();
+  unwrap(registry)->insert<tt::ttl::TTLDialect>();
+}
+
+void ttlangRegisterTTCoreDialect(MlirDialectRegistry registry) {
+  unwrap(registry)->insert<tt::ttcore::TTCoreDialect>();
+}
+
+void ttlangRegisterTTKernelDialect(MlirDialectRegistry registry) {
+  unwrap(registry)->insert<tt::ttkernel::TTKernelDialect>();
 }
 
 void ttlangRegisterUpstreamDialects(MlirDialectRegistry registry) {
@@ -53,8 +74,8 @@ void ttlangRegisterUpstreamDialects(MlirDialectRegistry registry) {
 }
 
 void ttlangRegisterPasses() {
-  mlir::tt::ttl::registerTTLPasses();
-  mlir::tt::ttl::registerTTLPipelines();
+  tt::ttl::registerTTLPasses();
+  tt::ttl::registerTTLPipelines();
 
   // Upstream passes the tt-lang pipeline runs. Registered explicitly (instead
   // of via MLIR's RegisterEverything) so the Python CAPI library links only the
@@ -64,4 +85,28 @@ void ttlangRegisterPasses() {
   registerPass([] { return createCSEPass(); });
   registerPass([] { return createSymbolDCEPass(); });
   registerPass([] { return createLowerAffinePass(); });
+  registerPass([] { return tt::createConvertTTKernelToEmitC(); });
+}
+
+bool ttlangRunTTKernelToEmitC(MlirModule module) {
+  Operation *op = unwrap(mlirModuleGetOperation(module));
+  PassManager passManager(op->getName());
+  passManager.addNestedPass<func::FuncOp>(tt::createConvertTTKernelToEmitC());
+  return succeeded(passManager.run(op));
+}
+
+char *ttlangTranslateKernelToCpp(MlirModule module, const char *kernelName) {
+  ModuleOp moduleOp = cast<ModuleOp>(unwrap(mlirModuleGetOperation(module)));
+  std::string output;
+  llvm::raw_string_ostream outputStream(output);
+  if (failed(tt::ttkernel::translateTopLevelKernelToCpp(moduleOp, outputStream,
+                                                        kernelName))) {
+    return nullptr;
+  }
+  char *result = static_cast<char *>(malloc(output.size() + 1));
+  if (!result) {
+    return nullptr;
+  }
+  memcpy(result, output.c_str(), output.size() + 1);
+  return result;
 }

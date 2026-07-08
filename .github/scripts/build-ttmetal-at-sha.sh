@@ -8,6 +8,8 @@
 #   install_dir=<path>   (default mode)  -- pass to TTLANG_EXTERNAL_TT_METAL_DIR
 #   source_dir=<path>    (--no-build)    -- checked-out tt-metal source tree
 #   ttmetal_date=<iso>                   -- the SHA's committer date (%cI)
+#   sha=<sha>                            -- the full checked-out SHA built
+#   short=<sha7>                         -- the SHA's 7-char prefix
 #
 # The tt-metal build is standalone (its own cmake config, mirrored from
 # BuildTTMetal.cmake) rather than tt-lang's build-and-install.sh so that a
@@ -64,6 +66,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+sha="$(printf '%s' "$sha" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
 if [[ -z "$sha" ]]; then
     echo "--sha is required" >&2
     usage
@@ -94,7 +98,7 @@ ensure_source() {
 }
 
 commit_date() {
-    git -C "$src_dir" show -s --format=%cI "$sha"
+    git -C "$src_dir" show -s --format=%cI "$1"
 }
 
 # Log whether $sha carries a release tag. The published ttnn wheel for a tagged
@@ -182,7 +186,10 @@ build_and_install() {
 
 ensure_source
 log_release_tag
-ttmetal_date="$(commit_date)"
+checked_out_sha="$(source_sha)"
+ttmetal_date="$(commit_date "$checked_out_sha")"
+emit "sha=$checked_out_sha"
+emit "short=${checked_out_sha:0:7}"
 
 if [[ "$no_build" -eq 1 ]]; then
     emit "source_dir=$src_dir"

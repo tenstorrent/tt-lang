@@ -56,6 +56,16 @@ on:
         type: string
         default: tt-lang-wheels
         required: false
+      ttlang_sha_override:
+        description: "tt-lang SHA/tag to build from. Leave empty to use the caller's ref."
+        type: string
+        default: ""
+        required: false
+      apply_patches:
+        description: "Apply wheel patches from .github/wheel-patches/ before building."
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -77,11 +87,29 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
+
+      # The patch runner and patches come from the workflow commit, not the
+      # (possibly older) target ref being rebuilt, which may predate them.
+      - name: Check out wheel patches from the workflow commit
+        if: ${{ inputs.apply_patches }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-patch-src
+          sparse-checkout: |
+            .github/scripts/apply-wheel-patches.sh
+            .github/wheel-patches
+          sparse-checkout-cone-mode: false
+
+      - name: Apply wheel patches
+        if: ${{ inputs.apply_patches }}
+        run: .wheel-patch-src/.github/scripts/apply-wheel-patches.sh --target-dir "$GITHUB_WORKSPACE"
 
       - name: Validate wheel inputs and resolve versions
         id: versions

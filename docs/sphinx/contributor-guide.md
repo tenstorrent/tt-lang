@@ -48,9 +48,9 @@ defm TTL_NewOp : TTL_BinaryElementwisePair<"newop", "newop_tiles">;
 defm TTL_NewOp : TTL_UnaryElementwisePair<"newop", "newop_tile">;
 ```
 
-### 3. Verify the TTKernel ops exist in tt-mlir
+### 3. Verify the TTKernel ops exist
 
-The TTKernel init and compute ops must exist in `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td`. If they don't, they need to be added to tt-mlir first.
+The TTKernel init and compute ops must exist in `include/ttlang/Dialect/TTKernel/IR/TTKernelOps.td`. If they don't, add them there.
 
 ### 4. Add tests
 

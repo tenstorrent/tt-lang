@@ -1633,7 +1633,7 @@ def _compile_kernel(
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
             f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
-            "ttl-lower-scalar-cmpf",
+            "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",
         ]
@@ -1656,7 +1656,7 @@ def _compile_kernel(
         pm.enable_verifier(verify)
 
         try:
-            from ttl._mlir_libs._ttmlir import enable_pretty_stack_traces
+            from ttl._mlir_libs._ttlang import enable_pretty_stack_traces
 
             enable_pretty_stack_traces(pm._CAPIPtr)
         except Exception:

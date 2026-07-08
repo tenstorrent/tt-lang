@@ -30,7 +30,6 @@ Steps to reproduce the behavior:
 - **OS:** [e.g., Ubuntu 24.04, macOS 14.0]
 - **Python version:** [e.g., 3.11.5]
 - **tt-lang version/commit:** [e.g., commit SHA or release version]
-- **tt-mlir version/commit:** [e.g., commit SHA]
 - **CMake version:** [e.g., 3.28.0]
 - **Compiler:** [e.g., Clang 18.1.0, GCC 11.4]
 

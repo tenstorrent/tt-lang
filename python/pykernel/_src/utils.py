@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# NOTE: This file was copied from tt-mlir/tools/pykernel/_src/utils.py
+# NOTE: This file was imported into tt-lang pykernel/_src/utils.py
 # and cleaned up to remove unused code (_discover_dialect_ops).
 
 import inspect

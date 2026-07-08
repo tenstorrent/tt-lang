@@ -2,18 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# On-demand: build a tt-lang-light wheel for a given (or detected) tt-metal SHA.
-# The scheduled path lives in publish-s3-pypi.yml, which reuses the images it
-# just built; this manual entry point resolves the builder-image tag itself.
-# Force a tt_metal_sha, or leave it empty to detect from tt-mlir's pin.
+# Build a tt-lang-light wheel for a forced or version-file-pinned tt-metal SHA.
+# Scheduled publishes use publish-s3-pypi.yml; this manual workflow resolves
+# the builder image tag itself.
 
-name: tt-lang-light wheel (on demand)
+name: Build tt-lang-light per-tt-metal-SHA wheel (on demand)
 
 on:
   workflow_dispatch:
     inputs:
       tt_metal_sha:
-        description: "Force a tt-metal SHA (skips detection). Leave empty to detect from tt-mlir."
+        description: "Force a tt-metal SHA (skips detection). Leave empty to detect from third-party/tt-metal-version."
+        required: false
+        type: string
+        default: ""
+      ttlang_ref:
+        description: "tt-lang SHA or tag to build (skips the compatibility search); requires tt_metal_sha. Empty = newest compatible."
         required: false
         type: string
         default: ""
@@ -28,7 +32,7 @@ on:
         type: string
         default: "14"
       python_tags:
-        description: "Comma-separated CPython ABIs to build."
+        description: "Comma-separated CPython ABIs to build; must include cp312 for device validation."
         required: false
         type: string
         default: "cp310,cp312"
@@ -52,7 +56,7 @@ permissions:
 
 jobs:
   detect:
-    name: "Detect tt-metal uplift"
+    name: "Detect tt-lang-light per-tt-metal-SHA build"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -69,42 +73,55 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
-          # get-version-tag.sh needs the full history and version tags; the
-          # tt-mlir submodule holds the TT_METAL_VERSION detection reads.
           fetch-depth: 0
           fetch-tags: true
-          submodules: true
 
       - name: Git safe directory
         run: git config --global --add safe.directory "$(pwd)"
 
-      # Resolve the builder-image tag for the current main. The on-push main
-      # build already pushed the ird and manylinux images at this content tag;
-      # the manylinux images carry no :latest, so a fixed tag will not resolve.
+      - name: Require main ref for S3 publishing
+        if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "S3 publishing is restricted to refs/heads/main (got ${GITHUB_REF}). Set dry_run=true for non-main validation." >&2
+          exit 1
+
+      # Manylinux builder images have content tags, not :latest.
       - name: Resolve builder image tag
         id: docker_tag
         run: echo "tag=$(.github/containers/get-version-tag.sh)" >> "$GITHUB_OUTPUT"
 
-      # Detection reads the published S3 prefix to decide idempotency.
+      # S3 idempotency is needed only for auto-detected real publishes.
       - name: Configure AWS Credentials
+        if: ${{ inputs.dry_run != true && inputs.tt_metal_sha == '' }}
         uses: ./.github/actions/configure-tt-s3-credentials
 
       - name: Detect uplift
         id: detect
         env:
           FORCED_SHA: ${{ inputs.tt_metal_sha }}
+          TTLANG_REF: ${{ inputs.ttlang_ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          if [ -n "$FORCED_SHA" ]; then
-            echo "Forced tt-metal SHA: $FORCED_SHA"
+          forced_sha="$(printf '%s' "$FORCED_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [ -n "$TTLANG_REF" ] && [ -z "$forced_sha" ]; then
+            echo "error: set tt_metal_sha when ttlang_ref is provided. Auto-detection reads" >&2
+            echo "the dispatch ref's third-party/tt-metal-version, not the pinned ref's, so it" >&2
+            echo "would build the pinned tt-lang ref against the wrong tt-metal." >&2
+            exit 1
+          fi
+          if [ -n "$forced_sha" ]; then
+            echo "Forced tt-metal SHA: $forced_sha"
             echo "uplift=true" >> "$GITHUB_OUTPUT"
-            echo "tt_metal_sha=$FORCED_SHA" >> "$GITHUB_OUTPUT"
+            echo "tt_metal_sha=$forced_sha" >> "$GITHUB_OUTPUT"
+          elif [ "$DRY_RUN" = "true" ]; then
+            .github/scripts/detect-ttmetal-uplift.sh --assume-new
           else
-            .github/scripts/detect-ttmlir-ttmetal-uplift.sh
+            .github/scripts/detect-ttmetal-uplift.sh
           fi
 
   build:
-    name: "Build light wheel for tt-metal SHA"
+    name: "Build tt-lang-light per-tt-metal-SHA wheel"
     needs: detect
     if: ${{ needs.detect.outputs.uplift == 'true' }}
     permissions:
@@ -115,6 +132,7 @@ jobs:
     secrets: inherit
     with:
       tt_metal_sha: ${{ needs.detect.outputs.tt_metal_sha }}
+      ttlang_ref: ${{ inputs.ttlang_ref }}
       docker_tag: ${{ inputs.docker_tag || needs.detect.outputs.docker_tag }}
       max_age_days: ${{ format('{0}', inputs.max_age_days) }}
       python_tags: ${{ inputs.python_tags }}
