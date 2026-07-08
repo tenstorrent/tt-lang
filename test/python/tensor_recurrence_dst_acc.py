@@ -10,9 +10,9 @@
 
 """Additive tensor recurrence lowers to DST-resident accumulation.
 
-`acc = acc + delta` over a compute loop seeds DST once, accumulates in place
-with `binary_dest_reuse_tiles`, and packs the result once. The contribution
-dataflow buffer has fewer blocks than the loop trip count.
+`acc = acc + delta` over a compute loop copies the initial value into DST,
+accumulates in place with `binary_dest_reuse_tiles`, and packs the result once.
+The contribution dataflow buffer has fewer blocks than the loop trip count.
 """
 
 import ttl
@@ -149,7 +149,8 @@ def resident_delta_acc_recurrence(initial, delta, out):
 # CHECK-INITIAL-NOT: ttl.cb_wait
 # CHECK-INITIAL: ttl.add
 
-# Generated C++ checks DST seeding, in-place accumulation, and final packing.
+# Generated C++ checks DST initialization, in-place accumulation, and final
+# packing.
 # CHECK-CPP-LABEL: === single_tile_compute kernel written to {{.*}} ===
 # CHECK-CPP: copy_tile(
 # CHECK-CPP: binary_dest_reuse_tiles<

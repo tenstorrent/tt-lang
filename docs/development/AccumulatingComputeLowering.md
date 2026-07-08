@@ -86,7 +86,7 @@ Initial modes have these meanings:
 - `overwrite`: the first executed contribution defines the accumulator value.
 - `accumulate_existing`: an existing value in the output location
   participates in the result.
-- `init`: an init operand seeds the accumulator, independent of the final
+- `init`: an init operand initializes the accumulator, independent of the final
   output location.
 
 Example:

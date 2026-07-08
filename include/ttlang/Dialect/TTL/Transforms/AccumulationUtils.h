@@ -14,6 +14,8 @@
 
 namespace mlir::tt::ttl {
 
+struct DFBAcquireReleaseIndex;
+
 /// Describes how the contribution operand is acquired relative to the source
 /// recurrence loop.
 enum class TensorAccumulationContributionResidency {
@@ -60,6 +62,9 @@ struct TensorDstAccumulationInfo {
   /// Number of accumulator tiles resident for the whole DST section.
   int64_t unitTileCount;
 
+  /// DFB-backed tensor copied into the DST accumulator before the source loop.
+  Value initialValue;
+
   /// Whether the contribution is acquired per iteration or held across the
   /// recurrence loop.
   TensorAccumulationContributionResidency contributionResidency;
@@ -104,16 +109,22 @@ FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType);
 
 /// Return DST-resident accumulation properties for `match` when the source
 /// loop can be deleted without dropping side effects.
-FailureOr<TensorDstAccumulationInfo>
-analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
-                                scf::ForOp loop);
+FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
+    const TensorAccumulationMatch &match, scf::ForOp loop,
+    const DFBAcquireReleaseIndex *dfbIndex = nullptr);
+
+/// Return DST-resident accumulation properties using `initialValue` as the
+/// tensor copied into the accumulator before the source loop executes.
+FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
+    const TensorAccumulationMatch &match, scf::ForOp loop, Value initialValue,
+    const DFBAcquireReleaseIndex *dfbIndex = nullptr);
 
 /// Lower a matched additive tensor recurrence to a streaming DST section whose
-/// DST acquisition spans the original source loop. Callers must either run the
-/// same analysis before mutation or handle failure without leaving partial IR.
-LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
-                                           scf::ForOp loop,
-                                           RewriterBase &rewriter);
+/// DST acquisition spans the original source loop.
+LogicalResult
+lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
+                             const TensorDstAccumulationInfo &info,
+                             scf::ForOp loop, RewriterBase &rewriter);
 
 } // namespace mlir::tt::ttl
 
