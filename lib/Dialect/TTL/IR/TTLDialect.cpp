@@ -5,9 +5,9 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 
 #include "mlir/IR/DialectImplementation.h"
+#include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCore.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsDialect.cpp.inc"

@@ -6,7 +6,7 @@
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 
 namespace mlir::tt::ttkernel {
 

@@ -337,7 +337,6 @@ class CMakeBuild(build_ext):
             for env_var in (
                 "TTLANG_EXTERNAL_TT_METAL_DIR",
                 "TTLANG_EXTERNAL_TT_METAL_BUILD_DIR",
-                "TTLANG_ACCEPT_TTMETAL_MISMATCH",
                 "TTLANG_PYTHON_VENV",
             ):
                 value = os.environ.get(env_var, "")

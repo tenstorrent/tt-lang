@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# NOTE: This file was copied from tt-mlir/tools/pykernel/_src/base_ast.py
+# NOTE: This file was imported into tt-lang pykernel/_src/base_ast.py
 
 import ast
 import inspect

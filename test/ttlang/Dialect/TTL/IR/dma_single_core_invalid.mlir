@@ -116,3 +116,32 @@ module {
     func.return
   }
 }
+
+// -----
+
+// Wait on an scf.if result where one branch yields a non-copy handle is
+// invalid. The verifier traces both branches independently.
+#layout_if = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, bf16>,
+                         buffer = l1, grid = [1, 1], memory = interleaved>
+
+module {
+  func.func @wait_scf_if_one_branch_invalid(
+      %cond: i1,
+      %src: tensor<1x1x!ttcore.tile<32x32, bf16>, #layout_if>,
+      %bogus: !ttl.transfer_handle<read>
+  ) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %tx_good = ttl.copy %src, %cb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>, #layout_if>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> !ttl.transfer_handle<read>
+    %result = scf.if %cond -> (!ttl.transfer_handle<read>) {
+      scf.yield %tx_good : !ttl.transfer_handle<read>
+    } else {
+      scf.yield %bogus : !ttl.transfer_handle<read>
+    }
+    // expected-error @below {{expects operand to be derived from ttl.copy}}
+    ttl.wait %result : !ttl.transfer_handle<read>
+    func.return
+  }
+}

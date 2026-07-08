@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Build, device-test, and publish a tt-lang-light wheel for a tt-metal SHA.
-# The per-SHA S3 location is tt-lang/<tt-metal-short-SHA>/, so wheel filenames
+# The per-SHA S3 location is tt-lang/ttmetal/<ttmetal7>/, so wheel filenames
 # stay unchanged and light/normal wheels live in the same find-links directory.
 
 name: Build tt-lang-light per-tt-metal-SHA wheel (reusable)

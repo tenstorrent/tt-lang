@@ -73,7 +73,6 @@ evaluate_candidate() {
     local sha="$1"
     log "evaluating $sha: checkout"
     git -C "$TTLANG_DIR" checkout --quiet --detach "$sha"
-    git -C "$TTLANG_DIR" submodule update --init --recursive --depth 1 third-party/tt-mlir
 
     log "evaluating $sha: configure + build"
     rm -rf "$BUILD_DIR"

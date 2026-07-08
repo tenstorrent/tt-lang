@@ -55,6 +55,31 @@ def _collect_assignments(source):
             ["left_accumulator", "right_accumulator"],
             ["left_accumulator", "right_accumulator"],
         ),
+        (
+            "if val > max_val:\n    max_val = val",
+            ["max_val"],
+            ["max_val"],
+        ),
+        (
+            "if val > max_val:\n    max_val = val\nelse:\n    max_val = max_val",
+            ["max_val"],
+            ["max_val"],
+        ),
+        (
+            "if cond1:\n    if val > max_val:\n        max_val = val",
+            ["max_val"],
+            ["max_val"],
+        ),
+        (
+            "if cond:\n    tmp = acc\nelse:\n    tmp = other\nacc = tmp",
+            ["tmp", "acc"],
+            ["acc"],
+        ),
+        (
+            "if c1:\n    x = acc\nelif c2:\n    x = acc + 1\nelse:\n    x = other\nacc = x",
+            ["x", "acc"],
+            ["acc"],
+        ),
     ],
 )
 def test_assignment_collector_detects_loop_carried_recurrences(
@@ -64,6 +89,13 @@ def test_assignment_collector_detects_loop_carried_recurrences(
 
     assert collector.names == expected_assigned
     assert collector.loop_carried_names == expected_loop_carried
+
+
+def test_condition_read_without_assignment_is_not_loop_carried():
+    collector = _collect_assignments("if x > 0:\n    y = x")
+
+    assert collector.names == ["y"]
+    assert collector.loop_carried_names == []
 
 
 def test_assignment_collector_tracks_augassign_only_names():

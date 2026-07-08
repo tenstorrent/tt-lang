@@ -57,9 +57,9 @@ RUN dnf install -y \
 # this image. Keep the override local to this wheel-builder image.
 #
 # GCC emits LLVM's singletons as STB_GNU_UNIQUE, which glibc merges process-wide
-# even under RTLD_LOCAL; importing tt-lang and a standalone tt-mlir together then
-# aborts ("Option 'greedy' already exists!"). -fno-gnu-unique keeps them weak, as
-# clang does (clang can't build LLVM on this image, above).
+# even under RTLD_LOCAL. Importing multiple MLIR extension modules can then
+# abort with duplicate option registration. -fno-gnu-unique keeps them weak, as
+# clang does.
 #
 # LLVM_ENABLE_ZSTD=OFF drops LLVM's libzstd dependency, which the
 # tt-lang -> ttkernel -> emitc pipeline never uses. With zstd enabled the
@@ -101,7 +101,6 @@ RUN python_dir="/opt/python/${PYTHON_TAG}-${PYTHON_TAG}" && \
     scripts/build-and-install.sh \
       --toolchain-only \
       --force-rebuild \
-      --accept-ttmetal-mismatch \
       --python "${python_dir}/bin/python" \
       --python-venv "${TTLANG_TOOLCHAIN_DIR}/venv" \
       --remove-build-dir && \
