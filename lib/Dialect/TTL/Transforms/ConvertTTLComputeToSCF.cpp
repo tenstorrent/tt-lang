@@ -217,17 +217,6 @@ static scf::LoopNest generateAccumulatingLoops(
     return fullIVs;
   };
 
-  auto remapIndexValue = [&](OpBuilder &builder, Location valueLoc,
-                             IRMapping &mapping, Value value) -> Value {
-    if (mapping.contains(value)) {
-      return mapping.lookup(value);
-    }
-    if (auto constant = foldIndexToConstant(value)) {
-      return arith::ConstantIndexOp::create(builder, valueLoc, *constant);
-    }
-    return value;
-  };
-
   // Clone the accumulator init chain outside the reduction loop with reduction
   // IVs fixed at zero. Init operands are mapped through the same indexing maps
   // as the compute body so multi-tile outputs initialize the matching DST slot.
@@ -250,23 +239,6 @@ static scf::LoopNest generateAccumulatingLoops(
       if (!accumulatorInitOps.contains(&bodyOp)) {
         continue;
       }
-      if (auto copyTile = dyn_cast<CopyTileOp>(&bodyOp)) {
-        SmallVector<Value> srcIndices;
-        for (Value index : copyTile.getSrcIndices()) {
-          srcIndices.push_back(
-              remapIndexValue(builder, bodyLoc, mapping, index));
-        }
-        auto clonedCopy = CopyTileOp::create(
-            builder, bodyLoc,
-            TypeRange{copyTile.getDstToken().getType(),
-                      copyTile.getDstTile().getType()},
-            mapping.lookupOrDefault(copyTile.getSrc()), srcIndices,
-            remapIndexValue(builder, bodyLoc, mapping, copyTile.getDstIndex()));
-        mapping.map(copyTile.getDstToken(), clonedCopy.getDstToken());
-        mapping.map(copyTile.getDstTile(), clonedCopy.getDstTile());
-        continue;
-      }
-
       builder.clone(bodyOp, mapping);
     }
     return mapping;

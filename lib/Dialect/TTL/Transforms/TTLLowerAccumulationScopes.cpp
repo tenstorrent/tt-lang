@@ -16,6 +16,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
@@ -29,6 +30,23 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
+
+/// Keeps the semantic scope init operand separate from the recurrence match.
+/// The recurrence matcher reports the loop-carried value inside the scope; DST
+/// lowering copies the external init tensor into the accumulator.
+struct TensorAccumulationScopeMatch {
+  scf::ForOp loop;
+  TensorAccumulationMatch recurrence;
+  Value initialValue;
+};
+
+/// Caches all facts needed by lowering before any scope is rewritten. The pass
+/// emits diagnostics for every invalid scope before mutating IR.
+struct TensorAccumulationScopeLoweringPlan {
+  AccumulationScopeOp scope;
+  TensorAccumulationScopeMatch match;
+  TensorDstAccumulationInfo dstInfo;
+};
 
 /// Check the structural policy encoded by tensor accumulation scopes. The
 /// scope lowerer relies on this policy before it looks through the contained
@@ -94,9 +112,8 @@ getSingleTensorAccumulationLoop(AccumulationScopeOp scope,
 }
 
 /// Reuse the shared recurrence matcher so scope formation and scope lowering
-/// accept the same tensor recurrence. The block argument is compared first,
-/// then replaced with the external init operand used by the lowered compute.
-static FailureOr<TensorAccumulationMatch>
+/// accept the same tensor recurrence.
+static FailureOr<TensorAccumulationScopeMatch>
 matchTensorAccumulationScope(AccumulationScopeOp scope) {
   if (failed(verifySingleAddInitTensorScope(scope))) {
     return failure();
@@ -132,8 +149,7 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
         "tensor accumulation scope policy must match the loop recurrence");
     return failure();
   }
-  match->initialValue = scope.getInits().front();
-  return match;
+  return TensorAccumulationScopeMatch{*loop, *match, scope.getInits().front()};
 }
 
 /// Compute replacements for inlining the scope body after the contained loop
@@ -180,51 +196,44 @@ static void replaceYieldOperandsWithStateArguments(AccumulationScopeOp scope) {
 /// Verify every condition that the mutating rewrite depends on. Diagnostics
 /// are emitted here, before any scope is rewritten, to avoid partially lowered
 /// IR when one scope is invalid.
-static LogicalResult
-verifyTensorScopeLoweringPrecondition(AccumulationScopeOp scope) {
-  FailureOr<TensorAccumulationMatch> match =
+static FailureOr<TensorAccumulationScopeLoweringPlan>
+getTensorScopeLoweringPlan(AccumulationScopeOp scope,
+                           const DFBAcquireReleaseIndex &dfbIndex) {
+  FailureOr<TensorAccumulationScopeMatch> match =
       matchTensorAccumulationScope(scope);
   if (failed(match)) {
     return failure();
   }
 
-  scf::ForOp loop = match->add->getParentOfType<scf::ForOp>();
-  assert(loop && "matched add must be inside an scf.for");
-  if (failed(analyzeTensorAccumulationForDst(*match, loop))) {
-    return scope.emitOpError(
+  FailureOr<TensorDstAccumulationInfo> dstInfo =
+      analyzeTensorAccumulationForDst(match->recurrence, match->loop,
+                                      match->initialValue, &dfbIndex);
+  if (failed(dstInfo)) {
+    (void)scope.emitOpError(
         "tensor accumulation lowering requires a DST-compatible same-type "
         "additive recurrence with an attached init tensor, a streamed or "
         "resident contribution ttl.cb_wait, no explicit contribution "
         "num_tiles, balanced contribution releases, and a static output tile "
         "count that fits in DST");
+    return failure();
   }
-  return success();
+  return TensorAccumulationScopeLoweringPlan{scope, *match, *dstInfo};
 }
 
 /// Rewrite one verified tensor accumulation scope to a streaming DST section
 /// and remove the now-empty scope wrapper.
-static LogicalResult lowerTensorAccumulationScope(AccumulationScopeOp scope,
-                                                  RewriterBase &rewriter) {
-  FailureOr<TensorAccumulationMatch> match =
-      matchTensorAccumulationScope(scope);
-  assert(succeeded(match) && "precondition scan must reject invalid scopes");
-  if (failed(match)) {
-    return failure();
-  }
-
-  scf::ForOp loop = match->add->getParentOfType<scf::ForOp>();
-  assert(loop && "matched add must be inside an scf.for");
-
+static void
+lowerTensorAccumulationScope(const TensorAccumulationScopeLoweringPlan &plan,
+                             RewriterBase &rewriter) {
+  AccumulationScopeOp scope = plan.scope;
   replaceYieldOperandsWithStateArguments(scope);
-  LogicalResult lowered = lowerTensorAccumulationToDst(*match, loop, rewriter);
+  LogicalResult lowered = lowerTensorAccumulationToDst(
+      plan.match.recurrence, plan.dstInfo, plan.match.loop, rewriter);
   assert(succeeded(lowered) && "precondition scan must prove DST lowering");
-  if (failed(lowered)) {
-    return failure();
-  }
+  (void)lowered;
 
   eraseAccumulationScopeWrapper(scope, rewriter,
                                 getScopeBlockArgumentReplacements(scope));
-  return success();
 }
 
 /// Lowers only verified tensor accumulation scopes. The pass scans first and
@@ -248,11 +257,18 @@ struct TTLLowerAccumulationScopesPass
     SmallVector<AccumulationScopeOp> scopes;
     func.walk([&](AccumulationScopeOp scope) { scopes.push_back(scope); });
 
+    DFBAcquireReleaseIndex dfbIndex(func);
+    SmallVector<TensorAccumulationScopeLoweringPlan> plans;
+    plans.reserve(scopes.size());
     bool hasInvalidScope = false;
     for (AccumulationScopeOp scope : scopes) {
-      if (failed(verifyTensorScopeLoweringPrecondition(scope))) {
+      FailureOr<TensorAccumulationScopeLoweringPlan> plan =
+          getTensorScopeLoweringPlan(scope, dfbIndex);
+      if (failed(plan)) {
         hasInvalidScope = true;
+        continue;
       }
+      plans.push_back(*plan);
     }
     if (hasInvalidScope) {
       signalPassFailure();
@@ -260,11 +276,8 @@ struct TTLLowerAccumulationScopesPass
     }
 
     IRRewriter rewriter(&getContext());
-    for (AccumulationScopeOp scope : scopes) {
-      if (failed(lowerTensorAccumulationScope(scope, rewriter))) {
-        signalPassFailure();
-        return;
-      }
+    for (const TensorAccumulationScopeLoweringPlan &plan : plans) {
+      lowerTensorAccumulationScope(plan, rewriter);
     }
   }
 };

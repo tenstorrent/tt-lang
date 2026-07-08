@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -18,6 +19,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 namespace mlir::tt::ttl {
 
@@ -26,7 +28,7 @@ namespace {
 /// Return the wait that provides the matched contribution value, peeling the
 /// optional attach operation that preserves dataflow buffer identity for tile
 /// extraction.
-static CBWaitOp getContributionWait(TensorAccumulationMatch &match,
+static CBWaitOp getContributionWait(const TensorAccumulationMatch &match,
                                     AttachCBOp &attachedContribution) {
   Value contribution = match.contribution;
   if (auto attach = contribution.getDefiningOp<AttachCBOp>()) {
@@ -41,11 +43,12 @@ static CBWaitOp getContributionWait(TensorAccumulationMatch &match,
 /// additive recurrence itself. The only permitted side effect is the pop that
 /// releases the matched contribution block after the add consumes it.
 static bool onlyContainsDstReductionOps(scf::ForOp loop,
-                                        TensorAccumulationMatch &match,
+                                        const TensorAccumulationMatch &match,
                                         CBWaitOp contributionWait,
                                         AttachCBOp attachedContribution) {
   DenseSet<Operation *> allowedOps;
-  allowedOps.insert(match.add.getOperation());
+  AddOp add = match.add;
+  allowedOps.insert(add.getOperation());
   allowedOps.insert(contributionWait.getOperation());
   if (attachedContribution) {
     allowedOps.insert(attachedContribution.getOperation());
@@ -60,7 +63,7 @@ static bool onlyContainsDstReductionOps(scf::ForOp loop,
     if (!contributionPop ||
         contributionPop.getCb() != contributionWait.getCb() ||
         contributionPop.getNumTiles() || foundContributionPop ||
-        contributionPop->isBeforeInBlock(match.add)) {
+        contributionPop->isBeforeInBlock(add)) {
       return false;
     }
     foundContributionPop = true;
@@ -73,9 +76,10 @@ static bool onlyContainsDstReductionOps(scf::ForOp loop,
 /// is the whole body aside from the terminator.
 static bool
 onlyContainsResidentDstReductionOps(scf::ForOp loop,
-                                    TensorAccumulationMatch &match) {
+                                    const TensorAccumulationMatch &match) {
+  AddOp add = match.add;
   for (Operation &bodyOp : loop.getBody()->without_terminator()) {
-    if (&bodyOp != match.add.getOperation()) {
+    if (&bodyOp != add.getOperation()) {
       return false;
     }
   }
@@ -101,23 +105,15 @@ struct ResidentContributionReleaseInfo {
 /// Classify the resident wait's release with the same ownership computation
 /// used by auto-sync so lowering and sync insertion agree on explicit pops.
 static FailureOr<ResidentContributionReleaseInfo>
-analyzeResidentContributionRelease(CBWaitOp contributionWait) {
-  auto func = contributionWait->getParentOfType<func::FuncOp>();
-  if (!func) {
-    return failure();
-  }
-
-  SmallVector<Operation *> reserves;
-  SmallVector<Operation *> waits;
-  SmallVector<Operation *> pushes;
-  SmallVector<Operation *> pops;
-  collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
-
-  DFBAcquireInterval interval =
-      makeDFBAcquireInterval(contributionWait.getOperation(), waits);
+analyzeResidentContributionRelease(CBWaitOp contributionWait,
+                                   const DFBAcquireReleaseIndex &dfbIndex) {
+  DFBAcquireInterval interval = makeDFBAcquireInterval(
+      contributionWait.getOperation(),
+      dfbIndex.getAcquires(DFBAcquireReleaseKind::Consumer));
   Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
-  DFBReleaseSearch releaseSearch =
-      findOwnedDFBReleases(interval, lastOwnedUse, pops);
+  DFBReleaseSearch releaseSearch = findOwnedDFBReleases(
+      interval, lastOwnedUse,
+      dfbIndex.getReleases(DFBAcquireReleaseKind::Consumer));
 
   if (!releaseSearch.nestedReleases.empty()) {
     return failure();
@@ -149,30 +145,18 @@ getDefaultDstCapacityForTensor(RankedTensorType tensorType) {
   return getDstCapacity(elementType->isF32(), /*fullSyncEn=*/false);
 }
 
-static void
-enumerateTileCoordinates(ArrayRef<int64_t> shape,
-                         SmallVectorImpl<int64_t> &current,
-                         SmallVectorImpl<SmallVector<int64_t>> &coordinates) {
-  if (current.size() == shape.size()) {
-    SmallVector<int64_t> coordinate;
-    llvm::append_range(coordinate, current);
-    coordinates.push_back(std::move(coordinate));
-    return;
-  }
-
-  int64_t dim = current.size();
-  for (int64_t index = 0; index < shape[dim]; ++index) {
-    current.push_back(index);
-    enumerateTileCoordinates(shape, current, coordinates);
-    current.pop_back();
-  }
-}
-
 static SmallVector<SmallVector<int64_t>>
 enumerateTileCoordinates(RankedTensorType tensorType) {
+  FailureOr<int64_t> tileCount = getStaticTensorTileCount(tensorType);
+  assert(succeeded(tileCount) && *tileCount > 0 &&
+         "coordinate enumeration requires a nonempty static tensor");
+
   SmallVector<SmallVector<int64_t>> coordinates;
-  SmallVector<int64_t> current;
-  enumerateTileCoordinates(tensorType.getShape(), current, coordinates);
+  coordinates.reserve(*tileCount);
+  SmallVector<int64_t> strides = computeStrides(tensorType.getShape());
+  for (int64_t linearIndex = 0; linearIndex < *tileCount; ++linearIndex) {
+    coordinates.push_back(delinearize(linearIndex, strides));
+  }
   return coordinates;
 }
 
@@ -311,13 +295,26 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
 }
 
 FailureOr<TensorDstAccumulationInfo>
-analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
-                                scf::ForOp loop) {
+analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
+                                scf::ForOp loop,
+                                const DFBAcquireReleaseIndex *dfbIndex) {
+  return analyzeTensorAccumulationForDst(match, loop, match.initialValue,
+                                         dfbIndex);
+}
+
+FailureOr<TensorDstAccumulationInfo>
+analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
+                                scf::ForOp loop, Value initialValue,
+                                const DFBAcquireReleaseIndex *dfbIndex) {
+  if (initialValue.getType() != match.tensorType) {
+    return failure();
+  }
+
   if (match.contribution.getType() != match.tensorType) {
     return failure();
   }
 
-  if (!getAttachedCB(match.initialValue)) {
+  if (!getAttachedCB(initialValue)) {
     return failure();
   }
 
@@ -347,8 +344,18 @@ analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
       return failure();
     }
 
+    std::optional<DFBAcquireReleaseIndex> localIndex;
+    if (!dfbIndex) {
+      auto func = contributionWait->getParentOfType<func::FuncOp>();
+      if (!func) {
+        return failure();
+      }
+      localIndex.emplace(func);
+      dfbIndex = &*localIndex;
+    }
+
     FailureOr<ResidentContributionReleaseInfo> releaseInfo =
-        analyzeResidentContributionRelease(contributionWait);
+        analyzeResidentContributionRelease(contributionWait, *dfbIndex);
     if (failed(releaseInfo)) {
       return failure();
     }
@@ -379,20 +386,16 @@ analyzeTensorAccumulationForDst(TensorAccumulationMatch &match,
     return failure();
   }
 
-  return TensorDstAccumulationInfo{*unitTileCount,   contributionResidency,
-                                   contributionWait, attachedContribution,
-                                   contributionType, residentContributionPop};
+  return TensorDstAccumulationInfo{*unitTileCount,         initialValue,
+                                   contributionResidency,  contributionWait,
+                                   attachedContribution,   contributionType,
+                                   residentContributionPop};
 }
 
-LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
-                                           scf::ForOp loop,
-                                           RewriterBase &rewriter) {
-  FailureOr<TensorDstAccumulationInfo> info =
-      analyzeTensorAccumulationForDst(match, loop);
-  if (failed(info)) {
-    return failure();
-  }
-
+LogicalResult
+lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
+                             const TensorDstAccumulationInfo &info,
+                             scf::ForOp loop, RewriterBase &rewriter) {
   Location loc = loop.getLoc();
   CBReserveOp outputReserve = match.reserve;
   if (outputReserve->getBlock() == loop->getBlock() &&
@@ -413,8 +416,11 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
       AccumulationCombinerAttr::get(context, AccumulationCombiner::Add);
   SmallVector<SmallVector<int64_t>> tileCoordinates =
       enumerateTileCoordinates(match.tensorType);
-  assert(static_cast<int64_t>(tileCoordinates.size()) == info->unitTileCount &&
+  assert(static_cast<int64_t>(tileCoordinates.size()) == info.unitTileCount &&
          "analysis tile count must match coordinate enumeration");
+
+  CBWaitOp contributionWait = info.contributionWait;
+  AttachCBOp attachedContribution = info.attachedContribution;
 
   SmallVector<Value> accumulatorTiles;
   SmallVector<Value> dstIndices;
@@ -424,8 +430,8 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
     Value dstIndex = arith::ConstantIndexOp::create(rewriter, loc, linearIndex);
     SmallVector<Value> coordinateValues =
         createIndexConstants(rewriter, loc, coordinates);
-    Value initTile = tensor::ExtractOp::create(
-        rewriter, loc, match.initialValue, coordinateValues);
+    Value initTile = tensor::ExtractOp::create(rewriter, loc, info.initialValue,
+                                               coordinateValues);
     auto copy = CopyTileOp::create(
         rewriter, loc, TypeRange{DSTRegisterType::get(context), tileType},
         initTile, coordinateValues, dstIndex);
@@ -440,28 +446,27 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
   }
 
   Value residentContributionTensor;
-  if (info->contributionResidency ==
+  if (info.contributionResidency ==
       TensorAccumulationContributionResidency::Resident) {
-    residentContributionTensor = info->attachedContribution
-                                     ? info->attachedContribution.getResult()
-                                     : info->contributionWait.getResult();
+    residentContributionTensor = attachedContribution
+                                     ? attachedContribution.getResult()
+                                     : contributionWait.getResult();
   }
 
   {
     OpBuilder::InsertionGuard loopGuard(rewriter);
     rewriter.setInsertionPointToStart(newLoop.getBody());
     Value contributionTensor = residentContributionTensor;
-    if (info->contributionResidency ==
+    if (info.contributionResidency ==
         TensorAccumulationContributionResidency::Streamed) {
-      CBWaitOp contributionWait = CBWaitOp::create(
-          rewriter, loc, info->contributionType, info->contributionWait.getCb(),
+      CBWaitOp newContributionWait = CBWaitOp::create(
+          rewriter, loc, info.contributionType, contributionWait.getCb(),
           /*num_tiles=*/IntegerAttr{});
-      contributionTensor = contributionWait.getResult();
-      if (info->attachedContribution) {
+      contributionTensor = newContributionWait.getResult();
+      if (attachedContribution) {
         contributionTensor =
-            AttachCBOp::create(rewriter, loc, info->contributionType,
-                               contributionTensor,
-                               info->contributionWait.getCb())
+            AttachCBOp::create(rewriter, loc, info.contributionType,
+                               contributionTensor, contributionWait.getCb())
                 .getResult();
       }
     }
@@ -475,9 +480,9 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
                                accumulatorTiles[linearIndex], contributionTile,
                                addCombiner, dstIndices[linearIndex]);
     }
-    if (info->contributionResidency ==
+    if (info.contributionResidency ==
         TensorAccumulationContributionResidency::Streamed) {
-      CBPopOp::create(rewriter, loc, info->contributionWait.getCb(),
+      CBPopOp::create(rewriter, loc, contributionWait.getCb(),
                       /*num_tiles=*/IntegerAttr{});
     }
   }
@@ -491,11 +496,11 @@ LogicalResult lowerTensorAccumulationToDst(TensorAccumulationMatch &match,
                         coordinateValues, dstIndices[linearIndex]);
   }
 
-  if (info->contributionResidency ==
+  if (info.contributionResidency ==
           TensorAccumulationContributionResidency::Resident &&
-      !info->residentContributionPop) {
+      !info.residentContributionPop) {
     rewriter.setInsertionPointAfter(dstSection);
-    CBPopOp::create(rewriter, loc, info->contributionWait.getCb(),
+    CBPopOp::create(rewriter, loc, contributionWait.getCb(),
                     /*num_tiles=*/IntegerAttr{});
   }
 

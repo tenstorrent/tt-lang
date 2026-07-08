@@ -146,8 +146,8 @@ def TTLLowerAccumulationScopes
     Lowers tensor `ttl.accumulation_scope` operations to streaming
     DST-resident recurrence sections. The pass first validates every scope
     before mutating IR, then rewrites each valid scope to one `ttl.dst_section`
-    that seeds the accumulator tiles, preserves the source recurrence loop, and
-    packs the final tiles once after the loop.
+    that copies the init tiles into accumulator slots, preserves the source
+    recurrence loop, and packs the final tiles once after the loop.
   }];
 
   let options = [

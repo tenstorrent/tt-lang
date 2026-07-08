@@ -209,7 +209,7 @@ func.func @dynamic_trip_recurrence_scope(%n: index) {
 // -----
 
 // A zero trip count forms because the lowered loop executes zero contribution
-// updates and stores the seeded init tile.
+// updates and stores the initial tile.
 // FORM-LABEL: func.func @zero_trip_recurrence_scope
 // FORM: ttl.accumulation_scope outs({{.*}}) inits({{.*}}) {
 // FORM: scf.for

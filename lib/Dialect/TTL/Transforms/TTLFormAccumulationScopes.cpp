@@ -16,6 +16,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
@@ -30,6 +31,13 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
+
+/// Immutable formation facts collected before any loop is moved. The DFB
+/// lifecycle index is valid only for this pre-mutation function version.
+struct TensorAccumulationScopeFormation {
+  scf::ForOp loop;
+  TensorAccumulationMatch match;
+};
 
 /// Return true when a loop already carries TTL compiler metadata. Such loops
 /// are owned by another lowering decision, and moving them into a new region
@@ -72,8 +80,12 @@ isContiguousSingleTensorAccumulator(scf::ForOp loop,
   return true;
 }
 
-static LogicalResult formTensorAccumulationScope(scf::ForOp loop,
-                                                 RewriterBase &rewriter) {
+/// Return the facts needed to form a tensor accumulation scope. The caller runs
+/// this during an immutable scan so DFB lifecycle analysis observes one
+/// function version.
+static FailureOr<TensorAccumulationScopeFormation>
+getTensorAccumulationScopeFormation(scf::ForOp loop,
+                                    const DFBAcquireReleaseIndex &dfbIndex) {
   if (loop->getParentOfType<AccumulationScopeOp>() ||
       hasCompilerAnnotation(loop)) {
     return failure();
@@ -82,7 +94,7 @@ static LogicalResult formTensorAccumulationScope(scf::ForOp loop,
   FailureOr<TensorAccumulationMatch> match =
       matchAdditiveTensorAccumulation(loop, /*resultIndex=*/0);
   if (failed(match) || !isContiguousSingleTensorAccumulator(loop, *match) ||
-      failed(analyzeTensorAccumulationForDst(*match, loop))) {
+      failed(analyzeTensorAccumulationForDst(*match, loop, &dfbIndex))) {
     return failure();
   }
 
@@ -98,33 +110,42 @@ static LogicalResult formTensorAccumulationScope(scf::ForOp loop,
     return failure();
   }
 
+  return TensorAccumulationScopeFormation{loop, *match};
+}
+
+/// Move a pre-verified recurrence into an accumulation scope.
+static void
+formTensorAccumulationScope(const TensorAccumulationScopeFormation &formation,
+                            RewriterBase &rewriter) {
+  scf::ForOp loop = formation.loop;
+  TensorAccumulationMatch match = formation.match;
+
   MLIRContext *context = loop.getContext();
   ArrayAttr initialModes =
       rewriter.getArrayAttr({AccumulationInitialModeAttr::get(
           context, AccumulationInitialMode::Init)});
 
-  if (!match->reserve->isBeforeInBlock(loop)) {
-    rewriter.moveOpBefore(match->reserve, loop);
+  if (!match.reserve->isBeforeInBlock(loop)) {
+    rewriter.moveOpBefore(match.reserve, loop);
   }
-  for (AttachCBOp attach : match->deadReserveAttachOps) {
+  for (AttachCBOp attach : match.deadReserveAttachOps) {
     rewriter.eraseOp(attach);
   }
 
   rewriter.setInsertionPoint(loop);
   auto scope = AccumulationScopeOp::create(
-      rewriter, loop.getLoc(), ValueRange{match->reserve.getResult()},
-      ValueRange{match->initialValue}, initialModes);
+      rewriter, loop.getLoc(), ValueRange{match.reserve.getResult()},
+      ValueRange{match.initialValue}, initialModes);
 
   Block *body =
-      rewriter.createBlock(&scope.getBody(), {}, match->initialValue.getType(),
-                           SmallVector<Location>{match->initialValue.getLoc()});
+      rewriter.createBlock(&scope.getBody(), {}, match.initialValue.getType(),
+                           SmallVector<Location>{match.initialValue.getLoc()});
 
   rewriter.moveOpBefore(loop, body, body->end());
   loop.getInitsMutable()[0].set(body->getArgument(0));
-  rewriter.moveOpBefore(match->finalStore, body, body->end());
+  rewriter.moveOpBefore(match.finalStore, body, body->end());
   rewriter.setInsertionPointToEnd(body);
   YieldOp::create(rewriter, loop.getLoc(), loop->getResults());
-  return success();
 }
 
 /// Forms tensor accumulation scopes opportunistically. Non-matching loops are
@@ -149,9 +170,31 @@ struct TTLFormAccumulationScopesPass
     getOperation().walk<WalkOrder::PostOrder>(
         [&](scf::ForOp loop) { loops.push_back(loop); });
 
-    IRRewriter rewriter(&getContext());
+    DFBAcquireReleaseIndex dfbIndex(getOperation());
+    SmallVector<TensorAccumulationScopeFormation> formations;
+    formations.reserve(loops.size());
     for (scf::ForOp loop : loops) {
-      (void)formTensorAccumulationScope(loop, rewriter);
+      // Post-order selection keeps the innermost valid recurrence. Forming a
+      // nested loop first changes the body an outer recurrence was matched
+      // against, so the outer candidate is not rewritten.
+      bool containsSelectedLoop = llvm::any_of(
+          formations, [&](const TensorAccumulationScopeFormation &formation) {
+            return loop->isAncestor(formation.loop);
+          });
+      if (containsSelectedLoop) {
+        continue;
+      }
+
+      FailureOr<TensorAccumulationScopeFormation> formation =
+          getTensorAccumulationScopeFormation(loop, dfbIndex);
+      if (succeeded(formation)) {
+        formations.push_back(*formation);
+      }
+    }
+
+    IRRewriter rewriter(&getContext());
+    for (const TensorAccumulationScopeFormation &formation : formations) {
+      formTensorAccumulationScope(formation, rewriter);
     }
   }
 };

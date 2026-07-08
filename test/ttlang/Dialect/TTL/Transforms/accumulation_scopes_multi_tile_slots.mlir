@@ -1,12 +1,12 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-assign-dst))' | FileCheck %s --check-prefix=ASSIGN
 
 // Summary: A multi-tile additive recurrence assigns one DST slot per output tile
-// and keeps that slot consistent across the seed copy, the per-iteration
+// and keeps that slot consistent across the initial copy, the per-iteration
 // accumulate, and the final store after ttl-assign-dst.
 
 // ASSIGN-LABEL: func.func @multi_tile_recurrence
 // ASSIGN: ttl.dst_section
-// Four output tiles seed four distinct DST slots.
+// Four output tiles initialize four distinct DST slots.
 // ASSIGN: %[[S0:.*]] = arith.constant 0 : index
 // ASSIGN: ttl.copy_tile {{.*}} into dst[%[[S0]]]
 // ASSIGN: %[[S1:.*]] = arith.constant 1 : index
@@ -15,7 +15,7 @@
 // ASSIGN: ttl.copy_tile {{.*}} into dst[%[[S2]]]
 // ASSIGN: %[[S3:.*]] = arith.constant 3 : index
 // ASSIGN: ttl.copy_tile {{.*}} into dst[%[[S3]]]
-// Each per-iteration accumulate targets the slot seeded for its tile.
+// Each per-iteration accumulate targets the slot initialized for its tile.
 // ASSIGN: scf.for
 // ASSIGN: ttl.tile_accumulate {{.*}} into dst[%[[S0]]]
 // ASSIGN: ttl.tile_accumulate {{.*}} into dst[%[[S1]]]
