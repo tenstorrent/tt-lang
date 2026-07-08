@@ -73,6 +73,8 @@ def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
 }
 
 def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
+// TODO(#646): Add non-additive combiners once their DST-resident legality and
+// lowering behavior are specified.
 
 def TTL_AccumulationCombiner : I32EnumAttr<"AccumulationCombiner",
     "TTL accumulation combiner", [TTL_AccumulationCombiner_Add]> {

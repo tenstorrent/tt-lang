@@ -1018,6 +1018,8 @@ mlir::LogicalResult mlir::tt::ttl::YieldOp::verify() {
 // TileAccumulateOp
 //===----------------------------------------------------------------------===//
 
+// ODS enum attributes parse as generic attributes in this position, but the op
+// syntax uses a bare combiner keyword.
 mlir::ParseResult
 mlir::tt::ttl::TileAccumulateOp::parse(mlir::OpAsmParser &parser,
                                        mlir::OperationState &result) {
@@ -1076,18 +1078,6 @@ void mlir::tt::ttl::TileAccumulateOp::print(mlir::OpAsmPrinter &p) {
   p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
   p << " : " << getAccumulator().getType() << ", "
     << getContribution().getType() << " -> " << getResult().getType();
-}
-
-mlir::LogicalResult mlir::tt::ttl::TileAccumulateOp::verify() {
-  // Accumulator/result type equality is structural (AllTypesMatch); only the
-  // combiner-specific contribution constraint is checked here. `add` reads the
-  // contribution through SRCB, so it must match the accumulator type.
-  if (getCombiner() == AccumulationCombiner::Add &&
-      getContribution().getType() != getAccumulator().getType()) {
-    return emitOpError(
-        "requires contribution and accumulator to have the same type for add");
-  }
-  return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//

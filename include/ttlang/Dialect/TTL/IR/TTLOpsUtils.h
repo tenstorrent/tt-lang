@@ -330,9 +330,10 @@ struct FusionTraceResult {
 /// `failedValue` are set.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
 
-/// Return true if fusing `value` into `consumer` would read from a root DFB
-/// after its release. The check prevents fusion from extending an attached
-/// value past the lifetime established by the wait/pop pair.
+/// Return true if fusing `value` into `consumer` would read from a
+/// wait-backed root value after its attached DFB is released. The check
+/// prevents fusion from extending the value past the lifetime established by
+/// the wait/pop pair.
 ///
 /// This proves only same-block, top-level releases between the root definition
 /// and consumer. Region-aware release reasoning belongs in the DFB
