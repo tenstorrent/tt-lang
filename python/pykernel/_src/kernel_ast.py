@@ -80,10 +80,12 @@ class _AssignmentCollector(_ScopedCollector):
     outer value must become an if result.
 
     `loop_carried_names` contains assigned variables whose new value depends on
-    their previous value, directly (`acc = acc + x`) or through local aliases
-    (`tmp = acc; acc = tmp + x`). `scf.for` uses this narrower list because
-    loop-local assignments that do not depend on a previous outer value do not
-    need iter_args.
+    their previous value, directly (`acc = acc + x`), through local aliases
+    (`tmp = acc; acc = tmp + x`), or through control-flow dependencies where
+    the enclosing if-condition reads the assigned variable
+    (`if val > max_val: max_val = val`). `scf.for` uses this narrower list
+    because loop-local assignments that do not depend on a previous outer value
+    do not need iter_args.
 
     `augassign_only_names` preserves the DFB-attached block exception:
     `out_blk += x` lowers through block `__iadd__` as an in-place accumulating
@@ -135,6 +137,30 @@ class _AssignmentCollector(_ScopedCollector):
                     self._add_loop_carried_name(name)
                 self._dependencies_by_name[name] = set(dependencies)
 
+    def _analyze_branch(self, deps_before, stmts):
+        self._dependencies_by_name = dict(deps_before)
+        for stmt in stmts:
+            self.visit(stmt)
+        return self._dependencies_by_name
+
+    def _join_branch_deps(self, deps_before, branch_deps_list, condition_reads):
+        merged = dict(deps_before)
+        written_names = set()
+        for branch_deps in branch_deps_list:
+            for name in branch_deps:
+                if branch_deps[name] is not deps_before.get(name):
+                    written_names.add(name)
+
+        for name in written_names:
+            combined = set(condition_reads)
+            for branch_deps in branch_deps_list:
+                combined |= branch_deps.get(name, deps_before.get(name, set()))
+            merged[name] = combined
+            if name in combined:
+                self._add_loop_carried_name(name)
+
+        return merged
+
     def visit_Assign(self, node):
         self._record_assignment(node.targets, node.value)
 
@@ -149,6 +175,31 @@ class _AssignmentCollector(_ScopedCollector):
         # __iadd__ lowers them in place, so AugAssign-only entries are
         # filtered out before creating SCF result values.
         self._record_assignment([node.target], node.value, from_augassign=True)
+
+    def visit_If(self, node):
+        # Flatten if/elif/else chain into a list of peer branches with
+        # all condition dependencies collected. Python's AST nests elif
+        # as If nodes inside orelse; flattening makes the N-way branch
+        # structure explicit.
+        branches = []
+        all_condition_reads = set()
+        current = node
+        while True:
+            cond_reads = _collect_read_variable_names(current.test)
+            cond_reads = self._expand_dependencies(cond_reads)
+            all_condition_reads |= cond_reads
+            branches.append(current.body)
+            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                current = current.orelse[0]
+            else:
+                branches.append(current.orelse)
+                break
+
+        deps_before = dict(self._dependencies_by_name)
+        branch_deps = [self._analyze_branch(deps_before, body) for body in branches]
+        self._dependencies_by_name = self._join_branch_deps(
+            deps_before, branch_deps, all_condition_reads
+        )
 
 
 class _UnsupportedLanguageConstructCollector(ast.NodeVisitor):
@@ -438,6 +489,14 @@ class TTCompilerBase(PyKernelAstBase):
             _require_mlir_value_type(value, var_name, "an if statement")
             for var_name, value in zip(carried_var_names, carried_initial_values)
         ]
+
+        # TODO(arichins, #380): Variables first assigned in *all* branches
+        # (but absent from enclosing scope) should also become scf.if results
+        # so they are visible after the block. With the current approach we can identify
+        # such names at the AST level, but scf.IfOp requires the MLIR result types at
+        # construction time. Since MLIR types are only known
+        # after visiting (they emerge from op construction, not from the AST),
+        # the regions of the IfOp need to be constructed before the parent IfOp is created.
 
         if_exp = scf.IfOp(
             cond=if_cond,

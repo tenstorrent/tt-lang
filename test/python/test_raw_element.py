@@ -14,13 +14,13 @@ Covers seven access patterns:
   3. Pairwise sort (ogt) -- compare two elements via greater-than and
      conditionally swap. Extended with negative/mixed-sign vectors (3b).
   4. Min-pair (olt) -- exercises the operand-swap path in
-     LowerScalarCmpF via less-than comparison.
+     LowerScalarFpTypes via less-than comparison.
   5. Compute-then-read -- compute negates a tile and stores to a CB;
      the writer thread element_reads from the computed result.
   6. Write-then-compute -- the reader copies a tile and element_writes
      a modified value; compute negates the modified tile.
   7. Row-scan argmax -- scan 32 elements and write the maximum.
-     Currently xfail (ISSUE #380). Includes a ttnn.max comparison.
+     Includes a ttnn.max comparison.
 """
 
 import pytest
@@ -319,7 +319,7 @@ def test_bf16_sort_pair_no_swap(device):
 
 
 # =============================================================================
-# Pattern 4: Min-pair via olt  (exercises operand-swap path in LowerScalarCmpF)
+# Pattern 4: Min-pair via olt  (exercises operand-swap path in LowerScalarFpTypes)
 # =============================================================================
 
 
@@ -722,7 +722,6 @@ def _make_argmax_row_input(dtype):
     return t
 
 
-@pytest.mark.xfail(reason="conditional assignment not exiting scope ISSUE #380")
 def test_f32_argmax_row(device):
     """f32 row-scan argmax finds the maximum across mixed-sign values."""
     inp_torch = _make_argmax_row_input(torch.float32)
@@ -735,7 +734,6 @@ def test_f32_argmax_row(device):
     assert result[0, 0].item() == pytest.approx(8.0, abs=1e-5)
 
 
-@pytest.mark.xfail(reason="conditional assignment not exiting scope ISSUE #380")
 def test_bf16_argmax_row(device):
     """bf16 row-scan argmax finds the maximum across mixed-sign values."""
     inp_torch = _make_argmax_row_input(torch.bfloat16)
@@ -753,7 +751,6 @@ def test_bf16_argmax_row(device):
 # =============================================================================
 
 
-@pytest.mark.xfail(reason="conditional assignment not exiting scope ISSUE #380")
 def test_f32_argmax_vs_ttnn_max(device):
     """f32 row-scan max matches ttnn.max on the same input.
 
@@ -775,7 +772,6 @@ def test_f32_argmax_vs_ttnn_max(device):
     assert ttnn_max.item() == pytest.approx(torch_max, abs=1e-5)
 
 
-@pytest.mark.xfail(reason="conditional assignment not exiting scope ISSUE #380")
 def test_bf16_argmax_vs_ttnn_max(device):
     """bf16 row-scan max matches ttnn.max on the same input."""
     inp_torch = _make_argmax_row_input(torch.bfloat16)

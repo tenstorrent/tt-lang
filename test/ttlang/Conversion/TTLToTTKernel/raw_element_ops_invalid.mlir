@@ -1,19 +1,15 @@
-// Negative tests for raw_element_write lowering: materializeIntBits fails
-// when the value source is not from raw_element_read, a float constant,
-// or arith.truncf.
+// Negative tests for raw element operations in convert-ttl-to-ttkernel.
 // RUN: ttlang-opt --convert-ttl-to-ttkernel --verify-diagnostics --split-input-file %s
 
 // -----
 
-// raw_element_write with a block argument (unsupported value source).
-// materializeIntBits cannot extract integer bits from a bare function argument.
-// expected-error @below {{failed to legalize operation 'ttl.raw_element_write' that was explicitly marked illegal}}
+// raw_element_write with a value that does not trace to a CB (missing bind_cb).
 module {
-  func.func @write_unsupported_source(%val: f32)
+  func.func @write_no_cb(%block: tensor<1x1x!ttcore.tile<32x32, f32>>, %val_int: i32)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %block = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
     %c0 = arith.constant 0 : index
+    %val = builtin.unrealized_conversion_cast %val_int : i32 to f32
+    // expected-error @below {{block must be a tensor view acquired from ttl.cb_reserve}}
     ttl.raw_element_write %block[%c0, %c0], %val : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
     func.return
   }

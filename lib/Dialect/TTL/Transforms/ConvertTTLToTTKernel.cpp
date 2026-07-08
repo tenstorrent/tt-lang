@@ -1464,18 +1464,23 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
       return rewriter.notifyMatchFailure(op, "block does not trace to a CB");
     }
 
-    auto intVal =
-        utils::materializeIntBits(adaptor.getValue(), intTy, rewriter, loc);
-    if (failed(intVal)) {
-      return rewriter.notifyMatchFailure(
-          op, "could not materialize integer bits from float value");
+    Value floatVal = adaptor.getValue();
+    Value intVal;
+    if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>();
+        cast && cast.getInputs().size() == 1 &&
+        cast.getInputs()[0].getType() == intTy) {
+      intVal = cast.getInputs()[0];
+    } else {
+      intVal =
+          UnrealizedConversionCastOp::create(rewriter, loc, intTy, floatVal)
+              .getResult(0);
     }
 
     auto [l1Ptr, offset] =
         emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
                            elemWidth, rewriter, loc);
 
-    ttk::StoreToL1Op::create(rewriter, loc, *intVal, l1Ptr, offset);
+    ttk::StoreToL1Op::create(rewriter, loc, intVal, l1Ptr, offset);
     rewriter.eraseOp(op);
     return success();
   }
