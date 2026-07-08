@@ -86,15 +86,26 @@ def __add(
 
     # One body: the compiler places the copies on the data movement threads
     # and the addition on the compute thread.
-    ttl.copy(a[0:1, 0:1], a_dfb.reserve())
-    ttl.copy(b[0:1, 0:1], b_dfb.reserve())
+    a_dst_blk = a_dfb.reserve()
+    b_dst_blk = b_dfb.reserve()
+    a_tx = ttl.copy(a[0:1, 0:1], a_dst_blk)
+    b_tx = ttl.copy(b[0:1, 0:1], b_dst_blk)
+    a_tx.wait()
+    b_tx.wait()
+    a_dst_blk.push()
+    b_dst_blk.push()
 
     out_blk = out_dfb.reserve()
     a_blk = a_dfb.wait()
     b_blk = b_dfb.wait()
     out_blk.store(a_blk + b_blk)
+    a_blk.pop()
+    b_blk.pop()
 
-    ttl.copy(out_dfb.wait(), out[0:1, 0:1])
+    out_tx = ttl.copy(out_dfb.wait(), out[0:1, 0:1])
+    out_tx.wait()
+    out_blk.push()
+    
 
 # Simple wrapper to allow returning output tensor in TT-NN style
 def add(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
