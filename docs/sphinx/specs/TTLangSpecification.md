@@ -105,7 +105,7 @@ def __add(
     out_tx = ttl.copy(out_dfb.wait(), out[0:1, 0:1])
     out_tx.wait()
     out_blk.push()
-    
+
 
 # Simple wrapper to allow returning output tensor in TT-NN style
 def add(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
