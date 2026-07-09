@@ -52,8 +52,10 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
 /// Routes a non-`ttl.compute` tensor value through a fresh compiler-allocated
 /// DFB for one consumer. Compute results are materialized atomically by
 /// `TTLInsertIntermediateDFBs` so one producer compute is rebuilt at most once.
-FailureOr<DFBMaterializedValue>
-materializeToDFB(Value intermediate, ModuleOp moduleOp, OpBuilder &builder);
+FailureOr<DFBMaterializedValue> materializeToDFB(Value intermediate,
+                                                 func::FuncOp funcOp,
+                                                 ModuleOp moduleOp,
+                                                 OpBuilder &builder);
 
 } // namespace mlir::tt::ttl
 

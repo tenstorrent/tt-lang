@@ -7,10 +7,9 @@
 //===----------------------------------------------------------------------===//
 //
 // Inserts compiler-allocated intermediate dataflow buffers at fusion split
-// points. Tensor-level ops whose tile-level lowerings require DFB inputs may
-// receive operands from ttl.compute results that are not DFB-attached. This
-// pass materializes those compute results as extra compute outputs so the
-// remaining consumers can be converted after attachment.
+// points. When a tensor-level op requires a DFB-attached operand produced by
+// ttl.compute, this pass adds a DFB-backed output to the producer compute and
+// rewrites the consumer operand to the waited, attached tensor.
 //
 //===----------------------------------------------------------------------===//
 
@@ -62,7 +61,7 @@ struct ComputeMaterializationPlan {
   SmallVector<ResultMaterializationPlan> results;
 };
 
-struct TensorFallbackUse {
+struct StandaloneTensorMaterializationUse {
   Operation *consumer;
   unsigned operandIndex;
 };
@@ -76,6 +75,25 @@ struct MaterializedOutput {
   AttachCBOp attach;
   unsigned storeCount = 0;
 };
+
+struct ComputeResult {
+  ComputeOp producer;
+  unsigned resultIndex;
+};
+
+static std::optional<ComputeResult> getComputeResult(Value value) {
+  auto result = dyn_cast<OpResult>(value);
+  if (!result) {
+    return std::nullopt;
+  }
+
+  auto producer = dyn_cast<ComputeOp>(result.getOwner());
+  if (!producer) {
+    return std::nullopt;
+  }
+
+  return ComputeResult{producer, result.getResultNumber()};
+}
 
 static ComputeMaterializationPlan &
 getOrCreateComputePlan(SmallVectorImpl<ComputeMaterializationPlan> &plans,
@@ -133,25 +151,26 @@ planMaterializedOutput(ComputeOp computeOp, unsigned resultIndex) {
 }
 
 static LogicalResult cloneComputeBodyWithMaterializedStores(
-    ComputeOp oldCompute, ComputeOp newCompute,
+    ComputeOp sourceCompute, ComputeOp rebuiltCompute,
     MutableArrayRef<MaterializedOutput> materializedOutputs,
     OpBuilder &builder) {
-  Block &oldBody = oldCompute.getBody().front();
-  Block *newBody = builder.createBlock(&newCompute.getBody());
-  Location loc = oldCompute.getLoc();
+  Block &sourceBody = sourceCompute.getBody().front();
+  Block *rebuiltBody = builder.createBlock(&rebuiltCompute.getBody());
+  Location loc = sourceCompute.getLoc();
 
   IRMapping mapper;
-  for (Value operand :
-       llvm::concat<Value>(newCompute.getInputs(), newCompute.getOutputs())) {
+  for (Value operand : llvm::concat<Value>(rebuiltCompute.getInputs(),
+                                           rebuiltCompute.getOutputs())) {
     auto tensorType = cast<RankedTensorType>(operand.getType());
-    newBody->addArgument(tensorType.getElementType(), loc);
+    rebuiltBody->addArgument(tensorType.getElementType(), loc);
   }
-  for (BlockArgument oldArgument : oldBody.getArguments()) {
-    mapper.map(oldArgument, newBody->getArgument(oldArgument.getArgNumber()));
+  for (BlockArgument sourceArgument : sourceBody.getArguments()) {
+    mapper.map(sourceArgument,
+               rebuiltBody->getArgument(sourceArgument.getArgNumber()));
   }
 
-  builder.setInsertionPointToStart(newBody);
-  for (Operation &bodyOp : oldBody.without_terminator()) {
+  builder.setInsertionPointToStart(rebuiltBody);
+  for (Operation &bodyOp : sourceBody.without_terminator()) {
     Operation *clonedOp = builder.clone(bodyOp, mapper);
     auto clonedStore = dyn_cast<TileStoreOp>(clonedOp);
     if (!clonedStore) {
@@ -172,7 +191,7 @@ static LogicalResult cloneComputeBodyWithMaterializedStores(
     }
   }
 
-  YieldOp::create(builder, oldBody.getTerminator()->getLoc());
+  YieldOp::create(builder, sourceBody.getTerminator()->getLoc());
 
   for (MaterializedOutput &output : materializedOutputs) {
     assert(output.storeCount > 0 &&
@@ -189,7 +208,7 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
     return lhs.resultIndex < rhs.resultIndex;
   });
 
-  ComputeOp oldCompute = plan.producer;
+  ComputeOp producerCompute = plan.producer;
 
   // Validate every result before allocating any DFB, so a rejected plan leaves
   // the IR unmutated.
@@ -197,67 +216,71 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
   materializedOutputs.reserve(plan.results.size());
   for (ResultMaterializationPlan &resultPlan : plan.results) {
     FailureOr<MaterializedOutput> output =
-        planMaterializedOutput(oldCompute, resultPlan.resultIndex);
+        planMaterializedOutput(producerCompute, resultPlan.resultIndex);
     if (failed(output)) {
       return failure();
     }
     materializedOutputs.push_back(*output);
   }
 
-  auto funcOp = oldCompute->getParentOfType<func::FuncOp>();
+  auto funcOp = producerCompute->getParentOfType<func::FuncOp>();
   assert(funcOp && "ttl.compute must be inside a func::FuncOp");
   {
     OpBuilder::InsertionGuard guard(builder);
     for (MaterializedOutput &output : materializedOutputs) {
-      output.bind = createCompilerAllocatedDFB(
-          output.tensorType, oldCompute.getLoc(), funcOp, moduleOp, builder);
+      output.bind = createCompilerAllocatedDFB(output.tensorType,
+                                               producerCompute.getLoc(), funcOp,
+                                               moduleOp, builder);
     }
   }
 
-  SmallVector<Type> resultTypes(oldCompute.getResultTypes().begin(),
-                                oldCompute.getResultTypes().end());
-  SmallVector<Value> outputs(oldCompute.getOutputs().begin(),
-                             oldCompute.getOutputs().end());
-  SmallVector<Attribute> indexingMaps(oldCompute.getIndexingMaps().begin(),
-                                      oldCompute.getIndexingMaps().end());
+  SmallVector<Type> resultTypes(producerCompute.getResultTypes().begin(),
+                                producerCompute.getResultTypes().end());
+  SmallVector<Value> outputs(producerCompute.getOutputs().begin(),
+                             producerCompute.getOutputs().end());
+  SmallVector<Attribute> indexingMaps(producerCompute.getIndexingMaps().begin(),
+                                      producerCompute.getIndexingMaps().end());
 
-  builder.setInsertionPoint(oldCompute);
+  builder.setInsertionPoint(producerCompute);
   for (MaterializedOutput &output : materializedOutputs) {
     output.reserve =
-        CBReserveOp::create(builder, oldCompute.getLoc(), output.tensorType,
-                            output.bind.getResult());
-    Value init = tensor::EmptyOp::create(builder, oldCompute.getLoc(),
+        CBReserveOp::create(builder, producerCompute.getLoc(),
+                            output.tensorType, output.bind.getResult());
+    Value init = tensor::EmptyOp::create(builder, producerCompute.getLoc(),
                                          output.tensorType.getShape(),
                                          output.tensorType.getElementType());
     Value initAttached =
-        AttachCBOp::create(builder, oldCompute.getLoc(), output.tensorType,
+        AttachCBOp::create(builder, producerCompute.getLoc(), output.tensorType,
                            init, output.bind.getResult());
 
     resultTypes.push_back(output.tensorType);
     outputs.push_back(initAttached);
     indexingMaps.push_back(
-        oldCompute.getIndexingMaps()[oldCompute.getNumInputs() +
-                                     output.sourceResultIndex]);
+        producerCompute.getIndexingMaps()[producerCompute.getNumInputs() +
+                                          output.sourceResultIndex]);
   }
 
-  auto newCompute = ComputeOp::create(
-      builder, oldCompute.getLoc(), TypeRange(resultTypes),
-      oldCompute.getInputs(), ValueRange(outputs),
-      builder.getArrayAttr(indexingMaps), oldCompute.getIteratorTypesAttr());
+  // Extra DFB outputs change the compute result list, output operands,
+  // indexing maps, and tile block arguments; rebuild them as one consistent op.
+  auto rebuiltCompute =
+      ComputeOp::create(builder, producerCompute.getLoc(),
+                        TypeRange(resultTypes), producerCompute.getInputs(),
+                        ValueRange(outputs), builder.getArrayAttr(indexingMaps),
+                        producerCompute.getIteratorTypesAttr());
 
   if (failed(cloneComputeBodyWithMaterializedStores(
-          oldCompute, newCompute, materializedOutputs, builder))) {
+          producerCompute, rebuiltCompute, materializedOutputs, builder))) {
     return failure();
   }
 
   SmallVector<Value> originalReplacements;
-  originalReplacements.reserve(oldCompute.getNumResults());
-  for (unsigned resultIndex = 0; resultIndex < oldCompute.getNumResults();
+  originalReplacements.reserve(producerCompute.getNumResults());
+  for (unsigned resultIndex = 0; resultIndex < producerCompute.getNumResults();
        ++resultIndex) {
-    originalReplacements.push_back(newCompute.getResult(resultIndex));
+    originalReplacements.push_back(rebuiltCompute.getResult(resultIndex));
   }
-  oldCompute->replaceAllUsesWith(originalReplacements);
-  oldCompute->erase();
+  producerCompute->replaceAllUsesWith(originalReplacements);
+  producerCompute->erase();
 
   // Emit each DFB's push and wait/attach in the compute's own block, right
   // after the rebuilt compute, so the push stays unconditional and paired with
@@ -265,17 +288,17 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
   // without a matching pop for branch-local consumers.
   // TODO(#724): relax once trace-balance analysis can prove balanced DFB
   // occupancy across structured control flow.
-  Operation *insertAfter = newCompute;
+  Operation *insertAfter = rebuiltCompute;
   for (MaterializedOutput &output : materializedOutputs) {
     builder.setInsertionPointAfter(insertAfter);
-    auto push = CBPushOp::create(builder, newCompute.getLoc(),
+    auto push = CBPushOp::create(builder, rebuiltCompute.getLoc(),
                                  output.bind.getResult(), IntegerAttr());
     insertAfter = push;
 
     builder.setInsertionPointAfter(insertAfter);
     output.attach =
         createDFBWaitAndAttach(output.bind.getResult(), output.tensorType,
-                               newCompute.getLoc(), builder);
+                               rebuiltCompute.getLoc(), builder);
     insertAfter = output.attach;
   }
 
@@ -289,10 +312,10 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
   return success();
 }
 
-static LogicalResult
-materializeTensorFallbackUses(ArrayRef<TensorFallbackUse> fallbackUses,
-                              ModuleOp moduleOp, OpBuilder &builder,
-                              DominanceInfo &dominanceInfo) {
+static LogicalResult materializeStandaloneTensorUses(
+    ArrayRef<StandaloneTensorMaterializationUse> standaloneTensorUses,
+    func::FuncOp funcOp, ModuleOp moduleOp, OpBuilder &builder,
+    DominanceInfo &dominanceInfo) {
   // A shared consumer-side acquire is valid only when its attach dominates
   // the next consumer. Incomparable control-flow regions need separate
   // compiler DFB outputs so each dynamic execution consumes exactly one
@@ -300,7 +323,7 @@ materializeTensorFallbackUses(ArrayRef<TensorFallbackUse> fallbackUses,
   // dataflow proof.
   llvm::DenseMap<Value, SmallVector<Value>> materialized;
 
-  for (TensorFallbackUse use : fallbackUses) {
+  for (StandaloneTensorMaterializationUse use : standaloneTensorUses) {
     Operation *op = use.consumer;
     Value operand = op->getOperand(use.operandIndex);
 
@@ -308,18 +331,26 @@ materializeTensorFallbackUses(ArrayRef<TensorFallbackUse> fallbackUses,
       continue;
     }
 
-    if (auto iter = materialized.find(operand); iter != materialized.end()) {
-      auto replacement = llvm::find_if(iter->second, [&](Value value) {
-        return materializedValueDominates(value, op, dominanceInfo);
-      });
-      if (replacement != iter->second.end()) {
-        op->setOperand(use.operandIndex, *replacement);
+    // Reuse an existing attached value only when it is valid SSA for this
+    // consumer. Branch-incomparable consumers need separate materializations.
+    auto existingMaterializations = materialized.find(operand);
+    if (existingMaterializations != materialized.end()) {
+      SmallVector<Value> &candidateReplacements =
+          existingMaterializations->second;
+      auto dominatingReplacement =
+          llvm::find_if(candidateReplacements, [&](Value candidateReplacement) {
+            return materializedValueDominates(candidateReplacement, op,
+                                              dominanceInfo);
+          });
+      if (dominatingReplacement != candidateReplacements.end()) {
+        op->setOperand(use.operandIndex, *dominatingReplacement);
         continue;
       }
     }
 
+    // No existing materialization dominates this consumer.
     FailureOr<DFBMaterializedValue> materialization =
-        materializeToDFB(operand, moduleOp, builder);
+        materializeToDFB(operand, funcOp, moduleOp, builder);
     if (failed(materialization)) {
       return failure();
     }
@@ -373,7 +404,7 @@ struct TTLInsertIntermediateDFBsPass
 
     OpBuilder builder(funcOp.getContext());
     SmallVector<ComputeMaterializationPlan> computePlans;
-    SmallVector<TensorFallbackUse> fallbackUses;
+    SmallVector<StandaloneTensorMaterializationUse> standaloneTensorUses;
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();
@@ -386,18 +417,20 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        if (auto result = dyn_cast<OpResult>(operand)) {
-          if (auto computeOp = dyn_cast<ComputeOp>(result.getOwner())) {
-            ComputeMaterializationPlan &computePlan =
-                getOrCreateComputePlan(computePlans, computeOp);
-            ResultMaterializationPlan &resultPlan =
-                getOrCreateResultPlan(computePlan, result.getResultNumber());
-            resultPlan.uses.push_back({op, idx});
-            continue;
-          }
+        // Compute results are materialized by rebuilding the producer once,
+        // even when several results or consumers require DFB-attached values.
+        if (std::optional<ComputeResult> computeResult =
+                getComputeResult(operand)) {
+          ComputeMaterializationPlan &computePlan =
+              getOrCreateComputePlan(computePlans, computeResult->producer);
+          ResultMaterializationPlan &resultPlan =
+              getOrCreateResultPlan(computePlan, computeResult->resultIndex);
+          resultPlan.uses.push_back({op, idx});
+          continue;
         }
 
-        fallbackUses.push_back({op, idx});
+        // Other tensor producers use standalone reserve/store/wait/attach.
+        standaloneTensorUses.push_back({op, idx});
       }
     }
 
@@ -409,8 +442,8 @@ struct TTLInsertIntermediateDFBsPass
     }
 
     DominanceInfo dominanceInfo(funcOp);
-    if (failed(materializeTensorFallbackUses(fallbackUses, moduleOp, builder,
-                                             dominanceInfo))) {
+    if (failed(materializeStandaloneTensorUses(
+            standaloneTensorUses, funcOp, moduleOp, builder, dominanceInfo))) {
       signalPassFailure();
       return;
     }

@@ -13,15 +13,13 @@ namespace mlir::tt::ttl {
 namespace {
 
 FailureOr<DFBMaterializedValue>
-materializeTensorValueToDFB(Value intermediate, ModuleOp moduleOp,
-                            OpBuilder &builder) {
+materializeTensorValueToDFB(Value intermediate, func::FuncOp funcOp,
+                            ModuleOp moduleOp, OpBuilder &builder) {
   auto tensorType = cast<RankedTensorType>(intermediate.getType());
   Location loc = intermediate.getLoc();
 
   Operation *defOp = intermediate.getDefiningOp();
   assert(defOp && "intermediate must have a defining op");
-
-  auto funcOp = defOp->getParentOfType<func::FuncOp>();
   assert(funcOp && "intermediate must be inside a func::FuncOp");
 
   BindCBOp bindDFB =
@@ -91,13 +89,15 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-FailureOr<DFBMaterializedValue>
-materializeToDFB(Value intermediate, ModuleOp moduleOp, OpBuilder &builder) {
+FailureOr<DFBMaterializedValue> materializeToDFB(Value intermediate,
+                                                 func::FuncOp funcOp,
+                                                 ModuleOp moduleOp,
+                                                 OpBuilder &builder) {
   auto result = dyn_cast<OpResult>(intermediate);
   assert((!result || !isa<ComputeOp>(result.getOwner())) &&
          "compute results are materialized atomically by "
          "TTLInsertIntermediateDFBs");
-  return materializeTensorValueToDFB(intermediate, moduleOp, builder);
+  return materializeTensorValueToDFB(intermediate, funcOp, moduleOp, builder);
 }
 
 } // namespace mlir::tt::ttl

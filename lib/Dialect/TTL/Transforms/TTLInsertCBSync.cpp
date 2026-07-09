@@ -42,8 +42,9 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
   for (Operation *acquire : acquires) {
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
 
-    // The last owned use is the insertion point for a new release; searching
-    // from it also accepts later releases, subsuming the strict-range check.
+    // Tensor SSA uses can keep this acquired slot live past the next same-DFB
+    // acquire. An existing release after that final use still belongs to this
+    // acquire, so pass the final use into the release search.
     Operation *last = findLastDFBAcquireOwnedUse(interval);
     DFBReleaseSearch releaseSearch =
         findOwnedDFBReleases(interval, last, releases, &erased);
