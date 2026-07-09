@@ -4,8 +4,9 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes))' --split-input-file | FileCheck %s --check-prefix=DST
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state))' --split-input-file | FileCheck %s --check-prefix=FALLBACK
 
-// Multi-tile additive recurrence lowers to one streaming DST section. The
-// contribution DFB holds one 2x2 block, not the full three-iteration window.
+// Multi-tile additive recurrence lowers to one streaming DST section. Each
+// iteration consumes one 2x2 contribution block while the accumulator stays in
+// DST across the source loop.
 func.func @multitile_tensor_recurrence_scope() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index

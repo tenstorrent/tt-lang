@@ -34,9 +34,13 @@ The current compiler lowering recognizes these accumulation forms:
   detects the preceding non-accumulating pack.
 
 - A loop-carried additive tensor recurrence (`acc = acc + contribution`)
-  can be accumulated in DST when the loop has a single coalescible
-  contribution stream. Other loop-carried tensor state uses compiler-managed
-  DFB state.
+  can be accumulated in DST when the accumulator is initialized from a
+  DFB-backed tensor and each recurrence update has one DFB-backed
+  contribution. The contribution may be acquired once per iteration or held
+  resident across the loop. Loop-carried tensor iter_args that do not match
+  this additive recurrence remain ordinary tensor state;
+  `ttl-materialize-loop-state` stores the initial value, updates a state DFB
+  each iteration, and reloads the final value after the loop.
 
 The accumulation-scope IR declares which destination tensor views participate
 in an accumulation region, plus the initial-state policy for each output. Later
