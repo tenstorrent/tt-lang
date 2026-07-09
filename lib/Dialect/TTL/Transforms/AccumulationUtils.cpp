@@ -23,6 +23,16 @@
 
 namespace mlir::tt::ttl {
 
+FailureOr<AccumulationScopeKind> parseAccumulationScopeKind(StringRef kind) {
+  if (kind == "tensor") {
+    return AccumulationScopeKind::Tensor;
+  }
+  if (kind == "dfb") {
+    return AccumulationScopeKind::DFB;
+  }
+  return failure();
+}
+
 namespace {
 
 /// Return the wait that provides the matched contribution value, peeling the

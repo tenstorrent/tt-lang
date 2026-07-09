@@ -358,13 +358,12 @@ struct FusionTraceResult {
 /// `failedValue` are set.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
 
-/// Return true if fusing `value` into `consumer` would read from a
-/// wait-backed root value after its attached DFB is released. The check
-/// prevents fusion from extending the value past the lifetime established by
-/// the wait/pop pair.
+/// Return true if fusing `value` into `consumer` would move a wait-backed
+/// source tensor read past the pop that releases its dataflow buffer.
 ///
-/// This proves only same-block, top-level releases between the root definition
-/// and consumer. Region-aware release reasoning belongs in the DFB
+/// The query traces `value` through fusable producers, then scans the
+/// same-block operations between each source definition and `consumer` for a
+/// matching DFB release. Region-aware lifetime reasoning belongs in the DFB
 /// acquire/release analysis.
 bool fusableValueCrossesDFBRelease(mlir::Value value,
                                    mlir::Operation *consumer);

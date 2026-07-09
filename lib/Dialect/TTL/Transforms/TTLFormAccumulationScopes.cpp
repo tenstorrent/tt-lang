@@ -158,10 +158,18 @@ struct TTLFormAccumulationScopesPass
       TTLFormAccumulationScopesPass>::TTLFormAccumulationScopesBase;
 
   void runOnOperation() override {
-    if (kind != "tensor") {
+    FailureOr<AccumulationScopeKind> scopeKind =
+        parseAccumulationScopeKind(kind);
+    if (failed(scopeKind)) {
       getOperation().emitOpError()
           << "invalid accumulation scope formation kind `" << kind
-          << "`; expected `tensor`";
+          << "`; expected `tensor` or `dfb`";
+      signalPassFailure();
+      return;
+    }
+    if (*scopeKind == AccumulationScopeKind::DFB) {
+      getOperation().emitOpError()
+          << "DFB accumulation scope formation is not supported yet";
       signalPassFailure();
       return;
     }
