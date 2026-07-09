@@ -285,7 +285,8 @@ def TTLFormProducerCompute
   let dependentDialects = [
     "::mlir::affine::AffineDialect",
     "::mlir::arith::ArithDialect",
-    "::mlir::tensor::TensorDialect"
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 
@@ -303,7 +304,8 @@ def TTLConvertTTLToCompute
   let dependentDialects = [
     "::mlir::affine::AffineDialect",
     "::mlir::arith::ArithDialect",
-    "::mlir::tensor::TensorDialect"
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 
