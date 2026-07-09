@@ -613,11 +613,11 @@ def emit_runner_source(
     grid_cols: int,
     grid_rows: int,
     num_tensors: int,
-    program_hash: Optional[int] = None,
     kernel_name: str = "kernel",
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    program_hash: Optional[int] = None,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -625,6 +625,9 @@ def emit_runner_source(
     Generates a ready-to-use Python file with all the CB and kernel
     descriptor setup. Tensor-specific values (buffer addresses, accessor args)
     are marked with TODO comments for the user to fill in.
+
+    program_hash, if provided, is normalized to uint64 and embedded as the
+    emitted runner's tt-metal program-cache key.
     """
     lines = []
 
@@ -807,14 +810,17 @@ def emit_runner_file(
     grid_rows: int,
     num_tensors: int,
     output_path: str,
-    program_hash: Optional[int] = None,
     kernel_name: str = "kernel",
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    program_hash: Optional[int] = None,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
+
+    program_hash, if provided, is forwarded to the emitted runner as its
+    normalized tt-metal program-cache key.
 
     Returns the output path.
     """
