@@ -75,16 +75,36 @@ class PipeNetUse:
     pipes: Tuple[PipeUse, ...]
 
 
+@dataclass(frozen=True)
+class GraphPipeNetUse:
+    """One graph-based PipeNet consumed by one operation invocation."""
+
+    id: int
+    transfer_graph: Any
+
+
 @dataclass
 class OperationPipeNets:
     """All PipeNets used by one operation invocation."""
 
     pipe_nets: List[PipeNetUse] = field(default_factory=list)
+    graph_pipe_nets: List[GraphPipeNetUse] = field(default_factory=list)
+
+    def _next_pipe_net_id(self) -> int:
+        return len(self.pipe_nets) + len(self.graph_pipe_nets)
 
     def add_pipe_net(self, pipes: Iterable[PipeUse]) -> PipeNetUse:
         """Append a new PipeNetUse with the next operation-local id."""
-        use = PipeNetUse(id=len(self.pipe_nets), pipes=tuple(pipes))
+        use = PipeNetUse(id=self._next_pipe_net_id(), pipes=tuple(pipes))
         self.pipe_nets.append(use)
+        return use
+
+    def add_graph_pipe_net(self, transfer_graph: Any) -> GraphPipeNetUse:
+        """Append a graph-based PipeNetUse with the next operation-local id."""
+        use = GraphPipeNetUse(
+            id=self._next_pipe_net_id(), transfer_graph=transfer_graph
+        )
+        self.graph_pipe_nets.append(use)
         return use
 
     def active_node_set(self, grid: Tuple[int, ...]) -> Optional[Set[int]]:
@@ -212,5 +232,6 @@ __all__ = [
     "NodeRange",
     "PipeUse",
     "PipeNetUse",
+    "GraphPipeNetUse",
     "OperationPipeNets",
 ]

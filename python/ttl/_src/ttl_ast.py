@@ -195,6 +195,15 @@ class TTLGenericCompiler(TTCompilerBase):
             return name
         return f"net_{pipenet.pipe_net_id}"
 
+    def _reject_graph_pipenet_lowering(self, node, pipenet) -> None:
+        pipe_net_name = self._resolve_pipe_net_name(pipenet)
+        self._raise_error(
+            node,
+            f"graph-based PipeNet `{pipe_net_name}` requires device-aware "
+            "pipe lowering; local ttl.create_pipe lowering only supports "
+            "PipeNet([...])",
+        )
+
     def visit_Assign(self, node):
         """Handle tuple unpacking for TTL functions like core(dims=2)."""
         if not isinstance(node.targets[0], ast.Tuple):
@@ -427,6 +436,8 @@ class TTLGenericCompiler(TTCompilerBase):
         assert isinstance(pipenet, PipeNet)
         if node.args or node.keywords:
             self._raise_error(node, f"PipeNet.{method}() takes no arguments")
+        if pipenet.is_graph:
+            self._reject_graph_pipenet_lowering(node, pipenet)
         op = self._PIPENET_PREDICATE_OPS[method](
             pipe_net_id=IntegerAttr.get(
                 IntegerType.get_signless(64, self.ctx), pipenet.pipe_net_id
@@ -442,6 +453,8 @@ class TTLGenericCompiler(TTCompilerBase):
         var_name = node.func.value.id
         tbl = self._var_exists(var_name)
         pipenet = tbl[var_name]
+        if pipenet.is_graph:
+            self._reject_graph_pipenet_lowering(node, pipenet)
 
         # Get the callback argument
         if len(node.args) != 1:
