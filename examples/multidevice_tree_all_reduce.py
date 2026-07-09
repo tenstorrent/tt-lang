@@ -6,11 +6,11 @@
 # TTLANG_TUTORIAL_CI: requires-multi-device
 # type: ignore
 
-"""Parameterized full-grid tree all-reduce over planned multidevice PipeNet syntax.
+"""Parameterized full-grid tree all-reduce over graph-based PipeNet syntax.
 
-This example is written against the planned API from
-``/home/bnorris/tt/plans/PipesMultidevice.md``. Current ``main`` does not yet
-define ``ttl.DeviceDomain``, ``ttl.TransferGraph``, or ``ttl.PipeNet(graph=...)``.
+This example is written against the multidevice API from
+``/home/bnorris/tt/plans/PipesMultidevice.md``. It exercises the frontend graph
+model; executable device-aware PipeNet lowering is a later PR734 increment.
 
 The operation launches the full core grid on each logical device. Each core
 reduces its assigned local tensor tiles across matching cores on a power-of-two
@@ -28,7 +28,6 @@ import ttl
 import ttnn
 
 from utils.correctness import assert_allclose
-
 
 TILE_SIZE = 32
 NUM_DEVICES = 4
@@ -50,6 +49,11 @@ def _require_multidevice_pipenet_api() -> None:
             "This example requires planned multidevice PipeNet APIs: "
             f"{missing_names}, and ttl.PipeNet(graph=...)."
         )
+    try:
+        domain = ttl.DeviceDomain((1, 2), topology=ttl.Fabric1D(axis=1))
+        ttl.PipeNet(graph=ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))]))
+    except TypeError as exc:
+        raise RuntimeError("This example requires ttl.PipeNet(graph=...).") from exc
 
 
 def _validate_num_devices(num_devices: int) -> None:
