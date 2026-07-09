@@ -114,9 +114,6 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     ArrayRef<Operation *> allowedReserveUsers = {},
     ArrayRef<Operation *> allowedLoopResultUsers = {});
 
-/// Return the number of tiles represented by a statically ranked tensor.
-FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType);
-
 /// Return DST-resident accumulation properties for `match` when the source
 /// loop can be deleted without dropping side effects.
 FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
