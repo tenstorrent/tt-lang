@@ -163,3 +163,26 @@ def test_factory_kernels_with_captured_constants_get_separate_hashes(monkeypatch
     assert len(compile_calls) == 2
     assert two_result == repeated_two_result
     assert two_result != three_result
+
+
+def test_factory_level_kernel_cache_reuses_matching_decorated_kernel(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+    kernel_cache = {}
+
+    def make_cached_scaled_kernel(scale):
+        if scale not in kernel_cache:
+            kernel_cache[scale] = _make_scaled_kernel(scale)
+        return kernel_cache[scale]
+
+    scale_by_two = make_cached_scaled_kernel(2)
+    repeated_scale_by_two = make_cached_scaled_kernel(2)
+    scale_by_three = make_cached_scaled_kernel(3)
+
+    two_result = scale_by_two(_FakeTensor(), _FakeTensor())
+    repeated_two_result = repeated_scale_by_two(_FakeTensor(), _FakeTensor())
+    three_result = scale_by_three(_FakeTensor(), _FakeTensor())
+
+    assert scale_by_two is repeated_scale_by_two
+    assert len(compile_calls) == 2
+    assert two_result == repeated_two_result
+    assert two_result != three_result
