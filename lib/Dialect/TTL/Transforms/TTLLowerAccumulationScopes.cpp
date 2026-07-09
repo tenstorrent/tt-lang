@@ -247,9 +247,17 @@ struct TTLLowerAccumulationScopesPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (kind != "tensor") {
+    FailureOr<AccumulationScopeKind> scopeKind =
+        parseAccumulationScopeKind(kind);
+    if (failed(scopeKind)) {
       func.emitOpError() << "invalid accumulation scope lowering kind `" << kind
-                         << "`; expected `tensor`";
+                         << "`; expected `tensor` or `dfb`";
+      signalPassFailure();
+      return;
+    }
+    if (*scopeKind == AccumulationScopeKind::DFB) {
+      func.emitOpError()
+          << "DFB accumulation scope lowering is not supported yet";
       signalPassFailure();
       return;
     }

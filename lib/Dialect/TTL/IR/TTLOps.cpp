@@ -1018,8 +1018,9 @@ mlir::LogicalResult mlir::tt::ttl::YieldOp::verify() {
 // TileAccumulateOp
 //===----------------------------------------------------------------------===//
 
-// ODS enum attributes parse as generic attributes in this position, but the op
-// syntax uses a bare combiner keyword.
+// Parse the compact form `%acc, %contribution add into dst[%idx]`. The
+// combiner remains an enum attribute, but the assembly syntax spells it as the
+// arithmetic operation instead of as an attribute dictionary entry.
 mlir::ParseResult
 mlir::tt::ttl::TileAccumulateOp::parse(mlir::OpAsmParser &parser,
                                        mlir::OperationState &result) {

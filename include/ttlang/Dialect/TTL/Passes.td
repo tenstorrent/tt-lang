@@ -163,7 +163,7 @@ def TTLFormAccumulationScopes
 
   let options = [
     Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Accumulation scope form to create. Only `tensor` is supported.">
+           "Accumulation scope form to create. `dfb` is reserved and unsupported.">
   ];
 
   let dependentDialects = [
@@ -185,7 +185,7 @@ def TTLLowerAccumulationScopes
 
   let options = [
     Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Accumulation scope form to lower. Only `tensor` is supported.">
+           "Accumulation scope form to lower. `dfb` is reserved and unsupported.">
   ];
 
   let dependentDialects = [
