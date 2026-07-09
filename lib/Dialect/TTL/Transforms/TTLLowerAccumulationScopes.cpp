@@ -20,7 +20,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
-#include "llvm/ADT/STLExtras.h"
 
 #define DEBUG_TYPE "ttl-lower-accumulation-scopes"
 
@@ -152,34 +151,15 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
   return TensorAccumulationScopeMatch{*loop, *match, scope.getInits().front()};
 }
 
-/// Compute replacements for inlining the scope body after the contained loop
-/// has been rewritten. Init-mode outputs use the explicit init operand; other
-/// modes keep the output value itself.
-static SmallVector<Value>
-getScopeBlockArgumentReplacements(AccumulationScopeOp scope) {
-  SmallVector<Value> replacements;
-  SmallVector<AccumulationInitialMode> initialModes =
-      scope.getAccumulationInitialModes();
-  unsigned initIndex = 0;
-  for (auto [outputIndex, output] : llvm::enumerate(scope.getOutputs())) {
-    if (initialModes[outputIndex] == AccumulationInitialMode::Init) {
-      replacements.push_back(scope.getInits()[initIndex++]);
-      continue;
-    }
-    replacements.push_back(output);
-  }
-  return replacements;
-}
-
 /// Remove the region wrapper after its contents no longer depend on region
-/// isolation. The caller provides block argument replacements because MLIR
-/// region inlining must preserve SSA dominance for remaining users.
+/// isolation. The single block argument is replaced with the verified init
+/// operand.
 static void
 eraseAccumulationScopeWrapper(AccumulationScopeOp scope, RewriterBase &rewriter,
-                              ValueRange blockArgReplacements = ValueRange()) {
+                              Value initialValue) {
   Block &body = scope.getBody().front();
   rewriter.eraseOp(body.getTerminator());
-  rewriter.inlineBlockBefore(&body, scope, blockArgReplacements);
+  rewriter.inlineBlockBefore(&body, scope, ValueRange{initialValue});
   rewriter.eraseOp(scope);
 }
 
@@ -188,9 +168,7 @@ eraseAccumulationScopeWrapper(AccumulationScopeOp scope, RewriterBase &rewriter,
 static void replaceYieldOperandsWithStateArguments(AccumulationScopeOp scope) {
   Block &body = scope.getBody().front();
   auto yield = cast<YieldOp>(body.getTerminator());
-  for (auto [index, stateArgument] : llvm::enumerate(body.getArguments())) {
-    yield->setOperand(index, stateArgument);
-  }
+  yield->setOperand(0, body.getArgument(0));
 }
 
 /// Verify every condition that the mutating rewrite depends on. Diagnostics
@@ -226,14 +204,14 @@ static void
 lowerTensorAccumulationScope(const TensorAccumulationScopeLoweringPlan &plan,
                              RewriterBase &rewriter) {
   AccumulationScopeOp scope = plan.scope;
+  Value initialValue = scope.getInits().front();
   replaceYieldOperandsWithStateArguments(scope);
   LogicalResult lowered = lowerTensorAccumulationToDst(
       plan.match.recurrence, plan.dstInfo, plan.match.loop, rewriter);
   assert(succeeded(lowered) && "precondition scan must prove DST lowering");
   (void)lowered;
 
-  eraseAccumulationScopeWrapper(scope, rewriter,
-                                getScopeBlockArgumentReplacements(scope));
+  eraseAccumulationScopeWrapper(scope, rewriter, initialValue);
 }
 
 /// Lowers only verified tensor accumulation scopes. The pass scans first and

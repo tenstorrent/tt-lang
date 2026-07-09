@@ -35,9 +35,9 @@ FailureOr<AccumulationScopeKind> parseAccumulationScopeKind(StringRef kind) {
 
 namespace {
 
-/// Return the wait that provides the matched contribution value, peeling the
-/// optional attach operation that preserves dataflow buffer identity for tile
-/// extraction.
+/// Return the wait that produces the matched contribution tensor. When the
+/// recurrence uses an attached tensor view, report the attach separately so DST
+/// lowering can recreate the same view after moving the wait into the new loop.
 static CBWaitOp getContributionWait(const TensorAccumulationMatch &match,
                                     AttachCBOp &attachedContribution) {
   Value contribution = match.contribution;
@@ -155,6 +155,22 @@ getDefaultDstCapacityForTensor(RankedTensorType tensorType) {
   return getDstCapacity(elementType->isF32(), /*fullSyncEn=*/false);
 }
 
+static FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType) {
+  if (!tensorType.hasStaticShape()) {
+    return failure();
+  }
+
+  int64_t tileCount = 1;
+  for (int64_t dim : tensorType.getShape()) {
+    if (dim < 0 ||
+        (dim != 0 && tileCount > std::numeric_limits<int64_t>::max() / dim)) {
+      return failure();
+    }
+    tileCount *= dim;
+  }
+  return tileCount;
+}
+
 static SmallVector<SmallVector<int64_t>>
 enumerateTileCoordinates(RankedTensorType tensorType) {
   FailureOr<int64_t> tileCount = getStaticTensorTileCount(tensorType);
@@ -189,22 +205,6 @@ static Value createTilePlaceholder(RewriterBase &rewriter, Location loc,
 }
 
 } // namespace
-
-FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType) {
-  if (!tensorType.hasStaticShape()) {
-    return failure();
-  }
-
-  int64_t tileCount = 1;
-  for (int64_t dim : tensorType.getShape()) {
-    if (dim < 0 ||
-        (dim != 0 && tileCount > std::numeric_limits<int64_t>::max() / dim)) {
-      return failure();
-    }
-    tileCount *= dim;
-  }
-  return tileCount;
-}
 
 FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     scf::ForOp loop, unsigned resultIndex,
