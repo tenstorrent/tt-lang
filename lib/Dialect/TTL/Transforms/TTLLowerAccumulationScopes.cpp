@@ -6,8 +6,8 @@
 // TTL Lower Accumulation Scopes
 //===----------------------------------------------------------------------===//
 //
-// Lowers semantic tensor accumulation scopes to streaming DST-resident
-// recurrence sections.
+// Lowers semantic tensor accumulation scopes to recurrence sections whose
+// accumulator stays resident in DST across the source loop.
 //
 //===----------------------------------------------------------------------===//
 
@@ -154,9 +154,9 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
 /// Remove the region wrapper after its contents no longer depend on region
 /// isolation. The single block argument is replaced with the verified init
 /// operand.
-static void
-eraseAccumulationScopeWrapper(AccumulationScopeOp scope, RewriterBase &rewriter,
-                              Value initialValue) {
+static void eraseAccumulationScopeWrapper(AccumulationScopeOp scope,
+                                          RewriterBase &rewriter,
+                                          Value initialValue) {
   Block &body = scope.getBody().front();
   rewriter.eraseOp(body.getTerminator());
   rewriter.inlineBlockBefore(&body, scope, ValueRange{initialValue});
@@ -198,8 +198,8 @@ getTensorScopeLoweringPlan(AccumulationScopeOp scope,
   return TensorAccumulationScopeLoweringPlan{scope, *match, *dstInfo};
 }
 
-/// Rewrite one verified tensor accumulation scope to a streaming DST section
-/// and remove the now-empty scope wrapper.
+/// Rewrite one verified tensor accumulation scope to a DST-resident accumulator
+/// section and remove the now-empty scope wrapper.
 static void
 lowerTensorAccumulationScope(const TensorAccumulationScopeLoweringPlan &plan,
                              RewriterBase &rewriter) {

@@ -67,7 +67,7 @@ struct TensorAccumulationMatch {
 };
 
 /// Properties that must remain stable between the precondition scan and the
-/// rewrite to a streaming DST-resident recurrence.
+/// rewrite to a recurrence whose accumulator stays resident in DST.
 struct TensorDstAccumulationInfo {
   /// Number of accumulator tiles resident for the whole DST section.
   int64_t unitTileCount;
@@ -126,8 +126,9 @@ FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
     const TensorAccumulationMatch &match, scf::ForOp loop, Value initialValue,
     const DFBAcquireReleaseIndex *dfbIndex = nullptr);
 
-/// Lower a matched additive tensor recurrence to a streaming DST section whose
-/// DST acquisition spans the original source loop.
+/// Lower a matched additive tensor recurrence to a DST section whose
+/// accumulator stays resident across the original source loop. Contribution
+/// acquisition follows `info.contributionResidency`.
 LogicalResult
 lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
                              const TensorDstAccumulationInfo &info,

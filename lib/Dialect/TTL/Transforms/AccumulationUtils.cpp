@@ -155,7 +155,8 @@ getDefaultDstCapacityForTensor(RankedTensorType tensorType) {
   return getDstCapacity(elementType->isF32(), /*fullSyncEn=*/false);
 }
 
-static FailureOr<int64_t> getStaticTensorTileCount(RankedTensorType tensorType) {
+static FailureOr<int64_t>
+getStaticTensorTileCount(RankedTensorType tensorType) {
   if (!tensorType.hasStaticShape()) {
     return failure();
   }
