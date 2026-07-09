@@ -384,6 +384,46 @@ def _default_mesh_program_placements(args: tuple):
     return None
 
 
+def _mesh_program_placements_from_device_domain(device_domain):
+    """Return a full-domain placement for a flat logical device domain."""
+    if device_domain is None:
+        return None
+
+    from math import prod
+    from .topology import DeviceDomain
+
+    if not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got {type(device_domain).__name__}"
+        )
+
+    if device_domain.level_count != 1:
+        raise ValueError(
+            "device_domain mesh placement currently requires a flat DeviceDomain"
+        )
+    extent = tuple(int(dim) for dim in device_domain.levels[0].extent)
+    if prod(extent) <= 1:
+        return None
+    start = tuple(0 for _ in extent)
+    end = tuple(dim - 1 for dim in extent)
+    return [MeshProgramPlacement(start, end)]
+
+
+def _default_mesh_program_placements_with_domain(args: tuple, device_domain):
+    """Return mesh placements from tensors, or from device_domain metadata."""
+    tensor_placements = _default_mesh_program_placements(args)
+    domain_placements = _mesh_program_placements_from_device_domain(device_domain)
+    if tensor_placements is None:
+        return domain_placements
+    if domain_placements is None:
+        return tensor_placements
+    if tensor_placements != domain_placements:
+        raise ValueError(
+            "mesh tensor shape does not match operation device_domain extent"
+        )
+    return tensor_placements
+
+
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
@@ -1199,6 +1239,10 @@ def _build_pipenet_graph(nets):
 
     graph = OperationPipeNets()
     for net in nets:
+        if net.is_graph:
+            net_use = graph.add_graph_pipe_net(net.graph)
+            net.pipe_net_id = net_use.id
+            continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id
         # Assign every Pipe in this net the operation-local id so the AST
@@ -1595,6 +1639,7 @@ def _compile_kernel(
     dst_full_sync_en: Optional[bool] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
+    device_domain=None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -1630,12 +1675,9 @@ def _compile_kernel(
 
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
-    # For mesh tensors, tensor.shape already returns the per-device shard
-    # dimensions, so no wrapping is needed.
-    is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
     compile_args = args
-    mesh_program_placements = (
-        _default_mesh_program_placements(args) if is_mesh else None
+    mesh_program_placements = _default_mesh_program_placements_with_domain(
+        args, device_domain
     )
 
     # For TTNN tensors, detect memory space from tensor's buffer type.
@@ -2215,6 +2257,7 @@ def pykernel_gen(
     dst_full_sync_en: Optional[bool] = None,
     options: Optional[str] = None,
     _prepare_call: Optional[Callable] = None,
+    device_domain=None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -2233,6 +2276,7 @@ def pykernel_gen(
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
+        device_domain: Optional logical device domain for mesh execution.
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -2288,6 +2332,7 @@ def pykernel_gen(
                 dst_full_sync_en=dst_full_sync_en,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
+                device_domain=device_domain,
             )
 
         return _make_operation_wrapper(
