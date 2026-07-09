@@ -220,11 +220,12 @@ users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
 ## Intermediate DFB Insertion
 
 `TTLInsertIntermediateDFBs` walks all operations implementing
-`DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that
-the interface marks as requiring a CB-attached value, the pass checks whether
-the operand traces to an existing DFB via `getAttachedCB`. If not, the pass
-materializes the value through a fresh compiler-allocated DFB marked with
-`ttl.compiler_allocated`.
+`DFBInputOpInterface`, including reduce, block broadcast, matmul, transpose,
+and selected elementwise forms that require DFB-attached operands. For each
+operand that the interface marks as requiring a DFB-attached value, the pass
+checks whether the operand traces to an existing DFB via `getAttachedCB`. If
+not, the pass materializes the value through a fresh compiler-allocated DFB
+marked with `ttl.compiler_allocated`.
 
 The standard pipeline runs this pass after `ttl-form-producer-compute`.
 Values produced by `ttl.compute` are materialized by the compiler-created
@@ -278,12 +279,15 @@ result of the same producer.
 (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove
 ranked-tensor `scf.for` iter_args before compute lowering.
 
-Non-compute producers use the tensor-level fallback:
+Non-compute producers use the tensor-level fallback. The helper emits the
+reserve/store and wait/attach at the tensor definition site, while
+`ttl-auto-sync` inserts the missing releases:
 
 ```
 bind_cb {ttl.compiler_allocated}
 cb_reserve
 store
+cb_push
 cb_wait
 attach_cb
 ... consumer ...
@@ -403,10 +407,10 @@ For each acquire `A`, the inserted release `R_A` must satisfy:
    advance it past slots whose data is still needed.
 
 (1) is enforced explicitly by the pass. (2) is enforced *implicitly* when
-consumers under criterion (a) appear in declaration order
-(`use(t1); use(t2); use(t3)`). Reordered consumes (`use(t2); use(t1)`) would
-violate FIFO monotonicity on their own, but in the current pipeline `TTLCoalesceDFBAcquires`
-runs immediately after `TTLInsertCBSync` and rewrites N consecutive same-DFB
+tile-SSA consumers appear in declaration order (`use(t1); use(t2); use(t3)`).
+Reordered consumes (`use(t2); use(t1)`) would violate FIFO monotonicity on
+their own, but in the current pipeline `TTLCoalesceDFBAcquires` runs
+immediately after `TTLInsertCBSync` and rewrites N consecutive same-DFB
 acquires into one multi-tile acquire plus per-block `tensor.extract_slice`
 views and a single coalesced release with `num_tiles = N*k`. Per-tile
 `src_idx` values fall out of `extract_slice` offsets, so consume order is
@@ -462,8 +466,9 @@ Consumer side:
 ```
 
 Each acquire owns exactly one interval. The release inserted for that interval
-must follow the last owned use and precede the next acquire in the same DFB sync
-class:
+must follow the last owned use. For direct-DFB ownership, the release must also
+precede the next acquire in the same DFB sync class because direct DFB uses are
+position-based:
 
 ```
 cb_wait A  ->  owned reads  ->  cb_pop A  ->  cb_wait B
@@ -494,20 +499,24 @@ insertReleases(acquires, releases, releaseOp):
     dfb = acquire.cb
     boundary = next acquire in the same DFB sync class, projected to acquire.block
 
-    matching = same-block release on dfb after acquire and before boundary
+    liveEnd = latest owned use:
+      direct-DFB uses are bounded by boundary
+      tensor-SSA uses ignore boundary
+
+    matching = same-block owned release on dfb
     nested = nested releases on dfb after acquire and before boundary
     if matching:
       continue
 
     erase nested releases
-    liveEnd = last transitive tensor or direction-matched direct DFB use
-              before boundary
     insert releaseOp(dfb) after liveEnd
 ```
 
-The same-block release check makes the pass idempotent. A release after the
-next acquire in the same DFB sync class belongs to that later interval and does
-not satisfy the earlier acquire.
+The same-block release check makes the pass idempotent. For direct-DFB
+ownership, a release after the next acquire in the same DFB sync class belongs
+to that later interval and does not satisfy the earlier acquire. For tile-SSA
+ownership, an existing release past the boundary still satisfies the earlier
+acquire when it follows that acquire's last owned tensor use.
 
 ## DFB Acquire Coalescing
 
@@ -545,16 +554,17 @@ same way.
 For a candidate group of acquires `G = {a_1, ..., a_N}` on DFB `c`, the
 rewrite is correct iff every op `O` between consecutive group members
 preserves the synchronization invariant of `c` under the coalesced
-schedule. The coalesced acquire blocks until `N*k` tiles are present
-*before* anything between original `a_i` and `a_{i+1}` runs; the
-coalesced release runs only after the last group member's last use.
+schedule. The coalesced acquire performs one `N*k`-slot acquire before
+anything between original `a_i` and `a_{i+1}` runs: `cb_wait` requires
+`N*k` tiles to be present, while `cb_reserve` requires `N*k` free slots.
+The coalesced release runs only after the last group member's last use.
 
 This holds iff no op between members causes a release on `c` (directly or
-transitively): the original IR may have allowed the producer to recycle
-slots between `a_i` and `a_{i+1}`, and the coalesced version forbids that
-until the very end. Forbidding inter-member releases is therefore
-necessary for correctness at low `block_count`, and sufficient when paired
-with the coalesced release placement.
+transitively): the original IR may have advanced the matching DFB pointer
+between `a_i` and `a_{i+1}`, and the coalesced version delays all releases
+until the end. Forbidding inter-member releases is therefore necessary for
+correctness at low `block_count`, and sufficient when paired with the
+coalesced release placement.
 
 A locally-checkable (sound, conservative) version of that criterion: an
 op `O` between members is safe to skip past iff none of:
@@ -594,12 +604,12 @@ the same op-order position, so the coalesced version is no worse.
 
 #### Why this is necessary
 
-If `O` is itself a release on `c` (e.g., a user-written `cb_pop`), the
-original IR lets the producer recycle one slot at `O`, but the coalesced
-acquire holds all `N*k` slots from the start. With `block_count` only
-slightly larger than the working set, the producer cannot push the next
-batch and the consumer cannot release until all members are consumed —
-deadlock. Same argument for transitive releases via group results.
+If `O` is itself a release on `c` (e.g., a user-written `cb_pop` for consumer
+acquires or `cb_push` for producer acquires), the original IR advances one
+slot at `O`, but the coalesced acquire holds all `N*k` slots from the start.
+With `block_count` only slightly larger than the working set, the matching
+thread cannot make progress until all members are released. Same argument for
+transitive releases via group results.
 
 ### Detection algorithm
 
@@ -654,9 +664,15 @@ ttl-coalesce-dfb-acquires))'`) verifies this.
 
 ## Index Reuse
 
-`TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same index to compiler-allocated DFBs whose lifetimes do not overlap. The algorithm runs per function. Compiler-allocated DFBs are intra-thread (both producer and consumer are in the same compute function), so their lifetimes are independent across functions.
+`TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same
+index to compiler-allocated DFBs whose lifetimes do not overlap. The algorithm
+runs per function. Compiler-allocated DFBs are intra-thread, so their lifetimes
+are independent across functions.
 
-Two DFBs may share an index only if they have identical `CircularBufferType` (shape, element type, block count). Since `CircularBufferType` is an MLIR uniqued type, this is a pointer comparison. The algorithm partitions DFBs by type and runs a linear scan within each partition.
+Two DFBs may share an index only if they have identical `CircularBufferType`
+(shape, element type, block count). Since `CircularBufferType` is an MLIR
+uniqued type, this is a pointer comparison. The algorithm partitions DFBs by
+type and runs a linear scan within each partition.
 
 ### Algorithm
 
@@ -666,14 +682,16 @@ reuseDFBIndices(funcOp, compilerAllocatedBindCBOps):
   for op in funcOp.entryBlock:
     opIndex[op] = nextIdx++
 
-  // Build intervals: [bind_cb position, last cb_pop position].
-  // CBPopOps inside nested regions (loops, compute) are projected
-  // to their function-level ancestor.
+  // Build intervals: [first acquire position, last cb_pop position].
+  // Nested acquires and pops are projected to their function-level ancestor.
+  // If no acquire exists, start = bind_cb position (synthetic IR fallback).
   // If no cb_pop exists, end = last operation (conservative).
   for bindOp in compilerAllocatedBindCBOps:
-    start = opIndex[bindOp]
+    start = min(getBodyIndex(acq) for acq in reserveOrWaitUsers(bindOp))
     end = max(getBodyIndex(pop) for pop in cbPopUsers(bindOp))
-    if end == start:
+    if no acquire:
+      start = opIndex[bindOp]
+    if end <= start:
       end = lastOpIdx
     intervals[bindOp.type].append({start, end, bindOp.result})
 
@@ -697,33 +715,69 @@ reuseDFBIndices(funcOp, compilerAllocatedBindCBOps):
     offset += maxSlot + 1
 ```
 
-The expiration condition `active.end <= interval.start` matches the DST register allocator's convention. Because operation indices are integers assigned to distinct operations, strict inequality and non-strict inequality produce the same result.
+The expiration condition `active.end <= interval.start` matches the DST
+register allocator's convention. Because operation indices are integers
+assigned to distinct operations, strict inequality and non-strict inequality
+produce the same result.
 
 ### Correctness with control flow
 
-The algorithm assigns sequential indices to function-level operations only. Structured operations (`scf.for`, `ttl.compute`) occupy a single index in this sequence; their contents are not individually numbered. This is sufficient because `InsertIntermediateDFBs` and `InsertCBSync` both run before `LowerToLoops`, placing `bind_cb` and `cb_pop` at function-level while the IR is flat. These operations remain at function-level after loop creation because they bracket compute regions.
+The algorithm assigns sequential indices to function-level operations only.
+Structured operations (`scf.for`, `scf.if`, `ttl.compute`) occupy a single
+index in this sequence; their contents are not individually numbered. Any
+nested acquire or `cb_pop` is projected to its enclosing function-level
+operation with `Block::findAncestorOpInBlock`.
 
-If a later pass restructures a `CBPopOp` into a nested region, it is projected to its enclosing operation at function-level via `Block::findAncestorOpInBlock`. This overestimates liveness -- the interval extends to the structured op rather than to the specific point where the pop occurs -- but never produces incorrect reuse.
+Projection overestimates liveness because an interval covers the enclosing
+structured operation rather than the exact nested operation. This can miss
+reuse opportunities across loop bodies or mutually exclusive branches, but it
+cannot assign one physical DFB index to lifetimes that may overlap at runtime.
 
-Two DFBs consumed simultaneously by the same operation (e.g., both operands of a matmul) necessarily have overlapping intervals because both `bind_cb` must precede the consumer and both `cb_pop` must follow it. The linear scan assigns them different slots.
+Two DFBs consumed simultaneously by the same operation (e.g., both operands of
+a matmul) necessarily have overlapping intervals because their acquires
+precede the consumer and their pops follow it. The linear scan assigns them
+different slots.
 
 ### Module attribute and runtime integration
 
-After rewriting indices, the pass calls `getNextAvailableDFBIndex`, which returns `max(cb_index) + 1` across all `BindCBOp`s in the module. This is the index space usage, not a count of distinct DFBs (sparse indices inflate it). The pass verifies this does not exceed `kMaxCircularBuffers` (32).
+After rewriting indices, the pass calls `getNextAvailableDFBIndex`, which
+returns `max(cb_index) + 1` across all `BindCBOp`s in the module. This is the
+index space usage, not a count of distinct DFBs (sparse indices inflate it).
+The pass verifies this does not exceed `kMaxCircularBuffers` (32).
 
-The pass then sets `ttl.base_cta_index` on every function. Compile-time arguments (CTAs) to each kernel are laid out as `[CB indices..., other args...]`. `base_cta_index` is the starting index of the non-CB arguments -- equivalently, one past the last CB index. CB indices occupy `[0, base_cta_index)`.
+The pass then sets `ttl.base_cta_index` on every function. Compile-time
+arguments (CTAs) to each kernel are laid out as `[CB indices..., other args...]`.
+`base_cta_index` is the starting index of the non-CB arguments -- equivalently,
+one past the last CB index. CB indices occupy `[0, base_cta_index)`.
 
-Finally, the pass builds the `ttl.compiler_allocated_dfbs` module attribute with one entry per unique physical index, deduplicated from the potentially many `BindCBOp`s that now share an index. The Python runtime reads this attribute to allocate L1 buffers at dispatch time.
+Finally, the pass builds the `ttl.compiler_allocated_dfbs` module attribute
+with one entry per unique physical index, deduplicated from the potentially
+many `BindCBOp`s that now share an index. The Python runtime reads this
+attribute to allocate L1 buffers at dispatch time.
 
 ## Limitations and Future Work
 
-The linear scan operates on a flat sequence of function-level operations. It cannot distinguish between branches of an `scf.if`, so DFBs used in mutually exclusive branches are treated as overlapping. The current pipeline does not produce conditional control flow around DFB lifecycle operations. The DSL evaluates Python `if` during tracing, so only the taken branch appears in the generated IR; runtime-conditional control flow (`scf.if` with conditions dependent on tensor values) is not supported by the frontend at this time.
+The linear scan operates on a flat sequence of function-level operations. It
+cannot distinguish between branches of an `scf.if`, so DFBs used in mutually
+exclusive branches are treated as overlapping. This is conservative for
+physical index reuse. More precise reuse across mutually exclusive regions
+would need branch-sensitive liveness.
 
-Index reuse is restricted to compiler-allocated DFBs. User-declared DFBs retain their original indices because the same CB index is referenced by multiple threads (reader, compute, writer) to implement cross-thread data flow. Reusing a user index in one function would invalidate references in the others.
+Index reuse is restricted to compiler-allocated DFBs. User-declared DFBs retain
+their original indices because the same CB index is referenced by multiple
+threads (reader, compute, writer) to implement cross-thread data flow. Reusing
+a user index in one function would invalidate references in the others.
 
-Liveness is computed at function-level granularity. If a `CBPopOp` is inside a structured op (loop, compute region), it is projected to its enclosing operation at function-level. The infrastructure for this exists (`Block::findAncestorOpInBlock`) but is not currently exercised: all compiler-allocated DFB lifecycle ops remain at function-level because `InsertIntermediateDFBs` and `InsertCBSync` run before loop creation, and Python control flow unrolls at trace time.
+Liveness is computed at function-level granularity. If an acquire or `CBPopOp`
+is inside a structured op, it is projected to its enclosing function-level
+operation. This is used by loop-state materialization and by later lowering
+passes that can place lifecycle ops in nested regions. The projection is safe
+but may keep a physical DFB index live longer than necessary.
 
-The type compatibility constraint prevents reuse across DFBs with different shapes or element types, even when L1 footprints happen to match. A size-based rather than type-based compatibility check could recover some reuse opportunities.
+The type compatibility constraint prevents reuse across DFBs with different
+shapes or element types, even when L1 footprints happen to match. A size-based
+rather than type-based compatibility check could recover some reuse
+opportunities.
 
 ## Scalar Element Access to DFBs
 

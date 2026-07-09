@@ -234,25 +234,18 @@ def TTLInsertIntermediateDFBs
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
     When an operand comes from `ttl.compute`, the pass materializes it as an
-    extra compute output backed by a compiler-allocated DFB:
+    extra compute output backed by a compiler-allocated DFB. The pass creates
+    the DFB, reserves the output slot, clones the compute with an extra
+    `ttl.tile_store`, emits the producer-side `cb_push`, and rewrites the
+    consumer operand to the attached waited value:
 
       bind_cb -> cb_reserve -> ttl.compute tile_store -> cb_push -> cb_wait -> attach_cb
-
-    The pass emits the producer-side `cb_push` immediately after the producing
-    compute because it constructs the producer interval directly. A later sync
-    pass inserts the consumer-side `cb_pop`.
 
     Non-compute producers use the tensor-level helper:
 
       bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
 
-    In the standard pipeline this pass runs after
-    `ttl-form-producer-compute`, so tensor-level materialization is limited
-    to IR forms that have not yet been converted to `ttl.compute`.
-
-    Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
-    that `ttl-finalize-dfb-indices` can register them for the Python
-    runtime.
+    All DFBs created by this pass are marked with `ttl.compiler_allocated`.
 
     When `enable` is false, the pass verifies that no operations require
     compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
@@ -267,7 +260,7 @@ def TTLInsertIntermediateDFBs
   ];
 
   let dependentDialects = [
-    "::mlir::tt::ttl::TTLDialect"
+    "::mlir::tensor::TensorDialect"
   ];
 }
 
@@ -290,9 +283,9 @@ def TTLFormProducerCompute
   }];
 
   let dependentDialects = [
-    "::mlir::func::FuncDialect",
-    "::mlir::tensor::TensorDialect",
-    "::mlir::tt::ttkernel::TTKernelDialect"
+    "::mlir::affine::AffineDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::tensor::TensorDialect"
   ];
 }
 
@@ -308,9 +301,9 @@ def TTLConvertTTLToCompute
   }];
 
   let dependentDialects = [
-    "::mlir::func::FuncDialect",
-    "::mlir::tensor::TensorDialect",
-    "::mlir::tt::ttkernel::TTKernelDialect"
+    "::mlir::affine::AffineDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::tensor::TensorDialect"
   ];
 }
 
