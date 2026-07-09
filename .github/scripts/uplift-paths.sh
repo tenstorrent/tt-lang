@@ -12,8 +12,8 @@
 #   - Pre-built LLVM artifacts        (driven by third-party/llvm-project)
 #   - Pre-built tt-metal artifacts    (driven by third-party/tt-metal)
 #   - Python runtime deps             (requirements-runtime.txt)
-# tt-mlir and tt-lang are built fresh by call-build.yml against the
-# pre-built LLVM inside the container, so they are NOT in this list.
+# tt-lang is built fresh by call-build.yml against the pre-built LLVM inside
+# the container, so ordinary source changes are NOT in this list.
 
 UPLIFT_PATHS=(
     third-party/tt-metal-version

@@ -145,7 +145,7 @@ if [ "$SHELL_MODE" = true ]; then
     echo "  cd /workspace"
     echo "  git clone --depth 1 --filter=blob:none --branch $BRANCH https://github.com/tenstorrent/tt-lang.git"
     echo "  cd tt-lang"
-    echo "  git submodule update --init --depth 1 third-party/tt-mlir third-party/tt-metal"
+    echo "  git submodule update --init --depth 1 third-party/tt-metal"
     echo "  cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DTTLANG_USE_TOOLCHAIN=ON"
     echo "  source build/env/activate"
     echo "  cmake --build build"

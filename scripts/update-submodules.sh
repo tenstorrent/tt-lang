@@ -6,7 +6,7 @@ set -euo pipefail
 
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
-# Update top-level submodules (llvm-project, tt-mlir, tt-metal).
+# Update top-level submodules (llvm-project, tt-metal).
 # Do NOT use --recursive here: llvm-project's submodules are huge and unneeded.
 git submodule update --init --force --depth 1
 

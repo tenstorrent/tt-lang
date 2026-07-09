@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Build a tt-lang-light wheel for a forced or tt-mlir-pinned tt-metal SHA.
+# Build a tt-lang-light wheel for a forced or version-file-pinned tt-metal SHA.
 # Scheduled publishes use publish-s3-pypi.yml; this manual workflow resolves
 # the builder image tag itself.
 
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tt_metal_sha:
-        description: "Force a tt-metal SHA (skips detection). Leave empty to detect from tt-mlir."
+        description: "Force a tt-metal SHA (skips detection). Leave empty to detect from third-party/tt-metal-version."
         required: false
         type: string
         default: ""
@@ -85,11 +85,6 @@ jobs:
           echo "S3 publishing is restricted to refs/heads/main (got ${GITHUB_REF}). Set dry_run=true for non-main validation." >&2
           exit 1
 
-      # Detection needs only tt-mlir's TT_METAL_VERSION pin.
-      - name: Fetch tt-mlir for uplift detection
-        if: ${{ inputs.tt_metal_sha == '' }}
-        run: git submodule update --init --depth 1 third-party/tt-mlir
-
       # Manylinux builder images have content tags, not :latest.
       - name: Resolve builder image tag
         id: docker_tag
@@ -111,7 +106,7 @@ jobs:
           forced_sha="$(printf '%s' "$FORCED_SHA" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           if [ -n "$TTLANG_REF" ] && [ -z "$forced_sha" ]; then
             echo "error: set tt_metal_sha when ttlang_ref is provided. Auto-detection reads" >&2
-            echo "the dispatch ref's third-party/tt-mlir pin, not the pinned ref's, so it" >&2
+            echo "the dispatch ref's third-party/tt-metal-version, not the pinned ref's, so it" >&2
             echo "would build the pinned tt-lang ref against the wrong tt-metal." >&2
             exit 1
           fi
@@ -120,9 +115,9 @@ jobs:
             echo "uplift=true" >> "$GITHUB_OUTPUT"
             echo "tt_metal_sha=$forced_sha" >> "$GITHUB_OUTPUT"
           elif [ "$DRY_RUN" = "true" ]; then
-            .github/scripts/detect-ttmlir-ttmetal-uplift.sh --assume-new
+            .github/scripts/detect-ttmetal-uplift.sh --assume-new
           else
-            .github/scripts/detect-ttmlir-ttmetal-uplift.sh
+            .github/scripts/detect-ttmetal-uplift.sh
           fi
 
   build:

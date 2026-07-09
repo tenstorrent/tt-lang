@@ -2,9 +2,8 @@
 
 ## Overview
 
-TT-Lang uses a CMake-based build system that compiles LLVM/MLIR, a minimal
-tt-mlir subset, tt-metal, and TT-Lang's own dialects and tools from git
-submodules at recorded commits. A single
+TT-Lang uses a CMake-based build system that compiles LLVM/MLIR, tt-metal, and
+TT-Lang's own dialects and tools from git submodules at recorded commits. A single
 `cmake -G Ninja -B build && cmake --build build` invocation produces a
 fully working environment.
 
@@ -28,7 +27,7 @@ cmake --build build
 ```
 
 Builds LLVM/MLIR from `third-party/llvm-project` and installs to
-`build/llvm-install/`. tt-metal builds to `third-party/tt-metal/build/`. tt-mlir
+`build/llvm-install/`. tt-metal builds to `third-party/tt-metal/build/`. TT-Lang's
 dialects compile inline. The result is cached — subsequent configures skip the
 LLVM build if `build/llvm-install/lib/cmake/mlir/MLIRConfig.cmake` already
 exists.
@@ -129,7 +128,7 @@ cmake --build build
 
 Point directly at an LLVM/MLIR install prefix. tt-metal still builds from
 submodule. TT-Lang may not build successfully if the pre-built LLVM is a
-significantly different version than what tt-mlir expects.
+significantly different version than what tt-lang expects.
 
 ## Installing
 
@@ -158,13 +157,12 @@ Open `http://localhost:8000` to browse the docs locally.
 
 ## Submodules
 
-`.gitmodules` declares three submodules:
+`.gitmodules` declares two submodules:
 
-| Submodule                    | Purpose                                                                      |
-| ---------------------------- | ---------------------------------------------------------------------------- |
-| `third-party/llvm-project` | LLVM/MLIR source (built at configure time)                                   |
-| `third-party/tt-mlir`      | tt-mlir source (only select directories compiled)                            |
-| `third-party/tt-metal`     | Runtime (built at configure time). Canonical version file: `third-party/tt-metal-version` |
+| Submodule                  | Purpose                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| `third-party/llvm-project` | LLVM/MLIR source (built at configure time)                                                 |
+| `third-party/tt-metal`     | Runtime (built at configure time). Canonical version file: `third-party/tt-metal-version`  |
 
 To update any of these, see [Uplifting Submodules](#uplifting-submodules).
 
@@ -209,29 +207,24 @@ cmake --build build
 
 When using a pre-built LLVM (via `MLIR_PREFIX` or `TTLANG_USE_TOOLCHAIN`), the
 build verifies the installed LLVM was built from the expected commit. The
-expected SHA is read from `third-party/tt-mlir/env/CMakeLists.txt`
-(`LLVM_PROJECT_VERSION`), and the actual SHA is read from
+expected SHA is the commit recorded by the `third-party/llvm-project` submodule
+gitlink, and the actual SHA is read from
 `<prefix>/include/llvm/Support/VCSRevision.h`. On mismatch, cmake emits a
 `FATAL_ERROR`. Pass `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` to proceed despite the
-mismatch.
+mismatch. When the submodule is not populated (the usual case with a pre-built
+toolchain), the check is skipped.
 
 ## Uplifting Submodules
 
-Each submodule in `third-party` records its commit independently; the three
+Each submodule in `third-party` records its commit independently; the two
 recorded commits are not derived from one another.
 
-- The LLVM commit in `third-party/llvm-project` is typically newer than
-  `LLVM_PROJECT_VERSION` in `third-party/tt-mlir/env/CMakeLists.txt`, and
-  the tt-metal commit is on a release tag picked independently from the
-  one tt-mlir records in `TT_METAL_VERSION`. Both mismatches are the
-  expected steady state, not exceptions.
-- tt-lang compiles a subset of tt-mlir and applies patches in
-  `third-party/patches/` to make that subset build against the newer LLVM.
-- Because the LLVM and tt-metal mismatches are expected, every uplift
-  build must bypass cmake's SHA-match check. Pass
-  `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` and `-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON`
-  to cmake. `scripts/build-and-install.sh` accepts the equivalent
-  `--accept-ttmetal-mismatch` flag.
+- tt-lang owns its MLIR dialects, conversion, and translation in-tree, so the
+  LLVM commit in `third-party/llvm-project` and the tt-metal commit are chosen
+  directly by tt-lang. tt-metal is typically on a release tag.
+- Because a pre-built toolchain's LLVM may differ from the submodule pin, an
+  uplift build may need to bypass cmake's LLVM SHA-match check. Pass
+  `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` to cmake.
 - The tt-metal and public `ttnn` provenance versions are recorded in
   `third-party/tt-metal-version`. See
   [Updating tt-metal](#updating-tt-metal).
@@ -271,12 +264,6 @@ drift.
 cd third-party/llvm-project && git fetch && git checkout <commit> && cd ../..
 ```
 
-### Updating tt-mlir
-
-```bash
-cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
-```
-
 ### Rebuilding and committing
 
 A submodule uplift changes what the toolchain (LLVM, tt-metal) is built
@@ -297,7 +284,7 @@ Build the toolchain (LLVM + tt-metal) into the parallel locations:
 ```bash
 CMAKE_BINARY_DIR=build-uplift-toolchain \
 TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
-  scripts/build-and-install.sh --toolchain-only --accept-ttmetal-mismatch
+  scripts/build-and-install.sh --toolchain-only
 ```
 
 Then build tt-lang against that toolchain and run the test suites to
@@ -323,7 +310,7 @@ re-running without the overrides (so `CMAKE_BINARY_DIR=build-toolchain` and
 pointer changes together:
 
 ```bash
-git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
+git add third-party/llvm-project third-party/tt-metal \
         third-party/tt-metal-version pyproject.toml
 git commit -m "Uplift submodules"
 git push
@@ -378,7 +365,7 @@ the current checkout:
   `git ls-tree HEAD -- <uplift-files> | sha256sum | cut -c1-8`, so two
   branches with identical submodule SHAs and Dockerfile/requirements content
   resolve to the same tag and share the rebuilt image. "Uplift" here means
-  the dist/ird image content changed — tt-mlir and tt-lang itself are built
+  the dist/ird image content changed — tt-lang itself is built
   fresh by `call-build.yml` against the pre-built LLVM inside the container,
   so they are not uplift files.
 
@@ -681,11 +668,11 @@ commit, not the pinned ref, so a ref that predates them is still patched.
 arbitrary tt-metal commit. Dispatch it with a `tt_metal_sha`; leave `ttlang_ref`
 empty to search for the newest compatible tt-lang commit, or set it to pin the
 tt-lang commit or tag to build. A pinned `ttlang_ref` requires `tt_metal_sha`,
-because auto-detection reads the dispatch ref's tt-mlir pin rather than the
-pinned ref's. With `dry_run: true` the workflow builds and validates without
-publishing and needs no S3 credentials, so it can run from a feature branch; the
-scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml` is best-effort and does
-not fail the nightly publish.
+because auto-detection reads the dispatch ref's `third-party/tt-metal-version`
+rather than the pinned ref's. With `dry_run: true` the workflow builds and
+validates without publishing and needs no S3 credentials, so it can run from a
+feature branch; the scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml`
+is best-effort and does not fail the nightly publish.
 
 Successful per-SHA publishes place the wheel files (both tt-lang and
 tt-lang-light) under `https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/`
@@ -827,7 +814,6 @@ python tutorials/elementwise/step_4_multinode_grid_full.py
 | `TTLANG_EXTERNAL_TT_METAL_BUILD_DIR` | —       | Existing native tt-metal build directory                                             |
 | `MLIR_PREFIX`                    | —          | Path to pre-built LLVM/MLIR install                                                  |
 | `TTLANG_ACCEPT_LLVM_MISMATCH`    | `OFF`     | Allow LLVM SHA mismatch with pre-built installs                                      |
-| `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF`     | Allow tt-metal SHA mismatch with pre-built installs                                  |
 | `TTLANG_ENABLE_PERF_TRACE`       | `ON`      | Enable tt-metal performance tracing support                                          |
 | `TTLANG_SIM_ONLY`                | `OFF`     | Set up Python environment for [simulator](simulator.md) only; skip compiler build       |
 | `TTLANG_ENABLE_DOCS`             | `OFF`     | Enable Sphinx documentation build (`ttlang-docs` target)                           |
@@ -836,15 +822,15 @@ python tutorials/elementwise/step_4_multinode_grid_full.py
 
 ## Build Architecture
 
-### Minimal tt-mlir subset
+### Dialects, conversion, and translation
 
-`cmake/modules/BuildTTMLIRMinimal.cmake` and `lib/ttmlir-minimal/` compile
-tt-mlir sources directly from the submodule, producing 7 CMake targets:
-`MLIRTTCoreDialect`, `MLIRTTTransforms`, `MLIRTTMetalDialect`,
-`MLIRTTKernelDialect`, `MLIRTTKernelTransforms`, `TTMLIRTTKernelToEmitC`, and
-`TTKernelTargetCpp`. Flatbuffers stub headers are generated in
-`build/include/ttmlir/Target/Common/` to satisfy compile-time references without
-requiring a flatc build.
+tt-lang owns the `ttcore` and `ttkernel` dialects, the `TTKernelToEmitC`
+conversion, and the `TTKernelToCpp` translation in its own tree
+(`lib/Dialect/{TTCore,TTKernel}`, `lib/Conversion/TTKernelToEmitC`,
+`lib/Target/TTKernel`), compiled by the normal `add_subdirectory(include)` /
+`add_subdirectory(lib)` MLIR CMake tree wired by
+`cmake/modules/BuildTTLangDialects.cmake`. The system-descriptor flatbuffer
+loader is compiled out (`TTLANG_NO_FLATBUFFERS`).
 
 ### tt-metal runtime
 
@@ -854,16 +840,14 @@ requiring a flatc build.
 
 ### Python bindings
 
-`python/ttmlir/` contains a nanobind extension (`_ttmlir`) with TTCore,
-TTKernel, and TTMetal dialect bindings. A CAPI aggregation library
-(`libTTLangPythonCAPI.so`) embeds upstream MLIR + tt-mlir + ttlang C API into a
-single shared object. The Python package prefix is `ttl.`.
+A single nanobind extension (`_ttlang`) exposes the `ttl`, `ttcore`, and
+`ttkernel` dialects — submodules `ttl_ir`, `tt_ir`, `ttkernel_ir`, and `passes`.
+The Python package prefix is `ttl.`.
 
-Three-stage site initialization registers all dialects on context creation:
-
-1. `_mlirRegisterEverything` — upstream MLIR dialects (func, arith, scf, etc.)
-2. `_site_initialize_0.py` — tt-mlir dialects (TTCore, TTKernel, TTMetal)
-3. `_site_initialize_1.py` — TTL dialect
+Site initialization registers every dialect on context creation:
+`_mlir_libs/_site_initialize_0.py` calls `_ttlang.register_dialects`, which
+registers `ttcore`, `ttkernel`, `ttl`, and the minimal upstream MLIR dialects
+the pipeline uses (in place of MLIR's RegisterEverything).
 
 ### Environment
 
@@ -885,7 +869,7 @@ skip the build if `llvm-install/` already exists.
 ### LLVM SHA mismatch
 
 If using a pre-built LLVM and cmake reports a SHA mismatch, the installed LLVM
-was built from a different commit than what tt-mlir expects. Either rebuild LLVM
+was built from a different commit than what tt-lang expects. Either rebuild LLVM
 from the correct commit or pass `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` to proceed at
 your own risk.
 

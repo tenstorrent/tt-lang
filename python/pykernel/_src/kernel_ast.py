@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# NOTE: This file was copied from tt-mlir/tools/pykernel/_src/kernel_ast.py
+# NOTE: This file was imported into tt-lang pykernel/_src/kernel_ast.py
 # and cleaned up to remove unused code (TTKernelCompiler) and fix i32->i64.
 
 import ast

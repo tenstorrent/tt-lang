@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -11,7 +12,6 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTKERNELLOWERSCALARFPTYPES
