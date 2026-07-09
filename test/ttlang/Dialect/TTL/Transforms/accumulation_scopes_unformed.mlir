@@ -6,8 +6,8 @@
 // conservative and non-diagnostic: each case keeps its scf.for and forms no
 // ttl.accumulation_scope (enforced by --implicit-check-not).
 
-// An explicit num_tiles on the contribution wait is not the canonical
-// one-block-per-iteration form the streaming DST rewrite expects.
+// A contribution wait with a num_tiles attribute is not the default-block
+// protocol used by DST-resident recurrence lowering.
 // CHECK-LABEL: func.func @explicit_num_tiles
 // CHECK: scf.for
 func.func @explicit_num_tiles() {

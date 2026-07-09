@@ -190,9 +190,9 @@ getTensorScopeLoweringPlan(AccumulationScopeOp scope,
     (void)scope.emitOpError(
         "tensor accumulation lowering requires a DST-compatible same-type "
         "additive recurrence with an attached init tensor, a streamed or "
-        "resident contribution ttl.cb_wait, no explicit contribution "
-        "num_tiles, balanced contribution releases, and a static output tile "
-        "count that fits in DST");
+        "resident contribution ttl.cb_wait using the default block size, "
+        "balanced contribution releases, and a static output tile count that "
+        "fits in DST");
     return failure();
   }
   return TensorAccumulationScopeLoweringPlan{scope, *match, *dstInfo};
