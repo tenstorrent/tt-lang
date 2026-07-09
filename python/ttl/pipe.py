@@ -227,22 +227,37 @@ class PipeNet:
         net.if_dst(lambda pipe: ttl.copy(pipe, blk).wait())
     """
 
-    def __init__(self, pipes: List[Pipe]):
+    def __init__(self, pipes: Optional[List[Pipe]] = None, *, graph=None):
         # Validate at construction time by building a one-net graph and
         # delegating to OperationPipeNets.validate(). Single source of
         # truth for empty/overlap/mixed-kind rules; the same graph is
         # rebuilt and re-validated at operation build time.
         from ._pipenets import OperationPipeNets
+        from .topology import TransferGraph
 
-        if not pipes:
-            raise ValueError("PipeNet requires at least one pipe")
-        graph = OperationPipeNets()
-        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in pipes)
-        graph.validate()
+        if (pipes is None) == (graph is None):
+            raise ValueError("PipeNet requires exactly one of pipes or graph")
         # Operation-local id assigned by the OperationPipeNets builder
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
-        self.pipes = pipes
+        self.pipes: List[Pipe] = []
+        self.graph: Optional[TransferGraph] = None
+        if graph is not None:
+            if not isinstance(graph, TransferGraph):
+                raise TypeError(
+                    f"PipeNet graph must be a TransferGraph, "
+                    f"got {type(graph).__name__}"
+                )
+            graph.project_initial()
+            self.graph = graph
+        else:
+            assert pipes is not None
+            if not pipes:
+                raise ValueError("PipeNet requires at least one pipe")
+            validation_graph = OperationPipeNets()
+            validation_graph.add_pipe_net(_pipe_to_pipe_use(pipe) for pipe in pipes)
+            validation_graph.validate()
+            self.pipes = pipes
         # Capture the user's call site so `ttl.create_pipe` ops can carry
         # the declaration location.
         self._source_file: Optional[str] = None
@@ -253,6 +268,10 @@ class PipeNet:
             self._source_line = frame.lineno
         except (IndexError, AttributeError):
             pass
+
+    @property
+    def is_graph(self) -> bool:
+        return self.graph is not None
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """

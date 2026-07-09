@@ -60,8 +60,8 @@ python examples/<example_name>.py
 
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
-| `multidevice_tree_all_reduce.py` | Parameterized full-grid tree all-reduce using the planned `DeviceDomain` and `TransferGraph` PipeNet API | planned | planned |
-| `multidevice_tree_all_reduce_4_devices.py` | Fixed four-device version with explicit tree stages | planned | planned |
+| `multidevice_tree_all_reduce.py` | Parameterized full-grid tree all-reduce using `DeviceDomain`, `TransferGraph`, and graph-based PipeNets | frontend only | planned |
+| `multidevice_tree_all_reduce_4_devices.py` | Fixed four-device version with explicit tree stages | frontend only | planned |
 
 ### Error Examples (Negative Tests)
 
