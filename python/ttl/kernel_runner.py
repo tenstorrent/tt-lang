@@ -351,6 +351,13 @@ def build_pipe_sync_semaphore_descriptors(
     ]
 
 
+def normalize_program_hash(program_hash: Optional[int]) -> Optional[int]:
+    """Return a uint64 program-cache hash suitable for tt-metal."""
+    if program_hash is None:
+        return None
+    return int(program_hash) & ((1 << 64) - 1)
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[Any],
@@ -474,7 +481,7 @@ def run_kernel_on_device(
     tensors: List[Any],
     cb_configs: List[Any],
     core_ranges: Any,
-    program_hash: int = None,
+    program_hash: Optional[int] = None,
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
@@ -495,7 +502,7 @@ def run_kernel_on_device(
             Includes both tensor-backed DFBs and intermediate DFBs. Each DFB has shape,
             block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
-        program_hash: Hash for tt-metal program cache (not yet used).
+        program_hash: Hash for tt-metal program cache.
         num_pipe_sync_semaphores: Number of pipe synchronization semaphores
             allocated by the compiler.
         pipe_sram_scratch_bytes: Per-core SRAM scratch bytes required by
@@ -558,15 +565,14 @@ def run_kernel_on_device(
     )
 
     # Build and execute program.
-    # TODO: Enable custom_program_hash once tt-metal exposes it in Python bindings.
-    # See tt-metal/ttnn/cpp/ttnn-nanobind/program_descriptors.cpp - needs to add
-    # custom_program_hash parameter to ProgramDescriptor binding.
     program = ttnn.ProgramDescriptor(
         kernels=kernel_descriptors,
         cbs=cb_descriptors,
         semaphores=semaphore_descriptors,
-        # custom_program_hash=program_hash,
     )
+    normalized_program_hash = normalize_program_hash(program_hash)
+    if normalized_program_hash is not None:
+        program.custom_program_hash = normalized_program_hash
 
     # ttnn.generic_op requires io_tensors to contain at least one input
     # and one output (size >= 2).  Output-only kernels (e.g. fill with no
@@ -611,6 +617,7 @@ def emit_runner_source(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    program_hash: Optional[int] = None,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -618,6 +625,9 @@ def emit_runner_source(
     Generates a ready-to-use Python file with all the CB and kernel
     descriptor setup. Tensor-specific values (buffer addresses, accessor args)
     are marked with TODO comments for the user to fill in.
+
+    program_hash, if provided, is normalized to uint64 and embedded as the
+    emitted runner's tt-metal program-cache key.
     """
     lines = []
 
@@ -641,6 +651,7 @@ def emit_runner_source(
     lines.append(f"GRID_COLS = {grid_cols}")
     lines.append(f"GRID_ROWS = {grid_rows}")
     lines.append(f"NUM_TENSORS = {num_tensors}")
+    lines.append(f"PROGRAM_HASH = {normalize_program_hash(program_hash)!r}")
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
@@ -773,6 +784,8 @@ def emit_runner_source(
     lines.append("        cbs=cb_descriptors,")
     lines.append("        semaphores=semaphore_descriptors,")
     lines.append("    )")
+    lines.append("    if PROGRAM_HASH is not None:")
+    lines.append("        program.custom_program_hash = PROGRAM_HASH")
     lines.append("")
     lines.append("    io_tensors = build_generic_op_io_tensors(")
     lines.append("        tensors=tensors,")
@@ -801,9 +814,13 @@ def emit_runner_file(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    program_hash: Optional[int] = None,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
+
+    program_hash, if provided, is forwarded to the emitted runner as its
+    normalized tt-metal program-cache key.
 
     Returns the output path.
     """
@@ -815,6 +832,7 @@ def emit_runner_file(
         grid_cols=grid_cols,
         grid_rows=grid_rows,
         num_tensors=num_tensors,
+        program_hash=program_hash,
         kernel_name=kernel_name,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
@@ -839,6 +857,7 @@ __all__ = [
     "build_pipe_global_semaphores",
     "build_pipe_runtime_resources",
     "build_pipe_sync_semaphore_descriptors",
+    "normalize_program_hash",
     "build_generic_op_io_tensors",
     "run_kernel_on_device",
     "emit_runner_source",
