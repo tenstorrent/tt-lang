@@ -6,8 +6,8 @@
 // TTL Form Accumulation Scopes
 //===----------------------------------------------------------------------===//
 //
-// Inserts accumulation regions around tensor recurrences that can be lowered
-// to streaming DST-resident recurrence sections.
+// Inserts accumulation regions around tensor recurrences whose accumulator can
+// stay resident in DST across the source loop.
 //
 //===----------------------------------------------------------------------===//
 
