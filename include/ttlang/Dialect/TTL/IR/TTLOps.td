@@ -1622,6 +1622,43 @@ def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// External function call (opaque)
+//===----------------------------------------------------------------------===//
+
+def TTL_OpaqueCallOp : TTL_Op<"opaque_call", []> {
+  let summary = "Call an external C/C++ function by name";
+  let description = [{
+    `ttl.opaque_call` emits a call to an external C/C++ function whose
+    declaration is provided by a user-specified header file. The callee
+    name and header path are string attributes; the call is opaque to the
+    compiler (no inlining, no type checking of the foreign signature).
+
+    The `header` attribute specifies the path to the C/C++ header that
+    declares the callee. The lowering pass emits a `#include` directive
+    for this header in the generated kernel source.
+
+    The operation accepts variadic operands that are forwarded as
+    arguments to the callee. Results are optional; when absent the call
+    is treated as a void function invocation.
+
+    Example:
+    ```mlir
+    ttl.opaque_call "my_func" {header = "my_header.hpp"} () : () -> ()
+    ttl.opaque_call "add_vals" {header = "math_utils.hpp"} (%a, %b) : (i64, i64) -> ()
+    ```
+  }];
+  let arguments = (ins
+    StrAttr:$callee,
+    StrAttr:$header,
+    Variadic<AnyType>:$arg_operands
+  );
+  let results = (outs Variadic<AnyType>);
+  let assemblyFormat = [{
+    $callee `(` $arg_operands `)` attr-dict `:` functional-type($arg_operands, results)
+  }];
+}
+
 def TTL_TileStoreOp : TTL_Op<"tile_store",
     [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
      TTL_DstAccessOpInterface]> {

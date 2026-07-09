@@ -8,6 +8,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
   LowerDPrintToEmitC.cpp
+  LowerOpaqueCallToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
 
   LowerMatmulCompute.cpp

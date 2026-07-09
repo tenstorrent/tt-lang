@@ -317,6 +317,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 ):
                     return self.visit_Print(node.args, node.keywords)
 
+                if (
+                    not isinstance(node.func, ast.Attribute)
+                    and hasattr(node.func, "id")
+                    and node.func.id == "call_extern_func"
+                ):
+                    return self.visit_Call_Extern_Func(node, node.args, node.keywords)
+
                 # Check for PipeNet.if_src/if_dst calls
                 if self._is_pipenet_callback_call(node):
                     return self._handle_pipenet_callback(node)
@@ -1380,6 +1387,48 @@ class TTLGenericCompiler(TTCompilerBase):
                 lambda ro=release_op, cv=cb_val: ro(cv),
                 implicit=True,
             )
+
+    def visit_Call_Extern_Func(self, node, args, keywords=None):
+        """Handle call_extern_func(header, callee, *args) by emitting ttl.opaque_call.
+
+        Signature: call_extern_func(header_path, callee_name, *call_args)
+          - header_path: string literal path to the C/C++ header
+          - callee_name: string literal name of the function to call
+          - call_args: optional MLIR values forwarded to the callee
+        """
+        if len(args) < 2:
+            self._raise_error(
+                node,
+                "call_extern_func() requires at least 2 arguments: "
+                "header path and callee name",
+            )
+
+        header_node = args[0]
+        callee_node = args[1]
+
+        if not isinstance(header_node, ast.Constant) or not isinstance(
+            header_node.value, str
+        ):
+            self._raise_error(
+                node,
+                "call_extern_func() first argument (header path) "
+                "must be a string literal",
+            )
+        if not isinstance(callee_node, ast.Constant) or not isinstance(
+            callee_node.value, str
+        ):
+            self._raise_error(
+                node,
+                "call_extern_func() second argument (callee name) "
+                "must be a string literal",
+            )
+
+        header = header_node.value
+        callee = callee_node.value
+
+        call_args = [self.visit(a) for a in args[2:]]
+
+        ttl.opaque_call([], callee, header, call_args)
 
     def visit_With(self, node):
         """
