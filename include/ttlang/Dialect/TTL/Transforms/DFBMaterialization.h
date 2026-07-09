@@ -23,7 +23,7 @@ struct DFBMaterializedValue {
   /// DFB-attached tensor value that should replace the consumer operand.
   Value materialized;
 
-  /// Source tensor value used to key fallback materialization reuse.
+  /// Original tensor value before materialization.
   Value source;
 };
 
