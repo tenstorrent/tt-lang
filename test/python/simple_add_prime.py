@@ -31,9 +31,15 @@ COL_TILES = 1
 
 @ttl.operation(grid=(1, 1))
 def add_prime(lhs, rhs, out):
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(ROW_TILES, COL_TILES), block_count=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(ROW_TILES, COL_TILES), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(ROW_TILES, COL_TILES), block_count=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(
+        lhs, shape=(ROW_TILES, COL_TILES), block_count=2
+    )
+    rhs_dfb = ttl.make_dataflow_buffer_like(
+        rhs, shape=(ROW_TILES, COL_TILES), block_count=2
+    )
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=(ROW_TILES, COL_TILES), block_count=2
+    )
 
     @ttl.compute()
     def add_compute():

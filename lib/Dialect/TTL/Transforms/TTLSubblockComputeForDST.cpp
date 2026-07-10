@@ -237,20 +237,16 @@ private:
     // preference.
     //
     // Only this no-subblocking-at-all case is rescued: if the heuristic already
-    // found a subblock > 1 (e.g. 3x3 -> (1,3), 11x3 -> (1,3)) the result is left
-    // unchanged. Skipped for matmul, whose M*N subblocking interacts with in-DST
-    // K accumulation and L1-accumulation guards.
-    int64_t parallelProduct =
-        std::accumulate(parallelSubblockSizes.begin(),
-                        parallelSubblockSizes.end(), int64_t{1},
-                        std::multiplies<>());
+    // found a subblock > 1 (e.g. 3x3 -> (1,3), 11x3 -> (1,3)) the result is
+    // left unchanged. Skipped for matmul, whose M*N subblocking interacts with
+    // in-DST K accumulation and L1-accumulation guards.
+    int64_t parallelProduct = std::accumulate(parallelSubblockSizes.begin(),
+                                              parallelSubblockSizes.end(),
+                                              int64_t{1}, std::multiplies<>());
     if (!hasMatmulBlock && parallelProduct == 1) {
       int64_t usedProduct = 1;
       for (int64_t pd = static_cast<int64_t>(parallelDimSizes.size()) - 1;
            pd >= 0; --pd) {
-        if (parallelSubblockSizes[pd] != 1 || parallelDimSizes[pd] <= 1) {
-          continue;
-        }
         int64_t remaining = parallelBudget / usedProduct;
         int64_t cap = std::min<int64_t>(parallelDimSizes[pd], remaining);
         int64_t pow = 1;
