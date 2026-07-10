@@ -132,12 +132,14 @@ def _get_tensor_cache_info(tensor) -> tuple:
 
 def _make_cache_key(
     args: tuple,
+    resolved_grid: Union[tuple, List[int]],
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
     target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
+    grid_key = tuple(resolved_grid)
     tensor_key = tuple(
         _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
     )
@@ -151,6 +153,7 @@ def _make_cache_key(
     return (
         tensor_key,
         mesh_key,
+        grid_key,
         fp32_dest_acc_en,
         dst_full_sync_en,
         target_arch,
@@ -953,6 +956,7 @@ def _compile_ttnn_kernel(
             grid_rows=grid_rows,
             num_tensors=len(args),
             output_path=runner_path,
+            program_hash=program_hash,
             kernel_name="ttlang_kernel",
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
@@ -1837,6 +1841,7 @@ def pykernel_gen(
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
                 args,
+                resolved_grid=resolved_grid,
                 # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,
