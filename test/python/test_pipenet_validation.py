@@ -18,7 +18,7 @@ def test_empty_pipenet_rejected():
 
 
 def test_pipenet_requires_exactly_one_representation():
-    domain = ttl.DeviceDomain((1, 2), topology=ttl.Fabric1D(axis=1))
+    domain = ttl.DeviceDomain((1, 2))
     graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
 
     with pytest.raises(ValueError, match="exactly one of pipes or graph"):
@@ -28,7 +28,7 @@ def test_pipenet_requires_exactly_one_representation():
 
 
 def test_pipenet_accepts_transfer_graph():
-    domain = ttl.DeviceDomain((1, 2), topology=ttl.Fabric1D(axis=1))
+    domain = ttl.DeviceDomain((1, 2))
     graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
 
     net = ttl.PipeNet(graph=graph)
@@ -43,12 +43,13 @@ def test_pipenet_graph_requires_transfer_graph():
         ttl.PipeNet(graph=object())
 
 
-def test_pipenet_graph_validates_initial_projection():
-    domain = ttl.DeviceDomain((2, 2), topology=ttl.Fabric1D(axis=1))
+def test_pipenet_graph_defers_target_routability_validation():
+    domain = ttl.DeviceDomain((2, 2))
     graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (1, 0))])
 
-    with pytest.raises(ValueError, match="non-cluster axis 0"):
-        ttl.PipeNet(graph=graph)
+    net = ttl.PipeNet(graph=graph)
+
+    assert net.graph is graph
 
 
 def test_within_pipenet_overlapping_collective_dst_allowed():
