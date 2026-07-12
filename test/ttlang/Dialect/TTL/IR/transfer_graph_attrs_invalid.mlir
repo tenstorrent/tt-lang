@@ -1,42 +1,66 @@
 // RUN: ttlang-opt %s --verify-diagnostics --split-input-file
 
-// Invalid tests for canonical device-domain and transfer-graph attributes.
-// Each split section checks one verifier error.
+// Verify diagnostics for typed device-domain and transfer-graph invariants.
 
-// expected-error @below {{duplicate device_domain level name `device`}}
-#domain = #ttl.device_domain<levels = [{cluster_axis = 0 : i64, extent = array<i64: 1>, mesh_id = 0 : i64, name = "device", periodic = false, topology = "fabric_1d"}, {cluster_axis = 0 : i64, extent = array<i64: 4>, mesh_id = 0 : i64, name = "device", periodic = false, topology = "fabric_1d"}]>
-
-// -----
-
-#domain = #ttl.device_domain<levels = [{cluster_axis = 1 : i64, extent = array<i64: 1, 4>, mesh_id = 0 : i64, name = "device", periodic = false, topology = "fabric_1d"}]>
-
-// expected-error @below {{transfer_graph edge 0.destination level `device` axis 1 is out of bounds for extent 4, got 4}}
-#graph = #ttl.transfer_graph<domain = #domain, edges = [{destination = [array<i64: 0, 4>], source = [array<i64: 0, 0>]}]>
+// A product domain requires unique component names.
+// expected-error @below {{duplicate device domain component name 'device'}}
+#domain = #ttl.device_domain<components = <name = "device", extent = [1]>, <name = "device", extent = [4]>>
 
 // -----
 
-#domain = #ttl.device_domain<levels = [{cluster_axis = 0 : i64, extent = array<i64: 2>, mesh_id = 0 : i64, name = "board", periodic = true, topology = "fabric_ring"}, {cluster_axis = 0 : i64, extent = array<i64: 4>, mesh_id = 0 : i64, name = "device", periodic = false, topology = "fabric_1d"}]>
-
-// expected-error @below {{transfer_graph edge 0 requires multiple topology levels; multi-level route lowering is deferred to MD-14}}
-#graph = #ttl.transfer_graph<domain = #domain, edges = [{destination = [array<i64: 1>, array<i64: 1>], source = [array<i64: 0>, array<i64: 0>]}]>
-
-// -----
-
-#domain = #ttl.device_domain<levels = [{cluster_axis = 1 : i64, extent = array<i64: 2, 4>, mesh_id = 0 : i64, name = "device", periodic = false, topology = "fabric_1d"}]>
-
-// expected-error @below {{transfer_graph edge 0 requires non-cluster axis 0 on level `device` to stay fixed}}
-#graph = #ttl.transfer_graph<domain = #domain, edges = [{destination = [array<i64: 1, 1>], source = [array<i64: 0, 0>]}]>
+// Explicit device references must be within every component extent.
+// expected-error @below {{transfer graph edge 0.destination component 'device' axis 1 is out of bounds for extent 4, got 4}}
+#graph = #ttl.transfer_graph<
+  domain = <components = <name = "device", extent = [1, 4]>>,
+  edges = [<source = <coordinates = [0, 0]>, destination = <coordinates = [0, 4]>>]>
 
 // -----
 
-#domain = #ttl.device_domain<levels = [{cluster_axis = 0 : i64, extent = array<i64: 4>, mesh_id = 0 : i64, name = "device", periodic = false, topology = "fabric_1d"}]>
-
-// expected-error @below {{transfer_graph must be explicit or structured, not both}}
-#graph = #ttl.transfer_graph<domain = #domain, edges = [{destination = [array<i64: 1>], source = [array<i64: 0>]}], structured = {axis = 0 : i64, kind = "axis_neighbor", level = "device", offset = 1 : i64, wrap = false}>
+// A graph cannot contain explicit and structured relation forms together.
+// expected-error @below {{transfer graph must be explicit or structured, not both}}
+#graph = #ttl.transfer_graph<
+  domain = <components = <name = "device", extent = [4]>>,
+  edges = [<source = <coordinates = [0]>, destination = <coordinates = [1]>>],
+  structured = #ttl.axis_neighbor_transfer<component = "device", axis = 0 : i64, offset = 1 : i64, wrap = false>>
 
 // -----
 
-#domain = #ttl.device_domain<levels = [{cluster_axis = 1 : i64, extent = array<i64: 1, 4>, mesh_id = 0 : i64, name = "device", periodic = false, topology = "fabric_1d"}]>
+// Structured relations must name a component in the associated domain.
+// expected-error @below {{structured transfer references unknown component 'board'}}
+#graph = #ttl.transfer_graph<
+  domain = <components = <name = "device", extent = [4]>>,
+  structured = #ttl.axis_neighbor_transfer<component = "board", axis = 0 : i64, offset = 1 : i64, wrap = false>>
 
-// expected-error @below {{axis_neighbor on level `device` must use cluster_axis 1, got axis 0}}
-#graph = #ttl.transfer_graph<domain = #domain, edges = [], structured = {axis = 0 : i64, kind = "axis_neighbor", level = "device", offset = 1 : i64, wrap = false}>
+// -----
+
+// Axis-neighbor dimensions are logical-domain dimensions.
+// expected-error @below {{axis_neighbor axis 1 is out of bounds for component 'device' rank 1}}
+#graph = #ttl.transfer_graph<
+  domain = <components = <name = "device", extent = [4]>>,
+  structured = #ttl.axis_neighbor_transfer<component = "device", axis = 1 : i64, offset = 1 : i64, wrap = false>>
+
+// -----
+
+// Component extents contain only positive dimensions.
+// expected-error @below {{device domain component 'device' extent axis 0 must be positive, got 0}}
+#component = #ttl.device_domain_component<name = "device", extent = [0]>
+
+// -----
+
+// Device references provide one coordinate per domain component.
+// expected-error @below {{transfer graph edge 0.source has 1 component coordinates, expected 2}}
+#graph = #ttl.transfer_graph<
+  domain = <components = <name = "board", extent = [2]>, <name = "device", extent = [4]>>,
+  edges = [<source = <coordinates = [0]>, destination = <coordinates = [1], [0]>>]>
+
+// -----
+
+// Device ranges use half-open bounds.
+// expected-error @below {{device range component 0 axis 0 requires lo < hi, got lo=2, hi=2}}
+#range = #ttl.device_range<lo = <coordinates = [2]>, hi = <coordinates = [2]>>
+
+// -----
+
+// Axis-neighbor relations require a positive logical offset.
+// expected-error @below {{axis_neighbor offset must be positive, got 0}}
+#structured = #ttl.axis_neighbor_transfer<component = "device", axis = 0 : i64, offset = 0 : i64, wrap = false>
