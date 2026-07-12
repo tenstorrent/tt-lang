@@ -231,7 +231,7 @@ class PipeNet:
         # truth for empty/overlap/mixed-kind rules; the same graph is
         # rebuilt and re-validated at operation build time.
         from ._pipenets import OperationPipeNets
-        from .topology import TransferGraph
+        from .domains import TransferGraph
 
         if (pipes is None) == (graph is None):
             raise ValueError("PipeNet requires exactly one of pipes or graph")
@@ -246,7 +246,6 @@ class PipeNet:
                     f"PipeNet graph must be a TransferGraph, "
                     f"got {type(graph).__name__}"
                 )
-            graph.project_initial()
             self.graph = graph
         else:
             assert pipes is not None
