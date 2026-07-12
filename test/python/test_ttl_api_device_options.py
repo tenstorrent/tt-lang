@@ -137,7 +137,7 @@ class TestMeshProgramPlacement:
         assert ttl_api._default_mesh_program_placements((tensor,)) is None
 
     def test_device_domain_mesh_program_placement_covers_domain(self):
-        domain = ttl.DeviceDomain((1, 4), topology=ttl.Fabric1D(axis=1))
+        domain = ttl.DeviceDomain((1, 4))
 
         placements = ttl_api._default_mesh_program_placements_with_domain((), domain)
 
@@ -146,7 +146,7 @@ class TestMeshProgramPlacement:
         assert placements[0].end == (0, 3)
 
     def test_device_domain_mesh_program_placement_matches_mesh_tensor(self):
-        domain = ttl.DeviceDomain((1, 4), topology=ttl.Fabric1D(axis=1))
+        domain = ttl.DeviceDomain((1, 4))
         tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 4)))
 
         placements = ttl_api._default_mesh_program_placements_with_domain(
@@ -156,19 +156,16 @@ class TestMeshProgramPlacement:
         assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
 
     def test_device_domain_mesh_program_placement_rejects_mismatch(self):
-        domain = ttl.DeviceDomain((1, 2), topology=ttl.Fabric1D(axis=1))
+        domain = ttl.DeviceDomain((1, 2))
         tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 4)))
 
         with pytest.raises(ValueError, match="does not match"):
             ttl_api._default_mesh_program_placements_with_domain((tensor,), domain)
 
-    def test_device_domain_mesh_program_placement_rejects_hierarchy(self):
-        domain = ttl.DeviceDomain.hierarchy(
-            ttl.TopologyLevelInfo("board", extent=(1,), topology=ttl.FabricRing()),
-            ttl.TopologyLevelInfo("device", extent=(4,), topology=ttl.Fabric1D()),
-        )
+    def test_device_domain_mesh_program_placement_rejects_product(self):
+        domain = ttl.DeviceDomain.product(board=(1,), device=(4,))
 
-        with pytest.raises(ValueError, match="flat DeviceDomain"):
+        with pytest.raises(ValueError, match="regular DeviceDomain"):
             ttl_api._default_mesh_program_placements_with_domain((), domain)
 
     def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):

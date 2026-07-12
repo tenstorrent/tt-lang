@@ -391,18 +391,18 @@ def _mesh_program_placements_from_device_domain(device_domain):
         return None
 
     from math import prod
-    from .topology import DeviceDomain
+    from .domains import DeviceDomain
 
     if not isinstance(device_domain, DeviceDomain):
         raise TypeError(
             f"device_domain must be a DeviceDomain, got {type(device_domain).__name__}"
         )
 
-    if device_domain.level_count != 1:
+    if device_domain.component_count != 1:
         raise ValueError(
-            "device_domain mesh placement currently requires a flat DeviceDomain"
+            "device_domain mesh placement currently requires a regular DeviceDomain"
         )
-    extent = tuple(int(dim) for dim in device_domain.levels[0].extent)
+    extent = tuple(int(dim) for dim in device_domain.shape)
     if prod(extent) <= 1:
         return None
     start = tuple(0 for _ in extent)
