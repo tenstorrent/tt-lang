@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_TD
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
+include "ttlang/Dialect/TTL/IR/TTLAttrInterfaces.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
 include "mlir/IR/AttrTypeBase.td"
 
@@ -42,53 +43,150 @@ def TTL_PipeTransferKindAttr : TTL_Attr<"PipeTransferKind",
   let assemblyFormat = "`<` $value `>`";
 }
 
-def TTL_DeviceDomainAttr : TTL_Attr<"DeviceDomain", "device_domain"> {
-  let summary = "Flat or hierarchical logical device domain";
+def TTL_DeviceDomainComponentAttr :
+    TTL_Attr<"DeviceDomainComponent", "device_domain_component"> {
+  let summary = "Named rectangular component of a device domain";
   let description = [{
-    Defines the logical device domain over which transfer graphs are expressed.
-
-    Levels are stored as dictionaries inside the aggregate attribute so the
-    domain remains one canonical IR object. Each level dictionary contains:
-    - `name`: string
-    - `extent`: `DenseI64ArrayAttr`
-    - `topology`: string (e.g., `fabric_1d` or `fabric_ring`)
-    - `cluster_axis`: integer
-    - `periodic`: bool
-    - `mesh_id`: integer
-
-    Storage class: compile-time metadata only. The attribute stores O(L + R)
-    data for L levels and total rank R. It never stores a dense domain table,
-    adjacency table, role table, PipeNet table, or device-visible state.
+    Defines one named rectangular index space in a logical device domain. The
+    extent contains one positive value per dimension.
   }];
   let parameters = (ins
-    "ArrayAttr":$levels
+    "StringAttr":$name,
+    "DenseI64ArrayAttr":$extent
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DeviceDomainAttr : TTL_Attr<"DeviceDomain", "device_domain"> {
+  let summary = "Logical index set of devices";
+  let description = [{
+    Defines the logical devices over which a transfer graph is expressed. A
+    single component represents a regular domain. Multiple components form a
+    product domain. Components describe only index-set semantics; physical
+    topology and routing are not part of this attribute.
+
+    Example:
+
+    ```mlir
+    #ttl.device_domain<components =
+      <name = "board", extent = [2]>,
+      <name = "device", extent = [4]>
+    >
+    ```
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"DeviceDomainComponentAttr">:$components
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DeviceRefAttr : TTL_Attr<"DeviceRef", "device_ref"> {
+  let summary = "Member of a logical device domain";
+  let description = [{
+    Identifies one logical device using one coordinate array per domain
+    component. Coordinates use the component order declared by the associated
+    device domain.
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"DenseI64ArrayAttr">:$coordinates
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DeviceRangeAttr : TTL_Attr<"DeviceRange", "device_range"> {
+  let summary = "Half-open range in a logical device domain";
+  let description = [{
+    Defines a rectangular range `[lo, hi)` using two device references from
+    the same domain.
+  }];
+  let parameters = (ins
+    "DeviceRefAttr":$lo,
+    "DeviceRefAttr":$hi
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_TransferEdgeAttr : TTL_Attr<"TransferEdge", "transfer_edge"> {
+  let summary = "Directed edge between logical devices";
+  let description = [{
+    Defines a transfer from one source device to either one destination device
+    or a destination range. Exactly one destination form is present.
+  }];
+  let parameters = (ins
+    "DeviceRefAttr":$source,
+    OptionalParameter<"DeviceRefAttr">:$destination,
+    OptionalParameter<"DeviceRangeAttr">:$destinationRange
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_AxisNeighborTransferAttr :
+    TTL_Attr<"AxisNeighborTransfer", "axis_neighbor_transfer",
+             [TTL_StructuredTransferAttrInterface]> {
+  let summary = "Transfer relation between axis neighbors";
+  let description = [{
+    Describes transfers from each device to the device at the specified
+    positive offset along one logical domain axis. `wrap` includes transfers
+    that cross the axis boundary.
+  }];
+  let parameters = (ins
+    "StringAttr":$component,
+    "IntegerAttr":$axis,
+    "IntegerAttr":$offset,
+    "BoolAttr":$wrap
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_GatherTransferAttr :
+    TTL_Attr<"GatherTransfer", "gather_transfer",
+             [TTL_StructuredTransferAttrInterface]> {
+  let summary = "Transfer relation from every device to one root";
+  let description = [{
+    Describes transfers from every non-root device in one domain component to
+    `root` without materializing the edge set.
+  }];
+  let parameters = (ins
+    "StringAttr":$component,
+    "DeviceRefAttr":$root
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_MulticastTransferAttr :
+    TTL_Attr<"MulticastTransfer", "multicast_transfer",
+             [TTL_StructuredTransferAttrInterface]> {
+  let summary = "Transfer relation from one source to every other device";
+  let description = [{
+    Describes transfers from `source` to every other device in one domain
+    component without materializing the edge set.
+  }];
+  let parameters = (ins
+    "StringAttr":$component,
+    "DeviceRefAttr":$source
   );
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
 }
 
 def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
-  let summary = "Device-level transfer graph over a device domain";
+  let summary = "Transfer relation over a logical device domain";
   let description = [{
     Describes device-level communication independently from core endpoints and
-    DFB operands. Core/DFB binding happens at the PipeNet or transfer site.
-
-    Edges and structured descriptors are stored as dictionaries inside the
-    aggregate attribute so helper concepts do not become independent IR
-    objects. Explicit edge dictionaries contain `source` plus exactly one of
-    `destination` or `destination_range`. Device coordinates are arrays of
-    per-level `DenseI64ArrayAttr` values in domain level order.
-
-    Storage class: compile-time metadata only. Explicit graphs store O(E)
-    user edges. Structured graphs store O(1) descriptors. This attribute does
-    not allocate runtime host state or device-visible communication memory;
-    later lowering must allocate only local live sender/receiver state and
-    queue-depth-dependent state.
+    dataflow buffer operands. The relation is either an explicit non-empty edge
+    list or one structured transfer descriptor.
   }];
   let parameters = (ins
     "DeviceDomainAttr":$domain,
-    "ArrayAttr":$edges,
-    OptionalParameter<"DictionaryAttr">:$structured
+    OptionalArrayRefParameter<"TransferEdgeAttr">:$edges,
+    OptionalParameter<"StructuredTransferAttrInterface">:$structured
   );
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;

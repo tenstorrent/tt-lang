@@ -40,7 +40,7 @@ LOCAL_TENSOR_WIDTH = LOCAL_TILE_COLS * TILE_SIZE
 def _require_multidevice_pipenet_api() -> None:
     missing = [
         name
-        for name in ("DeviceDomain", "DeviceRef", "Fabric1D", "TransferGraph")
+        for name in ("DeviceDomain", "DeviceRef", "TransferGraph")
         if not hasattr(ttl, name)
     ]
     if missing:
@@ -50,7 +50,7 @@ def _require_multidevice_pipenet_api() -> None:
             f"{missing_names}, and ttl.PipeNet(graph=...)."
         )
     try:
-        domain = ttl.DeviceDomain((1, 2), topology=ttl.Fabric1D(axis=1))
+        domain = ttl.DeviceDomain((1, 2))
         ttl.PipeNet(graph=ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))]))
     except TypeError as exc:
         raise RuntimeError("This example requires ttl.PipeNet(graph=...).") from exc
@@ -86,10 +86,7 @@ def make_tree_all_reduce_operation(
     _require_multidevice_pipenet_api()
     _validate_num_devices(num_devices)
 
-    device_domain = ttl.DeviceDomain(
-        (1, num_devices),
-        topology=ttl.Fabric1D(axis=1),
-    )
+    device_domain = ttl.DeviceDomain((1, num_devices))
 
     def device(column: int):
         return (0, column)

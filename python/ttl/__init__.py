@@ -5,14 +5,14 @@
 # TT-Lang Python Package
 
 from ttl.version import __version__, build_info
-from ttl.topology import (
+from ttl.domains import (
+    AxisNeighborTransfer,
     DeviceDomain,
     DeviceRange,
     DeviceRef,
-    Fabric1D,
-    FabricRing,
-    FabricTopology,
-    TopologyLevelInfo,
+    DomainComponent,
+    GatherTransfer,
+    MulticastTransfer,
     TransferEdge,
     TransferGraph,
 )
@@ -38,13 +38,13 @@ if _SIM_ONLY_INSTALL:
     __all__ = [
         "__version__",
         "build_info",
+        "AxisNeighborTransfer",
         "DeviceDomain",
         "DeviceRange",
         "DeviceRef",
-        "Fabric1D",
-        "FabricRing",
-        "FabricTopology",
-        "TopologyLevelInfo",
+        "DomainComponent",
+        "GatherTransfer",
+        "MulticastTransfer",
         "TransferEdge",
         "TransferGraph",
     ]
@@ -88,13 +88,13 @@ else:
         "CopyTransferHandler",
         "Pipe",
         "PipeNet",
+        "AxisNeighborTransfer",
         "DeviceDomain",
         "DeviceRange",
         "DeviceRef",
-        "Fabric1D",
-        "FabricRing",
-        "FabricTopology",
-        "TopologyLevelInfo",
+        "DomainComponent",
+        "GatherTransfer",
+        "MulticastTransfer",
         "TransferEdge",
         "TransferGraph",
         "make_dataflow_buffer_like",
