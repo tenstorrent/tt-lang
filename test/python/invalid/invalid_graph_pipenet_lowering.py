@@ -16,7 +16,7 @@ os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttl  # noqa: E402
 
-domain = ttl.DeviceDomain((1, 2), topology=ttl.Fabric1D(axis=1))
+domain = ttl.DeviceDomain((1, 2))
 graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
 net = ttl.PipeNet(graph=graph)
 
