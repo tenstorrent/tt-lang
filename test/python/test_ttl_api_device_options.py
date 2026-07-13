@@ -191,3 +191,4 @@ class TestMeshProgramPlacement:
 
         assert result == "result"
         assert calls[0]["mesh_program_placements"] == [placement]
+        assert calls[0]["fabric_route_cache"] is compiled_kernel._fabric_route_cache
