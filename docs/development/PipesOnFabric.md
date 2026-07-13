@@ -453,6 +453,13 @@ This interface keeps topology interpretation in TT-Metal. tt-lang does not
 infer routing from logical coordinates, physical mesh dimensions, node-number
 differences, or architecture-specific topology tables.
 
+Route resolution runs on the host while tt-lang constructs program
+descriptors. Each `CompiledTTNNKernel` caches the resolved link and hop count
+for a source-destination pair. The cache is cleared when the mesh object or
+active fabric configuration changes. Connection semaphores and descriptor
+runtime arguments remain per-invocation resources; no control-plane query runs
+in a device kernel or per packet.
+
 The tt-lang build applies managed patches from `third-party/patches` when
 building the pinned TT-Metal source. Production toolchains include the same
 TT-Metal change through the normal toolchain uplift process.
