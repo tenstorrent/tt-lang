@@ -6,14 +6,33 @@
 # a single publish directory. A spec has the form <variant>[:no-sim]=<dist_dir>.
 # Use `:no-sim` for light artifacts that intentionally omit tt-lang-sim.
 #
-# Usage: prepare-s3-publish-dist.sh <version_override> <publish_dir> <spec>...
+# Usage: prepare-s3-publish-dist.sh [--light-python-tags cp310,cp312] <version_override> <publish_dir> <spec>...
 
 set -eu
 
 usage() {
-    echo "Usage: $0 <version_override> <publish_dir> <variant[:no-sim]=dist_dir>..." >&2
+    echo "Usage: $0 [--light-python-tags cp310,cp312] <version_override> <publish_dir> <variant[:no-sim]=dist_dir>..." >&2
     exit 2
 }
+
+light_python_tags=cp310,cp312
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --light-python-tags)
+            if [ "$#" -lt 2 ]; then
+                usage
+            fi
+            light_python_tags="$2"
+            shift 2
+            ;;
+        --*)
+            usage
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 if [ "$#" -lt 3 ]; then
     usage
@@ -73,11 +92,13 @@ for spec in "$@"; do
     if [ "$no_sim" = true ]; then
         "$script_dir/verify-s3-wheel-versions.sh" \
             --no-sim \
+            --python-tags "$light_python_tags" \
             "$variant" \
             "$version" \
             "$artifact_dir"
     else
         "$script_dir/verify-s3-wheel-versions.sh" \
+            --python-tags "$light_python_tags" \
             "$variant" \
             "$version" \
             "$artifact_dir"

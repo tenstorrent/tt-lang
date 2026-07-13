@@ -4,8 +4,8 @@
 
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
+#include "ttlang/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"

@@ -168,9 +168,9 @@ plausible refactor rather than a behavior change.
 **Use existing MLIR collective dialects.** MLIR's
 [`shard`](https://mlir.llvm.org/docs/Dialects/ShardOps/) dialect
 (historically `mesh`) provides distributed-tensor sharding ops.
-tt-mlir's TTCore dialect has its own collective abstractions.
-tt-lang could lower to one of these instead of pattern-matching
-Pipes. Trade-off: pulls in a larger external dialect surface;
+TTCore could grow collective abstractions. tt-lang could lower to such
+abstractions instead of pattern-matching Pipes. Trade-off: increases the
+dialect surface;
 depends on whether the existing dialects' semantics fit tt-lang's
 intra-chip PipeNet model (the `shard` dialect targets distributed
 memory across SPMD nodes, which is closer to tt-lang's
@@ -741,7 +741,7 @@ The existing PipeNet protocol already uses this for the
 L1 word usable from any core in `core_grid`; the address is wired
 into the kernel as a compile-time arg, fetched at runtime via the
 TTKernel op
-[`ttkernel.get_semaphore`](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td)
+[`ttkernel.get_semaphore`](../../include/ttlang/Dialect/TTKernel/IR/TTKernelOps.td)
 (declared at `TTKernelOps.td:3500`), and operated on with
 `noc_semaphore_inc`, `noc_semaphore_set`, etc. For arbitrary L1
 regions larger than 4 bytes, host-side `Buffer::create_l1_sharded`
@@ -757,9 +757,8 @@ the host-side approach above is insufficient and a proper
 liveness-aware L1 allocator is needed. tt-lang will not adopt
 D2M's allocator (`memref.alloc` with
 [`ttcore::MemorySpace::DeviceL1`][ttcore-l1-enum] passed through
-the [`D2MAllocate`][d2m-allocate] pass — `addScratchToGeneric` in
-[`InsertScratchBuffers.cpp:130-177`][d2m-scratch] is the canonical
-example) — the project's stance is that the D2M dialect dependency
+the D2M allocation pass, including its scratch-buffer insertion logic)
+— the project's stance is that the D2M dialect dependency
 is cut. If a rewrite ever needs allocator-managed L1, tt-lang
 should grow its own TTL-side allocator targeting the same
 underlying tt-metal `Buffer` mechanism but driven from PipeGraph
@@ -787,9 +786,7 @@ have today.
 Path B becomes load-bearing only when a rewrite needs
 allocator-managed L1, which none of the rewrites in §3.2 require.
 
-[ttcore-l1-enum]: https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTCore/IR/TTCoreOpsEnums.td#L64
-[d2m-allocate]: https://github.com/tenstorrent/tt-mlir/blob/main/lib/Dialect/D2M/Transforms/Allocate.cpp
-[d2m-scratch]: https://github.com/tenstorrent/tt-mlir/blob/main/lib/Dialect/D2M/Transforms/InsertScratchBuffers.cpp#L130-L177
+[ttcore-l1-enum]: ../../include/ttlang/Dialect/TTCore/IR/TTCoreOpsEnums.td
 
 ### 4.6 Multi-PipeNet composition
 

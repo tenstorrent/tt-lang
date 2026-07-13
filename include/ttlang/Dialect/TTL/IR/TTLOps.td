@@ -8,8 +8,8 @@
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
-include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
-include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
+include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.td"
+include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -133,7 +133,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     encoding (transfers all tiles via loop).
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
-    ttkernel noc ops are available in tt-mlir. Issue: #87.
+    TTKernel NOC ops are available. Issue: #87.
 
     Example:
 
@@ -172,7 +172,7 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     used.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
-    barriers are available in ttkernel (tt-mlir). Issue: #87.
+    barriers are available in TTKernel. Issue: #87.
 
     Example:
 
@@ -1395,7 +1395,7 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     is forwarded to matmul_block's transpose argument and selects the
     transposed per-K addressing during TTKernel lowering.
 
-    Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
+    Maps to ttkernel.mm_block_init + ttkernel.matmul_block.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,

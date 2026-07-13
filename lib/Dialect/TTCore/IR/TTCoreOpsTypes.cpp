@@ -1,0 +1,1988 @@
+// SPDX-FileCopyrightText: (c) 2024 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+
+#include "ttlang/AffineMapUtils.h"
+#include "ttlang/Asserts.h"
+#include "ttlang/Dialect/TTCore/IR/TTCore.h"
+#include "ttlang/Dialect/TTCore/IR/Utils.h"
+#include "ttlang/Utils.h"
+
+#ifndef TTLANG_NO_FLATBUFFERS
+#include "ttlang/Target/Common/Target.h"
+#include "ttlang/Target/Common/system_desc_bfbs_hash_generated.h"
+#include "ttlang/Target/Common/types_generated.h"
+#endif
+
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/DialectImplementation.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/STLForwardCompat.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <fstream>
+#include <numeric>
+
+#include "ttlang/Dialect/TTCore/IR/TTCoreAttrInterfaces.cpp.inc"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsEnums.cpp.inc"
+
+#define GET_TYPEDEF_CLASSES
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.cpp.inc"
+
+namespace mlir::tt::ttcore {
+
+namespace {
+SystemDescAttr
+createDefaultQuasarSystemDesc(mlir::MLIRContext *context,
+                              const ::llvm::SmallVector<int64_t> &meshShape) {
+  llvm::SmallVector<ChipDescAttr> chipDescs;
+  llvm::SmallVector<uint32_t> chipIndicesList;
+  llvm::SmallVector<ChipCapabilityAttr> chipCapabilities;
+  llvm::SmallVector<ChipChannelAttr> chipChannelList;
+
+  return SystemDescAttr::get(
+      context,
+      // CPU Descriptors.
+      {CPUDescAttr::get(context, CPURole::Host,
+                        mlir::StringAttr::get(context, "x86_64-pc-linux-gnu"))},
+      // Chip Descriptors.
+      chipDescs,
+      // Chip Descriptor Indices.
+      chipIndicesList,
+      // Chip Capabilities.
+      chipCapabilities,
+      // Chip Mesh Coordinates.
+      {ChipCoordAttr::get(context, 0, 0, 0, 0)},
+      // Chip Channel Connections.
+      chipChannelList);
+}
+
+SystemDescAttr createDefaultBlackholeSystemDesc(
+    mlir::MLIRContext *context, const ::llvm::SmallVector<int64_t> &meshShape) {
+  // Set default values
+  constexpr auto l1Size = 1572864;
+  constexpr auto numDramChannels = 8;
+  constexpr auto dramChannelSize = 4278190080;
+  constexpr auto nocL1AddressAlignBytes = 16;
+  constexpr auto pcieAddressAlignBytes = 64;
+  constexpr auto nocDRAMAddressAlignBytes = 64;
+  constexpr auto l1UnreservedBase = 98304;
+  constexpr auto eriscL1UnreservedBase = 100032;
+  constexpr auto dramUnreservedBase = 64;
+  constexpr auto dramUnreservedEnd = 4276383744;
+  constexpr auto dstPhysicalSizeTiles = 16;
+  constexpr auto numCBs = 32;
+  constexpr auto numComputeThreads = 1;
+  constexpr auto numDatamovementThreads = 2;
+
+  // Get number of chips in mesh.
+  int64_t numberOfChips =
+      std::accumulate(meshShape.begin(), meshShape.end(), int64_t{1},
+                      std::multiplies<int64_t>());
+
+  // Populate dummy values for single chip or multi chip config.
+  llvm::SmallVector<std::int64_t> gridShape = {10, 13};
+  llvm::SmallVector<std::int64_t> dramGridShape = {1, 8};
+
+  // Captured from a p150 device. Blackhole's optimal mapping is identical
+  // for NOC_0 and NOC_1.
+  llvm::SmallVector<CoreCoordAttr> dramBankToLogicalWorker = {
+      CoreCoordAttr::get(context, 9, 0), CoreCoordAttr::get(context, 0, 0),
+      CoreCoordAttr::get(context, 7, 0), CoreCoordAttr::get(context, 3, 0),
+      CoreCoordAttr::get(context, 9, 7), CoreCoordAttr::get(context, 1, 7),
+      CoreCoordAttr::get(context, 6, 7), CoreCoordAttr::get(context, 4, 7),
+  };
+
+  // Physical-to-translated coordinate translation offsets
+  llvm::SmallVector<std::int64_t> coordTranslationOffsets = {18, 18};
+
+  // Populate a placeholder for supported tile sizes.
+  llvm::SmallVector<DataTypeAttr> supported_data_types = {
+      DataTypeAttr::get(context, DataType::Float32),
+      DataTypeAttr::get(context, DataType::Float16),
+      DataTypeAttr::get(context, DataType::BFloat16),
+      DataTypeAttr::get(context, DataType::BFP_Float8),
+      DataTypeAttr::get(context, DataType::BFP_BFloat8),
+      DataTypeAttr::get(context, DataType::BFP_Float4),
+      DataTypeAttr::get(context, DataType::BFP_BFloat4),
+      DataTypeAttr::get(context, DataType::BFP_Float2),
+      DataTypeAttr::get(context, DataType::BFP_BFloat2),
+      DataTypeAttr::get(context, DataType::UInt32),
+      DataTypeAttr::get(context, DataType::UInt16),
+      DataTypeAttr::get(context, DataType::UInt8),
+      DataTypeAttr::get(context, DataType::Int32),
+  };
+
+  // Populate a placeholder for supported tile sizes.
+  llvm::SmallVector<TileSizeAttr> supported_tile_sizes = {
+      TileSizeAttr::get(context, 4, 16),  TileSizeAttr::get(context, 16, 16),
+      TileSizeAttr::get(context, 32, 16), TileSizeAttr::get(context, 4, 32),
+      TileSizeAttr::get(context, 16, 32), TileSizeAttr::get(context, 32, 32),
+  };
+
+  // Get number of chips indices.
+  llvm::SmallVector<uint32_t> chipIndicesList =
+      llvm::to_vector(llvm::seq<uint32_t>(numberOfChips));
+
+  // Duplicate number of chip desc attributes based on number of chips.
+  llvm::SmallVector<ChipDescAttr> chipDescs;
+  chipDescs.reserve(numberOfChips);
+
+  for (auto i = 0; i < numberOfChips; i++) {
+    chipDescs.push_back(ChipDescAttr::get(
+        context, ArchAttr::get(context, Arch::Blackhole), gridShape,
+        coordTranslationOffsets, l1Size, numDramChannels, dramChannelSize,
+        nocL1AddressAlignBytes, pcieAddressAlignBytes, nocDRAMAddressAlignBytes,
+        l1UnreservedBase, eriscL1UnreservedBase, dramUnreservedBase,
+        dramUnreservedEnd, supported_data_types, supported_tile_sizes,
+        dstPhysicalSizeTiles, numCBs, numComputeThreads, numDatamovementThreads,
+        dramGridShape, dramBankToLogicalWorker, dramBankToLogicalWorker));
+  }
+
+  // Duplicate number of chip capabilities based on number of chips.
+  llvm::SmallVector<ChipCapabilityAttr> chipCapabilities;
+  chipCapabilities.reserve(numberOfChips);
+
+  for (auto i = 0; i < numberOfChips; i++) {
+    chipCapabilities.push_back(
+        ChipCapabilityAttr::get(context, ChipCapability::HostMMIO));
+  }
+
+  // Update chip channels based on number of chips.
+  llvm::SmallVector<ChipChannelAttr> chipChannelList;
+  chipChannelList.reserve(numberOfChips);
+
+  if (numberOfChips != 1) {
+    for (auto i = 0; i < numberOfChips; i++) {
+      // Assume a default ring topology where final chip connects with initial
+      // chip.
+      chipChannelList.push_back(ChipChannelAttr::get(
+          context, i, {0, 0}, (i + 1) % numberOfChips, {0, 0}));
+    }
+  }
+
+  return SystemDescAttr::get(
+      context,
+      // CPU Descriptors
+      {CPUDescAttr::get(context, CPURole::Host,
+                        mlir::StringAttr::get(context, "x86_64-pc-linux-gnu"))},
+      // Chip Descriptors
+      chipDescs,
+      // Chip Descriptor Indices
+      chipIndicesList,
+      // Chip capabilities
+      chipCapabilities,
+      // Chip Mesh Coordinates
+      {
+          ChipCoordAttr::get(context, 0, 0, 0, 0),
+      },
+      // Chip Channel Connections
+      chipChannelList);
+}
+
+SystemDescAttr
+createDefaultWormholeSystemDesc(mlir::MLIRContext *context,
+                                const ::llvm::SmallVector<int64_t> &meshShape) {
+  // Set default values
+  constexpr auto l1Size = 1499136;
+  constexpr auto numDramChannels = 12;
+  constexpr auto dramChannelSize = 1 << 30;
+  constexpr auto nocL1AddressAlignBytes = 16;
+  constexpr auto pcieAddressAlignBytes = 32;
+  constexpr auto nocDRAMAddressAlignBytes = 32;
+  constexpr auto l1UnreservedBase = 1024;
+  constexpr auto eriscL1UnreservedBase = 1024;
+  constexpr auto dramUnreservedBase = 1024;
+  constexpr auto dramUnreservedEnd = 1 << 30;
+  constexpr auto dstPhysicalSizeTiles = 16;
+  constexpr auto numCBs = 32;
+  constexpr auto numComputeThreads = 1;
+  constexpr auto numDatamovementThreads = 2;
+
+  // Get number of chips in mesh.
+  int64_t numberOfChips =
+      std::accumulate(meshShape.begin(), meshShape.end(), int64_t{1},
+                      std::multiplies<int64_t>());
+
+  // Populate dummy values for single chip or multi chip config.
+  llvm::SmallVector<std::int64_t> gridShape = {8, 8};
+  llvm::SmallVector<std::int64_t> dramGridShape = {1, 12};
+
+  // Captured from an n150 device. Wormhole's optimal mapping is identical
+  // for NOC_0 and NOC_1.
+  llvm::SmallVector<CoreCoordAttr> dramBankToLogicalWorker = {
+      CoreCoordAttr::get(context, 7, 3), CoreCoordAttr::get(context, 0, 0),
+      CoreCoordAttr::get(context, 3, 0), CoreCoordAttr::get(context, 4, 0),
+      CoreCoordAttr::get(context, 0, 4), CoreCoordAttr::get(context, 7, 7),
+      CoreCoordAttr::get(context, 1, 4), CoreCoordAttr::get(context, 6, 4),
+      CoreCoordAttr::get(context, 5, 4), CoreCoordAttr::get(context, 2, 6),
+      CoreCoordAttr::get(context, 3, 4), CoreCoordAttr::get(context, 4, 4),
+  };
+
+  // Physical-to-translated coordinate translation offsets
+  llvm::SmallVector<std::int64_t> coordTranslationOffsets = {18, 18};
+
+  // Populate a placeholder for supported tile sizes.
+  llvm::SmallVector<DataTypeAttr> supportedDataTypes = {
+      DataTypeAttr::get(context, DataType::Float32),
+      DataTypeAttr::get(context, DataType::Float16),
+      DataTypeAttr::get(context, DataType::BFloat16),
+      DataTypeAttr::get(context, DataType::BFP_Float8),
+      DataTypeAttr::get(context, DataType::BFP_BFloat8),
+      DataTypeAttr::get(context, DataType::BFP_Float4),
+      DataTypeAttr::get(context, DataType::BFP_BFloat4),
+      DataTypeAttr::get(context, DataType::BFP_Float2),
+      DataTypeAttr::get(context, DataType::BFP_BFloat2),
+      DataTypeAttr::get(context, DataType::UInt32),
+      DataTypeAttr::get(context, DataType::UInt16),
+      DataTypeAttr::get(context, DataType::UInt8),
+      DataTypeAttr::get(context, DataType::Int32),
+  };
+
+  // Populate a placeholder for supported tile sizes.
+  llvm::SmallVector<TileSizeAttr> supportedTileSizes = {
+      TileSizeAttr::get(context, 4, 16),  TileSizeAttr::get(context, 16, 16),
+      TileSizeAttr::get(context, 32, 16), TileSizeAttr::get(context, 4, 32),
+      TileSizeAttr::get(context, 16, 32), TileSizeAttr::get(context, 32, 32),
+  };
+
+  // Get number of chips indices.
+  llvm::SmallVector<uint32_t> chipIndicesList =
+      llvm::to_vector(llvm::seq<uint32_t>(numberOfChips));
+
+  // Duplicate number of chip desc attributes based on number of chips.
+  llvm::SmallVector<ChipDescAttr> chipDescs;
+  chipDescs.reserve(numberOfChips);
+
+  for (auto i = 0; i < numberOfChips; i++) {
+    chipDescs.push_back(ChipDescAttr::get(
+        context, ArchAttr::get(context, Arch::WormholeB0), gridShape,
+        coordTranslationOffsets, l1Size, numDramChannels, dramChannelSize,
+        nocL1AddressAlignBytes, pcieAddressAlignBytes, nocDRAMAddressAlignBytes,
+        l1UnreservedBase, eriscL1UnreservedBase, dramUnreservedBase,
+        dramUnreservedEnd, supportedDataTypes, supportedTileSizes,
+        dstPhysicalSizeTiles, numCBs, numComputeThreads, numDatamovementThreads,
+        dramGridShape, dramBankToLogicalWorker, dramBankToLogicalWorker));
+  }
+
+  // Duplicate number of chip capabilities based on number of chips.
+  llvm::SmallVector<ChipCapabilityAttr> chipCapabilities;
+  chipCapabilities.reserve(numberOfChips);
+
+  for (auto i = 0; i < numberOfChips; i++) {
+    chipCapabilities.push_back(
+        ChipCapabilityAttr::get(context, ChipCapability::HostMMIO));
+  }
+
+  // Update chip channels based on number of chips.
+  llvm::SmallVector<ChipChannelAttr> chipChannelList;
+  chipChannelList.reserve(numberOfChips);
+
+  if (numberOfChips != 1) {
+    for (auto i = 0; i < numberOfChips; i++) {
+      // Assume a default ring topology where final chip connects with initial
+      // chip.
+      chipChannelList.push_back(ChipChannelAttr::get(
+          context, i, {0, 0}, (i + 1) % numberOfChips, {0, 0}));
+    }
+  }
+
+  return SystemDescAttr::get(
+      context,
+      // CPU Descriptors
+      {CPUDescAttr::get(context, CPURole::Host,
+                        mlir::StringAttr::get(context, "x86_64-pc-linux-gnu"))},
+      // Chip Descriptors
+      chipDescs,
+      // Chip Descriptor Indices
+      chipIndicesList,
+      // Chip capabilities
+      chipCapabilities,
+      // Chip Mesh Coordinates
+      {
+          ChipCoordAttr::get(context, 0, 0, 0, 0),
+      },
+      // Chip Channel Connections
+      chipChannelList);
+}
+} // namespace
+
+SystemDescAttr
+SystemDescAttr::getDefault(MLIRContext *context, Arch arch,
+                           const ::llvm::SmallVector<int64_t> &meshShape) {
+  switch (arch) {
+  case Arch::WormholeB0:
+    return createDefaultWormholeSystemDesc(context, meshShape);
+  case Arch::Blackhole:
+    return createDefaultBlackholeSystemDesc(context, meshShape);
+  case Arch::Quasar:
+    return createDefaultQuasarSystemDesc(context, meshShape);
+  }
+}
+
+mlir::FailureOr<SystemDescAttr> SystemDescAttr::getFromPath(
+    MLIRContext *context, StringRef path,
+    llvm::function_ref<mlir::InFlightDiagnostic()> diagFn) {
+#ifdef TTLANG_NO_FLATBUFFERS
+  return diagFn() << "loading system descriptor from file requires flatbuffers "
+                     "support (disabled by TTLANG_NO_FLATBUFFERS)";
+#else
+  if (path.empty()) {
+    diagFn() << "system desc path must not be empty";
+    return failure();
+  }
+
+  std::ifstream fbb(path.data(), std::ios::binary | std::ios::ate);
+  if (!fbb.good()) {
+    diagFn() << "system desc does not exist: " << path;
+    return failure();
+  }
+  std::streampos size = fbb.tellg();
+  fbb.seekg(0, std::ios::beg);
+  auto buffer = std::shared_ptr<void>(std::malloc(size), std::free);
+  fbb.read(static_cast<char *>(buffer.get()), size);
+
+  return SystemDescAttr::getFromBuffer(context, buffer.get(), diagFn);
+#endif
+}
+
+mlir::FailureOr<SystemDescAttr> SystemDescAttr::getFromBuffer(
+    MLIRContext *context, void *systemDesc,
+    llvm::function_ref<mlir::InFlightDiagnostic()> diagFn) {
+#ifdef TTLANG_NO_FLATBUFFERS
+  return diagFn()
+         << "loading system descriptor from buffer requires flatbuffers "
+            "support (disabled by TTLANG_NO_FLATBUFFERS)";
+#else
+  // Read relevant information from binary
+  const auto *binarySystemDescRoot =
+      ::tt::target::GetSizePrefixedSystemDescRoot(systemDesc);
+  if (binarySystemDescRoot->schema_hash()->string_view() !=
+      ::tt::target::common::system_desc_bfbs_schema_hash) {
+    diagFn() << "system desc schema mismatch, please collect a system desc "
+                "with a runtime compiled with the same schema version";
+    return failure();
+  }
+
+  const auto *binarySystemDesc = binarySystemDescRoot->system_desc();
+  const auto *binaryCpuDesc = binarySystemDesc->cpu_descs();
+  const auto *binaryChipDesc = binarySystemDesc->chip_descs();
+  const auto *binaryChipDescIndices = binarySystemDesc->chip_desc_indices();
+  const auto *chipCapabilities = binarySystemDesc->chip_capabilities();
+  const auto *binaryChipCoords = binarySystemDesc->chip_coords();
+  const auto *chipChannelConnections = binarySystemDesc->chip_channels();
+
+  // Acquire cpu descs
+  std::vector<CPUDescAttr> cpuDescList;
+  for (const auto *element : *binaryCpuDesc) {
+    static_assert(llvm::to_underlying(CPURole::Device) ==
+                  llvm::to_underlying(CPURole::Device));
+    static_assert(llvm::to_underlying(CPURole::Host) ==
+                  llvm::to_underlying(::tt::target::CPURole::Host));
+    const auto *flatbufferTargetTripleString = element->target_triple();
+    cpuDescList.emplace_back(CPUDescAttr::get(
+        context, static_cast<CPURole>(element->role()),
+        mlir::StringAttr::get(
+            context, std::string(flatbufferTargetTripleString->c_str(),
+                                 flatbufferTargetTripleString->size()))));
+  }
+
+  // Acquire chip descs
+  std::vector<ChipDescAttr> chipDescList;
+  for (const auto *element : *binaryChipDesc) {
+    Arch arch;
+    switch (element->arch()) {
+    case ::tt::target::Arch::Wormhole_b0:
+      arch = Arch::WormholeB0;
+      break;
+    case ::tt::target::Arch::Blackhole:
+      arch = Arch::Blackhole;
+      break;
+    case ::tt::target::Arch::Quasar:
+      arch = Arch::Quasar;
+      break;
+    }
+
+    std::vector<DataTypeAttr> supportedDataTypesAttr;
+
+    for (auto it : *(element->supported_data_types())) {
+      switch (it) {
+      case ::tt::target::DataType::Float32:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::Float32));
+        break;
+      case ::tt::target::DataType::Float16:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::Float16));
+        break;
+      case ::tt::target::DataType::BFloat16:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::BFloat16));
+        break;
+      case ::tt::target::DataType::BFP_Float8:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::BFP_Float8));
+        break;
+      case ::tt::target::DataType::BFP_BFloat8:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::BFP_BFloat8));
+        break;
+      case ::tt::target::DataType::BFP_Float4:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::BFP_Float4));
+        break;
+      case ::tt::target::DataType::BFP_BFloat4:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::BFP_BFloat4));
+        break;
+      case ::tt::target::DataType::BFP_Float2:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::BFP_Float2));
+        break;
+      case ::tt::target::DataType::BFP_BFloat2:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::BFP_BFloat2));
+        break;
+      case ::tt::target::DataType::UInt32:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::UInt32));
+        break;
+      case ::tt::target::DataType::UInt16:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::UInt16));
+        break;
+      case ::tt::target::DataType::UInt8:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::UInt8));
+        break;
+      case ::tt::target::DataType::Int32:
+        supportedDataTypesAttr.push_back(
+            DataTypeAttr::get(context, DataType::Int32));
+        break;
+      // Unsupported data types
+      // We will list the cases here (rather than use `default`) so that
+      // if new supported data types are added, we will get a compile error.
+      case ::tt::target::DataType::Float64:
+      case ::tt::target::DataType::Int64:
+      case ::tt::target::DataType::UInt64:
+      case ::tt::target::DataType::Int16:
+      case ::tt::target::DataType::Int8:
+      case ::tt::target::DataType::Bool:
+        break;
+      }
+    }
+
+    SmallVector<TileSizeAttr> supportedTileSizesAttr;
+
+    for (const auto *it : *(element->supported_tile_sizes())) {
+      supportedTileSizesAttr.push_back(
+          TileSizeAttr::get(context, it->y(), it->x()));
+    }
+
+    SmallVector<CoreCoordAttr> dramBankToLogicalWorkerNoc0Attr;
+    for (const auto *it : *(element->dram_bank_to_logical_worker_noc0())) {
+      dramBankToLogicalWorkerNoc0Attr.push_back(
+          CoreCoordAttr::get(context, it->y(), it->x()));
+    }
+
+    SmallVector<CoreCoordAttr> dramBankToLogicalWorkerNoc1Attr;
+    for (const auto *it : *(element->dram_bank_to_logical_worker_noc1())) {
+      dramBankToLogicalWorkerNoc1Attr.push_back(
+          CoreCoordAttr::get(context, it->y(), it->x()));
+    }
+
+    auto currentChipDescAttr = ChipDescAttr::get(
+        context, ArchAttr::get(context, arch),
+        {element->grid_size()->y(), element->grid_size()->x()},
+        {element->coord_translation_offsets()->y(),
+         element->coord_translation_offsets()->x()},
+        element->l1_size(), element->num_dram_channels(),
+        element->dram_channel_size(), element->noc_l1_address_align_bytes(),
+        element->pcie_address_align_bytes(),
+        element->noc_dram_address_align_bytes(), element->l1_unreserved_base(),
+        element->erisc_l1_unreserved_base(), element->dram_unreserved_base(),
+        element->dram_unreserved_end(), supportedDataTypesAttr,
+        supportedTileSizesAttr, element->dst_physical_size_tiles(),
+        element->num_cbs(), element->num_compute_threads(),
+        element->num_datamovement_threads(),
+        {element->dram_grid_size()->y(), element->dram_grid_size()->x()},
+        dramBankToLogicalWorkerNoc0Attr, dramBankToLogicalWorkerNoc1Attr);
+    chipDescList.push_back(currentChipDescAttr);
+  }
+
+  // Acquire chip indices
+  std::vector<uint32_t> chipIndicesList;
+  for (auto element : *binaryChipDescIndices) {
+    chipIndicesList.push_back(element);
+  }
+
+  // Acquire chip capabilities
+  std::vector<ChipCapabilityAttr> chipCapabilitiesList;
+  for (auto element : *chipCapabilities) {
+    static_assert(llvm::to_underlying(ChipCapability::HostMMIO) ==
+                  llvm::to_underlying(::tt::target::ChipCapability::HostMMIO));
+
+    auto chipCapabilitiesAttr =
+        ChipCapabilityAttr::get(context, static_cast<ChipCapability>(element));
+    chipCapabilitiesList.push_back(chipCapabilitiesAttr);
+  }
+
+  // Acquire chip coordinates
+  std::vector<ChipCoordAttr> chipCoordinateList;
+  for (const auto *element : *binaryChipCoords) {
+    auto chipCoordinateAttr = ChipCoordAttr::get(
+        context, element->rack(), element->shelf(), element->y(), element->x());
+    chipCoordinateList.push_back(chipCoordinateAttr);
+  }
+
+  std::vector<ChipChannelAttr> chipChannelList;
+  if (chipChannelConnections) {
+    for (const auto *element : *chipChannelConnections) {
+      std::vector<int64_t> ethernetCoreCoord0Vec = {
+          element->ethernet_core_coord0().y(),
+          element->ethernet_core_coord0().x()};
+
+      std::vector<int64_t> ethernetCoreCoord1Vec = {
+          element->ethernet_core_coord1().y(),
+          element->ethernet_core_coord1().x()};
+
+      auto chipChannelAttr = ChipChannelAttr::get(
+          context, element->device_id0(), ethernetCoreCoord0Vec,
+          element->device_id1(), ethernetCoreCoord1Vec);
+      chipChannelList.push_back(chipChannelAttr);
+    }
+  }
+
+  // Generate system desc attribute
+  auto systemDescAttr = SystemDescAttr::get(
+      context, cpuDescList, chipDescList, chipIndicesList, chipCapabilitiesList,
+      chipCoordinateList, chipChannelList);
+
+  return systemDescAttr;
+#endif // TTLANG_NO_FLATBUFFERS
+}
+
+ChipDescAttr SystemDescAttr::getChipDesc(unsigned chipIndex) const {
+  return getChipDescs()[getChipDescIndices()[chipIndex]];
+}
+
+unsigned SystemDescAttr::getAddressAlignBytes(unsigned chipIndex) const {
+  return std::max(std::initializer_list<unsigned>{
+      getNocL1AddressAlignBytes(),
+      getNocDRAMAddressAlignBytes(),
+      getPcieAddressAlignBytes(),
+  });
+}
+
+unsigned SystemDescAttr::getAddressAlignBytes(MemorySpace memorySpace,
+                                              unsigned chipIndex) const {
+  switch (memorySpace) {
+  case MemorySpace::DeviceL1:
+    return getNocL1AddressAlignBytes(chipIndex);
+  case MemorySpace::DeviceDRAM:
+    return getNocDRAMAddressAlignBytes(chipIndex);
+  case MemorySpace::SystemMMIO:
+    return getPcieAddressAlignBytes(chipIndex);
+  default:
+    return 1;
+  }
+}
+
+unsigned SystemDescAttr::getNocL1AddressAlignBytes(unsigned chipIndex) const {
+  return getChipDesc(chipIndex).getNocL1AddressAlignBytes();
+}
+
+unsigned SystemDescAttr::getNocDRAMAddressAlignBytes(unsigned chipIndex) const {
+  return getChipDesc(chipIndex).getNocDRAMAddressAlignBytes();
+}
+
+unsigned SystemDescAttr::getPcieAddressAlignBytes(unsigned chipIndex) const {
+  return getChipDesc(chipIndex).getPcieAddressAlignBytes();
+}
+
+unsigned
+ChipDescAttr::getDstLogicalSizeTiles(Type type, bool fullSyncEn,
+                                     unsigned overridePhysicalSize) const {
+  auto nDstTiles = overridePhysicalSize > 0 ? overridePhysicalSize
+                                            : getDstPhysicalSizeTiles();
+  if (!fullSyncEn) {
+    nDstTiles /= 2;
+  }
+  // Will/should this be in-sync with the compute thread's fp32DestAccum?
+  const auto dataType = ttcore::elementTypeToDataType(type);
+  if (ttcore::getNumberOfBits(dataType) == 32u) {
+    nDstTiles /= 2;
+  }
+  return nDstTiles;
+}
+
+ShardLayoutAttr ShardLayoutAttr::get(mlir::MLIRContext *context,
+                                     ArrayRef<int64_t> shape,
+                                     uint64_t elementSize, uint32_t buffers) {
+  return get(
+      context,
+      ttlang::utils::calculateStrides(shape, static_cast<int64_t>(elementSize)),
+      buffers);
+}
+
+ShardLayoutAttr ShardLayoutAttr::get(ArrayRef<int64_t> shape, Type elementType,
+                                     uint32_t buffers) {
+  return get(elementType.getContext(), shape, getElementSizeBytes(elementType),
+             buffers);
+}
+
+ShardLayoutAttr ShardLayoutAttr::get(mlir::MemRefType memrefType,
+                                     uint32_t buffers) {
+  ArrayRef<int64_t> shape = memrefType.getShape();
+  if (auto layout =
+          mlir::dyn_cast<DeviceLayoutInterface>(memrefType.getLayout())) {
+    shape = layout.getShardShape(memrefType);
+  }
+  return get(shape, memrefType.getElementType(), buffers);
+}
+
+mlir::AffineMap ShardLayoutAttr::getAffineMap() const {
+  return ttlang::utils::generateAffineMapFromShardStrides(getStride(),
+                                                          getContext());
+}
+
+CBLayoutAttr CBLayoutAttr::get(mlir::MLIRContext *context,
+                               ArrayRef<int64_t> shape, uint64_t elementSize,
+                               uint32_t buffers) {
+  auto strides =
+      ttlang::utils::calculateStrides(shape, static_cast<int64_t>(elementSize));
+  return get(context, strides, buffers);
+}
+
+CBLayoutAttr CBLayoutAttr::get(ArrayRef<int64_t> shape, Type elementType,
+                               uint32_t buffers) {
+  return get(elementType.getContext(), shape, getElementSizeBytes(elementType),
+             buffers);
+}
+
+mlir::AffineMap CBLayoutAttr::getAffineMap() const {
+  // Return an identity map so that memrefs with this layout are
+  // cast-compatible with bare memrefs used by downstream ops (e.g.
+  // memref.cast in D2MToTTKernel).  The stride/buffers fields carry the
+  // CB configuration but don't affect the memref's logical indexing.
+  return mlir::AffineMap::getMultiDimIdentityMap(getStride().size(),
+                                                 getContext());
+}
+
+InterleavedLayoutAttr InterleavedLayoutAttr::get(mlir::MLIRContext *context,
+                                                 ArrayRef<int64_t> shape,
+                                                 uint64_t elementSize) {
+  return get(context, ttlang::utils::calculateStrides(
+                          shape, static_cast<int64_t>(elementSize)));
+}
+
+InterleavedLayoutAttr InterleavedLayoutAttr::get(ArrayRef<int64_t> shape,
+                                                 Type elementType) {
+  return get(elementType.getContext(), shape, getElementSizeBytes(elementType));
+}
+
+InterleavedLayoutAttr InterleavedLayoutAttr::get(mlir::MemRefType memrefType) {
+  ArrayRef<int64_t> shape = memrefType.getShape();
+  if (auto layout =
+          mlir::dyn_cast<DeviceLayoutInterface>(memrefType.getLayout())) {
+    shape = layout.getShardShape(memrefType);
+  }
+  return get(shape, memrefType.getElementType());
+}
+
+mlir::AffineMap InterleavedLayoutAttr::getAffineMap() const {
+  return ttlang::utils::generateAffineMapFromShardStrides(getStride(),
+                                                          getContext());
+}
+
+mlir::AffineMap HostLayoutAttr::getAffineMap() const {
+  auto *context = getContext();
+  const int64_t rank = getLogicalShape().size();
+  SmallVector<int64_t> strides{getHostStrides()};
+  assert(strides.size() == static_cast<size_t>(rank));
+
+  // Expression for generating linearized/flattened offsets.
+  mlir::AffineExpr linearAddrExpr = getAffineConstantExpr(0, context);
+  for (int64_t i = rank - 1; i >= 0; i--) {
+    auto dim = getAffineDimExpr(i, context);
+    auto stride = getAffineConstantExpr(strides[i], context);
+    linearAddrExpr = dim * stride + linearAddrExpr;
+  }
+
+  return mlir::AffineMap::get(rank, 0, linearAddrExpr, context);
+}
+
+LogicalResult
+HostLayoutAttr::getStridesAndOffset(ArrayRef<int64_t> shape,
+                                    SmallVectorImpl<int64_t> &strides,
+                                    int64_t &offset) const {
+  const int64_t rank = getHostStrides().size();
+  assert(rank == static_cast<int64_t>(shape.size()));
+  strides.resize_for_overwrite(rank);
+
+  for (int64_t i = 0; i < rank; i++) {
+    strides[i] = getHostStrides()[i];
+  }
+  offset = 0;
+  return success();
+}
+
+bool HostLayoutAttr::isPadded() const {
+  return getHostVolume() > ttlang::utils::volume(getLogicalShape());
+}
+
+bool MetalLayoutAttr::hasNonTrivialCollapsedDims(
+    ArrayRef<int64_t> deviceShape) {
+
+  auto numDims = deviceShape.size();
+  auto normalizedIntervals = getNormalizedIntervals();
+  for (size_t i = 0; i < normalizedIntervals.size() / 2; i += 2) {
+    int64_t start = normalizedIntervals[i * 2];
+    int64_t end = normalizedIntervals[i * 2 + 1];
+
+    if (start < 0) {
+      start = numDims + start;
+    }
+    if (end < 0) {
+      end = numDims + end;
+    }
+
+    if (end - start > 1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+//
+// This function creates an affine map that represents collapsing the tensor
+// dims onto an n-dimensional grid. E.g. (Where <> is some join operator)
+//
+//   - 3D tensor onto a 2D grid:
+//       (d0, d1, d2) -> (d0 <> d1, d2)
+//
+//   - 4D tensor onto a 2D grid:
+//       (d0, d1, d2, d3) -> (d0 <> d1 <> d2, d3)
+//
+// Note there are many ways we could collapse the above dims, by default we
+// just collapse the interval [0, -1), which collapses dim0 up to but not
+// including the last dim.  By using collapseIntervals we can achieve flexible
+// collapsing of any set of consecutive dimension ranges.
+//
+//   - 4D tensor onto a 3D grid collapseIntervals=[(1, -1)]:
+//       (d0, d1, d2, d3) -> (d0, d1 <> d2, d3)
+//
+//   - 4D tensor onto a 3D grid collapseIntervals=[(0, 2)]:
+//       (d0, d1, d2, d3) -> (d0 <> d1, d2, d3)
+//
+//   - 7D tensor onto a 4D grid collapseIntervals=[(0, 3), (-3, -1)]:
+//       (d0, d1, d2, d3, d4, d5, d6) -> (d0 <> d1 <> d2, d3, d4 <> d5, d6)
+//
+mlir::AffineMap collapsedLinearAffineMap(
+    ::mlir::MLIRContext *context, ::llvm::ArrayRef<int64_t> shape,
+    ::llvm::ArrayRef<int64_t> gridShape,
+    ::llvm::ArrayRef<std::pair<std::int64_t, std::int64_t>> collapseIntervals) {
+  int64_t numResultsClamped = std::min(shape.size(), gridShape.size());
+  auto map = mlir::AffineMap::getMinorIdentityMap(shape.size(),
+                                                  numResultsClamped, context);
+
+  if (ttlang::utils::volume(shape) == 0u) {
+    while (map.getNumResults() < gridShape.size()) {
+      map = map.insertResult(getAffineConstantExpr(0, context), 0);
+    }
+    return mlir::simplifyAffineMap(map);
+  }
+  std::int64_t minimumDim = static_cast<std::int64_t>(shape.size());
+  for (auto [begin, end] : collapseIntervals) {
+    if (begin < 0) {
+      begin += shape.size();
+    }
+    if (end < 0) {
+      end += shape.size();
+    }
+    if (begin >= end) {
+      continue;
+    }
+    minimumDim = std::min(minimumDim, begin);
+    auto collapsed = getAffineConstantExpr(0, context);
+    int multiplier = 1;
+    for (std::int64_t d = end - 1; d >= begin; --d) {
+      collapsed = getAffineDimExpr(d, context) * multiplier + collapsed;
+      multiplier *= shape[d];
+    }
+    map = map.dropResult(begin);
+    map = map.insertResult(collapsed, begin);
+  }
+
+  // Fill in implicit lower dims
+  for (std::int64_t d = 0; d < minimumDim; ++d) {
+    map = map.dropResult(d);
+    map = map.insertResult(getAffineDimExpr(d, context), d);
+  }
+
+  // Assert that all dims are represented on the RHS of the AffineMap
+  for (std::size_t d = 0; d < shape.size(); ++d) {
+    bool found = false;
+    for (auto result : map.getResults()) {
+      found |= result.isFunctionOfDim(d);
+    }
+    assert(found && "Dim does not participate in AffineMap RHS");
+  }
+
+  while (map.getNumResults() < gridShape.size()) {
+    map = map.insertResult(getAffineConstantExpr(0, context), 0);
+  }
+
+  return mlir::simplifyAffineMap(map);
+}
+
+mlir::SmallVector<std::int64_t>
+calculateLogicalShardShape(mlir::ArrayRef<int64_t> tensorShape,
+                           mlir::AffineMap linear, GridAttr grid) {
+  assert(linear.getNumResults() == grid.getShape().size());
+  mlir::SmallVector<std::int64_t> logicalShape =
+      ttlang::utils::evalShape(linear, tensorShape);
+  mlir::SmallVector<std::int64_t> shardShape(linear.getNumResults());
+  for (unsigned i = 0; i < linear.getNumResults(); ++i) {
+    shardShape[i] =
+        (logicalShape[i] + grid.getShape()[i] - 1) / grid.getShape()[i];
+  }
+  return shardShape;
+}
+
+static llvm::SmallVector<int64_t> applyCollapsedIntervalsAndAlignments(
+    llvm::ArrayRef<int64_t> shape, llvm::ArrayRef<int64_t> normalizedIntervals,
+    llvm::ArrayRef<int64_t> alignments) {
+  assert(shape.size() == alignments.size() &&
+         "Shape and alignments must have same size");
+
+  llvm::SmallVector<int64_t> resultShape;
+
+  // Process with collapse intervals.
+  assert(normalizedIntervals.size() % 2 == 0);
+  int64_t numIntervals = normalizedIntervals.size() / 2;
+
+  int64_t currentIdx = 0;
+
+  for (int64_t i = 0; i < numIntervals; ++i) {
+    int64_t start = normalizedIntervals[i * 2];
+    int64_t end = normalizedIntervals[i * 2 + 1];
+
+    // Handle Python-like negative indexing.
+    if (start < 0) {
+      start = shape.size() + start;
+    }
+    if (end < 0) {
+      end = shape.size() + end;
+    }
+
+    assert(start >= 0 && static_cast<size_t>(start) < shape.size() &&
+           "Start index out of bounds");
+    assert(end >= start && static_cast<size_t>(end) <= shape.size() &&
+           "End index out of bounds");
+
+    if (end - start == 1) {
+      // Single dimension - apply alignment.
+      resultShape.push_back(
+          ttlang::utils::alignUp(shape[start], alignments[start]));
+    } else if (end > start) {
+      // Start by aligning the innermost dimension.
+      int64_t collapsedDim =
+          ttlang::utils::alignUp(shape[end - 1], alignments[end - 1]);
+
+      // Process remaining dimensions from inner to outer w/ multiplication.
+      for (int64_t j = end - 2; j >= start; --j) {
+        // Multiply and then align up means that the alignment is in fact, the
+        // intentionally imposed alignment for the current collapse stage of the
+        // current collapsed interval.
+        collapsedDim =
+            ttlang::utils::alignUp(shape[j] * collapsedDim, alignments[j]);
+      }
+
+      resultShape.push_back(collapsedDim);
+    }
+    currentIdx = end;
+  }
+
+  // Handle remaining dimensions with alignment.
+  for (int64_t i = shape.size() - 1; i >= currentIdx; --i) {
+    resultShape.push_back(ttlang::utils::alignUp(shape[i], alignments[i]));
+  }
+
+  return resultShape;
+}
+
+llvm::SmallVector<int64_t>
+MetalLayoutAttr::getPhysicalShape(ArrayRef<int64_t> tileShape) const {
+  llvm::SmallVector<int64_t> normalizedIntervals = getNormalizedIntervals();
+  llvm::SmallVector<int64_t> physicalShape =
+      applyCollapsedIntervalsAndAlignments(
+          getLogicalShape(), normalizedIntervals, getDimAlignments());
+
+  // Scalar tensors still occupy a single physical tile when tiled on device.
+  // Keep the logical rank 0, but expose a 2D physical tile plane to D2M and
+  // TTKernel lowering.
+  if (getLogicalShape().empty() && physicalShape.empty()) {
+    constexpr std::array<int64_t, 2> tileShape = TileType::getDefaultShape();
+    physicalShape.assign(tileShape.begin(), tileShape.end());
+  }
+
+  // Rank-1 logical tensors are represented on device as a single logical row
+  // in a 2D tile plane. This preserves user-visible rank while keeping D2M and
+  // TTKernel tilize/tile compute paths on their native 2D block shape.
+  if (getLogicalShape().size() == 1 && physicalShape.size() == 1) {
+    physicalShape.insert(physicalShape.begin(), TileType::getDefaultShape()[0]);
+  }
+
+  if (!tileShape.empty()) {
+    assert(physicalShape.size() >= 2);
+    assert(tileShape.size() == 2);
+    assert(physicalShape[physicalShape.size() - 2] % tileShape[0] == 0);
+    physicalShape[physicalShape.size() - 2] /= tileShape[0];
+    assert(physicalShape[physicalShape.size() - 1] % tileShape[1] == 0);
+    physicalShape[physicalShape.size() - 1] /= tileShape[1];
+  }
+  return physicalShape;
+}
+
+// Takes various shape fields and returns the expected physical shape, which
+// should be the actual tensor shape.
+llvm::SmallVector<int64_t>
+MetalLayoutAttr::getDeviceShape(ArrayRef<int64_t> gridShape,
+                                ArrayRef<int64_t> tileShape) const {
+  llvm::SmallVector<int64_t> physicalShape = getPhysicalShape(tileShape);
+  llvm::SmallVector<int64_t> deviceShape(gridShape);
+  deviceShape.reserve(physicalShape.size() * 2);
+
+  // Divide grid dimensions in physical shape by tile dimensions to obtain the
+  // shard shape and append it to the device shape.
+  for (size_t i = 0; i < physicalShape.size(); ++i) {
+    const int64_t dim = physicalShape[i];
+    const int64_t gridDim = gridShape[i];
+    TT_assertv(dim % gridDim == 0,
+               "Collapsed dimension must be evenly divisible by grid "
+               "dimension, got {} % {} != 0.",
+               dim, gridDim);
+    deviceShape.push_back(dim / gridDim);
+  }
+  return deviceShape;
+}
+
+llvm::SmallVector<int64_t> MetalLayoutAttr::normalizeAndFlattenIntervals(
+    DenseIntElementsAttr inputIntervals, size_t inputRank) {
+  auto values = inputIntervals.getValues<int64_t>();
+  auto it = values.begin();
+
+  // Store intervals as pairs for easier sorting.
+  llvm::SmallVector<std::pair<int64_t, int64_t>> intervals;
+  while (it != values.end()) {
+    int64_t start = *it++;
+    int64_t end = *it++;
+
+    // Handle negative indexing (Python-style).
+    if (start < 0) {
+      start += inputRank;
+    }
+    if (end < 0) {
+      end += inputRank;
+    }
+
+    intervals.push_back({start, end});
+  }
+
+  // Sort intervals by start position.
+  llvm::sort(intervals,
+             [](const auto &a, const auto &b) { return a.first < b.first; });
+
+  llvm::SmallVector<int64_t> normalized;
+  // Track highest endpoint we've covered s.t. we can handle uncovered dims
+  // easily afterwards.
+  int64_t coveredUpTo = 0;
+
+  // Add sorted intervals and track coverage.
+  for (const auto &[start, end] : intervals) {
+    normalized.push_back(start);
+    normalized.push_back(end);
+    coveredUpTo = std::max(coveredUpTo, end);
+  }
+
+  // Any uncovered dim becomes it's own interval.
+  while (coveredUpTo < static_cast<int64_t>(inputRank)) {
+    normalized.push_back(coveredUpTo);
+    normalized.push_back(++coveredUpTo);
+  }
+
+  // Rank-1 logical tensors still use a 2D physical tile plane. The zero-length
+  // leading interval is the synthetic row dimension; the real logical dim maps
+  // to the innermost physical dimension.
+  if (inputRank == 1 && normalized.size() == 2) {
+    normalized.insert(normalized.begin(), {0, 0});
+  }
+
+  return normalized;
+}
+
+llvm::SmallVector<int64_t> MetalLayoutAttr::getNormalizedIntervals() const {
+  return normalizeAndFlattenIntervals(getCollapsedIntervals(),
+                                      getLogicalShape().size());
+}
+
+// Compute basic tile-based dimension alignments for the last two dimensions of
+// a collapsed shape. This function applies only tile alignment (e.g., 32x32)
+// without considering worker grid distribution.
+//
+// For example, tensor<4x43x7> with tile<32x32> and collapsed intervals
+// [[0,1],[2,3]]:
+// - Logical shape: 4x43x7
+// - Dimension alignments: 1x32x32 (align last two dims to tile boundaries)
+// - Tile-aligned logical shape: 4x64x32 (after applying alignments)
+// - Collapsed physical shape: 256x32 (collapse [0,1] and [2,3])
+//
+// Grid-aware alignment strategies that consider worker distribution are
+// implemented separately in D2MGridSelection pass.
+llvm::SmallVector<int64_t>
+MetalLayoutAttr::computeTileAlignments(ArrayRef<int64_t> logicalShape,
+                                       ArrayRef<int64_t> normalizedIntervals) {
+  constexpr std::array<int64_t, 2> tileShape = TileType::getDefaultShape();
+
+  const int64_t logicalRank = logicalShape.size();
+  const int64_t collapsedRank = normalizedIntervals.size() / 2;
+
+  llvm::SmallVector<int64_t> alignments(logicalRank, 1);
+  if (logicalRank == 0) {
+    return alignments;
+  }
+  if (logicalRank == 1) {
+    alignments[0] = tileShape[1];
+    return alignments;
+  }
+
+  // Handle the last two intervals (which will map to tiles).
+  for (int64_t idx = -1; idx >= -2; idx--) {
+    const int64_t tileIdx = tileShape.size() + idx;
+    const int64_t tileDim = tileShape[tileIdx];
+
+    const int64_t intvIdx = collapsedRank + idx;
+    // Interval end values are exclusive, so we need to subtract 1.
+    const int64_t intervalEnd = normalizedIntervals[intvIdx * 2 + 1] - 1;
+
+    alignments[intervalEnd] = tileDim;
+  }
+  assert(alignments[logicalRank - 1] % tileShape[1] == 0);
+  assert(alignments[logicalRank - 2] % tileShape[0] == 0);
+  return alignments;
+}
+
+// Compute dimension alignments for a MetalLayoutAttr that align to the worker
+// grid shape for a given operation. This extends basic tile alignment (32x32)
+// with grid-aware strategies to maximize worker utilization.
+//
+// For example, tensor<4x43x7> with grid<8x8> and tile<32x32>:
+// - Basic tile alignments: 1x32x32
+// - Tile-aligned logical shape: 4x64x32
+// - Collapsed physical shape: 256x32
+// - Grid & shard: 256x32 / 32x32 = 8x1
+// - Result: 8 workers, each with a 1x1 tile shard
+// This achieves good worker utilization with padding at tensor buffer ends,
+// minimizing memory access stride issues.
+//
+// However, consider tensor<9x43x7> with the same grid and tile:
+// - Collapsed physical shape: 576x32
+// - Without grid alignment: 576x32 with 8x8 grid gives uneven distribution
+// - With grid alignment (256x32x32): forces shape to 768x32
+// - Grid & shard: 768x32 / 32x32 = 24x1
+// - Result: More even distribution, though creates 'unnatural' shards
+//
+// For a collapsed shape of 31x33x447 with grid<8x8>:
+// - Basic alignments: 1x32x32 (from TTIRToD2M)
+// - Last dim exceeds tile*grid threshold (32*8=256)
+// - Grid-aware alignments: 1x32x256
+// - Forces shape: 31x64x512 to saturate the 8x8 worker grid
+//
+// This strategy trades some padding overhead for better worker utilization and
+// more predictable NoC traffic patterns.
+llvm::SmallVector<int64_t> MetalLayoutAttr::computeGridAwareDimAlignments(
+    ArrayRef<int64_t> logicalShape, ArrayRef<int64_t> deviceGridShape,
+    ArrayRef<int64_t> normalizedIntervals) {
+  constexpr std::array<int64_t, 2> tileShape =
+      ttcore::TileType::getDefaultShape();
+
+  const int64_t logicalRank = logicalShape.size();
+  const int64_t deviceGridRank = deviceGridShape.size();
+  const int64_t tensorGridRank = normalizedIntervals.size() / 2;
+
+  assert(deviceGridRank == 2);
+  assert(normalizedIntervals.size() % 2 == 0);
+
+  llvm::SmallVector<int64_t> alignments(logicalRank, 1);
+  if (logicalRank == 0) {
+    return alignments;
+  }
+
+  assert(deviceGridRank <= tensorGridRank);
+  if (logicalRank == 1) {
+    const int64_t tileDim = tileShape[1];
+    const int64_t gridDim = deviceGridShape[1];
+    const int64_t gridAlignmentThreshold = gridDim * tileDim;
+    const int64_t alignedSize =
+        ttlang::utils::alignUp(logicalShape[0], tileDim);
+    alignments[0] =
+        alignedSize > gridAlignmentThreshold ? gridAlignmentThreshold : tileDim;
+    return alignments;
+  }
+
+  // Process the last two intervals (which map to the 2D tile shape) and apply
+  // grid-aware alignments to saturate the worker grid when possible.
+  for (int64_t idx = -1; idx >= -2; idx--) {
+    const int64_t tileIdx = tileShape.size() + idx;
+    const int64_t tileDim = tileShape[tileIdx];
+
+    const int64_t gridIdx = deviceGridRank + idx;
+    const int64_t gridDim = deviceGridShape[gridIdx];
+
+    const int64_t intvIdx = tensorGridRank + idx;
+
+    const int64_t gridAlignmentThreshold = gridDim * tileDim;
+
+    const int64_t intervalStart = normalizedIntervals[intvIdx * 2];
+    const int64_t intervalEnd = normalizedIntervals[intvIdx * 2 + 1] - 1;
+
+    // Calculate the collapsed size for this interval by multiplying dimensions
+    // within the interval, applying tile alignment to the last two logical
+    // dims.
+    int64_t collapsedSize = 1;
+    for (int64_t i = intervalEnd; i >= intervalStart; i--) {
+      if (i >= logicalRank - 2) {
+        collapsedSize *= ttlang::utils::alignUp(logicalShape[i], tileDim);
+      } else {
+        collapsedSize *= logicalShape[i];
+      }
+    }
+
+    // If the collapsed size exceeds the grid threshold, align to the grid
+    // boundary to distribute work evenly across cores; otherwise just align
+    // to tile boundaries.
+    const bool alignToGrid = collapsedSize > gridAlignmentThreshold;
+    const int64_t alignment = alignToGrid ? gridAlignmentThreshold : tileDim;
+
+    // Apply the alignment to the appropriate dimension(s) in the interval.
+    // Assumes collapsed intervals are always <[[0, N-2], [N-1, N]]>.
+    if (intervalStart == intervalEnd) {
+      alignments[intervalEnd] = alignment;
+    } else {
+      assert(idx == -2);
+      assert(intervalEnd == logicalRank - 2);
+      alignments[intervalEnd] = tileDim;
+      // For multi-dimension intervals, apply grid alignment to the leading
+      // dimension to avoid redundant alignments (e.g., [32x32]x32 ->
+      // [1x32]x32).
+      if (alignToGrid) {
+        alignments[intervalStart] = alignment;
+      }
+    }
+  }
+  assert(alignments[logicalRank - 1] % tileShape[1] == 0);
+  assert(alignments[logicalRank - 2] % tileShape[0] == 0);
+  return alignments;
+}
+
+static llvm::SmallVector<int64_t>
+computeDefaultFlattenedIntervals(MLIRContext *context, int rank) {
+
+  constexpr size_t kGridRank = 2;
+
+  // Create collapse intervals.
+  if (rank == 0) {
+    return {};
+  }
+
+  int64_t numDimsToCollapse = rank - kGridRank + 1;
+  llvm::SmallVector<int64_t> flattenedIntervals;
+
+  // First interval will be [0, numDimsToCollapse).
+  flattenedIntervals.push_back(0);
+  flattenedIntervals.push_back(numDimsToCollapse);
+  for (int64_t i = 1; i < static_cast<int64_t>(kGridRank); ++i) {
+    // Last gridRank - 1 intervals will be [i, i + 1).
+    flattenedIntervals.push_back(numDimsToCollapse + i - 1);
+    flattenedIntervals.push_back(numDimsToCollapse + i);
+  }
+  return flattenedIntervals;
+}
+
+DenseIntElementsAttr
+MetalLayoutAttr::computeDefaultCollapsedIntervals(MLIRContext *context,
+                                                  int rank) {
+  constexpr size_t kGridRank = 2;
+
+  auto flattenedIntervals = computeDefaultFlattenedIntervals(context, rank);
+
+  if (rank == 0) {
+    auto scalarIntervalType =
+        RankedTensorType::get({0, 2}, IntegerType::get(context, 64));
+    return DenseIntElementsAttr::get(scalarIntervalType, flattenedIntervals);
+  }
+
+  auto intervalType = RankedTensorType::get(
+      {static_cast<int64_t>(kGridRank), 2}, IntegerType::get(context, 64));
+  DenseIntElementsAttr collapsedIntervals =
+      DenseIntElementsAttr::get(intervalType, flattenedIntervals);
+
+  assert(collapsedIntervals.getType().getRank() == 2 &&
+         "Collapse intervals must be a 2D array");
+
+  return collapsedIntervals;
+}
+
+static inline std::pair<DenseIntElementsAttr, llvm::SmallVector<int64_t>>
+createDefaultCollapsedIntervalsAndAlignments(::mlir::MLIRContext *context,
+                                             ArrayRef<int64_t> logicalShape) {
+
+  auto flattenedIntervals =
+      computeDefaultFlattenedIntervals(context, logicalShape.size());
+  auto collapsedIntervals = MetalLayoutAttr::computeDefaultCollapsedIntervals(
+      context, logicalShape.size());
+
+  // Set alignments based on the flattened intervals.
+  llvm::SmallVector<int64_t> dimAlignmentsVec =
+      MetalLayoutAttr::computeTileAlignments(logicalShape, flattenedIntervals);
+  return {collapsedIntervals, dimAlignmentsVec};
+}
+
+MetalLayoutAttr MetalLayoutAttr::get(::mlir::MLIRContext *context,
+                                     ArrayRef<int64_t> logicalShape,
+                                     MemorySpace memorySpace,
+                                     TensorMemoryLayout memoryLayout) {
+  auto [collapsedIntervals, dimAlignmentsVec] =
+      createDefaultCollapsedIntervalsAndAlignments(context, logicalShape);
+  return get(context, logicalShape, dimAlignmentsVec, collapsedIntervals,
+             memorySpace, memoryLayout);
+}
+
+// Getter with explicit collapsedIntervals, we calculate the alignments.
+MetalLayoutAttr MetalLayoutAttr::get(::mlir::MLIRContext *context,
+                                     ArrayRef<int64_t> logicalShape,
+                                     MemorySpace memorySpace,
+                                     TensorMemoryLayout memoryLayout,
+                                     DenseIntElementsAttr collapsedIntervals) {
+  llvm::SmallVector<int64_t> normalizedIntervals =
+      normalizeAndFlattenIntervals(collapsedIntervals, logicalShape.size());
+  llvm::SmallVector<int64_t> dimAlignmentsVec =
+      computeTileAlignments(logicalShape, normalizedIntervals);
+  return get(context, logicalShape, dimAlignmentsVec, collapsedIntervals,
+             memorySpace, memoryLayout);
+}
+
+// Getter with explicit collapsedIntervals and dimAlignments.
+MetalLayoutAttr MetalLayoutAttr::get(::mlir::MLIRContext *context,
+                                     ArrayRef<int64_t> logicalShape,
+                                     MemorySpace memorySpace,
+                                     TensorMemoryLayout memoryLayout,
+                                     DenseIntElementsAttr collapsedIntervals,
+                                     ArrayRef<int64_t> dimAlignments) {
+  return get(context, logicalShape, dimAlignments, collapsedIntervals,
+             memorySpace, memoryLayout);
+}
+
+mlir::MemRefType
+MetalLayoutAttr::getMemRefType(mlir::RankedTensorType tensorType) {
+
+  if (!tensorType.getEncoding()) {
+    return MemRefType::get(tensorType.getShape(), tensorType.getElementType());
+  }
+
+  auto layout = mlir::cast<MetalLayoutAttr>(tensorType.getEncoding());
+
+  auto shardShape = layout.getShardShape(tensorType);
+
+  return MemRefType::get(
+      shardShape, tensorType.getElementType(), MemRefLayoutAttrInterface{},
+      MemorySpaceAttr::get(tensorType.getContext(), layout.getMemorySpace()));
+}
+
+::mlir::LogicalResult MetalLayoutAttr::verify(
+    ::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+    ::llvm::ArrayRef<int64_t> logicalShape,
+    ::llvm::ArrayRef<int64_t> dimAlignments,
+    DenseIntElementsAttr collapsedIntervals, MemorySpace memorySpace,
+    TensorMemoryLayout memoryLayout) {
+
+  int64_t logicalRank = logicalShape.size();
+
+  // The dim_alignments rank must match logical_shape rank.
+  if (static_cast<int64_t>(dimAlignments.size()) != logicalRank) {
+    return emitError() << "dim_alignments size (" << dimAlignments.size()
+                       << ") must match logical_shape rank (" << logicalRank
+                       << ")";
+  }
+
+  // All alignments must be positive.
+  for (size_t i = 0; i < dimAlignments.size(); ++i) {
+    if (dimAlignments[i] <= 0) {
+      return emitError() << "dim_alignments[" << i << "] must be positive, got "
+                         << dimAlignments[i];
+    }
+  }
+
+  // The collapsed_intervals must be a 2D tensor with shape [N, 2].
+  auto intervalsType = collapsedIntervals.getType();
+  if (intervalsType.getRank() != 2) {
+    return emitError() << "collapsed_intervals must be a 2D array, got rank "
+                       << intervalsType.getRank();
+  }
+
+  if (intervalsType.getDimSize(1) != 2) {
+    return emitError()
+           << "collapsed_intervals must have pairs (second dim size 2), got "
+           << intervalsType.getDimSize(1);
+  }
+
+  // Validate each interval's bounds.
+  auto values = collapsedIntervals.getValues<int64_t>();
+  auto it = values.begin();
+  while (it != values.end()) {
+    const int64_t start = *it++;
+    const int64_t end = *it++;
+
+    // Normalize negative indices (Python-style).
+    const int64_t normalizedStart = start < 0 ? start + logicalRank : start;
+    const int64_t normalizedEnd = end < 0 ? end + logicalRank : end;
+
+    // Check bounds after normalization.
+    if (normalizedStart < 0 || normalizedStart >= logicalRank) {
+      return emitError() << "collapsed_intervals start index " << start
+                         << " (normalized: " << normalizedStart
+                         << ") is out of bounds for logical_shape rank "
+                         << logicalRank;
+    }
+
+    if (normalizedEnd < 0 || normalizedEnd > logicalRank) {
+      return emitError() << "collapsed_intervals end index " << end
+                         << " (normalized: " << normalizedEnd
+                         << ") is out of bounds for logical_shape rank "
+                         << logicalRank;
+    }
+
+    // Start must not exceed end (intervals are half-open [start, end)).
+    if (normalizedStart > normalizedEnd) {
+      return emitError() << "collapsed_intervals start (" << start
+                         << ") must not exceed end (" << end << ")";
+    }
+  }
+
+  return ::mlir::success();
+}
+
+// Get effective stride (use provided or calculate from shape)
+llvm::SmallVector<int64_t>
+MetalLayoutAttr::getShardStride(RankedTensorType tensorType) const {
+  auto shardShape = getShardShape(tensorType);
+  SmallVector<int64_t> shardStride(shardShape.size());
+  shardStride[shardStride.size() - 1] =
+      getElementSizeBytes(tensorType.getElementType());
+  for (int64_t i = static_cast<int64_t>(shardStride.size()) - 2; i >= 0; i--) {
+    shardStride[i] = shardShape[i + 1] * shardStride[i + 1];
+  }
+  return shardStride;
+}
+
+std::pair<llvm::SmallVector<int64_t>, int64_t>
+MetalLayoutAttr::getHostStrideAndVolume() const {
+  const auto logicalShape = getLogicalShape();
+  const auto alignments = getDimAlignments();
+  const auto normalizedIntervals = getNormalizedIntervals();
+
+  llvm::SmallVector<int64_t> strides(logicalShape.size(), 0);
+
+  const int64_t numIntervals = normalizedIntervals.size() / 2;
+
+  int64_t currentStride = 1;
+
+  // Process intervals from innermost (last) to outermost (first).
+  for (int64_t i = numIntervals - 1; i >= 0; i--) {
+    // Get interval bounds (end is exclusive in normalized form, so subtract 1).
+    const int64_t intervalStart = normalizedIntervals[i * 2];
+    const int64_t intervalEnd = normalizedIntervals[i * 2 + 1] - 1;
+
+    int64_t collapsedSize = 1;
+    // Both the alignments and the collapsed sizes are "cumulative" relative to
+    // the current collapse interval. But to update the current stride we need
+    // the true per-dim alignment, which is difficult to obtain, especially when
+    // the aligned up new collapsed size is not a multiple of the old collapsed
+    // size.
+    // Solution: revert the current stride to before the current collapse
+    // interval, and then update it straight to the current collapse stage.
+
+    for (int64_t j = intervalEnd; j >= intervalStart; j--) {
+      strides[j] = currentStride;
+
+      // Update stride calculation.
+      currentStride /= collapsedSize;
+      collapsedSize = ttlang::utils::alignUp(collapsedSize * logicalShape[j],
+                                             alignments[j]);
+      currentStride *= collapsedSize;
+    }
+  }
+
+  // At this point, currentStride == 'stride' of the entire tensor, i.e. volume.
+  if (logicalShape.size() == 1) {
+    currentStride *= TileType::getDefaultShape()[0];
+  }
+  TT_assertv(currentStride >= ttlang::utils::volume(logicalShape),
+             "Final stride ({}) less than volume ({})", currentStride,
+             ttlang::utils::volume(logicalShape));
+
+  return {strides, currentStride};
+}
+
+llvm::SmallVector<int64_t> MetalLayoutAttr::getHostStride() const {
+  return getHostStrideAndVolume().first;
+}
+
+int64_t MetalLayoutAttr::getHostVolume() const {
+  return getHostStrideAndVolume().second;
+}
+
+//
+// This function creates an affine map that represents mapping shards onto the
+// 2d physical device grid. A typical example would nearly be identity:
+//   (d0, d1, d2)[s0] -> ( # affine symbol baseOffset
+//     0,                  # Device index
+//     d0,                 # GridDimY
+//     d1,                 # GridDimX
+//     s0 + d2             # L1 offset
+//   )
+//
+//  Note the symbols are only there to maintain a congruent API with
+//  createDramMap which actually does use the shard shape for address
+//  calculation.  Perhaps in the future a more sophisticated mapping might use
+//  them.
+//
+static mlir::AffineMap createL1Map(mlir::MLIRContext *context,
+                                   GridAttr workerGrid) {
+  mlir::AffineMap workerMap = workerGrid.getVirtToPhysicalMap();
+  // Take the workerMap and just add an additional dimension for the L1 shard
+  // offset for each core.
+  mlir::SmallVector<mlir::AffineExpr> workerMapExprs(workerMap.getResults());
+  mlir::AffineExpr baseOffset = getAffineSymbolExpr(0, context);
+  workerMapExprs.push_back(baseOffset +
+                           getAffineDimExpr(workerMap.getNumDims(), context));
+  return mlir::AffineMap::get(workerMap.getNumDims() + 1, 1, workerMapExprs,
+                              context);
+}
+
+static GridAttr createWorkerGrid(::mlir::MLIRContext *context,
+                                 mlir::ArrayRef<int64_t> chipGrid,
+                                 mlir::ArrayRef<int64_t> meshShapeRef) {
+  assert(chipGrid.size() == 2 && "expected 2D grid");
+  mlir::SmallVector<int64_t> meshShape(meshShapeRef);
+
+  // Fill in missing dimensions with 1 so that the mesh shape is at least 2D.
+  while (meshShape.size() < chipGrid.size()) {
+    meshShape.push_back(1);
+  }
+
+  mlir::SmallVector<int64_t> virtualGrid(chipGrid);
+  // Fill in missing dimensions with 1 so that the virtual grid is at has
+  // meshShape dimensions.
+  while (virtualGrid.size() < meshShape.size()) {
+    virtualGrid.insert(virtualGrid.begin(), 1);
+  }
+
+  // Multiply out the mesh shape to get the real virtual grid shape.
+  for (int i = meshShape.size() - 1; i >= 0; --i) {
+    virtualGrid[i] *= meshShape[i];
+  }
+
+  // Calculate the affine expressions for the worker grid.
+  auto workerDeviceIdx = getAffineConstantExpr(0, context);
+  auto workerCoreY = getAffineDimExpr(virtualGrid.size() - 2, context);
+  auto workerCoreX = getAffineDimExpr(virtualGrid.size() - 1, context);
+  assert(virtualGrid.size() == meshShape.size());
+
+  // Special case the inner 2 dimensions of the device indexing to support
+  // horizontally/vertically stacked virtual grids.  For these cases we need an
+  // affine expression that rolls over the device index when we reach the end of
+  // single-chip boundaries.
+  int meshStride = 1;
+  if (meshShape[meshShape.size() - 1] > 1) {
+    workerDeviceIdx = workerCoreX.floorDiv(chipGrid[1]) + workerDeviceIdx;
+    workerCoreX = workerCoreX % meshShape[meshShape.size() - 1];
+  }
+
+  meshStride *= meshShape[meshShape.size() - 1];
+  if (meshShape[meshShape.size() - 2] > 1) {
+    workerDeviceIdx =
+        workerCoreY.floorDiv(chipGrid[0]) * meshStride + workerDeviceIdx;
+    workerCoreY = workerCoreY % meshShape[meshShape.size() - 2];
+  }
+
+  // The rest of the dimensions are just a simple linearization.
+  meshStride *= meshShape[meshShape.size() - 2];
+  for (int i = static_cast<int>(meshShape.size()) - 3; i >= 0; --i) {
+    workerDeviceIdx =
+        getAffineDimExpr(i, context) * meshStride + workerDeviceIdx;
+    meshStride *= meshShape[i];
+  }
+
+  mlir::SmallVector<mlir::AffineExpr> workerGridExprs = {
+      workerDeviceIdx, workerCoreY, workerCoreX};
+  auto virtToPhysicalMap =
+      mlir::AffineMap::get(virtualGrid.size(), 0, workerGridExprs, context);
+
+  // Create the inverse map (physical to virtual).
+  // Physical coords are (device_id, y, x) and we map back to virtual coords.
+  // For the simple single-device case, this is just (d0, d1, d2) -> (d1, d2).
+  // i.e. skip the first dimension (device index) and map physical y, x back to
+  // virtual dimensions.
+  mlir::SmallVector<mlir::AffineExpr> physicalToVirtExprs;
+  for (size_t i = 0; i < virtualGrid.size(); ++i) {
+    physicalToVirtExprs.push_back(getAffineDimExpr(i + 1, context));
+  }
+  auto physicalToVirtMap = mlir::AffineMap::get(virtualGrid.size() + 1, 0,
+                                                physicalToVirtExprs, context);
+
+  return GridAttr::get(context, virtualGrid, virtToPhysicalMap,
+                       physicalToVirtMap);
+}
+
+//
+// This function creates an affine map that represents mapping the tensor's
+// linear layout onto physical dram banks. The affine map round robin's the bank
+// in pages of page size.
+//   (d0, d1, d2)[s0, s1, s2, s3, s4, s5, s6] -> (
+//                |   |   |   |   |   |   |
+//                |   |   |   |   |   |   +- Element Size
+//                |   |   |   |   |   +- Base Address
+//                |   |   |   |   +- Page size
+//                |   |   |   +- Shard Dim X
+//                |   |   +- Shard Dim Y
+//                |   +- Grid Dim X
+//                +- Grid Dim Y
+//     index[0]: Device ID
+//     index[1]: _unused_
+//     index[2]: Channel Idx
+//       global_page_index % num_dram_banks
+//     index[3]: Byte Offset In Channel
+//       (channel_page_index * PAGE_SIZE) + (addr % PAGE_SIZE) + base_address
+//   )
+//
+// Where `addr` is the linearized address as though it were indexing all of DRAM
+// flat:
+//   shard_vol = s2 * s3 * s6
+//   addr = (d0 * shard_vol * s1) + (d1 * shard_vol) + d2
+//
+// Where global_page_index is the global page index corresponding to the
+// address:
+//   global_page_index  = addr floorDiv PAGE_SIZE
+//
+// Where channel_page_index is the page index within a bank
+//   channel_page_index = global_page_index floorDiv NUM_DRAM_BANKS
+//
+
+static mlir::AffineMap createDramMap(::mlir::MLIRContext *context,
+                                     GridAttr workerGrid, size_t numDramCores) {
+  mlir::AffineMap workerMap = workerGrid.getVirtToPhysicalMap();
+  assert(workerMap.getNumResults() == PhysGridResultIdx::NumIndices);
+
+  size_t elemSizeIndex = workerMap.getNumDims() * 2 + 2;
+  mlir::AffineExpr shardVolumeExpr =
+      getAffineSymbolExpr(elemSizeIndex, context);
+  for (int i = workerMap.getNumDims() - 1; i >= 0; i--) {
+    mlir::AffineExpr shardDim =
+        getAffineSymbolExpr(workerMap.getNumDims() + i, context);
+    shardVolumeExpr = shardDim * shardVolumeExpr;
+  }
+
+  // flatAddr is an expression representing the address as-if the memory was
+  // completely flat
+  mlir::AffineExpr flatAddr = getAffineDimExpr(workerMap.getNumDims(), context);
+  mlir::AffineExpr gridVolumeExpr = getAffineConstantExpr(1, context);
+  for (int i = workerMap.getNumDims() - 1; i >= 0; i--) {
+    mlir::AffineExpr dim = getAffineDimExpr(i, context);
+    mlir::AffineExpr gridDim = getAffineSymbolExpr(i, context);
+    flatAddr = dim * gridVolumeExpr * shardVolumeExpr + flatAddr;
+    gridVolumeExpr = gridVolumeExpr * gridDim;
+  }
+
+  mlir::AffineExpr baseAddressExpr =
+      getAffineSymbolExpr(workerMap.getNumDims() * 2 + 1, context);
+  mlir::AffineExpr numDramBanksExpr =
+      getAffineConstantExpr(numDramCores, context);
+  mlir::AffineExpr dramPageSizeExpr =
+      getAffineSymbolExpr(workerMap.getNumDims() * 2, context);
+  mlir::AffineExpr pageIndex = flatAddr.floorDiv(dramPageSizeExpr);
+  mlir::AffineExpr channelPageIndex = pageIndex.floorDiv(numDramBanksExpr);
+
+  mlir::SmallVector<mlir::AffineExpr> dramMapResults = {
+      getAffineConstantExpr(0, context), getAffineConstantExpr(0, context),
+      pageIndex % numDramBanksExpr,
+      (channelPageIndex * dramPageSizeExpr) + (flatAddr % dramPageSizeExpr) +
+          baseAddressExpr};
+
+  unsigned dimCount = workerMap.getNumDims() + 1;
+  unsigned symbolCount = workerMap.getNumDims() * 2 + 3;
+  return mlir::AffineMap::get(dimCount, symbolCount, dramMapResults, context);
+}
+
+static mlir::AffineMap createDramMap(::mlir::MLIRContext *context,
+                                     GridAttr workerGrid,
+                                     SystemDescAttr systemDesc,
+                                     ::llvm::ArrayRef<unsigned> chipIds) {
+  auto numDramChannels = systemDesc.getChipDescs().front().getNumDramChannels();
+  return createDramMap(context, workerGrid, numDramChannels);
+}
+
+DeviceAttr DeviceAttr::get(::mlir::MLIRContext *context,
+                           SystemDescAttr systemDesc,
+                           ArrayRef<int64_t> meshShape,
+                           ArrayRef<unsigned> chipIds,
+                           ArrayRef<Topology> meshTopology) {
+  assert(not chipIds.empty() && "expected at least one chip");
+  ChipDescAttr chipDesc = systemDesc.getChipDesc(chipIds.front());
+  SmallVector<int64_t> chipGrid(chipDesc.getGrid());
+  assert(chipGrid.size() == 2 && "expected 2D grid");
+
+  // Take the min grid shape across all chips, this can happen if 1 chip has
+  // more harvested rows than another.  We take the min because we want to
+  // ensure that the logical grid is the same across all chips and this vastly
+  // simplifies the grid /memory mappings across the board.
+  for (unsigned chipId : chipIds) {
+    ChipDescAttr chip = systemDesc.getChipDesc(chipId);
+    ArrayRef<int64_t> iChipGrid = chip.getGrid();
+    assert(iChipGrid.size() == 2 && "expected 2D grid");
+    chipGrid[0] = std::min(chipGrid[0], iChipGrid[0]);
+    chipGrid[1] = std::min(chipGrid[1], iChipGrid[1]);
+  }
+
+  // Due mainly to SPMD programming model for multi-devices, workerGrid
+  // currently is set to be limited to a single device {1, 1}.
+  auto workerGrid = createWorkerGrid(context, chipGrid, {1, 1});
+  auto dramGrid =
+      GridAttr::get(context, SmallVector<int64_t>(chipDesc.getDramGrid()));
+  auto l1Map = createL1Map(context, workerGrid);
+  auto dramMap = createDramMap(context, workerGrid, systemDesc, chipIds);
+  return get(context, workerGrid, dramGrid, l1Map, dramMap, meshShape, chipIds,
+             meshTopology);
+}
+
+DeviceAttr DeviceAttr::get(::mlir::MLIRContext *context,
+                           SystemDescAttr systemDesc,
+                           ArrayRef<int64_t> meshShape,
+                           ArrayRef<Topology> meshTopology) {
+  int64_t numChips = ttlang::utils::volume(meshShape);
+  assert(systemDesc.getChipDescIndices().size() >=
+             static_cast<size_t>(numChips) &&
+         "expected at least one chip");
+  SmallVector<unsigned> chipIds(numChips);
+  std::iota(chipIds.begin(), chipIds.end(), 0);
+  return get(context, systemDesc, meshShape, chipIds, meshTopology);
+}
+
+inline mlir::AffineMap prependResult(mlir::AffineMap map,
+                                     mlir::AffineExpr result) {
+  if (!map) {
+    return map;
+  }
+  return map.insertResult(result, 0);
+}
+
+size_t DeviceAttr::getShardSizeInBytes(MemRefType memrefType, size_t alignSize,
+                                       bool includeBuffers) const {
+
+  int64_t numBuffers = 1;
+  ArrayRef<int64_t> shardShape;
+  if (auto devLayout =
+          mlir::dyn_cast<DeviceLayoutInterface>(memrefType.getLayout())) {
+    shardShape = devLayout.getShardShape(memrefType);
+    // if the layout is sharded, numBuffers is programmable
+    if (auto shardLayout = mlir::dyn_cast<ShardLayoutAttr>(devLayout)) {
+      numBuffers = (includeBuffers) ? shardLayout.getBuffers() : 1;
+    }
+  } else if (auto cbLayout =
+                 mlir::dyn_cast<CBLayoutAttr>(memrefType.getLayout())) {
+    // Core-local CB buffers: full shape is the shard, numBuffers is
+    // programmable.
+    shardShape = memrefType.getShape();
+    numBuffers = (includeBuffers) ? cbLayout.getBuffers() : 1;
+  } else {
+    // local memrefs have no layout attribute
+    numBuffers = 1;
+    shardShape = memrefType.getShape();
+  }
+
+  auto elementSizeBytes = getElementSizeBytes(memrefType.getElementType());
+  int64_t bytesPerElem = elementSizeBytes * numBuffers;
+
+  return ttlang::utils::alignUp(
+      static_cast<size_t>(ttlang::utils::volume(shardShape, bytesPerElem)),
+      alignSize);
+}
+
+size_t DeviceAttr::getMemrefSizeBytes(MemRefType memrefType, size_t pageSize,
+                                      bool includeBuffers) const {
+  size_t alignSize = pageSize;
+  if (alignSize == 0) {
+    auto memorySpace = getMemorySpace(memrefType);
+    switch (memorySpace) {
+    case MemorySpace::DeviceL1: {
+      alignSize = getMemrefCBPageSizeBytes(memrefType);
+      break;
+    }
+    case MemorySpace::DeviceDRAM: {
+      alignSize = 1;
+      break;
+    }
+    default: {
+      llvm_unreachable("Unsupported memory space");
+    }
+    }
+  }
+
+  // Assume that memref size footprint is equal to shard size
+  return getShardSizeInBytes(memrefType, alignSize, includeBuffers);
+}
+
+size_t DeviceAttr::getMemrefCBPageSizeBytes(MemRefType memrefType) const {
+  mlir::Type elementType = memrefType.getElementType();
+  TileType tileType = mlir::dyn_cast<TileType>(elementType);
+  return tileType ? tileType.getSizeBytes()
+                  : TileType::get(elementType).getSizeBytes();
+}
+
+size_t DeviceAttr::getMemrefCBNumPages(MemRefType memrefType) const {
+  size_t sizeBytes =
+      getMemrefSizeBytes(memrefType, getMemrefCBPageSizeBytes(memrefType),
+                         /*includeBuffers=*/false);
+  size_t pageSize = getMemrefCBPageSizeBytes(memrefType);
+  assert(sizeBytes % pageSize == 0);
+  return sizeBytes / pageSize;
+}
+
+::mlir::LogicalResult
+DeviceAttr::verify(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+                   GridAttr workerGrid, GridAttr dramGrid,
+                   ::mlir::AffineMap l1Map, ::mlir::AffineMap dramMap,
+                   ::llvm::ArrayRef<int64_t> meshShape,
+                   ::llvm::ArrayRef<unsigned> chipIds,
+                   ::llvm::ArrayRef<Topology> meshTopology) {
+  if (chipIds.empty()) {
+    emitError() << "expected at least one chip";
+    return ::mlir::failure();
+  }
+
+  std::int64_t meshVolume = ttlang::utils::volume(meshShape);
+  if (chipIds.size() != static_cast<size_t>(meshVolume)) {
+    emitError() << "expected chipIds size to match the volume of meshShape";
+    return ::mlir::failure();
+  }
+
+  auto workerGridShape = workerGrid.getShape();
+  for (auto dim : workerGridShape) {
+    if (dim <= 0) {
+      emitError() << "expected positive worker grid dimensions";
+      return ::mlir::failure();
+    }
+  }
+
+  auto dramGridShape = dramGrid.getShape();
+  if (dramGridShape.size() != 2) {
+    emitError() << "expected 2D dram grid, got " << dramGridShape.size() << "D";
+    return ::mlir::failure();
+  }
+  for (auto dim : dramGridShape) {
+    if (dim <= 0) {
+      emitError() << "expected positive dram grid dimensions";
+      return ::mlir::failure();
+    }
+  }
+
+  auto physicalGridMapping = workerGrid.getVirtToPhysicalMap();
+  if (physicalGridMapping.getNumResults() != PhysGridResultIdx::NumIndices) {
+    emitError() << "expected physical grid mapping to have "
+                   "PhysGridResultIdx::NumIndices results";
+    return ::mlir::failure();
+  }
+
+  if (l1Map.getNumResults() != MemoryMapResultIdx::NumIndices) {
+    emitError()
+        << "expected l1Map to have MemoryMapResultIdx::NumIndices results";
+    return ::mlir::failure();
+  }
+
+  if (dramMap.getNumResults() != MemoryMapResultIdx::NumIndices) {
+    emitError()
+        << "expected dramMap to have MemoryMapResultIdx::NumIndices results";
+    return ::mlir::failure();
+  }
+
+  if (!meshTopology.empty() && meshTopology.size() != meshShape.size()) {
+    return emitError() << "expected meshTopology size to match meshShape rank";
+  }
+
+  return ::mlir::success();
+}
+
+::mlir::LogicalResult
+TileType::verify(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+                 ArrayRef<int64_t> shape, DataType dataType) {
+  if (shape.size() != 2) {
+    emitError() << "expected 2D shape";
+    return ::mlir::failure();
+  }
+  return ::mlir::success();
+}
+
+TileType TileType::get(Type elementType, ArrayRef<int64_t> shape) {
+  return get(elementType.getContext(), shape,
+             elementTypeToDataType(elementType));
+}
+
+llvm::SmallVector<int64_t>
+TileType::getScalarShape(SmallVector<int64_t> tiledShape) const {
+  assert(tiledShape.size() >= 2 && "expected at least 2D shape");
+  tiledShape[tiledShape.size() - 2] *= getHeight();
+  tiledShape[tiledShape.size() - 1] *= getWidth();
+  return tiledShape;
+}
+
+llvm::SmallVector<int64_t>
+TileType::getTiledShape(SmallVector<int64_t> scalarShape) const {
+  assert(scalarShape.size() >= 2 && "expected at least 2D shape");
+  scalarShape[scalarShape.size() - 2] =
+      (scalarShape[scalarShape.size() - 2] + getHeight() - 1) / getHeight();
+  scalarShape[scalarShape.size() - 1] =
+      (scalarShape[scalarShape.size() - 1] + getWidth() - 1) / getWidth();
+  return scalarShape;
+}
+
+uint64_t TileType::getSizeBytes() const {
+  switch (getDataType()) {
+  case DataType::Float32:
+    return getHeight() * getWidth() * 4;
+  case DataType::Float16:
+    return getHeight() * getWidth() * 2;
+  case DataType::BFloat16:
+    return getHeight() * getWidth() * 2;
+  case DataType::BFP_Float8:
+    assert(getHeight() == 32 && getWidth() == 32);
+    // 1024 + 64 (1 byte of shared exponent for every 16 elements)
+    return 1088;
+  case DataType::BFP_BFloat8:
+    assert(getHeight() == 32 && getWidth() == 32);
+    return 1088;
+  case DataType::BFP_Float4:
+    assert(getHeight() == 32 && getWidth() == 32);
+    return 576;
+  case DataType::BFP_BFloat4:
+    assert(getHeight() == 32 && getWidth() == 32);
+    return 576;
+  case DataType::BFP_Float2:
+    assert(getHeight() == 32 && getWidth() == 32);
+    return 320;
+  case DataType::BFP_BFloat2:
+    assert(getHeight() == 32 && getWidth() == 32);
+    return 320;
+  case DataType::UInt32:
+  case DataType::Int32:
+    return getHeight() * getWidth() * 4;
+  case DataType::UInt16:
+    return getHeight() * getWidth() * 2;
+  case DataType::UInt8:
+  case DataType::Bool:
+    return getHeight() * getWidth();
+  }
+}
+
+mlir::Type TileType::getElementType() const {
+  return dataTypeToElementType(getContext(), getDataType());
+}
+
+const llvm::fltSemantics &TileType::getFloatSemantics() {
+  switch (getDataType()) {
+  case DataType::Float32:
+    return llvm::APFloat::IEEEsingle();
+  case DataType::Float16:
+  case DataType::BFP_Float8:
+  case DataType::BFP_Float4:
+  case DataType::BFP_Float2:
+    return llvm::APFloat::IEEEhalf();
+  case DataType::BFloat16:
+  case DataType::BFP_BFloat8:
+  case DataType::BFP_BFloat4:
+  case DataType::BFP_BFloat2:
+    return llvm::APFloat::BFloat();
+  case DataType::UInt32:
+  case DataType::UInt16:
+  case DataType::UInt8:
+  case DataType::Int32:
+  case DataType::Bool:
+    break;
+  }
+  llvm_unreachable("getFloatSemantics called on non-float TileType");
+}
+
+TileType TileType::cloneWith(::std::optional<::llvm::ArrayRef<int64_t>> shape,
+                             ::mlir::Type elementType) const {
+  // Use provided shape or keep current shape
+  ::llvm::ArrayRef<int64_t> newShape = shape.has_value() ? *shape : getShape();
+
+  // Convert element type to DataType
+  DataType newDataType = elementTypeToDataType(elementType);
+
+  return TileType::get(getContext(), newShape, newDataType);
+}
+
+void TTCoreDialect::registerTypes() {
+  // NOLINTNEXTLINE
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.cpp.inc"
+      >();
+}
+
+bool CoreRangeAttr::intersects(CoreRangeAttr other) const {
+  bool thisEndsBeforeOtherStarts =
+      this->getEndCoord().getX() < other.getStartCoord().getX();
+  bool thisStartsAfterOtherEnds =
+      this->getStartCoord().getX() > other.getEndCoord().getX();
+  bool thisEndsBelowOtherStarts =
+      this->getEndCoord().getY() < other.getStartCoord().getY();
+  bool thisStartsAboveOtherEnds =
+      this->getStartCoord().getY() > other.getEndCoord().getY();
+
+  return !(thisEndsBeforeOtherStarts || thisStartsAfterOtherEnds ||
+           thisEndsBelowOtherStarts || thisStartsAboveOtherEnds);
+}
+
+::llvm::LogicalResult CoreRangeAttr::verify(
+    ::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+    mlir::tt::ttcore::CoreCoordAttr startCoord,
+    mlir::tt::ttcore::CoreCoordAttr endCoord) {
+  if (startCoord.getX() < 0 || startCoord.getY() < 0) {
+    return emitError() << "start coordinates " << startCoord
+                       << " must be non-negative";
+  }
+  if (endCoord.getX() < 0 || endCoord.getY() < 0) {
+    return emitError() << "end coordinates " << endCoord
+                       << " must be non-negative";
+  }
+
+  if (startCoord.getX() > endCoord.getX() ||
+      startCoord.getY() > endCoord.getY()) {
+    return emitError() << "Start coordinates " << startCoord
+                       << " must be less than or equal to end coordinates "
+                       << endCoord;
+  }
+
+  return ::llvm::success();
+}
+} // namespace mlir::tt::ttcore

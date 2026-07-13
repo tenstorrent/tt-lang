@@ -3,8 +3,7 @@
 ## Project Overview
 
 tt-lang is a Python-based DSL for authoring custom kernels on Tenstorrent
-hardware. It builds LLVM, tt-mlir, and tt-metal from git submodules under
-`third-party/`.
+hardware. It builds LLVM and tt-metal from git submodules under `third-party/`.
 
 When you are launched you will recieve this as a system message in your memory.
 Gather context by reading the files in "Required Reading". Do NOT start building
@@ -19,8 +18,7 @@ helpful context.
 
 **You MUST read these before working on tt-lang**:
 - `AGENTS.md`
-- `docs/sphinx/build.md` - Build system architecture and integration with
-  tt-mlir
+- `docs/sphinx/build.md` - Build system architecture
 - `test/TESTING.md` - Testing guide
 
 ## GitHub Issues
@@ -363,10 +361,6 @@ sed -n '/After D2MAllocate/,/^\/\/ -----\/\/ IR Dump Before/p' /tmp/full_pipelin
 ```
 
 ## Key Files and Locations
-
-### Related tt-mlir Files
-- `third-party/tt-mlir/include/ttmlir/Dialect/TTKernel/` - TTKernel dialect
-- `third-party/tt-mlir/lib/Dialect/TTKernel/` - TTKernel dialect implementation
 
 ## Tips for Claude
 

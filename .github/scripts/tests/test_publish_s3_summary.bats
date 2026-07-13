@@ -87,6 +87,20 @@ setup() {
     run -2 "$SCRIPT" --index-subdir
 }
 
+@test "--find-links-subdir points install commands at the direct wheel directory" {
+    run -0 "$SCRIPT" --find-links-subdir tt-lang/13adda8 light "$VER"
+    assert_output --partial "Wheel directory: https://pypi.eng.aws.tenstorrent.com/tt-lang/13adda8/"
+    assert_output --partial "--find-links https://pypi.eng.aws.tenstorrent.com/tt-lang/13adda8/"
+    assert_output --partial "tt-lang-light==$VER"
+    assert_output --partial "tt-lang==$VER+light"
+    refute_output --partial "extra-index-url https://pypi.eng.aws.tenstorrent.com/tt-lang/13adda8/"
+}
+
+@test "--find-links-subdir and --index-subdir conflict" {
+    run -2 "$SCRIPT" --index-subdir 2026-06 --find-links-subdir tt-lang/13adda8 light "$VER"
+    assert_output --partial "mutually exclusive"
+}
+
 @test "no --index-subdir keeps the flat-root index url" {
     run -0 "$SCRIPT" light "$VER"
     assert_output --partial "extra-index-url https://pypi.eng.aws.tenstorrent.com/ "
