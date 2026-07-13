@@ -91,6 +91,15 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
     )
     p.add_argument(
+        "--ttl-specialize-cores",
+        default=None,
+        dest="specialize_cores",
+        action=argparse.BooleanOptionalAction,
+        help="Clone each kernel that branches on a core coordinate once per "
+        "launch coordinate, const-folding core_x / core_y so dead branches are "
+        "removed (ttkernel-specialize-cores). Opt-in (default: disabled).",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -145,6 +154,7 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

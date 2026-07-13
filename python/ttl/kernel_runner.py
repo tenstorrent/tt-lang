@@ -96,12 +96,16 @@ class KernelSpec:
             common_runtime_args, in order.
         config: Kernel config descriptor (ComputeConfigDescriptor,
             ReaderConfigDescriptor, WriterConfigDescriptor, or EthernetConfigDescriptor).
+        core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
+            specialized kernel binary is dispatched only to these cores. When None,
+            the whole-grid core_ranges passed to build_kernel_descriptors is used.
     """
 
     path: str
     thread_type: str
     tensor_indices: List[int]
     config: Any
+    core_ranges: Optional[Any] = None
 
 
 @dataclass
@@ -201,9 +205,15 @@ def build_kernel_descriptors(
         else:
             kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
 
+        # Note: core_range is used outside this function to dispatch the kernel to the correct cores
+        # and should not be overridden
+        kernel_ranges = (
+            spec.core_ranges if spec.core_ranges is not None else core_ranges
+        )
+
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
-            core_ranges=core_ranges,
+            core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
