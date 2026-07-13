@@ -4,28 +4,31 @@
 
 """End-to-end test for the per-core specialization path.
 
-`ttl-specialize-cores` is exposed as the opt-in compiler option
-`specialize_cores` (enable with `--ttl-specialize-cores`; disabled by default
-because it is not yet compatible with PipeNet collectives or L1 accumulation).
-That pass specializes each kernel function for its launch grid: it tags every
-clone with `ttl.core_coord` (the coordinates it serves) and const-folds
-`ttl.core_x` / `ttl.core_y` to a representative coordinate. The runtime bridge
-(`_compile_ttnn_kernel`) turns each `ttl.core_coord` into a
-`KernelSpec.core_ranges` so every specialized binary is dispatched only to the
-cores it serves.
+Per-core specialization is opt-in via the compiler option `specialize_cores`
+(enable with `--ttl-specialize-cores`; disabled by default). It runs in two
+phases: Phase A (`ttl-specialize-plan`) annotates each kernel with a clone plan,
+and Phase B (`ttl-specialize-cores`, at the TTKernel level right before EmitC)
+materializes one clone per coordinate group, tagging each clone with
+`ttl.core_coord`. The runtime bridge (`_compile_ttnn_kernel`) turns each
+`ttl.core_coord` into a per-kernel core range for dispatch.
 
-To avoid emitting one near-identical binary per core, the pass groups
-coordinates with identical control flow (via `LaunchNodeDomainAnalysis`) into a
-single clone. The compute kernel here never touches the coordinate, so it
-de-duplicates to a single whole-grid clone; the data-movement kernels address
-`a`, `b`, and `out` through their `ttl.node` coordinate, so they stay per-core.
+Crucially, a kernel is cloned only when it *branches* on a core coordinate
+(`scf.if` on `ttl.core_x` / `ttl.core_y`). Kernels that use the coordinate only
+as data (e.g. addressing `a[y, x]`) are left as a single whole-grid binary,
+because the runtime `MyLogicalX/Y` reads already give each core its own
+coordinate -- no clone is needed. Modules that use pipes are never specialized
+(cloning a pipe endpoint deadlocks at runtime).
 
-What is checked:
+The add and matmul kernels below address their operands through the coordinate
+but never branch on it, so specialization is a correctness-preserving no-op for
+them. This test therefore verifies that:
   * The specialized result matches a torch reference (numerical correctness).
   * The specialized result matches the default (unspecialized) path.
-  * The dumped final MLIR shows specialization actually happened: coordinates
-    are const-folded away, the coordinate-free compute kernel de-duplicates to
-    one clone, and each data-movement kernel stays per-core.
+  * The dumped final MLIR shows these data-addressing kernels are NOT cloned
+    (no `ttl.core_coord`), i.e. specialization safely declines to clone them.
+
+Clone/fold behavior for kernels that do branch on a coordinate is covered by
+the lit test test/ttlang/Dialect/TTL/Transforms/specialize_cores.mlir.
 """
 
 import os
@@ -127,29 +130,20 @@ def _make_inputs(device):
     return a, b, expected
 
 
-def _assert_specialized_mlir(final_mlir_path, compute_prefix):
-    """Confirm the dumped final MLIR reflects a specialized program."""
+def _assert_not_cloned(final_mlir_path):
+    """Confirm the dumped final MLIR shows no per-core clones.
+
+    The kernels here use the coordinate only for addressing, never for a branch,
+    so specialization must decline to clone them: no `ttl.core_coord` clone tag
+    and no `_c<x>_<y>` clone suffixes should appear.
+    """
     with open(final_mlir_path) as fd:
         mlir = fd.read()
-    assert "ttl.core_coord" in mlir, "no ttl.core_coord clones in final MLIR"
-    # Coordinates should have been const-folded away.
-    assert "ttl.core_x" not in mlir, "ttl.core_x should be folded to a constant"
-    assert "ttl.core_y" not in mlir, "ttl.core_y should be folded to a constant"
-    # The compute kernel does not use the coordinate, so control-flow de-dup
-    # collapses it to a single whole-grid clone.
-    compute_clones = re.findall(rf"func\.func @{compute_prefix}_c\d+_\d+", mlir)
-    assert len(compute_clones) == 1, (
-        f"expected the coordinate-free compute kernel to de-duplicate to one "
-        f"clone, got {compute_clones}"
-    )
-    # Data-movement kernels address through the coordinate, so each stays a
-    # separate per-core clone.
-    n_cores = GRID_X * GRID_Y
-    for dm_prefix in ("dm_read", "dm_write"):
-        dm_clones = re.findall(rf"func\.func @{dm_prefix}_c\d+_\d+", mlir)
-        assert (
-            len(dm_clones) == n_cores
-        ), f"expected {n_cores} per-core {dm_prefix} clones, got {dm_clones}"
+    assert (
+        "ttl.core_coord" not in mlir
+    ), "data-addressing kernels must not be cloned (found ttl.core_coord)"
+    clones = re.findall(r"func\.func @\w+_c\d+_\d+", mlir)
+    assert not clones, f"expected no per-core clones, got {clones}"
 
 
 def test_specialize_cores_matches_reference(device, monkeypatch, tmp_path):
@@ -173,8 +167,9 @@ def test_specialize_cores_matches_reference(device, monkeypatch, tmp_path):
     assert_pcc(expected, spec_result)
     assert_pcc(default_result, spec_result)
 
-    # Structural confirmation that specialization actually happened.
-    _assert_specialized_mlir(str(final_mlir), compute_prefix="compute_fn")
+    # These kernels address through the coordinate but never branch on it, so
+    # specialization must leave them un-cloned.
+    _assert_not_cloned(str(final_mlir))
 
 
 # The motivating case from the specialization epic: a 2D grid matmul where
@@ -286,8 +281,9 @@ def test_specialize_cores_matmul_matches_reference(device, monkeypatch, tmp_path
     assert_pcc(expected, spec_result, threshold=0.999)
     assert_pcc(default_result, spec_result, threshold=0.999)
 
-    # Structural confirmation that specialization actually happened.
-    _assert_specialized_mlir(str(final_mlir), compute_prefix="mm_compute")
+    # These kernels address through the coordinate but never branch on it, so
+    # specialization must leave them un-cloned.
+    _assert_not_cloned(str(final_mlir))
 
 
 if __name__ == "__main__":
@@ -306,18 +302,17 @@ if __name__ == "__main__":
         a, b, expected = _make_inputs(dev)
         out = to_dram(torch.zeros_like(expected), dev)
 
-        n_cores = GRID_X * GRID_Y
         print(
             f"Grid: {GRID_X}x{GRID_Y} "
-            f"(expect 1 deduped compute + {2 * n_cores} per-core "
-            f"data-movement kernels)"
+            f"(these kernels address through the coordinate but never branch on "
+            f"it, so specialization is a no-op: no clones expected)"
         )
         add_kernel_specialized(a, b, out, options="--ttl-specialize-cores")
 
         result = ttnn.to_torch(out)
         assert_pcc(expected, result)
-        _assert_specialized_mlir(final_mlir, compute_prefix="compute_fn")
-        print(f"OK: specialized result matches torch reference.")
-        print(f"Final MLIR with clones written to {final_mlir}")
+        _assert_not_cloned(final_mlir)
+        print(f"OK: specialized result matches torch reference (no clones).")
+        print(f"Final MLIR written to {final_mlir}")
     finally:
         ttnn.close_device(dev)

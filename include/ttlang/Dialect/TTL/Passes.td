@@ -833,47 +833,88 @@ def TTKernelInsertInits
   ];
 }
 
-def TTLSpecializeCores
-    : Pass<"ttl-specialize-cores", "::mlir::ModuleOp"> {
-  let summary = "Specialize each kernel function per launch coordinate and "
-                "const-fold ttl.core_x / ttl.core_y";
+def TTLSpecializePlan
+    : Pass<"ttl-specialize-plan", "::mlir::func::FuncOp"> {
+  let summary = "Annotate kernel functions with a per-core specialization plan";
   let description = [{
-    Every kernel `func.func` is written once but launched once per coordinate
-    of its operation grid, so `ttl.core_x` / `ttl.core_y` are runtime values in
-    the shared body. This pass specializes that shared body: for each function
-    carrying a `ttl.operation_grid` attribute (an i64 array `[gridX, gridY]`),
-    it emits specialized clones, tags each clone with a `ttl.core_coord`
-    attribute (an array of `[x, y]` coordinates it serves), and replaces every
-    `ttl.core_x` / `ttl.core_y` result inside the clone with the corresponding
-    `arith.constant`.
+    Phase A of per-core specialization. This pass never clones or rewrites
+    ops; it only reads its function (and read-only facts from the parent
+    module) and writes attributes, so it runs in parallel across kernel
+    functions.
 
-    With the coordinates turned into constants, the standard upstream passes
-    (`sccp`, `canonicalize`, `cse`, and dead-code / symbol elimination) fold
-    coordinate-dependent predicates and delete the branches that do not apply
-    to that core, yielding a distinct, minimized program per clone.
+    For each `func.func` carrying a `ttl.operation_grid` attribute (an i64
+    array `[gridX, gridY]`), the pass runs `LaunchNodeDomainAnalysis` to
+    compute which launch coordinates reach each program point, then looks only
+    at `scf.if` branches whose condition depends on `ttl.core_x` / `ttl.core_y`
+    ("branches on core ops"). Each such branch is stamped with a
+    `ttl.specialize_branch` integer id, and coordinates are partitioned into
+    groups that take the same branch outcomes. The grouping is recorded on the
+    function as `ttl.specialize_plan`: an array of dictionaries, one per group,
+    each `{coords = array<i64: x0,y0,...>, taken = array<i1: ...>}` where
+    `taken[k]` is the outcome of the branch with id `k` for that group.
 
-    To avoid emitting one near-identical binary per core, the pass groups
-    coordinates whose control flow is identical (computed with
-    `LaunchNodeDomainAnalysis`) and emits a single clone per group. This
-    de-duplication is only sound when the coordinate is used purely to drive
-    control flow; if `ttl.core_x` / `ttl.core_y` feed a data value (e.g. a
-    tensor address), folding a group to one representative would bake that
-    coordinate's constants into every core, so the pass falls back to one clone
-    per coordinate.
+    The plan is deliberately dialect-neutral so it survives lowering to
+    TTKernel, where `ttl-specialize-cores` (Phase B) materializes the clones.
+    Running the analysis here, at TTL level, keeps it fully PipeNet-aware.
 
-    Current limitations (see the epic ticket). The pass is therefore opt-in
-    (compiler option `specialize_cores`, disabled by default):
-    - Not yet compatible with PipeNet collectives (per-core cloning breaks pipe
-      transfer lowering) or L1 accumulation (produces wrong numerics).
-    - Assumes kernel-thread functions are standalone (no inter-function
-      `SymbolRefAttr` uses to fix up on rename).
-    - Does not yet resolve per-core compile-time / runtime args, so coordinates
-      used as data values are not de-duplicated.
+    Conservative behavior: if the analysis cannot statically resolve
+    reachability, if there are no core-op branches, or if all coordinates fall
+    into a single group, the pass writes no plan and the function is left as a
+    single whole-grid kernel.
+
+    Minimum-version scope (alternatives deferred):
+    - Only `scf.if` conditions are considered; `affine.if` and other region
+      branches on core ops are treated as non-specializable (no plan).
+    - PipeNet role predicates (`is_src` / `is_dst` / `is_active`) do not trigger
+      cloning; the runtime guard on a single binary handles those roles.
+    - Coordinates used purely as data (addresses) do not trigger cloning; the
+      runtime `MyLogicalX/Y` reads keep per-core values correct without clones.
   }];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::func::FuncDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLSpecializeCores
+    : Pass<"ttl-specialize-cores", "::mlir::ModuleOp"> {
+  let summary = "Materialize per-core kernel clones from ttl.specialize_plan";
+  let description = [{
+    Phase B of per-core specialization, run at the TTKernel level right before
+    EmitC conversion. This pass consumes the `ttl.specialize_plan` attribute
+    produced by `ttl-specialize-plan` (Phase A).
+
+    For each `func.func` carrying a plan, the pass emits one clone per group.
+    In each clone it replaces the condition of every `scf.if` marked with
+    `ttl.specialize_branch = k` by an `arith.constant` equal to that group's
+    `taken[k]`, tags the clone with a `ttl.core_coord` attribute (the `[x, y]`
+    coordinates the clone serves), drops the plan/branch markers, and erases
+    the original template. The following `canonicalize` / `cse` then fold the
+    now-constant conditions and delete the dead branches, yielding a distinct,
+    minimized program per group. The runtime bridge turns each clone's
+    `ttl.core_coord` into a per-kernel core range for dispatch.
+
+    Functions without a plan are left untouched (single whole-grid binary).
+
+    Running after PipeNet lowering means pipe transfer resource allocation and
+    queue-depth validation have already completed on the single-function form,
+    so cloning does not perturb them. The pass is opt-in (compiler option
+    `specialize_cores`, disabled by default).
+
+    Minimum-version scope (alternatives deferred):
+    - Coordinate reads (`MyLogicalX/Y`) are not const-folded, even for
+      single-coordinate groups; only branch conditions are specialized.
+    - Per-core compile-time / runtime arg specialization and inter-function
+      `SymbolRefAttr` fixups are not performed.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::func::FuncDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
 }

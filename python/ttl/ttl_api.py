@@ -903,19 +903,21 @@ def _compile_ttnn_kernel(
                 f"Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts."
             )
     else:
-        # Specialized path: clones dispatch to disjoint sets of cores, but each
-        # physical core still has one compute (three TRISCs) and two NOCs. A
-        # clone may serve several coordinates (control-flow de-duplication), so
-        # validate the hardware budget per core rather than by total count.
+        # Specialized path: a module may legitimately MIX cloned kernels (tagged
+        # with ttl.core_coord, dispatched to specific cores) and un-cloned
+        # kernels (no core_coord, dispatched to the whole grid). A kernel is only
+        # cloned when it branches on a core coordinate, so e.g. a whole-grid
+        # compute can coexist with per-core data-movement clones. Validate the
+        # hardware budget per core: each physical core supports at most one
+        # compute and two NOC kernels. A clone may serve several coordinates; an
+        # un-cloned kernel covers every core in the grid.
+        grid_cols, grid_rows = grid
+        all_cores = [(x, y) for y in range(grid_rows) for x in range(grid_cols)]
         per_core_counts = {}
         for (name, thread_type), coords in zip(kernel_info, kernel_coords):
-            if coords is None:
-                raise ValueError(
-                    f"Specialized module mixes specialized and unspecialized "
-                    f"kernels: '{name}' has no ttl.core_coord."
-                )
-            for coord in coords:
-                counts = per_core_counts.setdefault(coord, [0, 0])
+            covered = coords if coords is not None else all_cores
+            for coord in covered:
+                counts = per_core_counts.setdefault(tuple(coord), [0, 0])
                 if thread_type == "compute":
                     counts[0] += 1
                 elif thread_type == "noc":
@@ -946,6 +948,7 @@ def _compile_ttnn_kernel(
     # Build CoreRangeSet from grid dimensions
     # Grid is (cols, rows) = (x, y), matching tt-metal CoreCoord convention
     grid_cols, grid_rows = grid
+    all_cores = [(x, y) for y in range(grid_rows) for x in range(grid_cols)]
     core_start = ttnn.CoreCoord(0, 0)
     core_end = ttnn.CoreCoord(grid_cols - 1, grid_rows - 1)
     core_range = ttnn.CoreRange(core_start, core_end)
@@ -1020,13 +1023,15 @@ def _compile_ttnn_kernel(
             # path.
             noc_role = _get_kernel_noc_index(module, name)
             if noc_role is None:
-                # A clone may serve several cores (control-flow de-dup). Assign
-                # one role for the whole clone from the highest count among the
-                # cores it covers, then advance every covered core so a later
-                # per-core clone on any of them lands on the next role. This
-                # keeps roles correct even when a de-duplicated whole-grid clone
-                # coexists with per-core clones.
-                covered = coords if coords else [None]
+                # A clone may serve several cores (control-flow de-dup) and an
+                # un-cloned kernel covers the whole grid. Assign one role for the
+                # kernel from the highest count among the cores it covers, then
+                # advance every covered core so a later kernel on any of them
+                # lands on the next role. Treating the whole-grid kernel as
+                # covering all cores keeps roles consistent when it coexists with
+                # per-core clones (otherwise a whole-grid writer could collide
+                # with a reader clone on the same NOC).
+                covered = coords if coords is not None else all_cores
                 noc_role = max(noc_role_per_core.get(c, 0) for c in covered)
                 for c in covered:
                     noc_role_per_core[c] = noc_role + 1
@@ -1813,18 +1818,14 @@ def _compile_kernel(
                 cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
-        # Per-core specialization: clone each kernel per launch coordinate,
-        # const-fold ttl.core_x / ttl.core_y to the concrete coordinate, then
-        # let canonicalize/cse/DCE prune each clone. Must run while
-        # ttl.core_x / ttl.core_y still exist, i.e. before
-        # convert-ttl-to-ttkernel. Each clone is tagged with ttl.core_coord,
-        # which the runtime bridge turns into a per-kernel core range.
+        # Per-core specialization, phase A (annotation): while ttl.core_x /
+        # ttl.core_y still exist, run the launch-domain analysis per function
+        # (in parallel) and record a ttl.specialize_plan describing how each
+        # kernel should be cloned per launch coordinate. This pass only writes
+        # attributes; phase B below materializes the clones after TTKernel
+        # lowering. Runs at TTL level so the analysis stays PipeNet-aware.
         if compiler_options.specialize_cores:
-            pipeline_passes += [
-                "ttl-specialize-cores",
-                "canonicalize",
-                "cse",
-            ]
+            pipeline_passes.append("func.func(ttl-specialize-plan)")
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
         pipeline_passes += [
@@ -1841,6 +1842,21 @@ def _compile_kernel(
             "cse",
             "lower-affine",
             "ttl-lower-signpost-to-emitc",
+        ]
+        # Per-core specialization, phase B (materialization): consume the
+        # ttl.specialize_plan recorded by phase A and emit one clone per
+        # coordinate group, forcing each marked branch to that group's outcome.
+        # Runs right before EmitC, after PipeNet lowering has already validated
+        # the single-function form, so cloning does not perturb it. The trailing
+        # canonicalize/cse fold the now-constant branch conditions and DCE dead
+        # regions.
+        if compiler_options.specialize_cores:
+            pipeline_passes += [
+                "ttl-specialize-cores",
+                "canonicalize",
+                "cse",
+            ]
+        pipeline_passes += [
             "func.func(convert-ttkernel-to-emitc)",
             "symbol-dce",
         ]
