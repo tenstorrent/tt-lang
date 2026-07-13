@@ -330,6 +330,13 @@ static bool isCapacityProtocolLowerable(const PipeCapacityEndpoint &endpoint,
                                         const PipeResourcePlan &resources) {
   bool hasResource = false;
   for (Operation *createOp : endpoint.pipeEdge->transferCreateOps) {
+    auto transferCreate = llvm::cast<PipeTransferCreateOp>(createOp);
+    auto createPipe = transferCreate.getPipe().getDefiningOp<CreatePipeOp>();
+    if (createPipe && createPipe.getDeviceTransferAttr()) {
+      debugRejectEndpoint(endpoint,
+                          "device transfer uses routing-plane flow control");
+      return false;
+    }
     auto resourceIt = resources.resources.find(createOp);
     if (resourceIt == resources.resources.end()) {
       debugRejectEndpoint(endpoint, "pipe resource is missing");
