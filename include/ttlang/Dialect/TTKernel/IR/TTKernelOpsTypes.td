@@ -127,6 +127,15 @@ def TTKernel_FabricConnectionManager : TTKernel_Type<"FabricConnectionManager", 
     let description = "Fabric connection manager type in TTKernel dialect";
 }
 
+def TTKernel_RoutingPlaneConnectionManager :
+    TTKernel_Type<"RoutingPlaneConnectionManager",
+                  "routing_plane_connection_manager"> {
+  let summary = "TTKernel routing-plane connection manager";
+  let description = [{
+    Connection manager used by the routing-plane fabric API.
+  }];
+}
+
 def TTKernel_MeshPosition : TTKernel_Type<"MeshPosition", "mesh_position"> {
     let summary = "TTKernel logical mesh position";
     let description = [{
