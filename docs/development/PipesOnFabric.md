@@ -436,63 +436,26 @@ code. It is not represented in TTL source attributes.
 
 ## Implementation details
 
-### TT-Metal physical-mesh query patch
+### TT-Metal control-plane route query
 
-The pinned TTNN Python API exposes `MeshDevice.shape` and `FabricNodeId`, but
-does not expose the physical fabric mesh dimensions maintained by TT-Metal.
-Those dimensions are required to distinguish the logical `1x4` P300 test mesh
-from its physical `2x2` fabric arrangement.
+`third-party/patches/ttmetal-expose-fabric-route-info.patch` adds a TTNN
+binding for a control-plane route query. The query returns `FabricRouteInfo`,
+which contains the selected forwarding-link index and physical hop count for a
+source and destination `FabricNodeId` pair.
 
-`third-party/patches/ttmetal-expose-physical-fabric-mesh-shapes.patch` adds a
-read-only Python binding for the existing TT-Metal C++ query:
+TT-Metal selects an available forwarding link and resolves the route through
+`ControlPlane::get_fabric_route()`. The hop count is the number of physical
+inter-node transitions in that resolved route. tt-lang passes the selected link
+back to `setup_routing_plane_connection()` and passes the hop count to generated
+TTKernel code as the packet-header route value.
 
-```cpp
-tt::tt_fabric::get_physical_mesh_shapes()
-```
+This interface keeps topology interpretation in TT-Metal. tt-lang does not
+infer routing from logical coordinates, physical mesh dimensions, node-number
+differences, or architecture-specific topology tables.
 
-The binding returns pairs containing a mesh identifier and physical dimensions
-in row-major order. It changes no router, connection, or packet behavior.
-
-The patch is preferable to parsing `TT_MESH_GRAPH_DESC_PATH` in Python.
-TT-Metal already parses the descriptor, applies system discovery, and owns the
-control-plane representation. Duplicating its protobuf parser in tt-lang would
-create a second source of topology truth and would not account for runtime
-control-plane decisions.
-
-The tt-lang build already applies managed patches from `third-party/patches`
-when building its pinned TT-Metal source. The patch does not modify an
-installed tt-lang toolchain. Hardware experiments apply it only to an isolated
-TT-Metal build.
-
-The physical-dimension query is sufficient to validate and encode a direct
-linear route that remains on one physical axis. It is not a general route
-resolver. It cannot describe failed links, selected forwarding links, turns,
-or multi-mesh routes. The intended final TT-Metal interface is a control-plane
-query that returns a resolved sequence of fabric route segments. Once the
-pinned TT-Metal revision exposes that interface, tt-lang should use it and
-remove the narrower managed patch.
-
-### Current linear-route resolver
-
-The target runtime converts a `FabricNodeId::chip_id` to physical coordinates
-using the physical mesh dimensions. For `FABRIC_1D`, it then:
-
-1. Requires source and destination to belong to the same physical mesh.
-2. Verifies both node identifiers are within that mesh.
-3. Computes the coordinate distance on each physical axis.
-4. Rejects a route whose endpoints differ on more than one axis.
-5. Uses the distance on the single differing axis as `chipRoute`.
-
-This resolver corrects two invalid approaches found by hardware testing:
-
-- logical `MeshDevice` coordinate distance;
-- absolute `FabricNodeId::chip_id` difference.
-
-Both approaches can disagree with physical fabric distance.
-
-The current resolver should not be extended with target-specific topology
-tables in Python. New architectures and non-linear routes require richer
-control-plane results from TT-Metal.
+The tt-lang build applies managed patches from `third-party/patches` when
+building the pinned TT-Metal source. Production toolchains include the same
+TT-Metal change through the normal toolchain uplift process.
 
 ### Validated segmented transport behavior
 
@@ -511,20 +474,17 @@ the proven per-segment C++.
 
 ### Validation environment
 
-Multi-device hardware tests run on the host through the shared-device
-scheduler. The wrapper unsets `TT_VISIBLE_DEVICES`, waits for all devices to
-be available, and prevents a test from accidentally opening only one card.
-
-The compiler fabric pytest runner is:
+Fabric tests use the standard tt-lang Docker environment and pytest invocation:
 
 ```bash
-/home/bnorris/soft/bin/tt-run-when-free \
-  /home/bnorris/tt/tt-lang3/_examples/fabric/run_ttlang_fabric_pytest.sh \
-  test/python/fabric/test_ccl.py -xvs
+docker exec -w /home/bnorris/tt/tt-lang3 bnorris-ird-fabric \
+  bash -lc 'source build-fabric/env/activate && \
+  python -m pytest test/python/fabric -v'
 ```
 
-The reference and compiler runners use the P300_X2 four-device mesh
-descriptor, apply a timeout, and write output to `/tmp/device_test.log`.
+Tests that require four devices skip when fewer devices are available. The
+four-device container maps `/dev/tenstorrent/0` through
+`/dev/tenstorrent/3`.
 
 ### Current validation status
 
@@ -534,13 +494,13 @@ The following results have been observed on the four-device P300_X2 system:
 | --- | --- | --- |
 | TT-Metal generic-op adjacent point-to-point | Pass | 4,096-byte BF16 payload delivered exactly. |
 | Segmented reference `(0,0) -> (0,3)` | Pass | Three adjacent forwarding segments with fused payload and completion commands. |
-| Compiler adjacent point-to-point | Pass | Four devices opened; destination data validated. |
+| Compiler logical non-adjacent point-to-point | Pass | Logical `(0,0) -> (0,3)` resolves to fabric nodes `D0 -> D2`, link 0, and one physical hop. |
 | Compiler adjacent ping-pong BF16 | Pass | Forward and reverse transfers validated. |
 | Compiler adjacent ping-pong FP32 | Pass | Forward and reverse transfers validated. |
 | Compiler direct non-adjacent transfer using logical distance | Timeout | Proves logical distance is not a valid route encoding. |
-| Physical-mesh resolver unit tests | Pass | Included in 39 passing domain and kernel-runner tests. |
-| Compiler non-adjacent transfer using physical route resolution | Pending | Requires isolated TTNN rebuild and hardware execution. |
-| Full `test/python/pipe` regression suite | Pass | 76 passed, 1 skipped, and 1 expected failure. |
+| Control-plane route integration unit tests | Pass | Kernel-runner tests validate selected-link and hop-count propagation. |
+| Full compiler fabric pytest suite | Pass | 3 passed in the four-device Docker container. |
+| Full `test/python/pipe` regression suite | Pass | 77 passed and 1 expected failure. |
 
 A source-level C++ match is not sufficient evidence of correctness. A fabric
 feature is considered working only after its hardware pytest passes and the
