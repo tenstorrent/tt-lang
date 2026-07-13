@@ -833,6 +833,22 @@ def TTKernelInsertInits
   ];
 }
 
+def TTKernelSpecializeCores
+    : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
+  let summary = "Clone kernels per core when control flow branches on a coordinate";
+  let description = [{
+    Clone and rewrite the graph with ttl.node values propagated as constants
+    to leverage DCE and other upstream canolicalization passes. To minimize
+    clones we only clone kernels whose control flow branches on a core
+    coordinate. Clone functions once per coordinate.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::func::FuncDialect"
+  ];
+}
+
 def TTKernelCombinePackTiles
     : Pass<"ttkernel-combine-pack-tiles", "::mlir::func::FuncOp"> {
   let summary = "Combine consecutive pack_tile ops into pack_tile_block";
