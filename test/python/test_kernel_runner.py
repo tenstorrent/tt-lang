@@ -51,26 +51,12 @@ class _FakeTTNN:
         self.generic_op_calls = []
         self.next_address = 0x1000
         self.fabric_setup_calls = []
+        self.fabric_route_calls = []
 
     class CoreCoord:
         def __init__(self, x, y):
             self.x = x
             self.y = y
-
-    class FabricConfig:
-        FABRIC_1D = 1
-        FABRIC_2D = 2
-        FABRIC_2D_TORUS_XY = 3
-        FABRIC_2D_TORUS_X = 4
-        FABRIC_2D_TORUS_Y = 5
-
-    @staticmethod
-    def get_fabric_config():
-        return _FakeTTNN.FabricConfig.FABRIC_1D
-
-    @staticmethod
-    def get_physical_mesh_shapes():
-        return [(0, [1, 2])]
 
     class TensorAccessorArgs:
         def __init__(self, tensor):
@@ -204,10 +190,23 @@ class _FakeTTNN:
         )
         return [0xA0, 0xB0]
 
+    def get_fabric_route_info(
+        self, source_node_id, destination_node_id, link_index=None
+    ):
+        self.fabric_route_calls.append(
+            (source_node_id, destination_node_id, link_index)
+        )
+        return _FakeFabricRouteInfo(link_index=2, hop_count=3)
+
 
 class _FakeFabricNodeId(NamedTuple):
     mesh_id: int
     chip_id: int
+
+
+class _FakeFabricRouteInfo(NamedTuple):
+    link_index: int
+    hop_count: int
 
 
 class _FakeMeshDevice:
@@ -479,31 +478,14 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
         grid_rows=1,
     )
 
-    assert kernel.runtime_args[0][0] == [1, 0, 0, 0, 1, 1, 0, 0xA0, 0xB0]
+    assert kernel.runtime_args[0][0] == [1, 0, 0, 0, 3, 3, 0, 0xA0, 0xB0]
     assert kernel.runtime_args[1][0] == [0, 0, 0, 0, 0, 0, 0]
     assert fake_ttnn.fabric_setup_calls == [
-        (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [], 0, (0, 0)),
+        (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [2], 0, (0, 0)),
     ]
-
-
-def test_linear_fabric_route_uses_physical_mesh_coordinates():
-    assert (
-        kernel_runner._linear_fabric_hop_count(
-            _FakeFabricNodeId(0, 0),
-            _FakeFabricNodeId(0, 2),
-            {0: (2, 2)},
-        )
-        == 1
-    )
-
-
-def test_linear_fabric_route_rejects_route_that_requires_turn():
-    with pytest.raises(ValueError, match="cannot turn"):
-        kernel_runner._linear_fabric_hop_count(
-            _FakeFabricNodeId(0, 0),
-            _FakeFabricNodeId(0, 3),
-            {0: (2, 2)},
-        )
+    assert fake_ttnn.fabric_route_calls == [
+        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1), None),
+    ]
 
 
 def test_run_kernel_sets_custom_program_hash(monkeypatch):

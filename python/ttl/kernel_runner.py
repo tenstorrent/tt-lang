@@ -136,74 +136,6 @@ class FabricRouteSpec:
     source_nodes: Tuple[Tuple[int, ...], ...]
 
 
-def _row_major_coordinates(index: int, extents: Tuple[int, ...]) -> Tuple[int, ...]:
-    if not extents or any(extent <= 0 for extent in extents):
-        raise ValueError("physical fabric mesh dimensions must be positive")
-    mesh_size = 1
-    for extent in extents:
-        mesh_size *= extent
-    if index < 0 or index >= mesh_size:
-        raise ValueError("fabric node ID must be within its physical mesh")
-
-    coordinates = [0] * len(extents)
-    for dimension in range(len(extents) - 1, -1, -1):
-        coordinates[dimension] = index % extents[dimension]
-        index //= extents[dimension]
-    return tuple(coordinates)
-
-
-def _linear_fabric_hop_count(
-    source_node_id: Any,
-    destination_node_id: Any,
-    physical_mesh_shapes: Dict[int, Tuple[int, ...]],
-) -> int:
-    """Encode a unicast route from TT-Metal's physical fabric description."""
-    source_mesh_id = int(source_node_id.mesh_id)
-    destination_mesh_id = int(destination_node_id.mesh_id)
-    if source_mesh_id != destination_mesh_id:
-        raise ValueError("linear fabric routes must remain within one physical mesh")
-    if source_mesh_id not in physical_mesh_shapes:
-        raise ValueError(f"physical fabric mesh {source_mesh_id} is not available")
-
-    extents = physical_mesh_shapes[source_mesh_id]
-    source_coordinates = _row_major_coordinates(source_node_id.chip_id, extents)
-    destination_coordinates = _row_major_coordinates(
-        destination_node_id.chip_id, extents
-    )
-    axis_distances = [
-        abs(source - destination)
-        for source, destination in zip(source_coordinates, destination_coordinates)
-    ]
-    nonzero_distances = [distance for distance in axis_distances if distance]
-    if not nonzero_distances:
-        raise ValueError("fabric route source and destination must differ")
-    if len(nonzero_distances) != 1:
-        raise ValueError("linear fabric route cannot turn between physical mesh axes")
-    return nonzero_distances[0]
-
-
-def _encode_unicast_chip_route(
-    source_node_id: Any,
-    destination_node_id: Any,
-    physical_mesh_shapes: Dict[int, Tuple[int, ...]],
-) -> int:
-    """Return the target routing value consumed by generated TTKernel code."""
-    fabric_config = ttnn.get_fabric_config()
-    mesh_configs = {
-        ttnn.FabricConfig.FABRIC_2D,
-        ttnn.FabricConfig.FABRIC_2D_TORUS_X,
-        ttnn.FabricConfig.FABRIC_2D_TORUS_Y,
-        ttnn.FabricConfig.FABRIC_2D_TORUS_XY,
-    }
-    if fabric_config == ttnn.FabricConfig.FABRIC_1D:
-        return _linear_fabric_hop_count(
-            source_node_id, destination_node_id, physical_mesh_shapes
-        )
-    if fabric_config in mesh_configs:
-        return 0
-    raise ValueError(f"unsupported fabric configuration: {fabric_config}")
-
-
 @dataclass(frozen=True)
 class MeshProgramPlacement:
     """Device range for one program inside a mesh descriptor."""
@@ -820,10 +752,6 @@ def configure_routing_plane_runtime_args(
     source_node_id = mesh_device.get_fabric_node_id(
         _build_mesh_coordinate(device_coordinates)
     )
-    physical_mesh_shapes = {
-        int(mesh_id): tuple(int(extent) for extent in extents)
-        for mesh_id, extents in ttnn.get_physical_mesh_shapes()
-    }
     for kernel_index, routes in enumerate(kernel_fabric_routes):
         if not routes:
             continue
@@ -849,19 +777,19 @@ def configure_routing_plane_runtime_args(
                     mesh_device.get_fabric_node_id(_build_mesh_coordinate(coordinates))
                     for coordinates in active_remote_devices
                 ]
+                route_infos = [
+                    ttnn.get_fabric_route_info(source_node_id, destination_node_id)
+                    for destination_node_id in destination_node_ids
+                ]
                 chip_routes = [0] * len(routes)
                 for route_index, route_slot in enumerate(route_slots):
-                    if route_slot >= len(destination_node_ids):
+                    if route_slot >= len(route_infos):
                         continue
                     if routes[route_index].local_device != device_coordinates:
                         continue
                     if node_coordinates not in routes[route_index].source_nodes:
                         continue
-                    chip_routes[route_index] = _encode_unicast_chip_route(
-                        source_node_id,
-                        destination_node_ids[route_slot],
-                        physical_mesh_shapes,
-                    )
+                    chip_routes[route_index] = int(route_infos[route_slot].hop_count)
                 runtime_prefix = [
                     len(destination_node_ids),
                     *route_slots,
@@ -874,7 +802,7 @@ def configure_routing_plane_runtime_args(
                 fabric_args = ttnn.setup_routing_plane_connection(
                     source_node_id,
                     destination_node_ids,
-                    [],
+                    [int(route_info.link_index) for route_info in route_infos],
                     program_descriptor,
                     kernel_index,
                     worker_node,
