@@ -5,6 +5,50 @@ architecture, implementation, and validation of cross-device PipeNets in
 tt-lang. It complements [PipeNets](PipeNets.md), which defines the shared pipe
 semantics used by both local NoC and fabric transports.
 
+## System overview
+
+```text
+  Python operation
+  DeviceDomain + TransferGraph + graph PipeNet
+                         |
+                         v
+  +-----------------------------------------------------------+
+  | Logical transfer semantics                                |
+  | source/destination relation and DFB ownership             |
+  | synchronization protocol                                  |
+  +-----------------------------------------------------------+
+                         |
+                         v
+  +-----------------------------------------------------------+
+  | Target route resolution                                   |
+  | FabricNodeIds, links, directions, legal packet routes     |
+  +-----------------------------------------------------------+
+             |                              |
+             | one proven direct segment    | multiple segments
+             v                              v
+  +--------------------------+   +-----------------------------+
+  | Source TENSIX node       |   | Source TENSIX node          |
+  | fabric write + atomic    |   | fabric write + atomic       |
+  +--------------------------+   +-----------------------------+
+             |                              |
+             | fabric                       v
+             |                   +-----------------------------+
+             |                   | Intermediate device         |
+             |                   | receive DFB + semaphore     |
+             |                   | fabric write + atomic       |
+             |                   +-----------------------------+
+             |                              |
+             v                              v
+  +-----------------------------------------------------------+
+  | Destination device                                        |
+  | completion wait -> destination DFB consumption            |
+  +-----------------------------------------------------------+
+```
+
+High-level TTL records the logical transfer only. Target resolution decides
+whether the transfer uses one direct packet route or an explicit
+receive-and-forward segment sequence.
+
 ## Hardware capabilities
 
 ### TENSIX nodes and dataflow buffers
