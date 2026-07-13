@@ -5,11 +5,11 @@
 #ifndef TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 #define TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -88,6 +88,55 @@ traceTransferHandleSource(mlir::Value value, MatchFn match,
             return traceTransferHandleSource<ResultT>(yielded[idx].get(), match,
                                                       seen);
           }
+        }
+      }
+    }
+    // Trace through region-branch ops (scf.if and other multi-region
+    // control flow) -- every region that can yield to the parent must
+    // independently trace its yield operand (at the result's index) through
+    // match to a non-null ResultT. All branches must agree on the same
+    // source op; divergent sources (e.g. different pipes on then/else) fail
+    // the trace because callers extract metadata (pipe coordinates, resource
+    // plan) from the returned op and would silently use the wrong branch's
+    // data. Each branch gets its own visited set to avoid false negatives
+    // when multiple branches yield the same outer value.
+    // Loops are excluded (handled above via LoopLikeOpInterface).
+    if (!mlir::isa<mlir::LoopLikeOpInterface>(result.getOwner())) {
+      if (auto regionOp = mlir::dyn_cast<mlir::RegionBranchOpInterface>(
+              result.getOwner())) {
+        unsigned idx = result.getResultNumber();
+        ResultT firstResult;
+        for (mlir::Region &region : regionOp->getRegions()) {
+          llvm::SmallVector<mlir::RegionSuccessor> successors;
+          regionOp.getSuccessorRegions(region, successors);
+          bool yieldsToParent =
+              llvm::any_of(successors, [](const mlir::RegionSuccessor &s) {
+                return !s.isRegion();
+              });
+          if (!yieldsToParent) {
+            continue;
+          }
+
+          auto *terminator = region.front().getTerminator();
+          if (idx >= terminator->getNumOperands()) {
+            continue;
+          }
+
+          llvm::SmallPtrSet<mlir::Value, 16> branchSeen(seen.begin(),
+                                                        seen.end());
+          ResultT branchResult = traceTransferHandleSource<ResultT>(
+              terminator->getOperand(idx), match, branchSeen);
+          if (!branchResult) {
+            return ResultT();
+          }
+          if (!firstResult) {
+            firstResult = branchResult;
+          } else if (firstResult != branchResult) {
+            return ResultT();
+          }
+        }
+        if (firstResult) {
+          return firstResult;
         }
       }
     }

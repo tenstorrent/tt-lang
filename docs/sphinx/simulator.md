@@ -33,7 +33,7 @@ cmake --build build
 source build/env/activate
 ```
 
-This skips the LLVM, tt-mlir, and tt-metal builds entirely and only sets up the Python venv with runtime dependencies.
+This skips the LLVM and tt-metal builds entirely and only sets up the Python venv with runtime dependencies.
 
 If you have already built the full TT-Lang compiler (`source build/env/activate`), the simulator works without any additional setup.
 

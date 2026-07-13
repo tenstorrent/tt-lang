@@ -128,7 +128,7 @@ on FPU binary init functions (`add_tiles_init`, `sub_tiles_init`,
 accumulates (`DST[i] += A op B`) or overwrites (`DST[i] = A op B`).
 The default is `acc_to_dest=false` (overwrite). However, TTKernel's
 `AddTilesInitOp` and `SubTilesInitOp` do not yet expose this parameter
-([FIXME in TTKernelOps.td](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L397)),
+([FIXME in TTKernelOps.td](../../include/ttlang/Dialect/TTKernel/IR/TTKernelOps.td)),
 so the emitted C++ calls `add_tiles_init(cb0, cb1)` without an explicit
 `acc_to_dest=false`.
 
@@ -174,9 +174,9 @@ This is tested in `dst_fpu_binary.mlir` Test 6
 `tile_add` and `tile_mul`.
 
 > **TODO** (tracked by #343): The long-term fix is to pass
-> `acc_to_dest=false` explicitly to FPU init functions in tt-mlir's
-> TTKernel dialect. `AddTilesInitOp` and `SubTilesInitOp` have a
-> [FIXME](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L397)
+> `acc_to_dest=false` explicitly to FPU init functions in the TTKernel
+> dialect. `AddTilesInitOp` and `SubTilesInitOp` have a
+> [FIXME](../../include/ttlang/Dialect/TTKernel/IR/TTKernelOps.td)
 > where the `acc_to_dst` parameter is commented out; `MulTilesInitOp`
 > omits it entirely. The tt-metal API flows `acc_to_dest` down to a
 > hardware bit

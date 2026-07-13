@@ -41,7 +41,7 @@ echo "Test 1: Basic imports"
 run_test "All imports work" "Import error" \
     sudo docker run --rm "$DIST_IMAGE" python -c "
 import ttl; import ttl.pykernel; import ttl.sim
-from ttmlir.dialects import ttkernel
+from ttl.dialects import ttkernel
 "
 echo ""
 

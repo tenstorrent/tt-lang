@@ -238,49 +238,6 @@ function(ttlang_verify_llvm_sha INSTALL_PREFIX EXPECTED_SHA)
     "This is usually fine if you built the toolchain yourself.")
 endfunction()
 
-# ttlang_verify_ttmetal_sha(SUBMODULE_DIR EXPECTED_SHA)
-# Verifies that the tt-metal submodule at SUBMODULE_DIR is checked out at the
-# expected commit SHA. The expected SHA is read from tt-mlir's third_party
-# CMakeLists.txt (TT_METAL_VERSION). On mismatch, emits FATAL_ERROR unless the
-# user passes -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON.
-function(ttlang_verify_ttmetal_sha SUBMODULE_DIR EXPECTED_SHA)
-  ttlang_get_submodule_sha("${SUBMODULE_DIR}" _actual_sha)
-
-  if(_actual_sha STREQUAL "unknown")
-    message(WARNING
-      "Cannot verify tt-metal commit: git rev-parse failed in ${SUBMODULE_DIR}.\n"
-      "SHA verification skipped.")
-    return()
-  endif()
-
-  execute_process(
-    COMMAND "${CMAKE_SOURCE_DIR}/scripts/verify-sha.sh"
-            "${EXPECTED_SHA}" "${_actual_sha}"
-    RESULT_VARIABLE _sha_cmp)
-
-  if(_sha_cmp EQUAL 0)
-    ttlang_debug_message("tt-metal SHA verified: ${_actual_sha}")
-    return()
-  endif()
-
-  option(TTLANG_ACCEPT_TTMETAL_MISMATCH
-    "Accept tt-metal SHA mismatch (use at your own risk)" OFF)
-
-  message(AUTHOR_WARNING
-    "tt-metal SHA mismatch!\n"
-    "  Expected (tt-mlir pins): ${EXPECTED_SHA}\n"
-    "  Actual (submodule):      ${_actual_sha}\n"
-    "  Submodule path:          ${SUBMODULE_DIR}\n"
-    "Using a mismatched tt-metal may cause JIT compile failures or runtime errors.\n"
-    "To update: cd ${SUBMODULE_DIR} && git fetch --unshallow && git fetch origin ${EXPECTED_SHA} && git checkout ${EXPECTED_SHA}")
-
-  if(NOT TTLANG_ACCEPT_TTMETAL_MISMATCH)
-    message(FATAL_ERROR
-      "tt-metal SHA mismatch. To proceed despite this, re-run with:\n"
-      "  -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON")
-  endif()
-endfunction()
-
 # _ttlang_apply_patch(SOURCE_DIR PATCH SOURCE_HAS_GIT)
 # Applies one patch, skipping it when already applied.
 function(_ttlang_apply_patch SOURCE_DIR PATCH SOURCE_HAS_GIT)

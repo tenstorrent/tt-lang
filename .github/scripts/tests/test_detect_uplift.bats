@@ -90,17 +90,6 @@ setup() {
     assert_equal "$(run_detect "$BASE" "$head")" "false"
 }
 
-# --- Regression: tt-mlir is NOT uplift (built fresh by call-build.yml) ---
-# Guards against a future "is tt-mlir uplift?" mistake re-adding it to
-# UPLIFT_PATHS.
-@test "diff in third-party/tt-mlir alone -> uplift=false" {
-    mkdir -p "$REPO/third-party/tt-mlir"
-    echo "tt-mlir bump" > "$REPO/third-party/tt-mlir/sentinel"
-    commit_all "$REPO" "tt-mlir-only"
-    head=$(cd "$REPO" && git rev-parse HEAD)
-    assert_equal "$(run_detect "$BASE" "$head")" "false"
-}
-
 # --- Regression: pyproject.toml is NOT uplift (covered by wheel filter,
 # not container content) ---
 @test "diff in pyproject.toml alone -> uplift=false" {

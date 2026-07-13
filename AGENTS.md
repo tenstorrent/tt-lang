@@ -4,7 +4,7 @@
 - **Environment**: `source build/env/activate` (activate virtual environment first, use actual build dir)
 - **Configure**: `cmake -G Ninja -B build`;
   with pre-built LLVM: `cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm-install`;
-  with ttmlir toolchain: `cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON`
+  with tt-lang toolchain: `cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON`
 - **Build**: `cmake --build build`
 - **Lint**: `pre-commit run --all-files` (includes clang-format, black,
   copyright checks)

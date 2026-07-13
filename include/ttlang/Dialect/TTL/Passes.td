@@ -733,39 +733,38 @@ def TTLDumpCBFlowGraph
   ];
 }
 
-def TTLLowerScalarCmpF
-    : Pass<"ttl-lower-scalar-cmpf", "::mlir::ModuleOp"> {
-  let summary = "Lower arith.cmpf on scalar floats to TTKernel soft-float ops";
+def TTKernelLowerScalarFpTypes
+    : Pass<"ttkernel-lower-scalar-fp-types", "::mlir::func::FuncOp"> {
+  let summary = "Lower scalar float types to integer bit patterns";
   let description = [{
-    Converts `arith.cmpf` operations on scalar floats (from `raw_element_read`
-    lowering) to TTKernel soft-float comparison ops. After
-    `convert-ttl-to-ttkernel`, float values from L1 loads are represented as
-    integer bit patterns with `unrealized_conversion_cast` bridging to float
-    types. This pass resolves those casts and emits the appropriate TTKernel
-    comparison op.
+    Converts all scalar float types to integer bit-pattern types using MLIR
+    dialect conversion. After `convert-ttl-to-ttkernel`, float values from L1
+    loads are represented as integer bit patterns bridged by
+    `unrealized_conversion_cast(iN -> fN)`. This pass eliminates those bridges
+    by converting all scalar `FloatType` values to the corresponding
+    `IntegerType` (f32 -> i32, bf16 -> i16).
 
-    Supported predicates:
-    - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
-    - `olt` -> same ops with swapped operands
+    The following conversions are performed:
 
-    All other predicates (`oeq`, `one`, `oge`, `ole`, and all unordered
-    predicates `uno`, `ueq`, `ugt`, `uge`, `ult`, `ule`, `une`) emit an
-    error diagnostic and signal pass failure.
+    1. **arith.cmpf**: Converts scalar float comparisons to TTKernel soft-float
+       comparison ops (`ttkernel.float32_greater` / `ttkernel.bfloat16_greater`).
+       Supported predicates: `ogt` and `olt` (swapped operands). Unsupported
+       predicates cause the pass to fail.
 
-    Operand requirements: each `arith.cmpf` operand must resolve to an
-    integer bit pattern via one of two sources:
-    1. `unrealized_conversion_cast(iN -> fN)` from a prior
-       `RawElementReadLowering` (unwraps to the integer directly).
-    2. `arith.constant <float>` (materializes the IEEE-754 bit pattern
-       as an integer constant).
+    2. **arith.truncf**: Converts float truncation (e.g. f32 -> bf16) to
+       integer bit extraction via `arith.shrui` + `arith.trunci`.
 
-    Operands from other sources (e.g., `arith.addf` results) cannot be
-    resolved and cause a diagnostic: "could not resolve float operand to
-    integer bit pattern".
+    3. **arith.constant**: Converts float constants to their integer bit-pattern
+       equivalents.
+
+    4. **SCF control flow**: Propagates integer types through `scf.if`,
+       `scf.for`, `scf.while`, and `scf.yield` using upstream SCF structural
+       type conversion patterns.
   }];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
-"""Verify the tt-lang-light metapackage pins tt-lang at the expected version.
+"""Verify the tt-lang-light metapackage metadata.
 
 Usage: check-light-metapackage.py --dist-dir <dir> --expect-ttlang-version <ver>
 """
@@ -12,6 +12,8 @@ import sys
 import zipfile
 
 from packaging.requirements import InvalidRequirement, Requirement
+
+REQUIRES_PYTHON = ">=3.10"
 
 
 def _metadata_for(pattern: str) -> str:
@@ -34,8 +36,12 @@ def main() -> int:
     parser.add_argument("--expect-ttlang-version", required=True)
     args = parser.parse_args()
 
+    metadata = _metadata_for(f"{args.dist_dir}/tt_lang_light-*.whl")
     requirements = []
-    for line in _metadata_for(f"{args.dist_dir}/tt_lang_light-*.whl").splitlines():
+    has_requires_python = False
+    for line in metadata.splitlines():
+        if line == f"Requires-Python: {REQUIRES_PYTHON}":
+            has_requires_python = True
         if not line.startswith("Requires-Dist:"):
             continue
         try:
@@ -59,7 +65,17 @@ def main() -> int:
         )
         return 1
 
-    print(f"tt-lang-light pins tt-lang=={args.expect_ttlang_version}")
+    if not has_requires_python:
+        print(
+            "tt-lang-light must declare " f"Requires-Python: {REQUIRES_PYTHON}",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"tt-lang-light pins tt-lang=={args.expect_ttlang_version} "
+        f"and Requires-Python: {REQUIRES_PYTHON}"
+    )
     return 0
 
 

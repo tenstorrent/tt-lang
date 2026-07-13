@@ -32,8 +32,8 @@ with Context() as ctx, Location.unknown():
     # CHECK: #ttl.slice<start = 15, stop = 0, step = -1>
     print(slice_attr3)
 
-    print("\n=== Test Integration with ttmlir Types ===")
-    # Create a ttcore TileType to verify ttlang works alongside ttmlir
+    print("\n=== Test Integration with TTCore Types ===")
+    # Create a ttcore TileType to verify ttl bindings interoperate with ttcore.
     tile_type = ttcore.ir.TileType.get(ctx, 32, 32, 2)  # 32x32 BFloat16 tile
 
     # CHECK: !ttcore.tile<32x32, bf16>

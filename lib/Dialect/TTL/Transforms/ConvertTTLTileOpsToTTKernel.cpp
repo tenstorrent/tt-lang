@@ -25,14 +25,14 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
 

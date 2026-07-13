@@ -14,11 +14,11 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.h.inc"
 

@@ -22,8 +22,6 @@
 #   --rebuild-ttmetal             Rebuild tt-metal from submodule while keeping LLVM
 #                                 from the toolchain (sets -DTTLANG_USE_TOOLCHAIN_TTMETAL=OFF)
 #   --remove-build-dir            Remove CMAKE_BINARY_DIR after finalize (for Docker builds)
-#   --accept-ttmetal-mismatch     Pass -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON to cmake
-#                                 configure to bypass the tt-metal SHA verification
 #   --external-tt-metal-dir <path>
 #                                 Use an existing tt-metal source or install tree
 #   --external-tt-metal-build-dir <path>
@@ -58,7 +56,6 @@ MODE="full"
 REMOVE_BUILD_DIR=false
 FORCE_REBUILD=false
 REBUILD_TTMETAL=false
-ACCEPT_TTMETAL_MISMATCH=false
 PYTHON_EXECUTABLE=""
 PYTHON_VENV=""
 EXTERNAL_TT_METAL_DIR=""
@@ -105,10 +102,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --remove-build-dir)
             REMOVE_BUILD_DIR=true
-            shift
-            ;;
-        --accept-ttmetal-mismatch)
-            ACCEPT_TTMETAL_MISMATCH=true
             shift
             ;;
         --external-tt-metal-dir)
@@ -216,11 +209,6 @@ do_configure() {
         _use_toolchain_ttmetal=OFF
     fi
 
-    local _accept_ttmetal_mismatch=OFF
-    if [ "$ACCEPT_TTMETAL_MISMATCH" = true ]; then
-        _accept_ttmetal_mismatch=ON
-    fi
-
     local _python_args=()
     if [ -n "$PYTHON_EXECUTABLE" ]; then
         _python_args+=("-DPython3_EXECUTABLE=$PYTHON_EXECUTABLE")
@@ -246,7 +234,6 @@ do_configure() {
         -DTTLANG_ENABLE_PERF_TRACE=ON \
         -DTTLANG_FORCE_TOOLCHAIN_REBUILD=$_force_rebuild \
         -DTTLANG_BUILD_TOOLCHAIN=$_build_toolchain \
-        -DTTLANG_ACCEPT_TTMETAL_MISMATCH=$_accept_ttmetal_mismatch \
         "${_external_ttmetal_args[@]}" \
         "${_python_args[@]}"
 
