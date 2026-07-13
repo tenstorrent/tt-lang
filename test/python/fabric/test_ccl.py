@@ -80,6 +80,7 @@ def test_point_to_point():
         )
 
         point_to_point(inp, out)
+        point_to_point(inp, out)
 
         result = ttnn.to_torch(
             out,
