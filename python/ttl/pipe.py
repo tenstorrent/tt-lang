@@ -242,6 +242,8 @@ class PipeNet:
         self.pipe_net_id = 0
         self.pipes: List[Pipe] = []
         self.graph: Optional[TransferGraph] = None
+        self._graph_edges = ()
+        self._graph_pipe_net_ids = ()
         if graph is not None:
             if not isinstance(graph, TransferGraph):
                 raise TypeError(

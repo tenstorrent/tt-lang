@@ -76,6 +76,8 @@ stringifySynchronizationProtocol(PipeSynchronizationProtocol protocol) {
     return "receiver_post";
   case PipeSynchronizationProtocol::Capacity:
     return "capacity";
+  case PipeSynchronizationProtocol::Fabric:
+    return "fabric";
   }
   llvm_unreachable("unknown pipe synchronization protocol");
 }

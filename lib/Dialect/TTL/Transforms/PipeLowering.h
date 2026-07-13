@@ -12,9 +12,12 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+#include <cstddef>
 #include <optional>
 
 namespace mlir::tt {
@@ -24,6 +27,32 @@ class ValueOriginAnalysis;
 namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
+inline constexpr llvm::StringLiteral kFabricRoutesAttrName =
+    "ttl.fabric_routes";
+inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
+    "ttl.fabric_device_domain";
+
+struct FabricRoute {
+  DeviceRefAttr localDevice;
+  DeviceRefAttr remoteDevice;
+  SmallVector<SmallVector<int64_t>> sourceNodes;
+};
+
+struct FabricRoutePlan {
+  llvm::MapVector<func::FuncOp, SmallVector<FabricRoute>> routesByFunction;
+  llvm::DenseMap<Operation *, DeviceDomainAttr> deviceDomainsByFunction;
+  llvm::DenseMap<Operation *, std::size_t> sendRouteIndex;
+  llvm::SmallPtrSet<Operation *, 16> transferOps;
+};
+
+struct FabricRuntimeInfo {
+  Value manager;
+  Value routeId;
+  Value connectionCount;
+  SmallVector<Value> chipRoutes;
+};
+
+using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
 
 struct PipeInfo {
   PipeType pipeType;
@@ -196,6 +225,17 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
+/// Build per-kernel routing-plane records from typed device transfers.
+LogicalResult buildFabricRoutePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                   FabricRoutePlan &plan);
+
+/// Materialize the function attributes recorded by `plan`.
+void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
+
+/// Materialize one routing-plane manager per kernel that uses fabric routes.
+void initializeFabricRuntime(const FabricRoutePlan &plan,
+                             FabricRuntimeMap &runtime);
+
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
@@ -265,6 +305,7 @@ LogicalResult lowerPipeTransferSend(
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
+    const FabricRuntimeMap &fabricRuntime,
     ConversionPatternRewriter &rewriter);
 
 /// Remove a receiver post proven unreachable at its pipe endpoint.
