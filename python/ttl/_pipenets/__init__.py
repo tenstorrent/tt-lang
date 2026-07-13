@@ -77,7 +77,8 @@ class PipeNetUse:
 class GraphPipeNetUse:
     """One graph-based PipeNet consumed by one operation invocation."""
 
-    id: int
+    pipe_net_ids: Tuple[int, ...]
+    edges: Tuple[Any, ...]
     transfer_graph: Any
 
 
@@ -87,9 +88,12 @@ class OperationPipeNets:
 
     pipe_nets: List[PipeNetUse] = field(default_factory=list)
     graph_pipe_nets: List[GraphPipeNetUse] = field(default_factory=list)
+    _next_id: int = 0
 
     def _next_pipe_net_id(self) -> int:
-        return len(self.pipe_nets) + len(self.graph_pipe_nets)
+        pipe_net_id = self._next_id
+        self._next_id += 1
+        return pipe_net_id
 
     def add_pipe_net(self, pipes: Iterable[PipeUse]) -> PipeNetUse:
         """Append a new PipeNetUse with the next operation-local id."""
@@ -98,9 +102,14 @@ class OperationPipeNets:
         return use
 
     def add_graph_pipe_net(self, transfer_graph: Any) -> GraphPipeNetUse:
-        """Append a graph-based PipeNetUse with the next operation-local id."""
+        """Append a graph PipeNet with one internal ID per device edge."""
+        edges = tuple(transfer_graph.iter_edges())
+        if not edges:
+            raise ValueError("graph-based PipeNet requires at least one transfer edge")
         use = GraphPipeNetUse(
-            id=self._next_pipe_net_id(), transfer_graph=transfer_graph
+            pipe_net_ids=tuple(self._next_pipe_net_id() for _ in edges),
+            edges=edges,
+            transfer_graph=transfer_graph,
         )
         self.graph_pipe_nets.append(use)
         return use
