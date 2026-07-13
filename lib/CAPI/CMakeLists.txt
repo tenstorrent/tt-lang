@@ -1,5 +1,7 @@
 add_mlir_library(TTLangCAPI
   Dialects.cpp
+  TTCoreAttrs.cpp
+  TTKernelTypes.cpp
   TTLAttrs.cpp
 
   EXCLUDE_FROM_LIBMLIR
@@ -9,25 +11,33 @@ add_mlir_library(TTLangCAPI
   MLIRTTLOpsAttributesIncGen
 
   LINK_LIBS PUBLIC
-  MLIRCAPIIR
-  MLIRIR
-  MLIRSupport
-  MLIRFuncDialect
-  MLIRTTLDialect
-  TTLangTTLTransforms
-  TTLangTTLPipelines
-
-  # Minimal upstream dialects + passes the tt-lang pipeline uses, registered in
-  # Dialects.cpp in place of MLIR's RegisterEverything.
+  MLIRAffineDialect
+  MLIRAffineToStandard
   MLIRArithDialect
+  MLIRCAPIIR
+  MLIRCAPITransforms
+  MLIRControlFlowDialect
+  MLIREmitCDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRIndexDialect
+  MLIRMathDialect
   MLIRMemRefDialect
   MLIRSCFDialect
-  MLIRControlFlowDialect
-  MLIRAffineDialect
-  MLIREmitCDialect
-  MLIRIndexDialect
-  MLIRUBDialect
-  MLIRMathDialect
+  MLIRSupport
+  MLIRTTCoreDialect
+  MLIRTTKernelDialect
+  MLIRTTLDialect
   MLIRTransforms
-  MLIRAffineToStandard
+  MLIRUBDialect
+  TTKernelTargetCpp
+  TTLangTTKernelToEmitC
+  TTLangTTLPipelines
+  TTLangTTLTransforms
+)
+
+target_compile_options(TTLangCAPI PRIVATE
+  -Wno-covered-switch-default
+  -Wno-deprecated-declarations
+  -Wno-switch
 )

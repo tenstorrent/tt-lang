@@ -15,10 +15,6 @@ Tests:
 - Multicore: height-sharded across 4 cores
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import importlib.util
 import tempfile
 

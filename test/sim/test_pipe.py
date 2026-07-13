@@ -14,7 +14,7 @@ from test_utils import make_zeros_tensor
 from sim import ttl, ttnn
 from sim.context import get_context
 from sim.nodecontext import pipe_crosses_mesh
-from sim.trace import ALL_CATEGORIES
+from sim.trace import ALL_CATEGORIES, set_tracing
 
 
 class TestPipeNetPredicates:
@@ -222,7 +222,7 @@ class TestCrossCardPipe:
     def _run(self, *, capture_trace: bool = False) -> tuple[ttnn.Tensor, list]:
         ctx = get_context()
         if capture_trace:
-            ctx.config.trace_set = ALL_CATEGORIES
+            set_tracing(ALL_CATEGORIES)
 
         inp = ttnn.from_torch(torch.full((32, 32), 7.0))
         out = ttnn.from_torch(torch.zeros(32, 32))
@@ -283,7 +283,7 @@ class TestOnChipPipeClassification:
 
     def test_on_chip_pipe_not_fabric_in_trace(self) -> None:
         ctx = get_context()
-        ctx.config.trace_set = ALL_CATEGORIES
+        set_tracing(ALL_CATEGORIES)
 
         inp = ttnn.from_torch(torch.full((32, 32), 3.0))
         out = ttnn.from_torch(torch.zeros(32, 32))

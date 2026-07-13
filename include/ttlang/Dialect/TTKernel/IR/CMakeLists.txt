@@ -1,0 +1,17 @@
+add_mlir_dialect(TTKernelOps ttkernel)
+add_mlir_doc(TTKernelBase TTKernelDialect src/autogen/md/Dialect/ -gen-dialect-doc)
+add_mlir_doc(TTKernelOps TTKernelOp src/autogen/md/Dialect/ -gen-op-doc)
+add_mlir_doc(TTKernelOpsTypes TTKernelAttr src/autogen/md/Dialect/ -gen-attrdef-doc)
+add_mlir_doc(TTKernelOpsTypes TTKernelType src/autogen/md/Dialect/ -gen-typedef-doc)
+
+set(LLVM_TARGET_DEFINITIONS TTKernelOpsTypes.td)
+mlir_tablegen(TTKernelOpsAttrDefs.h.inc -gen-attrdef-decls)
+mlir_tablegen(TTKernelOpsAttrDefs.cpp.inc -gen-attrdef-defs)
+add_public_tablegen_target(MLIRTTKernelOpsAttributesIncGen)
+add_dependencies(mlir-headers MLIRTTKernelOpsAttributesIncGen)
+
+set(LLVM_TARGET_DEFINITIONS TTKernelOpsEnums.td)
+mlir_tablegen(TTKernelOpsEnums.h.inc -gen-enum-decls)
+mlir_tablegen(TTKernelOpsEnums.cpp.inc -gen-enum-defs)
+add_public_tablegen_target(MLIRTTKernelOpsEnumsIncGen)
+add_dependencies(mlir-headers MLIRTTKernelOpsEnumsIncGen)

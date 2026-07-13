@@ -22,12 +22,19 @@ from test_helpers.mock_kernel import do_wait, do_reserve
 
 
 class MockBlockable:
-    """Mock object that can be waited on or reserved."""
+    """Mock object that can be waited on or reserved.
+
+    Mirrors the contract of real blocking objects (``DataflowBuffer``,
+    ``CopyTransaction``): exposes ``can_{wait,reserve}()`` predicates and a
+    stable ``_trace_name`` attribute that the scheduler reads directly from
+    its trace path.
+    """
 
     def __init__(self, initially_ready: bool = True):
         self._ready = initially_ready
         self._wait_count = 0
         self._reserve_count = 0
+        self._trace_name = f"mock_{id(self) & 0xFFFF:04x}"
 
     def can_wait(self) -> bool:
         return self._ready

@@ -10,6 +10,7 @@ including lazy import of the compiler's diagnostic module.
 """
 
 import inspect
+from types import FrameType
 from typing import Any, Optional, Tuple
 
 
@@ -58,29 +59,40 @@ def is_simulator_frame(filename: str) -> bool:
     )
 
 
-def find_user_code_location() -> Tuple[str, int]:
-    """Walk up the call stack to find user code location.
+def find_user_code_location(
+    start_frame: Optional[FrameType] = None,
+) -> Tuple[str, int]:
+    """Walk a frame chain to find the nearest user code location.
 
     Skips simulator internal frames (anything in /python/sim/ or /greenlet/)
     and returns the first user code location found.
+
+    Args:
+        start_frame: Frame to start the walk from.  When ``None`` (default),
+            walks the current call stack starting at the caller of this
+            function.  When given an explicit frame (e.g. ``greenlet.gr_frame``
+            for a suspended kernel), walks that chain instead -- used by the
+            scheduler's deadlock diagnostic to resolve a blocked kernel's
+            location lazily, without paying for it on every block.
 
     Returns:
         Tuple of (filename, line_number)
 
     Raises:
-        RuntimeError: If no user code found in stack (should never happen)
+        RuntimeError: If no user code found in chain (should never happen)
     """
-    frame = inspect.currentframe()
-    if not frame:
-        raise RuntimeError(
-            "inspect.currentframe() returned None - introspection not supported"
-        )
+    if start_frame is None:
+        frame = inspect.currentframe()
+        if not frame:
+            raise RuntimeError(
+                "inspect.currentframe() returned None - introspection not supported"
+            )
+        caller_frame = frame.f_back
+    else:
+        caller_frame = start_frame
 
-    # Start from caller and walk up to find user code
-    caller_frame = frame.f_back
     while caller_frame:
         filename = caller_frame.f_code.co_filename
-        # Skip simulator internals - return first non-sim frame
         if not is_simulator_frame(filename):
             return filename, caller_frame.f_lineno
         caller_frame = caller_frame.f_back

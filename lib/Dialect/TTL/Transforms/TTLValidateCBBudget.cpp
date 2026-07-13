@@ -10,9 +10,8 @@
 // cb_index) does not exceed a per-core L1 budget. Per-slot sizes use
 // ttcore::TileType::getSizeBytes() when the CB already carries a tile type, and
 // ttcore::TileType::get(elemTy).getSizeBytes() for row-wise / scalar element
-// types (same rule as tt-mlir DeviceAttr::getMemrefCBPageSizeBytes). Python
-// uses python/ttl/kernel_runner.py:build_cb_descriptors — if those ever
-// diverge, align them or share one implementation (see issue #511).
+// types. Python uses python/ttl/kernel_runner.py:build_cb_descriptors; if
+// those ever diverge, align them or share one implementation (see issue #511).
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,9 +27,9 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTCore/IR/Utils.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTCore/IR/Utils.h"
 #include <optional>
 
 #include "llvm/ADT/DenseMap.h"
@@ -90,7 +89,7 @@ static std::optional<uint64_t> tryBudgetFromModule(ModuleOp moduleOp) {
 
 /// Bytes per CB slot: explicit ttcore.tile uses its shape/dtype; row-wise
 /// (scalar/builtin) element types use the default tile layout for that dtype,
-/// matching tt-mlir CB page sizing.
+/// matching TTCore CB page sizing.
 static uint64_t bytesPerCbElement(mlir::Type elemTy) {
   if (auto tileTy = mlir::dyn_cast<mlir::tt::ttcore::TileType>(elemTy)) {
     return tileTy.getSizeBytes();

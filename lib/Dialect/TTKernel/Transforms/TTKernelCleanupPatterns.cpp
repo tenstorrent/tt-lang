@@ -6,15 +6,14 @@
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 
 namespace mlir::tt::ttkernel {
 
 namespace {
 
-/// Deduplicate consecutive barriers of the same type. Global barriers wait for
-/// all outstanding transactions, so multiple consecutive barriers are
-/// redundant.
+/// Deduplicate consecutive barriers of the same type and NoC. Barriers only
+/// wait for transactions issued on the selected NoC.
 template <typename BarrierOp>
 struct DeduplicateConsecutiveBarriers : OpRewritePattern<BarrierOp> {
   using OpRewritePattern<BarrierOp>::OpRewritePattern;
@@ -22,9 +21,11 @@ struct DeduplicateConsecutiveBarriers : OpRewritePattern<BarrierOp> {
   LogicalResult matchAndRewrite(BarrierOp op,
                                 PatternRewriter &rewriter) const override {
     if (auto *prev = op->getPrevNode()) {
-      if (isa<BarrierOp>(prev)) {
-        rewriter.eraseOp(op);
-        return success();
+      if (auto previousBarrier = dyn_cast<BarrierOp>(prev)) {
+        if (previousBarrier.getNoc() == op.getNoc()) {
+          rewriter.eraseOp(op);
+          return success();
+        }
       }
     }
     return failure();

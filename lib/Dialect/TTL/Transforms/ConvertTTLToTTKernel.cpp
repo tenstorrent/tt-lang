@@ -25,6 +25,10 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
@@ -32,10 +36,6 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -910,6 +910,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   auto pageSizeIdx = arith::ConstantIndexOp::create(
       rewriter, loc, accessorInfo->pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
+  int64_t nocIndex = getNocIndex(op);
+  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                           rewriter.getI8IntegerAttr(nocIndex));
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
@@ -956,10 +959,10 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
 
         if (isRead) {
           ttk::NocAsyncReadTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
-                                          accessor, cbAddr);
+                                          accessor, cbAddr, nocVal);
         } else {
-          ttk::NocAsyncWriteTileOp::create(loopBuilder, bodyLoc,
-                                           tensorTileIdx32, accessor, cbAddr);
+          ttk::NocAsyncWriteTileOp::create(
+              loopBuilder, bodyLoc, tensorTileIdx32, accessor, cbAddr, nocVal);
         }
       });
 
@@ -1146,16 +1149,22 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
       return op.emitError("untyped transfer handle survived pipe receive "
                           "expansion");
     }
-    if (*kind == TransferKind::read) {
-      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), Value());
-    } else if (*kind == TransferKind::write) {
-      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), Value());
-    } else {
-      // Future-proofing: TransferKind is currently {read, write}, but fail
-      // explicitly if it ever expands without updating the lowering.
+    // Future-proofing: TransferKind is currently {read, write}, but fail
+    // explicitly before mutating IR if it ever expands without updating the
+    // lowering.
+    if (*kind != TransferKind::read && *kind != TransferKind::write) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported TransferKind for ttl.wait lowering";
       });
+    }
+    int64_t nocIndex = getNocIndex(op);
+    Value nocVal =
+        arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getI8Type(),
+                                  rewriter.getI8IntegerAttr(nocIndex));
+    if (*kind == TransferKind::read) {
+      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), nocVal);
+    } else {
+      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), nocVal);
     }
     rewriter.eraseOp(op);
     return success();
@@ -1215,7 +1224,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       return failure();
     }
     op->removeAttr(kKernelThreadAttrName);
-    op->removeAttr("ttl.noc_index");
+    op->removeAttr(kNocIndexAttrName);
     op->setAttr("ttkernel.thread", ttlAttr);
 
     // If function has arguments, we need to transform them
@@ -1455,18 +1464,23 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
       return rewriter.notifyMatchFailure(op, "block does not trace to a CB");
     }
 
-    auto intVal =
-        utils::materializeIntBits(adaptor.getValue(), intTy, rewriter, loc);
-    if (failed(intVal)) {
-      return rewriter.notifyMatchFailure(
-          op, "could not materialize integer bits from float value");
+    Value floatVal = adaptor.getValue();
+    Value intVal;
+    if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>();
+        cast && cast.getInputs().size() == 1 &&
+        cast.getInputs()[0].getType() == intTy) {
+      intVal = cast.getInputs()[0];
+    } else {
+      intVal =
+          UnrealizedConversionCastOp::create(rewriter, loc, intTy, floatVal)
+              .getResult(0);
     }
 
     auto [l1Ptr, offset] =
         emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
                            elemWidth, rewriter, loc);
 
-    ttk::StoreToL1Op::create(rewriter, loc, *intVal, l1Ptr, offset);
+    ttk::StoreToL1Op::create(rewriter, loc, intVal, l1Ptr, offset);
     rewriter.eraseOp(op);
     return success();
   }

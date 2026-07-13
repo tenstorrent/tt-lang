@@ -118,9 +118,7 @@ def resolve_tt_metal_root(repo_root: Path) -> Path:
 def stage_bundled_ttnn_python_packages(
     tt_metal_root: Path, stage_root: Path, repo_root: Path
 ) -> BundledTTNNMetadata:
-    if stage_root.exists():
-        shutil.rmtree(stage_root)
-    stage_root.mkdir(parents=True)
+    stage_root = _prepare_stage_root(stage_root)
 
     _copy_python_package(
         tt_metal_root / "python_packages" / "ttnn" / "ttnn",
@@ -142,6 +140,30 @@ def stage_bundled_ttnn_python_packages(
         package_dir["tracy"] = os.path.relpath(stage_root / "tracy", repo_root)
 
     return BundledTTNNMetadata(packages=packages, package_dir=package_dir)
+
+
+def _prepare_stage_root(stage_root: Path) -> Path:
+    candidates = [stage_root]
+    if hasattr(os, "getuid"):
+        # Containerized builds can leave the shared staging directory owned by
+        # another UID; per-user fallback keeps metadata generation reproducible.
+        candidates.append(stage_root.with_name(f"{stage_root.name}-{os.getuid()}"))
+    else:
+        candidates.append(stage_root.with_name(f"{stage_root.name}-{os.getpid()}"))
+
+    last_error: PermissionError | None = None
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                shutil.rmtree(candidate)
+            candidate.mkdir(parents=True)
+            return candidate
+        except PermissionError as error:
+            last_error = error
+
+    raise RuntimeError(
+        f"unable to prepare bundled ttnn staging directory: {stage_root}"
+    ) from last_error
 
 
 def copy_bundled_ttnn(tt_metal_root: Path, build_lib: Path) -> None:

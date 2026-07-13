@@ -13,11 +13,11 @@
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Support/LogicalResult.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 #include <functional>
@@ -1978,20 +1978,20 @@ void mlir::tt::ttl::IfSrcOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point.isParent()) {
     regions.push_back(RegionSuccessor(&getBody()));
-    regions.push_back(RegionSuccessor::parent());
+    regions.push_back(RegionSuccessor(getOperation()));
     return;
   }
-  regions.push_back(RegionSuccessor::parent());
+  regions.push_back(RegionSuccessor(getOperation()));
 }
 
 void mlir::tt::ttl::IfDstOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point.isParent()) {
     regions.push_back(RegionSuccessor(&getBody()));
-    regions.push_back(RegionSuccessor::parent());
+    regions.push_back(RegionSuccessor(getOperation()));
     return;
   }
-  regions.push_back(RegionSuccessor::parent());
+  regions.push_back(RegionSuccessor(getOperation()));
 }
 
 void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
@@ -2000,5 +2000,5 @@ void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
     regions.push_back(RegionSuccessor(&getBody()));
     return;
   }
-  regions.push_back(RegionSuccessor::parent());
+  regions.push_back(RegionSuccessor(getOperation()));
 }

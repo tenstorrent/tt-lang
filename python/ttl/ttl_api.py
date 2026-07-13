@@ -132,12 +132,14 @@ def _get_tensor_cache_info(tensor) -> tuple:
 
 def _make_cache_key(
     args: tuple,
+    resolved_grid: Union[tuple, List[int]],
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
     target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
+    grid_key = tuple(resolved_grid)
     tensor_key = tuple(
         _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
     )
@@ -151,6 +153,7 @@ def _make_cache_key(
     return (
         tensor_key,
         mesh_key,
+        grid_key,
         fp32_dest_acc_en,
         dst_full_sync_en,
         target_arch,
@@ -638,20 +641,42 @@ class CompiledTTNNKernel:
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
-    """Write kernel source to /tmp and return the file path."""
+    """Write generated kernel source and return the path used by TT-Metal JIT."""
     import hashlib
     import os
+    import tempfile
 
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
     user = os.environ.get("USER", "default")
-    path = f"/tmp/{user}/ttlang_kernel_{name}_{content_hash}.cpp"
-    os.makedirs(f"/tmp/{user}", exist_ok=True)
-    with open(path, "w") as f:
-        f.write(source)
+    output_dir = Path("/tmp") / user
+    worker_name = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker_name:
+        output_dir = output_dir / worker_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    path = output_dir / f"ttlang_kernel_{name}_{content_hash}.cpp"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=output_dir,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(source)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
     print(f"=== {name} kernel written to {path} ===")
     print(source)
     print("=" * 60)
-    return path
+    return str(path)
 
 
 def _lookup_kernel_func_op(module, kernel_name: str):
@@ -931,6 +956,7 @@ def _compile_ttnn_kernel(
             grid_rows=grid_rows,
             num_tensors=len(args),
             output_path=runner_path,
+            program_hash=program_hash,
             kernel_name="ttlang_kernel",
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
@@ -1611,7 +1637,7 @@ def _compile_kernel(
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
             f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
-            "ttl-lower-scalar-cmpf",
+            "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",
         ]
@@ -1622,7 +1648,7 @@ def _compile_kernel(
             "cse",
             "lower-affine",
             "ttl-lower-signpost-to-emitc",
-            "convert-ttkernel-to-emitc",
+            "func.func(convert-ttkernel-to-emitc)",
             "symbol-dce",
         ]
 
@@ -1634,7 +1660,7 @@ def _compile_kernel(
         pm.enable_verifier(verify)
 
         try:
-            from ttl._mlir_libs._ttmlir import enable_pretty_stack_traces
+            from ttl._mlir_libs._ttlang import enable_pretty_stack_traces
 
             enable_pretty_stack_traces(pm._CAPIPtr)
         except Exception:
@@ -1815,6 +1841,7 @@ def pykernel_gen(
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
                 args,
+                resolved_grid=resolved_grid,
                 # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,

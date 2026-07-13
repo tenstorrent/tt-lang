@@ -136,6 +136,40 @@ function(ttlang_get_submodule_sha SUBMODULE_DIR OUTPUT_VAR)
   set(${OUTPUT_VAR} "${_sha}" PARENT_SCOPE)
 endfunction()
 
+# ttlang_get_gitlink_sha(REPO_DIR SUBMODULE_PATH OUTPUT_VAR)
+# Reads a submodule's recorded commit from the superproject gitlink, which works
+# whether or not the submodule is checked out. A plain rev-parse in an
+# unpopulated submodule directory would resolve to the superproject HEAD instead.
+function(ttlang_get_gitlink_sha REPO_DIR SUBMODULE_PATH OUTPUT_VAR)
+  execute_process(
+    COMMAND git -C "${REPO_DIR}" rev-parse "HEAD:${SUBMODULE_PATH}"
+    OUTPUT_VARIABLE _sha
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _result
+  )
+  if(NOT _result EQUAL 0)
+    set(_sha "unknown")
+  endif()
+  set(${OUTPUT_VAR} "${_sha}" PARENT_SCOPE)
+endfunction()
+
+# ttlang_read_tt_metal_version_var(VAR_NAME OUTPUT_VAR)
+# Reads a shell-style `VAR="value"` assignment from third-party/tt-metal-version.
+# Sets OUTPUT_VAR to "unknown" if the file or variable is missing.
+function(ttlang_read_tt_metal_version_var VAR_NAME OUTPUT_VAR)
+  set(_version_file "${CMAKE_SOURCE_DIR}/third-party/tt-metal-version")
+  set(_value "unknown")
+  if(EXISTS "${_version_file}")
+    file(STRINGS "${_version_file}" _matches REGEX "^${VAR_NAME}=")
+    if(_matches)
+      list(GET _matches 0 _line)
+      string(REGEX REPLACE "^${VAR_NAME}=\"?([^\"]*)\"?.*$" "\\1" _value "${_line}")
+    endif()
+  endif()
+  set(${OUTPUT_VAR} "${_value}" PARENT_SCOPE)
+endfunction()
+
 # ttlang_debug_message(MESSAGE)
 # Prints a STATUS message only if TTLANG_CMAKE_DEBUG environment variable is defined.
 # Useful for verbose debug output during CMake configuration.
@@ -202,49 +236,6 @@ function(ttlang_verify_llvm_sha INSTALL_PREFIX EXPECTED_SHA)
     "  Install prefix:       ${INSTALL_PREFIX}\n"
     "The installed LLVM differs from what the tt-lang submodule pins.\n"
     "This is usually fine if you built the toolchain yourself.")
-endfunction()
-
-# ttlang_verify_ttmetal_sha(SUBMODULE_DIR EXPECTED_SHA)
-# Verifies that the tt-metal submodule at SUBMODULE_DIR is checked out at the
-# expected commit SHA. The expected SHA is read from tt-mlir's third_party
-# CMakeLists.txt (TT_METAL_VERSION). On mismatch, emits FATAL_ERROR unless the
-# user passes -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON.
-function(ttlang_verify_ttmetal_sha SUBMODULE_DIR EXPECTED_SHA)
-  ttlang_get_submodule_sha("${SUBMODULE_DIR}" _actual_sha)
-
-  if(_actual_sha STREQUAL "unknown")
-    message(WARNING
-      "Cannot verify tt-metal commit: git rev-parse failed in ${SUBMODULE_DIR}.\n"
-      "SHA verification skipped.")
-    return()
-  endif()
-
-  execute_process(
-    COMMAND "${CMAKE_SOURCE_DIR}/scripts/verify-sha.sh"
-            "${EXPECTED_SHA}" "${_actual_sha}"
-    RESULT_VARIABLE _sha_cmp)
-
-  if(_sha_cmp EQUAL 0)
-    ttlang_debug_message("tt-metal SHA verified: ${_actual_sha}")
-    return()
-  endif()
-
-  option(TTLANG_ACCEPT_TTMETAL_MISMATCH
-    "Accept tt-metal SHA mismatch (use at your own risk)" OFF)
-
-  message(AUTHOR_WARNING
-    "tt-metal SHA mismatch!\n"
-    "  Expected (tt-mlir pins): ${EXPECTED_SHA}\n"
-    "  Actual (submodule):      ${_actual_sha}\n"
-    "  Submodule path:          ${SUBMODULE_DIR}\n"
-    "Using a mismatched tt-metal may cause JIT compile failures or runtime errors.\n"
-    "To update: cd ${SUBMODULE_DIR} && git fetch --unshallow && git fetch origin ${EXPECTED_SHA} && git checkout ${EXPECTED_SHA}")
-
-  if(NOT TTLANG_ACCEPT_TTMETAL_MISMATCH)
-    message(FATAL_ERROR
-      "tt-metal SHA mismatch. To proceed despite this, re-run with:\n"
-      "  -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON")
-  endif()
 endfunction()
 
 # _ttlang_apply_patch(SOURCE_DIR PATCH SOURCE_HAS_GIT)

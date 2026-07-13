@@ -8,10 +8,10 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLLOWERDPRINTTOEMITC
@@ -560,10 +560,9 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
 //===----------------------------------------------------------------------===//
 
 /// Add a hidden emitc.call_opaque "ttmlir::dprint" trigger to cause
-/// ScopedModuleHelper (in tt-mlir's TTKernelToCpp) to emit the dprint
-/// include and helpers at file scope. Wrapped in #if 0/#endif so it
-/// compiles away. Created via OperationState to avoid EmitC C++ type
-/// dependencies (different binary from tt-mlir).
+/// ScopedModuleHelper to emit the dprint include and helpers at file scope.
+/// Wrapped in #if 0/#endif so it compiles away. Created via OperationState to
+/// avoid EmitC C++ type dependencies.
 static void addDPrintIncludeTrigger(func::FuncOp func, OpBuilder &builder) {
   builder.setInsertionPointToStart(&func.getBody().front());
   auto loc = func.getLoc();

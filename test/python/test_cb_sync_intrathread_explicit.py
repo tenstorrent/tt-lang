@@ -7,10 +7,6 @@
 releases and skip inserting its own, so the emitted C++ matches what
 the user wrote. This verifies the structure itself is hardware-sound."""
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v --tb=short
-
 import os
 import sys
 

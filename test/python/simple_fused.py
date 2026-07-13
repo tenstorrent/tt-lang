@@ -92,7 +92,7 @@ def fused_kernel(inp, bias, out):
 # C++ Kernel Checks - Verify generated fused compute kernel
 # =============================================================================
 
-# CHECK-CPP: // fused_compute
+# CHECK-CPP: === fused_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -145,7 +145,7 @@ def fused_kernel(inp, bias, out):
 # Add stays SFPU (both inputs from DST), but scheduling groups copy_tiles
 # =============================================================================
 
-# CHECK-CPP-FPU: // fused_compute
+# CHECK-CPP-FPU: === fused_compute kernel written to {{.*}} ===
 # CHECK-CPP-FPU: void kernel_main()
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

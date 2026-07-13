@@ -2,3 +2,4 @@ sphinx-rtd-theme
 myst-parser
 sphinx
 sphinxcontrib-mermaid
+sphinx-reredirects

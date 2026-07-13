@@ -4,7 +4,7 @@
 
 # TT-Lang Python Package
 
-from ttl.version import __version__
+from ttl.version import __version__, build_info
 
 # `ttl._sim_only_marker` is shipped by the tt-lang-sim wheel and absent from
 # the tt-lang wheel. Detection is marker-based, not try/except, so a broken
@@ -24,7 +24,7 @@ except ImportError:
 
 if _SIM_ONLY_INSTALL:
     _elementwise_all: list[str] = []
-    __all__ = ["__version__"]
+    __all__ = ["__version__", "build_info"]
 else:
     from ttl.ttl import (
         operation,
@@ -52,6 +52,8 @@ else:
     from ttl.pipe import Pipe, PipeNet
 
     __all__ = [
+        "__version__",
+        "build_info",
         "operation",
         "compute",
         "datamovement",

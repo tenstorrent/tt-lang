@@ -25,6 +25,21 @@ def test_light_metadata_pins_ttlang_version(
     assert "tt-lang==0.71.0.dev20260525+light" in requires_text()
 
 
+def test_light_metadata_declares_python_requirement(
+    run_egg_info: Callable[..., object],
+    tmp_path: Path,
+) -> None:
+    result = run_egg_info(
+        {"TTLANG_VERSION_OVERRIDE": "0.71.0.dev20260525"},
+        cwd=LIGHT_ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    metadata_files = list((tmp_path / "egg-info").glob("*.egg-info/PKG-INFO"))
+    assert len(metadata_files) == 1
+    assert "Requires-Python: >=3.10" in metadata_files[0].read_text()
+
+
 def test_light_metadata_accepts_explicit_ttlang_version(
     run_egg_info: Callable[..., object],
     requires_text: Callable[[], str],

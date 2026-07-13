@@ -13,15 +13,15 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
@@ -62,18 +62,6 @@ static CircularBufferType getTTLCBType(Value cb) {
 
 static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
   return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-}
-
-static int64_t getNocIndex(Operation *op) {
-  auto parentFunc = op->getParentOfType<FuncOp>();
-  if (!parentFunc) {
-    return 0;
-  }
-  auto attr = parentFunc->getAttrOfType<IntegerAttr>("ttl.noc_index");
-  if (!attr) {
-    return 0;
-  }
-  return attr.getInt();
 }
 
 static PipeKey getPipeKey(PipeType pipeType) {
@@ -550,7 +538,7 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   if (pipeType.hasSingleReceiver()) {
     ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
                                  ValueRange{dstStartXVal, dstStartYVal},
-                                 ValueRange{}, dstAddr, totalSizeVal);
+                                 ValueRange{}, dstAddr, totalSizeVal, nocVal);
   } else {
     if (pipeType.srcInDstRange()) {
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
@@ -679,12 +667,11 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
       buildAddressTableAddress(loc, addressTableInfo, rewriter);
   // [Device 2.0] This is a receiver-authored write to a typed address table;
   // only this lowering should select the current inline NoC write primitive.
-  auto senderTableNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, tableAddress, nocVal);
   auto byteEnableAll = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-  ttk::NocInlineDwWriteOp::create(rewriter, loc, senderTableNocAddr.getResult(),
-                                  publishedAddress, byteEnableAll, nocVal);
+  ttk::NocInlineDwWriteOp::create(rewriter, loc, srcXTranslated, srcYTranslated,
+                                  tableAddress, publishedAddress, byteEnableAll,
+                                  nocVal);
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
 
   Value senderReadyCounterAddr =

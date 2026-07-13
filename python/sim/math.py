@@ -19,11 +19,22 @@ from typing import Callable, List, Optional, Set, Tuple
 
 import torch
 
-from .dfb import Block, check_same_layout, track_source_blocks, matmul
+from .context import get_context
+from .dfb import (
+    Block,
+    check_same_layout,
+    track_source_blocks,
+    matmul,
+    _dry_run_result,
+)
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 from .typedefs import PositiveInt
 
 _ = matmul
+
+
+def _is_dry_run() -> bool:
+    return get_context().config.dry_run
 
 
 # Helper function to create unary operation wrappers
@@ -41,6 +52,8 @@ def _create_unary_op_wrapper(
     """
 
     def wrapper(block: Block) -> Block:
+        if _is_dry_run():
+            return _dry_run_result(block.shape, block)
         # Apply the operation to each tensor in the block
         layout = block.layout
         result_torch: List[torch.Tensor] = [
@@ -145,6 +158,8 @@ def _apply_binary_op(
         raise ValueError(
             f"Shape mismatch in binary op: a has shape {a_shape}, b has shape {b_shape}"
         )
+    if _is_dry_run():
+        return _dry_run_result(a_shape, a, b)
     layout = a.layout
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
@@ -171,6 +186,8 @@ def _apply_unary_with_params(
     Returns:
         Block with operation applied element-wise
     """
+    if _is_dry_run():
+        return _dry_run_result(block.shape, block)
     layout = block.layout
     result_torch: List[torch.Tensor] = [op(t.to_torch()) for t in block.to_list()]
     result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
@@ -508,6 +525,9 @@ def _reduce_impl(
             f"reduce shape {shape} does not match expected result shape {result_shape} "
             f"(block shape {block_shape}, reducing dims {dims})"
         )
+
+    if _is_dry_run():
+        return _dry_run_result(result_shape, block)
 
     # Stack input tiles to reshape for reduction
     # Each output grid position gets contributions from multiple input positions

@@ -37,12 +37,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -387,9 +387,9 @@ static void buildLiveIntervals(
   //
   // TODO(#343): This wastes DST capacity. The proper fix is to pass
   // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
-  // tt-mlir's TTKernel dialect (currently has a FIXME in TTKernelOps.td).
-  // With explicit overwrite mode, DST reuse between FPU binary ops would be
-  // safe and this interval extension could be removed.
+  // TTKernel (currently a FIXME in TTKernelOps.td). With explicit overwrite
+  // mode, DST reuse between FPU binary ops would be safe and this interval
+  // extension could be removed.
   {
     // Include TileMatmulBlockOp alongside FPU binary ops: matmul_block also
     // accumulates into DST and its slot must not be reused by another
