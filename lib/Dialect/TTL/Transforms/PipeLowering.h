@@ -11,6 +11,8 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
@@ -21,6 +23,31 @@ class ValueOriginAnalysis;
 }
 
 namespace mlir::tt::ttl {
+
+inline constexpr llvm::StringLiteral kFabricRoutesAttrName =
+    "ttl.fabric_routes";
+inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
+    "ttl.fabric_device_domain";
+
+struct FabricRoute {
+  DeviceRefAttr localDevice;
+  DeviceRefAttr remoteDevice;
+  SmallVector<SmallVector<int64_t>> sourceNodes;
+};
+
+struct FabricRoutePlan {
+  llvm::MapVector<func::FuncOp, SmallVector<FabricRoute>> routesByFunction;
+  llvm::DenseMap<Operation *, unsigned> sendRouteIndex;
+};
+
+struct FabricRuntimeInfo {
+  Value manager;
+  Value routeId;
+  Value connectionCount;
+  SmallVector<Value> chipRoutes;
+};
+
+using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
 
 struct PipeInfo {
   PipeType pipeType;
@@ -225,6 +252,14 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
+/// Build per-kernel routing-plane records from typed device transfers.
+LogicalResult buildFabricRoutePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                   FabricRoutePlan &plan);
+
+/// Materialize one routing-plane manager per kernel that uses fabric routes.
+void initializeFabricRuntime(const FabricRoutePlan &plan,
+                             FabricRuntimeMap &runtime);
+
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
@@ -263,7 +298,8 @@ LogicalResult lowerPipeTransferSend(
     const PipeCapacityPlan *pipeCapacityPlan,
     const PipeSemaphoreCounterMap *senderCapacityCounters,
     const PipeComputedAddressCounterMap *computedAddressCounters,
-    ConversionPatternRewriter &rewriter);
+    const FabricRoutePlan *fabricRoutePlan,
+    const FabricRuntimeMap *fabricRuntime, ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
@@ -271,6 +307,8 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     const PipeSemaphoreCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     const PipeCapacityPlan *pipeCapacityPlan,
+                                    const FabricRoutePlan *fabricRoutePlan,
+                                    const FabricRuntimeMap *fabricRuntime,
                                     ConversionPatternRewriter &rewriter);
 
 /// Lower a dataflow buffer pop and emit any proven pipe capacity releases.

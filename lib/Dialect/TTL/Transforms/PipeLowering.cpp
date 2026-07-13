@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <tuple>
@@ -95,6 +96,153 @@ namespace mlir::tt::ttl {
 
 static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
+}
+
+static FailureOr<PipeTransferCreateOp>
+getPipeTransferCreate(Operation *op, Value transfer,
+                      ValueOriginAnalysis &analysis);
+
+static DeviceTransferAttr
+getDeviceTransfer(PipeTransferCreateOp transferCreate) {
+  auto createPipe = transferCreate.getPipe().getDefiningOp<CreatePipeOp>();
+  return createPipe ? createPipe.getDeviceTransferAttr() : DeviceTransferAttr();
+}
+
+static unsigned addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
+                               DeviceRefAttr localDevice,
+                               DeviceRefAttr remoteDevice,
+                               PipeSourceKey sourceNode) {
+  SmallVector<int64_t> sourceCoordinates{sourceNode.srcX, sourceNode.srcY};
+  auto route = llvm::find_if(routes, [&](const FabricRoute &existing) {
+    return existing.localDevice == localDevice &&
+           existing.remoteDevice == remoteDevice;
+  });
+  if (route != routes.end()) {
+    if (!llvm::is_contained(route->sourceNodes, sourceCoordinates)) {
+      route->sourceNodes.push_back(sourceCoordinates);
+    }
+    return static_cast<unsigned>(std::distance(routes.begin(), route));
+  }
+  routes.push_back(FabricRoute{localDevice, remoteDevice, {sourceCoordinates}});
+  return routes.size() - 1;
+}
+
+LogicalResult buildFabricRoutePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                   FabricRoutePlan &plan) {
+  LogicalResult result = success();
+  llvm::DenseMap<Operation *, DeviceDomainAttr> domainsByFunction;
+
+  auto recordRoute = [&](PipeTransferSendOp send,
+                         PipeTransferCreateOp transferCreate) {
+    DeviceTransferAttr transfer = getDeviceTransfer(transferCreate);
+    if (!transfer) {
+      return;
+    }
+    DeviceRefAttr destination = transfer.getEdge().getDestination();
+    if (!destination) {
+      send.emitError(
+          "device-range fabric transfers require multicast target lowering");
+      result = failure();
+      return;
+    }
+
+    FuncOp func = send->getParentOfType<FuncOp>();
+    DeviceDomainAttr &functionDomain = domainsByFunction[func];
+    if (functionDomain && functionDomain != transfer.getDomain()) {
+      send.emitError(
+          "all device transfers in one kernel must use the same device domain");
+      result = failure();
+      return;
+    }
+    functionDomain = transfer.getDomain();
+
+    DeviceRefAttr source = transfer.getEdge().getSource();
+    auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
+    unsigned routeIndex =
+        addFabricRoute(plan.routesByFunction[func], source, destination,
+                       getPipeSourceKey(pipeType));
+    plan.sendRouteIndex[send] = routeIndex;
+  };
+
+  mod.walk([&](Operation *operation) {
+    if (auto send = mlir::dyn_cast<PipeTransferSendOp>(operation)) {
+      FailureOr<PipeTransferCreateOp> maybeTransferCreate =
+          getPipeTransferCreate(send.getOperation(), send.getTransfer(),
+                                analysis);
+      if (failed(maybeTransferCreate)) {
+        result = failure();
+        return;
+      }
+      recordRoute(send, *maybeTransferCreate);
+    }
+  });
+  if (failed(result)) {
+    return failure();
+  }
+
+  Builder builder(mod.getContext());
+  for (auto &[func, routes] : plan.routesByFunction) {
+    SmallVector<Attribute> routeAttrs;
+    routeAttrs.reserve(routes.size());
+    for (const FabricRoute &route : routes) {
+      SmallVector<Attribute> sourceNodes;
+      sourceNodes.reserve(route.sourceNodes.size());
+      for (const SmallVector<int64_t> &sourceNode : route.sourceNodes) {
+        sourceNodes.push_back(builder.getDenseI64ArrayAttr(sourceNode));
+      }
+      routeAttrs.push_back(DictionaryAttr::get(
+          mod.getContext(),
+          {builder.getNamedAttr("local", route.localDevice),
+           builder.getNamedAttr("remote", route.remoteDevice),
+           builder.getNamedAttr("source_nodes",
+                                builder.getArrayAttr(sourceNodes))}));
+    }
+    func->setAttr(kFabricRoutesAttrName,
+                  ArrayAttr::get(mod.getContext(), routeAttrs));
+    func->setAttr(kFabricDeviceDomainAttrName, domainsByFunction.lookup(func));
+  }
+  return success();
+}
+
+void initializeFabricRuntime(const FabricRoutePlan &plan,
+                             FabricRuntimeMap &runtime) {
+  for (const auto &entry : plan.routesByFunction) {
+    FuncOp func = entry.first;
+    const SmallVector<FabricRoute> &routes = entry.second;
+    OpBuilder builder(func.getContext());
+    builder.setInsertionPointToStart(&func.getBody().front());
+    Location loc = func.getLoc();
+    Value connectionCountIndex =
+        arith::ConstantIndexOp::create(builder, loc, 0);
+    Value connectionCount = ttk::GetArgValOp::create(
+        builder, loc, builder.getI32Type(), connectionCountIndex);
+    Value manager = ttk::CreateRoutingPlaneConnectionManagerOp::create(
+        builder, loc,
+        ttk::RoutingPlaneConnectionManagerType::get(builder.getContext()));
+    Value routeId = ttk::OpenRoutingPlaneConnectionsOp::create(
+        builder, loc, builder.getI32Type(), manager, connectionCount,
+        builder.getI64IntegerAttr(1 + 2 * routes.size()));
+    SmallVector<Value> chipRoutes;
+    chipRoutes.reserve(routes.size());
+    for (unsigned routeIndex = 0; routeIndex < routes.size(); ++routeIndex) {
+      Value chipRouteIndex = arith::ConstantIndexOp::create(
+          builder, loc, 1 + routes.size() + routeIndex);
+      chipRoutes.push_back(ttk::GetArgValOp::create(
+          builder, loc, builder.getI32Type(), chipRouteIndex));
+    }
+    runtime[func] = FabricRuntimeInfo{manager, routeId, connectionCount,
+                                      std::move(chipRoutes)};
+
+    for (Block &block : func.getBody()) {
+      auto returnOp = mlir::dyn_cast<func::ReturnOp>(block.getTerminator());
+      if (!returnOp) {
+        continue;
+      }
+      builder.setInsertionPoint(returnOp);
+      ttk::CloseRoutingPlaneConnectionsOp::create(builder, returnOp.getLoc(),
+                                                  manager, connectionCount);
+    }
+  }
 }
 
 static FailureOr<PipeTransferCreateOp>
@@ -687,6 +835,123 @@ private:
   std::optional<DestinationRange> destinationRange;
 };
 
+class FabricPipeTransportEmitter final : public PipeTransportEmitter {
+public:
+  FabricPipeTransportEmitter(Operation *op, PipeType pipeType,
+                             unsigned routeIndex,
+                             const FabricRuntimeInfo &runtime,
+                             ConversionPatternRewriter &rewriter)
+      : op(op), loc(op->getLoc()), pipeType(pipeType), routeIndex(routeIndex),
+        runtime(runtime), rewriter(rewriter),
+        nocVal(
+            arith::ConstantIntOp::create(rewriter, loc, getNocIndex(op), 8)) {}
+
+  LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
+                                           Value publishedAddress) override {
+    op->emitError("fabric pipes require computed receiver DFB addresses");
+    return failure();
+  }
+
+  void emitAddressPublishBarrier() override {}
+
+  LogicalResult
+  emitSenderReadyIncrement(Value senderReadyCounterAddr) override {
+    Value remoteSemaphoreAddress = buildRemoteNocAddress(
+        pipeType.getSrcX(), pipeType.getSrcY(), senderReadyCounterAddr);
+    ttk::RoutingPlaneAtomicIncOp::create(
+        rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
+        getChipRoute(), remoteSemaphoreAddress,
+        arith::ConstantIntOp::create(rewriter, loc, 1, 32));
+    return success();
+  }
+
+  void preparePayloadWrite() override {}
+
+  LogicalResult emitPayloadWrite(Value srcAddr, Value dstAddr,
+                                 Value totalSizeBytes) override {
+    sourceAddress = srcAddr;
+    destinationAddress = dstAddr;
+    sizeBytes = totalSizeBytes;
+    return success();
+  }
+
+  void emitPayloadWriteBarrier() override {}
+
+  LogicalResult
+  emitReceiverCompletionIncrement(int64_t receiverCompletionSemIdx) override {
+    assert(sourceAddress && destinationAddress && sizeBytes &&
+           "fabric payload must be prepared before completion signaling");
+    Value remoteDestinationAddress = buildRemoteNocAddress(
+        pipeType.getDstStartX(), pipeType.getDstStartY(), destinationAddress);
+    Value completionSemaphoreIndex =
+        arith::ConstantIndexOp::create(rewriter, loc, receiverCompletionSemIdx);
+    Value completionSemaphoreAddress =
+        ttk::GetSemaphoreOp::create(rewriter, loc, completionSemaphoreIndex);
+    Value remoteCompletionSemaphoreAddress =
+        buildRemoteNocAddress(pipeType.getDstStartX(), pipeType.getDstStartY(),
+                              completionSemaphoreAddress);
+    ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
+        rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
+        getChipRoute(), sourceAddress, sizeBytes, remoteDestinationAddress,
+        remoteCompletionSemaphoreAddress,
+        arith::ConstantIntOp::create(rewriter, loc, 1, 32));
+    return success();
+  }
+
+  void emitCompletionSignalBarrier() override {}
+
+private:
+  struct TranslatedNode {
+    Value x;
+    Value y;
+  };
+
+  TranslatedNode buildTranslatedNode(int64_t logicalX, int64_t logicalY) {
+    Value logicalXValue =
+        arith::ConstantIndexOp::create(rewriter, loc, logicalX);
+    Value logicalYValue =
+        arith::ConstantIndexOp::create(rewriter, loc, logicalY);
+    return {
+        ttk::ConvertLogicalXToTranslatedOp::create(
+            rewriter, loc, rewriter.getIndexType(), logicalXValue),
+        ttk::ConvertLogicalYToTranslatedOp::create(
+            rewriter, loc, rewriter.getIndexType(), logicalYValue),
+    };
+  }
+
+  Value buildRemoteNocAddress(int64_t logicalX, int64_t logicalY,
+                              Value l1Address) {
+    TranslatedNode node = buildTranslatedNode(logicalX, logicalY);
+    return ttk::GetNocAddrOp::create(rewriter, loc, node.x, node.y, l1Address,
+                                     nocVal)
+        .getResult();
+  }
+
+  Value buildConnectionIndex() {
+    Value argIndex =
+        arith::ConstantIndexOp::create(rewriter, loc, 1 + routeIndex);
+    return ttk::GetArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                    argIndex);
+  }
+
+  Value getChipRoute() const {
+    assert(routeIndex < runtime.chipRoutes.size() &&
+           "fabric route must have target routing data");
+    return runtime.chipRoutes[routeIndex];
+  }
+
+  Operation *op;
+  Location loc;
+  PipeType pipeType;
+  unsigned routeIndex;
+  const FabricRuntimeInfo &runtime;
+  ConversionPatternRewriter &rewriter;
+  Value nocVal;
+  Value sourceAddress;
+  Value destinationAddress;
+  Value sizeBytes;
+};
+
 //===----------------------------------------------------------------------===//
 // Receiver post sequence counter initialization
 //===----------------------------------------------------------------------===//
@@ -809,6 +1074,8 @@ LogicalResult lowerPipeTransferSend(
     const PipeCapacityPlan *pipeCapacityPlan,
     const PipeSemaphoreCounterMap *senderCapacityCounters,
     const PipeComputedAddressCounterMap *computedAddressCounters,
+    const FabricRoutePlan *fabricRoutePlan,
+    const FabricRuntimeMap *fabricRuntime,
     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
@@ -830,8 +1097,19 @@ LogicalResult lowerPipeTransferSend(
   PipeResourceInfo pipeResource = *maybePipeResource;
   PipeCompletionInfo completionInfo = pipeResource.completion;
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
-  NocPipeTransportEmitter nocTransport(op, pipeType, rewriter);
-  PipeTransportEmitter &transport = nocTransport;
+
+  std::optional<unsigned> fabricRouteIndex;
+  if (fabricRoutePlan) {
+    auto fabricRoute = fabricRoutePlan->sendRouteIndex.find(op);
+    if (fabricRoute != fabricRoutePlan->sendRouteIndex.end()) {
+      fabricRouteIndex = fabricRoute->second;
+    }
+  }
+  bool usesFabric = fabricRouteIndex.has_value();
+  if (usesFabric && !pipeResource.addressStorage.usesComputedReceiverDFB()) {
+    op.emitError("fabric pipe send requires computed receiver DFB addresses");
+    return failure();
+  }
 
   auto cbType = getTTLCBType(srcCB);
   if (!cbType) {
@@ -877,6 +1155,19 @@ LogicalResult lowerPipeTransferSend(
       capacityCounters.push_back(counter);
     }
   }
+
+  std::unique_ptr<PipeTransportEmitter> transport;
+  if (usesFabric) {
+    FuncOp func = op->getParentOfType<FuncOp>();
+    auto runtimeIt = fabricRuntime->find(func);
+    assert(runtimeIt != fabricRuntime->end() &&
+           "fabric route must have initialized kernel runtime state");
+    transport = std::make_unique<FabricPipeTransportEmitter>(
+        op, pipeType, *fabricRouteIndex, runtimeIt->second, rewriter);
+  } else {
+    transport =
+        std::make_unique<NocPipeTransportEmitter>(op, pipeType, rewriter);
+  }
   int64_t numDests = pipeType.getNumDests();
 
   auto indexTy = rewriter.getIndexType();
@@ -905,7 +1196,7 @@ LogicalResult lowerPipeTransferSend(
       ttk::SemaphoreWaitMinOp::create(rewriter, loc, capacitySemaphorePtr,
                                       nextAcquired);
     }
-  } else {
+  } else if (!usesFabric) {
     ReadyCounterAddressInfo readyCounterInfo =
         getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
     int64_t expectedReceiverPosts =
@@ -940,7 +1231,7 @@ LogicalResult lowerPipeTransferSend(
     auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
   }
-  transport.preparePayloadWrite();
+  transport->preparePayloadWrite();
 
   // Transfer the entire block in one NoC write. Tiles are contiguous in the
   // DFB, and destination DFB layout is uniform across nodes, so lowering sends
@@ -964,22 +1255,22 @@ LogicalResult lowerPipeTransferSend(
         buildAddressTableDestinationAddress(loc, addressTableInfo, rewriter);
   }
 
-  if (failed(transport.emitPayloadWrite(srcAddr, dstAddr, totalSizeVal))) {
+  if (failed(transport->emitPayloadWrite(srcAddr, dstAddr, totalSizeVal))) {
     return failure();
   }
 
   // Wait for payload writes to complete before signaling receiver completion.
   // Without this barrier, the receiver may wake up before all data arrives.
-  transport.emitPayloadWriteBarrier();
+  transport->emitPayloadWriteBarrier();
 
-  if (failed(transport.emitReceiverCompletionIncrement(
+  if (failed(transport->emitReceiverCompletionIncrement(
           completionInfo.semaphoreIndex))) {
     return failure();
   }
 
   // Completion signals use non-posted atomics. The send ttl.wait lowers to a
   // no-op, so this barrier is the only flush before the kernel exits.
-  transport.emitCompletionSignalBarrier();
+  transport->emitCompletionSignalBarrier();
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
@@ -990,6 +1281,8 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     const PipeSemaphoreCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     const PipeCapacityPlan *pipeCapacityPlan,
+                                    const FabricRoutePlan *fabricRoutePlan,
+                                    const FabricRuntimeMap *fabricRuntime,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
@@ -1026,8 +1319,7 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     return failure();
   }
 
-  NocPipeTransportEmitter nocTransport(op, pipeType, rewriter);
-  PipeTransportEmitter &transport = nocTransport;
+  bool usesFabric = static_cast<bool>(getDeviceTransfer(createOp));
 
   // Preflight the only fallible validation before emitting any ops, so a match
   // failure leaves no partially-built IR for the conversion driver to roll
@@ -1035,6 +1327,11 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   bool usesComputedReceiverDFB =
       pipeResource.addressStorage.usesComputedReceiverDFB();
   std::optional<ReceiverPublishedAddressInfo> maybePublishedAddressInfo;
+  if (usesFabric && !usesComputedReceiverDFB) {
+    op.emitError(
+        "fabric pipe receive requires computed receiver DFB addresses");
+    return failure();
+  }
   if (!usesComputedReceiverDFB) {
     FailureOr<ReceiverPublishedAddressInfo> info =
         getReceiverPublishedAddressInfo(op, dst, rewriter);
@@ -1044,25 +1341,32 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     maybePublishedAddressInfo = *info;
   }
 
+  std::unique_ptr<PipeTransportEmitter> transport;
+  if (!usesFabric) {
+    transport =
+        std::make_unique<NocPipeTransportEmitter>(op, pipeType, rewriter);
+  }
+
   if (!usesComputedReceiverDFB) {
     AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
     Value publishedAddress = buildReceiverPublishedAddress(
         dst, loc, *maybePublishedAddressInfo, rewriter);
     Value tableAddress =
         buildAddressTableAddress(loc, addressTableInfo, rewriter);
-    if (failed(transport.emitReceiverAddressPublish(tableAddress,
-                                                    publishedAddress))) {
+    if (failed(transport->emitReceiverAddressPublish(tableAddress,
+                                                     publishedAddress))) {
       return failure();
     }
-    transport.emitAddressPublishBarrier();
+    transport->emitAddressPublishBarrier();
   }
 
-  if (!pipeCapacityPlan || !pipeCapacityPlan->usesCapacityProtocol(op)) {
+  if (!usesFabric && (!pipeCapacityPlan ||
+                      !pipeCapacityPlan->usesCapacityProtocol(op))) {
     ReadyCounterAddressInfo readyCounterInfo =
         getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
     Value senderReadyCounterAddr =
         buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
-    if (failed(transport.emitSenderReadyIncrement(senderReadyCounterAddr))) {
+    if (failed(transport->emitSenderReadyIncrement(senderReadyCounterAddr))) {
       return failure();
     }
   }
