@@ -178,7 +178,7 @@ def TTL_MulticastTransferAttr :
 def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
   let summary = "Transfer relation over a logical device domain";
   let description = [{
-    Describes device-level communication independently from core endpoints and
+    Describes device-level communication independently from node endpoints and
     dataflow buffer operands. The relation is either an explicit non-empty edge
     list or one structured transfer descriptor.
   }];
@@ -186,6 +186,21 @@ def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
     "DeviceDomainAttr":$domain,
     OptionalArrayRefParameter<"TransferEdgeAttr">:$edges,
     OptionalParameter<"StructuredTransferAttrInterface">:$structured
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DeviceTransferAttr : TTL_Attr<"DeviceTransfer", "device_transfer"> {
+  let summary = "Device edge bound to a node-level pipe";
+  let description = [{
+    Binds one logical device-domain edge to a node-level pipe. The attribute
+    records device semantics required by target lowering without describing a
+    physical topology, route, link, or hop count.
+  }];
+  let parameters = (ins
+    "DeviceDomainAttr":$domain,
+    "TransferEdgeAttr":$edge
   );
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
