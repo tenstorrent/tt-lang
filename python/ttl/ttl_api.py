@@ -39,9 +39,9 @@ def _ensure_ttnn():
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
-from ttl.dialects import ttkernel
+from ttl.dialects import ttl, ttkernel
 from ttl.ir import *
-from ttl.ir import DenseI32ArrayAttr
+from ttl.ir import DenseI32ArrayAttr, DenseI64ArrayAttr, DictAttr
 from ttl.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
@@ -88,6 +88,7 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    FabricRouteSpec,
     KernelSpec,
     MeshProgramPlacement,
     get_min_remaining_l1_for_device,
@@ -377,7 +378,7 @@ def _default_mesh_program_placements(args: tuple):
 
 
 def _mesh_program_placements_from_device_domain(device_domain):
-    """Return a full-domain placement for a flat logical device domain."""
+    """Return the default mesh placement for a logical device domain."""
     if device_domain is None:
         return None
 
@@ -389,11 +390,11 @@ def _mesh_program_placements_from_device_domain(device_domain):
             f"device_domain must be a DeviceDomain, got {type(device_domain).__name__}"
         )
 
-    if device_domain.component_count != 1:
-        raise ValueError(
-            "device_domain mesh placement currently requires a regular DeviceDomain"
-        )
-    extent = tuple(int(dim) for dim in device_domain.shape)
+    extent = tuple(
+        int(dimension)
+        for component in device_domain.components
+        for dimension in component.extent
+    )
     if prod(extent) <= 1:
         return None
     start = tuple(0 for _ in extent)
@@ -610,7 +611,9 @@ class CompiledTTNNKernel:
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
         kernel_pipe_computed_address_dfb_indices=None,
+        kernel_fabric_routes=None,
         mesh_program_placements=None,
+        device_domain=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -657,7 +660,9 @@ class CompiledTTNNKernel:
         self.kernel_pipe_computed_address_dfb_indices = (
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
+        self.kernel_fabric_routes = kernel_fabric_routes or [[] for _ in kernel_paths]
         self.mesh_program_placements = mesh_program_placements
+        self.device_domain = device_domain
         self._pipe_global_semaphore_lifetime = []
 
     def __call__(self, *args):
@@ -704,6 +709,8 @@ class CompiledTTNNKernel:
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
             mesh_program_placements=self.mesh_program_placements,
+            device_domain=self.device_domain,
+            kernel_fabric_routes=self.kernel_fabric_routes,
         )
 
 
@@ -812,6 +819,40 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     return list(attr)
 
 
+def _get_kernel_fabric_routes(module, kernel_name: str):
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get("ttl.fabric_routes", None)
+    if attr is None:
+        return []
+
+    routes = []
+    for route_attr in ArrayAttr(attr):
+        route = DictAttr(route_attr)
+        local = ttl.DeviceRefAttr.maybe_downcast(route["local"])
+        remote = ttl.DeviceRefAttr.maybe_downcast(route["remote"])
+        if local is None or remote is None:
+            raise ValueError(
+                f"Expected DeviceRefAttr entries in ttl.fabric_routes on "
+                f"kernel '{kernel_name}'"
+            )
+        source_nodes = tuple(
+            tuple(DenseI64ArrayAttr(source_node))
+            for source_node in ArrayAttr(route["source_nodes"])
+        )
+        routes.append(
+            FabricRouteSpec(
+                local_device=tuple(
+                    value for coordinate in local.coordinates for value in coordinate
+                ),
+                remote_device=tuple(
+                    value for coordinate in remote.coordinates for value in coordinate
+                ),
+                source_nodes=source_nodes,
+            )
+        )
+    return routes
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -830,6 +871,7 @@ def _compile_ttnn_kernel(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     mesh_program_placements=None,
+    device_domain=None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -917,6 +959,7 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     kernel_pipe_computed_address_dfb_indices = []
+    kernel_fabric_routes = []
     noc_kernel_idx = 0
     kernel_config_attrs = {
         name: {
@@ -942,6 +985,7 @@ def _compile_ttnn_kernel(
                 module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
             )
         )
+        kernel_fabric_routes.append(_get_kernel_fabric_routes(module, name))
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
@@ -997,7 +1041,9 @@ def _compile_ttnn_kernel(
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        kernel_fabric_routes=kernel_fabric_routes,
         mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
     )
 
     if verbose:
@@ -1084,7 +1130,9 @@ def _build_operation_pipenets(f: Callable, threads):
     for net in seen.values():
         if net.is_graph:
             net_use = graph.add_graph_pipe_net(net.graph)
-            net.pipe_net_id = net_use.id
+            net._graph_edges = net_use.edges
+            net._graph_pipe_net_ids = net_use.pipe_net_ids
+            net.pipe_net_id = net_use.pipe_net_ids[0]
             continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id
@@ -1830,6 +1878,7 @@ def _compile_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
         )
         return compiled_kernel
 
