@@ -25,6 +25,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstddef>
 #include <optional>
 #include <variant>
 
@@ -43,6 +44,9 @@ struct PipePlanningOptions {
 
   /// Use sender-local capacity counters for transfers proven safe.
   bool enableCapacitySynchronization = false;
+
+  /// Select routing-plane fabric synchronization for routed transfers.
+  const FabricRoutePlan *fabricRoutePlan = nullptr;
 };
 
 /// Protocol selection used while allocating readiness resources.
@@ -51,12 +55,19 @@ public:
   /// Return whether `op` uses sender-side capacity synchronization.
   bool usesCapacityProtocol(Operation *op) const;
 
+  /// Return whether `op` uses routing-plane fabric synchronization.
+  bool usesFabricProtocol(PipeTransferSendOp op) const;
+
+  /// Return whether `op` uses routing-plane fabric synchronization.
+  bool usesFabricProtocol(PipeTransferPostOp op) const;
+
 private:
   friend FailureOr<PipeModulePlan>
   buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &, const PipeGraph &,
                       const PipePlanningOptions &);
 
   llvm::SmallPtrSet<Operation *, 16> capacityTransferOps;
+  llvm::SmallPtrSet<Operation *, 16> fabricTransferOps;
 };
 
 /// Capacity consumed by one sender before issuing a payload write.
@@ -132,12 +143,14 @@ private:
 enum class PipeSynchronizationProtocol {
   ReceiverPost,
   Capacity,
+  Fabric,
 };
 
 /// Sender-side DFB access and payload size for one transfer.
 struct PipeSendPlan {
   bool usesReadPointer = false;
   int64_t payloadSizeBytes = 0;
+  std::optional<std::size_t> fabricRouteIndex;
 };
 
 /// Receiver information needed to publish a destination DFB address.
