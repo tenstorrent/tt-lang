@@ -120,6 +120,37 @@ static bool rangeContains(DeviceRangeAttr range, DeviceRefAttr deviceRef) {
   return true;
 }
 
+static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
+                                                      TransferEdgeAttr edge,
+                                                      EmitErrorFn emitError,
+                                                      llvm::StringRef context) {
+  if (mlir::failed(
+          verifyDeviceRefInDomain(domain, edge.getSource(), emitError,
+                                  (llvm::Twine(context) + ".source").str()))) {
+    return mlir::failure();
+  }
+  if (DeviceRefAttr destination = edge.getDestination()) {
+    return verifyDeviceRefInDomain(
+        domain, destination, emitError,
+        (llvm::Twine(context) + ".destination").str());
+  }
+
+  DeviceRangeAttr destinationRange = edge.getDestinationRange();
+  if (mlir::failed(verifyDeviceRefInDomain(
+          domain, destinationRange.getLo(), emitError,
+          (llvm::Twine(context) + ".destination_range.lo").str())) ||
+      mlir::failed(verifyDeviceRefInDomain(
+          domain, destinationRange.getHi(), emitError,
+          (llvm::Twine(context) + ".destination_range.hi").str(), true))) {
+    return mlir::failure();
+  }
+  if (rangeContains(destinationRange, edge.getSource())) {
+    return emitError() << context
+                       << " source-in-destination multicast is not supported";
+  }
+  return mlir::success();
+}
+
 } // namespace
 
 llvm::LogicalResult
@@ -291,30 +322,9 @@ llvm::LogicalResult TransferGraphAttr::verify(
   for (auto [edgeIndex, edge] : llvm::enumerate(edges)) {
     std::string context =
         (llvm::Twine("transfer graph edge ") + llvm::Twine(edgeIndex)).str();
-    if (mlir::failed(verifyDeviceRefInDomain(domain, edge.getSource(),
-                                             emitError, context + ".source"))) {
-      return mlir::failure();
-    }
-    if (DeviceRefAttr destination = edge.getDestination()) {
-      if (mlir::failed(verifyDeviceRefInDomain(domain, destination, emitError,
-                                               context + ".destination"))) {
-        return mlir::failure();
-      }
-      continue;
-    }
-
-    DeviceRangeAttr destinationRange = edge.getDestinationRange();
     if (mlir::failed(
-            verifyDeviceRefInDomain(domain, destinationRange.getLo(), emitError,
-                                    context + ".destination_range.lo")) ||
-        mlir::failed(
-            verifyDeviceRefInDomain(domain, destinationRange.getHi(), emitError,
-                                    context + ".destination_range.hi", true))) {
+            verifyTransferEdgeInDomain(domain, edge, emitError, context))) {
       return mlir::failure();
-    }
-    if (rangeContains(destinationRange, edge.getSource())) {
-      return emitError() << context
-                         << " source-in-destination multicast is not supported";
     }
   }
 
@@ -350,6 +360,30 @@ llvm::LogicalResult TransferGraphAttr::verify(
   }
   return verifyDeviceRefInDomain(domain, endpoint, emitError,
                                  "structured transfer endpoint");
+}
+
+llvm::LogicalResult DeviceTransferAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceDomainAttr domain, TransferEdgeAttr edge) {
+  return verifyTransferEdgeInDomain(domain, edge, emitError,
+                                    "device transfer edge");
+}
+
+mlir::LogicalResult IsDeviceOp::verify() {
+  return verifyDeviceRefInDomain(
+      getDomain(), getDevice(), [&]() { return emitOpError(); }, "device");
+}
+
+mlir::LogicalResult IsDeviceInRangeOp::verify() {
+  if (mlir::failed(verifyDeviceRefInDomain(
+          getDomain(), getRange().getLo(), [&]() { return emitOpError(); },
+          "range lower bound")) ||
+      mlir::failed(verifyDeviceRefInDomain(
+          getDomain(), getRange().getHi(), [&]() { return emitOpError(); },
+          "range upper bound", true))) {
+    return mlir::failure();
+  }
+  return mlir::success();
 }
 
 llvm::LogicalResult
