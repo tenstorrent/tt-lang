@@ -211,16 +211,14 @@ edge that requires a turn cannot be encoded by increasing the hop count.
 
 ### Multi-segment forwarding
 
-tt-blaze's `cross_device_send` provides the working reference for segmented
-forwarding. It decomposes a logical source-to-destination transfer into
-adjacent logical devices. Each intermediate device receives into a local DFB,
-waits for completion, then sends the payload to the next device. Every P300
-linear-fabric packet uses `to_chip_unicast(1)`.
+A validated segmented transport decomposes a logical source-to-destination
+transfer into adjacent logical devices. Each intermediate device receives into
+a local DFB, waits for completion, then sends the payload to the next device.
+Every P300 linear-fabric packet uses `to_chip_unicast(1)`.
 
-tt-lang should preserve those generated-kernel properties while replacing
-Blaze's topology-specific row-first and column-second route construction with
-a target control-plane route. The compiler representation remains more
-general than Blaze:
+tt-lang should preserve those generated-kernel properties while obtaining the
+segment sequence from the target control plane. The compiler representation
+remains target-independent:
 
 - the high-level transfer stays one logical edge;
 - target route resolution decides the segment sequence;
@@ -419,8 +417,8 @@ control-plane decisions.
 
 The tt-lang build already applies managed patches from `third-party/patches`
 when building its pinned TT-Metal source. The patch does not modify an
-installed tt-lang toolchain. Hardware experiments apply it only to the
-isolated TT-Metal build under `/home/bnorris/tt/tt-blaze-baseline`.
+installed tt-lang toolchain. Hardware experiments apply it only to an isolated
+TT-Metal build.
 
 The physical-dimension query is sufficient to validate and encode a direct
 linear route that remains on one physical axis. It is not a general route
@@ -452,23 +450,20 @@ The current resolver should not be extended with target-specific topology
 tables in Python. New architectures and non-linear routes require richer
 control-plane results from TT-Metal.
 
-### tt-blaze reference behavior
+### Validated segmented transport behavior
 
-tt-blaze is the generated-C++ reference for the fabric manager, packet pool,
-fused write and atomic command, sender submission sequence, completion wait,
-and connection closure.
+The generated-C++ reference for each segment uses the fabric manager, packet
+pool, fused write and atomic command, sender submission sequence, completion
+wait, and connection closure.
 
-Its `cross_device_send` implementation does not calculate arbitrary physical
-hop counts. It constructs a logical row-first and column-second sequence and
+The validated non-adjacent transfer does not calculate an arbitrary physical
+hop count. It constructs a logical row-first and column-second sequence and
 turns every adjacent pair into a separate transfer segment. Intermediate
-devices receive and forward the payload. The P300 adaptation adds
-`to_chip_unicast(1)` to every segment because the original Blaze workload uses
-a 2D torus configuration where `fabric_set_unicast_route()` supplies the
-route.
+devices receive and forward the payload. The P300 configuration uses
+`to_chip_unicast(1)` for every segment.
 
-tt-lang intentionally differs in route planning. Blaze's logical traversal is
-specific to its known mesh and algorithm. tt-lang must obtain the segment
-sequence from target binding while preserving the proven per-segment C++.
+tt-lang must obtain the segment sequence from target binding while preserving
+the proven per-segment C++.
 
 ### Validation environment
 
@@ -484,18 +479,8 @@ The compiler fabric pytest runner is:
   test/python/fabric/test_ccl.py -xvs
 ```
 
-The isolated tt-blaze baseline runners are:
-
-```bash
-/home/bnorris/soft/bin/tt-run-when-free \
-  /home/bnorris/tt/tt-blaze-baseline/run-generic-p2p.sh
-
-/home/bnorris/soft/bin/tt-run-when-free \
-  /home/bnorris/tt/tt-blaze-baseline/run-cross-device-send.sh
-```
-
-All runners use the P300_X2 four-device mesh descriptor, apply a timeout, and
-write output to `/tmp/device_test.log`.
+The reference and compiler runners use the P300_X2 four-device mesh
+descriptor, apply a timeout, and write output to `/tmp/device_test.log`.
 
 ### Current validation status
 
@@ -504,14 +489,14 @@ The following results have been observed on the four-device P300_X2 system:
 | Test | Result | Evidence |
 | --- | --- | --- |
 | TT-Metal generic-op adjacent point-to-point | Pass | 4,096-byte BF16 payload delivered exactly. |
-| Adapted tt-blaze `(0,0) -> (0,3)` | Pass | Three adjacent forwarding segments with fused payload and completion commands. |
+| Segmented reference `(0,0) -> (0,3)` | Pass | Three adjacent forwarding segments with fused payload and completion commands. |
 | Compiler adjacent point-to-point | Pass | Four devices opened; destination data validated. |
 | Compiler adjacent ping-pong BF16 | Pass | Forward and reverse transfers validated. |
 | Compiler adjacent ping-pong FP32 | Pass | Forward and reverse transfers validated. |
 | Compiler direct non-adjacent transfer using logical distance | Timeout | Proves logical distance is not a valid route encoding. |
 | Physical-mesh resolver unit tests | Pass | Included in 39 passing domain and kernel-runner tests. |
 | Compiler non-adjacent transfer using physical route resolution | Pending | Requires isolated TTNN rebuild and hardware execution. |
-| Full `test/python/pipe` regression suite | Pending | Required before implementation commits. |
+| Full `test/python/pipe` regression suite | Pass | 76 passed, 1 skipped, and 1 expected failure. |
 
 A source-level C++ match is not sufficient evidence of correctness. A fabric
 feature is considered working only after its hardware pytest passes and the
