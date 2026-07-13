@@ -11,6 +11,7 @@ from ttl.domains import (
     DeviceDomain,
     DeviceRange,
     DeviceRef,
+    TransferEdge,
     TransferGraph,
 )
 
@@ -81,6 +82,44 @@ def test_structured_axis_neighbor_remains_compact():
     assert graph.structured.component_name == "device"
     assert graph.structured.axis == 1
     assert "structured descriptor" in graph.metadata_cost().compile_time
+
+
+def test_axis_neighbor_edges_are_materialized_from_compact_relation():
+    domain = DeviceDomain((1, 3))
+
+    graph = TransferGraph.axis_neighbor(domain, axis=1, wrap=True)
+
+    assert list(graph.iter_edges()) == [
+        TransferEdge(DeviceRef((0, 0)), DeviceRef((0, 1))),
+        TransferEdge(DeviceRef((0, 1)), DeviceRef((0, 2))),
+        TransferEdge(DeviceRef((0, 2)), DeviceRef((0, 0))),
+    ]
+
+
+def test_gather_edges_preserve_other_product_components():
+    domain = DeviceDomain.product(board=(2,), device=(2,))
+
+    graph = TransferGraph.gather(
+        domain, DeviceRef(board=0, device=0), component="device"
+    )
+
+    assert list(graph.iter_edges()) == [
+        TransferEdge(DeviceRef((0,), (1,)), DeviceRef((0,), (0,))),
+        TransferEdge(DeviceRef((1,), (1,)), DeviceRef((1,), (0,))),
+    ]
+
+
+def test_multicast_edges_preserve_other_product_components():
+    domain = DeviceDomain.product(board=(2,), device=(2,))
+
+    graph = TransferGraph.multicast(
+        domain, DeviceRef(board=0, device=0), component="device"
+    )
+
+    assert list(graph.iter_edges()) == [
+        TransferEdge(DeviceRef((0,), (0,)), DeviceRef((0,), (1,))),
+        TransferEdge(DeviceRef((1,), (0,)), DeviceRef((1,), (1,))),
+    ]
 
 
 def test_product_structured_transfer_requires_component():
