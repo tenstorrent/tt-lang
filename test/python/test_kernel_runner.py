@@ -65,6 +65,7 @@ class _FakeTTNN:
         self.next_address = 0x1000
         self.fabric_setup_calls = []
         self.fabric_route_calls = []
+        self.fabric_config = "linear"
 
     class CoreCoord:
         def __init__(self, x, y):
@@ -225,6 +226,9 @@ class _FakeTTNN:
             (source_node_id, destination_node_id, link_index)
         )
         return _FakeFabricRouteInfo(link_index=2, hop_count=3)
+
+    def get_fabric_config(self):
+        return self.fabric_config
 
 
 class _FakeFabricNodeId(NamedTuple):
@@ -514,6 +518,46 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     assert fake_ttnn.fabric_route_calls == [
         (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1), None),
     ]
+
+
+def test_routing_plane_route_cache_tracks_mesh_and_fabric_config(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    route_cache = kernel_runner._FabricRouteCache()
+    routes = [kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),))]
+
+    def configure(mesh_device):
+        kernel = _FakeTTNN.KernelDescriptor(
+            kernel_source="/tmp/kernel.cpp",
+            core_ranges=object(),
+            compile_time_args=[],
+            common_runtime_args=[],
+            config=object(),
+        )
+        program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[routes],
+            mesh_device=mesh_device,
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+            fabric_route_cache=route_cache,
+        )
+
+    first_mesh = _FakeMeshDevice()
+    configure(first_mesh)
+    configure(first_mesh)
+    assert len(fake_ttnn.fabric_route_calls) == 1
+    assert len(fake_ttnn.fabric_setup_calls) == 2
+
+    fake_ttnn.fabric_config = "mesh"
+    configure(first_mesh)
+    assert len(fake_ttnn.fabric_route_calls) == 2
+
+    configure(_FakeMeshDevice())
+    assert len(fake_ttnn.fabric_route_calls) == 3
+    assert len(fake_ttnn.fabric_setup_calls) == 4
 
 
 def test_run_kernel_sets_custom_program_hash(monkeypatch):

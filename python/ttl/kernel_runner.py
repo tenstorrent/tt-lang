@@ -185,6 +185,51 @@ class FabricRouteSpec:
 
 
 @dataclass(frozen=True)
+class _ResolvedFabricRoute:
+    """Host-resolved values needed to configure one fabric connection."""
+
+    link_index: int
+    hop_count: int
+
+
+class _FabricRouteCache:
+    """Cache control-plane route queries for one mesh and fabric configuration."""
+
+    def __init__(self) -> None:
+        self._mesh_device = None
+        self._fabric_config = None
+        self._routes: Dict[Tuple[int, int, int, int], _ResolvedFabricRoute] = {}
+
+    @staticmethod
+    def _node_key(node_id: Any) -> Tuple[int, int]:
+        return (int(node_id.mesh_id), int(node_id.chip_id))
+
+    def resolve(
+        self,
+        mesh_device: Any,
+        source_node_id: Any,
+        destination_node_id: Any,
+    ) -> _ResolvedFabricRoute:
+        fabric_config = ttnn.get_fabric_config()
+        if self._mesh_device is not mesh_device or self._fabric_config != fabric_config:
+            self._mesh_device = mesh_device
+            self._fabric_config = fabric_config
+            self._routes.clear()
+
+        route_key = (
+            *self._node_key(source_node_id),
+            *self._node_key(destination_node_id),
+        )
+        if route_key not in self._routes:
+            route_info = ttnn.get_fabric_route_info(source_node_id, destination_node_id)
+            self._routes[route_key] = _ResolvedFabricRoute(
+                link_index=int(route_info.link_index),
+                hop_count=int(route_info.hop_count),
+            )
+        return self._routes[route_key]
+
+
+@dataclass(frozen=True)
 class MeshProgramPlacement:
     """Device range for one program inside a mesh descriptor."""
 
@@ -807,6 +852,7 @@ def configure_routing_plane_runtime_args(
     device_coordinates: tuple,
     grid_cols: int,
     grid_rows: int,
+    fabric_route_cache: Optional[_FabricRouteCache] = None,
 ) -> None:
     """Attach per-node routing-plane setup arguments to one device program."""
     if len(kernel_fabric_routes) != len(program_descriptor.kernels):
@@ -817,6 +863,9 @@ def configure_routing_plane_runtime_args(
         return
     source_node_id = mesh_device.get_fabric_node_id(
         _build_mesh_coordinate(device_coordinates)
+    )
+    route_cache = (
+        fabric_route_cache if fabric_route_cache is not None else _FabricRouteCache()
     )
     for kernel_index, routes in enumerate(kernel_fabric_routes):
         if not routes:
@@ -844,7 +893,9 @@ def configure_routing_plane_runtime_args(
                     for coordinates in active_remote_devices
                 ]
                 route_infos = [
-                    ttnn.get_fabric_route_info(source_node_id, destination_node_id)
+                    route_cache.resolve(
+                        mesh_device, source_node_id, destination_node_id
+                    )
                     for destination_node_id in destination_node_ids
                 ]
                 chip_routes = [0] * len(routes)
@@ -899,6 +950,7 @@ def run_kernel_on_device(
     mesh_program_placements: Optional[List[Any]] = None,
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
+    fabric_route_cache: Optional[_FabricRouteCache] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -927,6 +979,9 @@ def run_kernel_on_device(
         mesh_program_placements: Optional mesh device ranges. When present,
             execution uses ttnn.MeshProgramDescriptor instead of
             ttnn.ProgramDescriptor.
+        fabric_route_cache: Optional cache owned by a compiled kernel. Route
+            results are reused while the mesh and fabric configuration remain
+            unchanged.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -1043,6 +1098,7 @@ def run_kernel_on_device(
                 device_coordinates=mesh_coordinate,
                 grid_cols=grid_cols,
                 grid_rows=grid_rows,
+                fabric_route_cache=fabric_route_cache,
             )
             program_descriptors[mesh_coordinate] = device_program
         program = build_device_mesh_program_descriptor(program_descriptors)
