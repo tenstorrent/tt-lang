@@ -11,9 +11,9 @@ allocates runtime host state or device-visible communication memory.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional, Sequence, Tuple, Union
-
+from typing import Any, Iterable, Iterator, Optional, Sequence, Tuple, Union
 
 Coordinate = Tuple[int, ...]
 ComponentCoordinates = Tuple[Coordinate, ...]
@@ -426,6 +426,74 @@ class TransferGraph:
             runtime_host="none allocated by TransferGraph",
             device_visible="none allocated by TransferGraph",
         )
+
+    def iter_edges(self) -> Iterator[TransferEdge]:
+        """Iterate the transfer relation without changing its stored form."""
+        if self.is_explicit:
+            yield from self.transfer_edges
+            return
+
+        assert self.structured is not None
+        component_index = self.domain.component_index(self.structured.component_name)
+        devices = tuple(self._iter_domain_devices())
+
+        if isinstance(self.structured, AxisNeighborTransfer):
+            component = self.domain.components[component_index]
+            axis_extent = component.extent[self.structured.axis]
+            for source in devices:
+                source_coordinates = [
+                    list(coordinates) for coordinates in source.coordinates
+                ]
+                destination_axis = (
+                    source_coordinates[component_index][self.structured.axis]
+                    + self.structured.offset
+                )
+                if destination_axis >= axis_extent:
+                    if not self.structured.wrap:
+                        continue
+                    destination_axis %= axis_extent
+                source_coordinates[component_index][
+                    self.structured.axis
+                ] = destination_axis
+                yield TransferEdge(source, DeviceRef(*source_coordinates))
+            return
+
+        if isinstance(self.structured, GatherTransfer):
+            for source in devices:
+                destination_coordinates = list(source.coordinates)
+                destination_coordinates[component_index] = (
+                    self.structured.root.coordinates[component_index]
+                )
+                destination = DeviceRef(*destination_coordinates)
+                if source != destination:
+                    yield TransferEdge(source, destination)
+            return
+
+        if isinstance(self.structured, MulticastTransfer):
+            for destination in devices:
+                source_coordinates = list(destination.coordinates)
+                source_coordinates[component_index] = (
+                    self.structured.source.coordinates[component_index]
+                )
+                source = DeviceRef(*source_coordinates)
+                if source != destination:
+                    yield TransferEdge(source, destination)
+            return
+
+        raise TypeError(
+            f"unsupported structured transfer type " f"{type(self.structured).__name__}"
+        )
+
+    def _iter_domain_devices(self) -> Iterator[DeviceRef]:
+        component_coordinates = []
+        for component in self.domain.components:
+            component_coordinates.append(
+                tuple(
+                    itertools.product(*(range(extent) for extent in component.extent))
+                )
+            )
+        for coordinates in itertools.product(*component_coordinates):
+            yield DeviceRef(*coordinates)
 
     @staticmethod
     def _default_component(domain: DeviceDomain, component_name: Optional[str]) -> str:
