@@ -4339,6 +4339,99 @@ def TTKernel_CloseFabricConnectionsOp : TTKernel_Op<"experimental.close_fabric_c
   }];
 }
 
+def TTKernel_CreateRoutingPlaneConnectionManagerOp :
+    TTKernel_Op<"routing_plane.create_connection_manager"> {
+  let summary = "Create a routing-plane connection manager";
+  let description = [{
+    Creates the connection manager used by routing-plane fabric operations in
+    one kernel invocation.
+  }];
+  let results = (outs TTKernel_RoutingPlaneConnectionManager:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+def TTKernel_OpenRoutingPlaneConnectionsOp :
+    TTKernel_Op<"routing_plane.open_connections"> {
+  let summary = "Open routing-plane connections from runtime arguments";
+  let description = [{
+    Opens `connectionCount` routing-plane connections by reading their setup
+    data from runtime arguments beginning at `runtimeArgBase`. The result owns
+    one packet header for each opened connection.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$connectionCount,
+    I64Attr:$runtimeArgBase
+  );
+  let results = (outs I32:$routeId);
+  let assemblyFormat = [{
+    $manager `,` $connectionCount `runtime_arg_base` `=` $runtimeArgBase
+      attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneAtomicIncOp :
+    TTKernel_Op<"routing_plane.atomic_inc"> {
+  let summary = "Increment a remote semaphore through one fabric connection";
+  let description = [{
+    Sends a non-posted atomic increment to `semaphoreAddress` through the
+    connection selected by `connectionIndex`. `chipRoute` contains the
+    target-specific routing value for the selected connection.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$chipRoute,
+    TTKernel_NocAddr:$semaphoreAddress,
+    I32:$increment
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
+    TTKernel_Op<"routing_plane.fused_write_atomic_inc"> {
+  let summary = "Write a payload and increment a remote semaphore";
+  let description = [{
+    Sends one payload to `destinationAddress` and atomically increments
+    `semaphoreAddress` through the connection selected by `connectionIndex`.
+    `chipRoute` contains the target-specific routing value for the selected
+    connection. The increment flushes the payload before the remote semaphore
+    is updated.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$chipRoute,
+    I32:$sourceAddress,
+    I32:$sizeBytes,
+    TTKernel_NocAddr:$destinationAddress,
+    TTKernel_NocAddr:$semaphoreAddress,
+    I32:$increment
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_CloseRoutingPlaneConnectionsOp :
+    TTKernel_Op<"routing_plane.close_connections"> {
+  let summary = "Close routing-plane connections";
+  let description = [{
+    Closes every active connection owned by `manager`.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$connectionCount
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // TTKernel Logical Mesh Position operations
 //===----------------------------------------------------------------------===//
