@@ -64,3 +64,37 @@
 // Axis-neighbor relations require a positive logical offset.
 // expected-error @below {{axis_neighbor offset must be positive, got 0}}
 #structured = #ttl.axis_neighbor_transfer<component = "device", axis = 0 : i64, offset = 0 : i64, wrap = false>
+
+// -----
+
+// A bound device transfer must remain within its associated domain.
+// expected-error @below {{device transfer edge.destination component 'device' axis 0 is out of bounds for extent 4, got 4}}
+#transfer = #ttl.device_transfer<
+  domain = <components = <name = "device", extent = [4]>>,
+  edge = <source = <coordinates = [0]>, destination = <coordinates = [4]>>>
+
+// -----
+
+// An exact-device predicate must reference a member of its domain.
+module {
+  func.func @invalid_is_device() {
+    // expected-error @below {{device component 'device' axis 0 is out of bounds for extent 4, got 4}}
+    %invalid = ttl.is_device
+      <coordinates = [4]> in
+      <components = <name = "device", extent = [4]>> : i1
+    return
+  }
+}
+
+// -----
+
+// A range predicate permits the domain extent only as its exclusive bound.
+module {
+  func.func @invalid_is_device_range() {
+    // expected-error @below {{range upper bound component 'device' axis 0 is out of bounds for extent 4, got 5}}
+    %invalid = ttl.is_device_in_range
+      <lo = <coordinates = [1]>, hi = <coordinates = [5]>> in
+      <components = <name = "device", extent = [4]>> : i1
+    return
+  }
+}
