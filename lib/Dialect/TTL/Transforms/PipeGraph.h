@@ -24,6 +24,7 @@
 
 #include <cassert>
 #include <optional>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
@@ -35,9 +36,7 @@ struct PipeGraphAnalysisState;
 // and enough DFB slots for overlapping writes.
 //===----------------------------------------------------------------------===//
 
-/// Physical receiver identity for a pipe destination. The current pipe type
-/// stores local core coordinates; keeping that representation behind this type
-/// confines future mesh/device coordinate changes to the graph interface.
+/// Node coordinate for a pipe destination within one logical device.
 struct PipeReceiverCoord {
   int64_t x = 0;
   int64_t y = 0;
@@ -47,26 +46,26 @@ struct PipeReceiverCoord {
   }
 };
 
-/// Receiver-local DFB identity. The receiver coordinate is kept abstract from
-/// the current rectangular pipe encoding so future mesh/device coordinates can
-/// be localized behind PipeGraph.
+/// Receiver-local DFB identity. `receiverDevice` is null for intra-device
+/// pipes and identifies the logical destination device for fabric pipes.
 struct PipeReceiverDFBKey {
+  DeviceRefAttr receiverDevice;
   PipeReceiverCoord receiver;
   int64_t dfbIndex = 0;
 
   bool operator==(const PipeReceiverDFBKey &other) const {
-    return receiver == other.receiver && dfbIndex == other.dfbIndex;
+    return receiverDevice == other.receiverDevice &&
+           receiver == other.receiver && dfbIndex == other.dfbIndex;
   }
 };
 
-inline bool isReceiverDFB(mlir::Value cb,
-                          const PipeReceiverDFBKey &receiverDFB) {
-  std::optional<int64_t> dfbIndex = getCBIndex(cb);
-  return dfbIndex && *dfbIndex == receiverDFB.dfbIndex;
-}
+using PipeReceiverDFBStreamKey = std::pair<DeviceRefAttr, int64_t>;
 
 inline void printReceiverDFB(llvm::raw_ostream &os,
                              const PipeReceiverDFBKey &receiverDFB) {
+  if (receiverDFB.receiverDevice) {
+    os << "device " << receiverDFB.receiverDevice << " ";
+  }
   os << "receiver(" << receiverDFB.receiver.x << ", " << receiverDFB.receiver.y
      << ") DFB " << receiverDFB.dfbIndex;
 }
@@ -121,8 +120,8 @@ template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeReceiverDFBKey> {
   using Key = mlir::tt::ttl::PipeReceiverDFBKey;
   static unsigned getHashValue(const Key &receiverDFB) {
-    return hash_combine(receiverDFB.receiver.x, receiverDFB.receiver.y,
-                        receiverDFB.dfbIndex);
+    return hash_combine(receiverDFB.receiverDevice, receiverDFB.receiver.x,
+                        receiverDFB.receiver.y, receiverDFB.dfbIndex);
   }
   static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
 };
@@ -151,10 +150,11 @@ inline bool isCollectiveTransfer(PipeTransferContract contract) {
 
 /// Receiver DFB information for a pipe.
 struct ReceiverDFBInfo {
-  int64_t dfbIndex;           // DFB index (0-31) used by receiver
-  CircularBufferType dfbType; // Receiver DFB type
-  bool hasStaticTileOffset;   // Whether staticTileOffset is known.
-  int64_t staticTileOffset;   // Static destination tile offset within the DFB
+  DeviceRefAttr receiverDevice; // Null for intra-device pipes.
+  int64_t dfbIndex;             // DFB index (0-31) used by receiver
+  CircularBufferType dfbType;   // Receiver DFB type
+  bool hasStaticTileOffset;     // Whether staticTileOffset is known.
+  int64_t staticTileOffset;     // Static destination tile offset within the DFB
   std::optional<int64_t> receiverSlotIndex;
   int64_t receiverSlotSpanBlocks;
   int64_t blockCount; // DFB block_count
@@ -168,7 +168,7 @@ using PipeEdgeId = unsigned;
 using PipeReceiverEndpointId = unsigned;
 using PipeReceiverDFBNodeId = unsigned;
 
-/// One logical PipeNet edge from a source core to a receiver set.
+/// One logical PipeNet edge from a source node to a receiver set.
 struct PipeEdge {
   PipeEdgeId id = 0;
   PipeKey pipe;
@@ -230,20 +230,29 @@ public:
   bool hasPipes() const { return !receiverDFBs.empty(); }
 
   /// Add a receiver DFB mapping for a pipe.
-  LogicalResult addReceiverDFB(
-      int64_t srcX, int64_t srcY, int64_t dstStartX, int64_t dstStartY,
-      int64_t dstEndX, int64_t dstEndY, int64_t pipeNetId, int64_t dfbIndex,
-      CircularBufferType dfbType, bool hasStaticTileOffset,
-      int64_t staticTileOffset, int64_t receiverSlotSpanBlocks,
-      Operation *receiverReserveOp, PipeTransferContract transferContract,
-      ArrayRef<Operation *> transferCreateOps, int64_t blockCount,
-      Location loc);
+  LogicalResult
+  addReceiverDFB(int64_t srcX, int64_t srcY, int64_t dstStartX,
+                 int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
+                 int64_t pipeNetId, int64_t dfbIndex,
+                 DeviceRefAttr receiverDevice, CircularBufferType dfbType,
+                 bool hasStaticTileOffset, int64_t staticTileOffset,
+                 int64_t receiverSlotSpanBlocks, Operation *receiverReserveOp,
+                 PipeTransferContract transferContract,
+                 ArrayRef<Operation *> transferCreateOps, int64_t blockCount,
+                 Location loc);
 
   /// Verify that each receiver post was assigned a non-wrapping physical DFB
   /// slot.
   LogicalResult verifyReceiverDFBBlockCounts() const;
 
   const ReceiverDFBInfo *lookupReceiverDFB(const PipeKey &key) const;
+
+  ArrayRef<PipeTransferPostOp> getPipeReceiverPosts(const PipeKey &pipe) const;
+
+  ArrayRef<PipeTransferSendOp> getPipeSends(const PipeKey &pipe) const;
+
+  void appendReceiverDFBPops(const PipeReceiverDFBKey &receiverDFB,
+                             SmallVectorImpl<CBPopOp> &pops) const;
 
   ArrayRef<PipeEdge> getPipeEdges() const { return pipeEdges; }
 
@@ -304,17 +313,19 @@ private:
   /// Assign each pipe the physical DFB slot reserved by the corresponding
   /// receiver post. Multicast pipes require the same receiver slot at every
   /// receiver because TT-Metal NoC multicast carries one destination address.
-  LogicalResult assignReceiverSlotIndices(ModuleOp mod,
-                                          PipeGraphAnalysisState &state);
+  LogicalResult assignReceiverSlotIndices(PipeGraphAnalysisState &state);
 
   void rebuildEndpointGraph();
 
-  LogicalResult provePipeOnlyReceiverStreams(ModuleOp mod,
-                                             PipeGraphAnalysisState &state);
+  LogicalResult provePipeOnlyReceiverStreams(PipeGraphAnalysisState &state);
 
   llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
   SmallVector<PipeEdge, 0> pipeEdges;
   llvm::DenseMap<PipeKey, PipeEdgeId> pipeEdgeIdByPipe;
+  llvm::DenseMap<PipeKey, SmallVector<PipeTransferPostOp>> receiverPostsByPipe;
+  llvm::DenseMap<PipeKey, SmallVector<PipeTransferSendOp>> sendsByPipe;
+  llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<CBPopOp>>
+      receiverPopsByStream;
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
   bool hasAnalyzedLaunchGrid = false;
