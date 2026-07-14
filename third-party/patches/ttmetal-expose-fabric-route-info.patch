@@ -1,5 +1,22 @@
+diff --git a/tt_metal/api/tt-metalium/experimental/fabric/control_plane.hpp b/tt_metal/api/tt-metalium/experimental/fabric/control_plane.hpp
+index 83b6e631a5..bc13c30927 100644
+--- a/tt_metal/api/tt-metalium/experimental/fabric/control_plane.hpp
++++ b/tt_metal/api/tt-metalium/experimental/fabric/control_plane.hpp
+@@ -179,11 +179,7 @@ public:
+     std::vector<chan_id_t> get_valid_eth_chans_on_routing_plane(
+         FabricNodeId fabric_node_id, routing_plane_id_t routing_plane_id) const;
+
+-    // Return path from device to device in the fabric.
+-    // Constraints:
+-    // - src_fabric_node_id must be local to the host on which this ControlPlane is running.
+-    // - If dst_fabric_node_id is not local to the current host, the path will end at a local
+-    // fabric node routing to the remote cluster.
++    // Return the complete path from device to device using routing information collected from all hosts.
+     std::vector<std::pair<FabricNodeId, chan_id_t>> get_fabric_route(
+         FabricNodeId src_fabric_node_id, FabricNodeId dst_fabric_node_id, chan_id_t src_chan_id) const;
+
 diff --git a/tt_metal/api/tt-metalium/experimental/fabric/fabric.hpp b/tt_metal/api/tt-metalium/experimental/fabric/fabric.hpp
-index 18f42bd522..f9cec5418a 100644
+index 18f42bd522..ba51246dd7 100644
 --- a/tt_metal/api/tt-metalium/experimental/fabric/fabric.hpp
 +++ b/tt_metal/api/tt-metalium/experimental/fabric/fabric.hpp
 @@ -113,6 +113,21 @@ uint32_t append_routing_plane_connection_manager_rt_args(
@@ -24,11 +41,27 @@ index 18f42bd522..f9cec5418a 100644
  FabricNodeId get_fabric_node_id_from_physical_chip_id(ChipId physical_chip_id);
 
  std::vector<chan_id_t> get_active_fabric_eth_routing_planes_in_direction(
+diff --git a/tt_metal/fabric/control_plane.cpp b/tt_metal/fabric/control_plane.cpp
+index 7114a9cd08..bc0b8b7e6e 100644
+--- a/tt_metal/fabric/control_plane.cpp
++++ b/tt_metal/fabric/control_plane.cpp
+@@ -1429,11 +1429,6 @@ std::vector<chan_id_t> ControlPlane::get_intramesh_facing_eth_chans(FabricNodeId
+
+ std::vector<std::pair<FabricNodeId, chan_id_t>> ControlPlane::get_fabric_route(
+     FabricNodeId src_fabric_node_id, FabricNodeId dst_fabric_node_id, chan_id_t src_chan_id) const {
+-    // Query the mesh coord range owned by the current host
+-    auto host_local_coord_range = this->get_coord_range(this->get_local_mesh_id_bindings()[0], MeshScope::LOCAL);
+-    auto src_mesh_coord = this->mesh_graph_->chip_to_coordinate(src_fabric_node_id.mesh_id, src_fabric_node_id.chip_id);
+-    auto dst_mesh_coord = this->mesh_graph_->chip_to_coordinate(dst_fabric_node_id.mesh_id, dst_fabric_node_id.chip_id);
+-
+     std::vector<std::pair<FabricNodeId, chan_id_t>> route;
+     int i = 0;
+     while (src_fabric_node_id != dst_fabric_node_id) {
 diff --git a/tt_metal/fabric/fabric.cpp b/tt_metal/fabric/fabric.cpp
-index d8f396e303..91c5f9c210 100644
+index d8f396e303..9ea42f5980 100644
 --- a/tt_metal/fabric/fabric.cpp
 +++ b/tt_metal/fabric/fabric.cpp
-@@ -439,6 +439,79 @@ std::vector<uint32_t> get_forwarding_link_indices(
+@@ -439,6 +439,71 @@ std::vector<uint32_t> get_forwarding_link_indices(
          control_plane, src_fabric_node_id, dst_fabric_node_id, forwarding_direction.value());
  }
 
@@ -64,14 +97,6 @@ index d8f396e303..91c5f9c210 100644
 +
 +    const auto candidate_channels =
 +        control_plane.get_active_fabric_eth_channels_in_direction(src_fabric_node_id, forwarding_direction.value());
-+    TT_FATAL(
-+        selected_link_index < candidate_channels.size(),
-+        "Resolved link index {} is out of bounds for {} forwarding channels from {} to {}",
-+        selected_link_index,
-+        candidate_channels.size(),
-+        src_fabric_node_id,
-+        dst_fabric_node_id);
-+
 +    const auto route = control_plane.get_fabric_route(
 +        src_fabric_node_id, dst_fabric_node_id, candidate_channels[selected_link_index]);
 +    TT_FATAL(!route.empty(), "Could not resolve a fabric route from {} to {}", src_fabric_node_id, dst_fabric_node_id);
@@ -109,10 +134,10 @@ index d8f396e303..91c5f9c210 100644
      const auto& control_plane = tt::tt_metal::MetalContext::instance().get_control_plane();
      return control_plane.get_fabric_context().get_fabric_topology();
 diff --git a/ttnn/cpp/ttnn-nanobind/fabric.cpp b/ttnn/cpp/ttnn-nanobind/fabric.cpp
-index cf1fa1e812..22c116a9bb 100644
+index cf1fa1e812..ced681d67a 100644
 --- a/ttnn/cpp/ttnn-nanobind/fabric.cpp
 +++ b/ttnn/cpp/ttnn-nanobind/fabric.cpp
-@@ -49,6 +49,16 @@ void bind_fabric_api(nb::module_& mod) {
+@@ -49,6 +49,26 @@ void bind_fabric_api(nb::module_& mod) {
              return fmt::format("FabricNodeId(M{}, D{})", *id.mesh_id, id.chip_id);
          });
 
@@ -124,12 +149,22 @@ index cf1fa1e812..22c116a9bb 100644
 +            return static_cast<uint32_t>(info.direction);
 +        })
 +        .def_ro("link_index", &tt::tt_fabric::FabricRouteInfo::link_index)
-+        .def_ro("hop_count", &tt::tt_fabric::FabricRouteInfo::hop_count);
++        .def_ro("hop_count", &tt::tt_fabric::FabricRouteInfo::hop_count)
++        .def("__repr__", [](const tt::tt_fabric::FabricRouteInfo& info) {
++            return fmt::format(
++                "FabricRouteInfo(connection_node_id=FabricNodeId(M{}, D{}), direction={}, link_index={}, "
++                "hop_count={})",
++                *info.connection_node_id.mesh_id,
++                info.connection_node_id.chip_id,
++                static_cast<uint32_t>(info.direction),
++                info.link_index,
++                info.hop_count);
++        });
 +
      // custom mapping here for interface stability
      nb::enum_<tt::tt_fabric::FabricConfig>(mod, "FabricConfig")
          .value("DISABLED", tt::tt_fabric::FabricConfig::DISABLED)
-@@ -136,6 +146,20 @@ void bind_fabric_api(nb::module_& mod) {
+@@ -136,6 +156,20 @@ void bind_fabric_api(nb::module_& mod) {
              Returns the currently active global fabric configuration.
          )");
 
@@ -154,7 +189,7 @@ diff --git a/ttnn/ttnn/__init__.py b/ttnn/ttnn/__init__.py
 index 9b256fef09..31611d8ad6 100644
 --- a/ttnn/ttnn/__init__.py
 +++ b/ttnn/ttnn/__init__.py
-@@ -170,7 +170,9 @@ from ttnn._ttnn.fabric import (
+@@ -170,8 +170,10 @@ from ttnn._ttnn.fabric import (
      FabricUDMMode,
      FabricManagerMode,
      FabricRouterConfig,
@@ -164,3 +199,4 @@ index 9b256fef09..31611d8ad6 100644
 +    get_fabric_route_info,
      get_tt_fabric_packet_header_size_bytes,
      get_tt_fabric_max_payload_size_bytes,
+     MeshId,
