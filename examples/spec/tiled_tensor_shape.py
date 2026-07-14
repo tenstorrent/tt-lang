@@ -19,6 +19,7 @@ import torch
 import ttl
 import ttnn
 
+
 # spec:begin
 def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
     return ttnn.from_torch(
@@ -27,18 +28,22 @@ def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
         device=device,
     )
 
+
 def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
     padded_shape = list(tensor.padded_shape)
     tile_shape = list(tensor.tile.tile_shape)
-    return padded_shape[:-2] + [dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)]
+    return padded_shape[:-2] + [
+        dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)
+    ]
 
-shape_in_tiles(from_torch(torch.randn(()))) #              prints [1, 1]
-shape_in_tiles(from_torch(torch.randn((128)))) #           prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((1, 128)))) #        prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((32, 128)))) #       prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((128, 1)))) #        prints [4, 1]
-shape_in_tiles(from_torch(torch.randn((128, 32)))) #       prints [4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 128, 32)))) #    prints [2, 4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32)))) # prints [2, 2, 4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 2, 120, 30)))) # prints [2, 2, 4, 1]
+
+shape_in_tiles(from_torch(torch.randn(())))  #              prints [1, 1]
+shape_in_tiles(from_torch(torch.randn((128))))  #           prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((1, 128))))  #        prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((32, 128))))  #       prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((128, 1))))  #        prints [4, 1]
+shape_in_tiles(from_torch(torch.randn((128, 32))))  #       prints [4, 1]
+shape_in_tiles(from_torch(torch.randn((2, 128, 32))))  #    prints [2, 4, 1]
+shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32))))  # prints [2, 2, 4, 1]
+shape_in_tiles(from_torch(torch.randn((2, 2, 120, 30))))  # prints [2, 2, 4, 1]
 # spec:end

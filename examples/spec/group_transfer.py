@@ -32,9 +32,8 @@ import ttnn
 HO = HI * H_SCALE_FACTOR
 WO = WI * W_SCALE_FACTOR
 
-io_dfb = ttl.make_dataflow_buffer_like(
-    input_images, shape=(C,), block_count=2
-)
+io_dfb = ttl.make_dataflow_buffer_like(input_images, shape=(C,), block_count=2)
+
 
 @ttl.datamovement()
 def reader():
@@ -49,6 +48,7 @@ def reader():
 
                     xf.wait()
 
+
 @ttl.datamovement()
 def writer():
     for n in range(N):
@@ -62,7 +62,15 @@ def writer():
 
                             # Copy output pixel channels
 
-                            xf = ttl.copy(io_blk, output[n, hi * H_SCALE_FACTOR + h_scale_index, wi * W_SCALE_FACTOR + w_scale_index, :])
+                            xf = ttl.copy(
+                                io_blk,
+                                output[
+                                    n,
+                                    hi * H_SCALE_FACTOR + h_scale_index,
+                                    wi * W_SCALE_FACTOR + w_scale_index,
+                                    :,
+                                ],
+                            )
 
                             # Add transfer handle to a group
 
@@ -71,4 +79,6 @@ def writer():
                     # Wait for all transfers to complete
 
                     gxf.wait_all()
+
+
 # spec:end

@@ -19,12 +19,13 @@ import torch
 import ttl
 import ttnn
 
+
 # spec:begin
 @ttl.operation(grid=(1, 1))
 def __add(
-    a: ttnn.Tensor,   # input tensor
-    b: ttnn.Tensor,   # input tensor
-    out: ttnn.Tensor, # output tensor
+    a: ttnn.Tensor,  # input tensor
+    b: ttnn.Tensor,  # input tensor
+    out: ttnn.Tensor,  # output tensor
 ) -> None:
     # Dataflow buffers shared by the threads.
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
@@ -59,6 +60,7 @@ def add(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
     out = ttnn.zeros(a.shape, layout=ttnn.TILE_LAYOUT)
     __add(a, b, out)
     return out
+
 
 x = ttnn.rand(ttnn.Shape([32, 32]), layout=ttnn.TILE_LAYOUT)
 

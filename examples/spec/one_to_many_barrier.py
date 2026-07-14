@@ -20,9 +20,10 @@ import ttl
 import ttnn
 
 # spec:begin
-node_num = ttl.node(dims = 1)
+node_num = ttl.node(dims=1)
 my_barrier = ttl.Semaphore()
 all_barrier = my_barrier.get_remote_multicast()
+
 
 @ttl.datamovement()
 def dm():
@@ -35,4 +36,6 @@ def dm():
         my_barrier.wait_eq(1)
 
         # node 0 is done
+
+
 # spec:end

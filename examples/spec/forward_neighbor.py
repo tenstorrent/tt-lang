@@ -25,9 +25,13 @@ import ttnn
 
 grid_x, grid_y = ttl.grid_size()
 
-net = ttl.PipeNet([ttl.Pipe(
-    src = (x, y),
-    dst = (x, (y + 1) % grid_y)) for x in range(grid_x) for y in range(grid_y)])
+net = ttl.PipeNet(
+    [
+        ttl.Pipe(src=(x, y), dst=(x, (y + 1) % grid_y))
+        for x in range(grid_x)
+        for y in range(grid_y)
+    ]
+)
 
 # (0, 0) => (0, 1)  |
 # (0, 1) => (0, 2)  |
@@ -39,6 +43,7 @@ net = ttl.PipeNet([ttl.Pipe(
 # ...               |
 #
 # * - assuming (8, 8) grid
+
 
 @ttl.datamovement()
 def dm():
@@ -70,4 +75,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
+
+
 # spec:end

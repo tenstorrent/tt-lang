@@ -19,6 +19,7 @@ import torch
 import ttl
 import ttnn
 
+
 # spec:begin
 def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
     return ttnn.from_torch(
@@ -27,16 +28,18 @@ def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
         device=device,
     )
 
+
 def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
     return list(tensor.padded_shape)
 
-row_major_shape(from_torch(torch.randn(()))) #              prints [1]
-row_major_shape(from_torch(torch.randn((128)))) #           prints [128]
-row_major_shape(from_torch(torch.randn((1, 128)))) #        prints [1, 128]
-row_major_shape(from_torch(torch.randn((32, 128)))) #       prints [32, 128]
-row_major_shape(from_torch(torch.randn((128, 1)))) #        prints [128, 1]
-row_major_shape(from_torch(torch.randn((128, 32)))) #       prints [128, 32]
-row_major_shape(from_torch(torch.randn((2, 128, 32)))) #    prints [2, 128, 32]
-row_major_shape(from_torch(torch.randn((2, 2, 128, 32)))) # prints [2, 2, 128, 32]
-row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) # prints [2, 2, 120, 30]
+
+row_major_shape(from_torch(torch.randn(())))  #              prints [1]
+row_major_shape(from_torch(torch.randn((128))))  #           prints [128]
+row_major_shape(from_torch(torch.randn((1, 128))))  #        prints [1, 128]
+row_major_shape(from_torch(torch.randn((32, 128))))  #       prints [32, 128]
+row_major_shape(from_torch(torch.randn((128, 1))))  #        prints [128, 1]
+row_major_shape(from_torch(torch.randn((128, 32))))  #       prints [128, 32]
+row_major_shape(from_torch(torch.randn((2, 128, 32))))  #    prints [2, 128, 32]
+row_major_shape(from_torch(torch.randn((2, 2, 128, 32))))  # prints [2, 2, 128, 32]
+row_major_shape(from_torch(torch.randn((2, 2, 120, 30))))  # prints [2, 2, 120, 30]
 # spec:end

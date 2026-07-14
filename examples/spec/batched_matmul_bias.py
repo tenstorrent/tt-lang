@@ -46,10 +46,15 @@ M_BLOCKS = M_TILES // M_BLOCK_SIZE
 N_BLOCKS = N_TILES // N_BLOCK_SIZE
 K_BLOCKS = K_TILES // K_BLOCK_SIZE
 
-a_dfb = ttl.make_dataflow_buffer_like(a, shape = (L_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE))
-b_dfb = ttl.make_dataflow_buffer_like(b, shape = (K_BLOCK_SIZE, N_BLOCK_SIZE))
-c_dfb = ttl.make_dataflow_buffer_like(c, shape = (M_BLOCK_SIZE, N_BLOCK_SIZE))
-y_dfb = ttl.make_dataflow_buffer_like(y, shape = (L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+a_dfb = ttl.make_dataflow_buffer_like(
+    a, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE)
+)
+b_dfb = ttl.make_dataflow_buffer_like(b, shape=(K_BLOCK_SIZE, N_BLOCK_SIZE))
+c_dfb = ttl.make_dataflow_buffer_like(c, shape=(M_BLOCK_SIZE, N_BLOCK_SIZE))
+y_dfb = ttl.make_dataflow_buffer_like(
+    y, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE)
+)
+
 
 @ttl.datamovement()
 def matmul_read():
@@ -74,7 +79,9 @@ def matmul_read():
 
                 # Repeat for each K block
                 for k_block in range(K_BLOCKS):
-                    k_slice = slice(k_block * K_BLOCK_SIZE, (k_block + 1) * K_BLOCK_SIZE)
+                    k_slice = slice(
+                        k_block * K_BLOCK_SIZE, (k_block + 1) * K_BLOCK_SIZE
+                    )
 
                     # Reserve a_blk and b_blk
                     with (
@@ -92,6 +99,7 @@ def matmul_read():
                         # End of "with" scope:
                         # Push a_blk and b_blk to make it ready for matmul_compute
 
+
 @ttl.compute()
 def matmul_compute():
     for _ in range(L_BLOCKS):
@@ -102,7 +110,9 @@ def matmul_compute():
                 with y_dfb.reserve() as y_blk:
 
                     # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
-                    y_final = ttl.block.fill(0, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                    y_final = ttl.block.fill(
+                        0, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE)
+                    )
 
                     # Repeat for each K block
                     for _ in range(K_BLOCKS):
@@ -115,7 +125,11 @@ def matmul_compute():
                             # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
                             # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
                             # broadcast it over dim 0 to L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b_bcast = ttl.block.broadcast(ttl.block.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(L_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
+                            b_bcast = ttl.block.broadcast(
+                                ttl.block.unsqueeze(b_blk, dims=[0]),
+                                dims=[0],
+                                shape=(L_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE),
+                            )
 
                             # Accumulate dot product between L_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
                             # L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
@@ -130,7 +144,11 @@ def matmul_compute():
                         # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
                         # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
                         # broadcast it over dim 0 to L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
-                        c_bcast = ttl.block.broadcast(ttl.block.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                        c_bcast = ttl.block.broadcast(
+                            ttl.block.unsqueeze(c_blk, dims=[0]),
+                            dims=[0],
+                            shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE),
+                        )
 
                         y_final = y_final + c_bcast
 
@@ -142,6 +160,7 @@ def matmul_compute():
                     # End of "with" scope:
                     # Push y_blk to make it ready for matmul_write
 
+
 @ttl.datamovement()
 def matmul_write():
     for l_block in range(L_BLOCKS):
@@ -152,12 +171,18 @@ def matmul_write():
                 with y_dfb.wait() as y_blk:
 
                     # Store L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE y_blk block into y
-                    y_xf = ttl.copy(y_blk, y[
-                        l_block * L_BLOCK_SIZE : (l_block + 1) * L_BLOCK_SIZE,
-                        m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE,
-                        n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE])
+                    y_xf = ttl.copy(
+                        y_blk,
+                        y[
+                            l_block * L_BLOCK_SIZE : (l_block + 1) * L_BLOCK_SIZE,
+                            m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE,
+                            n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE,
+                        ],
+                    )
                     y_xf.wait()
 
                     # End of "with" scope:
                     # Pop y_blk to make it available for matmul_compute to store and push next block
+
+
 # spec:end

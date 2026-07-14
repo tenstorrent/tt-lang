@@ -21,11 +21,11 @@ import ttnn
 
 # spec:begin
 # for (8, 8) single chip or SPMD grid gets x = [0, 64)
-x = ttl.node(dims = 1)
+x = ttl.node(dims=1)
 
 # for (8, 8, 8) multi-chip grid gets x = [0, 8), y = [0, 64)
-x, y = ttl.node(dims = 2)
+x, y = ttl.node(dims=2)
 
 # for (8, 8) single-chip or SPMD grid gets x = [0, 8), y = [0, 8), z = 0
-x, y, z = ttl.node(dims = 3)
+x, y, z = ttl.node(dims=3)
 # spec:end

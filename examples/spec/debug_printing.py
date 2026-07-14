@@ -19,6 +19,7 @@ import torch
 import ttl
 import ttnn
 
+
 # spec:begin
 @ttl.datamovement()
 def matmul_read():
@@ -42,7 +43,16 @@ def matmul_read():
 
                     # Print iteration state and the content of c_blk block
 
-                    print("i_tile=", i_tile, " m_tile=", m_tile, "n_tile=", n_tile, " c_blk: ", c_blk)
+                    print(
+                        "i_tile=",
+                        i_tile,
+                        " m_tile=",
+                        m_tile,
+                        "n_tile=",
+                        n_tile,
+                        " c_blk: ",
+                        c_blk,
+                    )
 
                     c_xf = ttl.copy(c[m_tile, n_tile], c_blk)
                     c_xf.wait()
@@ -75,4 +85,6 @@ def matmul_read():
 
                         a_xf.wait()
                         b_xf.wait()
+
+
 # spec:end

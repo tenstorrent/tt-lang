@@ -42,9 +42,9 @@ import ttnn
 ROWS = ...  # rows participating in the gather
 COLS = ...  # columns participating in the gather
 
-net = ttl.PipeNet([ttl.Pipe(
-    src = (x, y),
-    dst = (0, y)) for x in range(1, COLS) for y in range(ROWS)])
+net = ttl.PipeNet(
+    [ttl.Pipe(src=(x, y), dst=(0, y)) for x in range(1, COLS) for y in range(ROWS)]
+)
 
 # (1, 0) -> (0, 0) |             |
 # (2, 0) -> (0, 0) | sequential  |
@@ -53,6 +53,7 @@ net = ttl.PipeNet([ttl.Pipe(
 #                                |
 # (1, 1) -> (0, 1)               |
 # ...                            |
+
 
 @ttl.datamovement()
 def dm():
@@ -80,4 +81,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
+
+
 # spec:end

@@ -20,10 +20,11 @@ import ttl
 import ttnn
 
 # spec:begin
-node_num = ttl.node(dims = 1)
+node_num = ttl.node(dims=1)
 my_barrier = ttl.Semaphore()
 node_0_barrier = my_barrier.get_remote((0, 0))
-non_0_node_count = grid_size(dims = 1) - 1
+non_0_node_count = grid_size(dims=1) - 1
+
 
 @ttl.datamovement()
 def dm():
@@ -36,4 +37,6 @@ def dm():
         my_barrier.wait_eq(non_0_node_count)
 
         # non-0 nodes are done
+
+
 # spec:end

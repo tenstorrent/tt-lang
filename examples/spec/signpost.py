@@ -19,6 +19,7 @@ import torch
 import ttl
 import ttnn
 
+
 # spec:begin
 @ttl.datamovement()
 def matmul_read():
@@ -59,4 +60,6 @@ def matmul_read():
 
                                     a_xf.wait()
                                     b_xf.wait()
+
+
 # spec:end
