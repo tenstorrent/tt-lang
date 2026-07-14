@@ -153,6 +153,8 @@ class FabricRouteSpec:
 class _ResolvedFabricRoute:
     """Host-resolved values needed to configure one fabric connection."""
 
+    connection_node_id: Any
+    direction: int
     link_index: int
     hop_count: int
 
@@ -188,6 +190,8 @@ class _FabricRouteCache:
         if route_key not in self._routes:
             route_info = ttnn.get_fabric_route_info(source_node_id, destination_node_id)
             self._routes[route_key] = _ResolvedFabricRoute(
+                connection_node_id=route_info.connection_node_id,
+                direction=int(route_info.direction),
                 link_index=int(route_info.link_index),
                 hop_count=int(route_info.hop_count),
             )
@@ -855,7 +859,7 @@ def configure_routing_plane_runtime_args(
                 node_coordinates = (node_x, node_y)
                 active_remote_devices = []
                 remote_index = {}
-                route_slots = [0] * len(routes)
+                route_remote_slots = [0] * len(routes)
                 for route_index, route in enumerate(routes):
                     if route.local_device != device_coordinates:
                         continue
@@ -864,7 +868,7 @@ def configure_routing_plane_runtime_args(
                     if route.remote_device not in remote_index:
                         remote_index[route.remote_device] = len(active_remote_devices)
                         active_remote_devices.append(route.remote_device)
-                    route_slots[route_index] = remote_index[route.remote_device]
+                    route_remote_slots[route_index] = remote_index[route.remote_device]
 
                 destination_node_ids = [
                     mesh_device.get_fabric_node_id(_build_mesh_coordinate(coordinates))
@@ -876,28 +880,64 @@ def configure_routing_plane_runtime_args(
                     )
                     for destination_node_id in destination_node_ids
                 ]
+                connection_index_by_direction = {}
+                connection_destination_node_ids = []
+                connection_link_indices = []
+                remote_connection_slots = []
+                for route_info in route_infos:
+                    connection_index = connection_index_by_direction.get(
+                        route_info.direction
+                    )
+                    if connection_index is None:
+                        connection_index = len(connection_destination_node_ids)
+                        connection_index_by_direction[route_info.direction] = (
+                            connection_index
+                        )
+                        connection_destination_node_ids.append(
+                            route_info.connection_node_id
+                        )
+                        connection_link_indices.append(route_info.link_index)
+                    elif (
+                        connection_link_indices[connection_index]
+                        != route_info.link_index
+                    ):
+                        raise ValueError(
+                            "routes sharing one fabric direction must use one link"
+                        )
+                    elif (
+                        connection_destination_node_ids[connection_index]
+                        != route_info.connection_node_id
+                    ):
+                        raise ValueError(
+                            "routes sharing one fabric direction must use one "
+                            "connection node"
+                        )
+                    remote_connection_slots.append(connection_index)
+
+                route_slots = [0] * len(routes)
                 chip_routes = [0] * len(routes)
-                for route_index, route_slot in enumerate(route_slots):
-                    if route_slot >= len(route_infos):
+                for route_index, remote_slot in enumerate(route_remote_slots):
+                    if remote_slot >= len(route_infos):
                         continue
                     if routes[route_index].local_device != device_coordinates:
                         continue
                     if node_coordinates not in routes[route_index].source_nodes:
                         continue
-                    chip_routes[route_index] = int(route_infos[route_slot].hop_count)
+                    route_slots[route_index] = remote_connection_slots[remote_slot]
+                    chip_routes[route_index] = int(route_infos[remote_slot].hop_count)
                 runtime_prefix = [
-                    len(destination_node_ids),
+                    len(connection_destination_node_ids),
                     *route_slots,
                     *chip_routes,
                 ]
                 worker_node = ttnn.CoreCoord(node_x, node_y)
                 kernel_descriptor.runtime_args[node_x][node_y] = list(runtime_prefix)
-                if not destination_node_ids:
+                if not connection_destination_node_ids:
                     continue
                 fabric_args = ttnn.setup_routing_plane_connection(
                     source_node_id,
-                    destination_node_ids,
-                    [int(route_info.link_index) for route_info in route_infos],
+                    connection_destination_node_ids,
+                    connection_link_indices,
                     program_descriptor,
                     kernel_index,
                     worker_node,
@@ -909,7 +949,7 @@ def configure_routing_plane_runtime_args(
                         device_coordinates,
                         kernel_index,
                         (node_x, node_y),
-                        destination_node_ids,
+                        connection_destination_node_ids,
                         kernel_descriptor.runtime_args[node_x][node_y],
                         flush=True,
                     )
