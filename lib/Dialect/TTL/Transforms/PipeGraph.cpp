@@ -766,6 +766,12 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       return success();
     }
     DeviceRefAttr receiverDevice = getEnclosingReceiverDevice(popOp);
+    if (receiverDevice) {
+      // Fabric senders use computed receiver addresses without a receiver-ready
+      // handshake. They can execute before later receiver posts, so a receiver
+      // pop cannot make that physical slot available to another fabric sender.
+      return success();
+    }
     for (LaunchNodeCoord coord : popDomain.nodes) {
       PipeReceiverDFBKey receiverDFB{
           receiverDevice, PipeReceiverCoord{coord.x, coord.y}, *maybeDFBIndex};
