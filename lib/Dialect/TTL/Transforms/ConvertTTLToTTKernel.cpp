@@ -1872,7 +1872,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
 
   // Validate receiver DFB consistency before lowering emits the pipe
   // synchronization protocol.
-  auto pipeGraphOrErr = PipeGraph::build(mod, transferAnalysis, transferIndex);
+  auto pipeGraphOrErr = PipeGraph::build(mod, transferIndex);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }
