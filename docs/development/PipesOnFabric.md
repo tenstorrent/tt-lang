@@ -177,6 +177,8 @@ design has the following invariants:
 - `DeviceRef` identifies a logical member of a `DeviceDomain`. It is not a
   physical device identifier.
 - PipeNet protocol planning is shared by local NoC and fabric transports.
+- PipeNet identifiers preserve semantic identity and never select physical
+  semaphore ids or runtime-argument indices.
 - Target binding resolves logical devices, physical routes, transport limits,
   and connection metadata.
 - Runtime communication state scales with local live degree and queue depth,
@@ -230,6 +232,22 @@ Local and fabric transfers use the same logical protocol:
 
 The transport emitter maps that protocol onto either NoC or fabric
 operations. It does not redefine PipeNet semantics.
+
+### Synchronization storage
+
+The resource planner selects synchronization storage independently from
+PipeNet identity. Local transfers use densely allocated hardware semaphore ids
+when every access remains on one device. A completion counter targeted by a
+fabric atomic uses a host-created `GlobalSemaphore`; a local semaphore id
+cannot identify an object on another device.
+
+`GlobalSemaphore` provides a common L1 address on the selected TENSIX nodes of
+every device. The sender receives that address as a common runtime argument and
+combines it with the destination node coordinates to form the remote NoC
+address. The receiver uses the same runtime argument as the local address for
+its completion wait. Route metadata and synchronization storage are therefore
+independent: changing the selected route does not change PipeNet semantics or
+counter identity.
 
 ### Target route resolution
 
@@ -347,6 +365,13 @@ planning from transport emission. `NocPipeTransportEmitter` emits existing
 same-device NoC operations. `FabricPipeTransportEmitter` emits routing-plane
 atomics and fused payload-write-plus-completion operations.
 
+The resource planner resolves each synchronization counter to an L1 address
+before invoking the transport emitter. The emitter consumes that address and
+does not interpret a PipeNet id as a semaphore id. A PipeNet containing a
+cross-device transfer allocates its completion counter from the global
+semaphore namespace; local-only PipeNets allocate completion counters densely
+from the local namespace.
+
 Current fabric lowering requires computed receiver DFB addresses. The sender
 uses the destination DFB base address supplied by the host runtime and builds
 the remote NoC address from the destination node coordinates. Receiver-
@@ -434,6 +459,11 @@ receive zeroed route metadata and no connection-manager arguments.
 This prefix is private to the tt-lang target runtime and generated TTKernel
 code. It is not represented in TTL source attributes.
 
+Compiler-managed global semaphore addresses follow the optional PipeNet SRAM
+scratch base in common runtime arguments. They are allocated while constructing
+the program descriptor. Route queries and synchronization allocation do not
+execute in a device kernel or once per packet.
+
 ## Implementation details
 
 ### TT-Metal control-plane route query
@@ -501,12 +531,13 @@ The following results have been observed on the four-device P300_X2 system:
 | --- | --- | --- |
 | TT-Metal generic-op adjacent point-to-point | Pass | 4,096-byte BF16 payload delivered exactly. |
 | Segmented reference `(0,0) -> (0,3)` | Pass | Three adjacent forwarding segments with fused payload and completion commands. |
-| Compiler logical non-adjacent point-to-point | Pass | Logical `(0,0) -> (0,3)` resolves to fabric nodes `D0 -> D2`, link 0, and one physical hop. |
-| Compiler adjacent ping-pong BF16 | Pass | Forward and reverse transfers validated. |
-| Compiler adjacent ping-pong FP32 | Pass | Forward and reverse transfers validated. |
-| Compiler direct non-adjacent transfer using logical distance | Timeout | Proves logical distance is not a valid route encoding. |
+| Standalone routing-plane unicast | Pass | Adjacent and two-router-hop transfers use host-resolved runtime hop counts. |
+| Compiler point-to-point BF16 and FP32 | Pass | Logical `(0,0) -> (0,3)` executes twice per test. |
+| Compiler ping-pong BF16 and FP32 | Pass | Forward and reverse transfers validated. |
+| Compiler broadcast, scatter, and gather | Pass | BF16 and FP32 results match host references on four devices. |
 | Control-plane route integration unit tests | Pass | Kernel-runner tests validate selected-link and hop-count propagation. |
-| Full compiler fabric pytest suite | Pass | 3 passed in the four-device Docker container. |
+| Fabric completion storage lowering | Pass | Sender and receiver consume one runtime-bound global semaphore address; no local completion semaphore is emitted. |
+| Full compiler fabric pytest suite | Pass | 10 passed in the four-device Docker container. |
 | Full `test/python/pipe` regression suite | Pass | 77 passed and 1 expected failure. |
 
 A source-level C++ match is not sufficient evidence of correctness. A fabric
@@ -524,8 +555,10 @@ The POC still requires:
 - payload packetization using the runtime maximum payload size;
 - receiver-published address support or a verified restriction to computed
   receiver DFB addresses;
-- hardware pytests for all general collectives in `test/python/fabric`;
-- full `test/python/pipe` regression validation in Docker;
+- hardware pytests for reduce-to-root, all-gather, reduce-scatter, all-reduce,
+  and all-to-all in `test/python/fabric`;
+- tree-reduction, packet-boundary, full-duplex, backpressure, and cache behavior
+  hardware pytests;
 - MLIR tests for TTKernel routing operations and generated C++;
 - removal of temporary target queries after the corresponding TT-Metal APIs
   are available in the pinned revision.
