@@ -77,6 +77,23 @@ static LaunchNodeCoord getLaunchNodeCoord(PipeReceiverCoord receiver) {
   return {receiver.x, receiver.y};
 }
 
+static DeviceRefAttr getEnclosingReceiverDevice(Operation *op) {
+  for (Operation *ancestor = op->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    auto ifDst = dyn_cast<IfDstOp>(ancestor);
+    if (!ifDst) {
+      continue;
+    }
+    auto createPipe = ifDst.getPipe().getDefiningOp<CreatePipeOp>();
+    if (!createPipe) {
+      return {};
+    }
+    DeviceTransferAttr transfer = createPipe.getDeviceTransferAttr();
+    return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
+  }
+  return {};
+}
+
 /// Index an operation for each launch node where it accesses `dfbIndex`.
 template <typename OpTy>
 static void indexOperationByReceiverDFB(
@@ -611,6 +628,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     LaunchNodeDomain popDomain =
         lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
     if (!popDomain.known) {
+      return success();
+    }
+    DeviceRefAttr receiverDevice = getEnclosingReceiverDevice(popOp);
+    if (receiverDevice) {
+      // Fabric senders use computed receiver addresses without a receiver-ready
+      // handshake. They can execute before later receiver posts, so a receiver
+      // pop cannot make that physical slot available to another fabric sender.
       return success();
     }
     for (LaunchNodeCoord coord : popDomain.nodes) {
