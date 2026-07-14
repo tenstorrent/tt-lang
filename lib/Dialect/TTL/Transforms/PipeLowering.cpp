@@ -1655,6 +1655,9 @@ struct PipeTransferAllocationUnit {
 
   PipeType pipeType;
 
+  /// Fabric completion counters require a common L1 address across devices.
+  bool usesFabric = false;
+
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
 
   /// Stable tie-breaker for deterministic allocation.
@@ -1743,6 +1746,7 @@ collectPipeTransferAllocationUnits(
     unit.sendOp = sendOp.getOperation();
     unit.pipe = transferNode.pipe;
     unit.pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
+    unit.usesFabric = static_cast<bool>(getDeviceTransfer(createOp));
     unit.transferContract = transferNode.transferContract;
     unit.ordinal = static_cast<int64_t>(transferNode.id);
     unit.protocolOps.push_back(sendOp.getOperation());
@@ -2092,16 +2096,30 @@ LogicalResult buildPipeResourcePlan(
       computedAddressPlan.counterInitializations;
   info.computedAddressDFBIndices = computedAddressPlan.dfbIndices;
 
-  SmallVector<SmallVector<PipeKey>> pipesByCompletionCounterColor;
+  SmallVector<SmallVector<PipeKey>> pipesByLocalCompletionCounterColor;
+  SmallVector<SmallVector<PipeKey>> pipesByFabricCompletionCounterColor;
   for (PipeTransferAllocationUnit &unit : units) {
+    SmallVector<SmallVector<PipeKey>> &pipesByCompletionCounterColor =
+        unit.usesFabric ? pipesByFabricCompletionCounterColor
+                        : pipesByLocalCompletionCounterColor;
     unit.maybeCompletionCounterColor = allocateCompletionCounterColor(
         unit.pipe, pipesByCompletionCounterColor);
   }
   PipeCounterAllocator counterAllocator;
-  SmallVector<PipeCounterInfo> completionCounters;
-  completionCounters.reserve(pipesByCompletionCounterColor.size());
-  while (completionCounters.size() < pipesByCompletionCounterColor.size()) {
-    completionCounters.push_back(counterAllocator.allocate());
+  SmallVector<PipeCounterInfo> localCompletionCounters;
+  localCompletionCounters.reserve(pipesByLocalCompletionCounterColor.size());
+  for (std::size_t counterIndex = 0;
+       counterIndex < pipesByLocalCompletionCounterColor.size();
+       ++counterIndex) {
+    localCompletionCounters.push_back(counterAllocator.allocate());
+  }
+  SmallVector<PipeCounterInfo> fabricCompletionCounters;
+  fabricCompletionCounters.reserve(
+      pipesByFabricCompletionCounterColor.size());
+  for (std::size_t counterIndex = 0;
+       counterIndex < pipesByFabricCompletionCounterColor.size();
+       ++counterIndex) {
+    fabricCompletionCounters.push_back(counterAllocator.allocateGlobal());
   }
 
   auto [readyColorBySourceColor, maxReadyCountersPerSource] =
@@ -2148,6 +2166,9 @@ LogicalResult buildPipeResourcePlan(
     assert(unit.maybeCompletionCounterColor &&
            "pipe transfer is missing a completion counter color");
     int64_t completionColor = *unit.maybeCompletionCounterColor;
+    ArrayRef<PipeCounterInfo> completionCounters =
+        unit.usesFabric ? ArrayRef<PipeCounterInfo>(fabricCompletionCounters)
+                        : ArrayRef<PipeCounterInfo>(localCompletionCounters);
     assert(completionColor < static_cast<int64_t>(completionCounters.size()));
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
     std::optional<PipeCounterInfo> maybeReadyCounter;
