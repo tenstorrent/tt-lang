@@ -136,6 +136,7 @@ class TTLGenericCompiler(TTCompilerBase):
     _UNRESOLVED_PYTHON_VALUE = object()
     # These method names are reserved for PipeNet receiver dispatch in kernels.
     _PIPENET_CALLBACK_METHODS = ("if_src", "if_dst")
+    _NO_PIPE_IDENTITY_VALUE = object()
 
     def __init__(self, name, kernel_type=None, captures={}, *args, **kwargs):
         super().__init__(name, kernel_type, *args, **kwargs)
@@ -747,6 +748,9 @@ class TTLGenericCompiler(TTCompilerBase):
                 if self._is_pipenet_predicate_call(node):
                     return self._handle_pipenet_predicate(node)
 
+                if self._is_device_domain_predicate_call(node):
+                    return self._handle_device_domain_predicate(node)
+
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -891,6 +895,46 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         )
         return op
+
+    def _is_device_domain_predicate_call(self, node):
+        if not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr != "is_current":
+            return False
+        if not isinstance(node.func.value, ast.Name):
+            return False
+        domain_name = node.func.value.id
+        table = self._var_exists(domain_name)
+        domain = table[domain_name] if table else self.fn_globals.get(domain_name)
+        from ..domains import DeviceDomain
+
+        return isinstance(domain, DeviceDomain)
+
+    def _static_device_reference(self, node):
+        from ..domains import DeviceRef
+
+        if isinstance(node, ast.Name):
+            value = self.fn_globals.get(node.id)
+            if isinstance(value, (DeviceRef, int, tuple, list)):
+                return value
+        try:
+            return ast.literal_eval(node)
+        except (ValueError, TypeError, SyntaxError):
+            self._raise_error(
+                node,
+                "DeviceDomain.is_current() requires a static device reference",
+            )
+
+    def _handle_device_domain_predicate(self, node):
+        domain_name = node.func.value.id
+        table = self._var_exists(domain_name)
+        domain = table[domain_name] if table else self.fn_globals[domain_name]
+        if len(node.args) != 1 or node.keywords:
+            self._raise_error(
+                node, "DeviceDomain.is_current() requires one device reference"
+            )
+        device = domain.device_ref(self._static_device_reference(node.args[0]))
+        return self._emit_device_endpoint_predicate(domain, device)
 
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
@@ -1159,6 +1203,13 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
             try:
+                identity_value = self._evaluate_pipe_identity_expression(node)
+                if identity_value is not self._NO_PIPE_IDENTITY_VALUE:
+                    if func_args or kwargs:
+                        self._raise_error(
+                            node, "Pipe callback identity properties are not callable"
+                        )
+                    return identity_value
                 # Handle ttl.XXX and ttl.math.XXX attribute access
                 if (
                     self._is_ttl_module_access(node)
@@ -1222,8 +1273,46 @@ class TTLGenericCompiler(TTCompilerBase):
                     raise
                 self._raise_error(node, str(e))
 
+    def _evaluate_pipe_identity_expression(self, node):
+        if isinstance(node, ast.Name):
+            identity_name = f"__{node.id}_identity"
+            table = self._var_exists(identity_name)
+            if table:
+                return table[identity_name]
+            return self._NO_PIPE_IDENTITY_VALUE
+
+        if isinstance(node, ast.Attribute):
+            receiver = self._evaluate_pipe_identity_expression(node.value)
+            if receiver is self._NO_PIPE_IDENTITY_VALUE:
+                return receiver
+            if not hasattr(receiver, node.attr):
+                self._raise_error(
+                    node,
+                    f"pipe callback identity has no property {node.attr!r}",
+                )
+            return getattr(receiver, node.attr)
+
+        if isinstance(node, ast.Subscript):
+            receiver = self._evaluate_pipe_identity_expression(node.value)
+            if receiver is self._NO_PIPE_IDENTITY_VALUE:
+                return receiver
+            try:
+                index = ast.literal_eval(node.slice)
+                return receiver[index]
+            except (IndexError, KeyError, TypeError, ValueError, SyntaxError) as error:
+                self._raise_error(
+                    node,
+                    f"invalid pipe callback identity subscript: {error}",
+                )
+
+        return self._NO_PIPE_IDENTITY_VALUE
+
     def visit_Subscript(self, node):
         """Handle tensor[row, col] or tensor[r0:r1, c0:c1] indexing."""
+        identity_value = self._evaluate_pipe_identity_expression(node)
+        if identity_value is not self._NO_PIPE_IDENTITY_VALUE:
+            return identity_value
+
         tensor = self.visit(node.value)
         if not isinstance(getattr(tensor, "type", None), RankedTensorType):
             self._raise_error(node, "TTL only supports subscripting tensors")
@@ -1251,6 +1340,8 @@ class TTLGenericCompiler(TTCompilerBase):
             if isinstance(val, int) and not isinstance(val, bool):
                 return arith.ConstantOp(IndexType.get(self.ctx), val)
         val = self.visit(node)
+        if isinstance(val, int) and not isinstance(val, bool):
+            return arith.ConstantOp(IndexType.get(self.ctx), val)
         if isinstance(val.type, IndexType):
             return val
         return arith.IndexCastOp(IndexType.get(self.ctx), val)
@@ -1462,6 +1553,7 @@ class TTLGenericCompiler(TTCompilerBase):
             # Prepopulate other captures (non-tensor).
             from ..dataflow_buffer import DataflowBuffer
             from ..pipe import Pipe, PipeNet, _iter_pipe_nets_in_value
+            from ..domains import DeviceDomain
 
             for name, val in self.captures.items():
                 if is_ttnn_tensor(val):
@@ -1482,7 +1574,9 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Stamp variable name (first-seen wins) so the
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
-                elif any(_iter_pipe_nets_in_value(val, set())):
+                elif isinstance(val, DeviceDomain) or any(
+                    _iter_pipe_nets_in_value(val, set())
+                ):
                     self._set_var(name, val)
                 else:
                     self._raise_error(
@@ -1495,12 +1589,13 @@ class TTLGenericCompiler(TTCompilerBase):
             # Captures take precedence: a closure cell shadows a global
             # of the same name.
             for name, val in self.fn_globals.items():
-                if not isinstance(val, PipeNet):
+                if not isinstance(val, (PipeNet, DeviceDomain)):
                     continue
                 if any(name in tbl for tbl in self.symbol_tables):
                     continue
                 self._set_var(name, val)
-                self._pipe_net_names.setdefault(id(val), name)
+                if isinstance(val, PipeNet):
+                    self._pipe_net_names.setdefault(id(val), name)
 
             for target in node.body:
                 self.visit(target)

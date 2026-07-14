@@ -15,9 +15,22 @@ PipeNet supports the spec's callback API:
 
 import inspect
 import warnings
-from typing import Any, Callable, Iterable, List, Optional, Set, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 from ttl._pipenets import iter_instances_in_metadata
+
+if TYPE_CHECKING:
+    from .domains import DeviceRange, DeviceRef
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -42,6 +55,15 @@ class SrcPipeIdentity:
             return self._pipe.dst_start
         return (self._pipe.dst_start, self._pipe.dst_end)
 
+    @property
+    def destination_device(self) -> Union["DeviceRef", "DeviceRange"]:
+        """Return the destination device of a graph-based pipe."""
+        if not hasattr(self._pipe, "_device_edge"):
+            raise ValueError(
+                "destination_device is available only for graph-based PipeNets"
+            )
+        return self._pipe._device_edge.destination
+
 
 class DstPipeIdentity:
     """
@@ -58,6 +80,13 @@ class DstPipeIdentity:
     def src(self) -> CoreCoord:
         """Get source core coordinate."""
         return self._pipe.src
+
+    @property
+    def source_device(self) -> "DeviceRef":
+        """Return the source device of a graph-based pipe."""
+        if not hasattr(self._pipe, "_device_edge"):
+            raise ValueError("source_device is available only for graph-based PipeNets")
+        return self._pipe._device_edge.source
 
 
 class Pipe:
