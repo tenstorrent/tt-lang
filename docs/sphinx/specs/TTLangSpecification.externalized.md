@@ -72,7 +72,7 @@ An operation can also be written with explicit kernels, where the author writes 
 
 #### Program example
 
-<!-- @spec:example operation_function.py -->
+<!-- @spec:example operation_function/operation_function.py -->
 
 
 ### Runtime and compile-time arguments
@@ -115,7 +115,7 @@ A *multi-kernel operation* is an alternative form in which the author writes the
 
 #### Program example
 
-<!-- @spec:example multi_kernel_operation.py.txt -->
+<!-- @spec:example operation_function/multi_kernel_operation.py.txt -->
 
 
 ## Grid
@@ -136,7 +136,7 @@ The `ttl.grid_size` function returns the size of the grid. The function takes an
 
 #### Grid size example
 
-<!-- @spec:example grid_size.py -->
+<!-- @spec:example grid/grid_size.py -->
 
 
 ### Node function
@@ -152,7 +152,7 @@ The `ttl.node` function returns *node coordinates* of the current node. Node coo
 
 #### Node example
 
-<!-- @spec:example node.py -->
+<!-- @spec:example grid/node.py -->
 
 
 ## Dataflow buffer
@@ -163,13 +163,13 @@ The shape is expressed as a tuple with outermost dimension first and innermost d
 
 #### Tiled tensor shape example
 
-<!-- @spec:example tiled_tensor_shape.py -->
+<!-- @spec:example dataflow_buffer/tiled_tensor_shape.py -->
 
 If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor with Torch shape of `(2, 2, 120, 30)` the corresponding block that fits this entire tensor will have shape of `(2, 2, 120, 30)`.
 
 #### Row-major tensor shape example
 
-<!-- @spec:example row_major_tensor_shape.py -->
+<!-- @spec:example dataflow_buffer/row_major_tensor_shape.py -->
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one thread can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
@@ -177,7 +177,7 @@ A dataflow buffer is constructed in the scope of an operation function but its o
 
 #### Dataflow buffer example
 
-<!-- @spec:example dataflow_buffer.py.txt -->
+<!-- @spec:example dataflow_buffer/dataflow_buffer.py.txt -->
 
 | Type alias/Function | Description |
 | :---- | :---- |
@@ -194,11 +194,11 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 
 #### Tiled element-wise with broadcast and reduce example
 
-<!-- @spec:example elementwise_broadcast_reduce.py -->
+<!-- @spec:example block/elementwise_broadcast_reduce.py -->
 
 #### Batched matrix multiplication with bias example
 
-<!-- @spec:example batched_matmul_bias.py -->
+<!-- @spec:example block/batched_matmul_bias.py -->
 
 | Function | Description |
 | :---- | :---- |
@@ -283,19 +283,19 @@ The active predicates are only required for code that includes pipe-coupled comp
 
 #### Gather example
 
-<!-- @spec:example gather.py -->
+<!-- @spec:example pipe/gather.py -->
 
 #### Scatter example
 
-<!-- @spec:example scatter.py -->
+<!-- @spec:example pipe/scatter.py -->
 
 #### Scatter-gather example
 
-<!-- @spec:example scatter_gather.py -->
+<!-- @spec:example pipe/scatter_gather.py -->
 
 #### Forward to a \+1 neighbor example
 
-<!-- @spec:example forward_neighbor.py -->
+<!-- @spec:example pipe/forward_neighbor.py -->
 
 
 ## Tensor slice
@@ -308,7 +308,7 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 
 #### Tensor slice example
 
-<!-- @spec:example tensor_slice.py -->
+<!-- @spec:example tensor_slice/tensor_slice.py -->
 
 
 ## Copy
@@ -322,7 +322,7 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 
 #### Group transfer example
 
-<!-- @spec:example group_transfer.py -->
+<!-- @spec:example copy/group_transfer.py -->
 
 | Function | Description |
 | :---- | :---- |
@@ -340,11 +340,11 @@ A *semaphore* is a communication primitive for general synchronization between n
 
 #### One-to-many barrier example
 
-<!-- @spec:example one_to_many_barrier.py -->
+<!-- @spec:example semaphore/one_to_many_barrier.py -->
 
 #### Many-to-one barrier example
 
-<!-- @spec:example many_to_one_barrier.py -->
+<!-- @spec:example semaphore/many_to_one_barrier.py -->
 
 | Function | Description |
 | :---- | :---- |
@@ -370,7 +370,7 @@ Profiling signpost is a language construct that allows the user to specify a blo
 
 #### Signpost example
 
-<!-- @spec:example signpost.py -->
+<!-- @spec:example performance_and_debugging/signpost.py -->
 
 | Function | Description |
 | :---- | :---- |
@@ -383,7 +383,7 @@ TT-Lang includes ability to print information to the standard output for debuggi
 
 #### Debug printing example
 
-<!-- @spec:example debug_printing.py -->
+<!-- @spec:example performance_and_debugging/debug_printing.py -->
 
 | Type | `print` function behavior |
 | :---- | :---- |
