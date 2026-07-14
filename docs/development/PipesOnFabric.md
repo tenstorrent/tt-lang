@@ -81,9 +81,14 @@ contains two distinct destinations:
   reaches the destination device.
 
 These destinations must not be conflated. A logical `DeviceRef` determines
-which device participates in a transfer. Target binding resolves that logical
-device to a `FabricNodeId`. The packet's NoC command is built separately from
-the destination node coordinates and receiver DFB address.
+which device participates in a transfer. Immediately before submitting a
+compiled operation, the host runtime constructs per-device `ProgramDescriptor`
+runtime arguments and a `MeshProgramDescriptor`. During this execution-setup
+stage, called *host runtime route binding* below, it resolves each logical
+device to a `FabricNodeId` and queries the active control plane for a legal
+route. Binding completes before `ttnn.generic_op(...)` submits the program; it
+does not execute in a device kernel. The packet's NoC command is built
+separately from the destination node coordinates and receiver DFB address.
 
 ### Routing-plane connections
 
@@ -179,8 +184,9 @@ design has the following invariants:
 - PipeNet protocol planning is shared by local NoC and fabric transports.
 - PipeNet identifiers preserve semantic identity and never select physical
   semaphore ids or runtime-argument indices.
-- Target binding resolves logical devices, physical routes, transport limits,
-  and connection metadata.
+- Host runtime route binding resolves logical devices, physical routes,
+  transport limits, and connection metadata while constructing program
+  descriptors before submission.
 - Runtime communication state scales with local live degree and queue depth,
   not the total domain or transfer-graph size.
 - Source programs and high-level TTL IR remain valid when a target uses a
@@ -249,10 +255,10 @@ its completion wait. Route metadata and synchronization storage are therefore
 independent: changing the selected route does not change PipeNet semantics or
 counter identity.
 
-### Target route resolution
+### Route resolution requirements
 
-Target binding converts one logical transfer edge into a resolved route. A
-resolved route contains one or more transport segments. Each segment records:
+A resolved transport plan converts one logical transfer edge into a route with
+one or more transport segments. Each segment records:
 
 - the local and remote `FabricNodeId` endpoints;
 - the connection slot and link selection;
@@ -317,22 +323,32 @@ strategies, not high-level domain properties.
 
 ### Compilation flow
 
-The cross-device pipe compilation flow is:
+Cross-device pipe processing has separate compilation and execution-setup
+stages:
 
 ```text
+Compilation:
 Python DeviceDomain, DeviceRef, TransferGraph, and PipeNet
   -> TTL device-domain and transfer attributes
   -> Pipe Transfer IR and shared PipeNet resource planning
   -> logical fabric-route records attached to generated kernels
-  -> target runtime binding to MeshDevice and FabricNodeId values
-  -> target-resolved connection slots and packet routes
   -> TTKernel routing-plane operations
   -> EmitC calls into tt::tt_fabric
+
+Host execution setup for each invocation:
+compiled kernel route records + active MeshDevice
+  -> host runtime route binding
+  -> FabricNodeId and control-plane route queries
+  -> per-device ProgramDescriptor runtime arguments
+  -> MeshProgramDescriptor construction
   -> TTNN MeshProgramDescriptor execution
 ```
 
-The first three stages are architecture-neutral. Fabric configuration and
-physical routing enter only in target runtime binding and later emission.
+Logical transfer analysis remains independent of physical topology. Concrete
+fabric configuration, link selection, and packet-route values first enter
+during host runtime route binding, after kernel generation and before
+`ttnn.generic_op(...)` submission. Generated kernels consume those values as
+runtime arguments.
 
 ### Frontend and TTL IR
 
@@ -398,9 +414,94 @@ flatbuffer runtime. tt-lang executes through `ttnn.generic_op` and
 `MeshProgramDescriptor`, so its TTKernel operations model the
 `RoutingPlaneConnectionManager` ABI directly.
 
-TTKernel and EmitC modifications are maintained in commits whose subject
-starts with `[ttkernel]`. This keeps the kernel-dialect portion independently
-reviewable and cherry-pickable.
+### Comparison with tt-mlir's experimental manager
+
+Both implementations ultimately use TT-Metal's
+`tt::tt_fabric::RoutingPlaneConnectionManager`. The distinction is where
+topology interpretation and route selection occur. At tt-mlir commit
+[`7a1e911f83`](https://github.com/tenstorrent/tt-mlir/commit/7a1e911f83ff5d380703309732d2a91e70104b07),
+its
+[`experimental::FabricConnectionManager`](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L52-L90)
+wraps the TT-Metal manager with topology state, packet-header ownership, and
+initialization state.
+
+The comparison uses these execution-location markers:
+
+- `[C]`: compiler work performed before invocation;
+- `[H]`: host runtime work performed while constructing program descriptors,
+  before `ttnn.generic_op(...)` submission;
+- `[D]`: worker-kernel work performed on a TENSIX node.
+
+Route-decision work occurs at different locations and frequencies:
+
+```text
+tt-lang
+  [C] Record each logical source/destination relation and assign a route index.
+  [H] Query the control plane once per distinct source/destination pair; cache
+      the result while the MeshDevice and fabric configuration remain unchanged.
+  [H] Write the selected connection index and packet-route value into runtime args.
+  [D] Once per kernel invocation: open the configured connections.
+  [D] Once per fabric operation: index the selected connection, construct the
+      packet command, and submit it.
+
+tt-mlir experimental API
+  [H] Serialize TopologyInfo and connection descriptors into runtime args.
+  [D] Once per kernel invocation: parse TopologyInfo and open the connections.
+  [D] Once per fabric operation: reconstruct logical positions, calculate the
+      direction and hops, search connection tags, construct the packet command,
+      and submit it.
+```
+
+These markers describe route selection and packet construction. After packet
+submission, TT-Metal's fabric routers perform the actual packet forwarding for
+both approaches.
+
+| Concern | tt-lang | tt-mlir experimental API |
+| --- | --- | --- |
+| C++ object | `[D]` Uses `tt::tt_fabric::RoutingPlaneConnectionManager` directly. | `[D]` Wraps the same manager in `experimental::FabricConnectionManager`. |
+| Route resolution | `[H]` Queries the active TT-Metal control plane and supplies a connection index and target-specific `chipRoute`. | `[D]` Derives an outgoing direction and hop encoding from destination mesh and device identifiers for each fabric operation. |
+| Transfer operands | `[C]` Routing-plane TTKernel operations represent a resolved connection index and route value. `[D]` The generated kernel reads both from runtime arguments. | `[C]` [Fabric TTKernel operations](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L4227-L4320) represent destination mesh and device identifiers. `[D]` The wrapper resolves them. |
+| Connection selection | `[D]` Generated C++ indexes the selected manager slot directly. | `[D]` The wrapper [searches active connection tags](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L38-L76) for each fabric operation. |
+| Runtime arguments | `[C]` The compiler assigns an explicit base for the connection descriptor block. `[H]` The binder appends control-plane-resolved route and connection values. `[D]` Connection setup reads them once per kernel invocation. | `[H]` The runtime serializes topology and connection descriptors into a [fixed fabric argument block](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L105-L135). `[D]` Setup parses that block once per kernel invocation. |
+| Topology model | `[C]` Logical TTL domains contain no fabric topology constants. `[H]` Host runtime route binding queries TT-Metal for the active topology's route. | `[H]` The runtime supplies a topology descriptor encoding [two dimensions, four directions, a 32-device limit, and line/ring/mesh/torus categories](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_topology_info.h#L14-L35). `[D]` Kernel helpers interpret it. |
+| Current operation coverage | Provides the unicast atomic and fused write-plus-atomic operations required by fabric PipeNets. | Also provides arbitrary-length packetization and multicast write and semaphore helpers. |
+| Per-operation kernel work | `[D]` Indexes a pre-resolved connection and constructs the packet command. | `[D]` Performs [logical-position route calculation](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_1d_routing.h#L36-L108) and connection-tag lookup before constructing the packet command. |
+
+The tt-lang representation is intentionally lower-level at the TTKernel
+boundary. Logical destinations remain available in TTL until host runtime route
+binding, but generated kernels receive only values already validated against
+the active control plane. This avoids embedding the current architecture's
+topology categories in high-level domain attributes. The tt-mlir API currently
+provides broader packet and multicast helpers; equivalent tt-lang functionality
+must preserve host-side route resolution rather than reintroducing an in-kernel
+topology model.
+
+The design comparison has the following implications:
+
+| Goal | tt-lang | tt-mlir experimental API |
+| --- | --- | --- |
+| Architecture portability | `[C]` Logical domains and transfer graphs contain no topology categories or link counts. `[H]` While constructing each invocation's program descriptors, the host runtime queries the active TT-Metal control plane and writes the resolved connection and packet-route values into kernel runtime arguments. A new route encoding requires corresponding host runtime route binding and TTKernel/EmitC lowering support. | `[H]` The runtime serializes explicit line, ring, mesh, and torus models with fixed dimension and device limits. `[D]` The kernel wrapper interprets that model. Supporting a new topology requires changes to the topology descriptor, runtime serialization, and kernel routing helpers. |
+| Extensibility | Logical transfers, route planning, connection reuse, and packet emission are separate components. New route scoring or packet operations do not change domain semantics, but the compiler/runtime argument contract must track TT-Metal API changes. | The wrapper gives TTKernel operations a compact destination-oriented API and already provides broader packetization and multicast helpers. Extending its topology model also increases on-device wrapper state and routing logic. |
+| Kernel performance | `[H]` Route queries or cache lookups occur while the host constructs an invocation's program descriptors, before program submission. `[D]` Kernels directly index reused connection slots without calculating a logical route or searching connection tags for each fabric operation. Current planning selects the control plane's first available link and does not yet score contention or workload traffic. | `[D]` Destination-oriented operations support runtime-selected destinations within the encoded topology. Each fabric operation reconstructs source and destination logical positions, performs topology-dependent hop calculation, and linearly searches active connection tags. This work is potentially material for small or frequent transfers. |
+| Route optimization | `[H]` Host planning can evaluate legal control-plane routes using global program information and can cache the selected plan. | `[D]` For every fabric operation, kernel helpers calculate the direction and hop encoding from local topology and destination values. This limits access to program-wide traffic information. |
+| Maturity | Generated C++ directly exposes the operations needed to converge on optimized routing-plane kernel sequences. Current packet and multicast coverage is narrower, and comparative performance has not yet been measured. | The experimental API currently covers more unicast, multicast, arbitrary-length write, and semaphore operations, but embeds more current-architecture policy in the kernel support library. |
+
+The tt-mlir routing helpers are `FORCE_INLINE`, which removes function-call
+overhead but does not generally remove the route calculation. `TopologyInfo`
+is populated from runtime arguments, so its topology, dimensions, coordinate
+mapping, and routing directions are not normally compile-time constants. The
+calculation occurs once per fabric operation, before arbitrary-length payload
+packetization, rather than once per packet chunk. Its performance impact has
+not yet been measured.
+
+tt-lang does not use `experimental::FabricConnectionManager` because it
+duplicates TT-Metal control-plane routing in each kernel and embeds a fixed
+topology model. Host route resolution instead supports connection reuse and
+future program-wide route optimization. The runtime-layout difference follows
+from this decision.
+
+tt-mlir's packet splitting, multicast, and semaphore helpers can still be
+adapted to the direct manager without its topology model.
 
 ### EmitC and generated C++
 
@@ -431,12 +532,15 @@ close_connections(connection_manager, connection_count);
 The 1D call is conditional on TT-Metal's `FABRIC_2D` kernel define. The high-
 level TTL program does not select this condition.
 
-### Host runtime binding
+### Host runtime route binding
 
-`python/ttl/kernel_runner.py` creates one `ProgramDescriptor` per logical
-device role and places those descriptors into a `MeshProgramDescriptor`.
-For each generated kernel and TENSIX node, it determines the active logical
-routes, resolves remote logical devices with
+Host runtime route binding is the execution-setup code in
+`python/ttl/kernel_runner.py`. It runs after compiled kernel specifications are
+available and before the invocation calls `ttnn.generic_op(...)`. The binder
+creates one `ProgramDescriptor` per logical device role and places those
+descriptors into a `MeshProgramDescriptor`. For each generated kernel and
+TENSIX node, it determines the active logical routes, resolves remote devices
+with
 `mesh_device.get_fabric_node_id()`, and calls
 `ttnn.setup_routing_plane_connection(...)`.
 
@@ -506,8 +610,8 @@ turns every adjacent pair into a separate transfer segment. Intermediate
 devices receive and forward the payload. The P300 configuration uses
 `to_chip_unicast(1)` for every segment.
 
-tt-lang must obtain the segment sequence from target binding while preserving
-the proven per-segment C++.
+tt-lang must obtain the segment sequence from its host-side route planner while
+preserving the proven per-segment C++.
 
 ### Validation environment
 
