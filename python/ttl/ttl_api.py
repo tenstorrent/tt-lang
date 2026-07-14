@@ -1310,6 +1310,8 @@ def _collect_captures(
         return {}
 
     def convert(name, val):
+        from .domains import DeviceDomain
+
         if isinstance(val, (int, float)):
             return val
         elif is_ttnn_tensor(val):
@@ -1319,6 +1321,8 @@ def _collect_captures(
         elif isinstance(val, Pipe):
             return val
         elif isinstance(val, PipeNet):
+            return val
+        elif isinstance(val, DeviceDomain):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
