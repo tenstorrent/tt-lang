@@ -6,6 +6,7 @@
 
 from ttl.version import __version__, build_info
 from ttl.domains import (
+    AllToAllTransfer,
     AxisNeighborTransfer,
     DeviceDomain,
     DeviceRange,
@@ -38,6 +39,7 @@ if _SIM_ONLY_INSTALL:
     __all__ = [
         "__version__",
         "build_info",
+        "AllToAllTransfer",
         "AxisNeighborTransfer",
         "DeviceDomain",
         "DeviceRange",
@@ -91,6 +93,7 @@ else:
         "CopyTransferHandler",
         "Pipe",
         "PipeNet",
+        "AllToAllTransfer",
         "AxisNeighborTransfer",
         "DeviceDomain",
         "DeviceRange",
