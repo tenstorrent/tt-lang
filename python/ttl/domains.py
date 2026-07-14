@@ -163,6 +163,11 @@ class MulticastTransfer(StructuredTransfer):
 
 
 @dataclass(frozen=True)
+class AllToAllTransfer(StructuredTransfer):
+    """Transfer relation between every ordered pair of distinct devices."""
+
+
+@dataclass(frozen=True)
 class GraphMetadataCost:
     """Asymptotic storage summary for a `TransferGraph`."""
 
@@ -229,6 +234,18 @@ class DeviceDomain:
             if component.name == component_name:
                 return index
         raise ValueError(f"unknown domain component {component_name!r}")
+
+    def is_current(self, device: Any) -> bool:
+        """Return whether the kernel executes on `device` in this domain.
+
+        The compiler replaces this predicate with target-independent logical
+        device-coordinate comparisons. Calling it outside a TTL kernel is an
+        error.
+        """
+        self.device_ref(device)
+        raise RuntimeError(
+            "DeviceDomain.is_current() should only be called inside a TTL kernel"
+        )
 
     def device_ref(self, value: Any) -> DeviceRef:
         if isinstance(value, DeviceRef):
@@ -402,6 +419,17 @@ class TransferGraph:
             ),
         )
 
+    @classmethod
+    def all_to_all(
+        cls, domain: DeviceDomain, *, component: Optional[str] = None
+    ) -> "TransferGraph":
+        return cls(
+            domain,
+            structured=AllToAllTransfer(
+                component_name=cls._default_component(domain, component),
+            ),
+        )
+
     @property
     def is_explicit(self) -> bool:
         return self.structured is None
@@ -480,6 +508,21 @@ class TransferGraph:
                     yield TransferEdge(source, destination)
             return
 
+        if isinstance(self.structured, AllToAllTransfer):
+            component = self.domain.components[component_index]
+            component_coordinates = itertools.product(
+                *(range(extent) for extent in component.extent)
+            )
+            destination_components = tuple(component_coordinates)
+            for source in devices:
+                for destination_component in destination_components:
+                    if destination_component == source.coordinates[component_index]:
+                        continue
+                    destination_coordinates = list(source.coordinates)
+                    destination_coordinates[component_index] = destination_component
+                    yield TransferEdge(source, DeviceRef(*destination_coordinates))
+            return
+
         raise TypeError(
             f"unsupported structured transfer type " f"{type(self.structured).__name__}"
         )
@@ -541,6 +584,9 @@ class TransferGraph:
                 source=domain.resolve_device_ref(structured.source),
             )
 
+        if isinstance(structured, AllToAllTransfer):
+            return structured
+
         raise TypeError(
             f"unsupported structured transfer type {type(structured).__name__}"
         )
@@ -558,6 +604,7 @@ class TransferGraph:
 
 
 __all__ = [
+    "AllToAllTransfer",
     "AxisNeighborTransfer",
     "DeviceDomain",
     "DeviceRange",
