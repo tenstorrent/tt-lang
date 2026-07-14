@@ -1272,20 +1272,12 @@ def _build_operation_pipenets(f: Callable, threads):
     def visit(func):
         if func is None:
             return
-        closure = getattr(func, "__closure__", None) or ()
-        for cell in closure:
-            try:
-                value = cell.cell_contents
-            except ValueError:
-                continue
-            for net in _iter_pipe_nets_in_value(value, set()):
-                if id(net) not in seen:
-                    seen[id(net)] = net
-        fn_globals = getattr(func, "__globals__", None) or {}
-        for value in fn_globals.values():
-            for net in _iter_pipe_nets_in_value(value, set()):
-                if id(net) not in seen:
-                    seen[id(net)] = net
+        closure_vars = inspect.getclosurevars(func)
+        for namespace in (closure_vars.nonlocals, closure_vars.globals):
+            for value in namespace.values():
+                for net in _iter_pipe_nets_in_value(value, set()):
+                    if id(net) not in seen:
+                        seen[id(net)] = net
 
     visit(f)
     for thread in threads:
