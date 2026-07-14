@@ -162,11 +162,12 @@ class TestMeshProgramPlacement:
         with pytest.raises(ValueError, match="does not match"):
             ttl_api._default_mesh_program_placements_with_domain((tensor,), domain)
 
-    def test_device_domain_mesh_program_placement_rejects_product(self):
+    def test_device_domain_mesh_program_placement_supports_product(self):
         domain = ttl.DeviceDomain.product(board=(1,), device=(4,))
 
-        with pytest.raises(ValueError, match="regular DeviceDomain"):
-            ttl_api._default_mesh_program_placements_with_domain((), domain)
+        placements = ttl_api._default_mesh_program_placements_with_domain((), domain)
+
+        assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
 
     def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
         placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))
