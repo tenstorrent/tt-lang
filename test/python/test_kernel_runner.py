@@ -53,6 +53,7 @@ class _FakeTTNN:
         self.fabric_setup_calls = []
         self.fabric_route_calls = []
         self.fabric_config = "linear"
+        self.fabric_route_infos = {}
 
     class CoreCoord:
         def __init__(self, x, y):
@@ -197,7 +198,15 @@ class _FakeTTNN:
         self.fabric_route_calls.append(
             (source_node_id, destination_node_id, link_index)
         )
-        return _FakeFabricRouteInfo(link_index=2, hop_count=3)
+        return self.fabric_route_infos.get(
+            destination_node_id,
+            _FakeFabricRouteInfo(
+                connection_node_id=destination_node_id,
+                direction=1,
+                link_index=2,
+                hop_count=3,
+            ),
+        )
 
     def get_fabric_config(self):
         return self.fabric_config
@@ -209,6 +218,8 @@ class _FakeFabricNodeId(NamedTuple):
 
 
 class _FakeFabricRouteInfo(NamedTuple):
+    connection_node_id: _FakeFabricNodeId
+    direction: int
     link_index: int
     hop_count: int
 
@@ -489,6 +500,41 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     ]
     assert fake_ttnn.fabric_route_calls == [
         (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1), None),
+    ]
+
+
+def test_routing_plane_reuses_connection_for_one_direction(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_route_infos = {
+        _FakeFabricNodeId(0, 1): _FakeFabricRouteInfo(_FakeFabricNodeId(0, 1), 1, 2, 1),
+        _FakeFabricNodeId(0, 2): _FakeFabricRouteInfo(_FakeFabricNodeId(0, 1), 1, 2, 3),
+    }
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=object(),
+        compile_time_args=[],
+        common_runtime_args=[],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    routes = [
+        kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),)),
+        kernel_runner.FabricRouteSpec((0, 0), (0, 2), ((0, 0),)),
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[routes],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert kernel.runtime_args[0][0] == [1, 0, 0, 1, 3, 0xA0, 0xB0]
+    assert fake_ttnn.fabric_setup_calls == [
+        (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [2], 0, (0, 0)),
     ]
 
 
