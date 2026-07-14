@@ -7,6 +7,7 @@
 import pytest
 
 from ttl.domains import (
+    AllToAllTransfer,
     AxisNeighborTransfer,
     DeviceDomain,
     DeviceRange,
@@ -120,6 +121,31 @@ def test_multicast_edges_preserve_other_product_components():
         TransferEdge(DeviceRef((0,), (0,)), DeviceRef((0,), (1,))),
         TransferEdge(DeviceRef((1,), (0,)), DeviceRef((1,), (1,))),
     ]
+
+
+def test_all_to_all_edges_preserve_other_product_components():
+    domain = DeviceDomain.product(board=(2,), device=(2,))
+
+    graph = TransferGraph.all_to_all(domain, component="device")
+
+    assert isinstance(graph.structured, AllToAllTransfer)
+    assert graph.transfer_edges == ()
+    assert list(graph.iter_edges()) == [
+        TransferEdge(DeviceRef((0,), (0,)), DeviceRef((0,), (1,))),
+        TransferEdge(DeviceRef((0,), (1,)), DeviceRef((0,), (0,))),
+        TransferEdge(DeviceRef((1,), (0,)), DeviceRef((1,), (1,))),
+        TransferEdge(DeviceRef((1,), (1,)), DeviceRef((1,), (0,))),
+    ]
+
+
+def test_device_domain_current_predicate_is_kernel_only():
+    domain = DeviceDomain((1, 4))
+
+    with pytest.raises(RuntimeError, match="only be called inside a TTL kernel"):
+        domain.is_current((0, 0))
+
+    with pytest.raises(ValueError, match="0 <= coord < 4"):
+        domain.is_current((0, 4))
 
 
 def test_product_structured_transfer_requires_component():
