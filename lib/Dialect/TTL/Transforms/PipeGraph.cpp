@@ -17,6 +17,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
 #include <utility>
@@ -26,8 +27,33 @@
 namespace mlir::tt::ttl {
 
 struct PipeGraphAnalysisState : LaunchNodeDomainState {
+  struct PipeTransferInfo {
+    PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
+    SmallVector<Operation *> transferCreateOps;
+  };
+
+  struct DFBLifecycleOperations {
+    SmallVector<Operation *> reserves;
+    SmallVector<Operation *> waits;
+    SmallVector<Operation *> pushes;
+    SmallVector<Operation *> pops;
+  };
+
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
   DFBReleaseOwnerMaps dfbReleaseOwners;
+  llvm::MapVector<PipeKey, PipeTransferInfo> transferInfos;
+  SmallVector<PipeTransferPostOp> receiverPosts;
+  SmallVector<Operation *> receiverSlotEvents;
+  llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
+      receiveWaitsByPost;
+  llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<PipeTransferPostOp>>
+      receiverPostsByStream;
+  llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<CBPushOp>>
+      pushesByStream;
+  llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<CBPopOp>> popsByStream;
+  llvm::DenseMap<PipeKey, SmallVector<PipeTransferPostOp>> receiverPostsByPipe;
+  llvm::DenseMap<PipeKey, SmallVector<PipeTransferSendOp>> sendsByPipe;
+  llvm::MapVector<func::FuncOp, DFBLifecycleOperations> dfbLifecycleByFunction;
 };
 
 namespace {
@@ -51,7 +77,6 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
   if (failed(solver.initializeAndRun(mod))) {
     return failure();
   }
-  buildDFBReleaseOwnerMaps(mod, state.dfbReleaseOwners);
   return success();
 }
 
@@ -71,6 +96,190 @@ static LaunchNodeCoord getLaunchNodeCoord(PipeReceiverCoord receiver) {
   return {receiver.x, receiver.y};
 }
 
+static DeviceRefAttr getReceiverDevice(PipeTransferCreateOp transferCreate) {
+  auto createPipe = transferCreate.getPipe().getDefiningOp<CreatePipeOp>();
+  if (!createPipe) {
+    return {};
+  }
+  DeviceTransferAttr transfer = createPipe.getDeviceTransferAttr();
+  return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
+}
+
+static DeviceRefAttr getEnclosingReceiverDevice(Operation *op) {
+  for (Operation *ancestor = op->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    auto ifDst = dyn_cast<IfDstOp>(ancestor);
+    if (!ifDst) {
+      continue;
+    }
+    auto createPipe = ifDst.getPipe().getDefiningOp<CreatePipeOp>();
+    if (!createPipe) {
+      return {};
+    }
+    DeviceTransferAttr transfer = createPipe.getDeviceTransferAttr();
+    return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
+  }
+  return {};
+}
+
+static std::optional<PipeReceiverDFBStreamKey>
+getReceiverDFBStreamKey(Value dfb, DeviceRefAttr receiverDevice) {
+  std::optional<int64_t> dfbIndex = getCBIndex(dfb);
+  if (!dfbIndex) {
+    return std::nullopt;
+  }
+  return std::make_pair(receiverDevice, *dfbIndex);
+}
+
+static void recordPipeTransfer(PipeTransferCreateOp transferCreate,
+                               PipeGraphAnalysisState &state) {
+  if (!transferCreate) {
+    return;
+  }
+  auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
+  PipeKey pipeKey = getPipeKey(pipeType);
+  PipeTransferContract contract = getPipeTransferContract(transferCreate);
+  auto transferIt = state.transferInfos.find(pipeKey);
+  if (transferIt == state.transferInfos.end()) {
+    state.transferInfos.insert(
+        {pipeKey, {contract, {transferCreate.getOperation()}}});
+    return;
+  }
+  if (!llvm::is_contained(transferIt->second.transferCreateOps,
+                          transferCreate.getOperation())) {
+    transferIt->second.transferCreateOps.push_back(
+        transferCreate.getOperation());
+  }
+  // Cloned regions may contribute different contracts for one pipe. Preserve
+  // the stronger contract so all receiver address checks remain valid.
+  if (isCollectiveTransfer(contract)) {
+    transferIt->second.transferContract = PipeTransferContract::Collective;
+  }
+}
+
+static PipeGraphAnalysisState::DFBLifecycleOperations &
+getDFBLifecycleOperations(Operation *op, PipeGraphAnalysisState &state) {
+  auto func = op->getParentOfType<func::FuncOp>();
+  assert(func && "DFB lifecycle operation must be nested in a function");
+  return state.dfbLifecycleByFunction[func];
+}
+
+static void recordReceiverPost(PipeTransferPostOp postOp,
+                               PipeGraphAnalysisState &state) {
+  PipeTransferCreateOp transferCreate =
+      findPipeTransferCreateForTransfer(postOp.getTransfer());
+  recordPipeTransfer(transferCreate, state);
+  state.receiverPosts.push_back(postOp);
+  state.receiverSlotEvents.push_back(postOp.getOperation());
+  if (!transferCreate) {
+    return;
+  }
+
+  Value dfb = getAttachedCB(postOp.getDst());
+  auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
+  state.receiverPostsByPipe[getPipeKey(pipeType)].push_back(postOp);
+  auto streamKey =
+      getReceiverDFBStreamKey(dfb, getReceiverDevice(transferCreate));
+  if (streamKey) {
+    state.receiverPostsByStream[*streamKey].push_back(postOp);
+  }
+}
+
+static void recordReceiveWait(PipeTransferWaitOp waitOp,
+                              PipeGraphAnalysisState &state) {
+  PipeTransferPostOp postOp = findPipeTransferPostForToken(waitOp.getToken());
+  if (!postOp) {
+    return;
+  }
+  state.receiveWaitsByPost[postOp.getOperation()].push_back(waitOp);
+}
+
+static void recordPipeSend(PipeTransferSendOp sendOp,
+                           PipeGraphAnalysisState &state) {
+  PipeTransferCreateOp transferCreate =
+      findPipeTransferCreateForTransfer(sendOp.getTransfer());
+  recordPipeTransfer(transferCreate, state);
+  if (!transferCreate) {
+    return;
+  }
+  auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
+  state.sendsByPipe[getPipeKey(pipeType)].push_back(sendOp);
+}
+
+static void recordDFBPush(CBPushOp pushOp, PipeGraphAnalysisState &state) {
+  auto streamKey = getReceiverDFBStreamKey(pushOp.getCb(),
+                                           getEnclosingReceiverDevice(pushOp));
+  if (streamKey) {
+    state.pushesByStream[*streamKey].push_back(pushOp);
+  }
+  getDFBLifecycleOperations(pushOp, state)
+      .pushes.push_back(pushOp.getOperation());
+}
+
+static void recordDFBPop(CBPopOp popOp, PipeGraphAnalysisState &state) {
+  auto streamKey =
+      getReceiverDFBStreamKey(popOp.getCb(), getEnclosingReceiverDevice(popOp));
+  if (streamKey) {
+    state.popsByStream[*streamKey].push_back(popOp);
+  }
+  state.receiverSlotEvents.push_back(popOp.getOperation());
+  getDFBLifecycleOperations(popOp, state).pops.push_back(popOp.getOperation());
+}
+
+static void collectPipeGraphOperations(ModuleOp mod,
+                                       PipeGraphAnalysisState &state) {
+  mod.walk<WalkOrder::PreOrder>([&](Operation *op) {
+    llvm::TypeSwitch<Operation *>(op)
+        .Case<PipeTransferPostOp>([&](PipeTransferPostOp postOp) {
+          recordReceiverPost(postOp, state);
+        })
+        .Case<PipeTransferSendOp>(
+            [&](PipeTransferSendOp sendOp) { recordPipeSend(sendOp, state); })
+        .Case<PipeTransferWaitOp>([&](PipeTransferWaitOp waitOp) {
+          recordReceiveWait(waitOp, state);
+        })
+        .Case<CBReserveOp>([&](CBReserveOp reserveOp) {
+          getDFBLifecycleOperations(reserveOp, state)
+              .reserves.push_back(reserveOp.getOperation());
+        })
+        .Case<CBWaitOp>([&](CBWaitOp waitOp) {
+          getDFBLifecycleOperations(waitOp, state)
+              .waits.push_back(waitOp.getOperation());
+        })
+        .Case<CBPushOp>([&](CBPushOp pushOp) { recordDFBPush(pushOp, state); })
+        .Case<CBPopOp>([&](CBPopOp popOp) { recordDFBPop(popOp, state); });
+  });
+
+  for (auto &entry : state.dfbLifecycleByFunction) {
+    PipeGraphAnalysisState::DFBLifecycleOperations &lifecycle = entry.second;
+    buildDFBReleaseOwnerMaps(lifecycle.reserves, lifecycle.waits,
+                             lifecycle.pushes, lifecycle.pops,
+                             state.dfbReleaseOwners);
+  }
+}
+
+template <typename OpTy, typename Callback>
+static void forEachReceiverDFBStreamEvent(
+    const llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<OpTy>>
+        &eventsByStream,
+    const PipeReceiverDFBKey &receiverDFB, Callback &&callback) {
+  auto visit = [&](DeviceRefAttr receiverDevice) {
+    PipeReceiverDFBStreamKey streamKey{receiverDevice, receiverDFB.dfbIndex};
+    auto eventsIt = eventsByStream.find(streamKey);
+    if (eventsIt == eventsByStream.end()) {
+      return;
+    }
+    for (OpTy event : eventsIt->second) {
+      callback(event);
+    }
+  };
+
+  visit(receiverDFB.receiverDevice);
+  if (receiverDFB.receiverDevice) {
+    visit({});
+  }
+}
+
 static bool isPostForReceiverDFB(
     PipeTransferPostOp postOp, const PipeReceiverDFBKey &receiverDFB,
     const llvm::MapVector<PipeKey, ReceiverDFBInfo> &receiverDFBs,
@@ -82,8 +291,13 @@ static bool isPostForReceiverDFB(
   PipeKey pipeKey =
       getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
   auto receiverIt = receiverDFBs.find(pipeKey);
-  if (receiverIt == receiverDFBs.end() ||
-      receiverIt->second.dfbIndex != receiverDFB.dfbIndex) {
+  if (receiverIt == receiverDFBs.end()) {
+    return false;
+  }
+  if (receiverIt->second.dfbIndex != receiverDFB.dfbIndex) {
+    return false;
+  }
+  if (receiverIt->second.receiverDevice != receiverDFB.receiverDevice) {
     return false;
   }
   LaunchNodeDomain postDomain =
@@ -125,18 +339,6 @@ static bool isBeforeInSameBlock(Operation *before, Operation *after) {
          before->isBeforeInBlock(after);
 }
 
-static void collectReceiveWaitsByPost(
-    ModuleOp mod,
-    llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>> &waitsByPost) {
-  mod.walk([&](PipeTransferWaitOp waitOp) {
-    PipeTransferPostOp postOp = findPipeTransferPostForToken(waitOp.getToken());
-    if (!postOp) {
-      return;
-    }
-    waitsByPost[postOp.getOperation()].push_back(waitOp);
-  });
-}
-
 static bool hasMatchingReceiveWaitBeforePush(
     PipeTransferPostOp postOp, CBPushOp pushOp,
     const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
@@ -169,23 +371,6 @@ static void debugAcceptPipeOnlyStream(const PipeReceiverDFBKey &receiverDFB) {
     printReceiverDFB(llvm::dbgs(), receiverDFB);
     llvm::dbgs() << "\n";
   });
-}
-
-template <typename Fn>
-static WalkResult walkNestedOpsInOrder(Operation *op, Fn &&callback) {
-  for (Region &region : op->getRegions()) {
-    for (Block &block : region) {
-      for (Operation &nestedOp : block) {
-        if (callback(&nestedOp).wasInterrupted()) {
-          return WalkResult::interrupt();
-        }
-        if (walkNestedOpsInOrder(&nestedOp, callback).wasInterrupted()) {
-          return WalkResult::interrupt();
-        }
-      }
-    }
-  }
-  return WalkResult::advance();
 }
 
 struct LiveReceiverSlot {
@@ -241,9 +426,10 @@ static LogicalResult releaseReceiverSlots(CBPopOp popOp,
 LogicalResult PipeGraph::addReceiverDFB(
     int64_t srcX, int64_t srcY, int64_t dstStartX, int64_t dstStartY,
     int64_t dstEndX, int64_t dstEndY, int64_t pipeNetId, int64_t dfbIndex,
-    CircularBufferType dfbType, bool hasStaticTileOffset,
-    int64_t staticTileOffset, int64_t receiverSlotSpanBlocks,
-    Operation *receiverReserveOp, PipeTransferContract transferContract,
+    DeviceRefAttr receiverDevice, CircularBufferType dfbType,
+    bool hasStaticTileOffset, int64_t staticTileOffset,
+    int64_t receiverSlotSpanBlocks, Operation *receiverReserveOp,
+    PipeTransferContract transferContract,
     ArrayRef<Operation *> transferCreateOps, int64_t blockCount, Location loc) {
   PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
   auto existing = receiverDFBs.find(key);
@@ -278,7 +464,7 @@ LogicalResult PipeGraph::addReceiverDFB(
     return success();
   }
   receiverDFBs.insert({key,
-                       {dfbIndex, dfbType, hasStaticTileOffset,
+                       {receiverDevice, dfbIndex, dfbType, hasStaticTileOffset,
                         staticTileOffset, std::nullopt, receiverSlotSpanBlocks,
                         blockCount, loc, receiverReserveOp, transferContract,
                         SmallVector<Operation *>(transferCreateOps.begin(),
@@ -323,8 +509,7 @@ assignReceiverPhysicalSlot(const PipeKey &pipeKey,
 }
 
 LogicalResult
-PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
-                                     PipeGraphAnalysisState &analysisState) {
+PipeGraph::assignReceiverSlotIndices(PipeGraphAnalysisState &analysisState) {
   llvm::DenseMap<PipeReceiverDFBKey, ReceiverSlotState> slotStateByReceiverDFB;
   llvm::DenseMap<PipeReceiverDFBKey, llvm::DenseMap<Operation *, int64_t>>
       slotByReceiverReserve;
@@ -352,12 +537,15 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
     bool nonUniformSlot = false;
     LogicalResult result = success();
     pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-      if (failed(result) ||
-          !launchNodeDomainContains(postDomain, getLaunchNodeCoord(receiver))) {
+      if (failed(result)) {
+        return;
+      }
+      if (!launchNodeDomainContains(postDomain, getLaunchNodeCoord(receiver))) {
         return;
       }
       hasReceiver = true;
-      PipeReceiverDFBKey receiverDFB{receiver, receiverInfo.dfbIndex};
+      PipeReceiverDFBKey receiverDFB{receiverInfo.receiverDevice, receiver,
+                                     receiverInfo.dfbIndex};
       auto &slotByReserve = slotByReceiverReserve[receiverDFB];
       auto reserveIt = slotByReserve.find(receiverInfo.receiverReserveOp);
       int64_t slot = 0;
@@ -404,9 +592,10 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
     if (!popDomain.known) {
       return success();
     }
+    DeviceRefAttr receiverDevice = getEnclosingReceiverDevice(popOp);
     for (LaunchNodeCoord coord : popDomain.nodes) {
-      PipeReceiverDFBKey receiverDFB{PipeReceiverCoord{coord.x, coord.y},
-                                     *dfbIndex};
+      PipeReceiverDFBKey receiverDFB{
+          receiverDevice, PipeReceiverCoord{coord.x, coord.y}, *dfbIndex};
       auto stateIt = slotStateByReceiverDFB.find(receiverDFB);
       if (stateIt == slotStateByReceiverDFB.end()) {
         continue;
@@ -419,19 +608,20 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
     return success();
   };
 
-  WalkResult walkResult =
-      walkNestedOpsInOrder(mod.getOperation(), [&](Operation *op) {
-        if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
-          return failed(processPost(postOp)) ? WalkResult::interrupt()
-                                             : WalkResult::advance();
-        }
-        if (auto popOp = dyn_cast<CBPopOp>(op)) {
-          return failed(processPop(popOp)) ? WalkResult::interrupt()
-                                           : WalkResult::advance();
-        }
-        return WalkResult::advance();
-      });
-  return walkResult.wasInterrupted() ? failure() : success();
+  for (Operation *op : analysisState.receiverSlotEvents) {
+    if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
+      if (failed(processPost(postOp))) {
+        return failure();
+      }
+      continue;
+    }
+    if (auto popOp = dyn_cast<CBPopOp>(op)) {
+      if (failed(processPop(popOp))) {
+        return failure();
+      }
+    }
+  }
+  return success();
 }
 
 LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
@@ -458,23 +648,21 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
 }
 
 LogicalResult
-PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
-                                        PipeGraphAnalysisState &analysisState) {
-  llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>> waitsByPost;
-  collectReceiveWaitsByPost(mod, waitsByPost);
-
+PipeGraph::provePipeOnlyReceiverStreams(PipeGraphAnalysisState &analysisState) {
   for (PipeReceiverDFBNode &node : receiverDFBNodes) {
     PipeReceiverDFBKey receiverDFB = node.receiverDFB;
     LaunchNodeDomain receiverDomain =
         getSingleLaunchNodeDomain(getLaunchNodeCoord(receiverDFB.receiver));
 
     SmallVector<PipeTransferPostOp> posts;
-    mod.walk([&](PipeTransferPostOp postOp) {
-      if (isPostForReceiverDFB(postOp, receiverDFB, receiverDFBs,
-                               analysisState)) {
-        posts.push_back(postOp);
-      }
-    });
+    forEachReceiverDFBStreamEvent(
+        analysisState.receiverPostsByStream, receiverDFB,
+        [&](PipeTransferPostOp postOp) {
+          if (isPostForReceiverDFB(postOp, receiverDFB, receiverDFBs,
+                                   analysisState)) {
+            posts.push_back(postOp);
+          }
+        });
     if (posts.empty()) {
       debugRejectPipeOnlyStream(receiverDFB, "no matching receiver posts");
       continue;
@@ -488,60 +676,66 @@ PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
     llvm::DenseSet<Operation *> postsWithPush;
     llvm::DenseSet<Operation *> waitsWithPop;
 
-    mod.walk([&](CBPushOp pushOp) {
-      if (!valid || !isReceiverDFB(pushOp.getCb(), receiverDFB)) {
-        return;
-      }
-      LaunchNodeDomain pushDomain =
-          lookupOperationLaunchDomain(pushOp.getOperation(), analysisState);
-      if (!launchNodeDomainsOverlap(pushDomain, receiverDomain)) {
-        return;
-      }
-      if (!knownLaunchNodeDomainContains(
-              pushDomain, getLaunchNodeCoord(receiverDFB.receiver)) ||
-          !isNocKernelThread(pushOp)) {
-        reject("push is not in the receiver NOC domain");
-        return;
-      }
-      std::optional<int64_t> pushedBlocks = getPushedBlockCount(pushOp);
-      if (!pushedBlocks) {
-        reject("push block count is not a whole DFB block count");
-        return;
-      }
-      auto reserveOp = lookupOwner<CBReserveOp>(
-          analysisState.dfbReleaseOwners.reserveByPush, pushOp.getOperation());
-      if (!reserveOp) {
-        reject("push has no unique receiver reserve owner");
-        return;
-      }
-      SmallVector<PipeTransferPostOp> ownedPosts =
-          getPostsOwnedByReserve(reserveOp, posts);
-      if (ownedPosts.empty()) {
-        reject("push reserve owns no matching receiver post");
-        return;
-      }
-      int64_t postedBlocks = 0;
-      for (PipeTransferPostOp postOp : ownedPosts) {
-        if (!hasMatchingReceiveWaitBeforePush(postOp, pushOp, waitsByPost)) {
-          reject("post has no receive wait before push");
-          return;
-        }
-        std::optional<int64_t> span =
-            getReceiverSlotSpanBlocksForPost(postOp, receiverDFBs);
-        if (!span) {
-          reject("post has no receiver slot span");
-          return;
-        }
-        postedBlocks += *span;
-        if (!postsWithPush.insert(postOp.getOperation()).second) {
-          reject("post is consumed by more than one push");
-          return;
-        }
-      }
-      if (*pushedBlocks != postedBlocks) {
-        reject("push block count does not match posted receiver slot span");
-      }
-    });
+    forEachReceiverDFBStreamEvent(
+        analysisState.pushesByStream, receiverDFB, [&](CBPushOp pushOp) {
+          if (!valid) {
+            return;
+          }
+          LaunchNodeDomain pushDomain =
+              lookupOperationLaunchDomain(pushOp.getOperation(), analysisState);
+          if (!launchNodeDomainsOverlap(pushDomain, receiverDomain)) {
+            return;
+          }
+          if (!knownLaunchNodeDomainContains(
+                  pushDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
+            reject("push is not in the receiver NOC domain");
+            return;
+          }
+          if (!isNocKernelThread(pushOp)) {
+            reject("push is not in the receiver NOC domain");
+            return;
+          }
+          std::optional<int64_t> pushedBlocks = getPushedBlockCount(pushOp);
+          if (!pushedBlocks) {
+            reject("push block count is not a whole DFB block count");
+            return;
+          }
+          auto reserveOp = lookupOwner<CBReserveOp>(
+              analysisState.dfbReleaseOwners.reserveByPush,
+              pushOp.getOperation());
+          if (!reserveOp) {
+            reject("push has no unique receiver reserve owner");
+            return;
+          }
+          SmallVector<PipeTransferPostOp> ownedPosts =
+              getPostsOwnedByReserve(reserveOp, posts);
+          if (ownedPosts.empty()) {
+            reject("push reserve owns no matching receiver post");
+            return;
+          }
+          int64_t postedBlocks = 0;
+          for (PipeTransferPostOp postOp : ownedPosts) {
+            if (!hasMatchingReceiveWaitBeforePush(
+                    postOp, pushOp, analysisState.receiveWaitsByPost)) {
+              reject("post has no receive wait before push");
+              return;
+            }
+            std::optional<int64_t> span =
+                getReceiverSlotSpanBlocksForPost(postOp, receiverDFBs);
+            if (!span) {
+              reject("post has no receiver slot span");
+              return;
+            }
+            postedBlocks += *span;
+            if (!postsWithPush.insert(postOp.getOperation()).second) {
+              reject("post is consumed by more than one push");
+              return;
+            }
+          }
+          if (*pushedBlocks != postedBlocks) {
+            reject("push block count does not match posted receiver slot span");
+          }
+        });
     if (!valid) {
       continue;
     }
@@ -556,49 +750,60 @@ PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
       continue;
     }
 
-    mod.walk([&](CBPopOp popOp) {
-      if (!valid || !isReceiverDFB(popOp.getCb(), receiverDFB)) {
-        return;
-      }
-      LaunchNodeDomain popDomain =
-          lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
-      if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
-        return;
-      }
-      if (!knownLaunchNodeDomainContains(
-              popDomain, getLaunchNodeCoord(receiverDFB.receiver)) ||
-          !isNocKernelThread(popOp)) {
-        reject("pop is not in the receiver NOC domain");
-        return;
-      }
-      std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
-      if (!releasedBlocks) {
-        reject("pop block count is not a whole DFB block count");
-        return;
-      }
-      auto waitOp = lookupOwner<CBWaitOp>(
-          analysisState.dfbReleaseOwners.waitByPop, popOp.getOperation());
-      if (!waitOp) {
-        reject("pop has no unique receiver wait owner");
-        return;
-      }
-      LaunchNodeDomain waitDomain =
-          lookupOperationLaunchDomain(waitOp.getOperation(), analysisState);
-      if (!knownLaunchNodeDomainContains(
-              waitDomain, getLaunchNodeCoord(receiverDFB.receiver)) ||
-          !isNocKernelThread(waitOp)) {
-        reject("wait is not in the receiver NOC domain");
-        return;
-      }
-      std::optional<int64_t> waitedBlocks = getWaitedBlockCount(waitOp);
-      if (!waitedBlocks || *waitedBlocks != *releasedBlocks) {
-        reject("wait and pop use different block counts");
-        return;
-      }
-      if (!waitsWithPop.insert(waitOp.getOperation()).second) {
-        reject("wait owns more than one pop");
-      }
-    });
+    forEachReceiverDFBStreamEvent(
+        analysisState.popsByStream, receiverDFB, [&](CBPopOp popOp) {
+          if (!valid) {
+            return;
+          }
+          LaunchNodeDomain popDomain =
+              lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
+          if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
+            return;
+          }
+          if (!knownLaunchNodeDomainContains(
+                  popDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
+            reject("pop is not in the receiver NOC domain");
+            return;
+          }
+          if (!isNocKernelThread(popOp)) {
+            reject("pop is not in the receiver NOC domain");
+            return;
+          }
+          std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
+          if (!releasedBlocks) {
+            reject("pop block count is not a whole DFB block count");
+            return;
+          }
+          auto waitOp = lookupOwner<CBWaitOp>(
+              analysisState.dfbReleaseOwners.waitByPop, popOp.getOperation());
+          if (!waitOp) {
+            reject("pop has no unique receiver wait owner");
+            return;
+          }
+          LaunchNodeDomain waitDomain =
+              lookupOperationLaunchDomain(waitOp.getOperation(), analysisState);
+          if (!knownLaunchNodeDomainContains(
+                  waitDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
+            reject("wait is not in the receiver NOC domain");
+            return;
+          }
+          if (!isNocKernelThread(waitOp)) {
+            reject("wait is not in the receiver NOC domain");
+            return;
+          }
+          std::optional<int64_t> waitedBlocks = getWaitedBlockCount(waitOp);
+          if (!waitedBlocks) {
+            reject("wait and pop use different block counts");
+            return;
+          }
+          if (*waitedBlocks != *releasedBlocks) {
+            reject("wait and pop use different block counts");
+            return;
+          }
+          if (!waitsWithPop.insert(waitOp.getOperation()).second) {
+            reject("wait owns more than one pop");
+          }
+        });
 
     node.hasProvenPipeOnlyStream = valid;
     if (valid) {
@@ -614,6 +819,30 @@ const ReceiverDFBInfo *PipeGraph::lookupReceiverDFB(const PipeKey &key) const {
     return nullptr;
   }
   return &it->second;
+}
+
+ArrayRef<PipeTransferPostOp>
+PipeGraph::getPipeReceiverPosts(const PipeKey &pipe) const {
+  auto postsIt = receiverPostsByPipe.find(pipe);
+  if (postsIt == receiverPostsByPipe.end()) {
+    return {};
+  }
+  return postsIt->second;
+}
+
+ArrayRef<PipeTransferSendOp>
+PipeGraph::getPipeSends(const PipeKey &pipe) const {
+  auto sendsIt = sendsByPipe.find(pipe);
+  if (sendsIt == sendsByPipe.end()) {
+    return {};
+  }
+  return sendsIt->second;
+}
+
+void PipeGraph::appendReceiverDFBPops(const PipeReceiverDFBKey &receiverDFB,
+                                      SmallVectorImpl<CBPopOp> &pops) const {
+  forEachReceiverDFBStreamEvent(receiverPopsByStream, receiverDFB,
+                                [&](CBPopOp popOp) { pops.push_back(popOp); });
 }
 
 LaunchNodeDomain PipeGraph::getOperationLaunchDomain(Operation *op) const {
@@ -648,7 +877,8 @@ void PipeGraph::rebuildEndpointGraph() {
     PipeEdge &pipeEdge = pipeEdges.back();
 
     pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-      PipeReceiverDFBKey receiverDFB{receiver, receiverInfo.dfbIndex};
+      PipeReceiverDFBKey receiverDFB{receiverInfo.receiverDevice, receiver,
+                                     receiverInfo.dfbIndex};
       auto nodeIt = nodeIdByReceiverDFB.find(receiverDFB);
       PipeReceiverDFBNodeId receiverDFBNodeId = 0;
       if (nodeIt == nodeIdByReceiverDFB.end()) {
@@ -674,48 +904,6 @@ void PipeGraph::rebuildEndpointGraph() {
                        receiverInfo.receiverSlotSpanBlocks);
     });
   }
-}
-
-struct PipeTransferInfo {
-  PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
-  SmallVector<Operation *> transferCreateOps;
-};
-
-static llvm::MapVector<PipeKey, PipeTransferInfo>
-collectPipeTransferInfo(ModuleOp mod) {
-  llvm::MapVector<PipeKey, PipeTransferInfo> pipeInfo;
-  auto addTransfer = [&](PipeTransferCreateOp op) {
-    if (!op) {
-      return;
-    }
-    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
-    PipeTransferContract contract = getPipeTransferContract(op);
-    PipeKey key = getPipeKey(pipeType);
-    auto existing = pipeInfo.find(key);
-    if (existing == pipeInfo.end()) {
-      pipeInfo.insert({key, PipeTransferInfo{contract, {op.getOperation()}}});
-      return;
-    }
-    if (!llvm::is_contained(existing->second.transferCreateOps,
-                            op.getOperation())) {
-      existing->second.transferCreateOps.push_back(op.getOperation());
-    }
-    // Duplicate transfers for the same PipeKey can arise from cloned regions.
-    // Collective is the stronger contract and must be preserved.
-    if (isCollectiveTransfer(contract)) {
-      existing->second.transferContract = PipeTransferContract::Collective;
-    }
-  };
-  mod.walk([&](Operation *op) {
-    if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
-      addTransfer(findPipeTransferCreateForTransfer(postOp.getTransfer()));
-      return;
-    }
-    if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
-      addTransfer(findPipeTransferCreateForTransfer(sendOp.getTransfer()));
-    }
-  });
-  return pipeInfo;
 }
 
 static LogicalResult
@@ -852,10 +1040,11 @@ getReceiverSlotSpanBlocks(Value dst, CircularBufferType dfbType) {
 }
 
 static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
-                                     PipeType pipeType,
+                                     PipeTransferCreateOp createOp,
                                      PipeTransferContract transferContract,
                                      ArrayRef<Operation *> transferCreateOps,
                                      Value dst) {
+  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   Value dstDFB = getAttachedCB(dst);
   if (!dstDFB) {
     return op->emitError("pipe receive destination is not attached to a DFB");
@@ -892,52 +1081,47 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
   return graph.addReceiverDFB(
       pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
       pipeType.getDstStartY(), pipeType.getDstEndX(), pipeType.getDstEndY(),
-      pipeType.getPipeNetId(), *dfbIndex, dfbType, hasStaticTileOffset,
-      staticTileOffset, *slotSpanBlocks, reserveOp.getOperation(),
-      transferContract, transferCreateOps, dfbType.getBlockCount(),
-      op->getLoc());
+      pipeType.getPipeNetId(), *dfbIndex, getReceiverDevice(createOp), dfbType,
+      hasStaticTileOffset, staticTileOffset, *slotSpanBlocks,
+      reserveOp.getOperation(), transferContract, transferCreateOps,
+      dfbType.getBlockCount(), op->getLoc());
 }
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
-  PipeGraph graph;
-  llvm::MapVector<PipeKey, PipeTransferInfo> transferInfos =
-      collectPipeTransferInfo(mod);
+  PipeGraphAnalysisState analysisState;
+  collectPipeGraphOperations(mod, analysisState);
 
-  WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
+  PipeGraph graph;
+  for (PipeTransferPostOp postOp : analysisState.receiverPosts) {
     auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
     if (!createOp) {
       postOp.emitError(
           "pipe transfer post must reference a transfer derived from "
           "ttl.pipe_transfer.create");
-      return WalkResult::interrupt();
+      return failure();
     }
     auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
     PipeKey key = getPipeKey(pipeType);
-    auto pipeInfoIt = transferInfos.find(key);
-    if (pipeInfoIt == transferInfos.end()) {
+    auto pipeInfoIt = analysisState.transferInfos.find(key);
+    if (pipeInfoIt == analysisState.transferInfos.end()) {
       postOp.emitError(
           "pipe transfer post must reference a known pipe transfer");
-      return WalkResult::interrupt();
+      return failure();
     }
-    const PipeTransferInfo &pipeInfo = pipeInfoIt->second;
-    if (failed(addPipeReceiver(graph, postOp, pipeType,
+    const PipeGraphAnalysisState::PipeTransferInfo &pipeInfo =
+        pipeInfoIt->second;
+    if (failed(addPipeReceiver(graph, postOp, createOp,
                                pipeInfo.transferContract,
                                pipeInfo.transferCreateOps, postOp.getDst()))) {
-      return WalkResult::interrupt();
+      return failure();
     }
-    return WalkResult::advance();
-  });
-
-  if (walkResult.wasInterrupted()) {
-    return failure();
   }
 
-  PipeGraphAnalysisState analysisState;
   if (failed(collectLaunchNodeDomains(mod, analysisState))) {
     return failure();
   }
 
-  if (failed(graph.assignReceiverSlotIndices(mod, analysisState))) {
+  if (failed(graph.assignReceiverSlotIndices(analysisState))) {
     return failure();
   }
 
@@ -946,13 +1130,16 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   }
 
   graph.rebuildEndpointGraph();
-  if (failed(graph.provePipeOnlyReceiverStreams(mod, analysisState))) {
+  if (failed(graph.provePipeOnlyReceiverStreams(analysisState))) {
     return failure();
   }
   graph.hasAnalyzedLaunchGrid = analysisState.hasLaunchGrid;
   graph.operationLaunchDomains =
       std::move(analysisState.operationLaunchDomains);
   graph.dfbReleaseOwners = std::move(analysisState.dfbReleaseOwners);
+  graph.receiverPostsByPipe = std::move(analysisState.receiverPostsByPipe);
+  graph.sendsByPipe = std::move(analysisState.sendsByPipe);
+  graph.receiverPopsByStream = std::move(analysisState.popsByStream);
   return std::move(graph);
 }
 

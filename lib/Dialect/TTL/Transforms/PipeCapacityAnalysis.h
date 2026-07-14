@@ -57,7 +57,6 @@
 
 #include "PipeGraph.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -125,7 +124,7 @@ private:
   int64_t nextSemaphoreIndex = 0;
 };
 
-void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
+void buildPipeCapacityPlan(const PipeGraph &pipeGraph,
                            const PipeResourcePlan &resources,
                            PipeCapacityPlan &plan);
 

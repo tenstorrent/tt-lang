@@ -168,13 +168,6 @@ static bool isReceiverDFBView(Value view,
   return dfbIndex && *dfbIndex == receiverDFB.dfbIndex;
 }
 
-static bool isMatchingTransfer(const PipeCapacityEndpoint &endpoint,
-                               Value transfer) {
-  PipeTransferCreateOp traced = findPipeTransferCreateForTransfer(transfer);
-  return traced && llvm::is_contained(endpoint.pipeEdge->transferCreateOps,
-                                      traced.getOperation());
-}
-
 static PipeCapacityEndpoint
 getCapacityEndpoint(const PipeGraph &pipeGraph,
                     const PipeReceiverEndpoint &receiverEndpoint) {
@@ -189,35 +182,37 @@ getCapacityEndpoint(const PipeGraph &pipeGraph,
   };
 }
 
-static bool collectAndCheckPosts(ModuleOp mod,
-                                 const PipeCapacityEndpoint &endpoint,
+static bool collectAndCheckPosts(const PipeCapacityEndpoint &endpoint,
                                  const PipeGraph &pipeGraph) {
   LaunchNodeDomain receiverDomain = getSingleLaunchNodeDomain(
       {endpoint.receiverDFB.receiver.x, endpoint.receiverDFB.receiver.y});
-  // Posts gate validity but carry no facts; the caller does not need them.
+  // Posts determine endpoint validity but carry no facts needed by the caller.
   SmallVector<PipeTransferPostOp> posts;
   bool valid = true;
-  mod.walk([&](PipeTransferPostOp postOp) {
-    if (!isMatchingTransfer(endpoint, postOp.getTransfer())) {
-      return;
-    }
+  for (PipeTransferPostOp postOp :
+       pipeGraph.getPipeReceiverPosts(endpoint.pipeEdge->pipe)) {
     LaunchNodeDomain postDomain =
         pipeGraph.getOperationLaunchDomain(postOp.getOperation());
     if (!launchNodeDomainsOverlap(postDomain, receiverDomain)) {
-      return;
+      continue;
     }
-    if (!(postDomain == receiverDomain) || !isNocKernelThread(postOp)) {
+    if (!(postDomain == receiverDomain)) {
       debugRejectEndpoint(endpoint, "post is not in the receiver NOC domain");
       valid = false;
-      return;
+      continue;
+    }
+    if (!isNocKernelThread(postOp)) {
+      debugRejectEndpoint(endpoint, "post is not in the receiver NOC domain");
+      valid = false;
+      continue;
     }
     if (!isReceiverDFBView(postOp.getDst(), endpoint.receiverDFB)) {
       debugRejectEndpoint(endpoint, "post destination is not the receiver DFB");
       valid = false;
-      return;
+      continue;
     }
     posts.push_back(postOp);
-  });
+  }
   if (valid && posts.empty()) {
     debugRejectEndpoint(endpoint, "no matching receiver posts");
     valid = false;
@@ -225,26 +220,27 @@ static bool collectAndCheckPosts(ModuleOp mod,
   return valid;
 }
 
-static bool collectAndCheckSends(ModuleOp mod,
-                                 const PipeCapacityEndpoint &endpoint,
+static bool collectAndCheckSends(const PipeCapacityEndpoint &endpoint,
                                  const PipeGraph &pipeGraph,
                                  SmallVectorImpl<PipeTransferSendOp> &sends) {
   const PipeCapacityReleaseTarget &target = endpoint.releaseTarget;
   LaunchNodeDomain sourceDomain =
       getSingleLaunchNodeDomain({target.logicalX, target.logicalY});
   bool valid = true;
-  mod.walk([&](PipeTransferSendOp sendOp) {
-    if (!isMatchingTransfer(endpoint, sendOp.getTransfer())) {
-      return;
-    }
-    if (!isExactlyDomain(sendOp, sourceDomain, pipeGraph) ||
-        !isNocKernelThread(sendOp)) {
+  for (PipeTransferSendOp sendOp :
+       pipeGraph.getPipeSends(endpoint.pipeEdge->pipe)) {
+    if (!isExactlyDomain(sendOp, sourceDomain, pipeGraph)) {
       debugRejectEndpoint(endpoint, "send is not in the sender NOC domain");
       valid = false;
-      return;
+      continue;
+    }
+    if (!isNocKernelThread(sendOp)) {
+      debugRejectEndpoint(endpoint, "send is not in the sender NOC domain");
+      valid = false;
+      continue;
     }
     sends.push_back(sendOp);
-  });
+  }
   if (valid && sends.empty()) {
     debugRejectEndpoint(endpoint, "no matching sends");
     valid = false;
@@ -252,32 +248,40 @@ static bool collectAndCheckSends(ModuleOp mod,
   return valid;
 }
 
-static bool collectAndCheckPops(ModuleOp mod,
-                                const PipeCapacityEndpoint &endpoint,
+static bool collectAndCheckPops(const PipeCapacityEndpoint &endpoint,
                                 const PipeGraph &pipeGraph,
                                 SmallVectorImpl<CBPopOp> &pops) {
   LaunchNodeDomain receiverDomain = getSingleLaunchNodeDomain(
       {endpoint.receiverDFB.receiver.x, endpoint.receiverDFB.receiver.y});
   bool valid = true;
-  mod.walk([&](CBPopOp popOp) {
-    if (!isReceiverDFB(popOp.getCb(), endpoint.receiverDFB)) {
-      return;
-    }
+  SmallVector<CBPopOp> candidatePops;
+  pipeGraph.appendReceiverDFBPops(endpoint.receiverDFB, candidatePops);
+  for (CBPopOp popOp : candidatePops) {
     LaunchNodeDomain popDomain =
         pipeGraph.getOperationLaunchDomain(popOp.getOperation());
     if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
-      return;
+      continue;
     }
-    if (!(popDomain == receiverDomain) || !isNocKernelThread(popOp)) {
+    if (!(popDomain == receiverDomain)) {
       debugRejectEndpoint(endpoint, "pop is not in the receiver NOC domain");
       valid = false;
-      return;
+      continue;
+    }
+    if (!isNocKernelThread(popOp)) {
+      debugRejectEndpoint(endpoint, "pop is not in the receiver NOC domain");
+      valid = false;
+      continue;
     }
     std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
-    if (!releasedBlocks || *releasedBlocks != 1) {
+    if (!releasedBlocks) {
       debugRejectEndpoint(endpoint, "pop does not release one DFB block");
       valid = false;
-      return;
+      continue;
+    }
+    if (*releasedBlocks != 1) {
+      debugRejectEndpoint(endpoint, "pop does not release one DFB block");
+      valid = false;
+      continue;
     }
     const DFBReleaseOwnerMaps &owners = pipeGraph.getDFBReleaseOwnerMaps();
     auto waitOp = lookupOwner<CBWaitOp>(owners.waitByPop, popOp.getOperation());
@@ -285,24 +289,35 @@ static bool collectAndCheckPops(ModuleOp mod,
       debugRejectEndpoint(endpoint,
                           "pop is not owned by a matching receiver wait");
       valid = false;
-      return;
+      continue;
     }
     LaunchNodeDomain waitDomain =
         pipeGraph.getOperationLaunchDomain(waitOp.getOperation());
-    if (!(waitDomain == receiverDomain) || !isNocKernelThread(waitOp)) {
+    if (!(waitDomain == receiverDomain)) {
       debugRejectEndpoint(endpoint, "wait is not in the receiver NOC domain");
       valid = false;
-      return;
+      continue;
+    }
+    if (!isNocKernelThread(waitOp)) {
+      debugRejectEndpoint(endpoint, "wait is not in the receiver NOC domain");
+      valid = false;
+      continue;
     }
     std::optional<int64_t> waitedBlocks = getWaitedBlockCount(waitOp);
-    if (!waitedBlocks || *waitedBlocks != *releasedBlocks) {
+    if (!waitedBlocks) {
       debugRejectEndpoint(endpoint,
                           "wait and pop release different DFB block counts");
       valid = false;
-      return;
+      continue;
+    }
+    if (*waitedBlocks != *releasedBlocks) {
+      debugRejectEndpoint(endpoint,
+                          "wait and pop release different DFB block counts");
+      valid = false;
+      continue;
     }
     pops.push_back(popOp);
-  });
+  }
   if (valid && pops.empty()) {
     debugRejectEndpoint(endpoint, "no matching receiver pops");
     valid = false;
@@ -361,7 +376,7 @@ static void markCapacityTransferCreates(const PipeEdge &pipeEdge,
 
 } // namespace
 
-void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
+void buildPipeCapacityPlan(const PipeGraph &pipeGraph,
                            const PipeResourcePlan &resources,
                            PipeCapacityPlan &plan) {
   plan.initializeSemaphoreAllocation(
@@ -418,17 +433,17 @@ void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
       continue;
     }
 
-    if (!collectAndCheckPosts(mod, endpoint, pipeGraph)) {
+    if (!collectAndCheckPosts(endpoint, pipeGraph)) {
       continue;
     }
 
     SmallVector<PipeTransferSendOp> sends;
-    if (!collectAndCheckSends(mod, endpoint, pipeGraph, sends)) {
+    if (!collectAndCheckSends(endpoint, pipeGraph, sends)) {
       continue;
     }
 
     SmallVector<CBPopOp> pops;
-    if (!collectAndCheckPops(mod, endpoint, pipeGraph, pops)) {
+    if (!collectAndCheckPops(endpoint, pipeGraph, pops)) {
       continue;
     }
 
