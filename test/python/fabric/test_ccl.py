@@ -141,7 +141,7 @@ def scatter(inp, out):
 @ttl.operation(grid=(1, 1), device_domain=DEVICE_DOMAIN)
 def gather(inp, out):
     send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=3)
     local_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
 
     @ttl.compute()
