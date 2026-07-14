@@ -430,13 +430,12 @@ def build_pipe_global_semaphores(
     count: int,
     device: Optional[Any] = None,
 ) -> Tuple[List[Any], List[int]]:
-    """Allocate GlobalSemaphores used by PipeNet ready counters.
+    """Allocate GlobalSemaphores used by PipeNet synchronization counters.
 
-    PipeNet coordinates are per-device core coordinates. When tensors live on
-    a TTNN MeshDevice, the same intra-chip PipeNet program is replicated across
-    device shards; this allocates one MeshDevice GlobalSemaphore object whose
-    address is passed to that replicated program. It does not create an
-    inter-chip PipeNet or assign per-mesh-coordinate pipe synchronization state.
+    A MeshDevice GlobalSemaphore has one common L1 address on the selected nodes
+    of every device. Fabric atomics target the receiver device's instance at that
+    address; node-local PipeNets can use the same storage when local semaphore
+    ids are exhausted.
     """
     if count <= 0:
         return [], []
@@ -532,7 +531,7 @@ def build_pipe_runtime_resources(
         device=resource_device,
     )
     # Keep this order in sync with PipeLowering.cpp: optional SRAM scratch base,
-    # then GlobalSemaphore ready-counter addresses.
+    # then GlobalSemaphore counter addresses.
     # [Device 2.0] This is the current ABI for pipe resource records; future
     # typed resource handles should preserve the same compiler-selected order.
     extra_common_runtime_args = [tensor.buffer_address() for tensor in scratch_tensors]
@@ -947,7 +946,7 @@ def run_kernel_on_device(
         pipe_sram_scratch_bytes: Per-core SRAM scratch bytes required by
             PipeNet metadata.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
-            ready counters allocated by the compiler.
+            synchronization counters allocated by the compiler.
         pipe_global_semaphore_lifetime: Optional list replaced with the current
             call's GlobalSemaphore objects. Cached kernels keep this bounded
             owner list so repeated calls do not retain old semaphore objects.

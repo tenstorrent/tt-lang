@@ -10,6 +10,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
@@ -337,13 +338,16 @@ static void recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &facts,
   }
 }
 
-static bool isCapacityProtocolLowerable(const PipeCapacityEndpoint &endpoint,
+static bool isCapacityProtocolLowerable(ValueOriginAnalysis &analysis,
+                                        const PipeCapacityEndpoint &endpoint,
                                         const PipeResourcePlan &resources) {
   auto sendOp = llvm::cast<PipeTransferSendOp>(endpoint.transferNode->sendOp);
   FailureOr<PipeTransferCreateOp> maybeCreateOp =
-      findPipeTransferCreateForTransfer(sendOp.getTransfer());
-  assert(succeeded(maybeCreateOp) &&
-         "pipe graph validated transfer provenance");
+      findPipeTransferCreateForTransfer(analysis, sendOp.getTransfer());
+  if (failed(maybeCreateOp)) {
+    debugRejectEndpoint(endpoint, "transfer provenance is not unique");
+    return false;
+  }
   auto createPipe = maybeCreateOp->getPipe().getDefiningOp<CreatePipeOp>();
   if (createPipe && createPipe.getDeviceTransferAttr()) {
     debugRejectEndpoint(endpoint,
@@ -374,7 +378,8 @@ static void markCapacityTransfer(const PipeTransferNode &transferNode,
 
 } // namespace
 
-void buildPipeCapacityPlan(const PipeGraph &pipeGraph,
+void buildPipeCapacityPlan(ValueOriginAnalysis &analysis,
+                           const PipeGraph &pipeGraph,
                            const PipeResourcePlan &resources,
                            PipeCapacityPlan &plan) {
   plan.initializeSemaphoreAllocation(
@@ -471,8 +476,8 @@ void buildPipeCapacityPlan(const PipeGraph &pipeGraph,
         allEndpointsProven = false;
         break;
       }
-      if (!isCapacityProtocolLowerable(endpointFacts[factIt->second].endpoint,
-                                       resources)) {
+      if (!isCapacityProtocolLowerable(
+              analysis, endpointFacts[factIt->second].endpoint, resources)) {
         allEndpointsProven = false;
         break;
       }

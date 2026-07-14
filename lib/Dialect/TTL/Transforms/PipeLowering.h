@@ -87,66 +87,66 @@ enum class PipeAddressMode {
 struct PipeResourcePlan;
 class PipeCapacityPlan;
 
-/// Resolved lowering-address form of a ready counter. A GlobalSemaphore counter
+/// Resolved lowering-address form of a pipe counter. A GlobalSemaphore counter
 /// resolves to a runtime-arg index because its address is bound at runtime.
-enum class ReadyCounterAddressStorage {
+enum class PipeCounterAddressStorage {
   LocalSemaphore,
   GlobalSemaphoreRuntimeArg,
 };
 
-/// Allocation-time storage kind chosen for a ready counter during planning,
+/// Allocation-time storage kind chosen for a pipe counter during planning,
 /// before its address form is resolved.
-enum class PipeReadyCounterStorage {
+enum class PipeCounterStorage {
   LocalSemaphore,
   GlobalSemaphore,
 };
 
-/// Sender-ready counters can live either in local semaphore space or in
-/// GlobalSemaphore-backed SRAM. The storage kind disambiguates the index value.
-struct ReadyCounterAddressInfo {
-  ReadyCounterAddressStorage storage;
+/// Pipe synchronization counters can live either in local semaphore space or
+/// in GlobalSemaphore-backed SRAM. The storage kind disambiguates the index.
+struct PipeCounterAddressInfo {
+  PipeCounterAddressStorage storage;
   int64_t index;
 };
 
-/// Visitor for ready-counter accounting. Default no-op methods let each
+/// Visitor for pipe-counter accounting. Default no-op methods let each
 /// accounting pass consume only the counter namespace it owns.
-class PipeReadyCounterObserver {
+class PipeCounterObserver {
 public:
-  virtual ~PipeReadyCounterObserver() = default;
+  virtual ~PipeCounterObserver() = default;
 
   virtual void observeLocalSemaphore(int64_t index) {}
   virtual void observeGlobalSemaphore(int64_t index) {}
 };
 
-/// Sender-ready counter allocation. This translates the stored index into the
-/// lowering address form and reports it in its resource namespace for count and
-/// limit checks.
-class PipeReadyCounterInfo {
+/// Pipe counter allocation. This translates the stored index into the lowering
+/// address form and reports it in its resource namespace for count and limit
+/// checks.
+class PipeCounterInfo {
 public:
-  /// Allocate a sender-ready counter from TTKernel local semaphore ids.
-  static PipeReadyCounterInfo localSemaphore(int64_t senderReadyCounterSemIdx);
+  /// Allocate a counter from TTKernel local semaphore ids.
+  static PipeCounterInfo localSemaphore(int64_t semaphoreIndex);
 
-  /// Allocate a sender-ready counter from host-created GlobalSemaphore storage.
-  static PipeReadyCounterInfo globalSemaphore(int64_t globalSemaphoreIndex);
+  /// Allocate a counter from host-created GlobalSemaphore storage.
+  static PipeCounterInfo globalSemaphore(int64_t globalSemaphoreIndex);
 
   /// Resolve this allocation to the address consumed by TTKernel lowering.
-  ReadyCounterAddressInfo
+  PipeCounterAddressInfo
   getAddressInfo(Operation *op, const PipeResourcePlan &pipeResourcePlan) const;
 
   /// Report this allocation to a pass-specific observer.
-  void observe(PipeReadyCounterObserver &observer) const;
+  void observe(PipeCounterObserver &observer) const;
 
 private:
-  PipeReadyCounterInfo(PipeReadyCounterStorage storage, int64_t index)
+  PipeCounterInfo(PipeCounterStorage storage, int64_t index)
       : storage(storage), index(index) {}
 
-  PipeReadyCounterStorage storage;
+  PipeCounterStorage storage;
   int64_t index;
 };
 
 /// Receiver-side completion state for one transfer definition.
 struct PipeCompletionInfo {
-  int64_t semaphoreIndex;
+  PipeCounterInfo counter;
 };
 
 /// Address storage used by one transfer-allocation unit.
@@ -182,7 +182,7 @@ struct PipeResourceInfo {
   PipeTransferContract transferContract;
   PipeCompletionInfo completion;
   /// Absent when the transfer does not use receiver-post sender readiness.
-  std::optional<PipeReadyCounterInfo> readyCounter;
+  std::optional<PipeCounterInfo> readyCounter;
   PipeAddressStorageInfo addressStorage;
 };
 
@@ -190,6 +190,15 @@ struct PipeResourceInfo {
 /// progress counter.
 using PipeSemaphoreCounterMap =
     llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
+
+/// Receiver-local post sequence counters grouped by completion-counter storage.
+struct PipePostSequenceCounters {
+  llvm::MapVector<int64_t, Value> localSemaphores;
+  llvm::MapVector<int64_t, Value> globalSemaphores;
+};
+
+using PipePostSequenceCounterMap =
+    llvm::MapVector<func::FuncOp, PipePostSequenceCounters>;
 
 /// Initial value for one sender-local computed-address slot counter.
 struct PipeComputedAddressCounterInitInfo {
@@ -289,7 +298,7 @@ void initializePipeComputedAddressCounters(
 /// for every completion semaphore used by that function.
 void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
-    PipeSemaphoreCounterMap &postSequenceCounters);
+    PipePostSequenceCounterMap &postSequenceCounters);
 
 /// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(
@@ -304,7 +313,7 @@ LogicalResult lowerPipeTransferSend(
 /// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     ValueOriginAnalysis &analysis,
-                                    const PipeSemaphoreCounterMap &counters,
+                                    const PipePostSequenceCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     const PipeCapacityPlan *pipeCapacityPlan,
                                     const FabricRoutePlan *fabricRoutePlan,

@@ -129,7 +129,8 @@ private:
   int64_t nextSemaphoreIndex = 0;
 };
 
-void buildPipeCapacityPlan(const PipeGraph &pipeGraph,
+void buildPipeCapacityPlan(ValueOriginAnalysis &analysis,
+                           const PipeGraph &pipeGraph,
                            const PipeResourcePlan &resources,
                            PipeCapacityPlan &plan);
 

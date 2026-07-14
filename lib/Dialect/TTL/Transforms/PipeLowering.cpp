@@ -330,7 +330,7 @@ static Value buildLocalSemaphorePtr(Location loc, OpBuilder &builder,
 }
 
 /// Return the first pipe-resource runtime arg index used for GlobalSemaphore
-/// ready-counter addresses.
+/// counter addresses.
 static int64_t
 getFirstPipeGlobalSemaphoreArgOffset(const PipeResourcePlan &info) {
   // GlobalSemaphore addresses follow the optional SRAM scratch base in the
@@ -338,47 +338,44 @@ getFirstPipeGlobalSemaphoreArgOffset(const PipeResourcePlan &info) {
   return info.sramScratch.bytes > 0 ? 1 : 0;
 }
 
-PipeReadyCounterInfo
-PipeReadyCounterInfo::localSemaphore(int64_t senderReadyCounterSemIdx) {
-  return PipeReadyCounterInfo(PipeReadyCounterStorage::LocalSemaphore,
-                              senderReadyCounterSemIdx);
+PipeCounterInfo PipeCounterInfo::localSemaphore(int64_t semaphoreIndex) {
+  return PipeCounterInfo(PipeCounterStorage::LocalSemaphore, semaphoreIndex);
 }
 
-PipeReadyCounterInfo
-PipeReadyCounterInfo::globalSemaphore(int64_t globalSemaphoreIndex) {
-  return PipeReadyCounterInfo(PipeReadyCounterStorage::GlobalSemaphore,
-                              globalSemaphoreIndex);
+PipeCounterInfo PipeCounterInfo::globalSemaphore(int64_t globalSemaphoreIndex) {
+  return PipeCounterInfo(PipeCounterStorage::GlobalSemaphore,
+                         globalSemaphoreIndex);
 }
 
-ReadyCounterAddressInfo PipeReadyCounterInfo::getAddressInfo(
+PipeCounterAddressInfo PipeCounterInfo::getAddressInfo(
     Operation *op, const PipeResourcePlan &pipeResourcePlan) const {
   switch (storage) {
-  case PipeReadyCounterStorage::LocalSemaphore:
-    return {ReadyCounterAddressStorage::LocalSemaphore, index};
-  case PipeReadyCounterStorage::GlobalSemaphore: {
+  case PipeCounterStorage::LocalSemaphore:
+    return {PipeCounterAddressStorage::LocalSemaphore, index};
+  case PipeCounterStorage::GlobalSemaphore: {
     int64_t argIndex = getPipeRuntimeCommonArgIndex(
         op, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) + index);
-    return {ReadyCounterAddressStorage::GlobalSemaphoreRuntimeArg, argIndex};
+    return {PipeCounterAddressStorage::GlobalSemaphoreRuntimeArg, argIndex};
   }
   }
-  llvm_unreachable("unknown pipe ready-counter storage");
+  llvm_unreachable("unknown pipe counter storage");
 }
 
-void PipeReadyCounterInfo::observe(PipeReadyCounterObserver &observer) const {
+void PipeCounterInfo::observe(PipeCounterObserver &observer) const {
   switch (storage) {
-  case PipeReadyCounterStorage::LocalSemaphore:
+  case PipeCounterStorage::LocalSemaphore:
     observer.observeLocalSemaphore(index);
     return;
-  case PipeReadyCounterStorage::GlobalSemaphore:
+  case PipeCounterStorage::GlobalSemaphore:
     observer.observeGlobalSemaphore(index);
     return;
   }
-  llvm_unreachable("unknown pipe ready-counter storage");
+  llvm_unreachable("unknown pipe counter storage");
 }
 
 /// Resolve the resource-plan ready-counter allocation to the addressing form
 /// used by TTKernel lowering at this operation site.
-static ReadyCounterAddressInfo
+static PipeCounterAddressInfo
 getReadyCounterAddressInfo(Operation *op, const PipeResourceInfo &pipeResource,
                            const PipeResourcePlan &pipeResourcePlan) {
   assert(pipeResource.readyCounter &&
@@ -386,26 +383,25 @@ getReadyCounterAddressInfo(Operation *op, const PipeResourceInfo &pipeResource,
   return pipeResource.readyCounter->getAddressInfo(op, pipeResourcePlan);
 }
 
-/// Build the L1 address for the sender-ready counter for either storage kind.
-static Value buildReadyCounterAddress(Location loc,
-                                      const ReadyCounterAddressInfo &info,
-                                      ConversionPatternRewriter &rewriter) {
-  // Lowering consumes both local and GlobalSemaphore ready counters as L1
-  // addresses; only address construction differs between the two kinds.
+/// Build the L1 address for a pipe counter for either storage kind.
+static Value buildPipeCounterAddress(Location loc,
+                                     const PipeCounterAddressInfo &info,
+                                     ConversionPatternRewriter &rewriter) {
+  // Lowering consumes both local and GlobalSemaphore counters as L1 addresses;
+  // only address construction differs between the two kinds.
   // [Device 2.0] This should become a typed semaphore-object lookup when the
   // device API exposes Semaphore/GlobalSemaphore objects directly.
   switch (info.storage) {
-  case ReadyCounterAddressStorage::LocalSemaphore: {
-    auto senderReadyCounterSemIdx =
+  case PipeCounterAddressStorage::LocalSemaphore: {
+    auto semaphoreIndex =
         arith::ConstantIndexOp::create(rewriter, loc, info.index);
-    auto senderReadyCounterAddr =
-        ttk::GetSemaphoreOp::create(rewriter, loc, senderReadyCounterSemIdx);
-    return senderReadyCounterAddr.getResult();
+    return ttk::GetSemaphoreOp::create(rewriter, loc, semaphoreIndex)
+        .getResult();
   }
-  case ReadyCounterAddressStorage::GlobalSemaphoreRuntimeArg:
+  case PipeCounterAddressStorage::GlobalSemaphoreRuntimeArg:
     return buildPipeRuntimeCommonArg(loc, rewriter, info.index);
   }
-  llvm_unreachable("unknown ready counter address storage");
+  llvm_unreachable("unknown pipe counter address storage");
 }
 
 /// Add a static byte offset to an L1 address without changing the address
@@ -634,7 +630,7 @@ public:
                                          Value totalSizeBytes) = 0;
   virtual void emitPayloadWriteBarrier() = 0;
   virtual LogicalResult
-  emitReceiverCompletionIncrement(int64_t receiverCompletionSemIdx) = 0;
+  emitReceiverCompletionIncrement(Value receiverCompletionAddress) = 0;
   virtual void emitCompletionSignalBarrier() = 0;
 };
 
@@ -730,18 +726,14 @@ public:
   }
 
   LogicalResult
-  emitReceiverCompletionIncrement(int64_t receiverCompletionSemIdx) override {
-    auto receiverCompletionCounterSemIdx =
-        arith::ConstantIndexOp::create(rewriter, loc, receiverCompletionSemIdx);
-    auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
-        rewriter, loc, receiverCompletionCounterSemIdx);
+  emitReceiverCompletionIncrement(Value receiverCompletionAddress) override {
     auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     if (pipeType.hasSingleReceiver()) {
       TranslatedCore dstStartCore = getDstStartCore();
       auto receiverCompletionNocAddr = ttk::GetNocAddrOp::create(
           rewriter, loc, dstStartCore.x, dstStartCore.y,
-          receiverCompletionCounterAddr, nocVal);
+          receiverCompletionAddress, nocVal);
       ttk::NocSemaphoreIncOp::create(
           rewriter, loc, receiverCompletionNocAddr.getResult(),
           completionIncrement, nocVal, /*posted=*/BoolAttr());
@@ -759,7 +751,7 @@ public:
         ttk::GetNocMulticastAddrOp::create(
             rewriter, loc, destinationRange.startX, destinationRange.startY,
             destinationRange.endX, destinationRange.endY,
-            receiverCompletionCounterAddr, nocVal);
+            receiverCompletionAddress, nocVal);
     ttk::NocSemaphoreIncMulticastOp::create(
         rewriter, loc, remoteReceiverCompletionMcastNocAddr.getResult(),
         completionIncrement, remoteReceiverCount, nocVal,
@@ -769,7 +761,7 @@ public:
       TranslatedCore sourceCore = getSourceCore();
       auto localReceiverCompletionNocAddr =
           ttk::GetNocAddrOp::create(rewriter, loc, sourceCore.x, sourceCore.y,
-                                    receiverCompletionCounterAddr, nocVal);
+                                    receiverCompletionAddress, nocVal);
       ttk::NocSemaphoreIncOp::create(
           rewriter, loc, localReceiverCompletionNocAddr.getResult(),
           completionIncrement, nocVal, /*posted=*/BoolAttr());
@@ -878,18 +870,14 @@ public:
   void emitPayloadWriteBarrier() override {}
 
   LogicalResult
-  emitReceiverCompletionIncrement(int64_t receiverCompletionSemIdx) override {
+  emitReceiverCompletionIncrement(Value receiverCompletionAddress) override {
     assert(sourceAddress && destinationAddress && sizeBytes &&
            "fabric payload must be prepared before completion signaling");
     Value remoteDestinationAddress = buildRemoteNocAddress(
         pipeType.getDstStartX(), pipeType.getDstStartY(), destinationAddress);
-    Value completionSemaphoreIndex =
-        arith::ConstantIndexOp::create(rewriter, loc, receiverCompletionSemIdx);
-    Value completionSemaphoreAddress =
-        ttk::GetSemaphoreOp::create(rewriter, loc, completionSemaphoreIndex);
     Value remoteCompletionSemaphoreAddress =
         buildRemoteNocAddress(pipeType.getDstStartX(), pipeType.getDstStartY(),
-                              completionSemaphoreAddress);
+                              receiverCompletionAddress);
     ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
         getChipRoute(), sourceAddress, sizeBytes, remoteDestinationAddress,
@@ -958,8 +946,8 @@ private:
 
 void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
-    PipeSemaphoreCounterMap &postSequenceCounters) {
-  llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> semaphoresByFunc;
+    PipePostSequenceCounterMap &postSequenceCounters) {
+  llvm::MapVector<FuncOp, SmallVector<PipeCounterAddressInfo>> countersByFunc;
   for (const auto &[protocolOp, resource] : pipeResourcePlan.resources) {
     auto postOp = dyn_cast<PipeTransferPostOp>(protocolOp);
     if (!postOp) {
@@ -967,11 +955,21 @@ void initializePipePostSequenceCounters(
     }
     FuncOp func = postOp->getParentOfType<FuncOp>();
     assert(func && "pipe transfer post must be inside a function");
-    semaphoresByFunc[func].insert(resource.completion.semaphoreIndex);
+    PipeCounterAddressInfo addressInfo =
+        resource.completion.counter.getAddressInfo(postOp, pipeResourcePlan);
+    SmallVector<PipeCounterAddressInfo> &addresses = countersByFunc[func];
+    bool alreadyRecorded = llvm::any_of(
+        addresses, [&](const PipeCounterAddressInfo &existing) {
+          return existing.storage == addressInfo.storage &&
+                 existing.index == addressInfo.index;
+        });
+    if (!alreadyRecorded) {
+      addresses.push_back(addressInfo);
+    }
   }
 
-  for (auto &[func, semaphoreSet] : semaphoresByFunc) {
-    // These entry-block values dominate waits nested in receiver control flow.
+  for (auto &[func, addresses] : countersByFunc) {
+    // These entry-block values dominate posts nested in receiver control flow.
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
@@ -980,15 +978,21 @@ void initializePipePostSequenceCounters(
     Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
     Value zeroI32 = arith::ConstantOp::create(builder, loc, i32Ty,
                                               builder.getI32IntegerAttr(0));
-    auto &countersForFunc = postSequenceCounters[func];
-    SmallVector<int64_t> semaphoreIndices(semaphoreSet.begin(),
-                                          semaphoreSet.end());
-    llvm::sort(semaphoreIndices);
-    for (int64_t semaphoreIndex : semaphoreIndices) {
+    llvm::sort(addresses, [](const PipeCounterAddressInfo &lhs,
+                             const PipeCounterAddressInfo &rhs) {
+      return std::tie(lhs.storage, lhs.index) <
+             std::tie(rhs.storage, rhs.index);
+    });
+    PipePostSequenceCounters &countersForFunc = postSequenceCounters[func];
+    for (const PipeCounterAddressInfo &address : addresses) {
       auto counter = memref::AllocaOp::create(builder, loc, memrefTy);
       memref::StoreOp::create(builder, loc, zeroI32, counter,
                               ValueRange{zeroIdx});
-      countersForFunc[semaphoreIndex] = counter.getResult();
+      auto &counters =
+          address.storage == PipeCounterAddressStorage::LocalSemaphore
+              ? countersForFunc.localSemaphores
+              : countersForFunc.globalSemaphores;
+      counters[address.index] = counter.getResult();
     }
   }
 }
@@ -1197,12 +1201,12 @@ LogicalResult lowerPipeTransferSend(
                                       nextAcquired);
     }
   } else if (!usesFabric) {
-    ReadyCounterAddressInfo readyCounterInfo =
+    PipeCounterAddressInfo readyCounterInfo =
         getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
     int64_t expectedReceiverPosts =
         isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
     Value senderReadyCounterAddr =
-        buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
+        buildPipeCounterAddress(loc, readyCounterInfo, rewriter);
     auto senderReadyCounterPtr = ttk::CastToL1PtrOp::create(
         rewriter, loc, l1PtrTy, senderReadyCounterAddr);
     auto expectedReadyCount = arith::ConstantOp::create(
@@ -1263,8 +1267,12 @@ LogicalResult lowerPipeTransferSend(
   // Without this barrier, the receiver may wake up before all data arrives.
   transport->emitPayloadWriteBarrier();
 
+  PipeCounterAddressInfo completionCounterInfo =
+      completionInfo.counter.getAddressInfo(op, pipeResourcePlan);
+  Value completionCounterAddress =
+      buildPipeCounterAddress(loc, completionCounterInfo, rewriter);
   if (failed(transport->emitReceiverCompletionIncrement(
-          completionInfo.semaphoreIndex))) {
+          completionCounterAddress))) {
     return failure();
   }
 
@@ -1278,7 +1286,7 @@ LogicalResult lowerPipeTransferSend(
 
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     ValueOriginAnalysis &analysis,
-                                    const PipeSemaphoreCounterMap &counters,
+                                    const PipePostSequenceCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     const PipeCapacityPlan *pipeCapacityPlan,
                                     const FabricRoutePlan *fabricRoutePlan,
@@ -1310,12 +1318,16 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     op.emitError("pipe receive post has no sequence counter allocation");
     return failure();
   }
-  auto sequenceCounter =
-      functionCounters->second.find(pipeResource.completion.semaphoreIndex);
-  if (sequenceCounter == functionCounters->second.end()) {
-    op.emitError("pipe receive post has no sequence counter for completion "
-                 "semaphore ")
-        << pipeResource.completion.semaphoreIndex;
+  PipeCounterAddressInfo completionCounterInfo =
+      pipeResource.completion.counter.getAddressInfo(op, pipeResourcePlan);
+  const llvm::MapVector<int64_t, Value> &sequenceCounters =
+      completionCounterInfo.storage == PipeCounterAddressStorage::LocalSemaphore
+          ? functionCounters->second.localSemaphores
+          : functionCounters->second.globalSemaphores;
+  auto sequenceCounter = sequenceCounters.find(completionCounterInfo.index);
+  if (sequenceCounter == sequenceCounters.end()) {
+    op.emitError("pipe receive post has no sequence counter for its completion "
+                 "counter");
     return failure();
   }
 
@@ -1360,12 +1372,12 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     transport->emitAddressPublishBarrier();
   }
 
-  if (!usesFabric &&
-      (!pipeCapacityPlan || !pipeCapacityPlan->usesCapacityProtocol(op))) {
-    ReadyCounterAddressInfo readyCounterInfo =
+  if (!usesFabric && (!pipeCapacityPlan ||
+                      !pipeCapacityPlan->usesCapacityProtocol(op))) {
+    PipeCounterAddressInfo readyCounterInfo =
         getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
     Value senderReadyCounterAddr =
-        buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
+        buildPipeCounterAddress(loc, readyCounterInfo, rewriter);
     if (failed(transport->emitSenderReadyIncrement(senderReadyCounterAddr))) {
       return failure();
     }
@@ -1450,12 +1462,12 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
   }
   PipeCompletionInfo completionInfo = maybePipeResource->completion;
 
+  PipeCounterAddressInfo completionCounterInfo =
+      completionInfo.counter.getAddressInfo(op, pipeResourcePlan);
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
-  auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, completionInfo.semaphoreIndex);
-  auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
-      rewriter, loc, receiverCompletionCounterSemIdx);
+  Value receiverCompletionCounterAddr =
+      buildPipeCounterAddress(loc, completionCounterInfo, rewriter);
   // [Device 2.0] Completion waits should consume the allocated completion
   // object directly once device APIs expose typed semaphore waits.
   auto receiverCompletionCounterPtr = ttk::CastToL1PtrOp::create(
@@ -1713,6 +1725,9 @@ struct PipeTransferAllocationUnit {
 
   PipeType pipeType;
 
+  /// Whether the transfer uses the routing-plane fabric transport.
+  bool usesFabric = false;
+
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
 
   /// Stable tie-breaker for deterministic allocation.
@@ -1724,8 +1739,8 @@ struct PipeTransferAllocationUnit {
   /// Assigned first-fit color within the source node's allocation group.
   int64_t resourceColor = 0;
 
-  /// Local semaphore index used to signal this transfer's completion.
-  std::optional<int64_t> maybeCompletionSemaphoreIndex;
+  /// Counter used to signal this transfer's completion.
+  std::optional<PipeCounterInfo> maybeCompletionCounter;
 
   /// Deterministic order used by first-fit interval coloring.
   bool operator<(const PipeTransferAllocationUnit &rhs) const {
@@ -1808,6 +1823,7 @@ collectPipeTransferAllocationUnits(
     unit.sendOp = sendOp.getOperation();
     unit.pipe = transferNode.pipe;
     unit.pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
+    unit.usesFabric = static_cast<bool>(getDeviceTransfer(*createOp));
     unit.transferContract = transferNode.transferContract;
     unit.ordinal = static_cast<int64_t>(transferNode.id);
     unit.protocolOps.push_back(sendOp.getOperation());
@@ -1894,8 +1910,15 @@ static int64_t allocateCompletionSemaphore(
   return static_cast<int64_t>(pipesBySemaphoreIndex.size() - 1);
 }
 
+static bool usesFabricTransport(const PipeTransferAllocationUnit &unit) {
+  return unit.usesFabric;
+}
+
 static bool usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
                                    const PipeCapacityPlan *pipeCapacityPlan) {
+  if (usesFabricTransport(unit)) {
+    return false;
+  }
   if (!pipeCapacityPlan) {
     return true;
   }
@@ -2157,13 +2180,22 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
 
-  SmallVector<SmallVector<PipeKey>> pipesByCompletionSemaphoreIndex;
+  SmallVector<SmallVector<PipeKey>> pipesByLocalCompletionIndex;
+  SmallVector<SmallVector<PipeKey>> pipesByGlobalCompletionIndex;
   for (PipeTransferAllocationUnit &unit : units) {
-    unit.maybeCompletionSemaphoreIndex =
-        allocateCompletionSemaphore(unit.pipe, pipesByCompletionSemaphoreIndex);
+    if (usesFabricTransport(unit)) {
+      int64_t globalIndex = allocateCompletionSemaphore(
+          unit.pipe, pipesByGlobalCompletionIndex);
+      unit.maybeCompletionCounter =
+          PipeCounterInfo::globalSemaphore(globalIndex);
+      continue;
+    }
+    int64_t localIndex =
+        allocateCompletionSemaphore(unit.pipe, pipesByLocalCompletionIndex);
+    unit.maybeCompletionCounter = PipeCounterInfo::localSemaphore(localIndex);
   }
   int64_t firstSourceLocalReadyCounterSemIdx =
-      static_cast<int64_t>(pipesByCompletionSemaphoreIndex.size());
+      static_cast<int64_t>(pipesByLocalCompletionIndex.size());
 
   auto [readyColorBySourceColor, maxReadyCountersPerSource] =
       compactColors(colorUsersBySource, [&](unsigned unitIndex) {
@@ -2177,7 +2209,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
       kMaxHardwareSemaphoreIds;
 
   llvm::MapVector<PipeSourceKey, SmallVector<int64_t>> globalIndexBySourceColor;
-  int64_t nextGlobalSemaphoreIndex = 0;
+  int64_t nextGlobalSemaphoreIndex =
+      static_cast<int64_t>(pipesByGlobalCompletionIndex.size());
   if (useGlobalReadyCounters) {
     for (const auto &[sourceKey, readyColors] : readyColorBySourceColor) {
       SmallVector<int64_t> &indices = globalIndexBySourceColor[sourceKey];
@@ -2199,24 +2232,24 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     const PipeTransferAllocationUnit &unit = indexedUnit.value();
-    assert(unit.maybeCompletionSemaphoreIndex &&
-           "pipe transfer is missing a completion semaphore");
+    assert(unit.maybeCompletionCounter &&
+           "pipe transfer is missing a completion counter");
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
-    std::optional<PipeReadyCounterInfo> maybeReadyCounter;
+    std::optional<PipeCounterInfo> maybeReadyCounter;
     if (usesSenderReadyCounter(unit, pipeCapacityPlan)) {
       auto sourceIt = readyColorBySourceColor.find(sourceKey);
       assert(sourceIt != readyColorBySourceColor.end());
       auto colorIt = sourceIt->second.find(unit.resourceColor);
       assert(colorIt != sourceIt->second.end());
       int64_t readyColor = colorIt->second;
-      maybeReadyCounter = PipeReadyCounterInfo::localSemaphore(
+      maybeReadyCounter = PipeCounterInfo::localSemaphore(
           firstSourceLocalReadyCounterSemIdx + readyColor);
       if (useGlobalReadyCounters) {
         auto globalIt = globalIndexBySourceColor.find(sourceKey);
         assert(globalIt != globalIndexBySourceColor.end());
         assert(readyColor < static_cast<int64_t>(globalIt->second.size()));
         maybeReadyCounter =
-            PipeReadyCounterInfo::globalSemaphore(globalIt->second[readyColor]);
+            PipeCounterInfo::globalSemaphore(globalIt->second[readyColor]);
       }
     }
 
@@ -2237,7 +2270,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
     PipeResourceInfo pipeResource{
         unit.pipe,
         unit.transferContract,
-        PipeCompletionInfo{*unit.maybeCompletionSemaphoreIndex},
+        PipeCompletionInfo{*unit.maybeCompletionCounter},
         maybeReadyCounter,
         addressStorage,
     };
@@ -2259,7 +2292,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
 PipeResourceRequirements
 getPipeResourceRequirements(const PipeResourcePlan &info,
                             const PipeCapacityPlan *pipeCapacityPlan) {
-  struct RequirementsObserver final : PipeReadyCounterObserver {
+  struct RequirementsObserver final : PipeCounterObserver {
     int64_t highestSyncSemaphoreIndex = -1;
     int64_t highestGlobalSemaphoreIndex = -1;
 
@@ -2276,7 +2309,7 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
   RequirementsObserver observer;
   for (const auto &[protocolOp, resource] : info.resources) {
     (void)protocolOp;
-    observer.observeLocalSemaphore(resource.completion.semaphoreIndex);
+    resource.completion.counter.observe(observer);
     if (resource.readyCounter) {
       resource.readyCounter->observe(observer);
     }
@@ -2313,16 +2346,18 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
     std::optional<PipeKey> pipe;
   };
 
-  struct SenderReadyObserver final : PipeReadyCounterObserver {
+  struct LocalSemaphoreObserver final : PipeCounterObserver {
     HighestSemaphore &highest;
-    const PipeKey &pipe;
+    PipeSemaphoreKind kind;
+    std::optional<PipeKey> pipe;
 
-    SenderReadyObserver(HighestSemaphore &highest, const PipeKey &pipe)
-        : highest(highest), pipe(pipe) {}
+    LocalSemaphoreObserver(HighestSemaphore &highest, PipeSemaphoreKind kind,
+                           std::optional<PipeKey> pipe = std::nullopt)
+        : highest(highest), kind(kind), pipe(pipe) {}
 
     void observeLocalSemaphore(int64_t index) override {
       if (index > highest.index) {
-        highest = HighestSemaphore{index, PipeSemaphoreKind::SenderReady, pipe};
+        highest = HighestSemaphore{index, kind, pipe};
       }
     }
   };
@@ -2330,13 +2365,13 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
   HighestSemaphore highest;
   for (const auto &[protocolOp, resource] : info.resources) {
     (void)protocolOp;
-    if (resource.completion.semaphoreIndex > highest.index) {
-      highest = HighestSemaphore{resource.completion.semaphoreIndex,
-                                 PipeSemaphoreKind::ReceiverCompletion,
-                                 resource.pipe};
-    }
+    LocalSemaphoreObserver observer(highest,
+                                    PipeSemaphoreKind::ReceiverCompletion,
+                                    resource.pipe);
+    resource.completion.counter.observe(observer);
     if (resource.readyCounter) {
-      SenderReadyObserver observer(highest, resource.pipe);
+      LocalSemaphoreObserver observer(highest, PipeSemaphoreKind::SenderReady,
+                                      resource.pipe);
       resource.readyCounter->observe(observer);
     }
   }

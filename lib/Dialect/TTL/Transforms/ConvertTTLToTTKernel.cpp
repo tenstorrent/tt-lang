@@ -1261,7 +1261,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   PipeTransferPostLowering(const TypeConverter &typeConverter,
                            MLIRContext *context, ValueOriginAnalysis &analysis,
-                           const PipeSemaphoreCounterMap &counters,
+                           const PipePostSequenceCounterMap &counters,
                            const PipeResourcePlan &pipeResourcePlan,
                            const PipeCapacityPlan &pipeCapacityPlan,
                            const FabricRoutePlan *fabricRoutePlan,
@@ -1284,7 +1284,7 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
 
 private:
   ValueOriginAnalysis &analysis;
-  const PipeSemaphoreCounterMap &counters;
+  const PipePostSequenceCounterMap &counters;
   const PipeResourcePlan &pipeResourcePlan;
   const PipeCapacityPlan &pipeCapacityPlan;
   const FabricRoutePlan *fabricRoutePlan;
@@ -1826,14 +1826,16 @@ static LogicalResult lowerTTLOpsToTTKernel(
       return failure();
     }
     PipeCapacityPlan preliminaryPipeCapacityPlan;
-    buildPipeCapacityPlan(*pipeGraphOrErr, preliminaryPipeResourcePlan,
+    buildPipeCapacityPlan(transferAnalysis, *pipeGraphOrErr,
+                          preliminaryPipeResourcePlan,
                           preliminaryPipeCapacityPlan);
     if (failed(buildPipeResourcePlan(mod, transferAnalysis, *pipeGraphOrErr,
                                      pipeResourcePlan, pipeComputedAddresses,
                                      &preliminaryPipeCapacityPlan))) {
       return failure();
     }
-    buildPipeCapacityPlan(*pipeGraphOrErr, pipeResourcePlan, pipeCapacityPlan);
+    buildPipeCapacityPlan(transferAnalysis, *pipeGraphOrErr, pipeResourcePlan,
+                          pipeCapacityPlan);
   } else if (failed(buildPipeResourcePlan(
                  mod, transferAnalysis, *pipeGraphOrErr, pipeResourcePlan,
                  pipeComputedAddresses, /*pipeCapacityPlan=*/nullptr))) {
@@ -1867,7 +1869,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   // change runtime binding code.
   PipeSemaphoreCounterMap senderCapacityCounters;
   initializePipeCapacitySemaphores(pipeCapacityPlan, senderCapacityCounters);
-  PipeSemaphoreCounterMap postSequenceCounters;
+  PipePostSequenceCounterMap postSequenceCounters;
   initializePipePostSequenceCounters(pipeResourcePlan, postSequenceCounters);
   PipeComputedAddressCounterMap computedAddressCounters;
   initializePipeComputedAddressCounters(pipeResourcePlan,
