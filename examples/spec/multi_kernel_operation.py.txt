@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Illustrative example source for docs/sphinx/specs/TTLangSpecification.md.
+#
+# The lines between the "spec:begin" and "spec:end" markers below are included
+# verbatim in the specification. This snippet is a documentation skeleton whose
+# kernel bodies are elided with "...", so it is not valid, runnable Python and
+# carries a .py.txt extension. Regenerate the specification after editing:
+#
+#     python docs/sphinx/specs/build_spec.py
+
+# spec:begin
+@ttl.operation()
+def __foo(
+    x: ttnn.Tensor, # input tensor
+    y: ttnn.Tensor, # output tensor
+) -> None:
+    # ...
+
+    @ttl.compute()
+    def some_compute():
+        # ...
+
+    @ttl.datamovement()
+    def some_dm0():
+        # ...
+
+    @ttl.datamovement()
+    def some_dm1():
+        # ...
+
+# Simple wrapper to allow returning output tensor in TT-NN style
+def foo(x: ttnn.Tensor) -> ttnn.Tensor:
+    y = ttnn.zeros(x.shape, layout=ttnn.TILE_LAYOUT)
+    __foo(x, y)
+    return y
+
+shape = ttnn.Shape([128, 128])
+
+x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT)
+
+ttnn.exp(y, foo(ttnn.abs(x)), fast_and_approximate_mode=True)
+# spec:end
