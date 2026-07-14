@@ -28,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
@@ -51,18 +52,25 @@ struct PipeReceiverCoord {
   }
 };
 
-/// Physical receiver DFB identity for the current single-device module.
+/// Physical receiver DFB identity within one logical device.
 struct PipeReceiverDFBKey {
+  DeviceRefAttr receiverDevice;
   PipeReceiverCoord receiver;
   int64_t dfbIndex = 0;
 
   bool operator==(const PipeReceiverDFBKey &other) const {
-    return receiver == other.receiver && dfbIndex == other.dfbIndex;
+    return receiverDevice == other.receiverDevice &&
+           receiver == other.receiver && dfbIndex == other.dfbIndex;
   }
 };
 
+using PipeReceiverDFBStreamKey = std::pair<DeviceRefAttr, int64_t>;
+
 inline void printReceiverDFB(llvm::raw_ostream &os,
                              const PipeReceiverDFBKey &receiverDFB) {
+  if (receiverDFB.receiverDevice) {
+    os << "device " << receiverDFB.receiverDevice << " ";
+  }
   os << "receiver(" << receiverDFB.receiver.x << ", " << receiverDFB.receiver.y
      << ") DFB " << receiverDFB.dfbIndex;
 }
@@ -118,8 +126,8 @@ template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeReceiverDFBKey> {
   using Key = mlir::tt::ttl::PipeReceiverDFBKey;
   static unsigned getHashValue(const Key &receiverDFB) {
-    return hash_combine(receiverDFB.receiver.x, receiverDFB.receiver.y,
-                        receiverDFB.dfbIndex);
+    return hash_combine(receiverDFB.receiverDevice, receiverDFB.receiver.x,
+                        receiverDFB.receiver.y, receiverDFB.dfbIndex);
   }
   static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
 };
@@ -149,6 +157,7 @@ inline bool isCollectiveTransfer(PipeTransferContract contract) {
 
 /// Receiver DFB geometry for one transfer definition.
 struct ReceiverDFBInfo {
+  DeviceRefAttr receiverDevice;
   int64_t dfbIndex;
   CircularBufferType dfbType;
   bool hasStaticTileOffset;
@@ -336,6 +345,10 @@ public:
   const DFBAcquireReleaseIndex &
   getDFBAcquireReleaseIndex(Operation *operation) const;
 
+  /// Append DFB pops that may execute for this physical receiver stream.
+  void appendReceiverDFBPops(const PipeReceiverDFBKey &receiverDFB,
+                             SmallVectorImpl<CBPopOp> &pops) const;
+
 private:
   /// Record the DFB geometry and destination offset for one receive post.
   LogicalResult addPipeReceiver(Operation *op,
@@ -360,6 +373,8 @@ private:
   llvm::DenseMap<Operation *, PipeTransferNodeId> transferNodeIdByProtocolOp;
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
+  llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<CBPopOp>>
+      receiverPopsByStream;
   bool hasAnalyzedLaunchGrid = false;
   /// Cached operation-keyed analysis facts are valid only before lowering
   /// starts erasing or replacing IR operations.
