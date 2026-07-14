@@ -11,6 +11,7 @@ This module provides:
 """
 
 from dataclasses import dataclass
+import inspect
 from typing import (
     Any,
     Callable,
@@ -371,23 +372,11 @@ def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
 
 
 def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
-    # The Python module is an enclosing scope of an @ttl.operation
-    # function, so module-scope PipeNets satisfy the spec's "enclosing
-    # scope" rule and must be discovered. Walks closure cells and the
-    # function's globals; the compiler's _build_operation_pipenets does
-    # the same so validation and grid="full" work extent agree.
-    closure = getattr(func, "__closure__", None) or ()
-    for cell in closure:
-        try:
-            value = cell.cell_contents
-        except ValueError:
-            continue
-        if isinstance(value, PipeNet):
-            yield value
-    fn_globals = getattr(func, "__globals__", None) or {}
-    for value in fn_globals.values():
-        if isinstance(value, PipeNet):
-            yield value
+    closure_vars = inspect.getclosurevars(func)
+    for namespace in (closure_vars.nonlocals, closure_vars.globals):
+        for value in namespace.values():
+            if isinstance(value, PipeNet):
+                yield value
 
 
 class PipeNet(Generic[DstT]):
