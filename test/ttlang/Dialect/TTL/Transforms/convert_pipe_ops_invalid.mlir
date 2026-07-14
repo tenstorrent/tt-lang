@@ -358,9 +358,8 @@ func.func @same_pipe_two_posts_in_loop_body_rejected()
 
 // -----
 
-// Receiver completion still uses local semaphore ids. A PipeNet id above the
-// local limit is rejected even when sender-ready counters use GlobalSemaphore
-// allocation.
+// Seventeen active local PipeNets require more receiver-completion counters
+// than the hardware semaphore namespace can represent.
 
 // expected-error @below {{pipe synchronization requires 17 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable pipe synchronization allocation}}
 // expected-note @below {{highest allocated semaphore id is 16 for receiver-completion counter}}
@@ -385,22 +384,38 @@ module {
         : !ttl.pipe<src(0, 0) dst(7, 0) to(7, 0) net 0>
     %p8 = ttl.create_pipe src(0, 0) dst(8, 0) to(8, 0) net 0
         : !ttl.pipe<src(0, 0) dst(8, 0) to(8, 0) net 0>
-    %p9 = ttl.create_pipe src(0, 0) dst(9, 0) to(9, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 0>
-    %p10 = ttl.create_pipe src(0, 0) dst(10, 0) to(10, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 0>
-    %p11 = ttl.create_pipe src(0, 0) dst(11, 0) to(11, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 0>
-    %p12 = ttl.create_pipe src(0, 0) dst(12, 0) to(12, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 0>
-    %p13 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 0>
-    %p14 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 0>
-    %p15 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 0>
-    %p16 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 16
-        : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 16>
+    %p9 = ttl.create_pipe src(0, 0) dst(9, 0) to(9, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 1>
+    %p10 = ttl.create_pipe src(0, 0) dst(10, 0) to(10, 0) net 2
+        : !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 2>
+    %p11 = ttl.create_pipe src(0, 0) dst(11, 0) to(11, 0) net 3
+        : !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 3>
+    %p12 = ttl.create_pipe src(0, 0) dst(12, 0) to(12, 0) net 4
+        : !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 4>
+    %p13 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 5
+        : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 5>
+    %p14 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 6
+        : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 6>
+    %p15 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 7
+        : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 7>
+    %p16 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 8
+        : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 8>
+    %p17 = ttl.create_pipe src(0, 0) dst(17, 0) to(17, 0) net 9
+        : !ttl.pipe<src(0, 0) dst(17, 0) to(17, 0) net 9>
+    %p18 = ttl.create_pipe src(0, 0) dst(18, 0) to(18, 0) net 10
+        : !ttl.pipe<src(0, 0) dst(18, 0) to(18, 0) net 10>
+    %p19 = ttl.create_pipe src(0, 0) dst(19, 0) to(19, 0) net 11
+        : !ttl.pipe<src(0, 0) dst(19, 0) to(19, 0) net 11>
+    %p20 = ttl.create_pipe src(0, 0) dst(20, 0) to(20, 0) net 12
+        : !ttl.pipe<src(0, 0) dst(20, 0) to(20, 0) net 12>
+    %p21 = ttl.create_pipe src(0, 0) dst(21, 0) to(21, 0) net 13
+        : !ttl.pipe<src(0, 0) dst(21, 0) to(21, 0) net 13>
+    %p22 = ttl.create_pipe src(0, 0) dst(22, 0) to(22, 0) net 14
+        : !ttl.pipe<src(0, 0) dst(22, 0) to(22, 0) net 14>
+    %p23 = ttl.create_pipe src(0, 0) dst(23, 0) to(23, 0) net 15
+        : !ttl.pipe<src(0, 0) dst(23, 0) to(23, 0) net 15>
+    %p24 = ttl.create_pipe src(0, 0) dst(24, 0) to(24, 0) net 16
+        : !ttl.pipe<src(0, 0) dst(24, 0) to(24, 0) net 16>
     %recv1 = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -465,14 +480,89 @@ module {
            tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.transfer_handle
     ttl.wait %xf8 : !ttl.transfer_handle
+    %send9 = ttl.copy %cb, %p9
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 1>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send9 : !ttl.transfer_handle<write>
+    %send10 = ttl.copy %cb, %p10
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 2>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send10 : !ttl.transfer_handle<write>
+    %send11 = ttl.copy %cb, %p11
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 3>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send11 : !ttl.transfer_handle<write>
+    %send12 = ttl.copy %cb, %p12
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 4>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send12 : !ttl.transfer_handle<write>
+    %send13 = ttl.copy %cb, %p13
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 5>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send13 : !ttl.transfer_handle<write>
+    %send14 = ttl.copy %cb, %p14
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 6>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send14 : !ttl.transfer_handle<write>
+    %send15 = ttl.copy %cb, %p15
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 7>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send15 : !ttl.transfer_handle<write>
     %recv16 = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>
     %xf16 = ttl.copy %p16, %recv16
-        : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 16>,
+        : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 8>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.transfer_handle
     ttl.wait %xf16 : !ttl.transfer_handle
+    %send17 = ttl.copy %cb, %p17
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(17, 0) to(17, 0) net 9>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send17 : !ttl.transfer_handle<write>
+    %send18 = ttl.copy %cb, %p18
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(18, 0) to(18, 0) net 10>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send18 : !ttl.transfer_handle<write>
+    %send19 = ttl.copy %cb, %p19
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(19, 0) to(19, 0) net 11>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send19 : !ttl.transfer_handle<write>
+    %send20 = ttl.copy %cb, %p20
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(20, 0) to(20, 0) net 12>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send20 : !ttl.transfer_handle<write>
+    %send21 = ttl.copy %cb, %p21
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(21, 0) to(21, 0) net 13>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send21 : !ttl.transfer_handle<write>
+    %send22 = ttl.copy %cb, %p22
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(22, 0) to(22, 0) net 14>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send22 : !ttl.transfer_handle<write>
+    %send23 = ttl.copy %cb, %p23
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(23, 0) to(23, 0) net 15>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send23 : !ttl.transfer_handle<write>
+    %send24 = ttl.copy %cb, %p24
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(24, 0) to(24, 0) net 16>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send24 : !ttl.transfer_handle<write>
     func.return
   }
 }
