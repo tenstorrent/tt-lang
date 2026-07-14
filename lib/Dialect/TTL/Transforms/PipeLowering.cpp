@@ -1360,8 +1360,8 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     transport->emitAddressPublishBarrier();
   }
 
-  if (!usesFabric && (!pipeCapacityPlan ||
-                      !pipeCapacityPlan->usesCapacityProtocol(op))) {
+  if (!usesFabric &&
+      (!pipeCapacityPlan || !pipeCapacityPlan->usesCapacityProtocol(op))) {
     ReadyCounterAddressInfo readyCounterInfo =
         getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
     Value senderReadyCounterAddr =

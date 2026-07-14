@@ -1826,15 +1826,14 @@ static LogicalResult lowerTTLOpsToTTKernel(
       return failure();
     }
     PipeCapacityPlan preliminaryPipeCapacityPlan;
-    buildPipeCapacityPlan(mod, *pipeGraphOrErr, preliminaryPipeResourcePlan,
+    buildPipeCapacityPlan(*pipeGraphOrErr, preliminaryPipeResourcePlan,
                           preliminaryPipeCapacityPlan);
     if (failed(buildPipeResourcePlan(mod, transferAnalysis, *pipeGraphOrErr,
                                      pipeResourcePlan, pipeComputedAddresses,
                                      &preliminaryPipeCapacityPlan))) {
       return failure();
     }
-    buildPipeCapacityPlan(mod, *pipeGraphOrErr, pipeResourcePlan,
-                          pipeCapacityPlan);
+    buildPipeCapacityPlan(*pipeGraphOrErr, pipeResourcePlan, pipeCapacityPlan);
   } else if (failed(buildPipeResourcePlan(
                  mod, transferAnalysis, *pipeGraphOrErr, pipeResourcePlan,
                  pipeComputedAddresses, /*pipeCapacityPlan=*/nullptr))) {
