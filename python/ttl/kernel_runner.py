@@ -489,11 +489,10 @@ def build_pipe_global_semaphores(
 ) -> Tuple[List[Any], List[int]]:
     """Allocate GlobalSemaphores used by compiler-managed PipeNet counters.
 
-    PipeNet coordinates are per-device core coordinates. When tensors live on
-    a TTNN MeshDevice, the same intra-chip PipeNet program is replicated across
-    device shards; this allocates one MeshDevice GlobalSemaphore object whose
-    address is passed to that replicated program. It does not create an
-    inter-chip PipeNet or assign per-mesh-coordinate pipe synchronization state.
+    A MeshDevice GlobalSemaphore has one common L1 address on the selected nodes
+    of every device. Fabric atomics target the receiver device's instance at
+    that address; node-local PipeNets use the same storage after local semaphore
+    ids are exhausted.
     """
     if count <= 0:
         return [], []
