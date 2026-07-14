@@ -351,8 +351,7 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   }
 
   if (options.enableCapacitySynchronization) {
-    PipeCapacityAnalysisResult capacityFacts =
-        analyzePipeCapacity(module, pipeGraph);
+    PipeCapacityAnalysisResult capacityFacts = analyzePipeCapacity(pipeGraph);
     // Preliminary resources determine which transfers have computed receiver
     // addresses. Final allocation omits sender-ready counters for transfers
     // selected for capacity synchronization.

@@ -56,7 +56,6 @@
 // not part of the analysis.
 
 #include "PipeGraph.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -99,8 +98,7 @@ public:
   getEndpointFacts(PipeReceiverEndpointId endpoint) const;
 
 private:
-  friend PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp,
-                                                        const PipeGraph &);
+  friend PipeCapacityAnalysisResult analyzePipeCapacity(const PipeGraph &);
 
   void addEndpointFacts(PipeCapacityEndpointFacts facts);
 
@@ -108,9 +106,8 @@ private:
   llvm::DenseMap<PipeReceiverEndpointId, std::size_t> factsIndexByEndpoint;
 };
 
-/// Prove capacity accounting facts for receiver endpoints in `module`.
-PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp module,
-                                               const PipeGraph &pipeGraph);
+/// Prove capacity accounting facts for the graph's receiver endpoints.
+PipeCapacityAnalysisResult analyzePipeCapacity(const PipeGraph &pipeGraph);
 
 } // namespace mlir::tt::ttl
 
