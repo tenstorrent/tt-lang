@@ -247,6 +247,26 @@ class DeviceDomain:
             "DeviceDomain.is_current() should only be called inside a TTL kernel"
         )
 
+    def current_index(self) -> int:
+        """Return the current logical device's zero-based row-major order.
+
+        The compiler replaces this call with target-independent logical
+        device-coordinate indexing. Calling it outside a TTL kernel is an
+        error.
+        """
+        raise RuntimeError(
+            "DeviceDomain.current_index() should only be called inside a TTL kernel"
+        )
+
+    def index_order(self, device: Any) -> int:
+        """Return a device's zero-based row-major order in this domain."""
+        device_ref = self.device_ref(device)
+        order = 0
+        for component, coordinates in zip(self.components, device_ref.coordinates):
+            for coordinate, extent in zip(coordinates, component.extent):
+                order = order * extent + coordinate
+        return order
+
     def device_ref(self, value: Any) -> DeviceRef:
         if isinstance(value, DeviceRef):
             return self.resolve_device_ref(value)

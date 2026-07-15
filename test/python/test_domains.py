@@ -148,6 +148,23 @@ def test_device_domain_current_predicate_is_kernel_only():
         domain.is_current((0, 4))
 
 
+def test_device_domain_index_order_is_row_major():
+    rectangular_domain = DeviceDomain((2, 3))
+    product_domain = DeviceDomain.product(board=(2,), device=(3,))
+
+    assert rectangular_domain.index_order((0, 0)) == 0
+    assert rectangular_domain.index_order((1, 2)) == 5
+    assert product_domain.index_order(DeviceRef(board=0, device=0)) == 0
+    assert product_domain.index_order(DeviceRef(board=1, device=2)) == 5
+
+
+def test_device_domain_current_index_is_kernel_only():
+    domain = DeviceDomain((2, 3))
+
+    with pytest.raises(RuntimeError, match="only be called inside a TTL kernel"):
+        domain.current_index()
+
+
 def test_product_structured_transfer_requires_component():
     domain = DeviceDomain.product(board=(2,), device=(4,))
 
