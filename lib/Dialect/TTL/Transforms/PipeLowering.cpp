@@ -65,6 +65,18 @@ struct PipeSourceKey {
   }
 };
 
+/// Receiver location used to determine whether completion counters alias.
+struct PipeCounterLocation {
+  DeviceRefAttr device;
+  int64_t nodeX;
+  int64_t nodeY;
+
+  bool operator==(const PipeCounterLocation &other) const {
+    return device == other.device && nodeX == other.nodeX &&
+           nodeY == other.nodeY;
+  }
+};
+
 } // namespace mlir::tt::ttl
 
 namespace llvm {
@@ -108,10 +120,24 @@ static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
     if (!llvm::is_contained(route->sourceNodes, sourceCoordinates)) {
       route->sourceNodes.push_back(sourceCoordinates);
     }
-    return static_cast<std::size_t>(std::distance(routes.begin(), route));
+    return route->routeIndex;
   }
-  routes.push_back(FabricRoute{localDevice, remoteDevice, {sourceCoordinates}});
-  return routes.size() - 1;
+
+  std::size_t routeIndex =
+      llvm::count_if(routes, [&](const FabricRoute &existing) {
+        return existing.localDevice == localDevice;
+      });
+  routes.push_back(
+      FabricRoute{localDevice, remoteDevice, {sourceCoordinates}, routeIndex});
+  return routeIndex;
+}
+
+static std::size_t getFabricRouteCount(ArrayRef<FabricRoute> routes) {
+  std::size_t routeCount = 0;
+  for (const FabricRoute &route : routes) {
+    routeCount = std::max(routeCount, route.routeIndex + 1);
+  }
+  return routeCount;
 }
 
 LogicalResult buildFabricRoutePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
@@ -197,6 +223,8 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
           mod.getContext(),
           {builder.getNamedAttr("local", route.localDevice),
            builder.getNamedAttr("remote", route.remoteDevice),
+           builder.getNamedAttr("route_index",
+                                builder.getI64IntegerAttr(route.routeIndex)),
            builder.getNamedAttr("source_nodes",
                                 builder.getArrayAttr(sourceNodes))}));
     }
@@ -212,6 +240,7 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
   for (const auto &entry : plan.routesByFunction) {
     FuncOp func = entry.first;
     const SmallVector<FabricRoute> &routes = entry.second;
+    std::size_t routeCount = getFabricRouteCount(routes);
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
@@ -224,19 +253,15 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
         ttk::RoutingPlaneConnectionManagerType::get(builder.getContext()));
     Value routeId = ttk::OpenRoutingPlaneConnectionsOp::create(
         builder, loc, builder.getI32Type(), manager, connectionCount,
-        builder.getI64IntegerAttr(1 + 4 * routes.size()));
+        builder.getI64IntegerAttr(1 + 3 * routeCount));
     SmallVector<FabricRouteTarget> routeTargets;
-    routeTargets.reserve(routes.size());
-    for (std::size_t routeIndex = 0; routeIndex < routes.size(); ++routeIndex) {
-      Value hopCountIndex = arith::ConstantIndexOp::create(
-          builder, loc, 1 + routes.size() + routeIndex);
+    routeTargets.reserve(routeCount);
+    for (std::size_t routeIndex = 0; routeIndex < routeCount; ++routeIndex) {
       Value destinationDeviceIndex = arith::ConstantIndexOp::create(
-          builder, loc, 1 + 2 * routes.size() + routeIndex);
+          builder, loc, 1 + routeCount + routeIndex);
       Value destinationMeshIndex = arith::ConstantIndexOp::create(
-          builder, loc, 1 + 3 * routes.size() + routeIndex);
+          builder, loc, 1 + 2 * routeCount + routeIndex);
       routeTargets.push_back(FabricRouteTarget{
-          ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
-                                   hopCountIndex),
           ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
                                    destinationDeviceIndex),
           ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
@@ -861,7 +886,7 @@ public:
     const FabricRouteTarget &target = getRouteTarget();
     ttk::RoutingPlaneAtomicIncOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        target.hopCount, target.destinationDeviceId, target.destinationMeshId,
+        target.destinationDeviceId, target.destinationMeshId,
         remoteSemaphoreAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
     return success();
@@ -892,9 +917,8 @@ public:
     const FabricRouteTarget &target = getRouteTarget();
     ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        target.hopCount, target.destinationDeviceId, target.destinationMeshId,
-        sourceAddress, sizeBytes, remoteDestinationAddress,
-        remoteCompletionSemaphoreAddress,
+        target.destinationDeviceId, target.destinationMeshId, sourceAddress,
+        sizeBytes, remoteDestinationAddress, remoteCompletionSemaphoreAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
     return success();
   }
@@ -1820,32 +1844,6 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
   return colorUsersBySource;
 }
 
-/// Return whether two closed destination rectangles share a receiver.
-static bool receiverSetsOverlap(const PipeKey &lhs, const PipeKey &rhs) {
-  return lhs.dstStartX <= rhs.dstEndX && rhs.dstStartX <= lhs.dstEndX &&
-         lhs.dstStartY <= rhs.dstEndY && rhs.dstStartY <= lhs.dstEndY;
-}
-
-/// Reuse a counter color only across disjoint physical receiver sets.
-/// Transfers sharing a receiver need distinct state because either send may
-/// complete first.
-static int64_t allocateCompletionCounterColor(
-    const PipeKey &pipe,
-    SmallVectorImpl<SmallVector<PipeKey>> &pipesByCounterColor) {
-  for (auto indexedPipes : llvm::enumerate(pipesByCounterColor)) {
-    bool overlapsAssignedReceiverSet =
-        llvm::any_of(indexedPipes.value(), [&](const PipeKey &allocatedPipe) {
-          return receiverSetsOverlap(pipe, allocatedPipe);
-        });
-    if (!overlapsAssignedReceiverSet) {
-      indexedPipes.value().push_back(pipe);
-      return static_cast<int64_t>(indexedPipes.index());
-    }
-  }
-  pipesByCounterColor.push_back(SmallVector<PipeKey>{pipe});
-  return static_cast<int64_t>(pipesByCounterColor.size() - 1);
-}
-
 static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
     const PipeSynchronizationSelection *synchronizationSelection) {
@@ -1855,6 +1853,54 @@ static bool usesSenderReadyCounter(
   PipeTransferSendOp sendOp = llvm::cast<PipeTransferSendOp>(unit.sendOp);
   return !synchronizationSelection->usesCapacityProtocol(sendOp) &&
          !synchronizationSelection->usesFabricProtocol(sendOp);
+}
+
+static SmallVector<PipeCounterLocation>
+getCompletionCounterLocations(const PipeTransferAllocationUnit &unit,
+                              const PipeGraph &pipeGraph) {
+  SmallVector<PipeCounterLocation> locations;
+  for (PipeReceiverEndpointId endpointId :
+       pipeGraph.getPipeReceiverEndpoints(unit.transferNodeId)) {
+    const PipeReceiverEndpoint &endpoint =
+        pipeGraph.getPipeReceiverEndpoint(endpointId);
+    PipeCounterLocation location{endpoint.receiverDFB.receiverDevice,
+                                 endpoint.receiver.x, endpoint.receiver.y};
+    if (!llvm::is_contained(locations, location)) {
+      locations.push_back(location);
+    }
+  }
+  assert(!locations.empty() && "pipe completion counter has no destination");
+  return locations;
+}
+
+static bool counterLocationsOverlap(ArrayRef<PipeCounterLocation> lhs,
+                                    ArrayRef<PipeCounterLocation> rhs) {
+  return llvm::any_of(lhs, [&](const PipeCounterLocation &lhsLocation) {
+    return llvm::any_of(rhs, [&](const PipeCounterLocation &rhsLocation) {
+      if (lhsLocation.nodeX != rhsLocation.nodeX ||
+          lhsLocation.nodeY != rhsLocation.nodeY) {
+        return false;
+      }
+      return !lhsLocation.device || !rhsLocation.device ||
+             lhsLocation.device == rhsLocation.device;
+    });
+  });
+}
+
+/// Reuse a counter color only when every receiver location is distinct.
+///
+/// A receiver without a proven device may refer to any device.
+static int64_t allocateCompletionCounterColor(
+    ArrayRef<PipeCounterLocation> locations,
+    SmallVectorImpl<SmallVector<PipeCounterLocation>> &locationsByColor) {
+  for (auto indexedAllocation : llvm::enumerate(locationsByColor)) {
+    if (!counterLocationsOverlap(locations, indexedAllocation.value())) {
+      indexedAllocation.value().append(locations.begin(), locations.end());
+      return static_cast<int64_t>(indexedAllocation.index());
+    }
+  }
+  locationsByColor.emplace_back(locations.begin(), locations.end());
+  return static_cast<int64_t>(locationsByColor.size() - 1);
 }
 
 static std::optional<FuncOp>
@@ -2075,32 +2121,33 @@ LogicalResult buildPipeResourcePlan(
       computedAddressPlan.counterInitializations;
   info.computedAddressDFBIndices = computedAddressPlan.dfbIndices;
 
-  SmallVector<SmallVector<PipeKey>>
-      pipesByIntraDeviceCompletionCounterColor;
-  SmallVector<SmallVector<PipeKey>> pipesByFabricCompletionCounterColor;
+  SmallVector<SmallVector<PipeCounterLocation>>
+      intraDeviceCompletionLocationsByColor;
+  SmallVector<SmallVector<PipeCounterLocation>>
+      fabricCompletionLocationsByColor;
   for (PipeTransferAllocationUnit &unit : units) {
-    SmallVector<SmallVector<PipeKey>> &pipesByCompletionCounterColor =
-        unit.usesFabric ? pipesByFabricCompletionCounterColor
-                        : pipesByIntraDeviceCompletionCounterColor;
+    SmallVector<PipeCounterLocation> completionLocations =
+        getCompletionCounterLocations(unit, pipeGraph);
+    SmallVector<SmallVector<PipeCounterLocation>> &locationsByColor =
+        unit.usesFabric ? fabricCompletionLocationsByColor
+                        : intraDeviceCompletionLocationsByColor;
     unit.maybeCompletionCounterColor = allocateCompletionCounterColor(
-        unit.pipe, pipesByCompletionCounterColor);
+        completionLocations, locationsByColor);
   }
   PipeCounterAllocator counterAllocator(PipeCounterAllocationCounts{},
                                         counterPolicy);
   SmallVector<PipeCounterInfo> intraDeviceCompletionCounters;
   intraDeviceCompletionCounters.reserve(
-      pipesByIntraDeviceCompletionCounterColor.size());
+      intraDeviceCompletionLocationsByColor.size());
   for (std::size_t counterIndex = 0;
-       counterIndex < pipesByIntraDeviceCompletionCounterColor.size();
+       counterIndex < intraDeviceCompletionLocationsByColor.size();
        ++counterIndex) {
     intraDeviceCompletionCounters.push_back(counterAllocator.allocate());
   }
   SmallVector<PipeCounterInfo> fabricCompletionCounters;
-  fabricCompletionCounters.reserve(
-      pipesByFabricCompletionCounterColor.size());
+  fabricCompletionCounters.reserve(fabricCompletionLocationsByColor.size());
   for (std::size_t counterIndex = 0;
-       counterIndex < pipesByFabricCompletionCounterColor.size();
-       ++counterIndex) {
+       counterIndex < fabricCompletionLocationsByColor.size(); ++counterIndex) {
     fabricCompletionCounters.push_back(counterAllocator.allocateGlobal());
   }
 
