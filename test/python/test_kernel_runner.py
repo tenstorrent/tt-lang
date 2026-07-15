@@ -210,10 +210,10 @@ class _FakeTTNN:
         return [0xA0, 0xB0]
 
     def get_fabric_route_info(
-        self, source_node_id, destination_node_id, link_index=None
+        self, mesh_device, source_node_id, destination_node_id, link_index=None
     ):
         self.fabric_route_calls.append(
-            (source_node_id, destination_node_id, link_index)
+            (mesh_device, source_node_id, destination_node_id, link_index)
         )
         return self.fabric_route_infos.get(
             destination_node_id,
@@ -501,10 +501,11 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
         kernel_runner.FabricRouteSpec((0, 1), (0, 0), ((1, 0),)),
     ]
 
+    mesh_device = _FakeMeshDevice()
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[routes],
-        mesh_device=_FakeMeshDevice(),
+        mesh_device=mesh_device,
         device_coordinates=(0, 0),
         grid_cols=2,
         grid_rows=1,
@@ -516,7 +517,12 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
         (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [2], 0, (0, 0)),
     ]
     assert fake_ttnn.fabric_route_calls == [
-        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1), None),
+        (
+            mesh_device,
+            _FakeFabricNodeId(0, 0),
+            _FakeFabricNodeId(0, 1),
+            None,
+        ),
     ]
 
 
