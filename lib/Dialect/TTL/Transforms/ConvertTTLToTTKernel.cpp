@@ -177,7 +177,7 @@ static int64_t getPipeRuntimeArgCount(ModuleOp module) {
 
 static int64_t getDeviceCoordinateCommonArgBase(Operation *op) {
   FuncOp func = op->getParentOfType<FuncOp>();
-  assert(func && "device predicate must be inside a function");
+  assert(func && "logical device operation must be inside a function");
   int64_t tensorArgumentCount =
       llvm::count_if(func.getArguments(), [](BlockArgument argument) {
         return mlir::isa<RankedTensorType>(argument.getType());
@@ -240,6 +240,31 @@ struct IsDeviceLowering : OpConversionPattern<IsDeviceOp> {
         op, op.getDomain(), op.getDevice(), rewriter);
     rewriter.replaceOp(op,
                        combinePredicates(op.getLoc(), rewriter, predicates));
+    return success();
+  }
+};
+
+struct CurrentDeviceIndexLowering : OpConversionPattern<CurrentDeviceIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CurrentDeviceIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value index = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+    int64_t commonArgIndex = getDeviceCoordinateCommonArgBase(op);
+    for (DeviceDomainComponentAttr component : op.getDomain().getComponents()) {
+      for (int64_t extent : component.getExtent().asArrayRef()) {
+        Value extentValue =
+            arith::ConstantIntOp::create(rewriter, loc, extent, 32);
+        Value coordinate =
+            buildDeviceCoordinate(loc, rewriter, commonArgIndex++);
+        index = arith::MulIOp::create(rewriter, loc, index, extentValue);
+        index = arith::AddIOp::create(rewriter, loc, index, coordinate);
+      }
+    }
+    rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, rewriter.getIndexType(),
+                                                    index);
     return success();
   }
 };
@@ -1932,7 +1957,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
            CBPushLowering, CBWaitLowering, TileStoreLowering, StoreLowering,
            CoreXLowering, CoreYLowering, RawElementReadLowering,
            RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering,
-           IsDeviceLowering, IsDeviceInRangeLowering>(typeConverter, &ctx);
+           IsDeviceLowering, CurrentDeviceIndexLowering,
+           IsDeviceInRangeLowering>(typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeResourcePlan);
   populatePipeLoweringPatterns(patterns, typeConverter,
