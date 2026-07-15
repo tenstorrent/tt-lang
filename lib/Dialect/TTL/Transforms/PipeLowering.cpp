@@ -224,17 +224,26 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
         ttk::RoutingPlaneConnectionManagerType::get(builder.getContext()));
     Value routeId = ttk::OpenRoutingPlaneConnectionsOp::create(
         builder, loc, builder.getI32Type(), manager, connectionCount,
-        builder.getI64IntegerAttr(1 + 2 * routes.size()));
-    SmallVector<Value> chipRoutes;
-    chipRoutes.reserve(routes.size());
+        builder.getI64IntegerAttr(1 + 4 * routes.size()));
+    SmallVector<FabricRouteTarget> routeTargets;
+    routeTargets.reserve(routes.size());
     for (std::size_t routeIndex = 0; routeIndex < routes.size(); ++routeIndex) {
-      Value chipRouteIndex = arith::ConstantIndexOp::create(
+      Value hopCountIndex = arith::ConstantIndexOp::create(
           builder, loc, 1 + routes.size() + routeIndex);
-      chipRoutes.push_back(ttk::GetArgValOp::create(
-          builder, loc, builder.getI32Type(), chipRouteIndex));
+      Value destinationDeviceIndex = arith::ConstantIndexOp::create(
+          builder, loc, 1 + 2 * routes.size() + routeIndex);
+      Value destinationMeshIndex = arith::ConstantIndexOp::create(
+          builder, loc, 1 + 3 * routes.size() + routeIndex);
+      routeTargets.push_back(FabricRouteTarget{
+          ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
+                                   hopCountIndex),
+          ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
+                                   destinationDeviceIndex),
+          ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
+                                   destinationMeshIndex)});
     }
     runtime[func] = FabricRuntimeInfo{manager, routeId, connectionCount,
-                                      std::move(chipRoutes)};
+                                      std::move(routeTargets)};
 
     for (Block &block : func.getBody()) {
       auto returnOp = mlir::dyn_cast<func::ReturnOp>(block.getTerminator());
@@ -849,9 +858,11 @@ public:
   emitSenderReadyIncrement(Value senderReadyCounterAddr) override {
     Value remoteSemaphoreAddress = buildRemoteNocAddress(
         pipeType.getSrcX(), pipeType.getSrcY(), senderReadyCounterAddr);
+    const FabricRouteTarget &target = getRouteTarget();
     ttk::RoutingPlaneAtomicIncOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        getChipRoute(), remoteSemaphoreAddress,
+        target.hopCount, target.destinationDeviceId, target.destinationMeshId,
+        remoteSemaphoreAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
     return success();
   }
@@ -878,9 +889,11 @@ public:
     Value remoteCompletionSemaphoreAddress =
         buildRemoteNocAddress(pipeType.getDstStartX(), pipeType.getDstStartY(),
                               receiverCompletionCounterAddr);
+    const FabricRouteTarget &target = getRouteTarget();
     ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        getChipRoute(), sourceAddress, sizeBytes, remoteDestinationAddress,
+        target.hopCount, target.destinationDeviceId, target.destinationMeshId,
+        sourceAddress, sizeBytes, remoteDestinationAddress,
         remoteCompletionSemaphoreAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
     return success();
@@ -922,10 +935,10 @@ private:
                                     argIndex);
   }
 
-  Value getChipRoute() const {
-    assert(routeIndex < runtime.chipRoutes.size() &&
+  const FabricRouteTarget &getRouteTarget() const {
+    assert(routeIndex < runtime.routeTargets.size() &&
            "fabric route must have target routing data");
-    return runtime.chipRoutes[routeIndex];
+    return runtime.routeTargets[routeIndex];
   }
 
   Operation *op;
