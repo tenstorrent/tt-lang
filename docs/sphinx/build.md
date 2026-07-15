@@ -258,10 +258,41 @@ tt-metal tag passed to `Dockerfile.base`. CI runs
 `.github/scripts/check-tt-metal-version.sh` on every PR to catch submodule
 drift.
 
+### Two-phase uplift: publishable release, then latest (S3-only)
+
+When the newest tt-metal tag is ahead of the latest public `ttnn` wheel, a
+single uplift to that tag cannot publish to public PyPI: `ttnn_pypi_aligned`
+(`.github/scripts/lib/tt-metal-version-utils.sh`) requires `TT_METAL_TAG` and
+`TTNN_PYPI_TT_METAL_TAG` to share a `vX.Y.Z` component, and `publish-pypi.yml`
+refuses the release otherwise. To ship a public PyPI release *and* pick up the
+newest tt-metal, split the work into two uplifts and land the publishable one
+first:
+
+1. **Publishable phase.** Set `TT_METAL_TAG` to the tt-metal tag whose `vX.Y.Z`
+   matches `TTNN_PYPI_TT_METAL_TAG`, and keep `TTNN_PYPI` at that public `ttnn`
+   version. The `-rc` suffix is ignored by the check, so `TT_METAL_TAG="v0.73.1"`
+   aligns with `TTNN_PYPI_TT_METAL_TAG="v0.73.1-rc5"`. This uplift's `vX.Y.Z`
+   release tag publishes to public PyPI.
+2. **Latest phase.** On top of the first, bump `TT_METAL_TAG` to the latest
+   tt-metal tag and leave `TTNN_PYPI`/`TTNN_PYPI_TT_METAL_TAG` unchanged. The tags
+   now diverge on `vX.Y.Z`, so the wheel is S3-only until a matching public
+   `ttnn` ships (S3 publishing runs from the nightly schedule or a manual
+   dispatch on `main`, never a tag push).
+
+Build, validate, and commit each phase separately (see [Rebuilding and
+committing](#rebuilding-and-committing)) as its own PR. When both phases move the
+same `third-party/tt-metal` gitlink and `TT_METAL_TAG` line, restack the second
+PR after the first merges so it applies onto the updated `main`.
+
 ### Updating LLVM
 
+`third-party/llvm-project` is a shallow clone, so a bare `git fetch` only
+refreshes the default branch tip and may leave an arbitrary commit unreachable
+("reference is not a tree"). Fetch the exact SHA:
+
 ```bash
-cd third-party/llvm-project && git fetch && git checkout <commit> && cd ../..
+git -C third-party/llvm-project fetch --depth 1 origin <full-sha>
+git -C third-party/llvm-project checkout --detach <full-sha>
 ```
 
 ### Rebuilding and committing
@@ -278,6 +309,23 @@ in case the uplift fails to build. `scripts/build-and-install.sh` uses
 to keep the existing `build-toolchain/` artifacts untouched if desired. It
 is best to remove any pre-existing uplift-related toolchain build directory
 before starting the new toolchain build.
+
+**Toolchain reuse is keyed on file existence, not on the submodule SHA.**
+`BuildLLVM` skips the LLVM build when
+`$TTLANG_TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake` already exists (a SHA
+mismatch against the submodule is only an `AUTHOR_WARNING`, never an error), and
+`BuildTTMetal` skips when `$CMAKE_BINARY_DIR/tt-metal/ttnn/_ttnn.so` already
+exists. Rebuilding an uplift into a populated toolchain or build directory
+therefore silently keeps the *old* LLVM and tt-metal, and the uplifted SHAs are
+never actually compiled or tested. When the SHAs change, remove both the uplift
+toolchain build directory and the target toolchain directory first (or pass
+`--force-rebuild`). If the target lives under `/opt`, recreate and chown it:
+
+```bash
+sudo rm -rf /opt/ttlang-toolchain-<version>
+sudo mkdir -p /opt/ttlang-toolchain-<version>
+sudo chown "$USER": /opt/ttlang-toolchain-<version>
+```
 
 Build the toolchain (LLVM + tt-metal) into the parallel locations:
 
@@ -300,9 +348,22 @@ ninja -C build-uplift check-ttlang-mlir          # MLIR lit tests, no hardware
 ninja -C build-uplift check-ttlang-all           # full suite (Docker for hw)
 ```
 
-Test failures here mean the new submodule combination is incompatible —
-fix patches under `third-party/patches/` or pick a different SHA before
-installing the uplifted toolchain to `/opt/ttlang-toolchain`.
+Uplift failures land in three distinct stages:
+
+- **A tt-metal patch fails to apply**, aborting the toolchain configure with a
+  `FATAL_ERROR`. The patches in `third-party/patches/` are context-sensitive and
+  drift whenever tt-metal moves. Regenerate the patch against the new source and
+  commit the updated `.patch` alongside the uplift. Pre-check before starting the
+  long build with
+  `git -C third-party/tt-metal apply --check third-party/patches/<name>.patch`.
+- **tt-lang fails to compile against the new LLVM.** This surfaces in the
+  validation build, not the toolchain build, because `--toolchain-only` never
+  builds tt-lang. The cause is upstream MLIR API churn; fix the tt-lang source and
+  include it in the uplift commit. `third-party/patches/` only patches tt-metal
+  and cannot address this.
+- **Tests fail**, meaning the submodule combination is incompatible. Pick a
+  different SHA before installing the uplifted toolchain to
+  `/opt/ttlang-toolchain`.
 
 Once the uplift builds and tests cleanly, replace the system toolchain by
 re-running without the overrides (so `CMAKE_BINARY_DIR=build-toolchain` and
@@ -311,10 +372,16 @@ pointer changes together:
 
 ```bash
 git add third-party/llvm-project third-party/tt-metal \
-        third-party/tt-metal-version pyproject.toml
+        third-party/tt-metal-version
 git commit -m "Uplift submodules"
 git push
 ```
+
+Add any regenerated `third-party/patches/*.patch`, and any tt-lang source fix the
+new LLVM required, to the same commit. `pyproject.toml` needs no edit: its
+version, readme and dependencies are all `dynamic`, the wheel version is derived
+from git tags, and `setup.py` reads the `ttnn` pin out of
+`third-party/tt-metal-version` at build time.
 
 On push, `resolve-docker-tag` (see [Auto-resolved tag in PR /
 push workflows](#auto-resolved-tag-in-pr--push-workflows)) sees the
