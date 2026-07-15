@@ -916,7 +916,9 @@ def configure_routing_plane_runtime_args(
                     remote_connection_slots.append(connection_index)
 
                 route_slots = [0] * len(routes)
-                chip_routes = [0] * len(routes)
+                hop_counts = [0] * len(routes)
+                destination_device_ids = [0] * len(routes)
+                destination_mesh_ids = [0] * len(routes)
                 for route_index, remote_slot in enumerate(route_remote_slots):
                     if remote_slot >= len(route_infos):
                         continue
@@ -925,11 +927,18 @@ def configure_routing_plane_runtime_args(
                     if node_coordinates not in routes[route_index].source_nodes:
                         continue
                     route_slots[route_index] = remote_connection_slots[remote_slot]
-                    chip_routes[route_index] = int(route_infos[remote_slot].hop_count)
+                    hop_counts[route_index] = int(route_infos[remote_slot].hop_count)
+                    destination_node_id = destination_node_ids[remote_slot]
+                    destination_device_ids[route_index] = int(
+                        destination_node_id.chip_id
+                    )
+                    destination_mesh_ids[route_index] = int(destination_node_id.mesh_id)
                 runtime_prefix = [
                     len(connection_destination_node_ids),
                     *route_slots,
-                    *chip_routes,
+                    *hop_counts,
+                    *destination_device_ids,
+                    *destination_mesh_ids,
                 ]
                 worker_node = ttnn.CoreCoord(node_x, node_y)
                 kernel_descriptor.runtime_args[node_x][node_y] = list(runtime_prefix)

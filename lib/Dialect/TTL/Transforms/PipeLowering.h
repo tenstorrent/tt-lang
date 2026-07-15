@@ -44,11 +44,17 @@ struct FabricRoutePlan {
   llvm::SmallPtrSet<Operation *, 16> transferOps;
 };
 
+struct FabricRouteTarget {
+  Value hopCount;
+  Value destinationDeviceId;
+  Value destinationMeshId;
+};
+
 struct FabricRuntimeInfo {
   Value manager;
   Value routeId;
   Value connectionCount;
-  SmallVector<Value> chipRoutes;
+  SmallVector<FabricRouteTarget> routeTargets;
 };
 
 using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
