@@ -159,9 +159,11 @@ the final packet.
 ### Physical and logical device arrangements
 
 A `MeshDevice` logical arrangement is not necessarily the physical fabric
-arrangement. The current P300_X2 system is described as a physical `2x2`
-fabric mesh. Tests open those devices as a logical `1x4` `MeshDevice`. Logical
-coordinate distance is therefore not a fabric hop count.
+arrangement. The current P300_X2 control plane reports a `2x2` mesh extent.
+General collective tests query that extent and construct the logical
+`DeviceDomain` from it instead of encoding a fixed extent. The extent defines
+logical membership and row-major ordering; it does not define fabric
+adjacency. Logical coordinate distance is therefore not a fabric hop count.
 
 The same distinction applies to `FabricNodeId::chip_id`. It is an identifier
 within a physical mesh, not a general distance metric. A target resolver must
@@ -202,6 +204,11 @@ target-specific mapping determines physical placement.
 ownership and distribution over a domain. `TransferGraph` describes the
 logical communication relation. `PipeNet` applies the existing pipe protocol
 to that relation.
+
+`DeviceDomain.current_index()` returns the zero-based row-major order of the
+current logical device. Pipe callback identities expose source and destination
+indices using the same ordering. These indices support distributed tensor
+offsets without exposing physical device identifiers or route coordinates.
 
 For example, a point-to-point transfer graph records only its logical edge:
 
@@ -365,6 +372,7 @@ The TTL dialect defines:
 - `TransferEdgeAttr` for one logical transfer relation;
 - `DeviceTransferAttr` for binding a logical device edge to a node-level
   pipe.
+- `CurrentDeviceIndexOp` for the current member's row-major logical index.
 
 These attributes contain no target route fields. Their verifiers check domain
 membership, coordinate rank, and transfer structure.
@@ -623,9 +631,10 @@ docker exec -w /home/bnorris/tt/tt-lang3 bnorris-ird-fabric \
   python -m pytest test/python/fabric -v'
 ```
 
-Tests that require four devices skip when fewer devices are available. The
-four-device container maps `/dev/tenstorrent/0` through
-`/dev/tenstorrent/3`.
+Tests skip when fewer devices than their communication relation requires are
+available. The collective suite derives its domain from the control-plane mesh
+extent. The four-device container maps `/dev/tenstorrent/0` through
+`/dev/tenstorrent/3` and currently reports a `2x2` extent.
 
 ### Current validation status
 
@@ -636,12 +645,12 @@ The following results have been observed on the four-device P300_X2 system:
 | TT-Metal generic-op adjacent point-to-point | Pass | 4,096-byte BF16 payload delivered exactly. |
 | Segmented reference `(0,0) -> (0,3)` | Pass | Three adjacent forwarding segments with fused payload and completion commands. |
 | Standalone routing-plane unicast | Pass | Adjacent and two-router-hop transfers use host-resolved runtime hop counts. |
-| Compiler point-to-point BF16 and FP32 | Pass | Logical `(0,0) -> (0,3)` executes twice per test. |
+| Compiler point-to-point BF16 and FP32 | Pass | Logical `(0,0) -> (1,1)` executes twice on the discovered `2x2` domain. |
 | Compiler ping-pong BF16 and FP32 | Pass | Forward and reverse transfers validated. |
-| Compiler broadcast, scatter, and gather | Pass | BF16 and FP32 results match host references on four devices. |
+| Compiler broadcast, scatter, gather, all-gather, and all-to-all | Pass | BF16 and FP32 results match exact host references on four devices. |
 | Control-plane route integration unit tests | Pass | Kernel-runner tests validate selected-link and hop-count propagation. |
 | Fabric completion storage lowering | Pass | Sender and receiver consume one runtime-bound global semaphore address; no local completion semaphore is emitted. |
-| Full compiler fabric pytest suite | Pass | 10 passed in the four-device Docker container. |
+| Full compiler fabric pytest suite | Pass | 14 passed in the four-device Docker container. |
 | Full `test/python/pipe` regression suite | Pass | 77 passed and 1 expected failure. |
 
 A source-level C++ match is not sufficient evidence of correctness. A fabric
@@ -659,8 +668,8 @@ The POC still requires:
 - payload packetization using the runtime maximum payload size;
 - receiver-published address support or a verified restriction to computed
   receiver DFB addresses;
-- hardware pytests for reduce-to-root, all-gather, reduce-scatter, all-reduce,
-  and all-to-all in `test/python/fabric`;
+- hardware pytests for reduce-to-root, reduce-scatter, and all-reduce in
+  `test/python/fabric`;
 - tree-reduction, packet-boundary, full-duplex, backpressure, and cache behavior
   hardware pytests;
 - MLIR tests for TTKernel routing operations and generated C++;
