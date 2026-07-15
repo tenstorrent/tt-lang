@@ -311,6 +311,13 @@ def _compose(mesh, tensor):
     )
 
 
+def _open_collective_mesh(mesh_shape: tuple[int, ...]):
+    return open_fabric_mesh(
+        requested_mesh_shape=mesh_shape,
+        fabric_config=ttnn.FabricConfig.FABRIC_2D,
+    )
+
+
 @pytest.fixture(scope="module")
 def fabric_mesh_shape():
     if ttnn.get_num_devices() < 2:
@@ -340,7 +347,7 @@ def test_point_to_point(
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(requested_mesh_shape=fabric_mesh_shape) as mesh:
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -368,7 +375,7 @@ def test_broadcast(
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(requested_mesh_shape=fabric_mesh_shape) as mesh:
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -395,7 +402,7 @@ def test_scatter(
     inp_torch = torch.randn(inp_shape, dtype=torch_dtype)
     out_torch = torch.zeros(out_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(requested_mesh_shape=fabric_mesh_shape) as mesh:
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -422,7 +429,7 @@ def test_gather(
     inp_torch = torch.randn(inp_shape, dtype=torch_dtype)
     out_torch = torch.zeros(out_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(requested_mesh_shape=fabric_mesh_shape) as mesh:
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -450,7 +457,7 @@ def test_all_gather(
     inp_torch = torch.randn(inp_shape, dtype=torch_dtype)
     out_torch = torch.zeros(out_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(requested_mesh_shape=fabric_mesh_shape) as mesh:
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -476,7 +483,7 @@ def test_all_to_all(
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(requested_mesh_shape=fabric_mesh_shape) as mesh:
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
