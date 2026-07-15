@@ -76,6 +76,17 @@ struct PipeSourceKey {
   }
 };
 
+struct PipeCounterLocation {
+  DeviceRefAttr device;
+  int64_t nodeX;
+  int64_t nodeY;
+
+  bool operator==(const PipeCounterLocation &other) const {
+    return device == other.device && nodeX == other.nodeX &&
+           nodeY == other.nodeY;
+  }
+};
+
 } // namespace mlir::tt::ttl
 
 namespace llvm {
@@ -115,10 +126,24 @@ static unsigned addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
     if (!llvm::is_contained(route->sourceNodes, sourceCoordinates)) {
       route->sourceNodes.push_back(sourceCoordinates);
     }
-    return static_cast<unsigned>(std::distance(routes.begin(), route));
+    return route->routeIndex;
   }
-  routes.push_back(FabricRoute{localDevice, remoteDevice, {sourceCoordinates}});
-  return routes.size() - 1;
+
+  unsigned routeIndex =
+      llvm::count_if(routes, [&](const FabricRoute &existing) {
+        return existing.localDevice == localDevice;
+      });
+  routes.push_back(
+      FabricRoute{localDevice, remoteDevice, {sourceCoordinates}, routeIndex});
+  return routeIndex;
+}
+
+static unsigned getFabricRouteCount(ArrayRef<FabricRoute> routes) {
+  unsigned routeCount = 0;
+  for (const FabricRoute &route : routes) {
+    routeCount = std::max(routeCount, route.routeIndex + 1);
+  }
+  return routeCount;
 }
 
 LogicalResult buildFabricRoutePlan(ModuleOp mod, FabricRoutePlan &plan) {
@@ -183,6 +208,8 @@ LogicalResult buildFabricRoutePlan(ModuleOp mod, FabricRoutePlan &plan) {
           mod.getContext(),
           {builder.getNamedAttr("local", route.localDevice),
            builder.getNamedAttr("remote", route.remoteDevice),
+           builder.getNamedAttr("route_index",
+                                builder.getI64IntegerAttr(route.routeIndex)),
            builder.getNamedAttr("source_nodes",
                                 builder.getArrayAttr(sourceNodes))}));
     }
@@ -198,6 +225,7 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
   for (const auto &entry : plan.routesByFunction) {
     FuncOp func = entry.first;
     const SmallVector<FabricRoute> &routes = entry.second;
+    unsigned routeCount = getFabricRouteCount(routes);
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
@@ -210,19 +238,15 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
         ttk::RoutingPlaneConnectionManagerType::get(builder.getContext()));
     Value routeId = ttk::OpenRoutingPlaneConnectionsOp::create(
         builder, loc, builder.getI32Type(), manager, connectionCount,
-        builder.getI64IntegerAttr(1 + 4 * routes.size()));
+        builder.getI64IntegerAttr(1 + 3 * routeCount));
     SmallVector<FabricRouteTarget> routeTargets;
-    routeTargets.reserve(routes.size());
-    for (unsigned routeIndex = 0; routeIndex < routes.size(); ++routeIndex) {
-      Value hopCountIndex = arith::ConstantIndexOp::create(
-          builder, loc, 1 + routes.size() + routeIndex);
+    routeTargets.reserve(routeCount);
+    for (unsigned routeIndex = 0; routeIndex < routeCount; ++routeIndex) {
       Value destinationDeviceIndex = arith::ConstantIndexOp::create(
-          builder, loc, 1 + 2 * routes.size() + routeIndex);
+          builder, loc, 1 + routeCount + routeIndex);
       Value destinationMeshIndex = arith::ConstantIndexOp::create(
-          builder, loc, 1 + 3 * routes.size() + routeIndex);
+          builder, loc, 1 + 2 * routeCount + routeIndex);
       routeTargets.push_back(FabricRouteTarget{
-          ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
-                                   hopCountIndex),
           ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
                                    destinationDeviceIndex),
           ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
@@ -852,7 +876,7 @@ public:
     const FabricRouteTarget &target = getRouteTarget();
     ttk::RoutingPlaneAtomicIncOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        target.hopCount, target.destinationDeviceId, target.destinationMeshId,
+        target.destinationDeviceId, target.destinationMeshId,
         remoteSemaphoreAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
     return success();
@@ -882,9 +906,8 @@ public:
     const FabricRouteTarget &target = getRouteTarget();
     ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        target.hopCount, target.destinationDeviceId, target.destinationMeshId,
-        sourceAddress, sizeBytes, remoteDestinationAddress,
-        remoteCompletionSemaphoreAddress,
+        target.destinationDeviceId, target.destinationMeshId, sourceAddress,
+        sizeBytes, remoteDestinationAddress, remoteCompletionSemaphoreAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
     return success();
   }
@@ -2048,6 +2071,64 @@ static bool usesFabricTransport(const PipeTransferAllocationUnit &unit) {
   });
 }
 
+static SmallVector<PipeCounterLocation>
+getCompletionCounterLocations(const PipeTransferAllocationUnit &unit) {
+  SmallVector<PipeCounterLocation> locations;
+  for (Operation *transferCreateOp : unit.transferCreateOps) {
+    auto transferCreate = llvm::cast<PipeTransferCreateOp>(transferCreateOp);
+    DeviceRefAttr device;
+    if (DeviceTransferAttr transfer = getDeviceTransfer(transferCreate)) {
+      device = transfer.getEdge().getDestination();
+      assert(device && "device-range transfers must fail route planning");
+    }
+
+    auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
+    int64_t minNodeX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
+    int64_t maxNodeX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
+    int64_t minNodeY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
+    int64_t maxNodeY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
+    for (int64_t nodeY = minNodeY; nodeY <= maxNodeY; ++nodeY) {
+      for (int64_t nodeX = minNodeX; nodeX <= maxNodeX; ++nodeX) {
+        PipeCounterLocation location{device, nodeX, nodeY};
+        if (!llvm::is_contained(locations, location)) {
+          locations.push_back(location);
+        }
+      }
+    }
+  }
+  assert(!locations.empty() && "pipe completion counter has no destination");
+  return locations;
+}
+
+static bool counterLocationsOverlap(ArrayRef<PipeCounterLocation> lhs,
+                                    ArrayRef<PipeCounterLocation> rhs) {
+  return llvm::any_of(lhs, [&](const PipeCounterLocation &lhsLocation) {
+    return llvm::any_of(rhs, [&](const PipeCounterLocation &rhsLocation) {
+      if (lhsLocation.nodeX != rhsLocation.nodeX ||
+          lhsLocation.nodeY != rhsLocation.nodeY) {
+        return false;
+      }
+      return !lhsLocation.device || !rhsLocation.device ||
+             lhsLocation.device == rhsLocation.device;
+    });
+  });
+}
+
+// A semaphore index may be reused where its device/node instances are
+// physically distinct; a missing device denotes an unknown device and aliases.
+static int64_t allocateCompletionCounter(
+    ArrayRef<PipeCounterLocation> locations,
+    SmallVectorImpl<SmallVector<PipeCounterLocation>> &allocations) {
+  for (auto indexedAllocation : llvm::enumerate(allocations)) {
+    if (!counterLocationsOverlap(locations, indexedAllocation.value())) {
+      indexedAllocation.value().append(locations.begin(), locations.end());
+      return indexedAllocation.index();
+    }
+  }
+  allocations.emplace_back(locations.begin(), locations.end());
+  return allocations.size() - 1;
+}
+
 static std::optional<FuncOp>
 getSingleSenderFunc(const PipeTransferAllocationUnit &unit) {
   std::optional<FuncOp> senderFunc;
@@ -2337,20 +2418,39 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
                                         activePipeNetIds.end());
   llvm::sort(sortedPipeNetIds);
 
-  int64_t nextLocalSemaphoreIndex = 0;
-  int64_t nextGlobalSemaphoreIndex = 0;
+  llvm::MapVector<int64_t, SmallVector<PipeCounterLocation>>
+      completionLocations;
+  for (const PipeTransferAllocationUnit &unit : units) {
+    SmallVector<PipeCounterLocation> &pipeNetLocations =
+        completionLocations[unit.pipe.pipeNetId];
+    for (const PipeCounterLocation &location :
+         getCompletionCounterLocations(unit)) {
+      if (!llvm::is_contained(pipeNetLocations, location)) {
+        pipeNetLocations.push_back(location);
+      }
+    }
+  }
+
+  SmallVector<SmallVector<PipeCounterLocation>> localCompletionAllocations;
+  SmallVector<SmallVector<PipeCounterLocation>> globalCompletionAllocations;
   for (int64_t pipeNetId : sortedPipeNetIds) {
     // A fabric sender addresses the receiver's GlobalSemaphore instance through
     // the routing plane. Local semaphore ids are valid only within one device
     // program and therefore cannot identify a cross-device completion target.
+    bool usesGlobalSemaphore = fabricPipeNetIds.contains(pipeNetId);
+    auto &allocations = usesGlobalSemaphore ? globalCompletionAllocations
+                                            : localCompletionAllocations;
+    int64_t counterIndex = allocateCompletionCounter(
+        completionLocations.lookup(pipeNetId), allocations);
     PipeCounterInfo completionCounter =
-        fabricPipeNetIds.contains(pipeNetId)
-            ? PipeCounterInfo::globalSemaphore(nextGlobalSemaphoreIndex++)
-            : PipeCounterInfo::localSemaphore(nextLocalSemaphoreIndex++);
+        usesGlobalSemaphore ? PipeCounterInfo::globalSemaphore(counterIndex)
+                            : PipeCounterInfo::localSemaphore(counterIndex);
     info.completionWaits.insert(
         {pipeNetId, PipeCompletionWaitInfo{completionCounter}});
   }
-  int64_t firstSourceLocalReadyCounterSemIdx = nextLocalSemaphoreIndex;
+  int64_t firstSourceLocalReadyCounterSemIdx =
+      localCompletionAllocations.size();
+  int64_t firstGlobalReadyCounterIndex = globalCompletionAllocations.size();
 
   auto [readyColorBySourceColor, maxReadyCountersPerSource] =
       compactColors(colorUsersBySource, [&](unsigned unitIndex) {
@@ -2370,7 +2470,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
       indices.reserve(readyColors.size());
       for (unsigned color = 0, colorCount = readyColors.size();
            color < colorCount; ++color) {
-        indices.push_back(nextGlobalSemaphoreIndex++);
+        indices.push_back(firstGlobalReadyCounterIndex + color);
       }
     }
   }
