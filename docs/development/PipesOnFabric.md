@@ -124,12 +124,19 @@ Under `FABRIC_1D`, `fabric_set_unicast_route()` does not populate this field.
 Omitting `to_chip_unicast()` allows connection setup and packet submission to
 complete, but the destination does not receive the packet.
 
-For a 2D fabric, routing-plane setup supplies the source and destination mesh
-metadata used by:
+For a 2D fabric, host runtime binding supplies the final physical destination
+for each logical transfer. The generated kernel uses TT-Metal's canonical
+packet encoder:
 
 ```cpp
-fabric_set_unicast_route(connection_manager, packet_header, connection_slot);
+tt::tt_fabric::fabric_set_unicast_route(
+    packet_header, destination_device_id, destination_mesh_id);
 ```
+
+TT-Metal initializes a compressed routing table when fabric starts. The call
+above reads and decodes the destination's entry into the packet header. The
+host still selects the injection direction and link once per bound route; the
+kernel does not reconstruct a topology model or search connection tags.
 
 The selected operation is a target-runtime decision. Neither the fabric mode
 nor either route encoding is part of the TTL domain or transfer-graph model.
@@ -152,19 +159,17 @@ The sender follows TT-Metal's packet lifecycle:
 7. Close the opened connections.
 
 The target runtime reports the maximum fabric payload size. Code generation
-must not embed a device-specific limit. The P300 linear-router baseline used a
-4,096-byte payload, below its observed 4,416-byte maximum. Larger PipeNet
-payloads require target-aware packetization, with the completion increment in
-the final packet.
+must not embed a device-specific limit. Larger PipeNet payloads require
+target-aware packetization, with the completion increment in the final packet.
 
 ### Physical and logical device arrangements
 
 A `MeshDevice` logical arrangement is not necessarily the physical fabric
-arrangement. The current P300_X2 control plane reports a `2x2` mesh extent.
-General collective tests query that extent and construct the logical
-`DeviceDomain` from it instead of encoding a fixed extent. The extent defines
-logical membership and row-major ordering; it does not define fabric
-adjacency. Logical coordinate distance is therefore not a fabric hop count.
+arrangement. General collective tests query the control-plane extent and
+construct the logical `DeviceDomain` from it instead of encoding a fixed
+extent. The extent defines logical membership and row-major ordering; it does
+not define fabric adjacency. Logical coordinate distance is therefore not a
+fabric hop count.
 
 The same distinction applies to `FabricNodeId::chip_id`. It is an identifier
 within a physical mesh, not a general distance metric. A target resolver must
@@ -277,9 +282,8 @@ one or more transport segments. Each segment records:
 - the synchronization objects used by that segment.
 
 A target may use one direct segment only when its control plane proves that
-the destination is representable by one packet-header route. A route requiring
-turns, forwarding nodes, or different transport mechanisms must be represented
-as multiple segments.
+the selected packet format can represent the complete route. Unsupported
+turns, forwarding nodes, or transport transitions require multiple segments.
 
 This rule is important for linear fabric. A direct hop count is valid only
 when the source and destination lie on one physical fabric axis. A logical
@@ -290,7 +294,8 @@ edge that requires a turn cannot be encoded by increasing the hop count.
 A validated segmented transport decomposes a logical source-to-destination
 transfer into adjacent logical devices. Each intermediate device receives into
 a local DFB, waits for completion, then sends the payload to the next device.
-Every P300 linear-fabric packet uses `to_chip_unicast(1)`.
+Each linear-fabric segment uses the hop encoding selected for that adjacent
+pair.
 
 tt-lang should preserve those generated-kernel properties while obtaining the
 segment sequence from the target control plane. The compiler representation
@@ -413,9 +418,10 @@ packet submission:
 - submit a fused payload write and remote atomic increment;
 - close the opened connections.
 
-The send operations take both a connection index and a target-provided
-`chipRoute`. The connection index selects a manager slot. `chipRoute` contains
-the packet-header value required by the selected target configuration.
+The send operations take a connection index, linear hop count, destination
+device id, and destination mesh id. The connection index selects the injection
+slot. The active target configuration selects the applicable packet-route
+operands.
 
 These operations do not use tt-mlir's experimental fabric operations. Those
 operations consume a different runtime argument layout produced by the
@@ -448,10 +454,13 @@ tt-lang
   [C] Record each logical source/destination relation and assign a route index.
   [H] Query the control plane once per distinct source/destination pair; cache
       the result while the MeshDevice and fabric configuration remain unchanged.
-  [H] Write the selected connection index and packet-route value into runtime args.
+  [H] Write the connection index, hop count, and final physical destination
+      into runtime args.
   [D] Once per kernel invocation: open the configured connections.
-  [D] Once per fabric operation: index the selected connection, construct the
-      packet command, and submit it.
+  [D] Once per fabric operation: index the selected connection, encode the
+      packet route, construct the packet command, and submit it. Linear routing
+      writes the host-resolved hop count. Mesh routing decodes TT-Metal's
+      precomputed destination entry.
 
 tt-mlir experimental API
   [H] Serialize TopologyInfo and connection descriptors into runtime args.
@@ -468,13 +477,13 @@ both approaches.
 | Concern | tt-lang | tt-mlir experimental API |
 | --- | --- | --- |
 | C++ object | `[D]` Uses `tt::tt_fabric::RoutingPlaneConnectionManager` directly. | `[D]` Wraps the same manager in `experimental::FabricConnectionManager`. |
-| Route resolution | `[H]` Queries the active TT-Metal control plane and supplies a connection index and target-specific `chipRoute`. | `[D]` Derives an outgoing direction and hop encoding from destination mesh and device identifiers for each fabric operation. |
-| Transfer operands | `[C]` Routing-plane TTKernel operations represent a resolved connection index and route value. `[D]` The generated kernel reads both from runtime arguments. | `[C]` [Fabric TTKernel operations](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L4227-L4320) represent destination mesh and device identifiers. `[D]` The wrapper resolves them. |
+| Route resolution | `[H]` Queries the active TT-Metal control plane and supplies the selected connection, linear hop count, and final physical destination. `[D]` Mesh packet encoding decodes TT-Metal's precomputed destination entry. | `[D]` Derives an outgoing direction and hop encoding from destination mesh and device identifiers for each fabric operation. |
+| Transfer operands | `[C]` Routing-plane TTKernel operations represent a connection index, hop count, destination device id, and destination mesh id. `[D]` Generated kernels consume the target values selected for the active fabric mode. | `[C]` [Fabric TTKernel operations](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L4227-L4320) represent destination mesh and device identifiers. `[D]` The wrapper resolves them. |
 | Connection selection | `[D]` Generated C++ indexes the selected manager slot directly. | `[D]` The wrapper [searches active connection tags](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L38-L76) for each fabric operation. |
 | Runtime arguments | `[C]` The compiler assigns an explicit base for the connection descriptor block. `[H]` The binder appends control-plane-resolved route and connection values. `[D]` Connection setup reads them once per kernel invocation. | `[H]` The runtime serializes topology and connection descriptors into a [fixed fabric argument block](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L105-L135). `[D]` Setup parses that block once per kernel invocation. |
 | Topology model | `[C]` Logical TTL domains contain no fabric topology constants. `[H]` Host runtime route binding queries TT-Metal for the active topology's route. | `[H]` The runtime supplies a topology descriptor encoding [two dimensions, four directions, a 32-device limit, and line/ring/mesh/torus categories](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_topology_info.h#L14-L35). `[D]` Kernel helpers interpret it. |
 | Current operation coverage | Provides the unicast atomic and fused write-plus-atomic operations required by fabric PipeNets. | Also provides arbitrary-length packetization and multicast write and semaphore helpers. |
-| Per-operation kernel work | `[D]` Indexes a pre-resolved connection and constructs the packet command. | `[D]` Performs [logical-position route calculation](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_1d_routing.h#L36-L108) and connection-tag lookup before constructing the packet command. |
+| Per-operation kernel work | `[D]` Indexes a pre-resolved connection. Linear routing writes a hop count; mesh routing looks up and decodes a precomputed TT-Metal route. | `[D]` Performs [logical-position route calculation](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_1d_routing.h#L36-L108) and connection-tag lookup before constructing the packet command. |
 
 The tt-lang representation is intentionally lower-level at the TTKernel
 boundary. Logical destinations remain available in TTL until host runtime route
@@ -491,7 +500,7 @@ The design comparison has the following implications:
 | --- | --- | --- |
 | Architecture portability | `[C]` Logical domains and transfer graphs contain no topology categories or link counts. `[H]` While constructing each invocation's program descriptors, the host runtime queries the active TT-Metal control plane and writes the resolved connection and packet-route values into kernel runtime arguments. A new route encoding requires corresponding host runtime route binding and TTKernel/EmitC lowering support. | `[H]` The runtime serializes explicit line, ring, mesh, and torus models with fixed dimension and device limits. `[D]` The kernel wrapper interprets that model. Supporting a new topology requires changes to the topology descriptor, runtime serialization, and kernel routing helpers. |
 | Extensibility | Logical transfers, route planning, connection reuse, and packet emission are separate components. New route scoring or packet operations do not change domain semantics, but the compiler/runtime argument contract must track TT-Metal API changes. | The wrapper gives TTKernel operations a compact destination-oriented API and already provides broader packetization and multicast helpers. Extending its topology model also increases on-device wrapper state and routing logic. |
-| Kernel performance | `[H]` Route queries or cache lookups occur while the host constructs an invocation's program descriptors, before program submission. `[D]` Kernels directly index reused connection slots without calculating a logical route or searching connection tags for each fabric operation. Current planning selects the control plane's first available link and does not yet score contention or workload traffic. | `[D]` Destination-oriented operations support runtime-selected destinations within the encoded topology. Each fabric operation reconstructs source and destination logical positions, performs topology-dependent hop calculation, and linearly searches active connection tags. This work is potentially material for small or frequent transfers. |
+| Kernel performance | `[H]` Route queries or cache lookups occur before program submission. `[D]` Kernels directly index reused connection slots. Mesh packets also require one lookup and decode from TT-Metal's precomputed route table per operation. Current planning selects the control plane's first available link and does not yet score contention or workload traffic. | `[D]` Destination-oriented operations support runtime-selected destinations within the encoded topology. Each fabric operation reconstructs source and destination logical positions, performs topology-dependent hop calculation, and linearly searches active connection tags. This work is potentially material for small or frequent transfers. |
 | Route optimization | `[H]` Host planning can evaluate legal control-plane routes using global program information and can cache the selected plan. | `[D]` For every fabric operation, kernel helpers calculate the direction and hop encoding from local topology and destination values. This limits access to program-wide traffic information. |
 | Maturity | Generated C++ directly exposes the operations needed to converge on optimized routing-plane kernel sequences. Current packet and multicast coverage is narrower, and comparative performance has not yet been measured. | The experimental API currently covers more unicast, multicast, arbitrary-length write, and semaphore operations, but embeds more current-architecture policy in the kernel support library. |
 
@@ -524,9 +533,11 @@ open_connections(connection_manager, connection_count, runtime_arg_base);
 
 PacketHeaderPool::reset();
 auto* packet_header = PacketHeaderPool::allocate_header(1);
-fabric_set_unicast_route(connection_manager, packet_header, connection_slot);
-#if !defined(FABRIC_2D)
-packet_header->to_chip_unicast(static_cast<uint8_t>(chip_route));
+#if defined(FABRIC_2D)
+tt::tt_fabric::fabric_set_unicast_route(
+    packet_header, destination_device_id, destination_mesh_id);
+#else
+packet_header->to_chip_unicast(static_cast<uint8_t>(hop_count));
 #endif
 
 packet_header->to_noc_fused_unicast_write_atomic_inc(...);
@@ -559,15 +570,18 @@ The compiler-managed runtime prefix is:
 [
   connection_count,
   route_slot_0, ..., route_slot_N,
-  chip_route_0, ..., chip_route_N,
+  hop_count_0, ..., hop_count_N,
+  destination_device_id_0, ..., destination_device_id_N,
+  destination_mesh_id_0, ..., destination_mesh_id_N,
   routing_plane_connection_manager_args...
 ]
 ```
 
 `route_slot_I` selects the manager connection used by logical route `I`.
-`chip_route_I` is the target packet-header value for that route. Connection
-manager arguments begin at `1 + 2 * N`. Nodes without an active fabric route
-receive zeroed route metadata and no connection-manager arguments.
+The remaining arrays describe its final target. Linear packets consume the hop
+count; mesh packets consume the physical destination ids. Connection manager
+arguments begin at `1 + 4 * N`. Nodes without an active fabric route receive
+zeroed route metadata and no connection-manager arguments.
 
 This prefix is private to the tt-lang target runtime and generated TTKernel
 code. It is not represented in TTL source attributes.
@@ -589,8 +603,9 @@ source and destination `FabricNodeId` pair.
 TT-Metal selects an available forwarding link and resolves the route through
 `ControlPlane::get_fabric_route()`. The hop count is the number of physical
 inter-node transitions in that resolved route. tt-lang passes the selected link
-back to `setup_routing_plane_connection()` and passes the hop count to generated
-TTKernel code as the packet-header route value.
+back to `setup_routing_plane_connection()`. It passes the hop count and final
+physical destination to generated TTKernel code. Linear and mesh packet
+encoders consume the applicable values.
 
 This interface keeps topology interpretation in TT-Metal. tt-lang does not
 infer routing from logical coordinates, physical mesh dimensions, node-number
@@ -616,47 +631,27 @@ wait, and connection closure.
 The validated non-adjacent transfer does not calculate an arbitrary physical
 hop count. It constructs a logical row-first and column-second sequence and
 turns every adjacent pair into a separate transfer segment. Intermediate
-devices receive and forward the payload. The P300 configuration uses
-`to_chip_unicast(1)` for every segment.
+devices receive and forward the payload. Each segment uses a separately
+validated packet route.
 
 tt-lang must obtain the segment sequence from its host-side route planner while
 preserving the proven per-segment C++.
 
-### Validation environment
+### Validation requirements
 
-Fabric tests use the standard tt-lang Docker environment and pytest invocation:
+Fabric changes require both a quick multi-device hardware check and a full
+Galaxy run. The Galaxy run uses the complete discovered mesh and exercises the
+full fabric pytest suite. The smaller-system run shortens the edit-test cycle
+but is not sufficient evidence of correctness.
 
-```bash
-docker exec -w /home/bnorris/tt/tt-lang3 bnorris-ird-fabric \
-  bash -lc 'source build-fabric/env/activate && \
-  python -m pytest test/python/fabric -v'
-```
+The collective suite derives its domain from the control-plane mesh extent and
+requests mesh routing so arbitrary physical turns remain one packet route.
+This target selection occurs when opening the runtime mesh, not in TTL domain
+or transfer attributes.
 
-Tests skip when fewer devices than their communication relation requires are
-available. The collective suite derives its domain from the control-plane mesh
-extent. The four-device container maps `/dev/tenstorrent/0` through
-`/dev/tenstorrent/3` and currently reports a `2x2` extent.
-
-### Current validation status
-
-The following results have been observed on the four-device P300_X2 system:
-
-| Test | Result | Evidence |
-| --- | --- | --- |
-| TT-Metal generic-op adjacent point-to-point | Pass | 4,096-byte BF16 payload delivered exactly. |
-| Segmented reference `(0,0) -> (0,3)` | Pass | Three adjacent forwarding segments with fused payload and completion commands. |
-| Standalone routing-plane unicast | Pass | Adjacent and two-router-hop transfers use host-resolved runtime hop counts. |
-| Compiler point-to-point BF16 and FP32 | Pass | Logical `(0,0) -> (1,1)` executes twice on the discovered `2x2` domain. |
-| Compiler ping-pong BF16 and FP32 | Pass | Forward and reverse transfers validated. |
-| Compiler broadcast, scatter, gather, all-gather, and all-to-all | Pass | BF16 and FP32 results match exact host references on four devices. |
-| Control-plane route integration unit tests | Pass | Kernel-runner tests validate selected-link and hop-count propagation. |
-| Fabric completion storage lowering | Pass | Sender and receiver consume one runtime-bound global semaphore address; no local completion semaphore is emitted. |
-| Full compiler fabric pytest suite | Pass | 14 passed in the four-device Docker container. |
-| Full `test/python/pipe` regression suite | Pass | 77 passed and 1 expected failure. |
-
-A source-level C++ match is not sufficient evidence of correctness. A fabric
-feature is considered working only after its hardware pytest passes and the
-existing pipe pytest suite shows no regression.
+Validation also includes the complete existing `test/python/pipe` suite and
+the affected MLIR tests. A source-level C++ match or a smaller-system hardware
+pass does not establish correctness without the Galaxy result.
 
 ### Required remaining work
 
@@ -673,6 +668,5 @@ The POC still requires:
   `test/python/fabric`;
 - tree-reduction, packet-boundary, full-duplex, backpressure, and cache behavior
   hardware pytests;
-- MLIR tests for TTKernel routing operations and generated C++;
 - removal of temporary target queries after the corresponding TT-Metal APIs
   are available in the pinned revision.
