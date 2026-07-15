@@ -163,7 +163,9 @@ class _FabricRouteCache:
             *self._node_key(destination_node_id),
         )
         if route_key not in self._routes:
-            route_info = ttnn.get_fabric_route_info(source_node_id, destination_node_id)
+            route_info = ttnn.get_fabric_route_info(
+                mesh_device, source_node_id, destination_node_id
+            )
             self._routes[route_key] = _ResolvedFabricRoute(
                 connection_node_id=route_info.connection_node_id,
                 direction=int(route_info.direction),
