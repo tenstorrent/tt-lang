@@ -157,8 +157,19 @@ class FabricMeshUnavailable(RuntimeError):
     pass
 
 
+def get_fabric_mesh_shape() -> tuple[int, ...]:
+    """Return the control-plane-discovered fabric mesh extent."""
+    ttnn_module = _get_ttnn()
+    if ttnn_module is None:
+        raise FabricMeshUnavailable("TTNN not available")
+    return tuple(
+        int(extent)
+        for extent in ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
+    )
+
+
 @contextmanager
-def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
+def open_fabric_mesh(requested_mesh_shape: tuple[int, ...] | None = None):
     """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
     control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
     mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
@@ -169,9 +180,7 @@ def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
         raise FabricMeshUnavailable("TTNN not available")
 
     if requested_mesh_shape is None:
-        requested_mesh_shape = tuple(
-            ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
-        )
+        requested_mesh_shape = get_fabric_mesh_shape()
     else:
         requested_mesh_shape = tuple(requested_mesh_shape)
 
