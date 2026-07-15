@@ -182,25 +182,16 @@ class FabricRouteSpec:
     local_device: Tuple[int, ...]
     remote_device: Tuple[int, ...]
     source_nodes: Tuple[Tuple[int, ...], ...]
+    route_index: int
 
 
-@dataclass(frozen=True)
-class _ResolvedFabricRoute:
-    """Host-resolved values needed to configure one fabric connection."""
-
-    connection_node_id: Any
-    direction: int
-    link_index: int
-    hop_count: int
-
-
-class _FabricRouteCache:
-    """Cache control-plane route queries for one mesh and fabric configuration."""
+class _FabricDirectionCache:
+    """Cache outgoing-direction queries for one mesh and fabric configuration."""
 
     def __init__(self) -> None:
         self._mesh_device = None
         self._fabric_config = None
-        self._routes: Dict[Tuple[int, int, int, int], _ResolvedFabricRoute] = {}
+        self._directions: Dict[Tuple[int, int, int, int], int] = {}
 
     @staticmethod
     def _node_key(node_id: Any) -> Tuple[int, int]:
@@ -211,28 +202,28 @@ class _FabricRouteCache:
         mesh_device: Any,
         source_node_id: Any,
         destination_node_id: Any,
-    ) -> _ResolvedFabricRoute:
+    ) -> int:
         fabric_config = ttnn.get_fabric_config()
         if self._mesh_device is not mesh_device or self._fabric_config != fabric_config:
             self._mesh_device = mesh_device
             self._fabric_config = fabric_config
-            self._routes.clear()
+            self._directions.clear()
 
         route_key = (
             *self._node_key(source_node_id),
             *self._node_key(destination_node_id),
         )
-        if route_key not in self._routes:
-            route_info = ttnn.get_fabric_route_info(
-                mesh_device, source_node_id, destination_node_id
+        if route_key not in self._directions:
+            direction = ttnn.get_eth_forwarding_direction(
+                source_node_id, destination_node_id
             )
-            self._routes[route_key] = _ResolvedFabricRoute(
-                connection_node_id=route_info.connection_node_id,
-                direction=int(route_info.direction),
-                link_index=int(route_info.link_index),
-                hop_count=int(route_info.hop_count),
-            )
-        return self._routes[route_key]
+            if direction is None:
+                raise ValueError(
+                    f"no fabric route from {source_node_id} to "
+                    f"{destination_node_id}"
+                )
+            self._directions[route_key] = int(direction)
+        return self._directions[route_key]
 
 
 @dataclass(frozen=True)
@@ -857,7 +848,7 @@ def configure_routing_plane_runtime_args(
     device_coordinates: tuple,
     grid_cols: int,
     grid_rows: int,
-    fabric_route_cache: Optional[_FabricRouteCache] = None,
+    fabric_direction_cache: Optional[_FabricDirectionCache] = None,
 ) -> None:
     """Attach per-node routing-plane setup arguments to one device program."""
     if len(kernel_fabric_routes) != len(program_descriptor.kernels):
@@ -869,14 +860,17 @@ def configure_routing_plane_runtime_args(
     source_node_id = mesh_device.get_fabric_node_id(
         _build_mesh_coordinate(device_coordinates)
     )
-    route_cache = (
-        fabric_route_cache if fabric_route_cache is not None else _FabricRouteCache()
+    direction_cache = (
+        fabric_direction_cache
+        if fabric_direction_cache is not None
+        else _FabricDirectionCache()
     )
     for kernel_index, routes in enumerate(kernel_fabric_routes):
         if not routes:
             continue
 
         kernel_descriptor = program_descriptor.kernels[kernel_index]
+        route_count = max(route.route_index for route in routes) + 1
         for node_y in range(grid_rows):
             for node_x in range(grid_cols):
                 node_coordinates = (node_x, node_y)
@@ -897,68 +891,55 @@ def configure_routing_plane_runtime_args(
                     mesh_device.get_fabric_node_id(_build_mesh_coordinate(coordinates))
                     for coordinates in active_remote_devices
                 ]
-                route_infos = [
-                    route_cache.resolve(
+                route_directions = [
+                    direction_cache.resolve(
                         mesh_device, source_node_id, destination_node_id
                     )
                     for destination_node_id in destination_node_ids
                 ]
                 connection_index_by_direction = {}
                 connection_destination_node_ids = []
-                connection_link_indices = []
                 remote_connection_slots = []
-                for route_info in route_infos:
-                    connection_index = connection_index_by_direction.get(
-                        route_info.direction
-                    )
+                for destination_node_id, direction in zip(
+                    destination_node_ids, route_directions
+                ):
+                    connection_index = connection_index_by_direction.get(direction)
                     if connection_index is None:
                         connection_index = len(connection_destination_node_ids)
-                        connection_index_by_direction[route_info.direction] = (
-                            connection_index
-                        )
-                        connection_destination_node_ids.append(
-                            route_info.connection_node_id
-                        )
-                        connection_link_indices.append(route_info.link_index)
-                    elif (
-                        connection_link_indices[connection_index]
-                        != route_info.link_index
-                    ):
-                        raise ValueError(
-                            "routes sharing one fabric direction must use one link"
-                        )
-                    elif (
-                        connection_destination_node_ids[connection_index]
-                        != route_info.connection_node_id
-                    ):
-                        raise ValueError(
-                            "routes sharing one fabric direction must use one "
-                            "connection node"
-                        )
+                        connection_index_by_direction[direction] = connection_index
+                        connection_destination_node_ids.append(destination_node_id)
                     remote_connection_slots.append(connection_index)
 
-                route_slots = [0] * len(routes)
-                hop_counts = [0] * len(routes)
-                destination_device_ids = [0] * len(routes)
-                destination_mesh_ids = [0] * len(routes)
+                route_slots = [0] * route_count
+                destination_device_ids = [0] * route_count
+                destination_mesh_ids = [0] * route_count
+                active_route_indices = set()
                 for route_index, remote_slot in enumerate(route_remote_slots):
-                    if remote_slot >= len(route_infos):
+                    if remote_slot >= len(route_directions):
                         continue
-                    if routes[route_index].local_device != device_coordinates:
+                    route = routes[route_index]
+                    if route.local_device != device_coordinates:
                         continue
-                    if node_coordinates not in routes[route_index].source_nodes:
+                    if node_coordinates not in route.source_nodes:
                         continue
-                    route_slots[route_index] = remote_connection_slots[remote_slot]
-                    hop_counts[route_index] = int(route_infos[remote_slot].hop_count)
+                    if route.route_index in active_route_indices:
+                        raise ValueError(
+                            "active fabric routes must have distinct route indices"
+                        )
+                    active_route_indices.add(route.route_index)
+                    route_slots[route.route_index] = remote_connection_slots[
+                        remote_slot
+                    ]
                     destination_node_id = destination_node_ids[remote_slot]
-                    destination_device_ids[route_index] = int(
+                    destination_device_ids[route.route_index] = int(
                         destination_node_id.chip_id
                     )
-                    destination_mesh_ids[route_index] = int(destination_node_id.mesh_id)
+                    destination_mesh_ids[route.route_index] = int(
+                        destination_node_id.mesh_id
+                    )
                 runtime_prefix = [
                     len(connection_destination_node_ids),
                     *route_slots,
-                    *hop_counts,
                     *destination_device_ids,
                     *destination_mesh_ids,
                 ]
@@ -969,7 +950,7 @@ def configure_routing_plane_runtime_args(
                 fabric_args = ttnn.setup_routing_plane_connection(
                     source_node_id,
                     connection_destination_node_ids,
-                    connection_link_indices,
+                    [],
                     program_descriptor,
                     kernel_index,
                     worker_node,
@@ -1000,7 +981,7 @@ def run_kernel_on_device(
     mesh_program_placements: Optional[List[Any]] = None,
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
-    fabric_route_cache: Optional[_FabricRouteCache] = None,
+    fabric_direction_cache: Optional[_FabricDirectionCache] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -1029,9 +1010,9 @@ def run_kernel_on_device(
         mesh_program_placements: Optional mesh device ranges. When present,
             execution uses ttnn.MeshProgramDescriptor instead of
             ttnn.ProgramDescriptor.
-        fabric_route_cache: Optional cache owned by a compiled kernel. Route
-            results are reused while the mesh and fabric configuration remain
-            unchanged.
+        fabric_direction_cache: Optional cache owned by a compiled kernel.
+            Direction results are reused while the mesh and fabric
+            configuration remain unchanged.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -1148,7 +1129,7 @@ def run_kernel_on_device(
                 device_coordinates=mesh_coordinate,
                 grid_cols=grid_cols,
                 grid_rows=grid_rows,
-                fabric_route_cache=fabric_route_cache,
+                fabric_direction_cache=fabric_direction_cache,
             )
             program_descriptors[mesh_coordinate] = device_program
         program = build_device_mesh_program_descriptor(program_descriptors)
