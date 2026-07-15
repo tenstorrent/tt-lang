@@ -52,6 +52,18 @@ class SrcPipeIdentity:
             )
         return self._pipe._device_edge.destination
 
+    @property
+    def destination_device_index(self) -> int:
+        """Return the destination's row-major order in the device domain."""
+        from .domains import DeviceRange
+
+        destination = self.destination_device
+        if isinstance(destination, DeviceRange):
+            raise ValueError(
+                "destination_device_index is unavailable for device ranges"
+            )
+        return self._pipe._device_domain.index_order(destination)
+
 
 class DstPipeIdentity:
     """
@@ -75,6 +87,11 @@ class DstPipeIdentity:
         if not hasattr(self._pipe, "_device_edge"):
             raise ValueError("source_device is available only for graph-based PipeNets")
         return self._pipe._device_edge.source
+
+    @property
+    def source_device_index(self) -> int:
+        """Return the source's row-major order in the device domain."""
+        return self._pipe._device_domain.index_order(self.source_device)
 
 
 class Pipe:

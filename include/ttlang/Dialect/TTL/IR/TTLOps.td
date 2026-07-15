@@ -546,6 +546,19 @@ def TTL_IsDeviceOp : TTL_Op<"is_device", [Pure]> {
   let hasVerifier = 1;
 }
 
+def TTL_CurrentDeviceIndexOp : TTL_Op<"current_device_index", [Pure]> {
+  let summary = "Get the current logical device index";
+  let description = [{
+    Returns the zero-based row-major order of the current logical device in
+    `domain`. Component and axis order follow the order stored in the domain.
+    The result depends only on the logical device coordinates, not on physical
+    device identifiers or fabric topology.
+  }];
+  let arguments = (ins TTL_DeviceDomainAttr:$domain);
+  let results = (outs Index:$result);
+  let assemblyFormat = "$domain attr-dict `:` type($result)";
+}
+
 def TTL_IsDeviceInRangeOp : TTL_Op<"is_device_in_range", [Pure]> {
   let summary = "Test whether the kernel executes in a logical device range";
   let description = [{

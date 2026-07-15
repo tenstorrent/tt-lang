@@ -416,6 +416,9 @@ class TTLGenericCompiler(TTCompilerBase):
                 if self._is_device_domain_predicate_call(node):
                     return self._handle_device_domain_predicate(node)
 
+                if self._is_device_domain_current_index_call(node):
+                    return self._handle_device_domain_current_index(node)
+
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -527,19 +530,31 @@ class TTLGenericCompiler(TTCompilerBase):
         )
         return op
 
-    def _is_device_domain_predicate_call(self, node):
+    def _device_domain_call_receiver(self, node):
         if not isinstance(node.func, ast.Attribute):
-            return False
-        if node.func.attr != "is_current":
-            return False
+            return None
         if not isinstance(node.func.value, ast.Name):
-            return False
+            return None
         domain_name = node.func.value.id
         table = self._var_exists(domain_name)
         domain = table[domain_name] if table else self.fn_globals.get(domain_name)
         from ..domains import DeviceDomain
 
-        return isinstance(domain, DeviceDomain)
+        return domain if isinstance(domain, DeviceDomain) else None
+
+    def _is_device_domain_predicate_call(self, node):
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "is_current"
+            and self._device_domain_call_receiver(node) is not None
+        )
+
+    def _is_device_domain_current_index_call(self, node):
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "current_index"
+            and self._device_domain_call_receiver(node) is not None
+        )
 
     def _static_device_reference(self, node):
         from ..domains import DeviceRef
@@ -557,15 +572,23 @@ class TTLGenericCompiler(TTCompilerBase):
             )
 
     def _handle_device_domain_predicate(self, node):
-        domain_name = node.func.value.id
-        table = self._var_exists(domain_name)
-        domain = table[domain_name] if table else self.fn_globals[domain_name]
+        domain = self._device_domain_call_receiver(node)
+        assert domain is not None
         if len(node.args) != 1 or node.keywords:
             self._raise_error(
                 node, "DeviceDomain.is_current() requires one device reference"
             )
         device = domain.device_ref(self._static_device_reference(node.args[0]))
         return self._emit_device_endpoint_predicate(domain, device)
+
+    def _handle_device_domain_current_index(self, node):
+        domain = self._device_domain_call_receiver(node)
+        assert domain is not None
+        if node.args or node.keywords:
+            self._raise_error(
+                node, "DeviceDomain.current_index() does not accept arguments"
+            )
+        return ttl.current_device_index(self._device_domain_attr(domain))
 
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
