@@ -60,12 +60,15 @@ module {
     return
   }
 
-  // Verify exact-device and range predicates over the same logical domain.
+  // Verify logical-device indexing and predicates over the same domain.
   // CHECK-LABEL: func.func @device_predicates
+  // CHECK-NEXT: %{{.*}} = ttl.current_device_index <components = <name = "device", extent = [4]>> : index
   // CHECK-NEXT: %{{.*}} = ttl.is_device <coordinates = [2]> in <components = <name = "device", extent = [4]>> : i1
   // CHECK-NEXT: %{{.*}} = ttl.is_device_in_range <lo = <coordinates = [1]>, hi = <coordinates = [3]>> in <components = <name = "device", extent = [4]>> : i1
   // CHECK-NEXT: return
   func.func @device_predicates() {
+    %device_index = ttl.current_device_index
+      <components = <name = "device", extent = [4]>> : index
     %is_device = ttl.is_device
       <coordinates = [2]> in
       <components = <name = "device", extent = [4]>> : i1
