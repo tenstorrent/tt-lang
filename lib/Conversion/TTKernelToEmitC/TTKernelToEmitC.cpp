@@ -2360,7 +2360,8 @@ public:
             "      packet_header, static_cast<uint16_t>({}), "
             "static_cast<uint16_t>({}));\n"
             "#else\n"
-            "  packet_header->to_chip_unicast(static_cast<uint8_t>({}));\n"
+            "  tt::tt_fabric::fabric_set_unicast_route(\n"
+            "      packet_header, static_cast<uint16_t>({}));\n"
             "#endif\n"
             "  auto &sender = {}.get(static_cast<uint8_t>({})).sender;\n"
             "  packet_header->to_noc_unicast_atomic_inc("
@@ -2373,9 +2374,10 @@ public:
             "}"),
         ValueRange{adaptor.getRouteId(), adaptor.getConnectionIndex(),
                    adaptor.getDestinationDeviceId(),
-                   adaptor.getDestinationMeshId(), adaptor.getHopCount(),
-                   adaptor.getManager(), adaptor.getConnectionIndex(),
-                   adaptor.getSemaphoreAddress(), adaptor.getIncrement()});
+                   adaptor.getDestinationMeshId(),
+                   adaptor.getDestinationDeviceId(), adaptor.getManager(),
+                   adaptor.getConnectionIndex(), adaptor.getSemaphoreAddress(),
+                   adaptor.getIncrement()});
     rewriter.eraseOp(op);
     return success();
   }
@@ -2402,7 +2404,8 @@ public:
             "      packet_header, static_cast<uint16_t>({}), "
             "static_cast<uint16_t>({}));\n"
             "#else\n"
-            "  packet_header->to_chip_unicast(static_cast<uint8_t>({}));\n"
+            "  tt::tt_fabric::fabric_set_unicast_route(\n"
+            "      packet_header, static_cast<uint16_t>({}));\n"
             "#endif\n"
             "  auto &sender = {}.get(static_cast<uint8_t>({})).sender;\n"
             "  packet_header->to_noc_fused_unicast_write_atomic_inc("
@@ -2417,14 +2420,14 @@ public:
             "reinterpret_cast<uint32_t>(packet_header), "
             "sizeof(PACKET_HEADER_TYPE));\n"
             "}"),
-        ValueRange{adaptor.getRouteId(), adaptor.getConnectionIndex(),
-                   adaptor.getDestinationDeviceId(),
-                   adaptor.getDestinationMeshId(), adaptor.getHopCount(),
-                   adaptor.getManager(), adaptor.getConnectionIndex(),
-                   adaptor.getDestinationAddress(),
-                   adaptor.getSemaphoreAddress(), adaptor.getIncrement(),
-                   adaptor.getSizeBytes(), adaptor.getSourceAddress(),
-                   adaptor.getSizeBytes()});
+        ValueRange{
+            adaptor.getRouteId(), adaptor.getConnectionIndex(),
+            adaptor.getDestinationDeviceId(), adaptor.getDestinationMeshId(),
+            adaptor.getDestinationDeviceId(), adaptor.getManager(),
+            adaptor.getConnectionIndex(), adaptor.getDestinationAddress(),
+            adaptor.getSemaphoreAddress(), adaptor.getIncrement(),
+            adaptor.getSizeBytes(), adaptor.getSourceAddress(),
+            adaptor.getSizeBytes()});
     rewriter.eraseOp(op);
     return success();
   }
