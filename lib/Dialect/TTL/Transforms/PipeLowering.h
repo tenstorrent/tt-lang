@@ -37,6 +37,7 @@ struct FabricRoute {
   DeviceRefAttr localDevice;
   DeviceRefAttr remoteDevice;
   SmallVector<SmallVector<int64_t>> sourceNodes;
+  std::size_t routeIndex;
 };
 
 struct FabricRoutePlan {
@@ -47,7 +48,6 @@ struct FabricRoutePlan {
 };
 
 struct FabricRouteTarget {
-  Value hopCount;
   Value destinationDeviceId;
   Value destinationMeshId;
 };
