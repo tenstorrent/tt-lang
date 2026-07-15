@@ -4358,15 +4358,14 @@ def TTKernel_RoutingPlaneAtomicIncOp :
   let summary = "Increment a remote semaphore through one fabric connection";
   let description = [{
     Sends a non-posted atomic increment to `semaphoreAddress` through the
-    connection selected by `connectionIndex`. `hopCount` supplies the linear
-    route, while `destinationDeviceId` and `destinationMeshId` identify the
-    destination for mesh routing.
+    connection selected by `connectionIndex`. `destinationDeviceId` identifies
+    the final destination; `destinationMeshId` also selects the mesh when mesh
+    routing is enabled.
   }];
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
     I32:$routeId,
     I32:$connectionIndex,
-    I32:$hopCount,
     I32:$destinationDeviceId,
     I32:$destinationMeshId,
     TTKernel_NocAddr:$semaphoreAddress,
@@ -4383,15 +4382,14 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
   let description = [{
     Sends one payload to `destinationAddress` and atomically increments
     `semaphoreAddress` through the connection selected by `connectionIndex`.
-    `hopCount` supplies the linear route, while `destinationDeviceId` and
-    `destinationMeshId` identify the destination for mesh routing. The
-    increment flushes the payload before the remote semaphore is updated.
+    `destinationDeviceId` identifies the final destination;
+    `destinationMeshId` also selects the mesh when mesh routing is enabled.
+    The increment flushes the payload before the remote semaphore is updated.
   }];
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
     I32:$routeId,
     I32:$connectionIndex,
-    I32:$hopCount,
     I32:$destinationDeviceId,
     I32:$destinationMeshId,
     I32:$sourceAddress,
