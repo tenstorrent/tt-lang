@@ -85,10 +85,11 @@ which device participates in a transfer. Immediately before submitting a
 compiled operation, the host runtime constructs per-device `ProgramDescriptor`
 runtime arguments and a `MeshProgramDescriptor`. During this execution-setup
 stage, called *host runtime route binding* below, it resolves each logical
-device to a `FabricNodeId` and queries the active control plane for a legal
-route. Binding completes before `ttnn.generic_op(...)` submits the program; it
-does not execute in a device kernel. The packet's NoC command is built
-separately from the destination node coordinates and receiver DFB address.
+device to a `FabricNodeId` and queries the control plane owned by the active
+`MeshDevice` runtime context for a legal route. Binding completes before
+`ttnn.generic_op(...)` submits the program; it does not execute in a device
+kernel. The packet's NoC command is built separately from the destination node
+coordinates and receiver DFB address.
 
 ### Routing-plane connections
 
@@ -345,7 +346,7 @@ Python DeviceDomain, DeviceRef, TransferGraph, and PipeNet
 Host execution setup for each invocation:
 compiled kernel route records + active MeshDevice
   -> host runtime route binding
-  -> FabricNodeId and control-plane route queries
+  -> FabricNodeId and MeshDevice-scoped control-plane route queries
   -> per-device ProgramDescriptor runtime arguments
   -> MeshProgramDescriptor construction
   -> TTNN MeshProgramDescriptor execution
