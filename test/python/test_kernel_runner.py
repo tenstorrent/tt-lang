@@ -511,8 +511,24 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
         grid_rows=1,
     )
 
-    assert kernel.runtime_args[0][0] == [1, 0, 0, 0, 3, 3, 0, 0xA0, 0xB0]
-    assert kernel.runtime_args[1][0] == [0, 0, 0, 0, 0, 0, 0]
+    assert kernel.runtime_args[0][0] == [
+        1,
+        0,
+        0,
+        0,
+        3,
+        3,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0xA0,
+        0xB0,
+    ]
+    assert kernel.runtime_args[1][0] == [0] * 13
     assert fake_ttnn.fabric_setup_calls == [
         (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [2], 0, (0, 0)),
     ]
@@ -555,7 +571,19 @@ def test_routing_plane_reuses_connection_for_one_direction(monkeypatch):
         grid_rows=1,
     )
 
-    assert kernel.runtime_args[0][0] == [1, 0, 0, 1, 3, 0xA0, 0xB0]
+    assert kernel.runtime_args[0][0] == [
+        1,
+        0,
+        0,
+        1,
+        3,
+        1,
+        2,
+        0,
+        0,
+        0xA0,
+        0xB0,
+    ]
     assert fake_ttnn.fabric_setup_calls == [
         (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [2], 0, (0, 0)),
     ]
