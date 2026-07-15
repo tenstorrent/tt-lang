@@ -460,7 +460,7 @@ def TTLLowerToLoops
            "accumulation. reduce_max always uses DST accumulation.">,
     Option<"useBlockMatmul", "use-block-matmul", "bool", "true",
            "Lower matmul to block-level hardware calls "
-           "(experimental::matmul_block) instead of per-tile loops.">
+           "(matmul_block) instead of per-tile loops.">
   ];
 
   let dependentDialects = [
