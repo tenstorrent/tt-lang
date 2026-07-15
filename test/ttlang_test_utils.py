@@ -169,7 +169,11 @@ def get_fabric_mesh_shape() -> tuple[int, ...]:
 
 
 @contextmanager
-def open_fabric_mesh(requested_mesh_shape: tuple[int, ...] | None = None):
+def open_fabric_mesh(
+    requested_mesh_shape: tuple[int, ...] | None = None,
+    *,
+    fabric_config: Any | None = None,
+):
     """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
     control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
     mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
@@ -179,6 +183,9 @@ def open_fabric_mesh(requested_mesh_shape: tuple[int, ...] | None = None):
     if ttnn_module is None:
         raise FabricMeshUnavailable("TTNN not available")
 
+    if fabric_config is None:
+        fabric_config = ttnn_module.FabricConfig.FABRIC_1D
+
     if requested_mesh_shape is None:
         requested_mesh_shape = get_fabric_mesh_shape()
     else:
@@ -186,7 +193,7 @@ def open_fabric_mesh(requested_mesh_shape: tuple[int, ...] | None = None):
 
     mesh_device = None
     try:
-        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.FABRIC_1D)
+        ttnn_module.set_fabric_config(fabric_config)
         mesh_device = ttnn_module.open_mesh_device(
             ttnn_module.MeshShape(requested_mesh_shape)
         )
