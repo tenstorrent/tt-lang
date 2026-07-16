@@ -281,15 +281,15 @@ def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
     ]
 
 
-shape_in_tiles(from_torch(torch.randn(())))  #              prints [1, 1]
-shape_in_tiles(from_torch(torch.randn((128))))  #           prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((1, 128))))  #        prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((32, 128))))  #       prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((128, 1))))  #        prints [4, 1]
-shape_in_tiles(from_torch(torch.randn((128, 32))))  #       prints [4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 128, 32))))  #    prints [2, 4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32))))  # prints [2, 2, 4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 2, 120, 30))))  # prints [2, 2, 4, 1]
+assert shape_in_tiles(from_torch(torch.randn(()))) == [1, 1]
+assert shape_in_tiles(from_torch(torch.randn((128)))) == [1, 4]
+assert shape_in_tiles(from_torch(torch.randn((1, 128)))) == [1, 4]
+assert shape_in_tiles(from_torch(torch.randn((32, 128)))) == [1, 4]
+assert shape_in_tiles(from_torch(torch.randn((128, 1)))) == [4, 1]
+assert shape_in_tiles(from_torch(torch.randn((128, 32)))) == [4, 1]
+assert shape_in_tiles(from_torch(torch.randn((2, 128, 32)))) == [2, 4, 1]
+assert shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32)))) == [2, 2, 4, 1]
+assert shape_in_tiles(from_torch(torch.randn((2, 2, 120, 30)))) == [2, 2, 4, 1]
 ```
 
 If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor with Torch shape of `(2, 2, 120, 30)` the corresponding block that fits this entire tensor will have shape of `(2, 2, 120, 30)`.
@@ -309,15 +309,15 @@ def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
     return list(tensor.padded_shape)
 
 
-row_major_shape(from_torch(torch.randn(())))  #              prints [1]
-row_major_shape(from_torch(torch.randn((128))))  #           prints [128]
-row_major_shape(from_torch(torch.randn((1, 128))))  #        prints [1, 128]
-row_major_shape(from_torch(torch.randn((32, 128))))  #       prints [32, 128]
-row_major_shape(from_torch(torch.randn((128, 1))))  #        prints [128, 1]
-row_major_shape(from_torch(torch.randn((128, 32))))  #       prints [128, 32]
-row_major_shape(from_torch(torch.randn((2, 128, 32))))  #    prints [2, 128, 32]
-row_major_shape(from_torch(torch.randn((2, 2, 128, 32))))  # prints [2, 2, 128, 32]
-row_major_shape(from_torch(torch.randn((2, 2, 120, 30))))  # prints [2, 2, 120, 30]
+assert row_major_shape(from_torch(torch.randn(()))) == [1]
+assert row_major_shape(from_torch(torch.randn((128)))) == [128]
+assert row_major_shape(from_torch(torch.randn((1, 128)))) == [1, 128]
+assert row_major_shape(from_torch(torch.randn((32, 128)))) == [32, 128]
+assert row_major_shape(from_torch(torch.randn((128, 1)))) == [128, 1]
+assert row_major_shape(from_torch(torch.randn((128, 32)))) == [128, 32]
+assert row_major_shape(from_torch(torch.randn((2, 128, 32)))) == [2, 128, 32]
+assert row_major_shape(from_torch(torch.randn((2, 2, 128, 32)))) == [2, 2, 128, 32]
+assert row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) == [2, 2, 120, 30]
 ```
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one thread can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.

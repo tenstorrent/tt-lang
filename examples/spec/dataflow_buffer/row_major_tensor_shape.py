@@ -12,34 +12,35 @@
 # Everything outside the markers (imports, scaffolding) exists so the file can
 # stand on its own and is not copied into the specification.
 
-import math
-
 import torch
-
-import ttl
 import ttnn
 
+device = ttnn.open_device(device_id=0)
 
-# spec:begin
-def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
-    return ttnn.from_torch(
-        tensor,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-    )
-
-
-def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
-    return list(tensor.padded_shape)
+try:
+    # spec:begin
+    def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
+        return ttnn.from_torch(
+            tensor,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=device,
+        )
 
 
-row_major_shape(from_torch(torch.randn(())))  #              prints [1]
-row_major_shape(from_torch(torch.randn((128))))  #           prints [128]
-row_major_shape(from_torch(torch.randn((1, 128))))  #        prints [1, 128]
-row_major_shape(from_torch(torch.randn((32, 128))))  #       prints [32, 128]
-row_major_shape(from_torch(torch.randn((128, 1))))  #        prints [128, 1]
-row_major_shape(from_torch(torch.randn((128, 32))))  #       prints [128, 32]
-row_major_shape(from_torch(torch.randn((2, 128, 32))))  #    prints [2, 128, 32]
-row_major_shape(from_torch(torch.randn((2, 2, 128, 32))))  # prints [2, 2, 128, 32]
-row_major_shape(from_torch(torch.randn((2, 2, 120, 30))))  # prints [2, 2, 120, 30]
-# spec:end
+    def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
+        return list(tensor.padded_shape)
+
+
+    assert row_major_shape(from_torch(torch.randn(()))) == [1]
+    assert row_major_shape(from_torch(torch.randn((128)))) == [128]
+    assert row_major_shape(from_torch(torch.randn((1, 128)))) == [1, 128]
+    assert row_major_shape(from_torch(torch.randn((32, 128)))) == [32, 128]
+    assert row_major_shape(from_torch(torch.randn((128, 1)))) == [128, 1]
+    assert row_major_shape(from_torch(torch.randn((128, 32)))) == [128, 32]
+    assert row_major_shape(from_torch(torch.randn((2, 128, 32)))) == [2, 128, 32]
+    assert row_major_shape(from_torch(torch.randn((2, 2, 128, 32)))) == [2, 2, 128, 32]
+    assert row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) == [2, 2, 120, 30]
+    # spec:end
+
+finally:
+    ttnn.close_device(device)
