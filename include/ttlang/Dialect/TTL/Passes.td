@@ -848,8 +848,9 @@ def TTKernelSpecializeCores
     branch conditions and delete untaken regions. The runtime bridge reads
     ttl.core_coord to build per-kernel core ranges for dispatch.
 
-    NOTE: functions with symbol uses (e.g. `func.call` targets) are skipped so erasing the
-    original does not leave dangling `SymbolRefAttr`s.
+    NOTE: functions with symbol uses (e.g. `func.call` targets) are left
+    unspecialized with a warning so erasing the original does not leave dangling
+    `SymbolRefAttr`s; unrelated functions in the module are still specialized.
 
     Example (`ttl.launch_grid = [1, 2]`):
     ```mlir

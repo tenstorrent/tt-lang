@@ -27,6 +27,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -150,8 +151,8 @@ struct TTKernelSpecializeCoresPass
       signalPassFailure();
       return;
     }
-    int64_t gridX = 0, gridY = 0;
-    if (!readGrid(gridAttr, gridX, gridY)) {
+    FailureOr<std::pair<int64_t, int64_t>> grid = readGrid(gridAttr);
+    if (failed(grid)) {
       module.emitOpError() << "`" << LaunchGridAttrName
                            << "` must be a length-2 array of positive i64 "
                               "extents";
