@@ -1076,12 +1076,13 @@ def _compile_ttnn_kernel(
     if emit_runner_path:
         kernel_specs_for_emit = []
         for kernel_idx, (kernel_path, thread_type) in enumerate(kernel_paths):
-            tensor_indices = thread_tensor_indices[kernel_idx]
+            tensor_indices = kernel_tensor_indices[kernel_idx]
             spec = KernelSpec(
                 path=kernel_path,
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
+                core_ranges=kernel_core_ranges[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
