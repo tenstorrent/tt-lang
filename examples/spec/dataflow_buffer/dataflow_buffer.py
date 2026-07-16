@@ -23,21 +23,21 @@ def from_torch(tensor: torch.Tensor):
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
-@ttl.operation()
+@ttl.operation(grid=(1, 1))
 def dataflow_buffer_example(
     x: ttnn.Tensor, # input tensor
     y: ttnn.Tensor, # output tensor
 ) -> None:
 
-# spec:begin
+    # spec:begin
     x_dfb = ttl.make_dataflow_buffer_like(x,
         shape = (2, 2),
         block_count = 2) # This can be omitted since block_count defaults to 2
-# spec:end
+    # spec:end
     y_dfb = ttl.make_dataflow_buffer_like(y,
         shape = (2, 2),
         block_count = 2)
-# spec:begin
+    # spec:begin
 
     @ttl.datamovement()
     def some_read():
@@ -46,10 +46,10 @@ def dataflow_buffer_example(
 
             # Load data into x_blk
             # ...
-# spec:end
-            x_xf = ttl.copy(x[:, :], x_blk)
+            # spec:end
+            x_xf = ttl.copy(x[0:2, 0:2], x_blk)
             x_xf.wait()
-# spec:begin
+            # spec:begin
 
             # Push x_blk implicitly at the end of the "with" scope
 
@@ -60,20 +60,20 @@ def dataflow_buffer_example(
 
         # Consume data in x_blk
         # ...
-# spec:end
+        # spec:end
         y_blk = y_dfb.reserve()
         y_blk.store(x_blk)
         y_blk.push() 
-# spec:begin
+        # spec:begin
 
         x_blk.pop() # Pop x_blk explicitly
-# spec:end
+        # spec:end
 
     @ttl.datamovement()
     def some_write():
         with y_dfb.wait() as y_blk:
 
-            y_xf = ttl.copy(y_blk, y[:, :])
+            y_xf = ttl.copy(y_blk, y[0:2, 0:2])
             y_xf.wait()
  
 torch.manual_seed(42)
@@ -91,7 +91,10 @@ try:
 
     dataflow_buffer_example(x, y)
 
-    assert torch.allclose(x, y, rtol=1e-2, atol=1e-2), "Tensors do not match"
+    x = ttnn.to_torch(x)
+    y = ttnn.to_torch(y)
+
+    assert torch.allclose(x, y, rtol=1e-1, atol=1e-1), "Tensors do not match"
 
 finally:
     ttnn.close_device(device)

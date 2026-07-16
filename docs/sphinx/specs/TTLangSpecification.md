@@ -162,7 +162,7 @@ A *multi-kernel operation* is an alternative form in which the author writes the
 #### Program example
 
 ```py
-@ttl.operation()
+@ttl.operation(grid=(1, 1))
 def __foo(
     x: ttnn.Tensor, # input tensor
     y: ttnn.Tensor, # output tensor
@@ -181,17 +181,23 @@ def __foo(
     def some_dm1():
         # ...
 
-# Simple wrapper to allow returning output tensor in TT-NN style
-def foo(x: ttnn.Tensor) -> ttnn.Tensor:
-    y = ttnn.zeros(x.shape, layout=ttnn.TILE_LAYOUT)
-    __foo(x, y)
-    return y
+device = ttnn.open_device(device_id=0)
 
-shape = ttnn.Shape([128, 128])
+try:
+    # Simple wrapper to allow returning output tensor in TT-NN style
+    def foo(x: ttnn.Tensor) -> ttnn.Tensor:
+        y = ttnn.zeros(x.shape, layout=ttnn.TILE_LAYOUT, device=device)
+        __foo(x, y)
+        return y
 
-x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT)
+    shape = ttnn.Shape([128, 128])
 
-y = ttnn.exp(foo(ttnn.abs(x)), fast_and_approximate_mode=True)
+    x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT, device=device)
+
+    y = ttnn.exp(foo(ttnn.abs(x)), fast_and_approximate_mode=True)
+
+finally:
+    ttnn.close_device(device)
 ```
 
 

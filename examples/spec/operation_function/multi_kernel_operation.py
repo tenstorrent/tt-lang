@@ -9,60 +9,75 @@
 #
 #     python docs/sphinx/specs/build_spec.py
 
+import torch
+
+import ttl
+import ttnn
+
 # spec:begin
-@ttl.operation()
+@ttl.operation(grid=(1, 1))
 def __foo(
     x: ttnn.Tensor, # input tensor
     y: ttnn.Tensor, # output tensor
 ) -> None:
     # ...
-# spec:end
+    # spec:end
     x_dfb = ttl.make_dataflow_buffer_like(x,
         shape = (4, 4),
-        block_count = 2)
+        block_count = 2
+    )
     y_dfb = ttl.make_dataflow_buffer_like(y,
         shape = (4, 4),
-        block_count = 2)
-# spec:begin
+        block_count = 2
+    )
+    # spec:begin
 
     @ttl.compute()
     def some_compute():
         # ...
-# spec:end
-        with x_blk = x_dfb.wait(), y_blk = y_dfb.reserve():
+        # spec:end
+        with x_dfb.wait() as x_blk, y_dfb.reserve() as y_blk:
             y_blk.store(x_blk)
-            y_blk.push() 
-            x_blk.pop()
-# spec:begin
+        # spec:begin
 
     @ttl.datamovement()
     def some_dm0():
         # ...
-# spec:end
+        # spec:end
         with x_dfb.reserve() as x_blk:
-            x_xf = ttl.copy(x[:, :], x_blk)
+            x_xf = ttl.copy(x[0:4, 0:4], x_blk)
             x_xf.wait()
-# spec:begin
+        # spec:begin
 
     @ttl.datamovement()
     def some_dm1():
         # ...
-# spec:end
+        # spec:end
         with y_dfb.wait() as y_blk:
-
-            y_xf = ttl.copy(y_blk, y[:, :])
+            y_xf = ttl.copy(y_blk, y[0:4, 0:4])
             y_xf.wait()
+
+torch.manual_seed(42)
 # spec:begin
 
-# Simple wrapper to allow returning output tensor in TT-NN style
-def foo(x: ttnn.Tensor) -> ttnn.Tensor:
-    y = ttnn.zeros(x.shape, layout=ttnn.TILE_LAYOUT)
-    __foo(x, y)
-    return y
+device = ttnn.open_device(device_id=0)
 
-shape = ttnn.Shape([128, 128])
+try:
+    # Simple wrapper to allow returning output tensor in TT-NN style
+    def foo(x: ttnn.Tensor) -> ttnn.Tensor:
+        y = ttnn.zeros(x.shape, layout=ttnn.TILE_LAYOUT, device=device)
+        __foo(x, y)
+        return y
 
-x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT)
+    shape = ttnn.Shape([128, 128])
 
-y = ttnn.exp(foo(ttnn.abs(x)), fast_and_approximate_mode=True)
-# spec:end
+    x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT, device=device)
+
+    y = ttnn.exp(foo(ttnn.abs(x)), fast_and_approximate_mode=True)
+    # spec:end
+    assert torch.allclose(torch.exp(torch.abs(ttnn.to_torch(x))), ttnn.to_torch(y), rtol=1e-1, atol=1e-1), "Tensors do not match"
+    # spec:begin
+
+finally:
+    ttnn.close_device(device)
+    # spec:end
