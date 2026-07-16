@@ -530,7 +530,9 @@ they cannot be distinguished by `pip install`. Prefer `-dev<YYYYMMDD>` or
 `publish-pypi.yml` is the orchestrator that turns a release tag into a wheel
 on PyPI. It triggers automatically on push of `v*.*.*`, `v*.*.*-rc*`,
 `v*.*.*-dev*`, or `v*.*.*+*` tags, and can also be dispatched manually for
-re-runs and dry-runs.
+re-runs and dry-runs. Manual dispatch takes the full SHA of the release-tagged
+commit to build. Non-dry-run dispatches must run from `refs/heads/main`, and
+the selected commit must be an ancestor of the dispatching main commit.
 
 ```text
    push release tag
@@ -538,8 +540,8 @@ re-runs and dry-runs.
           |
           v
    +--------------+
-   |  preflight   |   verify GITHUB_REF is a v* tag
-   +--------------+   (skipped if dry_run=true)
+   |  preflight   |   resolve and verify the v* release tag
+   +--------------+   (release checks skipped if dry_run=true)
           |
           v
    +--------------+
@@ -570,8 +572,9 @@ re-runs and dry-runs.
 
 Job-by-job:
 
-1. **`preflight`** — runs `require-release-tag.sh`, which fails unless
-   `GITHUB_REF` looks like `refs/tags/v[0-9]...`, then runs
+1. **`preflight`** — checks out the `ttlang_sha` input for manual runs, verifies
+   that publish targets are ancestors of the dispatching main commit, resolves
+   the commit's release tag, and runs `require-release-tag.sh`. It then runs
    `require-pypi-ttnn-alignment.sh`, which fails when the public `ttnn` wheel
    recorded in `third-party/tt-metal-version` was built from a different
    tt-metal `vX.Y.Z` component than TT-Lang. Skipped under `dry_run: true`. Exposes
@@ -598,17 +601,15 @@ Job-by-job:
    `dry_run: true`. Downloads the artifact and lists what would have been
    uploaded. No `environment`, no PyPI credentials.
 
-Common scenarios:
+Common scenarios (`<TAG>` denotes a release tag, `<SHA>` its full commit SHA,
+and `<DOCKER_TAG>` an existing ird image tag):
 
-Common scenarios (`<TAG>` denotes a release tag, `<DOCKER_TAG>` an existing
-ird image tag):
-
-| Trigger                                                       | docker_tag input | Result                                                              |
-| ------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------- |
-| `git push origin <TAG>`                                       | (n/a)            | Build docker, build wheel, publish to PyPI as the tag's version     |
-| Dispatch from a tag ref with `docker_tag: <DOCKER_TAG>`       | required         | Skip docker build, reuse the supplied ird image, publish to PyPI    |
-| Dispatch from a non-tag ref with `dry_run: true`              | required         | Build wheel against the supplied tag, skip PyPI upload              |
-| Dispatch from a non-tag ref with `dry_run: false`             | required         | Fails at `preflight` because `GITHUB_REF` is not a release tag      |
+| Trigger                                                          | docker_tag input | Result                                                              |
+| ---------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------- |
+| `git push origin <TAG>`                                          | (n/a)            | Build docker, build wheel, publish to PyPI as the tag's version     |
+| Dispatch from `main` with `ttlang_sha: <SHA>`                     | required         | Build the tagged commit and publish its version to PyPI             |
+| Dispatch with `ttlang_sha: <SHA>` and `dry_run: true`             | required         | Build the selected commit and skip PyPI upload                      |
+| Non-main dispatch with `ttlang_sha: <SHA>` and `dry_run: false`   | required         | Fails at `preflight`                                                |
 
 (publishing-to-s3-pypi)=
 #### Publishing to S3 PyPI

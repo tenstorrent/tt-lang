@@ -39,6 +39,11 @@ setup() {
     assert_failure
 }
 
+@test "explicit release ref overrides GITHUB_REF" {
+    GITHUB_REF="refs/heads/main" run -0 "$SCRIPT" "$REF"
+    assert_output "$BASE"
+}
+
 @test "rejects malformed PEP 440 segment with a clean message" {
     GITHUB_REF="${REF}-foobar" run --separate-stderr "$SCRIPT"
     assert_failure

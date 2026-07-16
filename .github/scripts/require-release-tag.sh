@@ -2,20 +2,19 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Refuse to run unless GITHUB_REF points at a v[0-9]* release tag, then print
-# the version (tag with leading 'v' stripped) for downstream steps.
+# Refuse to run unless the supplied ref, or GITHUB_REF by default, points at a
+# v[0-9]* release tag, then print the version for downstream steps.
 #
-# Usage: .github/scripts/require-release-tag.sh
-# Reads:  $GITHUB_REF
+# Usage: .github/scripts/require-release-tag.sh [release-ref]
+# Reads:  $GITHUB_REF when release-ref is omitted
 # Writes: tag_version=<MAJOR.MINOR.PATCH...> to $GITHUB_OUTPUT (if set)
 # Stdout: <MAJOR.MINOR.PATCH...>
 
 set -euo pipefail
 
-ref="${GITHUB_REF:-}"
+ref="${1:-${GITHUB_REF:-}}"
 if [[ ! "$ref" =~ ^refs/tags/v[0-9] ]]; then
-    echo "This workflow must be dispatched from a v* tag (got '$ref')." >&2
-    echo "Create and push a tag like 'vX.Y.Z', then dispatch from that tag." >&2
+    echo "Release ref must be a v* tag (got '$ref')." >&2
     exit 1
 fi
 

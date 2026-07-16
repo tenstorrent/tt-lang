@@ -339,6 +339,24 @@ def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
     ) in workflow
 
 
+def test_publish_pypi_supports_release_sha_from_main() -> None:
+    workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+    publish_job = workflow.split("\n  publish:", 1)[1].split("\n  dry-run-summary:", 1)[
+        0
+    ]
+
+    assert "ttlang_sha:" in workflow
+    assert "ref: ${{ inputs.ttlang_sha || github.sha }}" in workflow
+    assert "ttlang_sha must be a full 40-character commit SHA" in workflow
+    assert 'git merge-base --is-ancestor "$TTLANG_SHA" "$GITHUB_SHA"' in workflow
+    assert "git tag --list 'v[0-9]*' --points-at" in workflow
+    assert '.github/scripts/require-release-tag.sh "$release_ref"' in workflow
+    assert workflow.count("ttlang_sha_override: ${{ inputs.ttlang_sha }}") == 2
+    # The OIDC-enabled job runs verification code from the dispatch ref, not
+    # from the older source commit.
+    assert "inputs.ttlang_sha" not in publish_job
+
+
 def test_call_build_wheels_supports_pinned_ref_and_patches() -> None:
     workflow = CALL_BUILD_WHEELS_WORKFLOW.read_text()
     assert "ttlang_sha_override:" in workflow
