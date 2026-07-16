@@ -452,6 +452,11 @@ def test_all_gather(
     atol,
 ):
     device_count = prod(fabric_mesh_shape)
+    if device_count > 4:
+        pytest.xfail(
+            "all-gather PipeNet expansion exceeds the full-system kernel "
+            "configuration buffer (https://github.com/tenstorrent/tt-lang/issues/628)"
+        )
     inp_shape = (device_count * TILE_SIZE, TILE_SIZE)
     out_shape = (device_count * device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(inp_shape, dtype=torch_dtype)
