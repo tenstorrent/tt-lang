@@ -304,6 +304,94 @@ def test_specialize_cores_branch_matches_reference(device, monkeypatch, tmp_path
     _assert_reader_cloned(str(final_mlir))
 
 
+def _make_branch_swap_op():
+    """Return a fresh column-swap op with its own compilation cache.
+
+    The cache is keyed on tensor properties, not on env vars like
+    TTLANG_EMIT_RUNNER / TTLANG_COMPILE_ONLY, so tests that toggle those must
+    use distinct op objects or the cache hit skips the env-dependent codegen.
+    """
+
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def branch_swap(a, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute_fn():
+            with a_dfb.wait() as a_tile, out_dfb.reserve() as o:
+                o.store(a_tile)
+
+        @ttl.datamovement()
+        def dm_read():
+            x, y = ttl.node(dims=2)
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[y, 0], blk)
+                if x == 0:
+                    tx = ttl.copy(a[y, 1], blk)
+                tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            x, y = ttl.node(dims=2)
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, out[y, x])
+                tx.wait()
+
+    return branch_swap
+
+
+def test_specialize_cores_emit_runner_no_crash(device, monkeypatch, tmp_path):
+    """Regression: TTLANG_EMIT_RUNNER must stay clone-aligned.
+
+    The emit block indexed thread_tensor_indices (one per original thread)
+    against kernel_paths (one per clone), so it raised IndexError.
+    """
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    runner_path = tmp_path / "runner.py"
+    monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
+    a, _ = _make_swap_inputs(device)
+    out = to_dram(
+        torch.zeros((GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE), dtype=torch.bfloat16),
+        device,
+    )
+    _make_branch_swap_op()(a, out, options="--ttl-specialize-cores")
+    assert runner_path.exists(), "no runner emitted"
+
+
+@pytest.mark.xfail(
+    reason="emitted runner template cannot express per-clone dispatch: it "
+    "re-derives reader/writer from a positional counter and passes only the "
+    "whole-grid core_ranges, so every clone lands on every core and tt-metal "
+    "rejects it with TT_FATAL: Illegal NOC usage. Needs per-kernel core-range "
+    "and NOC-role constants in emit_runner_file.",
+    strict=True,
+    raises=RuntimeError,
+)
+def test_specialize_cores_emit_runner_executes(device, monkeypatch, tmp_path):
+    """The emitted runner, run standalone on a cold cache, must reproduce the swap.
+
+    Compile-only so the op never executes and warms the program cache; otherwise
+    the runner's custom_program_hash reuses the cached program and masks the
+    misdispatch. Strict xfail so it flags when the template is fixed.
+    """
+    import importlib.util
+
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    runner_path = tmp_path / "runner.py"
+    monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
+    a, expected = _make_swap_inputs(device)
+    out = to_dram(torch.zeros_like(expected), device)
+    _make_branch_swap_op()(a, out, options="--ttl-specialize-cores")
+
+    spec = importlib.util.spec_from_file_location("emitted_runner", str(runner_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    module.run([a, out], device=device)
+    assert_pcc(expected, ttnn.to_torch(out))
+
+
 if __name__ == "__main__":
     # Manual repro: run the specialized path directly (no pytest) and print a
     # summary plus the specialized-vs-torch comparison.
