@@ -20,8 +20,10 @@ setup() {
 # --- Rejection cases ---
 
 @test "rejects branch ref" {
-    GITHUB_REF="refs/heads/main" run "$SCRIPT"
+    GITHUB_REF="refs/heads/main" run --separate-stderr "$SCRIPT"
     assert_failure
+    [[ "$stderr" == *"pass 'refs/tags/vX.Y.Z' as release-ref"* ]] \
+        || fail "stderr missing recovery instructions: $stderr"
 }
 
 @test "rejects empty ref" {

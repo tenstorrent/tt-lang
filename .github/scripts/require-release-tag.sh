@@ -15,6 +15,7 @@ set -euo pipefail
 ref="${1:-${GITHUB_REF:-}}"
 if [[ ! "$ref" =~ ^refs/tags/v[0-9] ]]; then
     echo "Release ref must be a v* tag (got '$ref')." >&2
+    echo "Create and push a tag like 'vX.Y.Z', or pass 'refs/tags/vX.Y.Z' as release-ref." >&2
     exit 1
 fi
 
