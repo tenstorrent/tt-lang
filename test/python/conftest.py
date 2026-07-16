@@ -90,9 +90,9 @@ def pytest_configure(config):
 # =============================================================================
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def ttnn_device():
-    """Provide one TTNN device for each test module and xdist worker."""
+    """Provide an isolated TTNN device using WORKER dispatch."""
     global _ttnn_import_failed
     if not _ttnn_available or _ttnn_import_failed:
         pytest.skip("TTNN not available")
@@ -105,7 +105,13 @@ def ttnn_device():
         _ttnn_import_failed = True
         raise
 
-    device = ttnn.open_device(device_id=0)
+    if os.environ.get("TT_METAL_SIMULATOR"):
+        device = ttnn.open_device(device_id=0)
+    else:
+        dispatch_core_config = ttnn.DispatchCoreConfig(ttnn.DispatchCoreType.WORKER)
+        device = ttnn.open_device(
+            device_id=0, dispatch_core_config=dispatch_core_config
+        )
     yield device
     ttnn.close_device(device)
 
@@ -120,11 +126,5 @@ def seed_rng():
 
 @pytest.fixture
 def device(ttnn_device):
-    """Provide the module device and reset reusable state after each test."""
-    yield ttnn_device
-
-    import ttnn
-
-    ttnn.synchronize_device(ttnn_device)
-    ttnn_device.disable_and_clear_program_cache()
-    ttnn.device.DeallocateBuffers(ttnn_device)
+    """Alias for the isolated TTNN device fixture."""
+    return ttnn_device
