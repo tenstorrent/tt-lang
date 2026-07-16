@@ -90,9 +90,9 @@ def pytest_configure(config):
 # =============================================================================
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def ttnn_device():
-    """Fixture that provides a TTNN device, skipping if unavailable."""
+    """Provide one TTNN device for each test module and xdist worker."""
     global _ttnn_import_failed
     if not _ttnn_available or _ttnn_import_failed:
         pytest.skip("TTNN not available")
@@ -118,8 +118,13 @@ def seed_rng():
     torch.manual_seed(42)
 
 
-# Alias for convenience - most tests use 'device' as the fixture name
 @pytest.fixture
 def device(ttnn_device):
-    """Alias for ttnn_device fixture."""
-    return ttnn_device
+    """Provide the module device and reset reusable state after each test."""
+    yield ttnn_device
+
+    import ttnn
+
+    ttnn.synchronize_device(ttnn_device)
+    ttnn_device.disable_and_clear_program_cache()
+    ttnn.device.DeallocateBuffers(ttnn_device)
