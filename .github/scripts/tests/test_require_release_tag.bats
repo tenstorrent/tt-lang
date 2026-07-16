@@ -93,14 +93,14 @@ setup() {
     assert_output "${BASE}.post1"
 }
 
-@test "local version label (+uplift)" {
-    GITHUB_REF="${REF}+uplift" run -0 "$SCRIPT"
-    assert_output "${BASE}+uplift"
+@test "rejects local version label (+uplift)" {
+    GITHUB_REF="${REF}+uplift" run "$SCRIPT"
+    assert_failure
 }
 
-@test "dev + local combined" {
-    GITHUB_REF="${REF}-dev20260515+ci123" run -0 "$SCRIPT"
-    assert_output "${BASE}.dev20260515+ci123"
+@test "rejects dev + local combined" {
+    GITHUB_REF="${REF}-dev20260515+ci123" run "$SCRIPT"
+    assert_failure
 }
 
 # PEP 440 specifies that pre-release segment markers are case-insensitive and
