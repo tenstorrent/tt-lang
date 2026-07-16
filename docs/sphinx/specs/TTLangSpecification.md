@@ -191,7 +191,7 @@ shape = ttnn.Shape([128, 128])
 
 x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT)
 
-ttnn.exp(y, foo(ttnn.abs(x)), fast_and_approximate_mode=True)
+y = ttnn.exp(foo(ttnn.abs(x)), fast_and_approximate_mode=True)
 ```
 
 

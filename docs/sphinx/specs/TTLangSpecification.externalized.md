@@ -115,7 +115,7 @@ A *multi-kernel operation* is an alternative form in which the author writes the
 
 #### Program example
 
-<!-- @spec:example operation_function/multi_kernel_operation.py.txt -->
+<!-- @spec:example operation_function/multi_kernel_operation.py -->
 
 
 ## Grid
@@ -177,7 +177,7 @@ A dataflow buffer is constructed in the scope of an operation function but its o
 
 #### Dataflow buffer example
 
-<!-- @spec:example dataflow_buffer/dataflow_buffer.py.txt -->
+<!-- @spec:example dataflow_buffer/dataflow_buffer.py -->
 
 | Type alias/Function | Description |
 | :---- | :---- |

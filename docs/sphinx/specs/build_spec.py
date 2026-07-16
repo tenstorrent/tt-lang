@@ -23,6 +23,12 @@ directive and the markers (``# spec:begin <tag>`` / ``# spec:end <tag>``). The
 embedded region is dedented, so an example may nest the marked lines inside a
 function while the specification shows them at the left margin.
 
+A single directive (a given tag, or the untagged pair) may match several
+``spec:begin`` / ``spec:end`` sections in one file. The sections are
+concatenated first, with no separating line, and the result is dedented as a
+whole, so an example can skip over intervening scaffolding and embed only the
+relevant fragments while their shared indentation is stripped consistently.
+
 Usage::
 
     python docs/sphinx/specs/build_spec.py            # write the specification
@@ -54,26 +60,35 @@ def extract_region(source: str, tag: str | None) -> str:
     """Return the dedented lines between the spec markers in ``source``.
 
     ``tag`` selects a named region; ``None`` selects the plain
-    ``# spec:begin`` / ``# spec:end`` pair.
+    ``# spec:begin`` / ``# spec:end`` pair. When ``source`` contains several
+    matching sections, they are concatenated (with no separating line) and the
+    result is dedented as a whole.
     """
     begin = "# spec:begin" if tag is None else f"# spec:begin {tag}"
     end = "# spec:end" if tag is None else f"# spec:end {tag}"
+    marker = "spec:begin/spec:end" if tag is None else f"spec:begin/end '{tag}'"
 
     lines = source.splitlines(keepends=True)
-    start = end_idx = None
+    regions: list[str] = []
+    start = None
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped == begin and start is None:
+        if stripped == begin:
+            if start is not None:
+                raise SystemExit(f"Nested {begin!r} marker before its {end!r}")
             start = i
-        elif stripped == end and start is not None:
-            end_idx = i
-            break
+        elif stripped == end:
+            if start is None:
+                raise SystemExit(f"{end!r} marker without a preceding {begin!r}")
+            regions.append("".join(lines[start + 1 : i]))
+            start = None
 
-    if start is None or end_idx is None:
-        marker = "spec:begin/spec:end" if tag is None else f"spec:begin/end '{tag}'"
+    if start is not None:
+        raise SystemExit(f"{begin!r} marker without a closing {end!r}")
+    if not regions:
         raise SystemExit(f"Could not find {marker} markers")
 
-    return textwrap.dedent("".join(lines[start + 1 : end_idx]))
+    return textwrap.dedent("".join(regions))
 
 
 def render(template_text: str) -> str:
