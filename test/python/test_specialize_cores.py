@@ -5,34 +5,27 @@
 """End-to-end test for the per-core specialization path.
 
 Per-core specialization is opt-in via the compiler option `specialize_cores`
-(enable with `--ttl-specialize-cores`; disabled by default). It is a single
-module pass (`ttkernel-specialize-cores`) run at the TTKernel level right before
+(enable with --ttl-specialize-cores; disabled by default). It is a single
+module pass (ttkernel-specialize-cores) run at the TTKernel level right before
 EmitC: for each kernel that branches on a core coordinate it emits one clone
 per launch coordinate, replacing the coordinate reads with constants and
-tagging each clone with `ttl.core_coord`. The runtime bridge
-(`_compile_ttnn_kernel`) turns each `ttl.core_coord` into a per-kernel core
+tagging each clone with ttl.core_coord. The runtime bridge
+(_compile_ttnn_kernel) turns each ttl.core_coord into a per-kernel core
 range for dispatch.
 
-Crucially, a kernel is cloned only when it *branches* on a core coordinate
-(`scf.if` on `ttkernel.my_logical_x_` / `my_logical_y_`). Kernels that use the
-coordinate only as data (e.g. addressing `a[y, x]`) are left as a single
-whole-grid binary, because the runtime coordinate reads already give each core
-its own coordinate -- no clone is needed. Modules that use pipes are never
-specialized (cloning a pipe endpoint deadlocks at runtime).
-
 The matmul kernel below addresses its operands through the coordinate but never
-branches on it, so specialization is a correctness-preserving no-op for it. That
-test therefore verifies that:
+branches on it, so specialization skips cloning for it. That test therefore
+verifies that:
   * The specialized result matches a torch reference (numerical correctness).
   * The specialized result matches the default (unspecialized) path.
   * The dumped final MLIR shows these data-addressing kernels are NOT cloned
     (no `ttl.core_coord`), i.e. specialization safely declines to clone them.
 
-A third kernel (`branch_swap_*`) *does* branch on the coordinate: its reader
-selects a different source column depending on `core_x`, so specialization
+A second kernel (branch_swap_*) *does* branch on the coordinate: its reader
+selects a different source column depending on core_x, so specialization
 clones the reader per core and const-folds the branch. That test exercises the
 full clone-and-dispatch path end to end (the MLIR-only clone/fold checks live in
-the lit test test/ttlang/Dialect/TTL/Transforms/specialize_cores.mlir).
+the lit test test/ttlang/Dialect/TTKernel/Transforms/specialize_cores.mlir).
 """
 
 import os

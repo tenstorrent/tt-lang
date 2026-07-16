@@ -757,7 +757,7 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
 def _get_kernel_core_coords(module, kernel_name: str):
     """Read the `ttl.core_coord` attribute set by `ttkernel-specialize-cores`.
 
-    We expect the aray to be of length 2 since node dim currently only supports 2D.
+    We expect the array to be of length 2 since node dim currently only supports 2D.
     The attribute is the launch coordinates a kernel is dispatched to.
 
     Returns the list of `(x, y)` launch coordinates for a specialized clone, or
@@ -803,8 +803,7 @@ def _get_kernel_crta_indices(module, kernel_name: str):
     """Read the `ttl.crta_indices` attribute as a list of global tensor indices.
 
     Used by the per-core specialization path where clones cannot be aligned
-    positionally with the original thread list. Returns an empty list when the
-    attribute is missing.
+    positionally with the original thread list. Raises an error if the attribute is missing.
     """
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get("ttl.crta_indices", None)
@@ -1076,12 +1075,13 @@ def _compile_ttnn_kernel(
     if emit_runner_path:
         kernel_specs_for_emit = []
         for kernel_idx, (kernel_path, thread_type) in enumerate(kernel_paths):
-            tensor_indices = thread_tensor_indices[kernel_idx]
+            tensor_indices = kernel_tensor_indices[kernel_idx]
             spec = KernelSpec(
                 path=kernel_path,
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
+                core_ranges=kernel_core_ranges[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 

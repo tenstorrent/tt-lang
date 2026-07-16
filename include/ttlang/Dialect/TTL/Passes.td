@@ -837,10 +837,65 @@ def TTKernelSpecializeCores
     : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
   let summary = "Clone kernels per core when control flow branches on a coordinate";
   let description = [{
-    Clone and rewrite the graph with ttl.node values propagated as constants
-    to leverage DCE and other upstream canolicalization passes. To minimize
-    clones we only clone kernels whose control flow branches on a core
-    coordinate. Clone functions once per coordinate.
+    Per-core specialization for TTKernel functions. Requires the 
+    `ttl.launch_grid` attribute, missing or malformed `ttl.launch_grid` is a hard error.
+
+    For each kernel whose scf.if region branches on a core coordinate, clones
+    the function once per launch coordinate, replaces
+    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant's
+    for that core, and tags the cloned function with ttl.core_coord (the coordinate it
+    serves). Downstream canonicalize / cse then fold the now-constant
+    branch conditions and delete untaken regions. The runtime bridge reads
+    ttl.core_coord to build per-kernel core ranges for dispatch.
+
+    NOTE: functions with symbol uses (e.g. `func.call` targets) are skipped so erasing the
+    original does not leave dangling `SymbolRefAttr`s.
+
+    Example (`ttl.launch_grid = [1, 2]`):
+    ```mlir
+    // Before:
+    func.func @k() -> index {
+      %c0 = arith.constant 0 : index
+      %c7 = arith.constant 7 : index
+      %c9 = arith.constant 9 : index
+      %y = ttkernel.my_logical_y_ : () -> index
+      %pred = arith.cmpi eq, %y, %c0 : index
+      %r = scf.if %pred -> (index) {
+        scf.yield %c7 : index
+      } else {
+        scf.yield %c9 : index
+      }
+      return %r : index
+    }
+
+    // After:
+    func.func @k_c0_0() -> index attributes {ttl.core_coord = [[0, 0]]} {
+      %c0 = arith.constant 0 : index
+      %c7 = arith.constant 7 : index
+      %c9 = arith.constant 9 : index
+      %y = arith.constant 0 : index
+      %pred = arith.cmpi eq, %y, %c0 : index
+      %r = scf.if %pred -> (index) {
+        scf.yield %c7 : index
+      } else {
+        scf.yield %c9 : index
+      }
+      return %r : index
+    }
+    func.func @k_c0_1() -> index attributes {ttl.core_coord = [[0, 1]]} {
+      %c0 = arith.constant 0 : index
+      %c7 = arith.constant 7 : index
+      %c9 = arith.constant 9 : index
+      %y = arith.constant 1 : index
+      %pred = arith.cmpi eq, %y, %c0 : index
+      %r = scf.if %pred -> (index) {
+        scf.yield %c7 : index
+      } else {
+        scf.yield %c9 : index
+      }
+      return %r : index
+    }
+    ```
   }];
 
   let dependentDialects = [

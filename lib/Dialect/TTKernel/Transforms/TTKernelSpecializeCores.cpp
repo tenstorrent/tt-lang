@@ -26,6 +26,8 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -52,18 +54,21 @@ constexpr llvm::StringLiteral CoreCoordAttrName = "ttl.core_coord";
 ///
 /// NOTE: operations.py specifies that only dims=2 is supported for now.
 ///       this should be updated once operations.py is updated
-static bool readGrid(ArrayAttr attr, int64_t &gridX, int64_t &gridY) {
+static FailureOr<std::pair<int64_t, int64_t>> readGrid(ArrayAttr attr) {
   if (!attr || attr.size() != 2) {
-    return false;
+    return failure();
   }
   auto x = llvm::dyn_cast<IntegerAttr>(attr[0]);
   auto y = llvm::dyn_cast<IntegerAttr>(attr[1]);
   if (!x || !y) {
-    return false;
+    return failure();
   }
-  gridX = x.getInt();
-  gridY = y.getInt();
-  return gridX > 0 && gridY > 0;
+  int64_t gridX = x.getInt();
+  int64_t gridY = y.getInt();
+  if (gridX <= 0 || gridY <= 0) {
+    return failure();
+  }
+  return std::pair<int64_t, int64_t>{gridX, gridY};
 }
 
 /// Return true when `condition` is derived from a core
@@ -102,40 +107,35 @@ static bool funcBranchesOnCore(func::FuncOp func) {
   return found;
 }
 
-/// Emit one clone of `func` for core `(x, y)`, replacing every coordinate read
-/// with the matching constant and tagging the clone with `ttl.core_coord`.
+/// Replace every CoordOp in func clone with an arith.constant of coord.
+template <typename CoordOp>
+static void replaceCoordReads(func::FuncOp clone, int64_t coord) {
+  SmallVector<CoordOp> reads;
+  clone.walk([&](CoordOp op) { reads.push_back(op); });
+  for (CoordOp op : reads) {
+    OpBuilder b(op);
+    Value cst =
+        arith::ConstantOp::create(b, op.getLoc(), b.getIndexAttr(coord));
+    op.getResult().replaceAllUsesWith(cst);
+    op.erase();
+  }
+}
+
+/// Emit one clone of func for core (x, y), replacing every coordinate read
+/// with the matching constant and tagging the clone with ttl.core_coord.
 /// TODO: See if we can leverage LaunchDomainAnalysis in an earlier pass
 /// to further minimize clones.
 static void emitCoreClone(func::FuncOp func, int64_t x, int64_t y,
-                          OpBuilder &moduleBuilder, Builder &builder) {
+                          OpBuilder &moduleBuilder) {
   func::FuncOp clone = func.clone();
   clone.setSymName(
       (func.getSymName() + "_c" + Twine(x) + "_" + Twine(y)).str());
 
-  SmallVector<ttk::MyLogicalXOp> xReads;
-  SmallVector<ttk::MyLogicalYOp> yReads;
-  clone.walk([&](Operation *op) {
-    if (auto xr = dyn_cast<ttk::MyLogicalXOp>(op)) {
-      xReads.push_back(xr);
-    } else if (auto yr = dyn_cast<ttk::MyLogicalYOp>(op)) {
-      yReads.push_back(yr);
-    }
-  });
-  for (ttk::MyLogicalXOp xr : xReads) {
-    OpBuilder b(xr);
-    Value cst = arith::ConstantOp::create(b, xr.getLoc(), b.getIndexAttr(x));
-    xr.getResult().replaceAllUsesWith(cst);
-    xr.erase();
-  }
-  for (ttk::MyLogicalYOp yr : yReads) {
-    OpBuilder b(yr);
-    Value cst = arith::ConstantOp::create(b, yr.getLoc(), b.getIndexAttr(y));
-    yr.getResult().replaceAllUsesWith(cst);
-    yr.erase();
-  }
+  replaceCoordReads<ttk::MyLogicalXOp>(clone, x);
+  replaceCoordReads<ttk::MyLogicalYOp>(clone, y);
 
-  clone->setAttr(CoreCoordAttrName,
-                 builder.getArrayAttr({builder.getI64ArrayAttr({x, y})}));
+  clone->setAttr(CoreCoordAttrName, moduleBuilder.getArrayAttr(
+                                        {moduleBuilder.getI64ArrayAttr({x, y})}));
   moduleBuilder.insert(clone);
 }
 
@@ -144,11 +144,16 @@ struct TTKernelSpecializeCoresPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    int64_t gridX = 0, gridY = 0;
-    if (!readGrid(module->getAttrOfType<ArrayAttr>(LaunchGridAttrName), gridX,
-                  gridY)) {
+    FailureOr<std::pair<int64_t, int64_t>> grid =
+        readGrid(module->getAttrOfType<ArrayAttr>(LaunchGridAttrName));
+    if (failed(grid)) {
+      module.emitOpError()
+          << "ttkernel-specialize-cores requires a `ttl.launch_grid` module "
+             "attribute (an i64 array of length 2 with positive entries)";
+      signalPassFailure();
       return;
     }
+    auto [gridX, gridY] = *grid;
 
     if (gridX * gridY <= 1) {
       return;
@@ -156,17 +161,21 @@ struct TTKernelSpecializeCoresPass
 
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
-      if (funcBranchesOnCore(func)) {
-        targets.push_back(func);
+      if (!funcBranchesOnCore(func)) {
+        continue;
       }
+      if (auto uses = SymbolTable::getSymbolUses(func, module);
+          uses && !uses->empty()) {
+        continue;
+      }
+      targets.push_back(func);
     }
 
-    Builder builder(&getContext());
     for (func::FuncOp func : targets) {
       OpBuilder moduleBuilder(func);
       for (int64_t y = 0; y < gridY; ++y) {
         for (int64_t x = 0; x < gridX; ++x) {
-          emitCoreClone(func, x, y, moduleBuilder, builder);
+          emitCoreClone(func, x, y, moduleBuilder);
         }
       }
       func.erase();

@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttkernel-specialize-cores)' | FileCheck %s
+t // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttkernel-specialize-cores)' | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttkernel-specialize-cores,canonicalize,cse)' | FileCheck %s --check-prefix=FOLDED
 
 // Summary: per-core specialization is a single module pass run at the TTKernel
@@ -140,6 +140,83 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
     %c7 = arith.constant 7 : index
     %c9 = arith.constant 9 : index
     %sem = ttkernel.get_semaphore(%c0) : (index) -> !ttkernel.local_semaphore
+    %y = "ttkernel.my_logical_y_"() : () -> index
+    %pred = arith.cmpi eq, %y, %c0 : index
+    %r = scf.if %pred -> (index) {
+      scf.yield %c7 : index
+    } else {
+      scf.yield %c9 : index
+    }
+    return %r : index
+  }
+}
+
+// -----
+
+// -- Test 5: single-core launch grid is a legitimate no-op. ------------------
+// A valid `ttl.launch_grid` whose product is <= 1 has nothing to specialize
+// CHECK-LABEL: func.func @ksingle
+// CHECK-NOT:     ttl.core_coord
+// CHECK:         my_logical_y_
+// CHECK-NOT:   func.func @ksingle_c
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @ksingle() -> index {
+    %c0 = arith.constant 0 : index
+    %c7 = arith.constant 7 : index
+    %c9 = arith.constant 9 : index
+    %y = "ttkernel.my_logical_y_"() : () -> index
+    %pred = arith.cmpi eq, %y, %c0 : index
+    %r = scf.if %pred -> (index) {
+      scf.yield %c7 : index
+    } else {
+      scf.yield %c9 : index
+    }
+    return %r : index
+  }
+}
+
+// -----
+
+// -- Test 6: functions with symbol uses are skipped, others still clone. -----
+// `kcallee` branches on a coordinate but is referenced by `kcaller`, so it is
+// left unspecialized (erasing it would leave a dangling call). `kleaf` has no
+// symbol uses and is still cloned per core.
+
+// CHECK-LABEL: func.func @kcallee
+// CHECK-NOT:     ttl.core_coord
+// CHECK:         my_logical_y_
+// CHECK-NOT:   func.func @kcallee_c
+// CHECK-LABEL: func.func @kcaller
+// CHECK:         call @kcallee
+// CHECK-NOT:   func.func @kleaf()
+// CHECK-LABEL: func.func @kleaf_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-LABEL: func.func @kleaf_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func @kcallee() -> index {
+    %c0 = arith.constant 0 : index
+    %c7 = arith.constant 7 : index
+    %c9 = arith.constant 9 : index
+    %y = "ttkernel.my_logical_y_"() : () -> index
+    %pred = arith.cmpi eq, %y, %c0 : index
+    %r = scf.if %pred -> (index) {
+      scf.yield %c7 : index
+    } else {
+      scf.yield %c9 : index
+    }
+    return %r : index
+  }
+  func.func @kcaller() -> index {
+    %r = func.call @kcallee() : () -> index
+    return %r : index
+  }
+  func.func @kleaf() -> index {
+    %c0 = arith.constant 0 : index
+    %c7 = arith.constant 7 : index
+    %c9 = arith.constant 9 : index
     %y = "ttkernel.my_logical_y_"() : () -> index
     %pred = arith.cmpi eq, %y, %c0 : index
     %r = scf.if %pred -> (index) {
