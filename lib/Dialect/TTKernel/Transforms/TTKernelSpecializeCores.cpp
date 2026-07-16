@@ -27,7 +27,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
-#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -144,12 +143,18 @@ struct TTKernelSpecializeCoresPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    FailureOr<std::pair<int64_t, int64_t>> grid =
-        readGrid(module->getAttrOfType<ArrayAttr>(LaunchGridAttrName));
-    if (failed(grid)) {
-      module.emitOpError()
-          << "ttkernel-specialize-cores requires a `ttl.launch_grid` module "
-             "attribute (an i64 array of length 2 with positive entries)";
+    auto gridAttr = module->getAttrOfType<ArrayAttr>(LaunchGridAttrName);
+    if (!gridAttr) {
+      module.emitOpError() << "requires a `" << LaunchGridAttrName
+                           << "` module attribute";
+      signalPassFailure();
+      return;
+    }
+    int64_t gridX = 0, gridY = 0;
+    if (!readGrid(gridAttr, gridX, gridY)) {
+      module.emitOpError() << "`" << LaunchGridAttrName
+                           << "` must be a length-2 array of positive i64 "
+                              "extents";
       signalPassFailure();
       return;
     }
@@ -159,6 +164,11 @@ struct TTKernelSpecializeCoresPass
       return;
     }
 
+    // Cloning renames a target and erases the original; inter-function
+    // SymbolRefAttr fixups are not performed. A referenced function is left
+    // un-specialized (still a correct whole-grid binary via its runtime
+    // coordinate reads) rather than failing the whole pass, so unrelated
+    // functions still get specialized.
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
       if (!funcBranchesOnCore(func)) {
@@ -166,6 +176,8 @@ struct TTKernelSpecializeCoresPass
       }
       if (auto uses = SymbolTable::getSymbolUses(func, module);
           uses && !uses->empty()) {
+        func.emitWarning() << "not specializing '" << func.getSymName()
+                           << "': function has symbol uses";
         continue;
       }
       targets.push_back(func);
