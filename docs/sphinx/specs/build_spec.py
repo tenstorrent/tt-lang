@@ -8,7 +8,6 @@ Markdown file whose code examples are replaced by include directives of the
 form::
 
     <!-- @spec:example <file> -->
-    <!-- @spec:example <file>:<tag> -->
 
 Each directive names a Python file under ``examples/spec/``. That file is a
 standalone example; the region to embed in the specification is delimited by
@@ -18,16 +17,14 @@ marker comments::
     ...code included in the specification...
     # spec:end
 
-A file may contain several named regions, selected by ``:<tag>`` on both the
-directive and the markers (``# spec:begin <tag>`` / ``# spec:end <tag>``). The
-embedded region is dedented, so an example may nest the marked lines inside a
-function while the specification shows them at the left margin.
+The embedded region is dedented, so an example may nest the marked lines inside
+a function while the specification shows them at the left margin.
 
-A single directive (a given tag, or the untagged pair) may match several
-``spec:begin`` / ``spec:end`` sections in one file. The sections are
-concatenated first, with no separating line, and the result is dedented as a
-whole, so an example can skip over intervening scaffolding and embed only the
-relevant fragments while their shared indentation is stripped consistently.
+A single directive may match several ``spec:begin`` / ``spec:end`` sections in
+one file. The sections are concatenated first, with no separating line, and the
+result is dedented as a whole, so an example can skip over intervening
+scaffolding and embed only the relevant fragments while their shared
+indentation is stripped consistently.
 
 Usage::
 
@@ -51,42 +48,38 @@ EXAMPLES_DIR = REPO_ROOT / "examples" / "spec"
 TEMPLATE = SCRIPT_DIR / "TTLangSpecification.externalized.md"
 OUTPUT = SCRIPT_DIR / "TTLangSpecification.md"
 
-DIRECTIVE = re.compile(
-    r"^<!-- @spec:example (?P<file>[^\s:]+)(?::(?P<tag>\S+))? -->[ \t]*$"
-)
+DIRECTIVE = re.compile(r"^<!-- @spec:example (?P<file>\S+) -->[ \t]*$")
+
+BEGIN = "# spec:begin"
+END = "# spec:end"
 
 
-def extract_region(source: str, tag: str | None) -> str:
+def extract_region(source: str) -> str:
     """Return the dedented lines between the spec markers in ``source``.
 
-    ``tag`` selects a named region; ``None`` selects the plain
-    ``# spec:begin`` / ``# spec:end`` pair. When ``source`` contains several
-    matching sections, they are concatenated (with no separating line) and the
-    result is dedented as a whole.
+    When ``source`` contains several ``# spec:begin`` / ``# spec:end`` sections,
+    they are concatenated (with no separating line) and the result is dedented
+    as a whole.
     """
-    begin = "# spec:begin" if tag is None else f"# spec:begin {tag}"
-    end = "# spec:end" if tag is None else f"# spec:end {tag}"
-    marker = "spec:begin/spec:end" if tag is None else f"spec:begin/end '{tag}'"
-
     lines = source.splitlines(keepends=True)
     regions: list[str] = []
     start = None
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped == begin:
+        if stripped == BEGIN:
             if start is not None:
-                raise SystemExit(f"Nested {begin!r} marker before its {end!r}")
+                raise SystemExit(f"Nested {BEGIN!r} marker before its {END!r}")
             start = i
-        elif stripped == end:
+        elif stripped == END:
             if start is None:
-                raise SystemExit(f"{end!r} marker without a preceding {begin!r}")
+                raise SystemExit(f"{END!r} marker without a preceding {BEGIN!r}")
             regions.append("".join(lines[start + 1 : i]))
             start = None
 
     if start is not None:
-        raise SystemExit(f"{begin!r} marker without a closing {end!r}")
+        raise SystemExit(f"{BEGIN!r} marker without a closing {END!r}")
     if not regions:
-        raise SystemExit(f"Could not find {marker} markers")
+        raise SystemExit(f"Could not find {BEGIN}/{END} markers")
 
     return textwrap.dedent("".join(regions))
 
@@ -104,7 +97,7 @@ def render(template_text: str) -> str:
         if not example.is_file():
             raise SystemExit(f"Example file not found: {example}")
 
-        region = extract_region(example.read_text(encoding="utf-8"), match["tag"])
+        region = extract_region(example.read_text(encoding="utf-8"))
         if not region.endswith("\n"):
             region += "\n"
         out.append("```py\n")
