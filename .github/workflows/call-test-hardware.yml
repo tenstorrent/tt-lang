@@ -61,7 +61,6 @@ jobs:
       RUNS_ON: ${{ inputs.runs-on }}
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
-      HW_PYTEST_CHIPS: 1
 
     steps:
       - name: Checkout tt-lang

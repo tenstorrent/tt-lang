@@ -42,6 +42,9 @@ RECORD_TTMETAL_MISS = SCRIPTS_DIR / "record-ttmetal-miss.sh"
 CALL_BUILD_WHEELS_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-build-wheels.yml"
 )
+CALL_TEST_DIST_TUTORIALS_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-test-dist-tutorials.yml"
+)
 TTMETAL_LIGHT_ON_DEMAND_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "ttmetal-light-on-demand.yml"
 )
@@ -337,6 +340,46 @@ def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
         "apply_patches: ${{ github.event_name == 'workflow_dispatch'"
         " && inputs.apply_patches }}"
     ) in workflow
+
+
+def test_publish_pypi_supports_release_sha_from_main() -> None:
+    workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+    preflight_job = workflow.split("\n  preflight:", 1)[1].split(
+        "\n  build-docker:", 1
+    )[0]
+    publish_job = workflow.split("\n  publish:", 1)[1].split("\n  dry-run-summary:", 1)[
+        0
+    ]
+
+    assert "ttlang_sha:" in workflow
+    assert "ref: ${{ inputs.ttlang_sha || github.sha }}" in workflow
+    assert "path: release-source" in preflight_job
+    assert 'git -C "$release_source" rev-parse HEAD' in preflight_job
+    assert "TTLANG_TT_METAL_VERSION_FILE:" in preflight_job
+    assert "ttlang_sha must be a full 40-character commit SHA" in workflow
+    assert (
+        'git -C "$release_source" merge-base --is-ancestor'
+        ' "$TTLANG_SHA" "$GITHUB_SHA"'
+    ) in workflow
+    assert "git -C \"$RELEASE_SOURCE\" tag --list 'v[0-9]*' --points-at" in workflow
+    assert '.github/scripts/require-release-tag.sh "$release_ref"' in workflow
+    assert workflow.count("ttlang_sha_override: ${{ inputs.ttlang_sha }}") == 3
+    assert 'echo "dry_run=${{ inputs.dry_run }}"' not in workflow
+    assert 'echo "docker_tag=${{ inputs.docker_tag }}"' not in workflow
+    assert 'echo "ttlang_sha=${{ inputs.ttlang_sha }}"' not in workflow
+    assert "github.event_name == 'workflow_dispatch' && inputs.dry_run != true" in (
+        publish_job
+    )
+    # The OIDC-enabled job runs verification code from the dispatch ref, not
+    # from the older source commit.
+    assert "inputs.ttlang_sha" not in publish_job
+
+
+def test_dist_tutorial_workflow_supports_pinned_ref() -> None:
+    workflow = CALL_TEST_DIST_TUTORIALS_WORKFLOW.read_text()
+
+    assert workflow.count("ttlang_sha_override:") == 2
+    assert "ref: ${{ inputs.ttlang_sha_override || github.sha }}" in workflow
 
 
 def test_call_build_wheels_supports_pinned_ref_and_patches() -> None:

@@ -5,5 +5,5 @@ self-hosted-runner:
   labels:
     - mlir-large-runner-lang
     - n150
-    - n300-llmbox
+    - bh-loudbox-viommu
     - tt-ubuntu-2204-*-stable
