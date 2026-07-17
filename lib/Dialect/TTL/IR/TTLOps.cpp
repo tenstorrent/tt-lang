@@ -633,6 +633,16 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
   return result;
 }
 
+// ttl.compute does not consult pack/unpack inner-tile alignment hints; forward
+// to the hint-less overload (matches the TilingInterface default).
+llvm::FailureOr<mlir::TilingResult>
+mlir::tt::ttl::ComputeOp::getTiledImplementation(
+    mlir::OpBuilder &b, llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::ArrayRef<mlir::InnerTileAlignment>) {
+  return getTiledImplementation(b, offsets, sizes);
+}
+
 /// Map iteration-domain offsets/sizes to the result tensor's offsets/sizes
 /// via the output's indexing map.
 mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
