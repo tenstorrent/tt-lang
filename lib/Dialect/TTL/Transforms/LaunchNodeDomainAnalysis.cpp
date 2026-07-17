@@ -141,17 +141,9 @@ bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
   return !lhs.intersectWith(rhs).nodes.empty();
 }
 
-bool launchNodeDomainContains(const LaunchNodeDomain &domain,
-                              LaunchNodeCoord coord) {
-  if (!domain.known) {
-    return true;
-  }
-  return domain.nodes.find(coord) != domain.nodes.end();
-}
-
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord) {
-  return domain.known && launchNodeDomainContains(domain, coord);
+  return domain.known && domain.nodes.find(coord) != domain.nodes.end();
 }
 
 /// Normalize integer-array attributes before verifier-specific interpretation.

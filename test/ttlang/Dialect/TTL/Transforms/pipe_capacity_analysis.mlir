@@ -36,6 +36,43 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Purpose: collective receivers release one logical slot independently, so
+// single-counter capacity accounting cannot safely reuse the slot until
+// per-receiver releases are tracked.
+// DEBUG: PipeCapacity: 2 receiver DFB node(s), 2 receiver endpoint(s)
+// DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(1, 0) DFB 5 capacity 2
+// DEBUG: PipeCapacity: reject src(0, 0) -> receiver(1, 0) DFB 5 capacity 2: collective capacity-counter synchronization requires per-receiver release accounting
+// DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(2, 0) DFB 5 capacity 2
+// DEBUG: PipeCapacity: reject src(0, 0) -> receiver(2, 0) DFB 5 capacity 2: collective capacity-counter synchronization requires per-receiver release accounting
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  func.func @collective_capacity_uses_receiver_post_synchronization()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 5, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 {isCollective = true}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %token = ttl.pipe_transfer.post %transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+      ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %ready = ttl.cb_wait %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %send = ttl.pipe_transfer.send %transfer, %src_cb
+          : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Purpose: without a concrete receiver pop, the release side is not proven.
 // This models running the analysis before automatic DFB sync insertion.
 // DEBUG: PipeCapacity: 1 receiver DFB node(s), 1 receiver endpoint(s)

@@ -27,8 +27,6 @@ configure_lit_site_cfg(
   CMAKE_CURRENT_SOURCE_DIR
 )
 
-
-
 set(TTLANG_TEST_DEPENDS
   ttlang-opt
   ttlang-translate
@@ -135,10 +133,10 @@ add_custom_target(check-ttlang-all
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-packaging
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-pytest ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-pytest
-  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-me2e ==="
-  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-me2e
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-lit ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-lit
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-me2e ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-me2e
   COMMAND ${CMAKE_COMMAND} -E echo "=== All ttlang tests completed ==="
   USES_TERMINAL
   COMMENT "Running all ttlang tests sequentially"

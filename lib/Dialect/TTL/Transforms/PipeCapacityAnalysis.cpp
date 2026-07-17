@@ -379,6 +379,17 @@ void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
         getCapacityEndpoint(pipeGraph, receiverEndpoint);
     debugCandidateEndpoint(endpoint);
 
+    // Collective transfers use receiver-post synchronization until the
+    // capacity-counter protocol tracks each receiver independently. A fast
+    // receiver must not release a slot still owned by a slower receiver.
+    if (isCollectiveTransfer(endpoint.pipeEdge->transferContract)) {
+      debugRejectEndpoint(
+          endpoint,
+          "collective capacity-counter synchronization requires per-receiver "
+          "release accounting");
+      continue;
+    }
+
     ArrayRef<PipeReceiverEndpointId> writerEndpoints =
         pipeGraph.getReceiverDFBWriterEndpoints(endpoint.receiverDFBNode);
     if (writerEndpoints.size() != 1) {

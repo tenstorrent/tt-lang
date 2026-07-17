@@ -101,10 +101,6 @@ LaunchNodeDomain getSingleLaunchNodeDomain(LaunchNodeCoord coord);
 bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
                               const LaunchNodeDomain &rhs);
 
-/// Return true if `domain` contains `coord`, or if the domain is unknown.
-bool launchNodeDomainContains(const LaunchNodeDomain &domain,
-                              LaunchNodeCoord coord);
-
 /// Return true if `domain` is known and contains `coord`.
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
