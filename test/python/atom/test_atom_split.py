@@ -81,7 +81,7 @@ def test_statement_mixing_compute_and_data_movement_is_rejected():
     """One statement cannot contain work for both TRISC and NCRISC."""
     fn = _fn(
         """
-        def k(x):
+        def k(x, out):
             dst = out_cb.reserve()
             ttl.copy(ttl.exp(x), dst)
         """
@@ -91,7 +91,7 @@ def test_statement_mixing_compute_and_data_movement_is_rejected():
         split_function_body(
             fn,
             dfb_param_names=set(),
-            all_param_names={"x"},
+            all_param_names={"x", "out"},
             local_dfb_names={"out_cb"},
         )
 
