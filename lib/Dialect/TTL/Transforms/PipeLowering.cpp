@@ -257,8 +257,8 @@ static Value buildReadyCounterAddress(Location loc,
   llvm_unreachable("unknown ready counter address storage");
 }
 
-static Value loadIndexTableEntry(Operation *op, Location loc,
-                                 ArrayRef<int64_t> values, Value recordIndex,
+static Value loadIndexTableEntry(Location loc, ArrayRef<int64_t> values,
+                                 Value recordIndex,
                                  ConversionPatternRewriter &rewriter);
 
 static Value buildSelectedReadyCounterAddress(
@@ -281,7 +281,7 @@ static Value buildSelectedReadyCounterAddress(
     indices.push_back(info.index);
   }
 
-  Value index = loadIndexTableEntry(op, loc, indices, recordIndex, rewriter);
+  Value index = loadIndexTableEntry(loc, indices, recordIndex, rewriter);
   switch (*storage) {
   case ReadyCounterAddressStorage::LocalSemaphore:
     return ttk::GetSemaphoreOp::create(rewriter, loc, index).getResult();
@@ -315,33 +315,13 @@ static Value addByteOffset(Location loc, Value baseAddress, Value byteOffset,
       .getResult();
 }
 
-static Value
-buildIndexTableAtFunctionEntry(Operation *op, Location loc,
-                               ArrayRef<int64_t> values,
-                               ConversionPatternRewriter &rewriter) {
-  assert(!values.empty() && "selected pipe resource table must not be empty");
-  FuncOp func = op->getParentOfType<FuncOp>();
-  assert(func && "selected pipe op must be inside a function");
-
-  ConversionPatternRewriter::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPointToStart(&func.getBody().front());
-  auto memrefTy = MemRefType::get({static_cast<int64_t>(values.size())},
-                                  rewriter.getIndexType());
-  Value table = memref::AllocaOp::create(rewriter, loc, memrefTy);
-  for (auto [index, value] : llvm::enumerate(values)) {
-    Value tableIndex = arith::ConstantIndexOp::create(rewriter, loc, index);
-    Value tableValue = arith::ConstantIndexOp::create(rewriter, loc, value);
-    memref::StoreOp::create(rewriter, loc, tableValue, table,
-                            ValueRange{tableIndex});
-  }
-  return table;
-}
-
-static Value loadIndexTableEntry(Operation *op, Location loc,
-                                 ArrayRef<int64_t> values, Value recordIndex,
+static Value loadIndexTableEntry(Location loc, ArrayRef<int64_t> values,
+                                 Value recordIndex,
                                  ConversionPatternRewriter &rewriter) {
-  Value table = buildIndexTableAtFunctionEntry(op, loc, values, rewriter);
-  return memref::LoadOp::create(rewriter, loc, table, ValueRange{recordIndex});
+  assert(!values.empty() && "selected pipe resource table must not be empty");
+  return ttk::ConstantTableLookupOp::create(
+      rewriter, loc, rewriter.getIndexType(), recordIndex,
+      rewriter.getDenseI64ArrayAttr(values));
 }
 
 /// Source-core address-table entry selected for one transfer allocation unit.
@@ -378,18 +358,21 @@ static Value buildAddressTableAddress(Location loc,
 
 static Value buildSelectedAddressTableAddress(
     Operation *op, Location loc, ArrayRef<PipeResourceInfo> resources,
-    Value recordIndex, const PipeResourcePlan &pipeResourcePlan,
-    ConversionPatternRewriter &rewriter) {
+    Value recordIndex, ConversionPatternRewriter &rewriter) {
   SmallVector<int64_t> byteOffsets;
   byteOffsets.reserve(resources.size());
   for (const PipeResourceInfo &resource : resources) {
-    byteOffsets.push_back(resource.addressStorage.sramAddressTable.byteOffset);
+    assert(resource.addressStorage.mode ==
+               PipeAddressMode::ReceiverPublishedAddressTable &&
+           "selected pipe requires receiver-published addressing");
+    assert(resource.addressStorage.sramAddressTable.has_value() &&
+           "selected pipe missing address-table storage");
+    byteOffsets.push_back(resource.addressStorage.sramAddressTable->byteOffset);
   }
   Value byteOffset =
-      loadIndexTableEntry(op, loc, byteOffsets, recordIndex, rewriter);
+      loadIndexTableEntry(loc, byteOffsets, recordIndex, rewriter);
   Value scratchBase = buildPipeRuntimeCommonArg(
       loc, rewriter, getPipeRuntimeCommonArgIndex(op, 0));
-  (void)pipeResourcePlan;
   return addByteOffset(loc, scratchBase, byteOffset, rewriter);
 }
 
@@ -528,6 +511,7 @@ struct SelectedPipeFields {
   Value dstEndY;
   Value numDests;
   Value srcInDstRange;
+  bool isCollective;
   int64_t pipeNetId;
 };
 
@@ -535,20 +519,30 @@ static SelectedPipeFields getSelectedPipeFields(const PipeReference &pipeRef) {
   assert(pipeRef.isSelected() && "expected selected pipe reference");
   if (pipeRef.isSelectedSrc()) {
     SelectPipeSrcOp op = pipeRef.selectedSrc;
-    return SelectedPipeFields{
-        op.getRecordIndex(),   op.getSrcX(),
-        op.getSrcY(),          op.getDstStartX(),
-        op.getDstStartY(),     op.getDstEndX(),
-        op.getDstEndY(),       op.getNumDests(),
-        op.getSrcInDstRange(), static_cast<int64_t>(op.getPipeNetId())};
+    return SelectedPipeFields{op.getRecordIndex(),
+                              op.getSrcX(),
+                              op.getSrcY(),
+                              op.getDstStartX(),
+                              op.getDstStartY(),
+                              op.getDstEndX(),
+                              op.getDstEndY(),
+                              op.getNumDests(),
+                              op.getSrcInDstRange(),
+                              op.getIsMulticast(),
+                              static_cast<int64_t>(op.getPipeNetId())};
   }
   SelectPipeDstOp op = pipeRef.selectedDst;
-  return SelectedPipeFields{
-      op.getRecordIndex(),   op.getSrcX(),
-      op.getSrcY(),          op.getDstStartX(),
-      op.getDstStartY(),     op.getDstEndX(),
-      op.getDstEndY(),       op.getNumDests(),
-      op.getSrcInDstRange(), static_cast<int64_t>(op.getPipeNetId())};
+  return SelectedPipeFields{op.getRecordIndex(),
+                            op.getSrcX(),
+                            op.getSrcY(),
+                            op.getDstStartX(),
+                            op.getDstStartY(),
+                            op.getDstEndX(),
+                            op.getDstEndY(),
+                            op.getNumDests(),
+                            op.getSrcInDstRange(),
+                            op.getIsMulticast(),
+                            static_cast<int64_t>(op.getPipeNetId())};
 }
 
 static ArrayRef<PipeResourceInfo>
@@ -634,7 +628,8 @@ public:
   virtual void emitCompletionSignalBarrier() = 0;
 };
 
-class NocPipeTransportEmitter final : public PipeTransportEmitter {
+class NocPipeTransportEmitterBase : public PipeTransportEmitter {
+protected:
   struct TranslatedCore {
     Value x;
     Value y;
@@ -648,10 +643,9 @@ class NocPipeTransportEmitter final : public PipeTransportEmitter {
   };
 
 public:
-  NocPipeTransportEmitter(Operation *op, PipeType pipeType,
-                          ConversionPatternRewriter &rewriter)
-      : loc(op->getLoc()), pipeType(pipeType), rewriter(rewriter),
-        nocIdx(getNocIndex(op)),
+  NocPipeTransportEmitterBase(Operation *op,
+                              ConversionPatternRewriter &rewriter)
+      : loc(op->getLoc()), rewriter(rewriter), nocIdx(getNocIndex(op)),
         nocVal(arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
                                          rewriter.getI8IntegerAttr(nocIdx))) {}
 
@@ -683,6 +677,49 @@ public:
         readyCounterIncrement, nocVal, /*posted=*/BoolAttr());
     return success();
   }
+
+  void emitPayloadWriteBarrier() override {
+    ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
+  }
+
+  void emitCompletionSignalBarrier() override {
+    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
+  }
+
+protected:
+  virtual TranslatedCore getSourceCore() = 0;
+
+  TranslatedCore buildTranslatedCore(Value logicalX, Value logicalY) {
+    auto translatedX = ttk::ConvertLogicalXToTranslatedOp::create(
+        rewriter, loc, rewriter.getIndexType(), logicalX);
+    auto translatedY = ttk::ConvertLogicalYToTranslatedOp::create(
+        rewriter, loc, rewriter.getIndexType(), logicalY);
+    return {translatedX, translatedY};
+  }
+
+  TranslatedCore buildTranslatedCore(int64_t logicalX, int64_t logicalY) {
+    auto logicalXValue =
+        arith::ConstantIndexOp::create(rewriter, loc, logicalX);
+    auto logicalYValue =
+        arith::ConstantIndexOp::create(rewriter, loc, logicalY);
+    auto translatedX = ttk::ConvertLogicalXToTranslatedOp::create(
+        rewriter, loc, rewriter.getIndexType(), logicalXValue);
+    auto translatedY = ttk::ConvertLogicalYToTranslatedOp::create(
+        rewriter, loc, rewriter.getIndexType(), logicalYValue);
+    return {translatedX, translatedY};
+  }
+
+  Location loc;
+  ConversionPatternRewriter &rewriter;
+  int64_t nocIdx;
+  Value nocVal;
+};
+
+class NocPipeTransportEmitter final : public NocPipeTransportEmitterBase {
+public:
+  NocPipeTransportEmitter(Operation *op, PipeType pipeType,
+                          ConversionPatternRewriter &rewriter)
+      : NocPipeTransportEmitterBase(op, rewriter), pipeType(pipeType) {}
 
   void preparePayloadWrite() override {
     if (pipeType.hasSingleReceiver()) {
@@ -719,10 +756,6 @@ public:
         destinationRange.startX, destinationRange.startY, destinationRange.endX,
         destinationRange.endY, dstAddr, nocVal, /*linked=*/nullptr);
     return success();
-  }
-
-  void emitPayloadWriteBarrier() override {
-    ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
   }
 
   LogicalResult
@@ -773,24 +806,8 @@ public:
     return success();
   }
 
-  void emitCompletionSignalBarrier() override {
-    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
-  }
-
 private:
-  TranslatedCore buildTranslatedCore(int64_t logicalX, int64_t logicalY) {
-    auto logicalXValue =
-        arith::ConstantIndexOp::create(rewriter, loc, logicalX);
-    auto logicalYValue =
-        arith::ConstantIndexOp::create(rewriter, loc, logicalY);
-    auto translatedX = ttk::ConvertLogicalXToTranslatedOp::create(
-        rewriter, loc, rewriter.getIndexType(), logicalXValue);
-    auto translatedY = ttk::ConvertLogicalYToTranslatedOp::create(
-        rewriter, loc, rewriter.getIndexType(), logicalYValue);
-    return {translatedX, translatedY};
-  }
-
-  TranslatedCore getSourceCore() {
+  TranslatedCore getSourceCore() override {
     if (!sourceCore) {
       sourceCore = buildTranslatedCore(pipeType.getSrcX(), pipeType.getSrcY());
     }
@@ -821,11 +838,155 @@ private:
     return *destinationRange;
   }
 
-  Location loc;
   PipeType pipeType;
-  ConversionPatternRewriter &rewriter;
-  int64_t nocIdx;
-  Value nocVal;
+  std::optional<TranslatedCore> sourceCore;
+  std::optional<TranslatedCore> dstStartCore;
+  std::optional<DestinationRange> destinationRange;
+};
+
+class SelectedNocPipeTransportEmitter final
+    : public NocPipeTransportEmitterBase {
+public:
+  SelectedNocPipeTransportEmitter(Operation *op, SelectedPipeFields fields,
+                                  ConversionPatternRewriter &rewriter)
+      : NocPipeTransportEmitterBase(op, rewriter), fields(fields) {}
+
+  void preparePayloadWrite() override {
+    if (fields.isCollective) {
+      getDestinationRange();
+      return;
+    }
+    getDstStartCore();
+  }
+
+  LogicalResult emitPayloadWrite(Value srcAddr, Value dstAddr,
+                                 Value totalSizeBytes) override {
+    if (!fields.isCollective) {
+      TranslatedCore dstStartCore = getDstStartCore();
+      ttk::NocAsyncWriteOp::create(
+          rewriter, loc, srcAddr, ValueRange{dstStartCore.x, dstStartCore.y},
+          ValueRange{}, dstAddr, totalSizeBytes, nocVal);
+      return success();
+    }
+
+    DestinationRange destinationRange = getDestinationRange();
+    Value numDests = getNumDests();
+    auto loopbackIf = scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
+                                        /*withElseRegion=*/true);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&loopbackIf.getThenRegion().front());
+      ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
+          rewriter, loc, srcAddr, totalSizeBytes, numDests,
+          destinationRange.startX, destinationRange.startY,
+          destinationRange.endX, destinationRange.endY, dstAddr, nocVal,
+          /*linked=*/nullptr);
+      rewriter.setInsertionPointToStart(&loopbackIf.getElseRegion().front());
+      ttk::NocAsyncWriteMulticastOp::create(
+          rewriter, loc, srcAddr, totalSizeBytes, numDests,
+          destinationRange.startX, destinationRange.startY,
+          destinationRange.endX, destinationRange.endY, dstAddr, nocVal,
+          /*linked=*/nullptr);
+    }
+    rewriter.setInsertionPointAfter(loopbackIf);
+    return success();
+  }
+
+  LogicalResult
+  emitReceiverCompletionIncrement(int64_t receiverCompletionSemIdx) override {
+    auto receiverCompletionCounterSemIdx =
+        arith::ConstantIndexOp::create(rewriter, loc, receiverCompletionSemIdx);
+    auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
+        rewriter, loc, receiverCompletionCounterSemIdx);
+    auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+    if (!fields.isCollective) {
+      TranslatedCore dstStartCore = getDstStartCore();
+      auto receiverCompletionNocAddr = ttk::GetNocAddrOp::create(
+          rewriter, loc, dstStartCore.x, dstStartCore.y,
+          receiverCompletionCounterAddr, nocVal);
+      ttk::NocSemaphoreIncOp::create(
+          rewriter, loc, receiverCompletionNocAddr.getResult(),
+          completionIncrement, nocVal, /*posted=*/BoolAttr());
+      return success();
+    }
+
+    DestinationRange destinationRange = getDestinationRange();
+    auto one = arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
+                                         rewriter.getI32IntegerAttr(1));
+    Value numDests = getNumDests();
+    Value numRemoteWithLoopback =
+        arith::SubIOp::create(rewriter, loc, numDests, one);
+    Value numRemoteDests = arith::SelectOp::create(
+        rewriter, loc, fields.srcInDstRange, numRemoteWithLoopback, numDests);
+    auto remoteReceiverCompletionMcastNocAddr =
+        ttk::GetNocMulticastAddrOp::create(
+            rewriter, loc, destinationRange.startX, destinationRange.startY,
+            destinationRange.endX, destinationRange.endY,
+            receiverCompletionCounterAddr, nocVal);
+    ttk::NocSemaphoreIncMulticastOp::create(
+        rewriter, loc, remoteReceiverCompletionMcastNocAddr.getResult(),
+        completionIncrement, numRemoteDests, nocVal, /*posted=*/BoolAttr());
+
+    auto localIncrementIf = scf::IfOp::create(
+        rewriter, loc, fields.srcInDstRange, /*withElseRegion=*/false);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(
+          &localIncrementIf.getThenRegion().front());
+      TranslatedCore sourceCore = getSourceCore();
+      auto localReceiverCompletionNocAddr =
+          ttk::GetNocAddrOp::create(rewriter, loc, sourceCore.x, sourceCore.y,
+                                    receiverCompletionCounterAddr, nocVal);
+      ttk::NocSemaphoreIncOp::create(
+          rewriter, loc, localReceiverCompletionNocAddr.getResult(),
+          completionIncrement, nocVal, /*posted=*/BoolAttr());
+    }
+    rewriter.setInsertionPointAfter(localIncrementIf);
+    return success();
+  }
+
+private:
+  TranslatedCore getSourceCore() override {
+    if (!sourceCore) {
+      sourceCore = buildTranslatedCore(fields.srcX, fields.srcY);
+    }
+    return *sourceCore;
+  }
+
+  TranslatedCore getDstStartCore() {
+    if (!dstStartCore) {
+      dstStartCore = buildTranslatedCore(fields.dstStartX, fields.dstStartY);
+    }
+    return *dstStartCore;
+  }
+
+  DestinationRange getDestinationRange() {
+    if (destinationRange) {
+      return *destinationRange;
+    }
+    TranslatedCore dstStartTranslatedCore = getDstStartCore();
+    auto [dstStartX, dstStartY] = dstStartTranslatedCore;
+    auto [dstEndX, dstEndY] =
+        buildTranslatedCore(fields.dstEndX, fields.dstEndY);
+    if (nocIdx == 1) {
+      std::swap(dstStartX, dstEndX);
+      std::swap(dstStartY, dstEndY);
+    }
+    destinationRange = DestinationRange{dstStartX, dstStartY, dstEndX, dstEndY};
+    return *destinationRange;
+  }
+
+  Value getNumDests() {
+    if (!numDests) {
+      numDests = arith::IndexCastOp::create(
+          rewriter, loc, rewriter.getI32Type(), fields.numDests);
+    }
+    return numDests;
+  }
+
+  SelectedPipeFields fields;
+  Value numDests;
   std::optional<TranslatedCore> sourceCore;
   std::optional<TranslatedCore> dstStartCore;
   std::optional<DestinationRange> destinationRange;
@@ -967,7 +1128,6 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
       lookupSelectedPipeResources(createOp, pipeResourcePlan);
   PipeCompletionWaitInfo completionInfo =
       lookupPipeCompletionWaitInfo(fields.pipeNetId, pipeResourcePlan);
-  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto cbType = getTTLCBType(srcCB);
   if (!cbType) {
@@ -978,12 +1138,21 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
     return rewriter.notifyMatchFailure(op, "CB element type must be tile");
   }
 
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+  SelectedNocPipeTransportEmitter nocTransport(op, fields, rewriter);
+  PipeTransportEmitter &transport = nocTransport;
+
   Value senderSemAddr = buildSelectedReadyCounterAddress(
       op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
   auto senderSemPtr =
       ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
-  Value expectedSignals = arith::IndexCastOp::create(
-      rewriter, loc, rewriter.getI32Type(), fields.numDests);
+  Value expectedSignals;
+  if (fields.isCollective) {
+    expectedSignals = arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getI32Type(), fields.numDests);
+  } else {
+    expectedSignals = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+  }
   ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedSignals);
   auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
   ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
@@ -1010,126 +1179,22 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   auto totalSizeVal = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI32Type(),
       rewriter.getI32IntegerAttr(cbNumTiles * tileType.getSizeBytes()));
-
-  auto dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
-      rewriter, loc, rewriter.getIndexType(), fields.dstStartX);
-  auto dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
-      rewriter, loc, rewriter.getIndexType(), fields.dstStartY);
-  auto dstEndXVal = ttk::ConvertLogicalXToTranslatedOp::create(
-      rewriter, loc, rewriter.getIndexType(), fields.dstEndX);
-  auto dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(
-      rewriter, loc, rewriter.getIndexType(), fields.dstEndY);
-  Value numDestsVal = arith::IndexCastOp::create(
-      rewriter, loc, rewriter.getI32Type(), fields.numDests);
-  Value oneDst = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  Value isCollective = arith::CmpIOp::create(
-      rewriter, loc, arith::CmpIPredicate::ne, fields.numDests, oneDst);
-
-  int64_t nocIdx = getNocIndex(op);
-  // The NOC ops take a required `noc` operand; always materialize it (noc 0
-  // is a valid index), matching the static-pipe send path.
-  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
-                                           rewriter.getI8IntegerAttr(nocIdx));
+  transport.preparePayloadWrite();
 
   Value tableAddress = buildSelectedAddressTableAddress(
-      op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
+      op, loc, resources, fields.recordIndex, rewriter);
   Value dstAddr =
       buildAddressTableDestinationAddress(loc, tableAddress, rewriter);
-  Value mcastStartXVal = dstStartXVal;
-  Value mcastStartYVal = dstStartYVal;
-  Value mcastEndXVal = dstEndXVal;
-  Value mcastEndYVal = dstEndYVal;
-  // TTKernel multicast ops follow tt-metal's NOC1 convention: callers pass
-  // the rectangle with start/end reversed after coordinate translation.
-  if (nocIdx == 1) {
-    std::swap(mcastStartXVal, mcastEndXVal);
-    std::swap(mcastStartYVal, mcastEndYVal);
+  if (failed(transport.emitPayloadWrite(srcAddr, dstAddr, totalSizeVal))) {
+    return failure();
   }
+  transport.emitPayloadWriteBarrier();
 
-  auto writeIf =
-      scf::IfOp::create(rewriter, loc, isCollective, /*withElseRegion=*/true);
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(&writeIf.getThenRegion().front());
-    auto loopbackIf = scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
-                                        /*withElseRegion=*/true);
-    {
-      OpBuilder::InsertionGuard loopbackGuard(rewriter);
-      rewriter.setInsertionPointToStart(&loopbackIf.getThenRegion().front());
-      ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
-          rewriter, loc, srcAddr, totalSizeVal, numDestsVal, mcastStartXVal,
-          mcastStartYVal, mcastEndXVal, mcastEndYVal, dstAddr, nocVal,
-          /*linked=*/nullptr);
-      rewriter.setInsertionPointToStart(&loopbackIf.getElseRegion().front());
-      ttk::NocAsyncWriteMulticastOp::create(
-          rewriter, loc, srcAddr, totalSizeVal, numDestsVal, mcastStartXVal,
-          mcastStartYVal, mcastEndXVal, mcastEndYVal, dstAddr, nocVal,
-          /*linked=*/nullptr);
-    }
-
-    rewriter.setInsertionPointToStart(&writeIf.getElseRegion().front());
-    ttk::NocAsyncWriteOp::create(
-        rewriter, loc, srcAddr, ValueRange{dstStartXVal, dstStartYVal},
-        /*dstBankId=*/ValueRange{}, dstAddr, totalSizeVal);
+  if (failed(transport.emitReceiverCompletionIncrement(
+          completionInfo.receiverCompletionSemIdx))) {
+    return failure();
   }
-  rewriter.setInsertionPointAfter(writeIf);
-
-  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
-
-  auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, completionInfo.receiverCompletionSemIdx);
-  auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
-      rewriter, loc, receiverCompletionCounterSemIdx);
-  auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  auto completionIf =
-      scf::IfOp::create(rewriter, loc, isCollective, /*withElseRegion=*/true);
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(&completionIf.getThenRegion().front());
-    auto remoteReceiverCompletionMcastNocAddr =
-        ttk::GetNocMulticastAddrOp::create(
-            rewriter, loc, mcastStartXVal, mcastStartYVal, mcastEndXVal,
-            mcastEndYVal, receiverCompletionCounterAddr, nocVal);
-    auto oneI32 = arith::ConstantOp::create(
-        rewriter, loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
-    Value numRemoteWithLoopback =
-        arith::SubIOp::create(rewriter, loc, numDestsVal, oneI32);
-    Value numRemoteDests =
-        arith::SelectOp::create(rewriter, loc, fields.srcInDstRange,
-                                numRemoteWithLoopback, numDestsVal);
-    ttk::NocSemaphoreIncMulticastOp::create(
-        rewriter, loc, remoteReceiverCompletionMcastNocAddr.getResult(),
-        completionIncrement, numRemoteDests, nocVal, /*posted=*/BoolAttr());
-
-    auto selfIncIf = scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
-                                       /*withElseRegion=*/false);
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(&selfIncIf.getThenRegion().front());
-      auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
-          rewriter, loc, rewriter.getIndexType(), fields.srcX);
-      auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
-          rewriter, loc, rewriter.getIndexType(), fields.srcY);
-      auto localReceiverCompletionNocAddr = ttk::GetNocAddrOp::create(
-          rewriter, loc, srcXTranslated, srcYTranslated,
-          receiverCompletionCounterAddr, nocVal);
-      ttk::NocSemaphoreIncOp::create(
-          rewriter, loc, localReceiverCompletionNocAddr.getResult(),
-          completionIncrement, nocVal, /*posted=*/BoolAttr());
-    }
-    rewriter.setInsertionPointAfter(selfIncIf);
-
-    rewriter.setInsertionPointToStart(&completionIf.getElseRegion().front());
-    auto receiverCompletionNocAddr =
-        ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal, dstStartYVal,
-                                  receiverCompletionCounterAddr, nocVal);
-    ttk::NocSemaphoreIncOp::create(
-        rewriter, loc, receiverCompletionNocAddr.getResult(),
-        completionIncrement, nocVal, /*posted=*/BoolAttr());
-  }
-  rewriter.setInsertionPointAfter(completionIf);
-
-  ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
+  transport.emitCompletionSignalBarrier();
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
@@ -1324,38 +1389,24 @@ static LogicalResult lowerSelectedPipeTransferPost(
     return failure();
   }
 
-  int64_t nocIdx = getNocIndex(op);
-  Value nocVal;
-  Value inlineNocId = arith::ConstantOp::create(
-      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(nocIdx));
-  if (nocIdx > 0) {
-    nocVal = inlineNocId;
-  }
-
-  auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
-      rewriter, loc, rewriter.getIndexType(), fields.srcX);
-  auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
-      rewriter, loc, rewriter.getIndexType(), fields.srcY);
+  SelectedNocPipeTransportEmitter nocTransport(op, fields, rewriter);
+  PipeTransportEmitter &transport = nocTransport;
 
   Value publishedAddress =
       buildReceiverPublishedAddress(dst, loc, *publishedAddressInfo, rewriter);
   Value tableAddress = buildSelectedAddressTableAddress(
-      op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
-  auto senderTableNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, tableAddress);
-  auto byteEnableAll = arith::ConstantOp::create(
-      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-  ttk::NocInlineDwWriteOp::create(rewriter, loc, senderTableNocAddr.getResult(),
-                                  publishedAddress, byteEnableAll, inlineNocId);
-  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
+      op, loc, resources, fields.recordIndex, rewriter);
+  if (failed(transport.emitReceiverAddressPublish(tableAddress,
+                                                  publishedAddress))) {
+    return failure();
+  }
+  transport.emitAddressPublishBarrier();
 
   Value senderSemAddr = buildSelectedReadyCounterAddress(
       op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
-  auto senderSemNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
-  auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
-                                 readyIncr, nocVal, /*posted=*/BoolAttr());
+  if (failed(transport.emitSenderReadyIncrement(senderSemAddr))) {
+    return failure();
+  }
 
   auto token = UnrealizedConversionCastOp::create(
       rewriter, loc, op.getToken().getType(), ValueRange{});
@@ -2222,7 +2273,7 @@ countPostAndSendEvents(const PipeTransferAllocationUnit &unit) {
 
 static bool usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
                                    const PipeCapacityPlan *pipeCapacityPlan) {
-  if (!pipeCapacityPlan) {
+  if (!pipeCapacityPlan || isSelectedTransferUnit(unit)) {
     return true;
   }
   for (Operation *transferCreateOp : unit.transferCreateOps) {
@@ -2303,6 +2354,11 @@ static std::optional<PipeComputedAddressInfo>
 getComputedAddressInfo(const PipeTransferAllocationUnit &unit,
                        const ReceiverDFBInfo &receiverInfo,
                        const PipeGraph &pipeGraph) {
+  // Runtime-selected rows share one compact protocol body. Receiver-published
+  // addresses keep that body independent of row-specific DFB state.
+  if (isSelectedTransferUnit(unit)) {
+    return std::nullopt;
+  }
   if (!receiverInfo.hasStaticTileOffset) {
     return std::nullopt;
   }
@@ -2559,6 +2615,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
       });
   int64_t maxAddressTableBytes =
       maxAddressColorsPerSource * kPipeAddressWordBytes;
+  llvm::MapVector<Operation *, SmallVector<std::optional<PipeResourceInfo>>>
+      selectedResources;
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     const PipeTransferAllocationUnit &unit = indexedUnit.value();
@@ -2605,8 +2663,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
       info.resources.insert({transferCreateOp, pipeResource});
     }
     for (auto [transferCreateOp, recordIndex] : unit.selectedTransferRows) {
-      SmallVector<PipeResourceInfo> &resources =
-          info.selectedResources[transferCreateOp];
+      SmallVector<std::optional<PipeResourceInfo>> &resources =
+          selectedResources[transferCreateOp];
       if (resources.empty()) {
         FailureOr<PipeReference> pipeRef = getPipeReference(
             transferCreateOp,
@@ -2617,6 +2675,17 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
       assert(recordIndex < resources.size() && "selected record index invalid");
       resources[recordIndex] = pipeResource;
     }
+  }
+
+  for (auto &[transferCreateOp, optionalResources] : selectedResources) {
+    SmallVector<PipeResourceInfo> resources;
+    resources.reserve(optionalResources.size());
+    for (const std::optional<PipeResourceInfo> &resource : optionalResources) {
+      assert(resource.has_value() &&
+             "selected pipe record missing resource allocation");
+      resources.push_back(*resource);
+    }
+    info.selectedResources.insert({transferCreateOp, std::move(resources)});
   }
 
   info.sramScratch.bytes =
@@ -2655,18 +2724,20 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
     }
   }
 
+  for (const auto &[transferCreateOp, resources] : info.selectedResources) {
+    (void)transferCreateOp;
+    for (const PipeResourceInfo &resource : resources) {
+      assert(resource.readyCounter &&
+             "selected pipe missing sender-ready counter");
+      resource.readyCounter->observe(observer);
+    }
+  }
+
   int64_t syncSemaphoreCount = observer.highestSyncSemaphoreIndex + 1;
   if (pipeCapacityPlan) {
     syncSemaphoreCount =
         std::max(syncSemaphoreCount, pipeCapacityPlan->getSyncSemaphoreCount());
   }
-  for (const auto &[transferCreateOp, resources] : info.selectedResources) {
-    (void)transferCreateOp;
-    for (const PipeResourceInfo &resource : resources) {
-      resource.readyCounter.observe(observer);
-    }
-  }
-
   return PipeResourceRequirements{
       syncSemaphoreCount,
       observer.highestGlobalSemaphoreIndex + 1,
@@ -2731,7 +2802,9 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
     (void)transferCreateOp;
     for (const PipeResourceInfo &resource : resources) {
       SenderReadyObserver observer(highest, resource.pipe);
-      resource.readyCounter.observe(observer);
+      assert(resource.readyCounter &&
+             "selected pipe missing sender-ready counter");
+      resource.readyCounter->observe(observer);
     }
   }
 

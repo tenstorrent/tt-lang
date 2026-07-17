@@ -25,8 +25,6 @@
 #include <cassert>
 #include <optional>
 
-#include <cassert>
-
 namespace mlir::tt::ttl {
 
 struct PipeGraphAnalysisState;
@@ -88,6 +86,11 @@ struct PipeKey {
 
   bool hasSingleReceiver() const {
     return dstStartX == dstEndX && dstStartY == dstEndY;
+  }
+
+  bool containsReceiver(PipeReceiverCoord receiver) const {
+    return receiver.x >= dstStartX && receiver.x <= dstEndX &&
+           receiver.y >= dstStartY && receiver.y <= dstEndY;
   }
 
   template <typename Fn>
@@ -222,13 +225,6 @@ inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
 inline PipeTransferContract getPipeTransferContract(PipeRecordAttr record) {
   return record.getIsMulticast() ? PipeTransferContract::Collective
                                  : PipeTransferContract::PointToPoint;
-}
-
-inline PipeKey getPipeKey(PipeType pipeType) {
-  return {pipeType.getSrcX(),      pipeType.getSrcY(),
-          pipeType.getDstStartX(), pipeType.getDstStartY(),
-          pipeType.getDstEndX(),   pipeType.getDstEndY(),
-          pipeType.getPipeNetId()};
 }
 
 inline PipeKey getPipeKey(PipeRecordAttr record, int64_t pipeNetId) {

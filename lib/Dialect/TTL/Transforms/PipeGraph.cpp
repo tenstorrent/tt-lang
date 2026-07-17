@@ -75,21 +75,31 @@ static bool isPostForReceiverDFB(
     PipeTransferPostOp postOp, const PipeReceiverDFBKey &receiverDFB,
     const llvm::MapVector<PipeKey, ReceiverDFBInfo> &receiverDFBs,
     PipeGraphAnalysisState &state) {
-  auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
-  if (!createOp) {
-    return false;
-  }
-  PipeKey pipeKey =
-      getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
-  auto receiverIt = receiverDFBs.find(pipeKey);
-  if (receiverIt == receiverDFBs.end() ||
-      receiverIt->second.dfbIndex != receiverDFB.dfbIndex) {
-    return false;
-  }
   LaunchNodeDomain postDomain =
       lookupOperationLaunchDomain(postOp.getOperation(), state);
-  return knownLaunchNodeDomainContains(
-      postDomain, getLaunchNodeCoord(receiverDFB.receiver));
+  if (!knownLaunchNodeDomainContains(
+          postDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
+    return false;
+  }
+
+  auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
+  assert(createOp && "pipe transfer graph validated transfer creators");
+  FailureOr<PipeReference> pipeRef =
+      getPipeReference(postOp, createOp.getPipe());
+  assert(succeeded(pipeRef) && "pipe transfer graph validated pipe references");
+  for (PipeType pipeType :
+       getPipeTypesFromReference(postOp.getContext(), *pipeRef)) {
+    PipeKey pipeKey = getPipeKey(pipeType);
+    if (!pipeKey.containsReceiver(receiverDFB.receiver)) {
+      continue;
+    }
+    auto receiverIt = receiverDFBs.find(pipeKey);
+    if (receiverIt != receiverDFBs.end() &&
+        receiverIt->second.dfbIndex == receiverDFB.dfbIndex) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static SmallVector<PipeTransferPostOp>
@@ -105,19 +115,32 @@ getPostsOwnedByReserve(CBReserveOp reserveOp,
 }
 
 static std::optional<int64_t> getReceiverSlotSpanBlocksForPost(
-    PipeTransferPostOp postOp,
+    PipeTransferPostOp postOp, const PipeReceiverDFBKey &receiverDFB,
     const llvm::MapVector<PipeKey, ReceiverDFBInfo> &receiverDFBs) {
   auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
-  if (!createOp) {
-    return std::nullopt;
+  assert(createOp && "pipe transfer graph validated transfer creators");
+  FailureOr<PipeReference> pipeRef =
+      getPipeReference(postOp, createOp.getPipe());
+  assert(succeeded(pipeRef) && "pipe transfer graph validated pipe references");
+  std::optional<int64_t> span;
+  for (PipeType pipeType :
+       getPipeTypesFromReference(postOp.getContext(), *pipeRef)) {
+    PipeKey pipeKey = getPipeKey(pipeType);
+    if (!pipeKey.containsReceiver(receiverDFB.receiver)) {
+      continue;
+    }
+    auto receiverIt = receiverDFBs.find(pipeKey);
+    if (receiverIt == receiverDFBs.end() ||
+        receiverIt->second.dfbIndex != receiverDFB.dfbIndex) {
+      continue;
+    }
+    int64_t candidateSpan = receiverIt->second.receiverSlotSpanBlocks;
+    if (span && *span != candidateSpan) {
+      return std::nullopt;
+    }
+    span = candidateSpan;
   }
-  PipeKey pipeKey =
-      getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
-  auto receiverIt = receiverDFBs.find(pipeKey);
-  if (receiverIt == receiverDFBs.end()) {
-    return std::nullopt;
-  }
-  return receiverIt->second.receiverSlotSpanBlocks;
+  return span;
 }
 
 static bool isBeforeInSameBlock(Operation *before, Operation *after) {
@@ -331,63 +354,72 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
   auto processPost = [&](PipeTransferPostOp postOp) -> LogicalResult {
     auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
     if (!createOp) {
-      return success();
+      return postOp.emitError(
+          "pipe transfer post must reference a transfer derived from "
+          "ttl.pipe_transfer.create");
     }
-    PipeKey pipeKey =
-        getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
-    auto receiverIt = receiverDFBs.find(pipeKey);
-    if (receiverIt == receiverDFBs.end()) {
-      return success();
-    }
-
-    ReceiverDFBInfo &receiverInfo = receiverIt->second;
-    if (receiverInfo.receiverSlotIndex.has_value()) {
-      return success();
-    }
-
-    LaunchNodeDomain postDomain =
-        lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
-    std::optional<int64_t> uniformSlot;
-    bool hasReceiver = false;
-    bool nonUniformSlot = false;
-    LogicalResult result = success();
-    pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-      if (failed(result) ||
-          (postDomain.known && !knownLaunchNodeDomainContains(
-                                   postDomain, getLaunchNodeCoord(receiver)))) {
-        return;
-      }
-      hasReceiver = true;
-      PipeReceiverDFBKey receiverDFB{receiver, receiverInfo.dfbIndex};
-      auto &slotByReserve = slotByReceiverReserve[receiverDFB];
-      auto reserveIt = slotByReserve.find(receiverInfo.receiverReserveOp);
-      int64_t slot = 0;
-      if (reserveIt == slotByReserve.end()) {
-        FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
-            pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
-        if (failed(assignedSlot)) {
-          result = failure();
-          return;
-        }
-        slot = *assignedSlot;
-        slotByReserve[receiverInfo.receiverReserveOp] = slot;
-      } else {
-        slot = reserveIt->second;
-      }
-      if (!uniformSlot) {
-        uniformSlot = slot;
-      } else if (*uniformSlot != slot) {
-        nonUniformSlot = true;
-      }
-    });
-    if (failed(result)) {
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(postOp, createOp.getPipe());
+    if (failed(pipeRef)) {
       return failure();
     }
-    if (!hasReceiver || nonUniformSlot) {
-      receiverInfo.receiverSlotIndex = std::nullopt;
-      return success();
+    LaunchNodeDomain postDomain =
+        lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
+    for (PipeType pipeType :
+         getPipeTypesFromReference(postOp.getContext(), *pipeRef)) {
+      PipeKey pipeKey = getPipeKey(pipeType);
+      auto receiverIt = receiverDFBs.find(pipeKey);
+      if (receiverIt == receiverDFBs.end()) {
+        continue;
+      }
+
+      ReceiverDFBInfo &receiverInfo = receiverIt->second;
+      if (receiverInfo.receiverSlotIndex.has_value()) {
+        continue;
+      }
+
+      std::optional<int64_t> uniformSlot;
+      bool hasReceiver = false;
+      bool nonUniformSlot = false;
+      LogicalResult result = success();
+      pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
+        if (failed(result) ||
+            (postDomain.known && !knownLaunchNodeDomainContains(
+                                     postDomain, getLaunchNodeCoord(receiver)))) {
+          return;
+        }
+        hasReceiver = true;
+        PipeReceiverDFBKey receiverDFB{receiver, receiverInfo.dfbIndex};
+        auto &slotByReserve = slotByReceiverReserve[receiverDFB];
+        auto reserveIt = slotByReserve.find(receiverInfo.receiverReserveOp);
+        int64_t slot = 0;
+        if (reserveIt == slotByReserve.end()) {
+          FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
+              pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
+          if (failed(assignedSlot)) {
+            result = failure();
+            return;
+          }
+          slot = *assignedSlot;
+          slotByReserve[receiverInfo.receiverReserveOp] = slot;
+        } else {
+          slot = reserveIt->second;
+        }
+        if (!uniformSlot) {
+          uniformSlot = slot;
+        } else if (*uniformSlot != slot) {
+          nonUniformSlot = true;
+        }
+      });
+      if (failed(result)) {
+        return failure();
+      }
+      if (!hasReceiver || nonUniformSlot) {
+        receiverInfo.receiverSlotIndex = std::nullopt;
+        continue;
+      }
+      receiverInfo.receiverSlotIndex = *uniformSlot;
     }
-    receiverInfo.receiverSlotIndex = *uniformSlot;
     return success();
   };
 
@@ -528,7 +560,7 @@ PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
           return;
         }
         std::optional<int64_t> span =
-            getReceiverSlotSpanBlocksForPost(postOp, receiverDFBs);
+            getReceiverSlotSpanBlocksForPost(postOp, receiverDFB, receiverDFBs);
         if (!span) {
           reject("post has no receiver slot span");
           return;
@@ -971,8 +1003,7 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
         return WalkResult::interrupt();
       }
       const PipeTransferInfo &pipeInfo = pipeInfoIt->second;
-      if (failed(addPipeReceiver(graph, postOp, key,
-                                 pipeInfo.transferContract,
+      if (failed(addPipeReceiver(graph, postOp, key, pipeInfo.transferContract,
                                  pipeInfo.transferCreateOps,
                                  postOp.getDst()))) {
         return WalkResult::interrupt();
