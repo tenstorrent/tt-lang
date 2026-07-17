@@ -6,7 +6,7 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""SUMMA matmul as a single @ttl.atom, multicast only (no K-split).
+"""SUMMA matmul as a unified @ttl.operation, multicast only (no K-split).
 
 Each core (col_c, row_c) owns one BM x BN output block. A is multicast
 across the NP cores of each row; B is multicast down the MP rows of each
@@ -38,7 +38,7 @@ GRID_X = NP
 GRID_Y = MP
 
 
-@ttl.atom(grid=(GRID_X, GRID_Y))
+@ttl.operation(grid=(GRID_X, GRID_Y))
 def atom_summa_mcast(a, w, out):
     a_cb = ttl.make_dataflow_buffer_like(a, shape=(BM, BK), block_count=2)
     b_cb = ttl.make_dataflow_buffer_like(w, shape=(BK, BN), block_count=2)

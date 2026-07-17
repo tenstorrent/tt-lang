@@ -6,7 +6,7 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""@ttl.atom tensor copy: the minimal unified body -- read one tile from
+"""Unified @ttl.operation tensor copy: read one tile from
 a ttnn tensor into a DFB and write it back out. The compute thread is
 empty, so the splitter emits an empty compute kernel alongside the two
 data-movement threads."""
@@ -21,7 +21,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_l1
 
 
-@ttl.atom(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def atom_tensor_copy(src, dst):
     cb = ttl.make_dataflow_buffer_like(src, shape=(1, 1), block_count=2)
     blk_in = cb.reserve()

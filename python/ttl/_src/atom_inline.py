@@ -2,282 +2,88 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""@ttl.atom-in-@ttl.atom AST inlining.
-
-A @ttl.atom function may invoke another @ttl.atom function as a
-statement. At decoration time the caller's AST is rewritten by
-substituting the callee's body in place of the call, binding the call
-site's args to the callee's parameters and alpha-renaming the callee's
-local variables to avoid collisions with the caller's scope.
-
-Constraints on inlined callees:
-
-  - The callee body must not declare its own DFBs or PipeNets. All
-    DataFlow buffers and PipeNets used by the callee must be passed
-    in as parameters. Operating on existing PipeNets (e.g.
-    ``.if_src``/``.if_dst``) and emitting copies is fine.
-  - The callee must be invoked as a bare statement (``Callee(...)``);
-    using the result as an expression is not supported.
-  - The callee's parameters must all be provided at the call site; no
-    defaults are applied.
-"""
+"""Composition support for unified ``@ttl.operation`` functions."""
 
 from __future__ import annotations
 
 import ast
 import copy
+import inspect
 import itertools
-from typing import TYPE_CHECKING, Dict, List, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-if TYPE_CHECKING:
-    from ttl.atom import Atom
-
-
-_FORBIDDEN_CALLEE_NAMES = {"make_dataflow_buffer_like", "make_dfb", "PipeNet"}
 
 _inline_counter = itertools.count()
+_NESTED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
 
 
-def inline_atom_calls(
-    fn_def: ast.FunctionDef,
-    fn_globals: Dict[str, object],
-    caller_name: str,
-) -> None:
-    """Rewrite ``fn_def`` in place: inline statement-level calls to
-    @ttl.atom kernels reachable through ``fn_globals``.
+class _OuterLocalCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names: Set[str] = set()
 
-    ``fn_def.body`` is replaced with the post-inline statement list.
-    Nested compound bodies (if / for / while / with) are inlined
-    recursively. Raises ``ValueError`` if a discovered callee's body
-    declares its own DFBs or PipeNets.
-    """
-    fn_def.body = _inline_stmts(fn_def.body, fn_globals, caller_name)
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
 
+    def visit_FunctionDef(self, node):
+        self.names.add(node.name)
 
-def _inline_stmts(
-    stmts: List[ast.stmt],
-    fn_globals: Dict[str, object],
-    caller_name: str,
-) -> List[ast.stmt]:
-    out: List[ast.stmt] = []
-    for stmt in stmts:
-        _inline_inside_compound(stmt, fn_globals, caller_name)
-        match = _match_atom_call(stmt, fn_globals)
-        if match is None:
-            out.append(stmt)
-            continue
-        callee, call = match
-        out.extend(_expand_call(callee, call, caller_name))
-    return out
+    def visit_AsyncFunctionDef(self, node):
+        self.names.add(node.name)
 
+    def visit_Lambda(self, node):
+        return
 
-def _inline_inside_compound(
-    stmt: ast.stmt,
-    fn_globals: Dict[str, object],
-    caller_name: str,
-) -> None:
-    """Recurse into compound-statement bodies so nested calls inline too."""
-    for attr in ("body", "orelse", "finalbody"):
-        body = getattr(stmt, attr, None)
-        if isinstance(body, list) and body and isinstance(body[0], ast.stmt):
-            setattr(stmt, attr, _inline_stmts(body, fn_globals, caller_name))
-    # try/except handler bodies
-    handlers = getattr(stmt, "handlers", None)
-    if isinstance(handlers, list):
-        for h in handlers:
-            if isinstance(h, ast.ExceptHandler):
-                h.body = _inline_stmts(h.body, fn_globals, caller_name)
+    def visit_ListComp(self, node):
+        return
+
+    def visit_SetComp(self, node):
+        return
+
+    def visit_DictComp(self, node):
+        return
+
+    def visit_GeneratorExp(self, node):
+        return
+
+    def visit_ExceptHandler(self, node):
+        if node.name is not None:
+            self.names.add(node.name)
+        self.generic_visit(node)
 
 
-def _match_atom_call(
-    stmt: ast.stmt,
-    fn_globals: Dict[str, object],
-) -> Tuple["Atom", ast.Call] | None:
-    """Return (callee_atom, call_node) if ``stmt`` is a statement-level
-    call to a @ttl.atom kernel resolvable through ``fn_globals``."""
-    from ttl.atom import Atom
+class _NestedBindingCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names: Set[str] = set()
 
-    if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
-        return None
-    call = stmt.value
-    if not isinstance(call.func, ast.Name):
-        return None
-    obj = fn_globals.get(call.func.id)
-    if not isinstance(obj, Atom):
-        return None
-    return obj, call
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
 
+    def visit_FunctionDef(self, node):
+        self.names.add(node.name)
 
-def _expand_call(
-    callee: "Atom",
-    call: ast.Call,
-    caller_name: str,
-) -> List[ast.stmt]:
-    spec = callee._spec
-    _validate_callee_for_inline(spec, caller_name)
+    def visit_AsyncFunctionDef(self, node):
+        self.names.add(node.name)
 
-    bindings = _bind_args_to_params(spec, call, caller_name)
-    locals_in_callee = _collect_local_names(spec.fn_ast) - set(bindings)
-    suffix = f"__{spec.name}_inl{next(_inline_counter)}"
-    rename_map = {n: n + suffix for n in locals_in_callee}
+    def visit_Lambda(self, node):
+        return
 
-    transformer = _SubstituteTransformer(
-        bindings=bindings,
-        rename_map=rename_map,
-        callee_name=spec.name,
-        caller_name=caller_name,
-    )
-    inlined: List[ast.stmt] = []
-    for stmt in spec.fn_ast.body:
-        new_stmt = transformer.visit(copy.deepcopy(stmt))
-        ast.fix_missing_locations(new_stmt)
-        inlined.append(new_stmt)
-    return inlined
-
-
-def _validate_callee_for_inline(spec, caller_name: str) -> None:
-    """Forbid DFB / PipeNet declarations in a callee that's being inlined."""
-    for node in ast.walk(spec.fn_ast):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        attr = None
-        if isinstance(func, ast.Attribute):
-            attr = func.attr
-        elif isinstance(func, ast.Name):
-            attr = func.id
-        if attr in _FORBIDDEN_CALLEE_NAMES:
-            raise ValueError(
-                f"@ttl.atom: cannot inline {spec.name!r} into "
-                f"{caller_name!r}: callee body invokes {attr!r}. "
-                "Inlined callees must take all DFBs / PipeNets as "
-                "parameters; declare them in the caller and pass them in."
-            )
-
-
-def _bind_args_to_params(spec, call: ast.Call, caller_name: str) -> Dict[str, ast.expr]:
-    if any(isinstance(a, ast.Starred) for a in call.args):
-        raise ValueError(
-            f"@ttl.atom: inlining {spec.name!r} into {caller_name!r}: "
-            "*-unpacking is not supported at the call site."
-        )
-    if any(k.arg is None for k in call.keywords):
-        raise ValueError(
-            f"@ttl.atom: inlining {spec.name!r} into {caller_name!r}: "
-            "**-unpacking is not supported at the call site."
-        )
-
-    positional_params = [p for p in spec.params if not p.is_keyword_only]
-    if len(call.args) > len(positional_params):
-        raise ValueError(
-            f"@ttl.atom: inlining {spec.name!r} into {caller_name!r}: "
-            f"got {len(call.args)} positional args, expected at most "
-            f"{len(positional_params)} (params: "
-            f"{[p.name for p in positional_params]})"
-        )
-
-    bindings: Dict[str, ast.expr] = {}
-    for p, arg in zip(positional_params, call.args):
-        bindings[p.name] = arg
-
-    kwargs = {k.arg: k.value for k in call.keywords}
-    known_names = {p.name for p in spec.params}
-    unknown = set(kwargs) - known_names
-    if unknown:
-        raise ValueError(
-            f"@ttl.atom: inlining {spec.name!r} into {caller_name!r}: "
-            f"unknown keyword args {sorted(unknown)} "
-            f"(params: {sorted(known_names)})"
-        )
-
-    for p in spec.params:
-        if p.name in bindings:
-            if p.name in kwargs:
-                raise ValueError(
-                    f"@ttl.atom: inlining {spec.name!r} into "
-                    f"{caller_name!r}: param {p.name!r} passed both "
-                    "positionally and by keyword."
-                )
-            continue
-        if p.name in kwargs:
-            bindings[p.name] = kwargs[p.name]
-            continue
-        raise ValueError(
-            f"@ttl.atom: inlining {spec.name!r} into {caller_name!r}: "
-            f"missing argument for param {p.name!r}."
-        )
-
-    return bindings
-
-
-def _collect_local_names(fn_def: ast.FunctionDef) -> Set[str]:
-    """Names that the callee assigns to anywhere in its body.
-
-    Used to alpha-rename locals so they don't collide with caller-scope
-    names after substitution. Nested ``FunctionDef`` / ``Lambda`` scopes
-    are skipped: their locals shadow the outer scope already.
-    """
-    names: Set[str] = set()
-
-    class _LocalCollector(ast.NodeVisitor):
-        def visit_FunctionDef(self, node):
-            return
-
-        def visit_AsyncFunctionDef(self, node):
-            return
-
-        def visit_Lambda(self, node):
-            return
-
-        def visit_Assign(self, node):
-            for tgt in node.targets:
-                _walk_target(tgt, names)
-            self.generic_visit(node)
-
-        def visit_AugAssign(self, node):
-            _walk_target(node.target, names)
-            self.generic_visit(node)
-
-        def visit_AnnAssign(self, node):
-            _walk_target(node.target, names)
-            self.generic_visit(node)
-
-        def visit_For(self, node):
-            _walk_target(node.target, names)
-            self.generic_visit(node)
-
-        def visit_AsyncFor(self, node):
-            _walk_target(node.target, names)
-            self.generic_visit(node)
-
-        def visit_With(self, node):
-            for item in node.items:
-                if item.optional_vars is not None:
-                    _walk_target(item.optional_vars, names)
-            self.generic_visit(node)
-
-        def visit_comprehension(self, node):
-            _walk_target(node.target, names)
-            self.generic_visit(node)
-
-    for stmt in fn_def.body:
-        _LocalCollector().visit(stmt)
-    return names
-
-
-def _walk_target(target: ast.expr, names: Set[str]) -> None:
-    if isinstance(target, ast.Name):
-        names.add(target.id)
-    elif isinstance(target, (ast.Tuple, ast.List)):
-        for elt in target.elts:
-            _walk_target(elt, names)
-    elif isinstance(target, ast.Starred):
-        _walk_target(target.value, names)
+    def visit_ExceptHandler(self, node):
+        if node.name is not None:
+            self.names.add(node.name)
+        self.generic_visit(node)
 
 
 class _SubstituteTransformer(ast.NodeTransformer):
-    """Replace param Names with caller's arg expressions; rename locals."""
-
     def __init__(
         self,
         bindings: Dict[str, ast.expr],
@@ -290,16 +96,446 @@ class _SubstituteTransformer(ast.NodeTransformer):
         self.callee_name = callee_name
         self.caller_name = caller_name
 
-    def visit_Name(self, node: ast.Name) -> ast.expr:
+    def visit_FunctionDef(self, node):
+        node.name = self.rename_map.get(node.name, node.name)
+        return self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node):
+        node.name = self.rename_map.get(node.name, node.name)
+        return self.generic_visit(node)
+
+    def visit_Name(self, node):
         if node.id in self.bindings:
             if isinstance(node.ctx, (ast.Store, ast.Del)):
                 raise ValueError(
-                    f"@ttl.atom: inlining {self.callee_name!r} into "
-                    f"{self.caller_name!r}: cannot assign to or delete "
-                    f"parameter {node.id!r} inside the callee body."
+                    f"@ttl.operation: composing {self.callee_name!r} into "
+                    f"{self.caller_name!r} cannot assign to parameter "
+                    f"{node.id!r}"
                 )
-            return ast.copy_location(copy.deepcopy(self.bindings[node.id]), node)
-        if node.id in self.rename_map:
-            new = ast.Name(id=self.rename_map[node.id], ctx=node.ctx)
-            return ast.copy_location(new, node)
-        return node
+            replacement = copy.deepcopy(self.bindings[node.id])
+            return ast.copy_location(replacement, node)
+        if node.id not in self.rename_map:
+            return node
+        replacement = ast.Name(id=self.rename_map[node.id], ctx=node.ctx)
+        return ast.copy_location(replacement, node)
+
+
+def inline_atom_calls(
+    fn_def: ast.FunctionDef,
+    fn_globals: Dict[str, object],
+    caller_name: str,
+) -> Dict[str, object]:
+    reserved_names = _identifier_names(fn_def)
+    external_pipenets = {}
+    fn_def.body = _inline_statements(
+        fn_def.body,
+        fn_globals,
+        caller_name,
+        reserved_names,
+        external_pipenets,
+    )
+    return external_pipenets
+
+
+def _inline_statements(
+    statements: List[ast.stmt],
+    scope: Dict[str, object],
+    caller_name: str,
+    reserved_names: Set[str],
+    external_pipenets: Dict[str, object],
+) -> List[ast.stmt]:
+    result: List[ast.stmt] = []
+    for statement in statements:
+        _inline_compound_bodies(
+            statement,
+            scope,
+            caller_name,
+            reserved_names,
+            external_pipenets,
+        )
+        match = _standalone_operation_call(statement, scope)
+        if match is None:
+            _reject_unsupported_operation_calls(statement, scope, caller_name)
+            result.append(statement)
+            continue
+        callee, call = match
+        result.extend(
+            _expand_call(
+                callee,
+                call,
+                caller_name,
+                scope,
+                reserved_names,
+                external_pipenets,
+            )
+        )
+    return result
+
+
+def _inline_compound_bodies(
+    statement: ast.stmt,
+    scope: Dict[str, object],
+    caller_name: str,
+    reserved_names: Set[str],
+    external_pipenets: Dict[str, object],
+) -> None:
+    for attribute in ("body", "orelse", "finalbody"):
+        body = getattr(statement, attribute, None)
+        if not isinstance(body, list):
+            continue
+        if not body or not isinstance(body[0], ast.stmt):
+            continue
+        inlined = _inline_statements(
+            body,
+            scope,
+            caller_name,
+            reserved_names,
+            external_pipenets,
+        )
+        setattr(statement, attribute, inlined)
+
+    handlers = getattr(statement, "handlers", None)
+    if not isinstance(handlers, list):
+        return
+    for handler in handlers:
+        if isinstance(handler, ast.ExceptHandler):
+            handler.body = _inline_statements(
+                handler.body,
+                scope,
+                caller_name,
+                reserved_names,
+                external_pipenets,
+            )
+
+
+def _standalone_operation_call(
+    statement: ast.stmt,
+    scope: Dict[str, object],
+) -> Optional[Tuple[object, ast.Call]]:
+    if not isinstance(statement, ast.Expr):
+        return None
+    if not isinstance(statement.value, ast.Call):
+        return None
+    call = statement.value
+    if not isinstance(call.func, ast.Name):
+        return None
+    callee = scope.get(call.func.id)
+    if _operation_kind(callee) != "unified":
+        return None
+    if not hasattr(callee, "_spec"):
+        return None
+    return callee, call
+
+
+def _operation_kind(value: object) -> Optional[str]:
+    return getattr(value, "_ttl_operation_kind", None)
+
+
+def _resolve_reference(node: ast.expr, scope: Dict[str, object]):
+    if isinstance(node, ast.Name):
+        return scope.get(node.id)
+    if not isinstance(node, ast.Attribute):
+        return None
+    parent = _resolve_reference(node.value, scope)
+    return inspect.getattr_static(parent, node.attr, None)
+
+
+def _reject_unsupported_operation_calls(
+    statement: ast.stmt,
+    scope: Dict[str, object],
+    caller_name: str,
+) -> None:
+    for node in ast.walk(statement):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == caller_name:
+            raise ValueError(f"@ttl.operation {caller_name!r} cannot compose itself")
+        callee = _resolve_reference(node.func, scope)
+        operation_kind = _operation_kind(callee)
+        if operation_kind is None:
+            continue
+        reference = ast.unparse(node.func)
+        if operation_kind == "multi_kernel":
+            raise ValueError(
+                f"@ttl.operation: cannot compose multi-kernel operation "
+                f"{reference!r} into {caller_name!r}"
+            )
+        if isinstance(node.func, ast.Attribute):
+            raise ValueError(
+                f"@ttl.operation: compose {reference!r} through a captured "
+                "name instead of a qualified reference"
+            )
+        raise ValueError(
+            f"@ttl.operation: composed call to {reference!r} in "
+            f"{caller_name!r} must be a standalone statement"
+        )
+
+
+def _expand_call(
+    callee: object,
+    call: ast.Call,
+    caller_name: str,
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    external_pipenets: Dict[str, object],
+) -> List[ast.stmt]:
+    spec = callee._spec
+    bindings = _bind_args_to_params(spec, call, caller_name)
+    suffix = f"__{spec.name}_inl{next(_inline_counter)}"
+    _add_capture_bindings(spec, bindings)
+    _add_external_pipenet_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        external_pipenets,
+        suffix,
+    )
+
+    local_names = _collect_local_names(spec.fn_ast)
+    rebound_names = local_names & set(bindings)
+    if rebound_names:
+        raise ValueError(
+            f"@ttl.operation: composing {spec.name!r} into {caller_name!r} "
+            f"would rebind {sorted(rebound_names)}"
+        )
+    _validate_nested_bindings(spec, bindings, local_names, caller_name)
+
+    rename_map = _make_rename_map(local_names, suffix, reserved_names)
+    transformer = _SubstituteTransformer(
+        bindings,
+        rename_map,
+        spec.name,
+        caller_name,
+    )
+
+    result: List[ast.stmt] = []
+    for statement in spec.fn_ast.body:
+        cloned_statement = copy.deepcopy(statement)
+        inlined_statement = transformer.visit(cloned_statement)
+        ast.fix_missing_locations(inlined_statement)
+        result.append(inlined_statement)
+    return result
+
+
+def _add_capture_bindings(spec, bindings: Dict[str, ast.expr]) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, value in spec.compile_time_captures.items():
+        if name in loaded_names and name not in bindings:
+            bindings[name] = _literal_node(value)
+
+
+def _add_external_pipenet_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    external_pipenets: Dict[str, object],
+    suffix: str,
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, pipenet in spec.external_pipenets.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        fresh_name = _fresh_name(name, suffix, reserved_names)
+        bindings[name] = ast.Name(id=fresh_name, ctx=ast.Load())
+        scope[fresh_name] = pipenet
+        external_pipenets[fresh_name] = pipenet
+
+
+def _literal_node(value: object) -> ast.expr:
+    if isinstance(value, tuple):
+        elements = [_literal_node(element) for element in value]
+        return ast.Tuple(elts=elements, ctx=ast.Load())
+    if isinstance(value, list):
+        elements = [_literal_node(element) for element in value]
+        return ast.List(elts=elements, ctx=ast.Load())
+    return ast.Constant(value=value)
+
+
+def _make_rename_map(
+    names: Set[str],
+    suffix: str,
+    reserved_names: Set[str],
+) -> Dict[str, str]:
+    rename_map = {}
+    for name in sorted(names):
+        rename_map[name] = _fresh_name(name, suffix, reserved_names)
+    return rename_map
+
+
+def _fresh_name(base: str, suffix: str, reserved_names: Set[str]) -> str:
+    candidate = base + suffix
+    discriminator = 0
+    while candidate in reserved_names:
+        discriminator += 1
+        candidate = f"{base}{suffix}_{discriminator}"
+    reserved_names.add(candidate)
+    return candidate
+
+
+def _bind_args_to_params(spec, call: ast.Call, caller_name: str) -> Dict[str, ast.expr]:
+    if any(isinstance(argument, ast.Starred) for argument in call.args):
+        raise ValueError(
+            f"@ttl.operation: composing {spec.name!r} into {caller_name!r} "
+            "does not support *-unpacking"
+        )
+    if any(keyword.arg is None for keyword in call.keywords):
+        raise ValueError(
+            f"@ttl.operation: composing {spec.name!r} into {caller_name!r} "
+            "does not support **-unpacking"
+        )
+
+    positional_parameters = [
+        parameter for parameter in spec.params if not parameter.is_keyword_only
+    ]
+    if len(call.args) > len(positional_parameters):
+        raise ValueError(
+            f"@ttl.operation: composing {spec.name!r} into {caller_name!r} "
+            f"received too many positional arguments"
+        )
+
+    bindings: Dict[str, ast.expr] = {}
+    for parameter, argument in zip(positional_parameters, call.args):
+        bindings[parameter.name] = argument
+
+    keyword_arguments = {}
+    for keyword in call.keywords:
+        keyword_arguments[keyword.arg] = keyword.value
+
+    parameter_names = {parameter.name for parameter in spec.params}
+    unknown_names = set(keyword_arguments) - parameter_names
+    if unknown_names:
+        raise ValueError(
+            f"@ttl.operation: composing {spec.name!r} into {caller_name!r} "
+            f"received unknown arguments {sorted(unknown_names)}"
+        )
+
+    for parameter in spec.params:
+        if parameter.name in bindings:
+            if parameter.name in keyword_arguments:
+                raise ValueError(
+                    f"@ttl.operation: argument {parameter.name!r} was passed twice"
+                )
+            continue
+        if parameter.name not in keyword_arguments:
+            raise ValueError(
+                f"@ttl.operation: missing argument {parameter.name!r} while "
+                f"composing {spec.name!r} into {caller_name!r}"
+            )
+        bindings[parameter.name] = keyword_arguments[parameter.name]
+
+    for name, argument in bindings.items():
+        if not isinstance(argument, ast.Name):
+            raise TypeError(
+                f"@ttl.operation: argument {name!r} while composing "
+                f"{spec.name!r} into {caller_name!r} must be a tensor or "
+                "resource name"
+            )
+    return bindings
+
+
+def _collect_local_names(fn_def: ast.FunctionDef) -> Set[str]:
+    collector = _OuterLocalCollector()
+    for statement in fn_def.body:
+        collector.visit(statement)
+    return collector.names
+
+
+def _identifier_names(root: ast.AST) -> Set[str]:
+    names: Set[str] = set()
+    for node in ast.walk(root):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+    return names
+
+
+def _loaded_names(roots: Iterable[ast.AST]) -> Set[str]:
+    names: Set[str] = set()
+    for root in roots:
+        for node in ast.walk(root):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                names.add(node.id)
+    return names
+
+
+def _scope_roots(scope: ast.AST) -> List[ast.AST]:
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return list(scope.body)
+    if isinstance(scope, ast.Lambda):
+        return [scope.body]
+
+    roots: List[ast.AST] = []
+    if isinstance(scope, ast.DictComp):
+        roots.extend((scope.key, scope.value))
+    elif isinstance(scope, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+        roots.append(scope.elt)
+    for generator in scope.generators:
+        roots.append(generator.iter)
+        roots.extend(generator.ifs)
+    return roots
+
+
+def _function_parameter_names(scope: ast.AST) -> Set[str]:
+    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return set()
+    names = {argument.arg for argument in scope.args.posonlyargs}
+    names.update(argument.arg for argument in scope.args.args)
+    names.update(argument.arg for argument in scope.args.kwonlyargs)
+    if scope.args.vararg is not None:
+        names.add(scope.args.vararg.arg)
+    if scope.args.kwarg is not None:
+        names.add(scope.args.kwarg.arg)
+    return names
+
+
+def _nested_binding_names(scope: ast.AST) -> Set[str]:
+    names = _function_parameter_names(scope)
+    collector = _NestedBindingCollector()
+    for root in _scope_roots(scope):
+        collector.visit(root)
+    names.update(collector.names)
+    if isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        for generator in scope.generators:
+            _collect_target_names(generator.target, names)
+    return names
+
+
+def _collect_target_names(target: ast.expr, names: Set[str]) -> None:
+    if isinstance(target, ast.Name):
+        names.add(target.id)
+        return
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            _collect_target_names(element, names)
+        return
+    if isinstance(target, ast.Starred):
+        _collect_target_names(target.value, names)
+
+
+def _validate_nested_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    local_names: Set[str],
+    caller_name: str,
+) -> None:
+    protected_names = set(bindings)
+    protected_names.update(local_names)
+    for replacement in bindings.values():
+        if isinstance(replacement, ast.Name):
+            protected_names.add(replacement.id)
+
+    for scope in ast.walk(spec.fn_ast):
+        if scope is spec.fn_ast or not isinstance(scope, _NESTED_SCOPES):
+            continue
+        conflicts = _nested_binding_names(scope) & protected_names
+        if conflicts:
+            raise ValueError(
+                f"@ttl.operation: composing {spec.name!r} into "
+                f"{caller_name!r} would capture or rebind "
+                f"{sorted(conflicts)}; rename the nested binding"
+            )

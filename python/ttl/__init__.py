@@ -28,7 +28,6 @@ if _SIM_ONLY_INSTALL:
 else:
     from ttl.ttl import (
         operation,
-        atom,
         DFB,
         compute,
         datamovement,
@@ -58,7 +57,6 @@ else:
         "__version__",
         "build_info",
         "operation",
-        "atom",
         "DFB",
         "compute",
         "datamovement",

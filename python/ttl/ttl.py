@@ -20,8 +20,8 @@ Math operations:
     ttl.math.sqrt(), ttl.math.exp(), etc.
 """
 
-from .ttl_api import pykernel_gen as operation, compute, datamovement, Program
-from .atom import atom, DFB
+from .ttl_api import compute, datamovement, Program
+from .atom import operation, DFB
 from .dataflow_buffer import make_dataflow_buffer_like, make_dfb
 from .operators import copy, node, grid_size, matmul
 
@@ -30,7 +30,6 @@ from . import ttl_math as math
 
 __all__ = [
     "operation",
-    "atom",
     "DFB",
     "compute",
     "datamovement",

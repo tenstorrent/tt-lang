@@ -6,7 +6,7 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""SUMMA matmul with K-split reduction as a single @ttl.atom.
+"""SUMMA matmul with K-split reduction as a unified @ttl.operation.
 
 Each output tile block is computed by KP cores that split the K range,
 then a reduce PipeNet gathers the non-root partials onto the root band
@@ -48,7 +48,7 @@ GRID_X = NUM_COLS * KP  # 4
 GRID_Y = NUM_ROWS  # 2
 
 
-@ttl.atom(grid=(GRID_X, GRID_Y), fp32_dest_acc_en=True)
+@ttl.operation(grid=(GRID_X, GRID_Y), fp32_dest_acc_en=True)
 def atom_summa_ksplit(a, w, out):
     a_cb = ttl.make_dataflow_buffer_like(a, shape=(BLOCK_M, BLOCK_K), block_count=2)
     b_cb = ttl.make_dataflow_buffer_like(w, shape=(BLOCK_K, BLOCK_N), block_count=2)

@@ -6,7 +6,7 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""@ttl.atom tensor add: a single unified body (no explicit thread
+"""Unified @ttl.operation tensor add: a single body (no explicit thread
 functions) that reads two ttnn tensors through DFBs, adds them, and
 writes the result. Exercises the thread splitter end to end."""
 
@@ -20,7 +20,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_l1
 
 
-@ttl.atom(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def atom_tensor_add(a, b, out):
     a_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     b_cb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)

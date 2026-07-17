@@ -6,7 +6,7 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""@ttl.atom with a tensor-less DFB built via ttl.make_dfb. The output
+"""Unified @ttl.operation with a tensor-less DFB built via ttl.make_dfb. The output
 buffer is declared from a dtype name string rather than a borrowed
 tensor; compute writes exp(x) into it and data movement drains it."""
 
@@ -20,7 +20,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_l1
 
 
-@ttl.atom(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def atom_make_dfb_exp(inp, out):
     in_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)

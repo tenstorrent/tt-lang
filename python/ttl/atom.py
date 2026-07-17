@@ -2,23 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""@ttl.atom: unified-body kernels with automatic thread splitting.
+"""Unified-body ``@ttl.operation`` kernels with automatic thread splitting.
 
-Unlike @ttl.operation, which requires the author to write one
-@ttl.compute and two @ttl.datamovement thread functions explicitly, a
-@ttl.atom is a single function body. At decoration time, statement-level
-calls to other @ttl.atom functions are inlined; at compile time the
-unified body is split into compute (TRISC) and data-movement
+The unified form is a single function body instead of one @ttl.compute and
+two @ttl.datamovement thread functions. At decoration time, statement-level
+calls to other unified operations are inlined; at compile time the body is
+split into compute (TRISC) and data-movement
 (NCRISC / BRISC) threads, which then flow through the same MLIR pipeline
 as @ttl.operation.
 
-An atom may take ttnn tensors (resolved at the call site, exactly like
-@ttl.operation), compile-time scalars, and -- for atoms intended to be
-inlined into another atom -- ttl.DFB parameters. DataFlow buffers used
-within a top-level atom are declared in the body via ttl.make_dfb /
-ttl.make_dataflow_buffer_like; a DFB-parameter atom has no way to be
-supplied a buffer except by being inlined, so it is never a JIT entry
-point.
+A unified operation may take TT-NN tensors, compile-time captures, and --
+when intended for composition -- ttl.DFB or ttl.PipeNet parameters. Dataflow
+buffers used within a top-level operation are declared in its body. An
+operation with resource parameters is expand-only and cannot be called as a
+TT-NN operation.
 
 DFB declarations sit inline with the compute/copy work in a unified
 body, so after the split they land inside each thread body. The existing
@@ -38,9 +35,12 @@ import copy
 import functools
 import inspect
 import os
-import random
+import types
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import ttl as _ttl
+from ttl.pykernel._src.utils import _cleanup_source_code
 
 from ._src.atom_inline import inline_atom_calls
 from ._src.atom_split import split_function_body
@@ -53,7 +53,21 @@ from .dataflow_buffer import (
     make_dfb,
 )
 from .dtype_utils import is_ttnn_tensor
+from .operators import _set_current_grid
 from .pipe import PipeNet
+from .ttl_api import (
+    Program,
+    _build_pipenet_graph,
+    _canonical_tensor_args,
+    _detect_memory_space_from_tensor,
+    _lower_program_to_kernel,
+    _make_operation_wrapper,
+    _require_device,
+    _run_thread_compiler,
+    _validate_operation_options,
+    get_min_remaining_l1_for_device,
+    pykernel_gen,
+)
 
 
 # Names whose top-level ``x = <name>(...)`` assigns are lifted out of the body
@@ -67,7 +81,7 @@ _SETUP_FACTORY_NAMES = _DFB_FACTORY_NAMES | _PIPE_FACTORY_NAMES
 class DFB:
     """Marker annotation for a DataFlow buffer parameter.
 
-    Only meaningful on an atom that is inlined into another atom: the
+    Only meaningful on an operation that is expanded into another operation: the
     caller declares the buffer (ttl.make_dfb / make_dataflow_buffer_like)
     and passes it in, and the inliner substitutes it at the call site.
     """
@@ -90,6 +104,92 @@ class _AtomSpec:
     fn_ast: ast.FunctionDef  # post-inline
     params: List[_ParamInfo]
     dfb_param_names: List[str]
+    compile_time_captures: Dict[str, Any]
+    frozen_scope: Dict[str, Any]
+    external_pipenets: Dict[str, PipeNet]
+
+
+class _ReturnFinder(ast.NodeVisitor):
+    def __init__(self):
+        self.found = False
+
+    def visit_Return(self, node):
+        self.found = True
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_Lambda(self, node):
+        return
+
+
+def _parse_function_definition(fn: Callable) -> Optional[ast.FunctionDef]:
+    try:
+        module = ast.parse(_cleanup_source_code(fn))
+    except (OSError, TypeError, IndentationError, SyntaxError):
+        return None
+    if len(module.body) != 1:
+        return None
+    if not isinstance(module.body[0], ast.FunctionDef):
+        return None
+    return module.body[0]
+
+
+def _validate_operation_interface(fn: Callable) -> None:
+    signature = inspect.signature(fn)
+    for parameter in signature.parameters.values():
+        if parameter.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise ValueError(
+                "@ttl.operation does not support *args or **kwargs "
+                f"(parameter {parameter.name!r})"
+            )
+        if parameter.default is not inspect.Parameter.empty:
+            raise ValueError(
+                "@ttl.operation parameters cannot have default values "
+                f"(parameter {parameter.name!r})"
+            )
+
+    function_definition = _parse_function_definition(fn)
+    if function_definition is None:
+        return
+    finder = _ReturnFinder()
+    for statement in function_definition.body:
+        finder.visit(statement)
+    if finder.found:
+        raise ValueError(
+            "@ttl.operation functions cannot return a value or use return statements"
+        )
+
+
+def _decorator_name(decorator: ast.expr) -> Optional[str]:
+    if isinstance(decorator, ast.Call):
+        decorator = decorator.func
+    if isinstance(decorator, ast.Attribute):
+        return decorator.attr
+    if isinstance(decorator, ast.Name):
+        return decorator.id
+    return None
+
+
+def _has_explicit_kernels(fn: Callable) -> bool:
+    function_definition = _parse_function_definition(fn)
+    if function_definition is None:
+        return True
+    for node in ast.walk(function_definition):
+        if node is function_definition:
+            continue
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if _decorator_name(decorator) in {"compute", "datamovement"}:
+                return True
+    return False
 
 
 def _function_scope(fn: Callable) -> Dict[str, Any]:
@@ -107,9 +207,14 @@ def _function_scope(fn: Callable) -> Dict[str, Any]:
     return scope
 
 
-def _classify_params(fn: Callable) -> List[_ParamInfo]:
-    from .pipe import PipeNet
+def _captured_values(fn: Callable) -> Dict[str, Any]:
+    closure = inspect.getclosurevars(fn)
+    captures = dict(closure.globals)
+    captures.update(closure.nonlocals)
+    return captures
 
+
+def _classify_params(fn: Callable) -> List[_ParamInfo]:
     info: List[_ParamInfo] = []
     for pname, p in inspect.signature(fn).parameters.items():
         if p.kind in (
@@ -117,12 +222,12 @@ def _classify_params(fn: Callable) -> List[_ParamInfo]:
             inspect.Parameter.VAR_KEYWORD,
         ):
             raise ValueError(
-                f"@ttl.atom: *args / **kwargs are not allowed (param {pname!r})"
+                f"@ttl.operation: *args / **kwargs are not allowed (param {pname!r})"
             )
         ann = p.annotation
-        if ann is DFB:
+        if ann is DFB or ann in ("DFB", "ttl.DFB"):
             kind = "dfb"
-        elif ann is PipeNet:
+        elif ann is PipeNet or ann in ("PipeNet", "ttl.PipeNet"):
             kind = "pipenet"
         else:
             kind = "value"
@@ -137,8 +242,6 @@ def _classify_params(fn: Callable) -> List[_ParamInfo]:
 
 
 def _build_atom_spec(fn: Callable) -> _AtomSpec:
-    from ttl.pykernel._src.utils import _cleanup_source_code
-
     name = fn.__name__
     try:
         source_file = inspect.getfile(fn)
@@ -158,13 +261,45 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     module = ast.parse(_cleanup_source_code(fn))
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
         raise ValueError(
-            f"@ttl.atom: expected a single function definition for {name!r}"
+            f"@ttl.operation: expected a single function definition for {name!r}"
         )
     fn_def: ast.FunctionDef = module.body[0]
+    scope = _function_scope(fn)
 
-    # Inline statement-level calls to other @ttl.atom functions, then keep
+    # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
-    inline_atom_calls(fn_def, _function_scope(fn), caller_name=name)
+    inlined_pipenets = inline_atom_calls(fn_def, scope, caller_name=name)
+    _validate_resource_declarations(fn_def, name)
+
+    loaded_names = set()
+    for node in ast.walk(fn_def):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            loaded_names.add(node.id)
+
+    captured_values = _captured_values(fn)
+    external_pipenets = dict(inlined_pipenets)
+    compile_time_captures: Dict[str, Any] = {}
+    for capture_name in loaded_names & captured_values.keys():
+        value = captured_values[capture_name]
+        if isinstance(value, DataflowBuffer):
+            raise ValueError(
+                f"@ttl.operation {name!r}: external DFB {capture_name!r} is "
+                "not supported; declare it as a top-level operation resource "
+                "or pass it to an expand-only composed operation"
+            )
+        if isinstance(value, PipeNet):
+            external_pipenets[capture_name] = value
+        elif _is_compile_time_literal(value):
+            compile_time_captures[capture_name] = copy.deepcopy(value)
+        elif not isinstance(value, types.ModuleType) and not callable(value):
+            raise TypeError(
+                f"@ttl.operation {name!r}: compile-time capture "
+                f"{capture_name!r} has unsupported type "
+                f"{type(value).__name__}"
+            )
+
+    frozen_scope = dict(scope)
+    frozen_scope.update(compile_time_captures)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -177,7 +312,18 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         fn_ast=fn_def,
         params=params,
         dfb_param_names=[p.name for p in params if p.kind == "dfb"],
+        compile_time_captures=compile_time_captures,
+        frozen_scope=frozen_scope,
+        external_pipenets=external_pipenets,
     )
+
+
+def _is_compile_time_literal(value: Any) -> bool:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return True
+    if isinstance(value, (tuple, list)):
+        return all(_is_compile_time_literal(element) for element in value)
+    return False
 
 
 def _call_name(node: ast.expr) -> Optional[str]:
@@ -220,6 +366,76 @@ def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
     return None
 
 
+def _collect_assignment_targets(target: ast.expr, names: set) -> None:
+    if isinstance(target, ast.Name):
+        names.add(target.id)
+        return
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            _collect_assignment_targets(element, names)
+
+
+def _non_resource_assignment_names(fn_def: ast.FunctionDef) -> set:
+    names = set()
+    for statement in fn_def.body:
+        if _setup_assign_target(statement) is not None:
+            continue
+        if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                _collect_assignment_targets(target, names)
+        elif isinstance(statement, ast.AnnAssign):
+            _collect_assignment_targets(statement.target, names)
+    return names
+
+
+def _loaded_names_in(node: ast.AST) -> set:
+    return {
+        child.id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+    }
+
+
+def _validate_resource_declarations(
+    fn_def: ast.FunctionDef, operation_name: str
+) -> None:
+    """Require resource construction to use simple top-level assignments."""
+    allowed_calls = set()
+    resource_statements = []
+    for statement in fn_def.body:
+        if _setup_assign_target(statement) is None:
+            continue
+        resource_statements.append(statement)
+        for node in ast.walk(statement):
+            if not isinstance(node, ast.Call):
+                continue
+            if _call_name(node) in _SETUP_FACTORY_NAMES:
+                allowed_calls.add(id(node))
+
+    local_values = _non_resource_assignment_names(fn_def)
+    for statement in resource_statements:
+        dependencies = _loaded_names_in(statement) & local_values
+        if dependencies:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: resource declarations "
+                "cannot depend on operation-local values "
+                f"{sorted(dependencies)}"
+            )
+
+    for node in ast.walk(fn_def):
+        if not isinstance(node, ast.Call):
+            continue
+        factory_name = _call_name(node)
+        if factory_name not in _SETUP_FACTORY_NAMES or id(node) in allowed_calls:
+            continue
+        raise ValueError(
+            f"@ttl.operation {operation_name!r}: resource declaration "
+            f"{factory_name!r} must be a simple top-level assignment in the "
+            "operation body; declarations inside control flow, callbacks, or "
+            "nested scopes are not supported"
+        )
+
+
 def _lift_setup(
     fn_def: ast.FunctionDef,
     scope: Dict[str, Any],
@@ -236,8 +452,6 @@ def _lift_setup(
     body; the per-thread compiler consumes the results as captures, not as
     in-body calls.
     """
-    import ttl as _ttl
-
     ns = dict(scope)
     ns.setdefault("make_dfb", make_dfb)
     ns.setdefault("make_dataflow_buffer_like", make_dataflow_buffer_like)
@@ -294,8 +508,6 @@ def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
 
 
 def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
-    from .ttl_api import _run_thread_compiler
-
     def _compile_thread(*args, **kwargs):
         kwargs = dict(kwargs)
         kwargs["_source_file"] = spec.source_file
@@ -305,7 +517,7 @@ def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
             fn_name,
             kernel_type,
             captures,
-            _function_scope(spec.fn),
+            spec.frozen_scope,
             (),
             kwargs,
             _synthesize_thread_module(fn_name, body),
@@ -330,36 +542,27 @@ def _compile_atom(
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
 ):
-    from .operators import _set_current_grid
-    from .ttl_api import (
-        Program,
-        _build_pipenet_graph,
-        _detect_memory_space_from_tensor,
-        _lower_program_to_kernel,
-        _require_device,
-        get_min_remaining_l1_for_device,
-    )
 
-    # Bind call-site values to parameter names.
-    bound = inspect.signature(spec.fn).bind(*args, **kwargs)
-    eval_scope = dict(_function_scope(spec.fn))
-    eval_scope.update(bound.arguments)
+    # The shared operation wrapper supplies values in signature order.
+    bound_arguments = {param.name: value for param, value in zip(spec.params, args)}
+    eval_scope = dict(spec.frozen_scope)
+    eval_scope.update(bound_arguments)
 
     # Register ttnn tensors so the per-thread compiler can resolve global
     # tensor indices for its tensor accessors.
-    for idx, (pname, val) in enumerate(bound.arguments.items()):
+    for idx, (pname, val) in enumerate(bound_arguments.items()):
         if is_ttnn_tensor(val):
             register_tensor_name(val, pname, index=idx)
 
     # Detect L1 vs DRAM addressing from the first tensor (matching
     # @ttl.operation), since the tensor accessor type depends on it.
     first_tensor = next(
-        (v for v in bound.arguments.values() if is_ttnn_tensor(v)), None
+        (v for v in bound_arguments.values() if is_ttnn_tensor(v)), None
     )
     if first_tensor is not None:
         memory_space = _detect_memory_space_from_tensor(first_tensor, memory_space)
 
-    has_ttnn_tensors = any(is_ttnn_tensor(v) for v in bound.arguments.values())
+    has_ttnn_tensors = any(is_ttnn_tensor(v) for v in bound_arguments.values())
     l1_budget_override = compiler_options.l1_budget
     if l1_budget_override == 0 and has_ttnn_tensors:
         try:
@@ -370,12 +573,17 @@ def _compile_atom(
     _reset_cb_counter()
     _set_current_grid(grid)
 
-    stripped_fn, dfbs, nets = _lift_setup(spec.fn_ast, eval_scope)
+    stripped_fn, dfbs, nets = _lift_setup(copy.deepcopy(spec.fn_ast), eval_scope)
 
     # Assign each PipeNet a distinct operation-local id (and validate), the
     # same graph @ttl.operation builds; it also yields the runner's pipe
     # semaphore count.
-    pipe_graph = _build_pipenet_graph(nets.values())
+    all_nets = {}
+    for net in spec.external_pipenets.values():
+        all_nets[id(net)] = net
+    for net in nets.values():
+        all_nets[id(net)] = net
+    pipe_graph = _build_pipenet_graph(all_nets.values())
 
     split = split_function_body(
         fn_def=stripped_fn,
@@ -389,7 +597,7 @@ def _compile_atom(
             _dbg = _synthesize_thread_module(
                 f"{spec.name}__{_thread}", split.body_for(_thread)
             )
-            print(f"\n===== @ttl.atom split: {_thread} =====")
+            print(f"\n===== @ttl.operation split: {_thread} =====")
             print(ast.unparse(_dbg))
 
     # Captures shared by every thread: ttnn tensors and scalars (bound
@@ -397,11 +605,12 @@ def _compile_atom(
     # are included on all threads to keep the tensor-accessor and CB layout
     # stable; unused ones are removed by MLIR DCE.
     captures: Dict[str, Any] = {}
-    for pname, val in bound.arguments.items():
+    for pname, val in bound_arguments.items():
         if is_ttnn_tensor(val) or isinstance(val, (int, float)):
             captures[pname] = val
     captures.update(dfbs)
     captures.update(nets)
+    captures.update(spec.external_pipenets)
 
     # TTNN interop requires exactly 3 kernels (1 compute + 2 data movement);
     # emit all three even when a thread has no work, filling it with a pass
@@ -422,7 +631,7 @@ def _compile_atom(
 
     if not any_real_work:
         raise ValueError(
-            f"@ttl.atom '{spec.name}': body contained no compute or data "
+            f"@ttl.operation '{spec.name}': body contained no compute or data "
             f"movement work after classification"
         )
 
@@ -452,14 +661,60 @@ def _compile_atom(
     )
 
 
-class Atom:
-    """A @ttl.atom kernel: inline-able as a callee, JIT-compiled at top level."""
+def _compile_unified_operation(
+    spec,
+    decorator_options,
+    runtime_args,
+    _runtime_kwargs,
+    resolved_grid,
+    program_hash,
+    target_arch,
+    compiler_options,
+):
+    return _compile_atom(
+        spec,
+        runtime_args,
+        {},
+        resolved_grid,
+        decorator_options["num_outs"],
+        decorator_options["memory_space"],
+        decorator_options["tiled"],
+        program_hash,
+        fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
+        dst_full_sync_en=decorator_options["dst_full_sync_en"],
+        target_arch=target_arch,
+        compiler_options=compiler_options,
+    )
 
-    def __init__(self, spec: _AtomSpec, decorator_opts: dict):
+
+class Atom:
+    """Internal representation of a composable unified operation."""
+
+    def __init__(self, spec: _AtomSpec, decorator_options: dict):
         self._spec = spec
-        self._opts = decorator_opts
-        self._kernel_id = random.getrandbits(64)
-        self._cache: Dict[tuple, Any] = {}
+        self._grid = decorator_options["grid"]
+        self._ttl_operation_kind = "unified"
+
+        expand_only_params = [
+            param.name for param in spec.params if param.kind in {"dfb", "pipenet"}
+        ]
+        compile_callback = functools.partial(
+            _compile_unified_operation, spec, decorator_options
+        )
+        prepare_call = functools.partial(
+            _canonical_tensor_args,
+            spec.fn,
+            expand_only_params=expand_only_params,
+        )
+        self._wrapper = _make_operation_wrapper(
+            spec.fn,
+            compile_callback,
+            grid=decorator_options["grid"],
+            fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
+            dst_full_sync_en=decorator_options["dst_full_sync_en"],
+            options=decorator_options["options"],
+            prepare_call=prepare_call,
+        )
         functools.update_wrapper(self, spec.fn)
 
     @property
@@ -467,59 +722,15 @@ class Atom:
         return self._spec.name
 
     def __call__(self, *args, **kwargs):
-        from .ttl_api import (
-            _device_target_arch,
-            _make_cache_key,
-            _resolve_grid,
-            _should_execute,
-        )
-
-        opts = self._opts
-        resolved_grid = _resolve_grid(opts["grid"], args, kwargs)
-
-        opts_str = kwargs.pop("options", opts["options"])
-        env_opts = os.environ.get("TTLANG_COMPILER_OPTIONS")
-        if env_opts:
-            opts_str = f"{opts_str or ''} {env_opts}".strip() or None
-        compiler_options = CompilerOptions.from_string(opts_str).merge(
-            CompilerOptions.from_argv()
-        )
-        target_arch = _device_target_arch(args)
-
-        cache_key = _make_cache_key(
-            args,
-            resolved_grid=resolved_grid,
-            fp32_dest_acc_en=opts["fp32_dest_acc_en"],
-            dst_full_sync_en=opts["dst_full_sync_en"],
-            target_arch=target_arch,
-            compiler_options=compiler_options,
-        )
-
-        compiled_kernel = self._cache.get(cache_key)
-        if compiled_kernel is None:
-            compiled_kernel = _compile_atom(
-                self._spec,
-                args,
-                kwargs,
-                resolved_grid,
-                opts["num_outs"],
-                opts["memory_space"],
-                opts["tiled"],
-                hash((self._kernel_id, cache_key)),
-                fp32_dest_acc_en=opts["fp32_dest_acc_en"],
-                dst_full_sync_en=opts["dst_full_sync_en"],
-                target_arch=target_arch,
-                compiler_options=compiler_options,
+        if self._grid is None:
+            raise ValueError(
+                f"@ttl.operation {self.name!r} has no grid and is expand-only; "
+                "it cannot be called directly"
             )
-            if compiled_kernel is not None:
-                self._cache[cache_key] = compiled_kernel
-
-        if compiled_kernel is not None and _should_execute():
-            return compiled_kernel(*args)
-        return None
+        return self._wrapper(*args, **kwargs)
 
 
-def atom(
+def _unified_operation(
     grid: Optional[Union[tuple, Callable]] = None,
     num_outs: int = 1,
     memory_space: str = "L1",
@@ -528,14 +739,13 @@ def atom(
     dst_full_sync_en: Optional[bool] = None,
     options: Optional[str] = None,
 ) -> Callable:
-    """Decorator for a unified-body, auto-split @ttl.atom kernel.
+    """Build the unified-body form selected by ``@ttl.operation``.
 
     Accepts the same compile parameters as @ttl.operation (grid, the fp32
     / dst-sync overrides, compiler options). A grid is required for a
-    top-level atom; an atom used only as an inlined callee needs none.
+    top-level operation; a composed operation used only for expansion needs none.
     """
-    if num_outs != 1:
-        raise ValueError(f"num_outs must be 1, got {num_outs}")
+    _validate_operation_options(num_outs, memory_space, tiled)
 
     def _decorator(f):
         spec = _build_atom_spec(f)
@@ -551,5 +761,51 @@ def atom(
                 "options": options,
             },
         )
+
+    return _decorator
+
+
+def operation(
+    grid: Optional[Union[tuple, Callable]] = None,
+    indexing_maps: Optional[List[Callable]] = None,
+    iterator_types: Optional[List[str]] = None,
+    num_outs: int = 1,
+    memory_space: str = "L1",
+    tiled: bool = True,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
+    options: Optional[str] = None,
+) -> Callable:
+    """Define a unified-body or explicit multi-kernel operation."""
+
+    def _decorator(fn):
+        _validate_operation_interface(fn)
+        explicit_options = indexing_maps is not None or iterator_types is not None
+        if explicit_options or _has_explicit_kernels(fn):
+            prepare_call = functools.partial(_canonical_tensor_args, fn)
+            wrapped = pykernel_gen(
+                grid=grid,
+                indexing_maps=indexing_maps,
+                iterator_types=iterator_types,
+                num_outs=num_outs,
+                memory_space=memory_space,
+                tiled=tiled,
+                fp32_dest_acc_en=fp32_dest_acc_en,
+                dst_full_sync_en=dst_full_sync_en,
+                options=options,
+                _prepare_call=prepare_call,
+            )(fn)
+            wrapped._ttl_operation_kind = "multi_kernel"
+            return wrapped
+
+        return _unified_operation(
+            grid=grid,
+            num_outs=num_outs,
+            memory_space=memory_space,
+            tiled=tiled,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
+            options=options,
+        )(fn)
 
     return _decorator

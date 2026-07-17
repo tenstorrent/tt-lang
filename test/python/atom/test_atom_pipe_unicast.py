@@ -6,7 +6,7 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""@ttl.atom with a single unicast PipeNet across two cores. Core (1,0)
+"""Unified @ttl.operation with a single unicast PipeNet across two cores. Core (1,0)
 reads a tile and sends it over the pipe; core (0,0) reads its own tile,
 receives the sent tile, adds them, and writes the result.
 
@@ -25,7 +25,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_dram
 
 
-@ttl.atom(grid=(2, 1))
+@ttl.operation(grid=(2, 1))
 def atom_pipe_unicast(a, out):
     own_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     send_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
