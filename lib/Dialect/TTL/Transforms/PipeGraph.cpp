@@ -912,6 +912,39 @@ void PipeGraph::rebuildEndpointGraph() {
   }
 }
 
+FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe) {
+  Value tracedPipe = traceUnrealizedCasts(pipe);
+  if (auto pipeType = mlir::dyn_cast<PipeType>(tracedPipe.getType())) {
+    return PipeReference{PipeReference::Kind::Static, tracedPipe, pipeType,
+                         SelectPipeSrcOp(), SelectPipeDstOp()};
+  }
+  if (auto selectedSrc = tracedPipe.getDefiningOp<SelectPipeSrcOp>()) {
+    return PipeReference{PipeReference::Kind::SelectedSrc, tracedPipe,
+                         PipeType(), selectedSrc, SelectPipeDstOp()};
+  }
+  if (auto selectedDst = tracedPipe.getDefiningOp<SelectPipeDstOp>()) {
+    return PipeReference{PipeReference::Kind::SelectedDst, tracedPipe,
+                         PipeType(), SelectPipeSrcOp(), selectedDst};
+  }
+  return op->emitError() << "selected pipe operand must be a direct result of "
+                            "ttl.select_pipe_src or ttl.select_pipe_dst";
+}
+
+SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
+                                                const PipeReference &ref) {
+  if (ref.isStatic()) {
+    return SmallVector<PipeType>{ref.pipeType};
+  }
+  SmallVector<PipeType> pipeTypes;
+  PipeNetRecordsAttr records = ref.getRecords();
+  pipeTypes.reserve(records.getPipes().size());
+  for (PipeRecordAttr record : records.getPipes()) {
+    pipeTypes.push_back(
+        getPipeTypeFromRecord(context, record, records.getPipeNetId()));
+  }
+  return pipeTypes;
+}
+
 static LogicalResult
 emitUntraceableCollectiveDestinationAddress(Operation *op) {
   return op->emitError()

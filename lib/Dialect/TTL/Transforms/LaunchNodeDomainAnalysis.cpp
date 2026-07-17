@@ -154,6 +154,36 @@ bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
   return domain.known && launchNodeDomainContains(domain, coord);
 }
 
+LaunchNodeDomain getPipeRecordSourceLaunchNodeDomain(PipeRecordAttr record) {
+  LaunchNodeDomain result;
+  result.nodes.insert({record.getSrcX(), record.getSrcY()});
+  return result;
+}
+
+LaunchNodeDomain
+getPipeRecordDestinationLaunchNodeDomain(PipeRecordAttr record) {
+  LaunchNodeDomain result;
+  for (int64_t x = record.getDstStartX(); x <= record.getDstEndX(); ++x) {
+    for (int64_t y = record.getDstStartY(); y <= record.getDstEndY(); ++y) {
+      result.nodes.insert({x, y});
+    }
+  }
+  return result;
+}
+
+LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
+                                                    PipeRole role) {
+  LaunchNodeDomain result;
+  for (PipeRecordAttr record : records.getPipes()) {
+    LaunchNodeDomain recordDomain =
+        role == PipeRole::Source
+            ? getPipeRecordSourceLaunchNodeDomain(record)
+            : getPipeRecordDestinationLaunchNodeDomain(record);
+    result = result.unionWith(recordDomain);
+  }
+  return result;
+}
+
 /// Normalize integer-array attributes before verifier-specific interpretation.
 static bool readI64ArrayAttr(Operation *op, llvm::StringLiteral name,
                              SmallVectorImpl<int64_t> &values) {
@@ -212,22 +242,61 @@ LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
   return src.unionWith(dst);
 }
 
-void LaunchNodeDomainState::initialize(ModuleOp module) {
-  module.walk([&](CreatePipeOp pipe) {
-    PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
-    int64_t pipeNetId = pipeType.getPipeNetId();
+void LaunchNodeDomainState::recordPipeNet(PipeType pipeType, Location loc,
+                                          std::optional<StringRef> name) {
+  int64_t pipeNetId = pipeType.getPipeNetId();
+  netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
+      getPipeSourceLaunchNodeDomain(pipeType));
+  netDestinationDomains[pipeNetId] = netDestinationDomains[pipeNetId].unionWith(
+      getPipeDestinationLaunchNodeDomain(pipeType));
+  pipeNetLocs[pipeNetId].push_back(loc);
+  auto &storedName = pipeNetNames[pipeNetId];
+  if (storedName.empty() && name && !name->empty()) {
+    storedName = name->str();
+  }
+}
+
+void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
+                                                 Location loc) {
+  std::optional<StringRef> name;
+  if (StringAttr attr = records.getPipeNetName()) {
+    name = attr.getValue();
+  }
+  int64_t pipeNetId = records.getPipeNetId();
+  for (PipeRecordAttr record : records.getPipes()) {
     netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
-        getPipeSourceLaunchNodeDomain(pipeType));
+        getPipeRecordSourceLaunchNodeDomain(record));
     netDestinationDomains[pipeNetId] =
         netDestinationDomains[pipeNetId].unionWith(
-            getPipeDestinationLaunchNodeDomain(pipeType));
-    pipeNetLocs[pipeNetId].push_back(pipe.getLoc());
-    auto &name = pipeNetNames[pipeNetId];
-    if (name.empty()) {
-      if (auto attr = pipe.getPipeNetNameAttr()) {
-        name = attr.getValue().str();
-      }
+            getPipeRecordDestinationLaunchNodeDomain(record));
+    pipeNetLocs[pipeNetId].push_back(loc);
+  }
+  auto &storedName = pipeNetNames[pipeNetId];
+  if (storedName.empty() && name && !name->empty()) {
+    storedName = name->str();
+  }
+}
+
+void LaunchNodeDomainState::initialize(ModuleOp module) {
+  module.walk([&](CreatePipeOp pipe) {
+    std::optional<StringRef> name;
+    if (auto attr = pipe.getPipeNetNameAttr()) {
+      name = attr.getValue();
     }
+    recordPipeNet(mlir::cast<PipeType>(pipe.getResult().getType()),
+                  pipe.getLoc(), name);
+  });
+  module.walk([&](PipeNetForeachSrcOp op) {
+    recordPipeNetRecords(op.getRecords(), op.getLoc());
+  });
+  module.walk([&](PipeNetForeachDstOp op) {
+    recordPipeNetRecords(op.getRecords(), op.getLoc());
+  });
+  module.walk([&](SelectPipeSrcOp op) {
+    recordPipeNetRecords(op.getRecords(), op.getLoc());
+  });
+  module.walk([&](SelectPipeDstOp op) {
+    recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
 
   if (!module->hasAttr(kLaunchGridAttrName)) {
@@ -691,6 +760,16 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
         auto pipeType = mlir::cast<PipeType>(ifDst.getPipe().getType());
         narrowed = before.getDomain().intersectWith(
             getPipeDestinationLaunchNodeDomain(pipeType));
+      })
+      .Case<PipeNetForeachSrcOp>([&](PipeNetForeachSrcOp foreachSrc) {
+        narrowed =
+            before.getDomain().intersectWith(getPipeRecordsRoleLaunchNodeDomain(
+                foreachSrc.getRecords(), PipeRole::Source));
+      })
+      .Case<PipeNetForeachDstOp>([&](PipeNetForeachDstOp foreachDst) {
+        narrowed =
+            before.getDomain().intersectWith(getPipeRecordsRoleLaunchNodeDomain(
+                foreachDst.getRecords(), PipeRole::Destination));
       })
       .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
         auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state);
