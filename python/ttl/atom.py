@@ -35,6 +35,7 @@ import copy
 import functools
 import inspect
 import os
+import textwrap
 import types
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -128,7 +129,7 @@ class _ReturnFinder(ast.NodeVisitor):
 
 def _parse_function_definition(fn: Callable) -> Optional[ast.FunctionDef]:
     try:
-        module = ast.parse(_cleanup_source_code(fn))
+        module = ast.parse(textwrap.dedent(inspect.getsource(fn)))
     except (OSError, TypeError, IndentationError, SyntaxError):
         return None
     if len(module.body) != 1:
