@@ -134,8 +134,9 @@ static void emitCoreClone(func::FuncOp func, int64_t x, int64_t y,
   replaceCoordReads<ttk::MyLogicalXOp>(clone, x);
   replaceCoordReads<ttk::MyLogicalYOp>(clone, y);
 
-  clone->setAttr(CoreCoordAttrName, moduleBuilder.getArrayAttr(
-                                        {moduleBuilder.getI64ArrayAttr({x, y})}));
+  clone->setAttr(
+      CoreCoordAttrName,
+      moduleBuilder.getArrayAttr({moduleBuilder.getI64ArrayAttr({x, y})}));
   moduleBuilder.insert(clone);
 }
 

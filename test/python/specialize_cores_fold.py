@@ -82,9 +82,7 @@ if __name__ == "__main__":
         shape = (GRID_Y * TILE, GRID_X * TILE)
         a_torch = torch.randn(shape, dtype=torch.bfloat16)
         # Reference: swap the two tile-columns (GRID_X == 2).
-        expected = torch.cat(
-            [a_torch[:, TILE:], a_torch[:, :TILE]], dim=1
-        ).contiguous()
+        expected = torch.cat([a_torch[:, TILE:], a_torch[:, :TILE]], dim=1).contiguous()
 
         a = to_dram(a_torch, device)
         out = to_dram(torch.zeros(shape, dtype=torch.bfloat16), device)

@@ -837,7 +837,7 @@ def TTKernelSpecializeCores
     : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
   let summary = "Clone kernels per core when control flow branches on a coordinate";
   let description = [{
-    Per-core specialization for TTKernel functions. Requires the 
+    Per-core specialization for TTKernel functions. Requires the
     `ttl.launch_grid` attribute, missing or malformed `ttl.launch_grid` is a hard error.
 
     For each kernel whose scf.if region branches on a core coordinate, clones
