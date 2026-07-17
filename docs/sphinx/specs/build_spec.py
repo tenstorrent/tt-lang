@@ -98,6 +98,8 @@ def render(template_text: str) -> str:
     for line in template_text.splitlines(keepends=True):
         match = DIRECTIVE.match(line.rstrip("\n"))
         if match is None:
+            if "@spec:" in line:
+                raise SystemExit(f"Malformed directive: {line.strip()}")
             out.append(line)
             continue
 
