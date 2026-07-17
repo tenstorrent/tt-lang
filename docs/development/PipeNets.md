@@ -75,6 +75,57 @@ synchronization mechanism.
 `RA/CC` is unsupported because CC permits a send without a current
 receiver post, so the sender must compute the destination address.
 
+`RA/RP` and `CA/RP` use the same receiver-post synchronization. The
+receiver reserves the destination DFB block and then increments the
+sender-ready counter. That increment means the destination storage is
+available for the sender's payload write; it does not mean the payload
+write is complete. The sender signals payload completion separately
+after its NoC write barrier. The two modes differ only in how the sender
+obtains the destination address:
+
+| Protocol event or resource | `RA/RP` | `CA/RP` |
+| --- | --- | --- |
+| Receiver reserves a destination DFB block | Yes | Yes |
+| Receiver publishes the reserved block address to the sender | Yes: one inline 32-bit NoC write per receiver post | No |
+| Receiver increments the sender-ready counter after reserving the destination block | After the published address is visible | Immediately after the reserve; there is no address publication |
+| Sender waits for the required sender-ready count before writing the payload | Yes | Yes |
+| Sender obtains the destination address | Reads the receiver-published address-table entry | Computes `DFB base + slot * block stride + static offset` |
+| Sender writes the payload and signals receiver completion | Same operation sequence | Same operation sequence |
+| Additional source-node storage | Address-table entry | Kernel-local slot counter only when the DFB ring contains multiple receiver batches |
+| Point-to-point transfer | Supported | Supported when the address proof succeeds |
+| Multicast transfer | Supported | Supported when every receiver uses a statically proven, uniform address and slot layout |
+
+The practical difference is address publication, not send admission.
+`CA/RP` does not permit the sender to run before the receiver post. It
+removes the receiver's address write and the sender's address-table read
+when the compiler can prove that its computed address is the address of
+the block the receiver reserved.
+
+`RA/RP` remains the fallback when that equality cannot be proven. The
+current computed-address proof rejects a transfer when any of the
+following applies:
+
+- `--no-ttl-pipe-computed-addresses` is set.
+- The destination tile offset is dynamic.
+- The receiver DFB stream can contain non-pipe writes, which can advance
+  the hardware DFB ring without a corresponding pipe post.
+- The pipe graph cannot assign an exact receiver slot.
+- One transfer allocation unit does not contain exactly one receive post
+  and one send.
+- Multicast receiver endpoints do not have one uniform receiver batch
+  size.
+- The receiver batch size does not divide the DFB `block_count`; a later
+  batch could cross the ring boundary and require two payload writes.
+- The receiver DFB does not contain tiles, the sender operations do not
+  belong to one sender function, or the address arithmetic does not fit
+  the supported 32-bit representation.
+
+Multicast is not itself a restriction. Uniform multicast uses `CA/RP`
+when the proof succeeds. A collective transfer with a dynamic
+destination offset cannot use `RA/RP` as a fallback because TT-Metal NoC
+multicast requires one statically proven SRAM address for every receiver;
+lowering rejects that transfer.
+
 Pipe transfers have the following operational semantics:
 
 - A pipe has no hidden in-transit buffer. The destination storage is the
@@ -586,6 +637,47 @@ in https://github.com/tenstorrent/tt-lang/issues/728.
 The `--ttl-pipe-computed-addresses` option, enabled by default, selects
 `CA/RP` or `CA/CC` for eligible transfers.
 `--no-ttl-pipe-computed-addresses` forces `RA/RP` for every transfer.
+
+### Protocol performance
+
+The measurements below report the sender data-movement kernel duration
+from the Blackhole device profiler. Each row is the median of 50 warm
+dispatches after 5 warmup dispatches. Both workloads transfer BF16
+32-by-32 tiles with sender `block_count = 2` and receiver
+`block_count = 8`. The benchmark inspects final MLIR to reject a run if
+the compiler did not select the requested address mechanism. The
+multicast comparison also verifies that both variants retain the
+receiver-post sender wait. Every output was bit-exact.
+
+The point-to-point workload compares the general `RA/RP` fallback with
+`CA/CC`. It has one sender and one receiver:
+
+| Transfers | `CA/CC` sender (us) | `RA/RP` sender (us) | Delta/transfer (us) | Sender reduction | Ratio |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 54.403 | 59.658 | 0.082 | 8.81% | 1.0966x |
+| 256 | 217.342 | 238.922 | 0.084 | 9.03% | 1.0993x |
+| 1024 | 869.493 | 955.568 | 0.084 | 9.01% | 1.0990x |
+| 4096 | 3477.623 | 3824.195 | 0.085 | 9.06% | 1.0997x |
+
+The multicast workload isolates the address mechanism: both variants
+use receiver-post synchronization. One sender multicasts each tile to
+three receivers. The default option selects `CA/RP`; disabling computed
+addresses selects `RA/RP`:
+
+| Transfers | `CA/RP` sender (us) | `RA/RP` sender (us) | Delta/transfer (us) | Sender reduction | Ratio |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 60.290 | 68.358 | 0.126 | 11.80% | 1.1338x |
+| 256 | 240.942 | 273.790 | 0.128 | 12.00% | 1.1363x |
+| 1024 | 964.074 | 1094.733 | 0.128 | 11.94% | 1.1355x |
+| 4096 | 3853.720 | 4375.486 | 0.127 | 11.92% | 1.1354x |
+
+The multicast comparison shows the cost of address publication while
+holding synchronization constant. `CA/RP` removes each receiver's
+address-table write and the sender's address-table read, while both
+variants retain the sender-ready counter increments and the sender's
+wait for all three posts. Absolute durations should not be compared
+between the two tables because their point-to-point and multicast
+workloads differ.
 
 ### Ready-counter allocation
 
