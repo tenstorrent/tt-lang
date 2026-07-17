@@ -42,8 +42,15 @@ import sys
 import textwrap
 from pathlib import Path
 
+def _repo_root() -> Path:
+    """Nearest ancestor containing pyproject.toml."""
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    raise SystemExit("build_spec.py: no pyproject.toml found in any ancestor")
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
+REPO_ROOT = _repo_root()
 EXAMPLES_DIR = REPO_ROOT / "examples" / "spec"
 TEMPLATE = SCRIPT_DIR / "TTLangSpecification.externalized.md"
 OUTPUT = SCRIPT_DIR / "TTLangSpecification.md"
