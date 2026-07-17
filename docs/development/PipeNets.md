@@ -75,31 +75,36 @@ synchronization mechanism.
 `RA/CC` is unsupported because CC permits a send without a current
 receiver post, so the sender must compute the destination address.
 
-`RA/RP` and `CA/RP` use the same receiver-post synchronization. The
-receiver reserves the destination DFB block and then increments the
-sender-ready counter. That increment means the destination storage is
-available for the sender's payload write; it does not mean the payload
-write is complete. The sender signals payload completion separately
-after its NoC write barrier. The two modes differ only in how the sender
-obtains the destination address:
+All three modes use the same payload write and receiver-completion
+signal. A sender-ready increment means that the receiver has reserved
+destination storage; it does not mean that the payload write is
+complete. The sender signals payload completion separately after its
+NoC write barrier.
 
-| Protocol event or resource | `RA/RP` | `CA/RP` |
-| --- | --- | --- |
-| Receiver reserves a destination DFB block | Yes | Yes |
-| Receiver publishes the reserved block address to the sender | Yes: one inline 32-bit NoC write per receiver post | No |
-| Receiver increments the sender-ready counter after reserving the destination block | After the published address is visible | Immediately after the reserve; there is no address publication |
-| Sender waits for the required sender-ready count before writing the payload | Yes | Yes |
-| Sender obtains the destination address | Reads the receiver-published address-table entry | Computes `DFB base + slot * block stride + static offset` |
-| Sender writes the payload and signals receiver completion | Same operation sequence | Same operation sequence |
-| Additional source-node storage | Address-table entry | Kernel-local slot counter only when the DFB ring contains multiple receiver batches |
-| Point-to-point transfer | Supported | Supported when the address proof succeeds |
-| Multicast transfer | Supported | Supported when every receiver uses a statically proven, uniform address and slot layout |
+| Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` |
+| --- | --- | --- | --- |
+| Receiver reserves a destination DFB block | Yes | Yes | Yes |
+| Receiver publishes the reserved block address | Yes: one inline 32-bit NoC write per post | No | No |
+| Receiver increments the sender-ready counter | After the published address is visible | After reserving the block | No |
+| Condition for the sender's payload write | Every required receiver has posted | Every required receiver has posted | The receiver has available DFB capacity |
+| Sender obtains the destination address | Reads the published address-table entry | Computes `DFB base + slot * block stride + static offset` | Computes the same address |
+| Receiver action after popping a block | No capacity update | No capacity update | Increments the sender's capacity semaphore |
+| Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous | Sender may use the next computed slot when a capacity credit is available |
+| Multicast | Supported | Supported with a proven uniform receiver layout | Not currently supported; uses `CA/RP` instead |
 
 The practical difference is address publication, not send admission.
 `CA/RP` does not permit the sender to run before the receiver post. It
 removes the receiver's address write and the sender's address-table read
 when the compiler can prove that its computed address is the address of
 the block the receiver reserved.
+
+`CA/CC` also removes the per-transfer receiver-post rendezvous. The
+capacity semaphore starts with one credit per free receiver DFB slot.
+The sender can use the next computed slot when a credit is available,
+and the receiver returns a credit by incrementing the capacity semaphore
+after its pop. This allows sender and receiver execution to overlap
+across multiple DFB slots and removes the receiver-post synchronization
+traffic.
 
 `RA/RP` remains the fallback when that equality cannot be proven. The
 current computed-address proof rejects a transfer when any of the
