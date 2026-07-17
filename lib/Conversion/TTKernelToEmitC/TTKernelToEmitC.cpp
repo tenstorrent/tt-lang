@@ -838,7 +838,9 @@ public:
   ArrayAttr getTemplateArgs(Builder &builder, SourceOp op) const {
     if constexpr (std::is_same_v<SourceOp, ttkernel::ReduceInitOp> ||
                   std::is_same_v<SourceOp, ttkernel::ReduceTileOp>) {
-      SmallVector<Attribute, 3> template_args;
+      // Full-fp32 accumulation follows DST_ACCUM_MODE, set from the kernel's
+      // fp32_dest_acc_en; the metal API takes no per-call override.
+      SmallVector<Attribute, 2> template_args;
       StringRef reduceType, reduceDim;
       std::tie(reduceType, reduceDim) = reduceTypeAndDimToString(
           op.getReduceTypeAttr(), op.getReduceDimAttr());
@@ -846,18 +848,9 @@ public:
           emitc::OpaqueAttr::get(op.getContext(), reduceType));
       template_args.push_back(
           emitc::OpaqueAttr::get(op.getContext(), reduceDim));
-      template_args.push_back(emitc::OpaqueAttr::get(
-          op.getContext(), op.getFullFp32() ? "true" : "false"));
       return ArrayAttr::get(op.getContext(), template_args);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::ReduceUninitOp>) {
-      // The default `reduce_uninit()` signature already resolves to <false>,
-      // so emit a template arg only when full_fp32 is set.
-      if (!op.getFullFp32()) {
-        return ArrayAttr();
-      }
-      SmallVector<Attribute, 1> template_args;
-      template_args.push_back(emitc::OpaqueAttr::get(op.getContext(), "true"));
-      return ArrayAttr::get(op.getContext(), template_args);
+      return ArrayAttr();
     } else if constexpr (std::is_same_v<SourceOp,
                                         ttkernel::NocSemaphoreIncOp> ||
                          std::is_same_v<SourceOp,

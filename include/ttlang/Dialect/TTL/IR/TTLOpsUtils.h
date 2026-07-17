@@ -314,7 +314,9 @@ inline bool isFullFp32ReduceSupported(TileReduceOp reduceOp) {
     return false;
   }
 
-  // TODO(#533): Blackhole REDUCE_ROW full-fp32 produces incorrect results.
+  // Blackhole cannot write the low 16 bits while the 32-bit dest is enabled, so
+  // the row-reduce LLK disables fp32 accumulation internally (tt-metal #47311).
+  // Report unsupported so DST_ACCUM_MODE is not enabled for it.
   return !isBlackholeTarget(reduceOp) ||
          reduceOp.getReduceDim() != mlir::tt::ttkernel::ReduceDim::Row;
 }
