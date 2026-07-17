@@ -42,12 +42,14 @@ import sys
 import textwrap
 from pathlib import Path
 
+
 def _repo_root() -> Path:
     """Nearest ancestor containing pyproject.toml."""
     for candidate in Path(__file__).resolve().parents:
         if (candidate / "pyproject.toml").is_file():
             return candidate
     raise SystemExit("build_spec.py: no pyproject.toml found in any ancestor")
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = _repo_root()
@@ -76,11 +78,15 @@ def extract_region(example: Path) -> str:
         stripped = line.strip()
         if stripped == BEGIN:
             if start is not None:
-                raise SystemExit(f"Nested {BEGIN!r} marker before its {END!r} in {example}")
+                raise SystemExit(
+                    f"Nested {BEGIN!r} marker before its {END!r} in {example}"
+                )
             start = i
         elif stripped == END:
             if start is None:
-                raise SystemExit(f"{END!r} marker without a preceding {BEGIN!r} in {example}")
+                raise SystemExit(
+                    f"{END!r} marker without a preceding {BEGIN!r} in {example}"
+                )
             regions.append("".join(lines[start + 1 : i]))
             start = None
 
@@ -110,7 +116,7 @@ def render(template_text: str) -> str:
         region = extract_region(example)
         if not region:
             raise SystemExit(f"Empty region in {example}")
-        
+
         if not region.endswith("\n"):
             region += "\n"
         out.append("```py\n")
