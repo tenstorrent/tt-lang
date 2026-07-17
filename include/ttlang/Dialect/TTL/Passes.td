@@ -160,13 +160,12 @@ def TTLMaterializeLoopState
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
+  let summary = "Lower TTL data movement and PipeNet operations to TTKernel";
   let description = [{
-    Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers bind_cb, copy, wait MVP path.
-
-    TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
-    Issue: #77 (umbrella issue with subtasks #78-#89).
+    Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
+    and semaphore operations. PipeNet lowering selects receiver-published or
+    computed destination addresses and receiver-post or capacity-counter
+    synchronization according to the pass options and transfer eligibility.
   }];
 
   let options = [
@@ -176,7 +175,12 @@ def TTLConvertTTLToTTKernel
            "bool", "true",
            "Use computed receiver DFB addresses for eligible pipe transfers. "
            "When disabled, all pipe transfers use receiver-published "
-           "destination addresses.">
+           "destination addresses.">,
+    Option<"pipeCapacitySync", "pipe-capacity-sync",
+           "bool", "true",
+           "Use capacity-counter synchronization for eligible pipe transfers. "
+           "When disabled, computed-address transfers use receiver-post "
+           "synchronization.">
   ];
 
   let dependentDialects = [

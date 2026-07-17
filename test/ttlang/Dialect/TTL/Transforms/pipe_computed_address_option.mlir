@@ -1,8 +1,9 @@
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true})' | FileCheck %s --check-prefix=COMPUTED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=COMPUTED
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})' | FileCheck %s --check-prefix=PUBLISHED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=RECEIVER-POST
 
-// Summary: Verifies that the pipe computed-address option selects between
-// computed receiver DFB addresses and receiver-published destination addresses.
+// Summary: Verifies that the PipeNet options select receiver-published or
+// computed addresses and receiver-post or capacity-counter synchronization.
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-LABEL: func.func @point_to_point_pipe
@@ -114,6 +115,18 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // PUBLISHED-NOT: arith.subi
   // PUBLISHED-NOT: ttkernel.store_to_l1
   // PUBLISHED: return
+
+  // RECEIVER-POST-LABEL: func.func @capacity_pipe
+  // RECEIVER-POST-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // Receiver post increments sender-ready before the receiver completion wait.
+  // RECEIVER-POST: ttkernel.noc_semaphore_inc
+  // RECEIVER-POST: ttkernel.experimental.semaphore_wait_min
+  // RECEIVER-POST: ttkernel.cb_push_back
+  // RECEIVER-POST: ttkernel.cb_pop_front
+  // The pop does not release capacity; the sender consumes the ready post.
+  // RECEIVER-POST-NOT: ttkernel.noc_semaphore_inc
+  // RECEIVER-POST: ttkernel.experimental.semaphore_wait(
+  // RECEIVER-POST: ttkernel.noc_semaphore_set
   func.func @capacity_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>

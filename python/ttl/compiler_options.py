@@ -98,6 +98,13 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Use computed receiver DFB addresses for eligible pipe transfers (default: enabled).",
     )
     p.add_argument(
+        "--ttl-pipe-capacity-sync",
+        default=None,
+        dest="pipe_capacity_sync",
+        action=argparse.BooleanOptionalAction,
+        help="Use capacity-counter synchronization for eligible pipe transfers; disabling uses receiver-post synchronization (default: enabled).",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -153,6 +160,7 @@ class CompilerOptions:
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
+    pipe_capacity_sync: bool = True
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

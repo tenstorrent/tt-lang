@@ -642,6 +642,10 @@ in https://github.com/tenstorrent/tt-lang/issues/728.
 The `--ttl-pipe-computed-addresses` option, enabled by default, selects
 `CA/RP` or `CA/CC` for eligible transfers.
 `--no-ttl-pipe-computed-addresses` forces `RA/RP` for every transfer.
+The `--ttl-pipe-capacity-sync` option, also enabled by default,
+selects `CA/CC` when the capacity proof succeeds.
+`--no-ttl-pipe-capacity-sync` forces computed-address transfers to
+use `CA/RP` and has no effect on `RA/RP` transfers.
 
 ### Protocol performance
 
