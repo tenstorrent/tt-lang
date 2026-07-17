@@ -14,7 +14,7 @@ set -euo pipefail
 
 ref="${1:-${GITHUB_REF:-}}"
 if [[ ! "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-    echo "Release ref must match vX.Y.Z or vX.Y.Z-<prerelease> (got '$ref')." >&2
+    echo "Release ref must match refs/tags/vX.Y.Z or refs/tags/vX.Y.Z-<prerelease> (got '$ref')." >&2
     echo "Create and push a tag like 'vX.Y.Z', or pass 'refs/tags/vX.Y.Z' as release-ref." >&2
     exit 1
 fi

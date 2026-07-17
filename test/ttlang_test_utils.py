@@ -159,13 +159,13 @@ class FabricMeshUnavailable(RuntimeError):
 
 @contextmanager
 def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
-    """Open a linear fabric mesh spanning every visible device by default."""
+    """Open a 1D fabric mesh spanning every visible device by default."""
     ttnn_module = _get_ttnn()
     if ttnn_module is None:
         raise FabricMeshUnavailable("TTNN not available")
 
     if requested_mesh_shape is None:
-        # FABRIC_1D requires a line topology even when physical discovery is 2-D.
+        # FABRIC_1D requires a 1D topology even when physical discovery is 2-D.
         requested_mesh_shape = (1, ttnn_module.get_num_devices())
     else:
         requested_mesh_shape = tuple(requested_mesh_shape)
