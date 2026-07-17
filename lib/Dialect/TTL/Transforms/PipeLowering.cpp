@@ -553,8 +553,7 @@ static Value buildSelectedAddressTableAddress(
   for (const PipeResourceInfo &resource : resources) {
     assert(resource.addressStorage.sramAddressTable.has_value() &&
            "selected local pipe requires an address table");
-    byteOffsets.push_back(
-        resource.addressStorage.sramAddressTable->byteOffset);
+    byteOffsets.push_back(resource.addressStorage.sramAddressTable->byteOffset);
   }
   Value byteOffset =
       loadIndexTableEntry(op, loc, byteOffsets, recordIndex, rewriter);
@@ -1635,12 +1634,9 @@ static LogicalResult lowerSelectedPipeTransferPost(
   }
 
   int64_t nocIdx = getNocIndex(op);
-  Value nocVal;
   Value inlineNocId = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(nocIdx));
-  if (nocIdx > 0) {
-    nocVal = inlineNocId;
-  }
+  Value nocVal = inlineNocId;
 
   auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
       rewriter, loc, rewriter.getIndexType(), fields.srcX);
@@ -1653,15 +1649,15 @@ static LogicalResult lowerSelectedPipeTransferPost(
       op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
   auto byteEnableAll = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-  ttk::NocInlineDwWriteOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, tableAddress,
-      publishedAddress, byteEnableAll, inlineNocId);
-  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
+  ttk::NocInlineDwWriteOp::create(rewriter, loc, srcXTranslated, srcYTranslated,
+                                  tableAddress, publishedAddress, byteEnableAll,
+                                  inlineNocId);
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
 
   Value senderSemAddr = buildSelectedReadyCounterAddress(
       op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
   auto senderSemNocAddr = ttk::GetNocAddrOp::create(
-      rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
+      rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr, nocVal);
   auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
   ttk::NocSemaphoreIncOp::create(rewriter, loc, senderSemNocAddr.getResult(),
                                  readyIncr, nocVal, /*posted=*/BoolAttr());
@@ -2544,6 +2540,11 @@ countPostAndSendEvents(const PipeTransferAllocationUnit &unit) {
 
 static bool usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
                                    const PipeCapacityPlan *pipeCapacityPlan) {
+  // Selected records use receiver-published addresses, so each send must also
+  // wait for the receiver-ready notification associated with that address.
+  if (isSelectedTransferUnit(unit)) {
+    return true;
+  }
   for (Operation *transferCreateOp : unit.transferCreateOps) {
     auto transferCreate = llvm::cast<PipeTransferCreateOp>(transferCreateOp);
     if (getDeviceTransfer(transferCreate)) {
@@ -2567,15 +2568,7 @@ static bool usesFabricTransport(const PipeTransferAllocationUnit &unit) {
 static SmallVector<PipeCounterLocation>
 getCompletionCounterLocations(const PipeTransferAllocationUnit &unit) {
   SmallVector<PipeCounterLocation> locations;
-  for (Operation *transferCreateOp : unit.transferCreateOps) {
-    auto transferCreate = llvm::cast<PipeTransferCreateOp>(transferCreateOp);
-    DeviceRefAttr device;
-    if (DeviceTransferAttr transfer = getDeviceTransfer(transferCreate)) {
-      device = transfer.getEdge().getDestination();
-      assert(device && "device-range transfers must fail route planning");
-    }
-
-    auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
+  auto appendLocations = [&](PipeType pipeType, DeviceRefAttr device) {
     int64_t minNodeX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
     int64_t maxNodeX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
     int64_t minNodeY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
@@ -2588,6 +2581,22 @@ getCompletionCounterLocations(const PipeTransferAllocationUnit &unit) {
         }
       }
     }
+  };
+
+  if (isSelectedTransferUnit(unit)) {
+    // Selected PipeNet records are local-only, so the destination device is
+    // the device that executes the operation.
+    appendLocations(unit.pipeType, DeviceRefAttr{});
+  }
+  for (Operation *transferCreateOp : unit.transferCreateOps) {
+    auto transferCreate = llvm::cast<PipeTransferCreateOp>(transferCreateOp);
+    DeviceRefAttr device;
+    if (DeviceTransferAttr transfer = getDeviceTransfer(transferCreate)) {
+      device = transfer.getEdge().getDestination();
+      assert(device && "device-range transfers must fail route planning");
+    }
+    appendLocations(mlir::cast<PipeType>(transferCreate.getPipe().getType()),
+                    device);
   }
   assert(!locations.empty() && "pipe completion counter has no destination");
   return locations;
@@ -3071,11 +3080,6 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
     }
   }
 
-  int64_t syncSemaphoreCount = observer.highestSyncSemaphoreIndex + 1;
-  if (pipeCapacityPlan) {
-    syncSemaphoreCount =
-        std::max(syncSemaphoreCount, pipeCapacityPlan->getSyncSemaphoreCount());
-  }
   for (const auto &[transferCreateOp, resources] : info.selectedResources) {
     (void)transferCreateOp;
     for (const PipeResourceInfo &resource : resources) {
@@ -3083,6 +3087,12 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
         resource.readyCounter->observe(observer);
       }
     }
+  }
+
+  int64_t syncSemaphoreCount = observer.highestSyncSemaphoreIndex + 1;
+  if (pipeCapacityPlan) {
+    syncSemaphoreCount =
+        std::max(syncSemaphoreCount, pipeCapacityPlan->getSyncSemaphoreCount());
   }
 
   return PipeResourceRequirements{
@@ -3150,8 +3160,7 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
     (void)transferCreateOp;
     for (const PipeResourceInfo &resource : resources) {
       if (resource.readyCounter) {
-        LocalSemaphoreObserver observer(highest,
-                                        PipeSemaphoreKind::SenderReady,
+        LocalSemaphoreObserver observer(highest, PipeSemaphoreKind::SenderReady,
                                         resource.pipe);
         resource.readyCounter->observe(observer);
       }

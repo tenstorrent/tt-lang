@@ -181,7 +181,7 @@ class TTLGenericCompiler(TTCompilerBase):
         # instead of `net_0.is_active()`). Body-local PipeNet assignments
         # are recorded here too — `a_pipe_net = ttl.PipeNet(a_pipes)`
         # evaluates the RHS at trace time and stores the resulting object.
-        from ..pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
+        from ..pipe import PipeNet
 
         if isinstance(value, PipeNet):
             self._pipe_net_names.setdefault(id(value), var_name)
@@ -592,7 +592,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
-        from ..pipe import PipeNet
+        from ..pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
 
         method_name = node.func.attr
         var_name = node.func.value.id
