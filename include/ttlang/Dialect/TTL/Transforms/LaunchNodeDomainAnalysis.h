@@ -105,6 +105,16 @@ bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
 
+/// Evaluate an integer expression at one launch coordinate when its operands
+/// are launch coordinates, integer constants, or supported arithmetic.
+std::optional<int64_t> evaluateIndexAtLaunchNode(Value value,
+                                                 LaunchNodeCoord coord);
+
+/// Evaluate a predicate at one launch coordinate when its integer operands are
+/// statically evaluable by `evaluateIndexAtLaunchNode`.
+std::optional<bool> evaluatePredicateAtLaunchNode(Value value,
+                                                  LaunchNodeCoord coord);
+
 /// Read the PipeNet ids selected by a `ttl.pipenet_scope`.
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp, SmallVectorImpl<int64_t> &ids);
 

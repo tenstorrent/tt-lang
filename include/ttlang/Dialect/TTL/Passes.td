@@ -174,8 +174,9 @@ def TTLConvertTTLToTTKernel
     Option<"pipeComputedAddresses", "pipe-computed-addresses",
            "bool", "true",
            "Use computed receiver DFB addresses for eligible pipe transfers. "
-           "When disabled, all pipe transfers use receiver-published "
-           "destination addresses.">,
+           "When disabled, pipe transfers use receiver-published destination "
+           "addresses; multicast still requires proven equal runtime "
+           "receiver addresses.">,
     Option<"pipeCapacitySync", "pipe-capacity-sync",
            "bool", "true",
            "Use capacity-counter synchronization for eligible pipe transfers. "

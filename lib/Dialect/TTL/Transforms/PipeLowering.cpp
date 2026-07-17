@@ -1681,40 +1681,6 @@ static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
   return info.staticTileOffset * tileType.getSizeBytes();
 }
 
-static std::optional<int64_t>
-getUniformReceiverBatchSize(const PipeGraph &pipeGraph,
-                            const PipeEdge &pipeEdge) {
-  std::optional<int64_t> receiverBatchSize;
-  for (PipeReceiverEndpointId endpointId :
-       pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
-    const PipeReceiverEndpoint &endpoint =
-        pipeGraph.getPipeReceiverEndpoint(endpointId);
-    const PipeReceiverDFBNode &receiverDFBNode =
-        pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
-    if (receiverBatchSize &&
-        *receiverBatchSize != receiverDFBNode.receiverBatchSize) {
-      return std::nullopt;
-    }
-    receiverBatchSize = receiverDFBNode.receiverBatchSize;
-  }
-  return receiverBatchSize;
-}
-
-static bool hasProvenPipeOnlyReceiverStreams(const PipeGraph &pipeGraph,
-                                             const PipeEdge &pipeEdge) {
-  for (PipeReceiverEndpointId endpointId :
-       pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
-    const PipeReceiverEndpoint &endpoint =
-        pipeGraph.getPipeReceiverEndpoint(endpointId);
-    const PipeReceiverDFBNode &receiverDFBNode =
-        pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
-    if (!receiverDFBNode.hasProvenPipeOnlyStream) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /// Return metadata for receiver addresses the sender can compute without
 /// receiver publication. Rejections preserve the receiver-published protocol.
 static std::optional<PipeComputedAddressInfo>
@@ -1742,11 +1708,8 @@ getComputedAddressInfo(const PipeTransferAllocationUnit &unit,
   // assignment. Non-pipe DFB traffic can advance the hardware ring without a
   // pipe post, so computed addressing requires the graph to prove that the
   // receiver stream contains only pipe-delivered blocks.
-  if (!hasProvenPipeOnlyReceiverStreams(pipeGraph, *pipeEdge)) {
-    return std::nullopt;
-  }
   std::optional<int64_t> receiverBatchSize =
-      getUniformReceiverBatchSize(pipeGraph, *pipeEdge);
+      pipeGraph.getProvenUniformReceiverBatchSize(pipeEdge->id);
   if (!receiverBatchSize) {
     return std::nullopt;
   }

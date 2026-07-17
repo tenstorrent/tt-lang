@@ -46,6 +46,65 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Disabling computed addresses keeps receiver-published multicast available
+// when every receiver DFB is proven to advance identically.
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  // COMPUTED-LABEL: func.func @uniform_multicast
+  // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.noc_async_write_multicast
+  // COMPUTED: return
+
+  // PUBLISHED-LABEL: func.func @uniform_multicast
+  // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED: ttkernel.noc_inline_dw_write
+  // PUBLISHED: ttkernel.load_from_l1
+  // PUBLISHED: ttkernel.noc_async_write_multicast
+  // PUBLISHED: return
+
+  // RECEIVER-POST-LABEL: func.func @uniform_multicast
+  // RECEIVER-POST-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // RECEIVER-POST-NOT: ttkernel.noc_inline_dw_write
+  // RECEIVER-POST: ttkernel.noc_async_write_multicast
+  // RECEIVER-POST: return
+  func.func @uniform_multicast()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe
+        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %recv = ttl.cb_reserve %dst_cb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %token = ttl.pipe_transfer.post %transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+      ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %ready = ttl.cb_wait %dst_cb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %send = ttl.pipe_transfer.send %transfer, %src_cb
+          : (!ttl.pipe_transfer,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Computed addresses require a receiver DFB stream whose physical ring movement
 // is fully modeled by pipe receives. A non-pipe push on the receiver DFB keeps
 // the receiver-published address protocol even when computed addresses are

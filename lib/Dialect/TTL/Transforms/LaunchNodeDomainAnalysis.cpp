@@ -240,7 +240,8 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
 
 /// Evaluate index expressions that are affine over `ttl.core_x`,
 /// `ttl.core_y`, and integer constants for one launch coordinate.
-static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
+std::optional<int64_t> evaluateIndexAtLaunchNode(Value value,
+                                                 LaunchNodeCoord coord) {
   if (value.getDefiningOp<CoreXOp>()) {
     return coord.x;
   }
@@ -251,25 +252,25 @@ static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
     return *constant;
   }
   if (auto castOp = value.getDefiningOp<arith::IndexCastOp>()) {
-    return evalIndex(castOp.getIn(), coord);
+    return evaluateIndexAtLaunchNode(castOp.getIn(), coord);
   }
   if (auto addOp = value.getDefiningOp<arith::AddIOp>()) {
-    auto lhs = evalIndex(addOp.getLhs(), coord);
-    auto rhs = evalIndex(addOp.getRhs(), coord);
+    auto lhs = evaluateIndexAtLaunchNode(addOp.getLhs(), coord);
+    auto rhs = evaluateIndexAtLaunchNode(addOp.getRhs(), coord);
     if (lhs && rhs) {
       return *lhs + *rhs;
     }
   }
   if (auto subOp = value.getDefiningOp<arith::SubIOp>()) {
-    auto lhs = evalIndex(subOp.getLhs(), coord);
-    auto rhs = evalIndex(subOp.getRhs(), coord);
+    auto lhs = evaluateIndexAtLaunchNode(subOp.getLhs(), coord);
+    auto rhs = evaluateIndexAtLaunchNode(subOp.getRhs(), coord);
     if (lhs && rhs) {
       return *lhs - *rhs;
     }
   }
   if (auto mulOp = value.getDefiningOp<arith::MulIOp>()) {
-    auto lhs = evalIndex(mulOp.getLhs(), coord);
-    auto rhs = evalIndex(mulOp.getRhs(), coord);
+    auto lhs = evaluateIndexAtLaunchNode(mulOp.getLhs(), coord);
+    auto rhs = evaluateIndexAtLaunchNode(mulOp.getRhs(), coord);
     if (lhs && rhs) {
       return *lhs * *rhs;
     }
@@ -279,15 +280,16 @@ static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
 
 /// Evaluate boolean predicates composed from statically evaluable comparisons
 /// and integer boolean operations for one launch coordinate.
-static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord) {
+std::optional<bool> evaluatePredicateAtLaunchNode(Value value,
+                                                  LaunchNodeCoord coord) {
   if (value.getType().isInteger(1)) {
     if (auto constant = getConstantIntValue(value)) {
       return *constant != 0;
     }
   }
   if (auto cmpOp = value.getDefiningOp<arith::CmpIOp>()) {
-    auto lhs = evalIndex(cmpOp.getLhs(), coord);
-    auto rhs = evalIndex(cmpOp.getRhs(), coord);
+    auto lhs = evaluateIndexAtLaunchNode(cmpOp.getLhs(), coord);
+    auto rhs = evaluateIndexAtLaunchNode(cmpOp.getRhs(), coord);
     if (!lhs || !rhs) {
       return std::nullopt;
     }
@@ -311,22 +313,22 @@ static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord) {
     }
   }
   if (auto andOp = value.getDefiningOp<arith::AndIOp>()) {
-    auto lhs = evalBool(andOp.getLhs(), coord);
-    auto rhs = evalBool(andOp.getRhs(), coord);
+    auto lhs = evaluatePredicateAtLaunchNode(andOp.getLhs(), coord);
+    auto rhs = evaluatePredicateAtLaunchNode(andOp.getRhs(), coord);
     if (lhs && rhs) {
       return *lhs && *rhs;
     }
   }
   if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
-    auto lhs = evalBool(orOp.getLhs(), coord);
-    auto rhs = evalBool(orOp.getRhs(), coord);
+    auto lhs = evaluatePredicateAtLaunchNode(orOp.getLhs(), coord);
+    auto rhs = evaluatePredicateAtLaunchNode(orOp.getRhs(), coord);
     if (lhs && rhs) {
       return *lhs || *rhs;
     }
   }
   if (auto xorOp = value.getDefiningOp<arith::XOrIOp>()) {
-    auto lhs = evalBool(xorOp.getLhs(), coord);
-    auto rhs = evalBool(xorOp.getRhs(), coord);
+    auto lhs = evaluatePredicateAtLaunchNode(xorOp.getLhs(), coord);
+    auto rhs = evaluatePredicateAtLaunchNode(xorOp.getRhs(), coord);
     if (lhs && rhs) {
       return *lhs != *rhs;
     }
@@ -379,7 +381,7 @@ getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
   for (LaunchNodeCoord coord : baseDomain.nodes) {
     bool resolved = true;
     for (unsigned idx = 0; idx < set.getNumInputs(); ++idx) {
-      auto value = evalIndex(operands[idx], coord);
+      auto value = evaluateIndexAtLaunchNode(operands[idx], coord);
       if (!value) {
         resolved = false;
         break;
@@ -506,7 +508,7 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
   }
   LaunchNodeDomain trueDomain;
   for (LaunchNodeCoord coord : state.baseDomain.nodes) {
-    std::optional<bool> value = evalBool(condition, coord);
+    std::optional<bool> value = evaluatePredicateAtLaunchNode(condition, coord);
     if (!value) {
       return {LaunchNodeDomain::unknown(), LaunchNodeDomain::unknown(),
               condition.getDefiningOp()};

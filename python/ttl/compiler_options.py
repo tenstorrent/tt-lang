@@ -95,7 +95,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="pipe_computed_addresses",
         action=argparse.BooleanOptionalAction,
-        help="Use computed receiver DFB addresses for eligible pipe transfers (default: enabled).",
+        help="Use computed receiver DFB addresses for eligible pipe transfers; receiver-published multicast still requires proven equal runtime addresses (default: enabled).",
     )
     p.add_argument(
         "--ttl-pipe-capacity-sync",

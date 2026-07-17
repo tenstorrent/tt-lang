@@ -90,7 +90,7 @@ NoC write barrier.
 | Sender obtains the destination address | Reads the published address-table entry | Computes `DFB base + slot * block stride + static offset` | Computes the same address |
 | Receiver action after popping a block | No capacity update | No capacity update | Increments the sender's capacity semaphore |
 | Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous | Sender may use the next computed slot when a capacity credit is available |
-| Multicast | Supported | Supported with a proven uniform receiver layout | Not currently supported; uses `CA/RP` instead |
+| Multicast | Supported when receiver runtime addresses are proven equal | Supported with proven equal receiver runtime addresses | Not currently supported; uses `CA/RP` instead |
 
 The practical difference is address publication, not send admission.
 `CA/RP` does not permit the sender to run before the receiver post. It
@@ -106,30 +106,35 @@ after its pop. This allows sender and receiver execution to overlap
 across multiple DFB slots and removes the receiver-post synchronization
 traffic.
 
-`RA/RP` remains the fallback when that equality cannot be proven. The
-current computed-address proof rejects a transfer when any of the
-following applies:
+Point-to-point transfers use `RA/RP` when computed-address equality cannot be
+proven. Multicast cannot use that fallback unless every receiver DFB write
+pointer is proven equal. The computed-address protocol is unavailable when any
+of the following applies:
 
 - `--no-ttl-pipe-computed-addresses` is set.
 - The destination tile offset is dynamic.
 - The receiver DFB stream can contain non-pipe writes, which can advance
   the hardware DFB ring without a corresponding pipe post.
-- The pipe graph cannot assign an exact receiver slot.
+- Receiver DFB posts occur in different data-movement functions or different
+  loop or branch regions.
+- One PipeKey has multiple static posts to the receiver DFB.
+- A receiver DFB pop that can affect slot reuse occurs in a different control
+  context from the posts.
 - One transfer allocation unit does not contain exactly one receive post
   and one send.
-- Multicast receiver endpoints do not have one uniform receiver batch
-  size.
+- Multicast receiver DFBs do not have one uniform receiver batch size.
 - The receiver batch size does not divide the DFB `block_count`; a later
   batch could cross the ring boundary and require two payload writes.
 - The receiver DFB does not contain tiles, the sender operations do not
   belong to one sender function, or the address arithmetic does not fit
   the supported 32-bit representation.
 
-Multicast is not itself a restriction. Uniform multicast uses `CA/RP`
-when the proof succeeds. A collective transfer with a dynamic
-destination offset cannot use `RA/RP` as a fallback because TT-Metal NoC
-multicast requires one statically proven SRAM address for every receiver;
-lowering rejects that transfer.
+Multicast is not itself a restriction. Uniform multicast uses `CA/RP` when the
+computed-address proof succeeds. `RA/RP` remains available when computed
+addressing is disabled or another computed-address predicate fails, but only if
+the compiler has separately proven equal runtime receiver addresses. A
+collective transfer without that proof is rejected because TT-Metal NoC
+multicast requires the same SRAM address for every receiver.
 
 Pipe transfers have the following operational semantics:
 
@@ -285,6 +290,16 @@ def transfer():
             net.if_dst(recv)
 ```
 
+Repeated rendezvous are paired in first-in, first-out order only when receiver
+posts, sends, and receive waits have equal static occurrence counts and proven
+equal execution multiplicities. Matched events must share each enclosing loop.
+The verifier evaluates every `scf.for` trip count at the event's launch node and
+requires equal counts. A loop-IV condition must restrict both matched events in
+the same structured-control region. A static event outside a loop or condition
+does not correspond to an event that executes only on some iterations. The
+verifier rejects an unproven correspondence instead of assigning dependencies
+by lexical module order.
+
 The receive post executes before the send can block on that post. The
 receive wait runs only after the send operation has run:
 
@@ -304,8 +319,8 @@ flowchart LR
     linkStyle 1 stroke:#94a3b8,stroke-width:2px
 ```
 
-The program order satisfies both dependencies: the send sees the
-destination address from `ttl.copy(pipe, dst_blk)`, and
+The program order satisfies both dependencies: the send observes the
+receiver post from `ttl.copy(pipe, dst_blk)`, and
 `recv_tx.wait()` runs after `ttl.copy(src_blk, pipe)` has run the send
 that can complete the receive.
 
@@ -509,9 +524,9 @@ compile-time arguments:
 ```
 
 For ordinary point-to-point transfers, `%static_receiver_slot_index` is
-0. For gather or allgather-style receivers, `PipeGraph` assigns a
-physical receiver slot to each receive post from the receiver DFB
-reserve order.
+usually 0. For gather or allgather-style receivers, `PipeGraph` assigns
+a physical receiver slot only after proving one receiver DFB reservation
+sequence.
 Receiver DFB pops release physical slots, so a later batch can reuse the
 same slot after the compiler has observed the pop. Static tensor
 subviews add `%static_byte_offset` inside the selected DFB block.
@@ -570,6 +585,80 @@ release cannot race with a sender update.
 receiver increments of the sender-ready counter. The receiver-completion
 counter remains unchanged because it reports payload arrival, not sender
 capacity.
+
+#### CA/RP address proof
+
+Address computation must reproduce the physical DFB block selected by the
+receiver's dynamic reserve. The proof therefore applies to the complete writer
+set of one physical receiver DFB, not to one pipe independently.
+
+Let `D = (receiver node, finalized DFB index)`. Let `posts(D)` contain every
+pipe receive post that may execute on that receiver and target `D`. A receiver
+control context is the ordered nesting of function and structured-control-flow
+blocks containing an operation. Receiver-role scopes known to execute on that
+node, such as a matching `ttl.if_dst` or `ttl.pipenet_scope`, do not add a
+context because they do not select among dynamic executions on that receiver.
+
+| Predicate | Required facts |
+| --- | --- |
+| `single_context(D)` | Every post in `posts(D)` belongs to the same receiver function and the same loop and branch regions. Every DFB pop that may release a slot from `D` has that context. |
+| `single_occurrence(D)` | Each PipeKey occurs exactly once in `posts(D)`. The sender representation has one initial slot plus one repeated-batch stride, so it cannot represent two distinct static positions for one PipeKey. |
+| `ordered_batch(D)` | Within the common context, operation order gives one sequential order for all posts and relevant pops. Slot assignment never reuses a live block or extends beyond `block_count(D)`. |
+| `uniform_slot(edge)` | Every receiver endpoint of a collective edge assigns that edge the same physical slot. |
+| `uniform_advancement(edge)` | Every collective receiver DFB advances only through modeled pipe receives, and every receiver's repeated batch contains the same number of DFB blocks. This keeps their runtime write pointers equal across iterations. |
+
+Posts in different data-movement functions have no program order. Posts in
+different `scf.if` regions may execute in either branch, and a post inside a
+loop may execute more times than a post outside it. Lexical module order does
+not order any of those dynamic reservations. Such a DFB does not satisfy
+`single_context(D)`, so every point-to-point writer to it uses `RA/RP`.
+
+Posts in one common loop body can satisfy the proof. Each loop iteration then
+executes the same ordered batch, and the sender-local slot counter advances by
+that complete batch size. Separate matching `ttl.if_dst` regions also preserve
+order for a receiver that belongs to each region because those receiver-role
+conditions are statically true on that receiver.
+
+The schedule analysis is:
+
+```text
+for D in pipe_graph.receiver_dfbs:
+    posts = collect_all_receiver_posts(D)
+    if posts.empty()
+       or not single_context(D)
+       or not single_occurrence(D):
+        schedule[D] = unproven
+        continue
+
+    for operation in program_order(common_context(posts)):
+        if operation posts to D:
+            slot[pipe(operation), D] = reserve_next_blocks(D)
+        if operation pops D:
+            release_oldest_blocks(D)
+    schedule[D] = proven
+
+for edge in pipe_graph.edges:
+    address_schedule = all endpoint D has schedule[D] == proven
+                       and uniform_slot(edge)
+    if collective(edge)
+       and (not address_schedule or not uniform_advancement(edge)):
+        error("multicast receiver DFB addresses are not proven equal")
+    if not address_schedule:
+        computed_address(edge) = false
+        continue
+    computed_address(edge) = remaining_address_predicates(edge)
+```
+
+`remaining_address_predicates` includes a static destination offset, a
+pipe-only receiver DFB stream, exactly one static post and send per transfer
+allocation unit, a uniform receiver batch size, non-wrapping repeated batches,
+tile-based address geometry, one sender function, and supported 32-bit address
+arithmetic.
+
+For a point-to-point edge, `computed_address(edge) = false` selects `RA/RP`.
+For a collective edge, `uniform_advancement` is required independently of the
+selected protocol because a single TT-Metal NoC multicast cannot target
+different SRAM addresses.
 
 #### CA/CC capacity proof
 
@@ -630,10 +719,11 @@ for edge in pipe_graph.edges:
     mode(edge) = "CA/CC"
 ```
 
-Selection is all-or-none per logical pipe edge because one send writes
-every endpoint. Multicast currently uses `CA/RP` when computed
-addressing is proven and `RA/RP` otherwise. Its receiver post, wait, and
-pop operations execute over the complete receiver range, so
+Selection is all-or-none per logical pipe edge because one send writes every
+endpoint. Multicast uses `CA/RP` when computed addressing is proven. It can use
+`RA/RP` only after the separate runtime-address equality proof succeeds. Its
+receiver post, wait, and pop operations execute over the complete receiver
+range, so
 `valid_posts` and `valid_pops` cannot establish an exact single-node
 domain for each endpoint. Extending `CA/CC` to multicast requires
 per-receiver release facts and independent capacity accounting, tracked
@@ -641,7 +731,8 @@ in https://github.com/tenstorrent/tt-lang/issues/728.
 
 The `--ttl-pipe-computed-addresses` option, enabled by default, selects
 `CA/RP` or `CA/CC` for eligible transfers.
-`--no-ttl-pipe-computed-addresses` forces `RA/RP` for every transfer.
+`--no-ttl-pipe-computed-addresses` requests `RA/RP`; multicast is rejected if
+equal runtime receiver addresses are not proven.
 The `--ttl-pipe-capacity-sync` option, also enabled by default,
 selects `CA/CC` when the capacity proof succeeds.
 `--no-ttl-pipe-capacity-sync` forces computed-address transfers to
@@ -649,24 +740,70 @@ use `CA/RP` and has no effect on `RA/RP` transfers.
 
 ### Protocol performance
 
-The measurements below report the sender data-movement kernel duration
-from the Blackhole device profiler. Each row is the median of 50 warm
-dispatches after 5 warmup dispatches. Both workloads transfer BF16
-32-by-32 tiles with sender `block_count = 2` and receiver
-`block_count = 8`. The benchmark inspects final MLIR to reject a run if
-the compiler did not select the requested address mechanism. The
-multicast comparison also verifies that both variants retain the
-receiver-post sender wait. Every output was bit-exact.
+The measurements below come from the Blackhole device profiler. Each row is the
+median of 50 warm dispatches after 5 warmup dispatches. The ready-receiver and
+multicast comparisons report sender data-movement kernel duration. The
+pipelined-receiver comparison reports the complete interval from the earliest
+sender or receiver kernel start to the latest kernel completion. All workloads
+transfer BF16 32-by-32 tiles with sender `block_count = 2` and receiver
+`block_count = 8`. The benchmark inspects final MLIR to reject a run if the
+compiler did not select the requested protocol. Every output was bit-exact.
 
-The point-to-point workload compares the general `RA/RP` fallback with
-`CA/CC`. It has one sender and one receiver:
+#### Ready receiver: protocol overhead
 
-| Transfers | `CA/CC` sender (us) | `RA/RP` sender (us) | Delta/transfer (us) | Sender reduction | Ratio |
+The point-to-point workload has one sender and one receiver. It compares all
+three protocols side by side. Each reduction is
+`(RA/RP sender time - compared sender time) / RA/RP sender time`:
+
+| Transfers | `CA/CC` sender (us) | `CA/RP` sender (us) | `RA/RP` sender (us) | `CA/CC` time reduction vs `RA/RP` | `CA/RP` time reduction vs `RA/RP` |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 64 | 54.403 | 59.658 | 0.082 | 8.81% | 1.0966x |
-| 256 | 217.342 | 238.922 | 0.084 | 9.03% | 1.0993x |
-| 1024 | 869.493 | 955.568 | 0.084 | 9.01% | 1.0990x |
-| 4096 | 3477.623 | 3824.195 | 0.085 | 9.06% | 1.0997x |
+| 64 | 54.616 | 54.457 | 59.688 | 8.50% | 8.76% |
+| 256 | 217.294 | 217.340 | 238.946 | 9.06% | 9.04% |
+| 1024 | 868.510 | 868.520 | 955.681 | 9.12% | 9.12% |
+| 4096 | 3474.474 | 3473.896 | 3825.039 | 9.17% | 9.18% |
+
+`CA/CC` and `CA/RP` differ by at most 0.3% in this workload. Receiver-post
+synchronization is not on the critical execution time when the receiver stays
+ready, so computed addressing accounts for the measured improvement over
+`RA/RP`.
+
+#### Pipelined receiver: CA/CC overlap
+
+The ready-receiver workload is a protocol-overhead control; it does not expose
+the scheduling difference between `CA/RP` and `CA/CC`. The pipelined-receiver
+workload retains each received DFB block while writing it to four distinct
+output locations:
+
+```python
+with recv_dfb.wait() as recv_block:
+    for output_index in range(receiver_work):
+        ttl.copy(
+            recv_block,
+            out[output_index, transfer_index],
+        ).wait()
+# The context exit pops the block; CA/CC then returns its capacity.
+```
+
+With `CA/RP`, the receiver cannot post the next reservation until those writes
+and the pop complete. With `CA/CC`, the sender can write later free DFB slots
+while the receiver processes earlier slots. The reduction columns use the
+operation times named in their headers:
+
+| Transfers | `CA/CC` operation (us) | `CA/RP` operation (us) | `RA/RP` operation (us) | `CA/CC` reduction vs `CA/RP` | `CA/RP` reduction vs `RA/RP` | `CA/CC` reduction vs `RA/RP` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 89.252 | 101.847 | 114.044 | 12.37% | 10.69% | 21.74% |
+| 256 | 354.841 | 406.895 | 456.470 | 12.79% | 10.86% | 22.26% |
+| 1024 | 1416.960 | 1623.742 | 1823.716 | 12.73% | 10.97% | 22.30% |
+| 4096 | 5661.811 | 6495.647 | 7305.041 | 12.84% | 11.08% | 22.49% |
+
+`CA/CC` reduces complete operation time by 12.4-12.8% relative to `CA/RP` in
+this pipelined workload. A 20-run calibration at 256 transfers measured only a
+1.74% reduction with receiver `block_count = 1`, then 12.64% with
+`block_count = 2` and 12.75% with `block_count = 4`. The benefit therefore
+comes from overlapping sender work with receiver processing once the receiver
+DFB is at least double-buffered.
+
+#### Multicast: address publication
 
 The multicast workload isolates the address mechanism: both variants
 use receiver-post synchronization. One sender multicasts each tile to
@@ -729,14 +866,15 @@ destination address from the table, issues one multicast payload write,
 and signals receiver completion with the existing per-PipeNet completion
 counter.
 
-TT-Metal NoC multicast has one destination SRAM address for all
-receivers. All receivers for one collective pipe must therefore publish
-the same destination SRAM address value. The compiler proves that by
-validating the receiver DFB index, DFB type, and static tile offset for
-every collective receive post. Non-uniform or untraceable destination
-addresses are rejected before TTKernel lowering. Per-receiver
-destination addresses are not a multicast feature in the current
-TT-Metal NoC architecture.
+TT-Metal NoC multicast has one destination SRAM address for all receivers. All
+receivers for one collective pipe must therefore publish the same destination
+SRAM address value. The compiler validates the receiver DFB index, DFB type,
+static tile offset, and initial physical slot. It also proves that receiver DFB
+write pointers remain equal: every stream advances only through modeled pipe
+receives, and every repeated receiver batch advances by the same number of DFB
+blocks. Non-uniform or untraceable destination addresses are rejected before
+TTKernel lowering. Per-receiver destination addresses are not a multicast
+feature in the current TT-Metal NoC architecture.
 
 `ttl.wait` on the transfer handle returned by `ttl.copy(pipe, dst_blk)`
 expands to `ttl.pipe_transfer.wait`. TTKernel lowering implements that
@@ -922,14 +1060,16 @@ sender's data lands in its own slot of the receiver's dataflow buffer.
 
 ### Data layout: physical receiver slots
 
-Slot assignment is deterministic for the lowered receive sequence.
-`PipeGraph` walks receiver posts in IR order, assigns the next physical
-slot in each receiver DFB, and releases slots when it observes a proven
-receiver DFB pop. For multicast, every receiver for the same pipe must
-reserve the same physical slot because TT-Metal NoC multicast carries
-one destination address. Pipes that are simultaneously live at one
-receiver use distinct physical slots. After the receiver consumes and
-pops a batch, later receive posts can reuse those physical slots.
+Slot assignment is deterministic only after the address proof establishes one
+receiver control context for every post and relevant pop in the physical DFB.
+Within that context, `PipeGraph` follows program order, assigns the next
+physical slot, and releases slots at proven receiver DFB pops. It does not infer
+order between functions, threads, loop regions, or branch regions from their
+lexical module positions. For multicast, every receiver for the same pipe must
+reserve the same physical slot because TT-Metal NoC multicast carries one
+destination address. Pipes that are simultaneously live at one receiver use
+distinct physical slots. After the receiver consumes and pops a batch, later
+receive posts can reuse those physical slots.
 
 Each receive post identifies one concrete DFB write pointer. When the
 static slot proof succeeds, the sender computes the same address from
@@ -947,10 +1087,11 @@ lowering rejects that form before TTKernel lowering. Future support
 would need to decompose the operation into separate writes or groups
 with uniform destination addresses.
 
-Overlapping arrivals are safe because the user reserves one DFB block
-per receive callback. Slot assignment follows receiver post order and
-proves that every receiver in a multicast reserves the same DFB slot for
-the same pipe.
+Overlapping arrivals are safe because the user reserves one DFB block per
+receive callback. Computed slot assignment requires a proven receiver program
+order and proves that every receiver in a multicast reserves the same DFB slot
+for the same pipe. Otherwise point-to-point transfers publish the actual
+reserved address.
 
 This is the same layout rule point-to-point gather uses:
 simultaneously live point-to-point pipes to one destination use distinct
@@ -992,14 +1133,15 @@ hardware multicast loopback case are documented in
 Slot-per-sender preserves every parallelism property of a non-overlapping
 collective. The proof tracks four points in the lowered IR:
 
-1. Receiver slot assignment is static within each live batch.
-   `PipeGraph` follows receiver post order, assigns each pipe a physical
-   receiver DFB slot index, releases slots when a receiver DFB pop is
-   proven, and verifies that every multicast receiver uses the same slot
-   for that pipe. `CA/RP` and `CA/CC` use that slot index directly or use
-   a sender-local slot counter that advances by one receiver batch per
-   repeated execution. `RA/RP` uses the receiver-published DFB write
-   pointer recorded in the source node's SRAM address table.
+1. Receiver slot assignment is static within each proven live batch.
+   `PipeGraph` first proves one receiver control context for every writer to
+   the physical DFB. It then follows program order in that context, assigns
+   each pipe a physical receiver DFB slot index, releases slots at proven DFB
+   pops, and verifies that every multicast receiver uses the same slot for
+   that pipe. `CA/RP` and `CA/CC` use that slot index directly or use a
+   sender-local slot counter that advances by one receiver batch per repeated
+   execution. `RA/RP` uses the receiver-published DFB write pointer recorded
+   in the source node's SRAM address table.
 2. No inter-sender wait. In `RP`, each sender waits only for its own
    receivers to post. In `CC`, each sender waits only for its own capacity
    counter. The sender then performs its NoC write and increments the
@@ -1274,9 +1416,11 @@ note: suggested guard: `net_0.is_src()`
 | this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union. | wrap the surrounding work in `if net_<N>.is_active(): ...` |
 | this `ttl.copy(buffer, pipe)` sends data on PipeNet \<N\> from a node that is not a source of any pipe in that net | A DFB-to-pipe copy is reachable from a node that isn't the pipe's source coordinate. | wrap the copy in `net_<N>.if_src(...)` or guard with `if net_<N>.is_src(): ...` |
 | this `ttl.copy(pipe, buffer)` receives data from PipeNet \<N\> on a node that is not a destination of any pipe in that net | A pipe-to-DFB copy is reachable from a node outside the pipe's destination range. | wrap the copy in `net_<N>.if_dst(...)` or guard with `if net_<N>.is_dst(): ...` |
-| pipe send occurs before the receiver publishes a destination address on PipeNet \<N\> | A same-thread source can block waiting for a receiver address that is posted later in the same thread. | move `ttl.copy(pipe, dst)` before `ttl.copy(src, pipe)`, then wait for receive completion after the send operation has run |
+| pipe send occurs before the receiver posts a dataflow buffer reservation on PipeNet \<N\> | A same-thread source can block waiting for a receiver post that executes later in the same thread. | move `ttl.copy(pipe, dst)` before `ttl.copy(src, pipe)`, then wait for receive completion after the send operation has run |
 | receive wait occurs before the send that completes it on PipeNet \<N\> | A receiver waits on the receive transfer before the matching sender operation can run. | post the receive first, run the send, then wait on the transfer handle returned by `ttl.copy(pipe, dst)` |
 | pipe schedule contains a wait-for cycle | Same-thread ordering creates a wait-for cycle not matched by a more specific diagnostic. | reorder same-thread sends and receives so all required receive posts happen before dependent sends |
+| cannot prove a one-to-one synchronization schedule on PipeNet \<N\> | Matching receiver posts, sends, or receive waits have different static counts, per-node loop trip counts, or loop-IV conditions. | use equal occurrence counts and the same structured loop and conditional context for each matched event |
+| collective pipe receiver DFB write pointers are not proven equal | Multicast receivers can advance their destination DFBs differently through non-pipe writes or unequal repeated pipe batches. | use receiver DFBs whose writes are fully modeled by equal pipe receive schedules |
 | this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
 | this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of `cb_push` producer domains for the same DFB index. | guard the wait with the same `if net.is_active(): ...` predicate the producer uses |
 | could not statically analyze the PipeNet guard around this op | A surrounding condition uses runtime values or arithmetic the verifier can't enumerate per coordinate (e.g. multiplying a node coordinate by a runtime value). | rewrite using `net.is_src()` / `net.is_dst()` / `net.is_active()`, or compare `ttl.node(dims=2)` coordinates against integer constants |
@@ -1516,7 +1660,7 @@ compile-time properties not runtime-observable.
 | 51 | OperationPipeNets.work_extent: empty / point-to-point / collective |     |  X  |     |
 | 52 | OperationPipeNets.work_extent: union, mixed-rank padding  |     |  X  |     |
 | 53 | grid="auto" and grid="full" both launch the device grid   |  X  |  X  |     |
-| 54 | Verifier accepts every `arith.cmpi` predicate kind, `andi`/`ori`/`xori` boolean composition, `subi`/`muli`/`index_cast` in `evalIndex` |  |  |  X  |
+| 54 | Verifier accepts every `arith.cmpi` predicate kind, `andi`/`ori`/`xori` boolean composition, `subi`/`muli`/`index_cast` in `evaluateIndexAtLaunchNode` |  |  |  X  |
 | 55 | Verifier accepts `affine.if` over `Mul`, `Mod`, `FloorDiv` (non-zero), `CeilDiv`, `AffineSymbolExpr`, else-branch |  |  |  X  |
 | 56 | Verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
 | 57 | Verifier rejects malformed `pipenet_scope`: missing attrs, length mismatch, role out of {0, 1} |  |  |  X  |
@@ -1530,9 +1674,16 @@ compile-time properties not runtime-observable.
 | 65 | Lowering: non-loopback collective uses a computed receiver address when the static or dynamic slot proof succeeds | X | | X |
 | 66 | Semaphore counting: collective address storage does not allocate semaphore ids | | X | |
 | 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
-| 68 | Schedule verifier rejects same-thread send before destination address publication | X | | X |
+| 68 | Schedule verifier rejects same-thread send before receiver post | X | | X |
 | 69 | Lowering: overlapping same-source transfers allocate distinct ready counters |  |  |  X  |
 | 70 | Lowering: non-overlapping same-source transfers reuse ready counters |  |  |  X  |
+| 71 | Schedule verifier rejects mismatched post/send execution contexts | X | | X |
+| 72 | Schedule verifier rejects unequal post/send or send/wait counts | | | X |
+| 73 | Multicast rejects asymmetric non-pipe receiver DFB writes | X | | X |
+| 74 | Multicast rejects unequal repeated receiver DFB batch sizes | | | X |
+| 75 | Uniform multicast supports computed and receiver-published address options | | | X |
+| 76 | Schedule verifier rejects unequal source/destination trip counts from node-dependent loop bounds | X | | X |
+| 77 | Schedule verifier rejects a loop-conditional send paired with an unconditional receiver post | X | | X |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts

@@ -31,9 +31,9 @@ struct PipeSramAddressTableInfo {
   int64_t byteOffset;
 };
 
-/// Sender-side recipe for computing a receiver DFB address. The graph assigns
-/// `receiverSlotIndex`; a dynamic counter is needed only when repeated
-/// executions revisit the same receiver batch at a different physical slot.
+/// Sender-side recipe for computing a receiver DFB address. The graph proves a
+/// sequential receiver reservation schedule and assigns `receiverSlotIndex`;
+/// a dynamic counter is needed when execution repeats the proven schedule.
 struct PipeComputedAddressInfo {
   int64_t receiverDFBIndex = 0;
   int64_t baseCompileTimeArgIndex = 0;

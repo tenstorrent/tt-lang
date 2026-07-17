@@ -36,6 +36,7 @@
 // CHECK: memref.store %[[N2]], %[[CTR]]
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
+module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 func.func @overlap_two_receives_share_counter() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -49,6 +50,7 @@ func.func @overlap_two_receives_share_counter() attributes { "ttl.kernel_thread"
   ttl.wait %xf2 : !ttl.transfer_handle
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   func.return
+}
 }
 
 // -----
@@ -68,6 +70,7 @@ func.func @overlap_two_receives_share_counter() attributes { "ttl.kernel_thread"
 // CHECK: %[[NB:.*]] = arith.addi %[[VB]]
 // CHECK: memref.store %[[NB]], %[[CTR_B]]
 // CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NB]])
+module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p_net0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -81,6 +84,7 @@ func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttker
   ttl.wait %xf1 : !ttl.transfer_handle
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
+}
 }
 
 // -----
