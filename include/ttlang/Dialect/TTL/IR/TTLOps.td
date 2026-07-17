@@ -1638,20 +1638,26 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call", []> {
     declares the callee. The lowering pass emits a `#include` directive
     for this header in the generated kernel source.
 
+    The `template_args` attribute holds an optional array of integer
+    attributes that become C++ template arguments on the emitted call,
+    e.g. `my_func<1, 2>(a, b)`.
+
     The operation accepts variadic operands that are forwarded as
-    arguments to the callee. Results are optional; when absent the call
-    is treated as a void function invocation.
+    function arguments to the callee. Results are optional; when absent
+    the call is treated as a void function invocation.
 
     Example:
     ```mlir
     ttl.opaque_call "my_func" {header = "my_header.hpp"} () : () -> ()
-    ttl.opaque_call "add_vals" {header = "math_utils.hpp"} (%a, %b) : (i64, i64) -> ()
+    ttl.opaque_call "add_vals" {header = "math_utils.hpp",
+        template_args = [1 : i64, 2 : i64]} (%a, %b) : (i64, i64) -> ()
     ```
   }];
   let arguments = (ins
     StrAttr:$callee,
     StrAttr:$header,
-    Variadic<AnyType>:$arg_operands
+    Variadic<AnyType>:$arg_operands,
+    OptionalAttr<ArrayAttr>:$template_args
   );
   let results = (outs Variadic<AnyType>);
   let assemblyFormat = [{

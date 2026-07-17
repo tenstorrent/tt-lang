@@ -4801,4 +4801,36 @@ def TTKernel_DPrintOp : TTKernel_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]
     }];
 }
 
+def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Call an external C/C++ function declared in a user header.";
+    let description = [{
+      Emits a call to an opaque external C/C++ function whose declaration is
+      provided by a user-specified header file. The `callee` attribute names
+      the function and `header` specifies the `#include` path. Arguments are
+      forwarded positionally. Scalar float arguments are converted to integer
+      bit patterns by the ttkernel-lower-scalar-fp-types pass.
+
+      The `template_args` attribute holds an optional array of integer
+      attributes that become C++ template arguments on the emitted call.
+
+      Example:
+      ```
+      ttkernel.opaque_call "my_func" {header = "my_header.hpp",
+          template_args = [1 : i64]} (%a, %b) : (f32, f32) -> ()
+      ```
+    }];
+    let arguments = (ins
+      StrAttr:$callee,
+      StrAttr:$header,
+      Variadic<AnyType>:$arg_operands,
+      OptionalAttr<ArrayAttr>:$template_args
+    );
+    let results = (outs Variadic<AnyType>);
+    let assemblyFormat = [{
+      $callee `(` $arg_operands `)` attr-dict `:`
+      functional-type($arg_operands, results)
+    }];
+}
+
 #endif

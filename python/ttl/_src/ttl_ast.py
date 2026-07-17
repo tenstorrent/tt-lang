@@ -174,6 +174,10 @@ class TTLGenericCompiler(TTCompilerBase):
         # so the verifier can name PipeNets by user-facing identifier.
         self._pipe_net_names: dict[int, str] = {}
 
+        # Include paths collected from call_extern_func invocations, forwarded
+        # to the JIT compiler as -I flags.
+        self._opaque_include_paths: list[str] = []
+
     def _set_var(self, var_name, value):
         # Capture PipeNet variable names so the verifier can render
         # diagnostics in user-facing terms (e.g. `a_pipe_net.is_active()`
@@ -1388,47 +1392,129 @@ class TTLGenericCompiler(TTCompilerBase):
                 implicit=True,
             )
 
-    def visit_Call_Extern_Func(self, node, args, keywords=None):
-        """Handle call_extern_func(header, callee, *args) by emitting ttl.opaque_call.
+    def _resolve_int_value(self, node, param_name):
+        """Resolve an AST node to a Python int.
 
-        Signature: call_extern_func(header_path, callee_name, *call_args)
-          - header_path: string literal path to the C/C++ header
-          - callee_name: string literal name of the function to call
-          - call_args: optional MLIR values forwarded to the callee
+        Accepts ``ast.Constant(int)``, signed literals via ``_signed_int_literal``,
+        or ``ast.Name`` that maps to an ``int`` in ``self.fn_globals``
+        (module-level variables / closure captures).
+        """
+        v = self._signed_int_literal(node)
+        if v is not None:
+            return v
+        if isinstance(node, ast.Name) and node.id in self.fn_globals:
+            val = self.fn_globals[node.id]
+            if isinstance(val, int):
+                return val
+        self._raise_error(
+            node,
+            f"call_extern_func() {param_name} must be an integer "
+            f"literal or a module-level integer variable",
+        )
+
+    def _resolve_string_value(self, node, param_name):
+        """Resolve an AST node to a Python string.
+
+        Accepts ``ast.Constant(str)`` or ``ast.Name`` that maps to a ``str``
+        in ``self.fn_globals`` (module-level variables / closure captures).
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in self.fn_globals:
+            val = self.fn_globals[node.id]
+            if isinstance(val, str):
+                return val
+        self._raise_error(
+            node,
+            f"call_extern_func() {param_name} must be a string "
+            f"literal or a module-level string variable",
+        )
+
+    def _resolve_string_list(self, node, param_name):
+        """Resolve an AST list node to a Python list of strings."""
+        if not isinstance(node, ast.List):
+            self._raise_error(
+                node,
+                f"call_extern_func() {param_name} must be a list",
+            )
+        return [self._resolve_string_value(elt, param_name) for elt in node.elts]
+
+    def visit_Call_Extern_Func(self, node, args, keywords=None):
+        """Handle call_extern_func(header, callee, ...) by emitting ttl.opaque_call.
+
+        Signature::
+
+            call_extern_func(
+                header_path,                    # string (literal or variable)
+                callee_name,                    # string (literal or variable)
+                template_args=[1, 2],           # C++ template arguments
+                func_args=[a, b],               # C++ function arguments
+                include_paths=["/path/to/inc"], # -I flags for JIT compiler
+            )
         """
         if len(args) < 2:
             self._raise_error(
                 node,
-                "call_extern_func() requires at least 2 arguments: "
+                "call_extern_func() requires at least 2 positional arguments: "
                 "header path and callee name",
             )
-
-        header_node = args[0]
-        callee_node = args[1]
-
-        if not isinstance(header_node, ast.Constant) or not isinstance(
-            header_node.value, str
-        ):
+        if len(args) > 2:
             self._raise_error(
                 node,
-                "call_extern_func() first argument (header path) "
-                "must be a string literal",
-            )
-        if not isinstance(callee_node, ast.Constant) or not isinstance(
-            callee_node.value, str
-        ):
-            self._raise_error(
-                node,
-                "call_extern_func() second argument (callee name) "
-                "must be a string literal",
+                "call_extern_func() accepts only 2 positional arguments "
+                "(header, callee). Use template_args=[] and func_args=[] "
+                "keyword arguments for call arguments.",
             )
 
-        header = header_node.value
-        callee = callee_node.value
+        header = self._resolve_string_value(args[0], "header path")
+        callee = self._resolve_string_value(args[1], "callee name")
 
-        call_args = [self.visit(a) for a in args[2:]]
+        kw_map = {}
+        if keywords:
+            for kw in keywords:
+                kw_map[kw.arg] = kw.value
 
-        ttl.opaque_call([], callee, header, call_args)
+        template_args_attr = None
+        if "template_args" in kw_map:
+            ta_node = kw_map["template_args"]
+            if not isinstance(ta_node, ast.List):
+                self._raise_error(
+                    ta_node, "call_extern_func() template_args must be a list"
+                )
+            ta_values = []
+            for elt in ta_node.elts:
+                ta_values.append(
+                    self._resolve_int_value(elt, "template_args element")
+                )
+            template_args_attr = ArrayAttr.get(
+                [
+                    IntegerAttr.get(IntegerType.get_signless(64, self.ctx), v)
+                    for v in ta_values
+                ]
+            )
+
+        func_args = []
+        if "func_args" in kw_map:
+            fa_node = kw_map["func_args"]
+            if not isinstance(fa_node, ast.List):
+                self._raise_error(
+                    fa_node, "call_extern_func() func_args must be a list"
+                )
+            func_args = [self.visit(elt) for elt in fa_node.elts]
+
+        if "include_paths" in kw_map:
+            paths = self._resolve_string_list(
+                kw_map["include_paths"], "include_paths"
+            )
+            self._opaque_include_paths.extend(paths)
+
+        ttl.opaque_call(
+            [],
+            callee,
+            header,
+            func_args,
+            template_args=template_args_attr,
+        )
 
     def visit_With(self, node):
         """

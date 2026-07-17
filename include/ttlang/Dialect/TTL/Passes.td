@@ -633,20 +633,6 @@ def TTLLowerDPrintToEmitC
   }];
 }
 
-def TTLLowerOpaqueCallToEmitC
-    : Pass<"ttl-lower-opaque-call-to-emitc", "::mlir::ModuleOp"> {
-  let summary = "Lower ttl.opaque_call ops to emitc.call_opaque with includes";
-  let description = [{
-    Converts `ttl.opaque_call` operations to `emitc.call_opaque` operations
-    and emits `#include` directives for the referenced headers. Scalar
-    float operands are bridged with `unrealized_conversion_cast` (f32 -> i32,
-    bf16 -> i16) to be resolved by `ttkernel-lower-scalar-fp-types`.
-
-    This pass runs just before `convert-ttl-to-ttkernel` so that the
-    opaque calls are already in EmitC form when TTKernel lowering runs.
-  }];
-}
-
 def TTLLowerSignpostToEmitC
     : Pass<"ttl-lower-signpost-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Lower ttl.signpost ops to EmitC verbatim for profiling";

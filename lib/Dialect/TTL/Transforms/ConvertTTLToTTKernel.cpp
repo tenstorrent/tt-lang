@@ -1199,6 +1199,61 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Opaque call lowering
+//===----------------------------------------------------------------------===//
+
+struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    SmallVector<Value> convertedArgs;
+
+    for (auto [origArg, adaptedArg] :
+         llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
+      Type origTy = origArg.getType();
+
+      // CB -> i32 cb index via get_compile_time_arg_val.
+      if (mlir::isa<CircularBufferType>(origTy)) {
+        auto cbIdx = getCBIndex(origArg);
+        if (!cbIdx) {
+          return rewriter.notifyMatchFailure(
+              op, "cannot resolve CB index for opaque_call operand");
+        }
+        auto cbVal = ttk::GetCompileArgValOp::create(
+            rewriter, loc, rewriter.getI32Type(), *cbIdx);
+        convertedArgs.push_back(cbVal);
+        continue;
+      }
+
+      // Scalar floats are forwarded as-is; ttkernel-lower-scalar-fp-types
+      // converts them to integer bit patterns uniformly.
+      convertedArgs.push_back(adaptedArg);
+    }
+
+    // Convert result types (unlikely for void external calls, but supported).
+    SmallVector<Type> resultTypes;
+    for (Type resTy : op.getResultTypes()) {
+      Type converted = getTypeConverter()->convertType(resTy);
+      if (!converted) {
+        return rewriter.notifyMatchFailure(op,
+                                           "failed to convert result type");
+      }
+      resultTypes.push_back(converted);
+    }
+
+    auto newOp = ttk::OpaqueCallOp::create(
+        rewriter, loc, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
+        convertedArgs, op.getTemplateArgsAttr());
+    (void)newOp;
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 /// Tensor-level ttl.store ops must be lowered to tile_store by
 /// convert-ttl-to-compute. Any surviving to this point is a miscompile.
 struct StoreLowering : OpConversionPattern<StoreOp> {
@@ -1604,8 +1659,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering>(typeConverter,
-                                                                &ctx);
+               RawElementReadLowering, RawElementWriteLowering,
+               OpaqueCallLowering>(typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
