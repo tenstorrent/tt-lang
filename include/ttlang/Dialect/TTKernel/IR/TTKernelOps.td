@@ -4142,6 +4142,23 @@ def TTKernel_GetCompileArgValOp : TTKernel_Op<"get_compile_time_arg_val",
     }];
 }
 
+def TTKernel_ConstantTableLookupOp
+    : TTKernel_Op<"experimental.constant_table_lookup", [Pure]> {
+    let summary = "Look up an element in an immutable compile-time table.";
+    let description = [{
+      Returns the element at `index` from the non-empty `values` table. The
+      index must be within the table bounds. The table is immutable kernel
+      metadata and does not consume runtime stack storage.
+    }];
+
+    let arguments = (ins Index:$index, DenseI64ArrayAttr:$values);
+    let results = (outs Index:$result);
+
+    let assemblyFormat = [{
+      $index `,` $values attr-dict `:` type($index)
+    }];
+}
+
 
 //===----------------------------------------------------------------------===//
 // TTKernel Helper functions
