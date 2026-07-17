@@ -805,24 +805,13 @@ struct PipeCopyExpansion {
   int64_t pipeNetId = 0;
 };
 
-static Value buildForeachIndexTable(OpBuilder &builder, Location loc,
-                                    ArrayRef<int64_t> values) {
+static Value buildConstantTableLookup(OpBuilder &builder, Location loc,
+                                      ArrayRef<int64_t> values,
+                                      Value recordIndex) {
   assert(!values.empty() && "PipeNet foreach records must not be empty");
-  auto memrefType = MemRefType::get({static_cast<int64_t>(values.size())},
-                                    builder.getIndexType());
-  Value table = memref::AllocaOp::create(builder, loc, memrefType);
-  for (auto [index, value] : llvm::enumerate(values)) {
-    Value tableIndex = arith::ConstantIndexOp::create(builder, loc, index);
-    Value tableValue = arith::ConstantIndexOp::create(builder, loc, value);
-    memref::StoreOp::create(builder, loc, tableValue, table,
-                            ValueRange{tableIndex});
-  }
-  return table;
-}
-
-static Value loadForeachIndexTable(OpBuilder &builder, Location loc,
-                                   Value table, Value recordIndex) {
-  return memref::LoadOp::create(builder, loc, table, ValueRange{recordIndex});
+  return ttk::ConstantTableLookupOp::create(
+      builder, loc, builder.getIndexType(), recordIndex,
+      builder.getDenseI64ArrayAttr(values));
 }
 
 static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records) {
@@ -830,14 +819,14 @@ static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records) {
 }
 
 struct PipeForeachTables {
-  Value srcX;
-  Value srcY;
-  Value dstStartX;
-  Value dstStartY;
-  Value dstEndX;
-  Value dstEndY;
-  Value numDests;
-  Value srcInDstRange;
+  SmallVector<int64_t> srcX;
+  SmallVector<int64_t> srcY;
+  SmallVector<int64_t> dstStartX;
+  SmallVector<int64_t> dstStartY;
+  SmallVector<int64_t> dstEndX;
+  SmallVector<int64_t> dstEndY;
+  SmallVector<int64_t> numDests;
+  SmallVector<int64_t> srcInDstRange;
 };
 
 static PipeForeachTables buildPipeForeachTables(OpBuilder &builder,
@@ -864,14 +853,10 @@ static PipeForeachTables buildPipeForeachTables(OpBuilder &builder,
     numDests.push_back(pipeType.getNumDests());
     srcInDstRange.push_back(pipeType.srcInDstRange() ? 1 : 0);
   }
-  return PipeForeachTables{buildForeachIndexTable(builder, loc, srcX),
-                           buildForeachIndexTable(builder, loc, srcY),
-                           buildForeachIndexTable(builder, loc, dstStartX),
-                           buildForeachIndexTable(builder, loc, dstStartY),
-                           buildForeachIndexTable(builder, loc, dstEndX),
-                           buildForeachIndexTable(builder, loc, dstEndY),
-                           buildForeachIndexTable(builder, loc, numDests),
-                           buildForeachIndexTable(builder, loc, srcInDstRange)};
+  return PipeForeachTables{std::move(srcX),      std::move(srcY),
+                           std::move(dstStartX), std::move(dstStartY),
+                           std::move(dstEndX),   std::move(dstEndY),
+                           std::move(numDests),  std::move(srcInDstRange)};
 }
 
 template <typename SelectOp, typename SelectedType>
@@ -880,19 +865,19 @@ buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
                   const PipeForeachTables &tables, Value recordIndex) {
   Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
   Value srcInDstRangeIndex =
-      loadForeachIndexTable(builder, loc, tables.srcInDstRange, recordIndex);
+      buildConstantTableLookup(builder, loc, tables.srcInDstRange, recordIndex);
   Value srcInDstRange = arith::CmpIOp::create(
       builder, loc, arith::CmpIPredicate::ne, srcInDstRangeIndex, zero);
   bool isMulticast = records.getPipes().front().getIsMulticast();
   return SelectOp::create(
       builder, loc, SelectedType::get(builder.getContext()), recordIndex,
-      loadForeachIndexTable(builder, loc, tables.srcX, recordIndex),
-      loadForeachIndexTable(builder, loc, tables.srcY, recordIndex),
-      loadForeachIndexTable(builder, loc, tables.dstStartX, recordIndex),
-      loadForeachIndexTable(builder, loc, tables.dstStartY, recordIndex),
-      loadForeachIndexTable(builder, loc, tables.dstEndX, recordIndex),
-      loadForeachIndexTable(builder, loc, tables.dstEndY, recordIndex),
-      loadForeachIndexTable(builder, loc, tables.numDests, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.srcX, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.srcY, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.dstStartX, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.dstStartY, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.dstEndX, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.dstEndY, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.numDests, recordIndex),
       srcInDstRange, builder.getBoolAttr(isMulticast),
       builder.getI64IntegerAttr(records.getPipeNetId()), records);
 }

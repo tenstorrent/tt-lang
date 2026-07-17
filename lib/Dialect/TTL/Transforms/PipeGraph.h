@@ -32,8 +32,6 @@ namespace mlir::tt {
 class ValueOriginAnalysis;
 }
 
-#include <cassert>
-
 namespace mlir::tt::ttl {
 
 struct PipeGraphAnalysisState;
@@ -93,6 +91,11 @@ struct PipeKey {
 
   bool hasSingleReceiver() const {
     return dstStartX == dstEndX && dstStartY == dstEndY;
+  }
+
+  bool containsReceiver(PipeReceiverCoord receiver) const {
+    return receiver.x >= dstStartX && receiver.x <= dstEndX &&
+           receiver.y >= dstStartY && receiver.y <= dstEndY;
   }
 
   template <typename Fn>
