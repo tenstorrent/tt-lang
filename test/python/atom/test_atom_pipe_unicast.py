@@ -6,9 +6,11 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""Unified @ttl.operation with a single unicast PipeNet across two cores. Core (1,0)
-reads a tile and sends it over the pipe; core (0,0) reads its own tile,
-receives the sent tile, adds them, and writes the result.
+"""Composed @ttl.operation with a single unicast PipeNet across two cores.
+
+The same transfer operation is composed with a locally declared PipeNet and
+an enclosing-scope PipeNet. Core (1,0) sends a tile over the pipe; core (0,0)
+adds it to its own tile and writes the result.
 
 Each pipe buffer is touched on exactly one RISC -- send_cb only in the
 if_src callback (BRISC), recv_cb only in if_dst (NCRISC) -- because the
@@ -25,14 +27,13 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_dram
 
 
-@ttl.operation(grid=(2, 1))
-def atom_pipe_unicast(a, out):
+@ttl.operation()
+def _pipe_transfer(a, out, net: ttl.PipeNet):
     own_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     send_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     recv_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
-    fwd_net = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
     node_x, _ = ttl.node(dims=2)
 
     # Reserves hoisted out of the callbacks; each lands on a single RISC.
@@ -43,12 +44,12 @@ def atom_pipe_unicast(a, out):
         ttl.copy(a[1:2, 0:1], s_blk)
         ttl.copy(s_blk, pipe)
 
-    fwd_net.if_src(send)
+    net.if_src(send)
 
     def recv(pipe):
         ttl.copy(pipe, r_dst)
 
-    fwd_net.if_dst(recv)
+    net.if_dst(recv)
 
     if node_x == 0:
         own_blk = own_cb.reserve()
@@ -58,7 +59,34 @@ def atom_pipe_unicast(a, out):
         ttl.copy(out_cb.wait(), out[0:1, 0:1])
 
 
-def test_atom_pipe_unicast(device):
+@ttl.operation()
+def _local_pipe_stage(a, out):
+    net = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
+    _pipe_transfer(a, out, net)
+
+
+EXTERNAL_NET = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
+
+
+@ttl.operation()
+def _external_pipe_stage(a, out):
+    _pipe_transfer(a, out, EXTERNAL_NET)
+
+
+@ttl.operation(grid=(2, 1))
+def atom_pipe_unicast_local(a, out):
+    _local_pipe_stage(a, out)
+
+
+@ttl.operation(grid=(2, 1))
+def atom_pipe_unicast_external(a, out):
+    _external_pipe_stage(a, out)
+
+
+@pytest.mark.parametrize(
+    "operation", [atom_pipe_unicast_local, atom_pipe_unicast_external]
+)
+def test_atom_pipe_unicast(operation, device):
     tile = ttnn.TILE_SIZE
     # Two row-tiles: tile 0 is core (0,0)'s own, tile 1 is sent from (1,0).
     a_t = torch.randn(2 * tile, tile, dtype=torch.bfloat16) * 0.5
@@ -67,7 +95,7 @@ def test_atom_pipe_unicast(device):
     a = to_dram(a_t, device)
     out = to_dram(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
 
-    atom_pipe_unicast(a, out)
+    operation(a, out)
 
     got = ttnn.to_torch(out).reshape(tile, tile).to(torch.bfloat16)
     assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
