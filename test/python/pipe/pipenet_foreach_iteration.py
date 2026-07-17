@@ -4,12 +4,18 @@
 
 # REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_EMIT_RUNNER=%t.runner.py %python %s > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-INITIAL < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: FileCheck %s --check-prefix=CHECK-LOOPS < %t.output
+# RUN: FileCheck %s --check-prefix=CHECK-SIZE < %t.output
+# RUN: FileCheck %s --check-prefix=CHECK-NO-STACK < %t.output
 
 """Compile-only coverage for compact PipeNet foreach callback lowering."""
+
+import os
+import runpy
+from pathlib import Path
 
 import pytest
 import torch
@@ -18,6 +24,7 @@ import ttl
 pytest.importorskip("ttnn", exc_type=ImportError)
 
 PIPE_COUNT = 7
+MAX_PIPE_KERNEL_SOURCE_BYTES = 24 * 1024
 
 
 class BFloat16Tensor:
@@ -73,8 +80,26 @@ def compile_pipenet_foreach_iteration():
         SINGLETON_MULTICAST_NET.if_dst(recv)
 
 
+def report_compact_kernel_size():
+    runner = runpy.run_path(os.environ["TTLANG_EMIT_RUNNER"])
+    pipe_kernel_paths = [
+        Path(kernel_path)
+        for kernel_path, thread_type in runner["KERNEL_PATHS"]
+        if thread_type == "noc"
+    ]
+    largest_kernel_bytes = max(
+        kernel_path.stat().st_size for kernel_path in pipe_kernel_paths
+    )
+    assert largest_kernel_bytes < MAX_PIPE_KERNEL_SOURCE_BYTES
+    print(
+        "COMPACT-PIPE-KERNEL-SOURCE-BYTES: "
+        f"{largest_kernel_bytes} / {MAX_PIPE_KERNEL_SOURCE_BYTES}"
+    )
+
+
 if __name__ == "__main__":
     compile_pipenet_foreach_iteration()
+    report_compact_kernel_size()
 
 
 # CHECK-INITIAL-NOT: ttl.if_src
@@ -96,9 +121,16 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.if_dst
 # CHECK-INITIAL-NOT: ttl.create_pipe
 
-# CHECK-CPP: {{noc\.async_write\(}}
+# CHECK-CPP: {{noc[0-9]*\.async_write\(}}
 # CHECK-CPP: {{noc[0-9]*\.async_write_multicast}}
-# CHECK-CPP-COUNT-2: noc_inline_dw_write
+# CHECK-CPP-COUNT-2: {{noc[0-9]*\.inline_dw_write}}
+# CHECK-CPP: experimental::constant_table_lookup<
 
 # CHECK-LOOPS-COUNT-4: for (
 # CHECK-LOOPS-NOT: for (
+
+# CHECK-SIZE: COMPACT-PIPE-KERNEL-SOURCE-BYTES: {{[0-9]+}} / 24576
+
+# CHECK-NO-STACK: TTNN INTEROP: Compiling kernel
+# CHECK-NO-STACK-NOT: {{size_t v[0-9]+\[[0-9]+\];}}
+# CHECK-NO-STACK: COMPACT-PIPE-KERNEL-SOURCE-BYTES:
