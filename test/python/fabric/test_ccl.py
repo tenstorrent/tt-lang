@@ -6,6 +6,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from glob import glob
 from math import prod
 
 import pytest
@@ -24,6 +25,8 @@ FABRIC_DTYPES = [
     pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
     pytest.param(torch.float32, ttnn.float32, 1e-5, 1e-5, id="fp32"),
 ]
+DEVICE_NODES = glob("/dev/tenstorrent/*") or glob("/dev/tenstorrent[0-9]*")
+IS_FULL_SYSTEM = len(DEVICE_NODES) > 4
 
 
 @dataclass(frozen=True)
@@ -443,6 +446,14 @@ def test_gather(
 
 
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.xfail(
+    condition=IS_FULL_SYSTEM,
+    reason=(
+        "all-gather PipeNet expansion exceeds the full-system kernel "
+        "configuration buffer (https://github.com/tenstorrent/tt-lang/issues/628)"
+    ),
+    strict=True,
+)
 def test_all_gather(
     fabric_mesh_shape,
     collective_operations,
@@ -452,11 +463,6 @@ def test_all_gather(
     atol,
 ):
     device_count = prod(fabric_mesh_shape)
-    if device_count > 4:
-        pytest.xfail(
-            "all-gather PipeNet expansion exceeds the full-system kernel "
-            "configuration buffer (https://github.com/tenstorrent/tt-lang/issues/628)"
-        )
     inp_shape = (device_count * TILE_SIZE, TILE_SIZE)
     out_shape = (device_count * device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(inp_shape, dtype=torch_dtype)
