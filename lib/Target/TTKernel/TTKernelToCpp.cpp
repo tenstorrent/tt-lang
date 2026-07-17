@@ -6,6 +6,7 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
+#include "ttlang/Target/TTKernel/LLKs/experimental_constant_table_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_coord_translation_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_1d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_2d_routing_generated.h"
@@ -123,6 +124,10 @@ public:
           callee == "experimental::convert_logical_y_to_translated") {
         emitLlk(experimental_coord_translation_generated,
                 experimental_coord_translation_generated_len);
+      }
+      if (callee == "experimental::constant_table_lookup") {
+        emitLlk(experimental_constant_table_generated,
+                experimental_constant_table_generated_len);
       }
       if (callee == "experimental::close_fabric_connections" ||
           callee == "experimental::setup_fabric_connections" ||

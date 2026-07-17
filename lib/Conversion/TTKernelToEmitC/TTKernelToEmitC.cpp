@@ -1141,6 +1141,44 @@ private:
 } // namespace
 
 namespace {
+class TTKernelConstantTableLookupOpRewriter
+    : public OpConversionPattern<ttkernel::ConstantTableLookupOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::ConstantTableLookupOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+    }
+    if (op.getValues().empty()) {
+      return rewriter.notifyMatchFailure(op,
+                                         "constant table must not be empty");
+    }
+
+    SmallVector<Attribute> templateArgs;
+    templateArgs.reserve(op.getValues().size());
+    for (int64_t value : op.getValues()) {
+      if (value < 0) {
+        return rewriter.notifyMatchFailure(
+            op, "constant table values must be non-negative");
+      }
+      templateArgs.push_back(
+          emitc::OpaqueAttr::get(op.getContext(), std::to_string(value)));
+    }
+    auto call = emitc::CallOpaqueOp::create(
+        rewriter, op.getLoc(), resultType,
+        "experimental::constant_table_lookup", ArrayAttr(),
+        rewriter.getArrayAttr(templateArgs), adaptor.getIndex());
+    rewriter.replaceOp(op, call.getResult(0));
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 template <typename SourceOp>
 class TTKernelMatmulInitToEmitCRewriter : public OpConversionPattern<SourceOp> {
 public:
@@ -2629,6 +2667,7 @@ public:
     populateMemRefToEmitCConversionPatterns(patterns, typeConverter);
 
     patterns.add<TTKernelBitcastOpRewriter>(typeConverter, context, &state);
+    patterns.add<TTKernelConstantTableLookupOpRewriter>(typeConverter, context);
     patterns
         .add<TTKernelMatmulInitToEmitCRewriter<ttkernel::MatmulInitOp>,
              TTKernelMatmulInitToEmitCRewriter<ttkernel::MatmulBlockInitOp>>(
