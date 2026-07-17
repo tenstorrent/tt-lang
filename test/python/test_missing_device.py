@@ -95,9 +95,7 @@ def test_fixed_grid_host_tensor():
 
 def test_full_grid_rejects_non_ttnn_tensor():
     """grid='full' rejects non-TTNN arguments before device resolution."""
-    with pytest.raises(
-        TypeError, match="runtime argument 'a' must be a TT-NN tensor"
-    ):
+    with pytest.raises(TypeError, match="runtime argument 'a' must be a TT-NN tensor"):
         nop_full_grid(torch.zeros(32, 32, dtype=torch.bfloat16))
 
 
