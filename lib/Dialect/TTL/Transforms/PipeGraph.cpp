@@ -131,29 +131,50 @@ getReceiverDFBStreamKey(Value dfb, DeviceRefAttr receiverDevice) {
   return std::make_pair(receiverDevice, *dfbIndex);
 }
 
+static SmallVector<PipeType>
+getPipeTypesForTransfer(PipeTransferCreateOp transferCreate) {
+  FailureOr<PipeReference> pipeRef =
+      getPipeReference(transferCreate, transferCreate.getPipe());
+  assert(succeeded(pipeRef) && "pipe transfer create verifier failed");
+  return getPipeTypesFromReference(transferCreate.getContext(), *pipeRef);
+}
+
 static void recordPipeTransfer(PipeTransferCreateOp transferCreate,
                                PipeGraphAnalysisState &state) {
   if (!transferCreate) {
     return;
   }
-  auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
-  PipeKey pipeKey = getPipeKey(pipeType);
-  PipeTransferContract contract = getPipeTransferContract(transferCreate);
-  auto transferIt = state.transferInfos.find(pipeKey);
-  if (transferIt == state.transferInfos.end()) {
-    state.transferInfos.insert(
-        {pipeKey, {contract, {transferCreate.getOperation()}}});
+  auto recordPipe = [&](PipeKey pipeKey, PipeTransferContract contract) {
+    auto transferIt = state.transferInfos.find(pipeKey);
+    if (transferIt == state.transferInfos.end()) {
+      state.transferInfos.insert(
+          {pipeKey, {contract, {transferCreate.getOperation()}}});
+      return;
+    }
+    if (!llvm::is_contained(transferIt->second.transferCreateOps,
+                            transferCreate.getOperation())) {
+      transferIt->second.transferCreateOps.push_back(
+          transferCreate.getOperation());
+    }
+    // Cloned regions may contribute different contracts for one pipe.
+    // Preserve the stronger contract for receiver-address validation.
+    if (isCollectiveTransfer(contract)) {
+      transferIt->second.transferContract = PipeTransferContract::Collective;
+    }
+  };
+
+  FailureOr<PipeReference> pipeRef =
+      getPipeReference(transferCreate, transferCreate.getPipe());
+  assert(succeeded(pipeRef) && "pipe transfer create verifier failed");
+  if ((*pipeRef).isStatic()) {
+    recordPipe(getPipeKey((*pipeRef).pipeType),
+               getPipeTransferContract(transferCreate));
     return;
   }
-  if (!llvm::is_contained(transferIt->second.transferCreateOps,
-                          transferCreate.getOperation())) {
-    transferIt->second.transferCreateOps.push_back(
-        transferCreate.getOperation());
-  }
-  // Cloned regions may contribute different contracts for one pipe. Preserve
-  // the stronger contract so all receiver address checks remain valid.
-  if (isCollectiveTransfer(contract)) {
-    transferIt->second.transferContract = PipeTransferContract::Collective;
+  PipeNetRecordsAttr records = (*pipeRef).getRecords();
+  for (PipeRecordAttr record : records.getPipes()) {
+    recordPipe(getPipeKey(record, records.getPipeNetId()),
+               getPipeTransferContract(record));
   }
 }
 
@@ -176,8 +197,9 @@ static void recordReceiverPost(PipeTransferPostOp postOp,
   }
 
   Value dfb = getAttachedCB(postOp.getDst());
-  auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
-  state.receiverPostsByPipe[getPipeKey(pipeType)].push_back(postOp);
+  for (PipeType pipeType : getPipeTypesForTransfer(transferCreate)) {
+    state.receiverPostsByPipe[getPipeKey(pipeType)].push_back(postOp);
+  }
   auto streamKey =
       getReceiverDFBStreamKey(dfb, getReceiverDevice(transferCreate));
   if (streamKey) {
@@ -202,8 +224,9 @@ static void recordPipeSend(PipeTransferSendOp sendOp,
   if (!transferCreate) {
     return;
   }
-  auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
-  state.sendsByPipe[getPipeKey(pipeType)].push_back(sendOp);
+  for (PipeType pipeType : getPipeTypesForTransfer(transferCreate)) {
+    state.sendsByPipe[getPipeKey(pipeType)].push_back(sendOp);
+  }
 }
 
 static void recordDFBPush(CBPushOp pushOp, PipeGraphAnalysisState &state) {
@@ -288,16 +311,15 @@ static bool isPostForReceiverDFB(
   if (!createOp) {
     return false;
   }
-  PipeKey pipeKey =
-      getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
-  auto receiverIt = receiverDFBs.find(pipeKey);
-  if (receiverIt == receiverDFBs.end()) {
-    return false;
-  }
-  if (receiverIt->second.dfbIndex != receiverDFB.dfbIndex) {
-    return false;
-  }
-  if (receiverIt->second.receiverDevice != receiverDFB.receiverDevice) {
+  bool matchesReceiverDFB = llvm::any_of(
+      getPipeTypesForTransfer(createOp), [&](PipeType pipeType) {
+        auto receiverIt = receiverDFBs.find(getPipeKey(pipeType));
+        return receiverIt != receiverDFBs.end() &&
+               receiverIt->second.dfbIndex == receiverDFB.dfbIndex &&
+               receiverIt->second.receiverDevice ==
+                   receiverDFB.receiverDevice;
+      });
+  if (!matchesReceiverDFB) {
     return false;
   }
   LaunchNodeDomain postDomain =
@@ -325,13 +347,18 @@ static std::optional<int64_t> getReceiverSlotSpanBlocksForPost(
   if (!createOp) {
     return std::nullopt;
   }
-  PipeKey pipeKey =
-      getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
-  auto receiverIt = receiverDFBs.find(pipeKey);
-  if (receiverIt == receiverDFBs.end()) {
-    return std::nullopt;
+  std::optional<int64_t> slotSpanBlocks;
+  for (PipeType pipeType : getPipeTypesForTransfer(createOp)) {
+    auto receiverIt = receiverDFBs.find(getPipeKey(pipeType));
+    if (receiverIt == receiverDFBs.end()) {
+      continue;
+    }
+    int64_t pipeSlotSpanBlocks = receiverIt->second.receiverSlotSpanBlocks;
+    assert((!slotSpanBlocks || *slotSpanBlocks == pipeSlotSpanBlocks) &&
+           "selected receive records must use one DFB reserve span");
+    slotSpanBlocks = pipeSlotSpanBlocks;
   }
-  return receiverIt->second.receiverSlotSpanBlocks;
+  return slotSpanBlocks;
 }
 
 static bool isBeforeInSameBlock(Operation *before, Operation *after) {
@@ -518,63 +545,65 @@ PipeGraph::assignReceiverSlotIndices(PipeGraphAnalysisState &analysisState) {
     if (!createOp) {
       return success();
     }
-    PipeKey pipeKey =
-        getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
-    auto receiverIt = receiverDFBs.find(pipeKey);
-    if (receiverIt == receiverDFBs.end()) {
-      return success();
-    }
-
-    ReceiverDFBInfo &receiverInfo = receiverIt->second;
-    if (receiverInfo.receiverSlotIndex.has_value()) {
-      return success();
-    }
-
-    LaunchNodeDomain postDomain =
-        lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
-    std::optional<int64_t> uniformSlot;
-    bool hasReceiver = false;
-    bool nonUniformSlot = false;
-    LogicalResult result = success();
-    pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-      if (failed(result)) {
-        return;
+    for (PipeType pipeType : getPipeTypesForTransfer(createOp)) {
+      PipeKey pipeKey = getPipeKey(pipeType);
+      auto receiverIt = receiverDFBs.find(pipeKey);
+      if (receiverIt == receiverDFBs.end()) {
+        continue;
       }
-      if (!launchNodeDomainContains(postDomain, getLaunchNodeCoord(receiver))) {
-        return;
+
+      ReceiverDFBInfo &receiverInfo = receiverIt->second;
+      if (receiverInfo.receiverSlotIndex.has_value()) {
+        continue;
       }
-      hasReceiver = true;
-      PipeReceiverDFBKey receiverDFB{receiverInfo.receiverDevice, receiver,
-                                     receiverInfo.dfbIndex};
-      auto &slotByReserve = slotByReceiverReserve[receiverDFB];
-      auto reserveIt = slotByReserve.find(receiverInfo.receiverReserveOp);
-      int64_t slot = 0;
-      if (reserveIt == slotByReserve.end()) {
-        FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
-            pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
-        if (failed(assignedSlot)) {
-          result = failure();
+
+      LaunchNodeDomain postDomain =
+          lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
+      std::optional<int64_t> uniformSlot;
+      bool hasReceiver = false;
+      bool nonUniformSlot = false;
+      LogicalResult result = success();
+      pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
+        if (failed(result)) {
           return;
         }
-        slot = *assignedSlot;
-        slotByReserve[receiverInfo.receiverReserveOp] = slot;
-      } else {
-        slot = reserveIt->second;
+        if (!launchNodeDomainContains(postDomain,
+                                      getLaunchNodeCoord(receiver))) {
+          return;
+        }
+        hasReceiver = true;
+        PipeReceiverDFBKey receiverDFB{receiverInfo.receiverDevice, receiver,
+                                       receiverInfo.dfbIndex};
+        auto &slotByReserve = slotByReceiverReserve[receiverDFB];
+        auto reserveIt = slotByReserve.find(receiverInfo.receiverReserveOp);
+        int64_t slot = 0;
+        if (reserveIt == slotByReserve.end()) {
+          FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
+              pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
+          if (failed(assignedSlot)) {
+            result = failure();
+            return;
+          }
+          slot = *assignedSlot;
+          slotByReserve[receiverInfo.receiverReserveOp] = slot;
+        } else {
+          slot = reserveIt->second;
+        }
+        if (!uniformSlot) {
+          uniformSlot = slot;
+        } else if (*uniformSlot != slot) {
+          nonUniformSlot = true;
+        }
+      });
+      if (failed(result)) {
+        return failure();
       }
-      if (!uniformSlot) {
-        uniformSlot = slot;
-      } else if (*uniformSlot != slot) {
-        nonUniformSlot = true;
+      if (!hasReceiver || nonUniformSlot) {
+        receiverInfo.receiverSlotIndex = std::nullopt;
+        continue;
       }
-    });
-    if (failed(result)) {
-      return failure();
+      receiverInfo.receiverSlotIndex = *uniformSlot;
     }
-    if (!hasReceiver || nonUniformSlot) {
-      receiverInfo.receiverSlotIndex = std::nullopt;
-      return success();
-    }
-    receiverInfo.receiverSlotIndex = *uniformSlot;
     return success();
   };
 
@@ -1080,10 +1109,10 @@ getReceiverSlotSpanBlocks(Value dst, CircularBufferType dfbType) {
 
 static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
                                      PipeTransferCreateOp createOp,
+                                     PipeType pipeType,
                                      PipeTransferContract transferContract,
                                      ArrayRef<Operation *> transferCreateOps,
                                      Value dst) {
-  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   Value dstDFB = getAttachedCB(dst);
   if (!dstDFB) {
     return op->emitError("pipe receive destination is not attached to a DFB");
@@ -1139,20 +1168,21 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
           "ttl.pipe_transfer.create");
       return failure();
     }
-    auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-    PipeKey key = getPipeKey(pipeType);
-    auto pipeInfoIt = analysisState.transferInfos.find(key);
-    if (pipeInfoIt == analysisState.transferInfos.end()) {
-      postOp.emitError(
-          "pipe transfer post must reference a known pipe transfer");
-      return failure();
-    }
-    const PipeGraphAnalysisState::PipeTransferInfo &pipeInfo =
-        pipeInfoIt->second;
-    if (failed(addPipeReceiver(graph, postOp, createOp,
-                               pipeInfo.transferContract,
-                               pipeInfo.transferCreateOps, postOp.getDst()))) {
-      return failure();
+    for (PipeType pipeType : getPipeTypesForTransfer(createOp)) {
+      PipeKey key = getPipeKey(pipeType);
+      auto pipeInfoIt = analysisState.transferInfos.find(key);
+      if (pipeInfoIt == analysisState.transferInfos.end()) {
+        postOp.emitError(
+            "pipe transfer post must reference a known pipe transfer");
+        return failure();
+      }
+      const PipeGraphAnalysisState::PipeTransferInfo &pipeInfo =
+          pipeInfoIt->second;
+      if (failed(addPipeReceiver(
+              graph, postOp, createOp, pipeType, pipeInfo.transferContract,
+              pipeInfo.transferCreateOps, postOp.getDst()))) {
+        return failure();
+      }
     }
   }
 
