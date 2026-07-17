@@ -145,6 +145,15 @@ static LogicalResult recordReceiverPost(PipeTransferPostOp postOp,
     return failure();
   }
 
+  FailureOr<PipeReference> pipeReference =
+      getPipeReference(postOp, maybeCreateOp->getPipe());
+  if (failed(pipeReference)) {
+    return failure();
+  }
+  if (pipeReference->isSelected()) {
+    return success();
+  }
+
   state.transferProtocolOps.push_back(postOp.getOperation());
   state.receiverPosts.push_back(postOp);
   state.receiverSlotEvents.push_back(postOp.getOperation());
@@ -167,7 +176,42 @@ static LogicalResult recordReceiveWait(PipeTransferWaitOp waitOp,
         "ttl.pipe_transfer.post");
     return failure();
   }
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      findPipeTransferCreateForTransfer(analysis, maybePostOp->getTransfer());
+  if (failed(maybeCreateOp)) {
+    return failure();
+  }
+  FailureOr<PipeReference> pipeReference =
+      getPipeReference(waitOp, maybeCreateOp->getPipe());
+  if (failed(pipeReference)) {
+    return failure();
+  }
+  if (pipeReference->isSelected()) {
+    return success();
+  }
   state.receiveWaitsByPost[maybePostOp->getOperation()].push_back(waitOp);
+  return success();
+}
+
+static LogicalResult recordPipeSend(PipeTransferSendOp sendOp,
+                                    PipeGraphAnalysisState &state,
+                                    ValueOriginAnalysis &analysis) {
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      findPipeTransferCreateForTransfer(analysis, sendOp.getTransfer());
+  if (failed(maybeCreateOp)) {
+    sendOp.emitError(
+        "requires every possible transfer value to derive from the same "
+        "ttl.pipe_transfer.create");
+    return failure();
+  }
+  FailureOr<PipeReference> pipeReference =
+      getPipeReference(sendOp, maybeCreateOp->getPipe());
+  if (failed(pipeReference)) {
+    return failure();
+  }
+  if (!pipeReference->isSelected()) {
+    state.transferProtocolOps.push_back(sendOp.getOperation());
+  }
   return success();
 }
 
@@ -182,7 +226,7 @@ static LogicalResult collectPipeGraphOperations(ModuleOp mod,
               recordResult = recordReceiverPost(postOp, state, analysis);
             })
             .Case<PipeTransferSendOp>([&](PipeTransferSendOp sendOp) {
-              state.transferProtocolOps.push_back(sendOp.getOperation());
+              recordResult = recordPipeSend(sendOp, state, analysis);
             })
             .Case<PipeTransferWaitOp>([&](PipeTransferWaitOp waitOp) {
               recordResult = recordReceiveWait(waitOp, state, analysis);
@@ -1419,6 +1463,39 @@ PipeGraph::rebuildEndpointGraph(ValueOriginAnalysis &analysis,
     }
   }
   return success();
+}
+
+FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe) {
+  Value tracedPipe = traceUnrealizedCasts(pipe);
+  if (auto pipeType = mlir::dyn_cast<PipeType>(tracedPipe.getType())) {
+    return PipeReference{PipeReference::Kind::Static, tracedPipe, pipeType,
+                         SelectPipeSrcOp(), SelectPipeDstOp()};
+  }
+  if (auto selectedSrc = tracedPipe.getDefiningOp<SelectPipeSrcOp>()) {
+    return PipeReference{PipeReference::Kind::SelectedSrc, tracedPipe,
+                         PipeType(), selectedSrc, SelectPipeDstOp()};
+  }
+  if (auto selectedDst = tracedPipe.getDefiningOp<SelectPipeDstOp>()) {
+    return PipeReference{PipeReference::Kind::SelectedDst, tracedPipe,
+                         PipeType(), SelectPipeSrcOp(), selectedDst};
+  }
+  return op->emitError() << "selected pipe operand must be a direct result of "
+                            "ttl.select_pipe_src or ttl.select_pipe_dst";
+}
+
+SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
+                                                const PipeReference &ref) {
+  if (ref.isStatic()) {
+    return SmallVector<PipeType>{ref.pipeType};
+  }
+  SmallVector<PipeType> pipeTypes;
+  PipeNetRecordsAttr records = ref.getRecords();
+  pipeTypes.reserve(records.getPipes().size());
+  for (PipeRecordAttr record : records.getPipes()) {
+    pipeTypes.push_back(
+        getPipeTypeFromRecord(context, record, records.getPipeNetId()));
+  }
+  return pipeTypes;
 }
 
 static LogicalResult
