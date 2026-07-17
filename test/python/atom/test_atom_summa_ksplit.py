@@ -79,10 +79,10 @@ def atom_summa_ksplit(a, w, out):
     # A is multicast across the NUM_COLS cores of each KP band, per M row.
     a_pipes = [
         ttl.Pipe(
-            src=(k_p * NUM_COLS, m),
-            dst=(slice(k_p * NUM_COLS, (k_p + 1) * NUM_COLS), m),
+            src=(k_band * NUM_COLS, m),
+            dst=(slice(k_band * NUM_COLS, (k_band + 1) * NUM_COLS), m),
         )
-        for k_p in range(KP)
+        for k_band in range(KP)
         for m in range(NUM_ROWS)
     ]
     mcast_a_net = ttl.PipeNet(a_pipes)
@@ -90,20 +90,20 @@ def atom_summa_ksplit(a, w, out):
     # B is multicast down the NUM_ROWS rows of each (KP band, N col).
     b_pipes = [
         ttl.Pipe(
-            src=(n + k_p * NUM_COLS, 0),
-            dst=(n + k_p * NUM_COLS, slice(0, NUM_ROWS)),
+            src=(n + k_band * NUM_COLS, 0),
+            dst=(n + k_band * NUM_COLS, slice(0, NUM_ROWS)),
         )
-        for k_p in range(KP)
+        for k_band in range(KP)
         for n in range(NUM_COLS)
     ]
     mcast_b_net = ttl.PipeNet(b_pipes)
 
     # K-split reduce: non-root k_p bands send their partial to the k_p == 0 root.
     reduce_pipes = [
-        ttl.Pipe(src=(n + k_p * NUM_COLS, m), dst=(n, m))
+        ttl.Pipe(src=(n + k_band * NUM_COLS, m), dst=(n, m))
         for n in range(NUM_COLS)
         for m in range(NUM_ROWS)
-        for k_p in range(1, KP)
+        for k_band in range(1, KP)
     ]
     reduce_net = ttl.PipeNet(reduce_pipes)
 
