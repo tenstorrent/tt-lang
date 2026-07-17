@@ -205,8 +205,8 @@ def build_kernel_descriptors(
         else:
             kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
 
-        # Note: core_range is used outside this function to dispatch the kernel to the correct cores
-        # and should not be overridden
+        # Prefer per-kernel core_ranges (specialize-cores clones); otherwise
+        # fall back to the whole-grid core_ranges.
         kernel_ranges = (
             spec.core_ranges if spec.core_ranges is not None else core_ranges
         )
@@ -621,6 +621,47 @@ def _dtype_to_ttnn_str(data_format) -> str:
     return "ttnn.bfloat16"
 
 
+def _serialize_core_ranges(
+    core_ranges: Optional[Any],
+) -> Optional[List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
+    """Serialize a ttnn.CoreRangeSet to nested ((sx, sy), (ex, ey)) tuples.
+
+    Returns None when core_ranges is None (whole-grid fallback in the runner).
+    """
+    if core_ranges is None:
+        return None
+    serialized = []
+    for core_range in core_ranges.ranges():
+        serialized.append(
+            (
+                (int(core_range.start.x), int(core_range.start.y)),
+                (int(core_range.end.x), int(core_range.end.y)),
+            )
+        )
+    return serialized
+
+
+def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
+    """Map KernelSpec.config to the ttl.noc_index role for the emitted runner.
+
+    Returns None for compute, 0 for reader, 1 for writer. The emitted file has
+    no MLIR module, so the role already resolved from ttl.noc_index in
+    _compile_ttnn_kernel is baked in here (same idea as KERNEL_CORE_RANGES).
+    """
+    if spec.thread_type == "compute":
+        return None
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    if isinstance(spec.config, ttnn.ReaderConfigDescriptor):
+        return 0
+    if isinstance(spec.config, ttnn.WriterConfigDescriptor):
+        return 1
+    raise TypeError(
+        f"Unsupported NOC config on kernel '{spec.path}': {type(spec.config)!r}"
+    )
+
+
 def emit_runner_source(
     kernel_specs: List[KernelSpec],
     cb_configs: List[Any],
@@ -680,6 +721,25 @@ def emit_runner_source(
     lines.append("KERNEL_TENSOR_INDICES = [")
     for spec in kernel_specs:
         lines.append(f"    {spec.tensor_indices!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
+    # Per-kernel dispatch ranges from KernelSpec.core_ranges. None means use
+    # the whole-grid core_ranges below; a list of ((sx, sy), (ex, ey)) pairs
+    # rebuilds a CoreRangeSet for specialize-cores clones.
+    lines.append("KERNEL_CORE_RANGES = [")
+    for spec in kernel_specs:
+        lines.append(
+            f"    {_serialize_core_ranges(spec.core_ranges)!r},  # {spec.thread_type}"
+        )
+    lines.append("]")
+    lines.append("")
+
+    # Per-kernel NOC roles from KernelSpec.config (set from ttl.noc_index in
+    # _compile_ttnn_kernel). None = compute, 0 = reader, 1 = writer.
+    lines.append("KERNEL_NOC_INDICES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {_serialize_noc_role(spec)!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
 
@@ -743,20 +803,28 @@ def emit_runner_source(
     lines.append("        cb_descriptors.append(cb_desc)")
     lines.append("")
 
+    lines.append("    def _core_ranges_from_spec(ranges_spec):")
+    lines.append("        if ranges_spec is None:")
+    lines.append("            return None")
+    lines.append("        return ttnn.CoreRangeSet([")
+    lines.append("            ttnn.CoreRange(")
+    lines.append("                ttnn.CoreCoord(sx, sy), ttnn.CoreCoord(ex, ey)")
+    lines.append("            )")
+    lines.append("            for (sx, sy), (ex, ey) in ranges_spec")
+    lines.append("        ])")
+    lines.append("")
     lines.append("    kernel_specs = []")
-    lines.append("    noc_idx = 0")
     lines.append("")
     lines.append(
         "    for kernel_idx, (kernel_path, thread_type) in enumerate(KERNEL_PATHS):"
     )
-    lines.append("        if thread_type == 'compute':")
+    lines.append("        noc_index = KERNEL_NOC_INDICES[kernel_idx]")
+    lines.append("        if thread_type == 'compute' or noc_index is None:")
     lines.append("            config = ttnn.ComputeConfigDescriptor()")
+    lines.append("        elif noc_index == 0:")
+    lines.append("            config = ttnn.ReaderConfigDescriptor()")
     lines.append("        else:")
-    lines.append("            if noc_idx == 0:")
-    lines.append("                config = ttnn.ReaderConfigDescriptor()")
-    lines.append("            else:")
-    lines.append("                config = ttnn.WriterConfigDescriptor()")
-    lines.append("            noc_idx += 1")
+    lines.append("            config = ttnn.WriterConfigDescriptor()")
     lines.append("")
     lines.append("        kernel_specs.append(")
     lines.append("            KernelSpec(")
@@ -764,6 +832,10 @@ def emit_runner_source(
     lines.append("                thread_type=thread_type,")
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
     lines.append("                config=config,")
+    lines.append(
+        "                core_ranges=_core_ranges_from_spec("
+        "KERNEL_CORE_RANGES[kernel_idx]),"
+    )
     lines.append("            )")
     lines.append("        )")
     lines.append("    kernel_descriptors = build_kernel_descriptors(")

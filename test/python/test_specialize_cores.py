@@ -29,8 +29,8 @@ Coverage:
     `test/ttlang/Dialect/TTKernel/Transforms/specialize_cores.mlir`).
   * emit_runner_no_crash: `TTLANG_EMIT_RUNNER` must not IndexError when
     kernels are cloned (per-clone tensor indices / core ranges).
-  * emit_runner_executes: strict xfail until the emitted runner template can
-    express per-clone dispatch on a cold program cache.
+  * emit_runner_executes: emitted runner, run cold, reproduces the swap
+    (per-kernel core ranges and NOC roles baked into the template).
 """
 
 import os
@@ -282,21 +282,13 @@ def test_specialize_cores_emit_runner_no_crash(device, monkeypatch, tmp_path):
     assert runner_path.exists(), "no runner emitted"
 
 
-@pytest.mark.xfail(
-    reason="emitted runner template cannot express per-clone dispatch: it "
-    "re-derives reader/writer from a positional counter and passes only the "
-    "whole-grid core_ranges, so every clone lands on every core and tt-metal "
-    "rejects it with TT_FATAL: Illegal NOC usage. Needs per-kernel core-range "
-    "and NOC-role constants in emit_runner_file.",
-    strict=True,
-    raises=RuntimeError,
-)
 def test_specialize_cores_emit_runner_executes(device, monkeypatch, tmp_path):
     """The emitted runner, run standalone on a cold cache, must reproduce the swap.
 
     Compile-only so the op never executes and warms the program cache; otherwise
-    the runner's custom_program_hash reuses the cached program and masks the
-    misdispatch. Strict xfail so it flags when the template is fixed.
+    the runner's custom_program_hash could reuse a cached in-process program and
+    mask a template bug. The emitted runner must carry per-kernel core ranges
+    and NOC roles so clones dispatch correctly when built cold.
     """
     import importlib.util
 
