@@ -358,211 +358,99 @@ func.func @same_pipe_two_posts_in_loop_body_rejected()
 
 // -----
 
-// Seventeen active local PipeNets require more receiver-completion counters
-// than the hardware semaphore namespace can represent.
+// Seventeen PipeNets whose completion counters reside on the same receiver
+// node cannot share local hardware semaphore ids.
 
 // expected-error @below {{pipe synchronization requires 17 hardware semaphore ids, exceeding TT hardware limit of 16; issue #619 tracks scalable pipe synchronization allocation}}
 // expected-note @below {{highest allocated semaphore id is 16 for receiver-completion counter}}
 module {
-  func.func @unicast_pipe_sync_exceeds_hardware_semaphore_limit()
+  func.func @overlapping_completion_counters_exceed_hardware_semaphore_limit()
       attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %p2 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
-    %p3 = ttl.create_pipe src(0, 0) dst(3, 0) to(3, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>
-    %p4 = ttl.create_pipe src(0, 0) dst(4, 0) to(4, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(4, 0) to(4, 0) net 0>
-    %p5 = ttl.create_pipe src(0, 0) dst(5, 0) to(5, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(5, 0) to(5, 0) net 0>
-    %p6 = ttl.create_pipe src(0, 0) dst(6, 0) to(6, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(6, 0) to(6, 0) net 0>
-    %p7 = ttl.create_pipe src(0, 0) dst(7, 0) to(7, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(7, 0) to(7, 0) net 0>
-    %p8 = ttl.create_pipe src(0, 0) dst(8, 0) to(8, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(8, 0) to(8, 0) net 0>
-    %p9 = ttl.create_pipe src(0, 0) dst(9, 0) to(9, 0) net 1
-        : !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 1>
-    %p10 = ttl.create_pipe src(0, 0) dst(10, 0) to(10, 0) net 2
-        : !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 2>
-    %p11 = ttl.create_pipe src(0, 0) dst(11, 0) to(11, 0) net 3
-        : !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 3>
-    %p12 = ttl.create_pipe src(0, 0) dst(12, 0) to(12, 0) net 4
-        : !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 4>
-    %p13 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 5
-        : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 5>
-    %p14 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 6
-        : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 6>
-    %p15 = ttl.create_pipe src(0, 0) dst(15, 0) to(15, 0) net 7
-        : !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 7>
-    %p16 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 8
-        : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 8>
-    %p17 = ttl.create_pipe src(0, 0) dst(17, 0) to(17, 0) net 9
-        : !ttl.pipe<src(0, 0) dst(17, 0) to(17, 0) net 9>
-    %p18 = ttl.create_pipe src(0, 0) dst(18, 0) to(18, 0) net 10
-        : !ttl.pipe<src(0, 0) dst(18, 0) to(18, 0) net 10>
-    %p19 = ttl.create_pipe src(0, 0) dst(19, 0) to(19, 0) net 11
-        : !ttl.pipe<src(0, 0) dst(19, 0) to(19, 0) net 11>
-    %p20 = ttl.create_pipe src(0, 0) dst(20, 0) to(20, 0) net 12
-        : !ttl.pipe<src(0, 0) dst(20, 0) to(20, 0) net 12>
-    %p21 = ttl.create_pipe src(0, 0) dst(21, 0) to(21, 0) net 13
-        : !ttl.pipe<src(0, 0) dst(21, 0) to(21, 0) net 13>
-    %p22 = ttl.create_pipe src(0, 0) dst(22, 0) to(22, 0) net 14
-        : !ttl.pipe<src(0, 0) dst(22, 0) to(22, 0) net 14>
-    %p23 = ttl.create_pipe src(0, 0) dst(23, 0) to(23, 0) net 15
-        : !ttl.pipe<src(0, 0) dst(23, 0) to(23, 0) net 15>
-    %p24 = ttl.create_pipe src(0, 0) dst(24, 0) to(24, 0) net 16
-        : !ttl.pipe<src(0, 0) dst(24, 0) to(24, 0) net 16>
-    %recv1 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf1 = ttl.copy %p1, %recv1
-        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf1 : !ttl.transfer_handle
-    %recv2 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf2 = ttl.copy %p2, %recv2
-        : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf2 : !ttl.transfer_handle
-    %recv3 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf3 = ttl.copy %p3, %recv3
-        : (!ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf3 : !ttl.transfer_handle
-    %recv4 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf4 = ttl.copy %p4, %recv4
-        : (!ttl.pipe<src(0, 0) dst(4, 0) to(4, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf4 : !ttl.transfer_handle
-    %recv5 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf5 = ttl.copy %p5, %recv5
-        : (!ttl.pipe<src(0, 0) dst(5, 0) to(5, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf5 : !ttl.transfer_handle
-    %recv6 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf6 = ttl.copy %p6, %recv6
-        : (!ttl.pipe<src(0, 0) dst(6, 0) to(6, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf6 : !ttl.transfer_handle
-    %recv7 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf7 = ttl.copy %p7, %recv7
-        : (!ttl.pipe<src(0, 0) dst(7, 0) to(7, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf7 : !ttl.transfer_handle
-    %recv8 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf8 = ttl.copy %p8, %recv8
-        : (!ttl.pipe<src(0, 0) dst(8, 0) to(8, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf8 : !ttl.transfer_handle
-    %send9 = ttl.copy %cb, %p9
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(9, 0) to(9, 0) net 1>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send9 : !ttl.transfer_handle<write>
-    %send10 = ttl.copy %cb, %p10
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(10, 0) to(10, 0) net 2>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send10 : !ttl.transfer_handle<write>
-    %send11 = ttl.copy %cb, %p11
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(11, 0) to(11, 0) net 3>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send11 : !ttl.transfer_handle<write>
-    %send12 = ttl.copy %cb, %p12
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(12, 0) to(12, 0) net 4>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send12 : !ttl.transfer_handle<write>
-    %send13 = ttl.copy %cb, %p13
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 5>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send13 : !ttl.transfer_handle<write>
-    %send14 = ttl.copy %cb, %p14
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 6>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send14 : !ttl.transfer_handle<write>
-    %send15 = ttl.copy %cb, %p15
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(15, 0) to(15, 0) net 7>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send15 : !ttl.transfer_handle<write>
-    %recv16 = ttl.cb_reserve %cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf16 = ttl.copy %p16, %recv16
-        : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 8>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf16 : !ttl.transfer_handle
-    %send17 = ttl.copy %cb, %p17
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(17, 0) to(17, 0) net 9>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send17 : !ttl.transfer_handle<write>
-    %send18 = ttl.copy %cb, %p18
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(18, 0) to(18, 0) net 10>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send18 : !ttl.transfer_handle<write>
-    %send19 = ttl.copy %cb, %p19
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(19, 0) to(19, 0) net 11>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send19 : !ttl.transfer_handle<write>
-    %send20 = ttl.copy %cb, %p20
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(20, 0) to(20, 0) net 12>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send20 : !ttl.transfer_handle<write>
-    %send21 = ttl.copy %cb, %p21
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(21, 0) to(21, 0) net 13>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send21 : !ttl.transfer_handle<write>
-    %send22 = ttl.copy %cb, %p22
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(22, 0) to(22, 0) net 14>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send22 : !ttl.transfer_handle<write>
-    %send23 = ttl.copy %cb, %p23
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(23, 0) to(23, 0) net 15>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send23 : !ttl.transfer_handle<write>
-    %send24 = ttl.copy %cb, %p24
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(24, 0) to(24, 0) net 16>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send24 : !ttl.transfer_handle<write>
+    %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb1 = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb2 = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb3 = ttl.bind_cb {cb_index = 3, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb4 = ttl.bind_cb {cb_index = 4, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb5 = ttl.bind_cb {cb_index = 5, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb6 = ttl.bind_cb {cb_index = 6, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb7 = ttl.bind_cb {cb_index = 7, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb8 = ttl.bind_cb {cb_index = 8, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb9 = ttl.bind_cb {cb_index = 9, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb10 = ttl.bind_cb {cb_index = 10, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb11 = ttl.bind_cb {cb_index = 11, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb12 = ttl.bind_cb {cb_index = 12, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb13 = ttl.bind_cb {cb_index = 13, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb14 = ttl.bind_cb {cb_index = 14, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb15 = ttl.bind_cb {cb_index = 15, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %cb16 = ttl.bind_cb {cb_index = 16, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %p0 = ttl.create_pipe src(0, 0) dst(17, 0) to(17, 0) net 0 : !ttl.pipe<src(0, 0) dst(17, 0) to(17, 0) net 0>
+    %p1 = ttl.create_pipe src(1, 0) dst(17, 0) to(17, 0) net 1 : !ttl.pipe<src(1, 0) dst(17, 0) to(17, 0) net 1>
+    %p2 = ttl.create_pipe src(2, 0) dst(17, 0) to(17, 0) net 2 : !ttl.pipe<src(2, 0) dst(17, 0) to(17, 0) net 2>
+    %p3 = ttl.create_pipe src(3, 0) dst(17, 0) to(17, 0) net 3 : !ttl.pipe<src(3, 0) dst(17, 0) to(17, 0) net 3>
+    %p4 = ttl.create_pipe src(4, 0) dst(17, 0) to(17, 0) net 4 : !ttl.pipe<src(4, 0) dst(17, 0) to(17, 0) net 4>
+    %p5 = ttl.create_pipe src(5, 0) dst(17, 0) to(17, 0) net 5 : !ttl.pipe<src(5, 0) dst(17, 0) to(17, 0) net 5>
+    %p6 = ttl.create_pipe src(6, 0) dst(17, 0) to(17, 0) net 6 : !ttl.pipe<src(6, 0) dst(17, 0) to(17, 0) net 6>
+    %p7 = ttl.create_pipe src(7, 0) dst(17, 0) to(17, 0) net 7 : !ttl.pipe<src(7, 0) dst(17, 0) to(17, 0) net 7>
+    %p8 = ttl.create_pipe src(8, 0) dst(17, 0) to(17, 0) net 8 : !ttl.pipe<src(8, 0) dst(17, 0) to(17, 0) net 8>
+    %p9 = ttl.create_pipe src(9, 0) dst(17, 0) to(17, 0) net 9 : !ttl.pipe<src(9, 0) dst(17, 0) to(17, 0) net 9>
+    %p10 = ttl.create_pipe src(10, 0) dst(17, 0) to(17, 0) net 10 : !ttl.pipe<src(10, 0) dst(17, 0) to(17, 0) net 10>
+    %p11 = ttl.create_pipe src(11, 0) dst(17, 0) to(17, 0) net 11 : !ttl.pipe<src(11, 0) dst(17, 0) to(17, 0) net 11>
+    %p12 = ttl.create_pipe src(12, 0) dst(17, 0) to(17, 0) net 12 : !ttl.pipe<src(12, 0) dst(17, 0) to(17, 0) net 12>
+    %p13 = ttl.create_pipe src(13, 0) dst(17, 0) to(17, 0) net 13 : !ttl.pipe<src(13, 0) dst(17, 0) to(17, 0) net 13>
+    %p14 = ttl.create_pipe src(14, 0) dst(17, 0) to(17, 0) net 14 : !ttl.pipe<src(14, 0) dst(17, 0) to(17, 0) net 14>
+    %p15 = ttl.create_pipe src(15, 0) dst(17, 0) to(17, 0) net 15 : !ttl.pipe<src(15, 0) dst(17, 0) to(17, 0) net 15>
+    %p16 = ttl.create_pipe src(16, 0) dst(17, 0) to(17, 0) net 16 : !ttl.pipe<src(16, 0) dst(17, 0) to(17, 0) net 16>
+    %recv0 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv1 = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv2 = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv3 = ttl.cb_reserve %cb3 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv4 = ttl.cb_reserve %cb4 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv5 = ttl.cb_reserve %cb5 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv6 = ttl.cb_reserve %cb6 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv7 = ttl.cb_reserve %cb7 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv8 = ttl.cb_reserve %cb8 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv9 = ttl.cb_reserve %cb9 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv10 = ttl.cb_reserve %cb10 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv11 = ttl.cb_reserve %cb11 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv12 = ttl.cb_reserve %cb12 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv13 = ttl.cb_reserve %cb13 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv14 = ttl.cb_reserve %cb14 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv15 = ttl.cb_reserve %cb15 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv16 = ttl.cb_reserve %cb16 : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %transfer0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(17, 0) to(17, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(1, 0) dst(17, 0) to(17, 0) net 1>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(17, 0) to(17, 0) net 2>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer3 = ttl.copy %p3, %recv3 : (!ttl.pipe<src(3, 0) dst(17, 0) to(17, 0) net 3>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer4 = ttl.copy %p4, %recv4 : (!ttl.pipe<src(4, 0) dst(17, 0) to(17, 0) net 4>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer5 = ttl.copy %p5, %recv5 : (!ttl.pipe<src(5, 0) dst(17, 0) to(17, 0) net 5>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer6 = ttl.copy %p6, %recv6 : (!ttl.pipe<src(6, 0) dst(17, 0) to(17, 0) net 6>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer7 = ttl.copy %p7, %recv7 : (!ttl.pipe<src(7, 0) dst(17, 0) to(17, 0) net 7>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer8 = ttl.copy %p8, %recv8 : (!ttl.pipe<src(8, 0) dst(17, 0) to(17, 0) net 8>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer9 = ttl.copy %p9, %recv9 : (!ttl.pipe<src(9, 0) dst(17, 0) to(17, 0) net 9>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer10 = ttl.copy %p10, %recv10 : (!ttl.pipe<src(10, 0) dst(17, 0) to(17, 0) net 10>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer11 = ttl.copy %p11, %recv11 : (!ttl.pipe<src(11, 0) dst(17, 0) to(17, 0) net 11>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer12 = ttl.copy %p12, %recv12 : (!ttl.pipe<src(12, 0) dst(17, 0) to(17, 0) net 12>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer13 = ttl.copy %p13, %recv13 : (!ttl.pipe<src(13, 0) dst(17, 0) to(17, 0) net 13>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer14 = ttl.copy %p14, %recv14 : (!ttl.pipe<src(14, 0) dst(17, 0) to(17, 0) net 14>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer15 = ttl.copy %p15, %recv15 : (!ttl.pipe<src(15, 0) dst(17, 0) to(17, 0) net 15>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    %transfer16 = ttl.copy %p16, %recv16 : (!ttl.pipe<src(16, 0) dst(17, 0) to(17, 0) net 16>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    ttl.wait %transfer0 : !ttl.transfer_handle
+    ttl.wait %transfer1 : !ttl.transfer_handle
+    ttl.wait %transfer2 : !ttl.transfer_handle
+    ttl.wait %transfer3 : !ttl.transfer_handle
+    ttl.wait %transfer4 : !ttl.transfer_handle
+    ttl.wait %transfer5 : !ttl.transfer_handle
+    ttl.wait %transfer6 : !ttl.transfer_handle
+    ttl.wait %transfer7 : !ttl.transfer_handle
+    ttl.wait %transfer8 : !ttl.transfer_handle
+    ttl.wait %transfer9 : !ttl.transfer_handle
+    ttl.wait %transfer10 : !ttl.transfer_handle
+    ttl.wait %transfer11 : !ttl.transfer_handle
+    ttl.wait %transfer12 : !ttl.transfer_handle
+    ttl.wait %transfer13 : !ttl.transfer_handle
+    ttl.wait %transfer14 : !ttl.transfer_handle
+    ttl.wait %transfer15 : !ttl.transfer_handle
+    ttl.wait %transfer16 : !ttl.transfer_handle
     func.return
   }
 }

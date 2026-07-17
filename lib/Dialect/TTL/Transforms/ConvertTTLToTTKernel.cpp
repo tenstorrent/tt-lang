@@ -446,10 +446,6 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
     TargetOp::create(rewriter, loc, *convertedCb, numTiles);
 
     if constexpr (HasResult) {
-      if (op.getResult().use_empty()) {
-        rewriter.eraseOp(op);
-        return success();
-      }
       auto viewCast = UnrealizedConversionCastOp::create(
           rewriter, loc, op.getResult().getType(), *convertedCb);
       rewriter.replaceOp(op, viewCast.getResult(0));
@@ -1026,30 +1022,25 @@ static LogicalResult lowerPipeNetForeachDst(PipeNetForeachDstOp op,
   return success();
 }
 
-struct PipeNetForeachSrcLowering : OpRewritePattern<PipeNetForeachSrcOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(PipeNetForeachSrcOp op,
-                                PatternRewriter &rewriter) const override {
-    return lowerPipeNetForeachSrc(op, rewriter);
-  }
-};
-
-struct PipeNetForeachDstLowering : OpRewritePattern<PipeNetForeachDstOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(PipeNetForeachDstOp op,
-                                PatternRewriter &rewriter) const override {
-    return lowerPipeNetForeachDst(op, rewriter);
-  }
-};
-
 static LogicalResult lowerPipeNetForeachOps(ModuleOp mod) {
-  RewritePatternSet patterns(mod.getContext());
-  patterns.add<PipeNetForeachSrcLowering, PipeNetForeachDstLowering>(
-      mod.getContext());
-  FrozenRewritePatternSet frozenPatterns(std::move(patterns));
-  return applyPatternsGreedily(mod.getOperation(), frozenPatterns);
+  IRRewriter rewriter(mod.getContext());
+  // Restrict this rewrite to foreach ops. A module-wide greedy driver also
+  // removes unrelated TTL ops before their side-effecting lowerings run.
+  WalkResult result =
+      mod.walk<WalkOrder::PostOrder>([&](Operation *nestedOp) -> WalkResult {
+        if (auto srcOp = mlir::dyn_cast<PipeNetForeachSrcOp>(nestedOp)) {
+          return failed(lowerPipeNetForeachSrc(srcOp, rewriter))
+                     ? WalkResult::interrupt()
+                     : WalkResult::advance();
+        }
+        if (auto dstOp = mlir::dyn_cast<PipeNetForeachDstOp>(nestedOp)) {
+          return failed(lowerPipeNetForeachDst(dstOp, rewriter))
+                     ? WalkResult::interrupt()
+                     : WalkResult::advance();
+        }
+        return WalkResult::advance();
+      });
+  return failure(result.wasInterrupted());
 }
 
 static LogicalResult verifyPipeTransferWaits(ModuleOp mod) {

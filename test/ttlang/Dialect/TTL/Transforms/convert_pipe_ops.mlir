@@ -256,14 +256,15 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // -----
 
 // Capacity-proven transfers do not reserve sender-ready counters, while
-// fallback transfers in the same module still do. The capacity semaphore starts
-// after receiver-completion ids and the one remaining sender-ready id.
+// fallback transfers in the same module still do. Disjoint receiver locations
+// share one physical completion id. The capacity semaphore starts after that id
+// and the remaining sender-ready id.
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_sync_semaphore_count = 4 : i64
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 3 : i64
 // CHECK-LABEL: func.func @mixed_capacity_and_sender_ready_compact_resources
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1, 2>
-// CHECK: %[[READY_SEM:.*]] = arith.constant 2 : index
-// CHECK: %[[CAPACITY_IDX:.*]] = arith.constant 3 : index
+// CHECK: %[[READY_SEM:.*]] = arith.constant 1 : index
+// CHECK: %[[CAPACITY_IDX:.*]] = arith.constant 2 : index
 // CHECK: %[[CAPACITY_SEM:.*]] = ttkernel.get_semaphore(%[[CAPACITY_IDX]])
 // CHECK: %[[CAPACITY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[CAPACITY_SEM]])
 // CHECK: ttkernel.noc_semaphore_set(%[[CAPACITY_PTR]]
@@ -1172,12 +1173,12 @@ func.func @local_completion_pressure_uses_global_ready_counter() attributes { "t
 
 // -----
 
-// Noncontiguous semantic PipeNet ids share a dense local completion namespace.
-// Source-local ready-counter colors begin after that namespace.
+// Noncontiguous semantic PipeNet ids with disjoint receiver locations share one
+// physical completion id. Source-local ready-counter colors begin after it.
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_sync_semaphore_count = 3 : i64
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 2 : i64
 // CHECK-LABEL: func.func @interleaved_pipenets_use_dense_local_allocation
-// CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 1 : index
 // CHECK: %[[READY_POST:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc

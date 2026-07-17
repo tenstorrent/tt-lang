@@ -37,9 +37,9 @@ func.func @foreach_src_send_direct()
 // CHECK-LABEL: func.func @foreach_dst_receive_direct
 // CHECK-NOT: scf.for
 // CHECK: ttkernel.noc_inline_dw_write(
-// CHECK: ttkernel.experimental::semaphore_wait_min(
+// CHECK: ttkernel.experimental.semaphore_wait_min(
 // CHECK: ttkernel.noc_inline_dw_write(
-// CHECK: ttkernel.experimental::semaphore_wait_min(
+// CHECK: ttkernel.experimental.semaphore_wait_min(
 // CHECK-NOT: scf.for
 // CHECK-NOT: ttl.pipenet_foreach_dst
 // CHECK-NOT: ttl.select_pipe_dst
@@ -109,7 +109,7 @@ func.func @foreach_src_send_compact()
 // CHECK: memref.alloca
 // CHECK: scf.for
 // CHECK-COUNT-1: ttkernel.noc_inline_dw_write(
-// CHECK-COUNT-1: ttkernel.experimental::semaphore_wait_min(
+// CHECK-COUNT-1: ttkernel.experimental.semaphore_wait_min(
 // CHECK-NOT: ttl.pipenet_foreach_dst
 // CHECK-NOT: ttl.select_pipe_dst
 func.func @foreach_dst_receive_compact()
