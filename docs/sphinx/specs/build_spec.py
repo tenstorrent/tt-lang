@@ -61,13 +61,14 @@ BEGIN = "# spec:begin"
 END = "# spec:end"
 
 
-def extract_region(source: str) -> str:
+def extract_region(example: Path) -> str:
     """Return the dedented lines between the spec markers in ``source``.
 
     When ``source`` contains several ``# spec:begin`` / ``# spec:end`` sections,
     they are concatenated (with no separating line) and the result is dedented
     as a whole.
     """
+    source = example.read_text(encoding="utf-8")
     lines = source.splitlines(keepends=True)
     regions: list[str] = []
     start = None
@@ -75,18 +76,18 @@ def extract_region(source: str) -> str:
         stripped = line.strip()
         if stripped == BEGIN:
             if start is not None:
-                raise SystemExit(f"Nested {BEGIN!r} marker before its {END!r}")
+                raise SystemExit(f"Nested {BEGIN!r} marker before its {END!r} in {example}")
             start = i
         elif stripped == END:
             if start is None:
-                raise SystemExit(f"{END!r} marker without a preceding {BEGIN!r}")
+                raise SystemExit(f"{END!r} marker without a preceding {BEGIN!r} in {example}")
             regions.append("".join(lines[start + 1 : i]))
             start = None
 
     if start is not None:
-        raise SystemExit(f"{BEGIN!r} marker without a closing {END!r}")
+        raise SystemExit(f"{BEGIN!r} marker without a closing {END!r} in {example}")
     if not regions:
-        raise SystemExit(f"Could not find {BEGIN}/{END} markers")
+        raise SystemExit(f"Could not find {BEGIN}/{END} markers in {example}")
 
     return textwrap.dedent("".join(regions))
 
@@ -104,7 +105,7 @@ def render(template_text: str) -> str:
         if not example.is_file():
             raise SystemExit(f"Example file not found: {example}")
 
-        region = extract_region(example.read_text(encoding="utf-8"))
+        region = extract_region(example)
         if not region.endswith("\n"):
             region += "\n"
         out.append("```py\n")
