@@ -4,12 +4,15 @@
 
 # REQUIRES: ttnn
 # RUN: not %python %s default 2>&1 | FileCheck %s --check-prefix=DEFAULT
+# RUN: not %python %s varargs 2>&1 | FileCheck %s --check-prefix=VARARGS
+# RUN: not %python %s varkwargs 2>&1 | FileCheck %s --check-prefix=VARKWARGS
 # RUN: not %python %s return 2>&1 | FileCheck %s --check-prefix=RETURN
 # RUN: not %python %s non-tensor 2>&1 | FileCheck %s --check-prefix=NON-TENSOR
 # RUN: not %python %s expand-only 2>&1 | FileCheck %s --check-prefix=EXPAND-ONLY
 # RUN: not %python %s external-dfb 2>&1 | FileCheck %s --check-prefix=EXTERNAL-DFB
 # RUN: not %python %s nested-resource 2>&1 | FileCheck %s --check-prefix=NESTED
 # RUN: not %python %s shadow 2>&1 | FileCheck %s --check-prefix=SHADOW
+# RUN: not %python %s expression 2>&1 | FileCheck %s --check-prefix=EXPRESSION
 
 """Public diagnostics for unsupported unified-operation boundaries."""
 
@@ -23,6 +26,22 @@ def default_parameter():
     # DEFAULT: ValueError: @ttl.operation parameters cannot have default values (parameter 'inp')
     @ttl.operation(grid=(1, 1))
     def invalid(inp=None):
+        pass
+
+
+# Variadic positional parameters are not part of the operation interface.
+def variadic_positional_parameter():
+    # VARARGS: ValueError: @ttl.operation does not support *args or **kwargs (parameter 'args')
+    @ttl.operation(grid=(1, 1))
+    def invalid(inp, *args):
+        pass
+
+
+# Variadic keyword parameters are not part of the operation interface.
+def variadic_keyword_parameter():
+    # VARKWARGS: ValueError: @ttl.operation does not support *args or **kwargs (parameter 'kwargs')
+    @ttl.operation(grid=(1, 1))
+    def invalid(inp, **kwargs):
         pass
 
 
@@ -86,14 +105,29 @@ def nested_binding_shadow():
         stage(pipe)
 
 
+# Composed arguments must be names that can be substituted safely.
+def composed_expression_argument():
+    @ttl.operation()
+    def stage(inp):
+        pass
+
+    # EXPRESSION: TypeError: @ttl.operation: argument 'inp' while composing 'stage' into 'invalid' must be a tensor or resource name
+    @ttl.operation(grid=(1, 1))
+    def invalid(inp):
+        stage(ttl.exp(inp))
+
+
 CASES = {
     "default": default_parameter,
+    "varargs": variadic_positional_parameter,
+    "varkwargs": variadic_keyword_parameter,
     "return": return_value,
     "non-tensor": non_tensor_argument,
     "expand-only": direct_expand_only_call,
     "external-dfb": external_dfb_capture,
     "nested-resource": nested_resource_declaration,
     "shadow": nested_binding_shadow,
+    "expression": composed_expression_argument,
 }
 
 CASES[sys.argv[1]]()
