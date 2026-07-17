@@ -4,12 +4,12 @@
 
 # RUN: %python -m pytest %s -v
 
-"""Off-device unit tests for the @ttl.atom thread splitter.
+"""Off-device unit tests for the unified @ttl.operation thread splitter.
 
 These drive ``split_function_body`` directly on small ASTs, so they need
 neither ttnn nor a device and run anywhere ttl imports. They lock in the
-split-time error paths (unknown op, no-use producer, NCRISC/BRISC
-double-reserve) and the basic compute/data-movement routing."""
+split-time error paths for ambiguous thread ownership and the basic
+compute/data-movement routing."""
 
 import ast
 import textwrap
@@ -68,13 +68,110 @@ def test_producer_split_across_ncrisc_and_brisc_is_rejected():
             net.if_dst(recv)
         """
     )
-    with pytest.raises(ValueError, match="both NCRISC"):
+    with pytest.raises(ValueError, match="multiple threads .*NCRISC, BRISC"):
         split_function_body(
             fn,
             dfb_param_names=set(),
             all_param_names={"net"},
             local_dfb_names={"a_cb"},
         )
+
+
+def test_statement_mixing_compute_and_data_movement_is_rejected():
+    """One statement cannot contain work for both TRISC and NCRISC."""
+    fn = _fn(
+        """
+        def k(x):
+            dst = out_cb.reserve()
+            ttl.copy(ttl.exp(x), dst)
+        """
+    )
+
+    with pytest.raises(ValueError, match="statement is pinned to multiple threads"):
+        split_function_body(
+            fn,
+            dfb_param_names=set(),
+            all_param_names={"x"},
+            local_dfb_names={"out_cb"},
+        )
+
+
+def test_acquired_block_used_by_compute_and_data_movement_is_rejected():
+    """A DFB acquire cannot be cloned onto compute and data movement."""
+    fn = _fn(
+        """
+        def k(x, out):
+            shared = out_cb.reserve()
+            shared.store(x)
+            ttl.copy(shared, out)
+        """
+    )
+
+    with pytest.raises(ValueError, match="multiple threads .*TRISC, NCRISC"):
+        split_function_body(
+            fn,
+            dfb_param_names=set(),
+            all_param_names={"x", "out"},
+            local_dfb_names={"out_cb"},
+        )
+
+
+def test_with_acquired_block_used_by_multiple_threads_is_rejected():
+    """The scoped DFB acquire form has the same single-thread requirement."""
+    fn = _fn(
+        """
+        def k(x, out):
+            with out_cb.reserve() as shared:
+                shared.store(x)
+                ttl.copy(shared, out)
+        """
+    )
+
+    with pytest.raises(ValueError, match="acquire statement resolves to multiple"):
+        split_function_body(
+            fn,
+            dfb_param_names=set(),
+            all_param_names={"x", "out"},
+            local_dfb_names={"out_cb"},
+        )
+
+
+def test_assigned_copy_transfer_handle_is_rejected():
+    """Assigned transfer handles remain unsupported until alias tracking lands."""
+    fn = _fn(
+        """
+        def k(x, out):
+            tx = ttl.copy(x, out)
+            tx.wait()
+        """
+    )
+
+    with pytest.raises(ValueError, match="assigned transfer handle"):
+        split_function_body(
+            fn,
+            dfb_param_names=set(),
+            all_param_names={"x", "out"},
+        )
+
+
+def test_chained_copy_wait_routes_to_data_movement():
+    """The supported non-assigned transfer wait remains on NCRISC."""
+    fn = _fn(
+        """
+        def k(x, out):
+            ttl.copy(x, out).wait()
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names=set(),
+        all_param_names={"x", "out"},
+    )
+
+    assert "ttl.copy" not in _thread_src(result, "trisc")
+    assert "ttl.copy" in _thread_src(result, "ncrisc")
+    assert "ttl.copy" not in _thread_src(result, "brisc")
 
 
 def test_compute_and_dm_route_to_separate_threads():

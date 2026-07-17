@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Duplicate-and-prune splitter for @ttl.atom kernels.
+"""Duplicate-and-prune splitter for unified-body @ttl.operation kernels.
 
-Walks the function body of a unified @ttl.atom kernel and produces
+Walks the function body of a unified @ttl.operation kernel and produces
 three stripped function ASTs: one each for the TRISC (compute), NCRISC
 (default DM, receivers + non-pipe DM), and BRISC (pipe senders) threads.
 
@@ -33,11 +33,10 @@ Algorithm:
         removes dead code per-thread later.
 
     Post-check:
-        A DFB producer (``blk = cb.wait()`` / ``cb.reserve()``) whose
-        downstream uses span both ncrisc and brisc would be reserved
-        twice on the same CB. Raise immediately and ask the author to
-        inline the reserve inside the if_src / if_dst callback so each
-        reserve sits on a single RISC.
+        A DFB producer (``blk = cb.wait()`` / ``cb.reserve()``) must have
+        users on exactly one thread. Splitting an acquire across threads
+        would issue the synchronization operation more than once against
+        the same DFB.
 
 Unknown ``ttl.<name>(...)`` calls are a hard error. To add an op,
 register it in ``_TTL_OPS`` with its thread.
@@ -219,12 +218,12 @@ def split_function_body(
     all_param_names: Optional[Set[str]] = None,
     local_dfb_names: Optional[Set[str]] = None,
 ) -> SplitResult:
-    """Split a @ttl.atom function body into trisc / ncrisc / brisc bodies.
+    """Split a unified @ttl.operation body into trisc / ncrisc / brisc bodies.
 
     Args:
-        fn_def: AST FunctionDef of the user's @ttl.atom function.
+        fn_def: AST FunctionDef of the user's @ttl.operation function.
         dfb_param_names: parameter names annotated as ttl.DFB / ttl.DFB.Output.
-        all_param_names: full atom parameter name set, used to track which
+        all_param_names: full operation parameter name set, used to track which
             parameters each thread references. Defaults to dfb_param_names.
         local_dfb_names: names of DFBs declared inside the body via
             ``ttl.make_dataflow_buffer_like(...)``. Treated as DFB receivers
@@ -312,7 +311,7 @@ class _AnchorTagger:
                 self.block_threads[name] = frozenset(threads)
         for stmt in body:
             self._annotate(stmt)
-        self._check_duplicate_producers()
+        self._check_producer_threads()
 
     # --- phase 1a: producer discovery (this scope only) ---
 
@@ -379,6 +378,13 @@ class _AnchorTagger:
                         f"cannot pick a thread for the wait/reserve. "
                         f"Add a use inside the with-body or remove it.",
                     )
+                if len(threads) != 1:
+                    raise _split_error(
+                        stmt,
+                        "DFB acquire statement resolves to multiple threads "
+                        f"({_format_threads(threads)}); each .reserve()/.wait() "
+                        "must resolve to exactly one thread",
+                    )
                 _tag(stmt, threads)
             for child in stmt.body:
                 self._annotate(child)
@@ -408,8 +414,24 @@ class _AnchorTagger:
             _tag(stmt, threads)
             return
 
+        copy_target = _assigned_copy_target(stmt)
+        if copy_target is not None:
+            raise _split_error(
+                stmt,
+                f"assigned transfer handle '{copy_target}' is not supported "
+                "yet; write `ttl.copy(...).wait()` as a single statement "
+                "instead",
+            )
+
         threads = self._stmt_anchor_threads(stmt)
         if threads is not None:
+            if len(threads) != 1:
+                raise _split_error(
+                    stmt,
+                    "executable statement is pinned to multiple threads "
+                    f"({_format_threads(threads)}); split the compute and "
+                    "data movement work into separate statements",
+                )
             _tag(stmt, threads)
 
     def _with_threads(self, stmt: ast.With) -> Optional[Set[str]]:
@@ -430,6 +452,18 @@ class _AnchorTagger:
     def _block_thread_set(self, block_name: str) -> Set[str]:
         return set(self.block_threads.get(block_name, frozenset()))
 
+    def _anchor_threads_in(self, root: ast.AST) -> Set[str]:
+        """Return all concrete thread anchors in ``root``."""
+        threads: Set[str] = set()
+        for node in _iter_skip_nested_fns(root):
+            if isinstance(node, ast.Call):
+                thread = self._classify_call(node)
+                if thread in THREADS:
+                    threads.add(thread)
+            elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
+                threads.add("trisc")
+        return threads
+
     def _stmt_anchor_threads(self, stmt: ast.stmt) -> Optional[Set[str]]:
         """Union of anchor threads found in the stmt's subtree. ``None``
         if the stmt has no thread-pinning anchor (control / scalar /
@@ -445,14 +479,7 @@ class _AnchorTagger:
         AugAssign on a known block is still a compute anchor even when
         the RHS has no Call / MatMult (e.g. ``blk += scalar``).
         """
-        threads: Set[str] = set()
-        for node in _iter_skip_nested_fns(stmt):
-            if isinstance(node, ast.Call):
-                t = self._classify_call(node)
-                if t in THREADS:
-                    threads.add(t)
-            elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
-                threads.add("trisc")
+        threads = self._anchor_threads_in(stmt)
         if threads:
             return threads
         if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
@@ -485,21 +512,18 @@ class _AnchorTagger:
                         return next(iter(bt))
         return None
 
-    # --- post-check: forbid duplicate DM-side reserves ---
+    # --- post-check: every DFB acquire belongs to exactly one thread ---
 
-    def _check_duplicate_producers(self) -> None:
+    def _check_producer_threads(self) -> None:
         for name, stmts in self._producers.items():
             threads = self.block_threads.get(name, frozenset())
-            if "ncrisc" in threads and "brisc" in threads:
+            if len(threads) > 1:
                 raise _split_error(
                     stmts[0],
-                    f"DFB '{name}' is used on both NCRISC (e.g. an if_dst "
-                    f"callback or non-pipe DM op) and BRISC (an if_src "
-                    f"callback). Splitting the producer onto both RISCs "
-                    f"would issue two cb_reserve_back / cb_wait_front calls "
-                    f"against the same CB and corrupt its pointer. Inline "
-                    f"the .reserve()/.wait() inside each callback so each "
-                    f"reserve sits on a single RISC.",
+                    f"DFB block '{name}' is used on multiple threads "
+                    f"({_format_threads(threads)}). Its .reserve()/.wait() "
+                    f"acquire must resolve to exactly one thread; use a "
+                    f"separate acquired block for each thread.",
                 )
 
 
@@ -559,6 +583,25 @@ def _tag(stmt: ast.stmt, threads: Set[str]) -> None:
     'drop on every side'.
     """
     stmt._ttl_threads = frozenset(threads)
+
+
+def _assigned_copy_target(stmt: ast.stmt) -> Optional[str]:
+    """Return the target of ``name = ttl.copy(...)``, otherwise None."""
+    if not isinstance(stmt, ast.Assign):
+        return None
+    if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
+        return None
+    value = stmt.value
+    if not isinstance(value, ast.Call):
+        return None
+    func = value.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    if not isinstance(func.value, ast.Name) or func.value.id != "ttl":
+        return None
+    if func.attr != "copy":
+        return None
+    return stmt.targets[0].id
 
 
 def _bare_wait_assign_target(
@@ -630,9 +673,14 @@ def _expr_root_name(node) -> Optional[str]:
         return None
 
 
+def _format_threads(threads) -> str:
+    """Stable, user-facing rendering of a concrete thread collection."""
+    return ", ".join(thread.upper() for thread in THREADS if thread in threads)
+
+
 def _split_error(node, msg: str) -> ValueError:
     line = getattr(node, "lineno", "?")
-    return ValueError(f"@ttl.atom split: {msg} (line {line})")
+    return ValueError(f"@ttl.operation split: {msg} (line {line})")
 
 
 # ----- block use collection (shadow-aware) ---------------------------------
