@@ -61,7 +61,7 @@ def atom_factory_exp(in_t, out_t):
     a_blk = a_cb.reserve()
     ttl.copy(in_t[0:1, 0:1], a_blk)
 
-    _factory_exp_block(a_cb, out_t)
+    _factory_exp_block(out=out_t, inp=a_cb)
 
 
 def test_atom_outer_exp(device):
