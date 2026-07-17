@@ -589,7 +589,6 @@ def _compile_atom(
     split = split_function_body(
         fn_def=stripped_fn,
         dfb_param_names=set(spec.dfb_param_names),
-        all_param_names={p.name for p in spec.params},
         local_dfb_names=set(dfbs),
     )
 

@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import ast
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 
@@ -201,21 +201,14 @@ class SplitResult:
     trisc_body: List[ast.stmt]
     ncrisc_body: List[ast.stmt]
     brisc_body: List[ast.stmt]
-    trisc_param_uses: Set[str] = field(default_factory=set)
-    ncrisc_param_uses: Set[str] = field(default_factory=set)
-    brisc_param_uses: Set[str] = field(default_factory=set)
 
     def body_for(self, thread: str) -> List[ast.stmt]:
         return getattr(self, f"{thread}_body")
-
-    def param_uses_for(self, thread: str) -> Set[str]:
-        return getattr(self, f"{thread}_param_uses")
 
 
 def split_function_body(
     fn_def: ast.FunctionDef,
     dfb_param_names: Set[str],
-    all_param_names: Optional[Set[str]] = None,
     local_dfb_names: Optional[Set[str]] = None,
 ) -> SplitResult:
     """Split a unified @ttl.operation body into trisc / ncrisc / brisc bodies.
@@ -223,15 +216,10 @@ def split_function_body(
     Args:
         fn_def: AST FunctionDef of the user's @ttl.operation function.
         dfb_param_names: parameter names annotated as ttl.DFB / ttl.DFB.Output.
-        all_param_names: full operation parameter name set, used to track which
-            parameters each thread references. Defaults to dfb_param_names.
         local_dfb_names: names of DFBs declared inside the body via
             ``ttl.make_dataflow_buffer_like(...)``. Treated as DFB receivers
             for wait/reserve recognition.
     """
-    all_names = (
-        set(all_param_names) if all_param_names is not None else set(dfb_param_names)
-    )
     dfb_names = set(dfb_param_names) | (local_dfb_names or set())
 
     # Pass A: tag anchor stmts in-place on the original body.
@@ -248,9 +236,6 @@ def split_function_body(
         trisc_body=bodies["trisc"],
         ncrisc_body=bodies["ncrisc"],
         brisc_body=bodies["brisc"],
-        trisc_param_uses=_params_referenced(bodies["trisc"], all_names),
-        ncrisc_param_uses=_params_referenced(bodies["ncrisc"], all_names),
-        brisc_param_uses=_params_referenced(bodies["brisc"], all_names),
     )
 
 
@@ -645,15 +630,6 @@ def _with_item_block_name(item: ast.withitem, dfb_names: Set[str]) -> Optional[s
     if not isinstance(item.optional_vars, ast.Name):
         return None
     return item.optional_vars.id
-
-
-def _params_referenced(stmts: List[ast.stmt], param_names: Set[str]) -> Set[str]:
-    used: Set[str] = set()
-    for stmt in stmts:
-        for sub in ast.walk(stmt):
-            if isinstance(sub, ast.Name) and sub.id in param_names:
-                used.add(sub.id)
-    return used
 
 
 def _expr_root_name(node) -> Optional[str]:

@@ -35,7 +35,7 @@ def test_unknown_ttl_op_is_rejected():
         """
     )
     with pytest.raises(ValueError, match="unknown ttl.frobnicate"):
-        split_function_body(fn, dfb_param_names=set(), all_param_names={"a"})
+        split_function_body(fn, dfb_param_names=set())
 
 
 def test_producer_with_no_uses_is_rejected():
@@ -72,7 +72,6 @@ def test_producer_split_across_ncrisc_and_brisc_is_rejected():
         split_function_body(
             fn,
             dfb_param_names=set(),
-            all_param_names={"net"},
             local_dfb_names={"a_cb"},
         )
 
@@ -91,7 +90,6 @@ def test_statement_mixing_compute_and_data_movement_is_rejected():
         split_function_body(
             fn,
             dfb_param_names=set(),
-            all_param_names={"x", "out"},
             local_dfb_names={"out_cb"},
         )
 
@@ -111,7 +109,6 @@ def test_acquired_block_used_by_compute_and_data_movement_is_rejected():
         split_function_body(
             fn,
             dfb_param_names=set(),
-            all_param_names={"x", "out"},
             local_dfb_names={"out_cb"},
         )
 
@@ -131,7 +128,6 @@ def test_with_acquired_block_used_by_multiple_threads_is_rejected():
         split_function_body(
             fn,
             dfb_param_names=set(),
-            all_param_names={"x", "out"},
             local_dfb_names={"out_cb"},
         )
 
@@ -150,7 +146,6 @@ def test_assigned_copy_transfer_handle_is_rejected():
         split_function_body(
             fn,
             dfb_param_names=set(),
-            all_param_names={"x", "out"},
         )
 
 
@@ -166,7 +161,6 @@ def test_chained_copy_wait_routes_to_data_movement():
     result = split_function_body(
         fn,
         dfb_param_names=set(),
-        all_param_names={"x", "out"},
     )
 
     assert "ttl.copy" not in _thread_src(result, "trisc")
@@ -192,7 +186,6 @@ def test_compute_and_dm_route_to_separate_threads():
     result = split_function_body(
         fn,
         dfb_param_names=set(),
-        all_param_names={"a", "out"},
         local_dfb_names={"a_cb", "out_cb"},
     )
 
