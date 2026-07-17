@@ -108,6 +108,9 @@ def render(template_text: str) -> str:
             raise SystemExit(f"Example file not found: {example}")
 
         region = extract_region(example)
+        if not region:
+            raise SystemExit(f"Empty region in {example}")
+        
         if not region.endswith("\n"):
             region += "\n"
         out.append("```py\n")
