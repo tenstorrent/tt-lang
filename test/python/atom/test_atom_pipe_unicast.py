@@ -94,7 +94,8 @@ def _pipe_transfer(a, out, net: ttl.PipeNet):
 
 @ttl.operation()
 def _local_pipe_stage(a, out):
-    net = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
+    link = ttl.Pipe(src=(1, 0), dst=(0, 0))
+    net = ttl.PipeNet([link])
     _pipe_transfer(a, out, net)
 
 
