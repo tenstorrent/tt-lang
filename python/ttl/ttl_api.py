@@ -789,13 +789,15 @@ def _get_kernel_core_coords(module, kernel_name: str):
 def _get_kernel_noc_index(module, kernel_name: str):
     """Read the `ttl.noc_index` attribute (0 = reader, 1 = writer).
 
-    Returns None when the attribute is absent so callers can fall back to the
-    positional reader/writer assignment used by the default path.
+    The frontend tags every datamovement thread with this attribute, required here so
+    reader/writer role assignment is attribute-based rather than positional.
     """
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get("ttl.noc_index", None)
     if attr is None:
-        return None
+        raise ValueError(
+            f"Missing 'ttl.noc_index' on datamovement kernel '{kernel_name}'"
+        )
     return int(IntegerAttr(attr).value)
 
 
@@ -938,7 +940,6 @@ def _compile_ttnn_kernel(
     # Build CoreRangeSet from grid dimensions
     # Grid is (cols, rows) = (x, y), matching tt-metal CoreCoord convention
     grid_cols, grid_rows = grid
-    all_cores = [(x, y) for y in range(grid_rows) for x in range(grid_cols)]
     core_start = ttnn.CoreCoord(0, 0)
     core_end = ttnn.CoreCoord(grid_cols - 1, grid_rows - 1)
     core_range = ttnn.CoreRange(core_start, core_end)
@@ -953,8 +954,6 @@ def _compile_ttnn_kernel(
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
     specialized_tensor_indices = []
-    # Per-core NOC role counter
-    noc_role_per_core = {}
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -976,8 +975,7 @@ def _compile_ttnn_kernel(
         kernel_paths.append((kernel_path, thread_type))
 
         # The specialized clone's launch coordinates (None on the default,
-        # whole-grid path). Used both for the per-core reader/writer fallback
-        # below and to build the dispatch range further down.
+        # whole-grid path). Used to build the per-kernel dispatch range below.
         coords = kernel_coords[idx]
 
         if thread_type == "compute":
@@ -999,11 +997,6 @@ def _compile_ttnn_kernel(
             thread_to_kernel["TRISC_2"] = name
         elif thread_type == "noc":
             noc_role = _get_kernel_noc_index(module, name)
-            if noc_role is None:
-                covered = coords if coords is not None else all_cores
-                noc_role = max(noc_role_per_core.get(c, 0) for c in covered)
-                for c in covered:
-                    noc_role_per_core[c] = noc_role + 1
             if noc_role == 0:
                 config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name  # Reader
@@ -1725,8 +1718,8 @@ def _lower_program_to_kernel(
                 ctx,
             )
 
-            # Tag noc functions with their index so pipe semaphore
-            # allocation can distinguish threads.
+            # Tag noc functions with their index so pipe semaphore allocation
+            # and TTNN reader/writer role assignment can distinguish threads.
             if ct.kernel_type == "datamovement":
                 ct.func_entry.attributes["ttl.noc_index"] = IntegerAttr.get(
                     IntegerType.get_signless(32, ctx), noc_kernel_idx
