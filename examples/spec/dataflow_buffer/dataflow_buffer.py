@@ -14,6 +14,7 @@ import torch
 import ttl
 import ttnn
 
+
 def from_torch(tensor: torch.Tensor):
     return ttnn.from_torch(
         tensor,
@@ -23,20 +24,19 @@ def from_torch(tensor: torch.Tensor):
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
+
 @ttl.operation(grid=(1, 1))
 def dataflow_buffer_example(
-    x: ttnn.Tensor, # input tensor
-    y: ttnn.Tensor, # output tensor
+    x: ttnn.Tensor,  # input tensor
+    y: ttnn.Tensor,  # output tensor
 ) -> None:
 
     # spec:begin
-    x_dfb = ttl.make_dataflow_buffer_like(x,
-        shape = (2, 2),
-        block_count = 2) # This can be omitted since block_count defaults to 2
+    x_dfb = ttl.make_dataflow_buffer_like(
+        x, shape=(2, 2), block_count=2
+    )  # This can be omitted since block_count defaults to 2
     # spec:end
-    y_dfb = ttl.make_dataflow_buffer_like(y,
-        shape = (2, 2),
-        block_count = 2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(2, 2), block_count=2)
     # spec:begin
 
     @ttl.datamovement()
@@ -63,10 +63,10 @@ def dataflow_buffer_example(
         # spec:end
         y_blk = y_dfb.reserve()
         y_blk.store(x_blk)
-        y_blk.push() 
+        y_blk.push()
         # spec:begin
 
-        x_blk.pop() # Pop x_blk explicitly
+        x_blk.pop()  # Pop x_blk explicitly
         # spec:end
 
     @ttl.datamovement()
@@ -75,7 +75,8 @@ def dataflow_buffer_example(
 
             y_xf = ttl.copy(y_blk, y[0:2, 0:2])
             y_xf.wait()
- 
+
+
 torch.manual_seed(42)
 
 device = ttnn.open_device(device_id=0)

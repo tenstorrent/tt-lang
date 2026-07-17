@@ -26,10 +26,8 @@ try:
             device=device,
         )
 
-
     def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
         return list(tensor.padded_shape)
-
 
     assert row_major_shape(from_torch(torch.randn(()))) == [1]
     assert row_major_shape(from_torch(torch.randn((128)))) == [128]

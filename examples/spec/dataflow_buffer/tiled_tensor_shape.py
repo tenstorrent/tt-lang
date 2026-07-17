@@ -26,14 +26,12 @@ try:
             device=device,
         )
 
-
     def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
         padded_shape = list(tensor.padded_shape)
         tile_shape = list(tensor.tile.tile_shape)
         return padded_shape[:-2] + [
             dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)
         ]
-
 
     assert shape_in_tiles(from_torch(torch.randn(()))) == [1, 1]
     assert shape_in_tiles(from_torch(torch.randn((128)))) == [1, 4]

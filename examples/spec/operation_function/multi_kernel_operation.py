@@ -14,22 +14,17 @@ import torch
 import ttl
 import ttnn
 
+
 # spec:begin
 @ttl.operation(grid=(1, 1))
 def __foo(
-    x: ttnn.Tensor, # input tensor
-    y: ttnn.Tensor, # output tensor
+    x: ttnn.Tensor,  # input tensor
+    y: ttnn.Tensor,  # output tensor
 ) -> None:
     # ...
     # spec:end
-    x_dfb = ttl.make_dataflow_buffer_like(x,
-        shape = (4, 4),
-        block_count = 2
-    )
-    y_dfb = ttl.make_dataflow_buffer_like(y,
-        shape = (4, 4),
-        block_count = 2
-    )
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(4, 4), block_count=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(4, 4), block_count=2)
     # spec:begin
 
     @ttl.compute()
@@ -57,6 +52,7 @@ def __foo(
             y_xf = ttl.copy(y_blk, y[0:4, 0:4])
             y_xf.wait()
 
+
 torch.manual_seed(42)
 # spec:begin
 
@@ -75,7 +71,9 @@ try:
 
     y = ttnn.exp(foo(ttnn.abs(x)), fast_and_approximate_mode=True)
     # spec:end
-    assert torch.allclose(torch.exp(torch.abs(ttnn.to_torch(x))), ttnn.to_torch(y), rtol=1e-1, atol=1e-1), "Tensors do not match"
+    assert torch.allclose(
+        torch.exp(torch.abs(ttnn.to_torch(x))), ttnn.to_torch(y), rtol=1e-1, atol=1e-1
+    ), "Tensors do not match"
     # spec:begin
 
 finally:

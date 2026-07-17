@@ -164,8 +164,8 @@ A *multi-kernel operation* is an alternative form in which the author writes the
 ```py
 @ttl.operation(grid=(1, 1))
 def __foo(
-    x: ttnn.Tensor, # input tensor
-    y: ttnn.Tensor, # output tensor
+    x: ttnn.Tensor,  # input tensor
+    y: ttnn.Tensor,  # output tensor
 ) -> None:
     # ...
 
@@ -272,14 +272,12 @@ def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
         device=device,
     )
 
-
 def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
     padded_shape = list(tensor.padded_shape)
     tile_shape = list(tensor.tile.tile_shape)
     return padded_shape[:-2] + [
         dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)
     ]
-
 
 assert shape_in_tiles(from_torch(torch.randn(()))) == [1, 1]
 assert shape_in_tiles(from_torch(torch.randn((128)))) == [1, 4]
@@ -304,10 +302,8 @@ def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
         device=device,
     )
 
-
 def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
     return list(tensor.padded_shape)
-
 
 assert row_major_shape(from_torch(torch.randn(()))) == [1]
 assert row_major_shape(from_torch(torch.randn((128)))) == [128]
@@ -327,9 +323,9 @@ A dataflow buffer is constructed in the scope of an operation function but its o
 #### Dataflow buffer example
 
 ```py
-x_dfb = ttl.make_dataflow_buffer_like(x,
-    shape = (2, 2),
-    block_count = 2) # This can be omitted since block_count defaults to 2
+x_dfb = ttl.make_dataflow_buffer_like(
+    x, shape=(2, 2), block_count=2
+)  # This can be omitted since block_count defaults to 2
 
 @ttl.datamovement()
 def some_read():
@@ -349,7 +345,7 @@ def some_compute():
     # Consume data in x_blk
     # ...
 
-    x_blk.pop() # Pop x_blk explicitly
+    x_blk.pop()  # Pop x_blk explicitly
 ```
 
 | Type alias/Function | Description |
