@@ -40,7 +40,16 @@
 #   4. build-and-install.sh --build-and-install            # Build + install tt-lang
 #   5. build-and-install.sh --finalize --remove-build-dir  # Normalize + cleanup
 
-set -e
+set -Eeo pipefail
+
+# Robust failure handling so a failure can never be reported as success: exit
+# non-zero on any error (-e), have the ERR trap fire inside functions/subshells
+# too (-E), and treat a failing stage in any pipeline as a failure (pipefail).
+# The trap prints the failing command so failures are never silent. Note: a
+# caller that pipes our output (e.g. `... | tee`) still sees the pipe's exit
+# status, not ours -- invoke without a masking pipe, or set pipefail in the
+# caller.
+trap 'rc=$?; echo "ERROR: build-and-install.sh failed (exit $rc) at: ${BASH_COMMAND}" >&2; exit $rc' ERR
 
 # When running inside a Docker container with volume-mounted repos, git
 # will refuse to operate due to ownership mismatch ("dubious ownership").
@@ -238,7 +247,7 @@ do_configure() {
         "${_python_args[@]}"
 
     echo "=== Disk space after configure ==="
-    df -BM
+    df -h
 
     source "$CMAKE_BINARY_DIR/env/activate"
 
@@ -263,7 +272,7 @@ do_build_and_install() {
     cmake --build "$CMAKE_BINARY_DIR"
 
     echo "=== Disk space after build ==="
-    df -BM
+    df -h
 
     echo "=== Installing tt-lang ==="
     cmake --install "$CMAKE_BINARY_DIR" --prefix "$TTLANG_TOOLCHAIN_DIR"
@@ -293,7 +302,7 @@ do_finalize() {
     fi
 
     echo "=== Disk space after cleanup ==="
-    df -BM
+    df -h
 }
 
 # ---- Test toolchain (separate build using installed toolchain) ----
