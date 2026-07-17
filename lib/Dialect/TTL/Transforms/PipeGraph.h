@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 
 namespace mlir::tt {
 class ValueOriginAnalysis;
@@ -35,6 +36,16 @@ class ValueOriginAnalysis;
 namespace mlir::tt::ttl {
 
 struct PipeGraphAnalysisState;
+
+/// Compiler-generated control flow that implements PipeNet foreach callbacks.
+///
+/// `controlOps` identifies loops and conditions that select records rather than
+/// independent user control. `ifThenDomains` records the launch nodes that may
+/// enter each generated `scf.if` across all record-loop iterations.
+struct PipeForeachLoweringInfo {
+  SmallVector<Operation *> controlOps;
+  llvm::DenseMap<Operation *, LaunchNodeDomain> ifThenDomains;
+};
 
 //===----------------------------------------------------------------------===//
 // Pipe Graph: Tracks static transfers, receiver endpoints, physical receiver
@@ -90,6 +101,11 @@ struct PipeKey {
 
   bool hasSingleReceiver() const {
     return dstStartX == dstEndX && dstStartY == dstEndY;
+  }
+
+  bool containsReceiver(PipeReceiverCoord receiver) const {
+    return receiver.x >= dstStartX && receiver.x <= dstEndX &&
+           receiver.y >= dstStartY && receiver.y <= dstEndY;
   }
 
   template <typename Fn>
@@ -263,6 +279,97 @@ inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
              : PipeTransferContract::PointToPoint;
 }
 
+inline PipeTransferContract getPipeTransferContract(PipeRecordAttr record) {
+  return record.getIsCollective() ? PipeTransferContract::Collective
+                                  : PipeTransferContract::PointToPoint;
+}
+
+inline PipeKey getPipeKey(PipeRecordAttr record, int64_t pipeNetId) {
+  return {record.getSrcX(),
+          record.getSrcY(),
+          record.getDstStartX(),
+          record.getDstStartY(),
+          record.getDstEndX(),
+          record.getDstEndY(),
+          pipeNetId};
+}
+
+inline PipeType getPipeTypeFromRecord(MLIRContext *context,
+                                      PipeRecordAttr record,
+                                      int64_t pipeNetId) {
+  return PipeType::get(context, record.getSrcX(), record.getSrcY(),
+                       record.getDstStartX(), record.getDstStartY(),
+                       record.getDstEndX(), record.getDstEndY(), pipeNetId);
+}
+
+/// A pipe operand represented either by a static type or by one selected
+/// source or destination record.
+class PipeReference {
+public:
+  PipeReference() = delete;
+  explicit PipeReference(PipeType pipeType) : value(pipeType) {
+    assert(pipeType && "static pipe reference requires a pipe type");
+  }
+  explicit PipeReference(SelectPipeSrcOp selectedSrc) : value(selectedSrc) {
+    assert(selectedSrc && "selected source reference requires an operation");
+  }
+  explicit PipeReference(SelectPipeDstOp selectedDst) : value(selectedDst) {
+    assert(selectedDst &&
+           "selected destination reference requires an operation");
+  }
+
+  bool isStatic() const { return std::holds_alternative<PipeType>(value); }
+  bool isSelected() const { return !isStatic(); }
+  bool isSelectedSrc() const {
+    return std::holds_alternative<SelectPipeSrcOp>(value);
+  }
+  bool isSelectedDst() const {
+    return std::holds_alternative<SelectPipeDstOp>(value);
+  }
+
+  PipeType getStaticPipeType() const {
+    assert(isStatic() && "selected pipe reference has no static pipe type");
+    return std::get<PipeType>(value);
+  }
+
+  SelectPipeSrcOp getSelectedSrc() const {
+    assert(isSelectedSrc() && "pipe reference is not a selected source");
+    return std::get<SelectPipeSrcOp>(value);
+  }
+
+  SelectPipeDstOp getSelectedDst() const {
+    assert(isSelectedDst() && "pipe reference is not a selected destination");
+    return std::get<SelectPipeDstOp>(value);
+  }
+
+  PipeNetRecordsAttr getRecords() const {
+    assert(isSelected() && "static pipe has no records attr");
+    if (isSelectedSrc()) {
+      return getSelectedSrc().getRecords();
+    }
+    return getSelectedDst().getRecords();
+  }
+
+  int64_t getPipeNetId() const {
+    if (isStatic()) {
+      return getStaticPipeType().getPipeNetId();
+    }
+    return getRecords().getPipeNetId();
+  }
+
+private:
+  std::variant<PipeType, SelectPipeSrcOp, SelectPipeDstOp> value;
+};
+
+/// Return a static or selected pipe reference after tracing only unrealized
+/// conversion casts. Requiring direct select results keeps each selected value
+/// tied to the record table that defines it.
+FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe);
+
+/// Enumerate the static pipe types represented by a pipe reference.
+SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
+                                                const PipeReference &ref);
+
 /// Graph of transfer definitions, receiver endpoints, physical receiver DFBs,
 /// and proven receiver address sequences.
 /// Built after pipe receive copies have been expanded to pipe transfer ops.
@@ -271,8 +378,11 @@ public:
   /// Analyze a module to find all pipe receivers and build the graph.
   /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
-  static FailureOr<PipeGraph> build(ModuleOp mod,
-                                    ValueOriginAnalysis &analysis);
+  /// `selectedRecordControlOps` are compiler-generated loops and endpoint
+  /// conditions that select one table record, not independent user control.
+  static FailureOr<PipeGraph>
+  build(ModuleOp mod, ValueOriginAnalysis &analysis,
+        const PipeForeachLoweringInfo &foreachLoweringInfo);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !pipeTransferNodes.empty(); }
@@ -290,12 +400,16 @@ public:
     return pipeTransferNodes[id];
   }
 
-  const PipeTransferNode *
-  getPipeTransferNodeForProtocolOp(Operation *op) const {
-    auto it = transferNodeIdByProtocolOp.find(op);
-    return it == transferNodeIdByProtocolOp.end()
-               ? nullptr
-               : &pipeTransferNodes[it->second];
+  ArrayRef<PipeTransferNodeId>
+  getPipeTransferNodeIdsForProtocolOp(Operation *op) const {
+    auto it = transferNodeIdsByProtocolOp.find(op);
+    return it == transferNodeIdsByProtocolOp.end()
+               ? ArrayRef<PipeTransferNodeId>{}
+               : ArrayRef<PipeTransferNodeId>{it->second};
+  }
+
+  bool hasPipeTransferNodeForProtocolOp(Operation *op) const {
+    return !getPipeTransferNodeIdsForProtocolOp(op).empty();
   }
 
   ArrayRef<PipeReceiverEndpointId>
@@ -367,7 +481,9 @@ private:
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;
   SmallVector<PipeTransferNode, 0> pipeTransferNodes;
-  llvm::DenseMap<Operation *, PipeTransferNodeId> transferNodeIdByProtocolOp;
+  // A table-driven protocol operation represents one transfer node per record.
+  llvm::DenseMap<Operation *, SmallVector<PipeTransferNodeId>>
+      transferNodeIdsByProtocolOp;
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
   bool hasAnalyzedLaunchGrid = false;
