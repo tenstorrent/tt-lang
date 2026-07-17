@@ -121,7 +121,7 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                runner: [n150, n300-llmbox]
+                runner: [n150, bh-loudbox-viommu]
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
