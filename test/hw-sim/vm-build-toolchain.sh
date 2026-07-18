@@ -59,7 +59,6 @@ copy_tree() {
   [ "$rc_c" -le 1 ] || { echo "read of $src failed (tar rc=$rc_c)"; exit "$rc_c"; }
 }
 copy_tree "$SRC_HOST/tt-lang" "$VM_LOCAL/tt-lang" --exclude=./build --exclude=./build-toolchain --exclude=.cpmcache --exclude=pre-compiled
-copy_tree "$SRC_HOST/craq-sim" "$VM_LOCAL/craq-sim" --exclude=./src/_out
 
 echo "=== build toolchain (LLVM + tt-metal from submodules) ==="
 cd "$VM_LOCAL/tt-lang"
@@ -71,5 +70,10 @@ CPM_SOURCE_CACHE="$VM_LOCAL/cpmcache" \
 echo "=== install tt-metal into the toolchain (_ttnn.so etc.) ==="
 CMAKE_BINARY_DIR="$VM_LOCAL/build-toolchain" TTLANG_TOOLCHAIN_DIR="$TOOLCHAIN" \
   ./scripts/build-and-install.sh --install-ttmetal
+
+# Reclaim the build scratch: the toolchain now lives at $TOOLCHAIN, and tt-lang
+# itself is built from your checkout (build-lima) rather than this copy.
+cd /
+rm -rf "$VM_LOCAL/tt-lang" "$VM_LOCAL/build-toolchain" "$VM_LOCAL/cpmcache"
 
 echo "=== DONE: toolchain at $TOOLCHAIN ==="

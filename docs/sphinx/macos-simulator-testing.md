@@ -90,8 +90,8 @@ patches are host-side only -- GCC in the VM does not need them.
 ### In the Lima VM (for the runtime-test loop)
 
 The VM is Ubuntu aarch64, so build `libttsim.so` there (a macOS Mach-O will not
-load under Linux) and place it at the path the run harness expects
-(`/var/tmp/sim/libttsim.so`, below).
+load under Linux) and stage it at `/opt/ttlang-toolchain/sim/libttsim.so`; the
+one-time setup below does this.
 
 ## Runtime tests in a Lima VM
 
@@ -99,16 +99,20 @@ load under Linux) and place it at the path the run harness expects
 tt-metal builds and runs there, so tt-lang's `REQUIRES: tt-device` tests execute
 against a craq-sim `libttsim.so` with no silicon. tt-mlir is **not** needed.
 
-This is the verified flow: fresh VM -> current LLVM + tt-metal from the submodules
--> tt-lang -> craq-sim `libttsim.so` -> a passing device test. Helper scripts that
-encode the aarch64 fixes live in the repo at `test/hw-sim/` (`craqsim-vm.yaml`,
-`vm-build-toolchain.sh`, `vm-build-ttlang.sh`, `vm-resume-build.sh`). They run
-inside the VM against the mounted source, auto-detecting the virtiofs mount that
-contains `tt-lang` (override with `SRC_HOST`).
+Everyday work stays in your single checkout (`~/tt/tt-lang`): tt-lang builds
+directly from the mounted source into `build-lima/`, and tests run there. Only the
+one-time **toolchain** build (LLVM + tt-metal) needs a VM-local scratch copy --
+tt-metal writes firmware ELFs and its CPM cache into its own source tree, and
+virtiofs rejects those writes -- and that copy is internal to
+`vm-build-toolchain.sh` (reclaimed when it finishes); you never work in it.
+
+Helper scripts live in the repo at `test/hw-sim/` (`craqsim-vm.yaml`,
+`vm-build-toolchain.sh`, `vm-build-ttlang.sh`, `vm-resume-build.sh`). They discover
+the mount by finding the dir that contains `tt-lang` (override with `SRC_HOST`).
 
 **Prerequisites:** Homebrew, `brew install lima`, and ~80 GB free host disk. The
-LLVM + tt-metal build tree lands on the VM's disk image, which draws from host
-free space and is not reclaimed by deleting files inside the VM (see disk note).
+toolchain build tree lands on the VM's disk image, which draws from host free
+space and is not reclaimed by deleting files inside the VM (see disk note).
 
 ### aarch64 gotchas the scripts handle
 
@@ -118,17 +122,15 @@ free space and is not reclaimed by deleting files inside the VM (see disk note).
   one; remove it.
 - apt installs versioned `clang-20` only, but tt-lang's CMake wants bare
   `clang`/`clang++` -- add them with `update-alternatives`.
-- Build from a **VM-local copy** of the source, not the virtiofs mount: tt-metal
-  writes into its own tree (CPM cache, firmware ELFs) and those writes fail over
-  virtiofs.
+- The toolchain build runs from a VM-local copy, not the mount: tt-metal writes
+  into its own tree and those writes fail over virtiofs. tt-lang itself builds
+  fine over virtiofs, so `build-lima` uses your real checkout directly.
 
-### Build and run
+### One-time setup
 
-Run from the tt-lang repo root on the host. tt-lang and craq-sim are assumed to
-sit under a common **TT root** that the VM mounts -- default `~/tt`, set by the
-`mounts:` entry in `test/hw-sim/craqsim-vm.yaml` (change it if your clones live
-elsewhere). Host-side commands below are relative to the repo root; guest-side
-paths are discovered from the mount.
+Run from the tt-lang repo root on the host. tt-lang and craq-sim sit under a
+common **TT root** that the VM mounts -- default `~/tt`, set by the `mounts:` entry
+in `test/hw-sim/craqsim-vm.yaml` (change it if your clones live elsewhere).
 
 ```bash
 # 1. Init tt-metal's submodules (umd, tracy) so the build finds them.
@@ -139,113 +141,84 @@ limactl start --tty=false --name=ttlang-craqsim test/hw-sim/craqsim-vm.yaml
 
 # Discover where the TT root (the dir holding tt-lang) is mounted in the guest:
 TT="$(limactl shell ttlang-craqsim -- bash -c 'findmnt -nrt virtiofs -o TARGET | while read m; do [ -d "$m/tt-lang" ] && { echo "$m"; break; }; done')"
-HW="$TT/tt-lang/test/hw-sim"
 
-# 3. Provision + build the toolchain (LLVM + tt-metal) and install tt-metal into
-#    it, from a VM-local source copy. Detached so it survives a dropped SSH session.
+# 3. Build the toolchain (LLVM + tt-metal) into /opt/ttlang-toolchain. Detached, so
+#    it survives a dropped SSH session; logs to the mount (host-visible).
 limactl shell ttlang-craqsim -- bash -c \
-  "setsid bash $HW/vm-build-toolchain.sh >/var/tmp/toolchain-build.log 2>&1 </dev/null & disown"
-#    watch: limactl shell ttlang-craqsim -- tail -f /var/tmp/toolchain-build.log
+  "setsid bash $TT/tt-lang/test/hw-sim/vm-build-toolchain.sh > $TT/tt-lang/toolchain-build.log 2>&1 </dev/null & disown"
+#    watch on the host: tail -f toolchain-build.log
 
-# 4. Build tt-lang against the toolchain.
-limactl shell ttlang-craqsim -- bash "$HW/vm-build-ttlang.sh"
-
-# 5. Build craq-sim's libttsim.so (Linux aarch64), stage it with the SOC descriptor.
-limactl shell ttlang-craqsim -- bash -c '
-  cd /var/tmp/craq-sim && ./make.py src/_out/release_wh/libttsim.so
-  mkdir -p /var/tmp/sim && cp src/_out/release_wh/libttsim.so /var/tmp/sim/libttsim.so
-  cp /opt/ttlang-toolchain/tt-metal/tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml \
-     /var/tmp/sim/soc_descriptor.yaml'
-
-# 6. Run a runtime test under the simulator.
-limactl shell ttlang-craqsim -- bash -c '
-  cd /var/tmp/tt-lang && source build/env/activate
-  export TT_METAL_SIMULATOR=/var/tmp/sim/libttsim.so TT_METAL_SLOW_DISPATCH_MODE=1
-  python3 test/python/dram_interleaved_add.py'
-# -> "PASS: DRAM interleaved direct access works!"
-#    ("EmulationDriver ... KHz" in the log confirms craq-sim drove the device.)
-```
-
-VM paths: source copies under `/var/tmp/{tt-lang,craq-sim}`, build dir
-`/var/tmp/build-toolchain`, toolchain `/opt/ttlang-toolchain`, sim `/var/tmp/sim/`.
-
-### Running tests interactively
-
-`limactl shell ttlang-craqsim` opens an interactive shell in the VM, just like
-`docker exec -it`. Append the two simulator `export`s to the VM's `~/.bashrc` so
-every interactive shell sets them automatically; `source build/env/activate` is
-still per-shell (venv + paths). Then run any suite:
-
-```bash
-limactl shell ttlang-craqsim              # interactive shell in the VM
-cd /var/tmp/tt-lang
-source build/env/activate
-export TT_METAL_SIMULATOR=/var/tmp/sim/libttsim.so TT_METAL_SLOW_DISPATCH_MODE=1
-
-# pytest -- test/python/test_*.py and me2e (run against test/):
-python -m pytest test/python/pipe/test_broadcast_2d.py -xvs
-python -m pytest test/me2e/test_compute_ops.py -k add -xvs
-
-# python lit test -- run against the build-configured tree, NOT the source tree:
-llvm-lit -v build/test/python/dram_interleaved_add.py
-
-# a lit test file as a plain script:
-python3 test/python/dram_interleaved_add.py
-```
-
-Remember the split: **pytest runs against `test/...`, lit against `build/test/...`**.
-`llvm-lit test/...` on the source tree fails (`AttributeError: ... python_executable`)
-because the generated `lit.site.cfg.py` lives in the build dir.
-
-### Iterating on tt-lang from the host tree (`build-lima`)
-
-The steps above build tt-lang from a VM-local copy (`/var/tmp/tt-lang`), so host
-edits don't appear there. For an edit-on-host / build-and-test-in-VM loop, build
-tt-lang directly from the **mounted** source into a separate `build-lima/` dir
-(tt-lang -- unlike tt-metal -- builds fine over virtiofs). The prebuilt toolchain is
-reused, so this compiles only tt-lang's own dialects/bindings.
-
-```bash
-# Discover the mounted TT root (dir holding tt-lang), then point at tt-lang:
-TT="$(limactl shell ttlang-craqsim -- bash -c 'findmnt -nrt virtiofs -o TARGET | while read m; do [ -d "$m/tt-lang" ] && { echo "$m"; break; }; done')"
-TTLANG="$TT/tt-lang"
-
-# Configure once, against the prebuilt toolchain:
-limactl shell ttlang-craqsim -- bash -c \
-  "cd $TTLANG && cmake -G Ninja -B build-lima -DTTLANG_USE_TOOLCHAIN=ON -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain"
-
-# After editing tt-lang on the host: rebuild (incremental) and test.
-limactl shell ttlang-craqsim -- bash -c "cd $TTLANG && cmake --build build-lima"
+# 4. Build craq-sim's libttsim.so (Linux aarch64) and stage it with a SOC descriptor.
 limactl shell ttlang-craqsim -- bash -c "
-  cd $TTLANG && source build-lima/env/activate
-  export TT_METAL_SIMULATOR=/var/tmp/sim/libttsim.so TT_METAL_SLOW_DISPATCH_MODE=1
-  python -m pytest test/python/pipe/test_broadcast_2d.py -xvs"
+  cd $TT/craq-sim && ./make.py src/_out/release_wh/libttsim.so
+  mkdir -p /opt/ttlang-toolchain/sim
+  cp src/_out/release_wh/libttsim.so /opt/ttlang-toolchain/sim/libttsim.so
+  cp /opt/ttlang-toolchain/tt-metal/tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml \
+     /opt/ttlang-toolchain/sim/soc_descriptor.yaml"
+
+# 5. Auto-set the simulator env for every interactive shell.
+limactl shell ttlang-craqsim -- bash -c \
+  'grep -q TT_METAL_SIMULATOR ~/.bashrc || printf "\nexport TT_METAL_SIMULATOR=/opt/ttlang-toolchain/sim/libttsim.so\nexport TT_METAL_SLOW_DISPATCH_MODE=1\n" >> ~/.bashrc'
 ```
 
-`build-lima/` lives in your tt-lang checkout on the host, so its
-`build.log` and artifacts are visible on the host. Use `source
-build-lima/env/activate` (not `build/...`) for this build. The `/var/tmp` copy is
-only needed for the one-time toolchain build (LLVM + tt-metal can't build over
-virtiofs).
+### Build and test tt-lang (one checkout, `build-lima`)
+
+Everything below uses your single tree; edit tt-lang on the host and it is live in
+the VM via the mount. `limactl shell ttlang-craqsim` opens an interactive shell,
+just like `docker exec -it`.
+
+```bash
+limactl shell ttlang-craqsim
+cd "$(findmnt -nrt virtiofs -o TARGET | while read m; do [ -d "$m/tt-lang" ] && { echo "$m"; break; }; done)/tt-lang"
+
+# Build tt-lang from this source into build-lima/, against the prebuilt toolchain
+# (once to configure, incremental thereafter). Or: bash test/hw-sim/vm-build-ttlang.sh
+cmake -G Ninja -B build-lima -DTTLANG_USE_TOOLCHAIN=ON -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+cmake --build build-lima
+
+source build-lima/env/activate    # venv + paths for this build
+# TT_METAL_SIMULATOR + slow-dispatch are already set via ~/.bashrc
+
+# Run tests (all against your checkout):
+python -m pytest test/python/pipe/test_broadcast_2d.py -xvs   # a pytest
+python -m pytest test/me2e/test_compute_ops.py -k add -xvs    # me2e
+llvm-lit -v build-lima/test/python/dram_interleaved_add.py    # a python lit test
+```
+
+Remember the split: **pytest runs against `test/...`, lit against
+`build-lima/test/...`** (the generated `lit.site.cfg.py` lives in the build dir, so
+`llvm-lit test/...` on the source tree fails with `AttributeError: ...
+python_executable`).
+
+### Parallel test runs
+
+The CMake device-test targets run pytest-xdist in parallel when configured against
+the simulator: `check-ttlang-pytest` and `check-ttlang-me2e` append
+`-n ${TTLANG_SIM_PYTEST_JOBS}` when `TT_METAL_SIMULATOR` is set. Each worker starts
+its own `libttsim.so` device and uses ~2-3 GiB, so the default of 2 suits the
+16 GiB reference VM; raise it (and the VM's `memory:`) with
+`-DTTLANG_SIM_PYTEST_JOBS=<N>`.
+
+```bash
+ninja -C build-lima check-ttlang-me2e     # runs pytest -n 2 under the sim
+```
 
 ### Operational notes
 
-- **Detach long builds** (`setsid ... & disown`) and have them write an exit-code
-  marker; a dropped `limactl shell` otherwise orphans the build. Mirror the VM
-  log into the mounted tree for host visibility
-  (`limactl shell <vm> -- tail -F <vmlog> > <mounted-tree>/...`).
-- **Disk:** the VM diffdisk grows with the build and is not returned to the host
-  when files are deleted inside the VM (`fstrim` did not reclaim it here). If it
-  bloats across failed attempts, delete and recreate the VM to reclaim the space.
+- **Detach long builds** (`setsid ... & disown`) and log to the mount for host
+  visibility; a dropped `limactl shell` otherwise orphans the build. The toolchain
+  build is the long one; the incremental `build-lima` build is short.
+- **Disk:** the VM diffdisk grows with the toolchain build and is not returned to
+  the host when files are deleted inside the VM (`fstrim` did not reclaim it here).
+  If it bloats across failed attempts, delete and recreate the VM.
 - **Post-uplift:** after bumping the LLVM/tt-metal submodules, re-init tt-metal's
-  submodules (step 1) and rebuild with a *clean* toolchain -- pass `--force-rebuild`
-  to `build-and-install.sh` (or `rm -rf /opt/ttlang-toolchain` first), because
-  toolchain reuse is keyed on file existence, not the submodule SHA (see
-  [build.md](build.md)).
+  submodules (step 1), remove `/opt/ttlang-toolchain` (toolchain reuse is keyed on
+  file existence, not the submodule SHA -- see [build.md](build.md)), rerun
+  `vm-build-toolchain.sh`, then rebuild `build-lima`.
 
 Setting `TT_METAL_SIMULATOR` is what enables the runtime tests: tt-lang's
-`test/lit.cfg.py` adds the `tt-device` lit feature when `TT_METAL_SIMULATOR` is
-set (or when hardware is present), so `REQUIRES: tt-device` tests run under the
+`test/lit.cfg.py` adds the `tt-device` lit feature when `TT_METAL_SIMULATOR` is set
+(or when hardware is present), so `REQUIRES: tt-device` tests run under the
 simulator. See [testing.md](testing.md).
 
 ## Reference: how tt-mlir CI uses the same simulator
@@ -266,6 +239,7 @@ Verified end-to-end on Apple Silicon:
 - macOS host: the LLVM/MLIR toolchain builds (exit 0); craq-sim `libttsim.so`
   builds for wormhole/blackhole and the `rv32_alu` host smoke passes.
 - Lima VM (Ubuntu 24.04 aarch64): current LLVM + tt-metal build from the
-  submodules, tt-lang builds against that toolchain, craq-sim `libttsim.so` builds
-  for Linux aarch64, and `test/python/dram_interleaved_add.py` executes on the
-  simulated wormhole device under `TT_METAL_SIMULATOR` and passes.
+  submodules, tt-lang builds against that toolchain in `build-lima`, craq-sim
+  `libttsim.so` builds for Linux aarch64, and pytest / me2e / lit device tests
+  (e.g. `dram_interleaved_add`) execute on the simulated wormhole device under
+  `TT_METAL_SIMULATOR` and pass.
