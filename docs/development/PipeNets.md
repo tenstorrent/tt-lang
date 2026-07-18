@@ -131,6 +131,47 @@ destination offset cannot use `RA/RP` as a fallback because TT-Metal NoC
 multicast requires one statically proven SRAM address for every receiver;
 lowering rejects that transfer.
 
+### Receiver readiness and phase barriers
+
+`RP` uses a per-transfer receiver-readiness rendezvous rather than a
+multi-participant phase barrier. Here, a phase barrier is a scheduling
+barrier among pipe participants, not a NoC write or atomic barrier used
+to order payload writes and semaphore updates.
+
+| Property | Receiver readiness (`RP`) | Phase barrier |
+| --- | --- | --- |
+| Storage-safety evidence | The receiver posts only after reserving its destination DFB block, so the sender's readiness wait proves that the block is reserved. | Every participant must arrive only after all destination DFB blocks needed by the next phase are reserved. |
+| Synchronization scope | One transfer and its required receivers. | Every transfer and participant assigned to the phase. |
+| Blocking behavior | An unavailable receiver blocks only senders that require that receiver. | Every participant waits for the slowest participant, including otherwise independent transfers. |
+| Independent progress | Unrelated transfers can proceed concurrently. | The phase boundary serializes otherwise independent transfers. |
+| Synchronization cost | One post increment per required receiver and one sender wait per transfer phase. | Arrivals and release can be amortized across a statically scheduled batch, but synchronize the complete participant set. |
+| Correct use | General PipeNet execution, including independently scheduled producers and consumers. | A statically scheduled batch whose barrier arrivals are proven to follow every required receiver reservation. |
+
+Receiver readiness directly establishes the per-transfer reuse order:
+
+```text
+receiver pop
+  -> next receiver reserve
+  -> next receiver post
+  -> next sender write
+```
+
+A phase barrier is correct only when it establishes the stronger order:
+
+```text
+all required receiver reservations
+  -> all barrier arrivals
+  -> barrier release
+  -> all phase writes
+```
+
+The stronger order is unnecessary for general PipeNets and introduces
+dependencies between unrelated transfers. PipeNet lowering therefore
+uses receiver readiness as the general synchronization contract. A
+phase barrier can replace that rendezvous only when the compiler proves
+the complete participant set, the required receiver reservations, and
+the ordering of every reservation before barrier arrival.
+
 Pipe transfers have the following operational semantics:
 
 - A pipe has no hidden in-transit buffer. The destination storage is the

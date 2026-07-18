@@ -136,6 +136,12 @@ struct LaunchNodeDomainState {
   LaunchNodeDomain baseDomain;
   llvm::DenseMap<int64_t, LaunchNodeDomain> netSourceDomains;
   llvm::DenseMap<int64_t, LaunchNodeDomain> netDestinationDomains;
+  llvm::DenseMap<int64_t, LaunchNodeDomain> localNetSourceDomains;
+  llvm::DenseMap<int64_t, LaunchNodeDomain> localNetDestinationDomains;
+  llvm::DenseMap<int64_t, llvm::DenseMap<DeviceRefAttr, LaunchNodeDomain>>
+      netSourceDomainsByDevice;
+  llvm::DenseMap<int64_t, llvm::DenseMap<DeviceRefAttr, LaunchNodeDomain>>
+      netDestinationDomainsByDevice;
   llvm::DenseMap<int64_t, SmallVector<Location>> pipeNetLocs;
   llvm::DenseMap<int64_t, std::string> pipeNetNames;
   bool sawError = false;
@@ -148,10 +154,12 @@ struct LaunchNodeDomainState {
   std::string netName(int64_t netId) const;
 
   /// Return the launch nodes that have `role` for the requested PipeNet.
-  LaunchNodeDomain getRoleDomain(int64_t netId, PipeRole role) const;
+  LaunchNodeDomain getRoleDomain(int64_t netId, PipeRole role,
+                                 DeviceRefAttr device = {}) const;
 
   /// Record one static pipe declaration into source and destination domains.
-  void recordPipeNet(PipeType pipeType, Location loc,
+  void recordPipeNet(PipeType pipeType, DeviceTransferAttr transfer,
+                     Location loc,
                      std::optional<StringRef> name = std::nullopt);
 
   /// Record pipe declarations carried by compact selected PipeNet records.
@@ -203,6 +211,10 @@ private:
 
 /// Optional callbacks and analysis behavior requested by a verifier.
 struct LaunchNodeDomainAnalysisOptions {
+  /// Logical device for which execution is analyzed. A null device preserves
+  /// the device-independent launch-node analysis.
+  DeviceRefAttr currentDevice;
+
   /// Intersect the active domain with each `ttl.pipenet_scope` role domain when
   /// entering the scope body.
   bool narrowPipeNetScopes = false;

@@ -8,8 +8,6 @@
 #include "mlir/IR/Attributes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 
-#include "ttlang/Dialect/TTL/IR/TTLAttrInterfaces.h.inc"
-
 #define GET_ATTRDEF_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrDefs.h.inc"
 

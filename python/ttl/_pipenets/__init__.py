@@ -20,9 +20,27 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 from ttl.constants import MAX_HARDWARE_SEMAPHORE_IDS
+
+
+def iter_referenced_function_values(func: Any) -> Iterator[Any]:
+    """Yield nonempty closure cells and referenced globals from `func`."""
+    closure = getattr(func, "__closure__", None) or ()
+    for cell in closure:
+        try:
+            yield cell.cell_contents
+        except ValueError:
+            continue
+
+    code = getattr(func, "__code__", None)
+    globals_dict = getattr(func, "__globals__", None)
+    if code is None or globals_dict is None:
+        return
+    for name in code.co_names:
+        if name in globals_dict:
+            yield globals_dict[name]
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,6 @@ add_mlir_dialect_library(MLIRTTLDialect
 
     DEPENDS
     MLIRTTLOpsIncGen
-    MLIRTTLAttrInterfacesIncGen
     MLIRTTLInterfacesIncGen
 
     LINK_LIBS PUBLIC

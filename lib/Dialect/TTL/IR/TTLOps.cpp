@@ -27,7 +27,6 @@
 #include <numeric>
 #include <optional>
 
-#include "ttlang/Dialect/TTL/IR/TTLAttrInterfaces.cpp.inc"
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
 
 #define GET_OP_CLASSES
@@ -93,31 +92,6 @@ verifyDeviceRefInDomain(DeviceDomainAttr domain, DeviceRefAttr deviceRef,
   return mlir::success();
 }
 
-static std::optional<unsigned> findComponent(DeviceDomainAttr domain,
-                                             llvm::StringRef name) {
-  for (auto [index, component] : llvm::enumerate(domain.getComponents())) {
-    if (component.getName().getValue() == name) {
-      return index;
-    }
-  }
-  return std::nullopt;
-}
-
-static bool rangeContains(DeviceRangeAttr range, DeviceRefAttr deviceRef) {
-  for (auto [loCoordinate, coordinate, hiCoordinate] : llvm::zip_equal(
-           range.getLo().getCoordinates(), deviceRef.getCoordinates(),
-           range.getHi().getCoordinates())) {
-    for (auto [lo, value, hi] :
-         llvm::zip_equal(loCoordinate.asArrayRef(), coordinate.asArrayRef(),
-                         hiCoordinate.asArrayRef())) {
-      if (value < lo || value >= hi) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
                                                       TransferEdgeAttr edge,
                                                       EmitErrorFn emitError,
@@ -142,7 +116,7 @@ static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
           (llvm::Twine(context) + ".destination_range.hi").str(), true))) {
     return mlir::failure();
   }
-  if (rangeContains(destinationRange, edge.getSource())) {
+  if (deviceRangeContains(destinationRange, edge.getSource())) {
     return emitError() << context
                        << " source-in-destination multicast is not supported";
   }
@@ -262,102 +236,12 @@ llvm::LogicalResult TransferEdgeAttr::verify(
     DeviceRangeAttr destinationRange) {
   if (static_cast<bool>(destination) == static_cast<bool>(destinationRange)) {
     return emitError() << "transfer edge requires exactly one of destination "
-                          "or destination_range";
+                          "or destinationRange";
   }
-  return mlir::success();
-}
-
-static llvm::LogicalResult verifyStructuredTransferComponent(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    StringAttr component) {
-  if (component.getValue().empty()) {
-    return emitError() << "structured transfer component must not be empty";
+  if (destination && source == destination) {
+    return emitError() << "transfer edge source must differ from destination";
   }
-  return mlir::success();
-}
-
-llvm::LogicalResult AxisNeighborTransferAttr::verify(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    StringAttr component, IntegerAttr axis, IntegerAttr offset, BoolAttr wrap) {
-  if (mlir::failed(verifyStructuredTransferComponent(emitError, component))) {
-    return mlir::failure();
-  }
-  if (axis.getInt() < 0) {
-    return emitError() << "axis_neighbor axis must be non-negative, got "
-                       << axis.getInt();
-  }
-  if (offset.getInt() <= 0) {
-    return emitError() << "axis_neighbor offset must be positive, got "
-                       << offset.getInt();
-  }
-  return mlir::success();
-}
-
-llvm::LogicalResult GatherTransferAttr::verify(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    StringAttr component, DeviceRefAttr root) {
-  return verifyStructuredTransferComponent(emitError, component);
-}
-
-llvm::LogicalResult MulticastTransferAttr::verify(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    StringAttr component, DeviceRefAttr source) {
-  return verifyStructuredTransferComponent(emitError, component);
-}
-
-llvm::LogicalResult TransferGraphAttr::verify(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    DeviceDomainAttr domain, llvm::ArrayRef<TransferEdgeAttr> edges,
-    StructuredTransferAttrInterface structured) {
-  if (structured && !edges.empty()) {
-    return emitError()
-           << "transfer graph must be explicit or structured, not both";
-  }
-  if (!structured && edges.empty()) {
-    return emitError() << "explicit transfer graph requires at least one edge";
-  }
-
-  for (auto [edgeIndex, edge] : llvm::enumerate(edges)) {
-    std::string context =
-        (llvm::Twine("transfer graph edge ") + llvm::Twine(edgeIndex)).str();
-    if (mlir::failed(
-            verifyTransferEdgeInDomain(domain, edge, emitError, context))) {
-      return mlir::failure();
-    }
-  }
-
-  if (!structured) {
-    return mlir::success();
-  }
-
-  std::optional<unsigned> componentIndex =
-      findComponent(domain, structured.getComponent().getValue());
-  if (!componentIndex) {
-    return emitError() << "structured transfer references unknown component '"
-                       << structured.getComponent().getValue() << "'";
-  }
-
-  if (auto axisNeighbor =
-          mlir::dyn_cast<AxisNeighborTransferAttr>(structured)) {
-    int64_t axisValue = axisNeighbor.getAxis().getInt();
-    size_t rank = domain.getComponents()[*componentIndex].getExtent().size();
-    if (axisValue >= static_cast<int64_t>(rank)) {
-      return emitError() << "axis_neighbor axis " << axisValue
-                         << " is out of bounds for component '"
-                         << structured.getComponent().getValue() << "' rank "
-                         << rank;
-    }
-    return mlir::success();
-  }
-
-  DeviceRefAttr endpoint;
-  if (auto gather = mlir::dyn_cast<GatherTransferAttr>(structured)) {
-    endpoint = gather.getRoot();
-  } else {
-    endpoint = mlir::cast<MulticastTransferAttr>(structured).getSource();
-  }
-  return verifyDeviceRefInDomain(domain, endpoint, emitError,
-                                 "structured transfer endpoint");
+  return success();
 }
 
 llvm::LogicalResult DeviceTransferAttr::verify(

@@ -21,8 +21,6 @@ namespace mlir::tt::ttl {
 
 inline constexpr llvm::StringLiteral kFabricRoutesAttrName =
     "ttl.fabric_routes";
-inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
-    "ttl.fabric_device_domain";
 
 struct FabricRoute {
   DeviceRefAttr localDevice;
@@ -34,6 +32,7 @@ struct FabricRoute {
 struct FabricRoutePlan {
   llvm::MapVector<func::FuncOp, SmallVector<FabricRoute>> routesByFunction;
   llvm::DenseMap<Operation *, unsigned> sendRouteIndex;
+  llvm::DenseMap<Operation *, unsigned> postRouteIndex;
 };
 
 struct FabricRouteTarget {
@@ -44,7 +43,6 @@ struct FabricRouteTarget {
 struct FabricRuntimeInfo {
   Value manager;
   Value routeId;
-  Value connectionCount;
   SmallVector<FabricRouteTarget> routeTargets;
 };
 

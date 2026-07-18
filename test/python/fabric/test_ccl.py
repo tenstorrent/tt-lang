@@ -6,6 +6,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from glob import glob
 from math import prod
 
 import pytest
@@ -21,9 +22,11 @@ pytestmark = pytest.mark.multi_device
 
 TILE_SIZE = 32
 FABRIC_DTYPES = [
-    pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
-    pytest.param(torch.float32, ttnn.float32, 1e-5, 1e-5, id="fp32"),
+    pytest.param(torch.bfloat16, ttnn.bfloat16, id="bf16"),
+    pytest.param(torch.float32, ttnn.float32, id="fp32"),
 ]
+DEVICE_NODES = glob("/dev/tenstorrent/*") or glob("/dev/tenstorrent[0-9]*")
+IS_FULL_SYSTEM = len(DEVICE_NODES) > 4
 
 
 @dataclass(frozen=True)
@@ -320,8 +323,6 @@ def _open_collective_mesh(mesh_shape: tuple[int, ...]):
 
 @pytest.fixture(scope="module")
 def fabric_mesh_shape():
-    if ttnn.get_num_devices() < 2:
-        pytest.skip("requires at least two devices")
     mesh_shape = get_fabric_mesh_shape()
     if prod(mesh_shape) < 2:
         pytest.skip("requires a multi-device fabric mesh")
@@ -333,14 +334,12 @@ def collective_operations(fabric_mesh_shape):
     return _make_collective_operations(fabric_mesh_shape)
 
 
-@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype", FABRIC_DTYPES)
 def test_point_to_point(
     fabric_mesh_shape,
     collective_operations,
     torch_dtype,
     ttnn_dtype,
-    rtol,
-    atol,
 ):
     device_count = prod(fabric_mesh_shape)
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
@@ -351,24 +350,24 @@ def test_point_to_point(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.point_to_point(inp, out)
-        collective_operations.point_to_point(inp, out)
+        # Reuse the program and DFB slot to detect stale readiness or
+        # completion counters across invocations.
+        for _ in range(2):
+            collective_operations.point_to_point(inp, out)
 
         result = _compose(mesh, out)
 
     expected = torch.zeros_like(inp_torch)
     expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
-    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+    assert_allclose(result.float(), expected.float(), rtol=0.0, atol=0.0)
 
 
-@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype", FABRIC_DTYPES)
 def test_broadcast(
     fabric_mesh_shape,
     collective_operations,
     torch_dtype,
     ttnn_dtype,
-    rtol,
-    atol,
 ):
     device_count = prod(fabric_mesh_shape)
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
@@ -384,17 +383,15 @@ def test_broadcast(
         result = _compose(mesh, out)
 
     expected = inp_torch[:TILE_SIZE, :].repeat(device_count, 1)
-    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+    assert_allclose(result.float(), expected.float(), rtol=0.0, atol=0.0)
 
 
-@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype", FABRIC_DTYPES)
 def test_scatter(
     fabric_mesh_shape,
     collective_operations,
     torch_dtype,
     ttnn_dtype,
-    rtol,
-    atol,
 ):
     device_count = prod(fabric_mesh_shape)
     inp_shape = (device_count * device_count * TILE_SIZE, TILE_SIZE)
@@ -411,17 +408,15 @@ def test_scatter(
         result = _compose(mesh, out)
 
     expected = inp_torch[: device_count * TILE_SIZE, :]
-    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+    assert_allclose(result.float(), expected.float(), rtol=0.0, atol=0.0)
 
 
-@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype", FABRIC_DTYPES)
 def test_gather(
     fabric_mesh_shape,
     collective_operations,
     torch_dtype,
     ttnn_dtype,
-    rtol,
-    atol,
 ):
     device_count = prod(fabric_mesh_shape)
     inp_shape = (device_count * TILE_SIZE, TILE_SIZE)
@@ -439,24 +434,25 @@ def test_gather(
 
     expected = torch.zeros_like(out_torch)
     expected[: device_count * TILE_SIZE, :] = inp_torch
-    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+    assert_allclose(result.float(), expected.float(), rtol=0.0, atol=0.0)
 
 
-@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype", FABRIC_DTYPES)
+@pytest.mark.xfail(
+    condition=IS_FULL_SYSTEM,
+    reason=(
+        "all-gather PipeNet expansion exceeds the full-system kernel "
+        "configuration buffer (https://github.com/tenstorrent/tt-lang/issues/628)"
+    ),
+    strict=True,
+)
 def test_all_gather(
     fabric_mesh_shape,
     collective_operations,
     torch_dtype,
     ttnn_dtype,
-    rtol,
-    atol,
 ):
     device_count = prod(fabric_mesh_shape)
-    if device_count > 4:
-        pytest.xfail(
-            "all-gather PipeNet expansion exceeds the full-system kernel "
-            "configuration buffer (https://github.com/tenstorrent/tt-lang/issues/628)"
-        )
     inp_shape = (device_count * TILE_SIZE, TILE_SIZE)
     out_shape = (device_count * device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(inp_shape, dtype=torch_dtype)
@@ -471,17 +467,15 @@ def test_all_gather(
         result = _compose(mesh, out)
 
     expected = inp_torch.repeat(device_count, 1)
-    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+    assert_allclose(result.float(), expected.float(), rtol=0.0, atol=0.0)
 
 
-@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype", FABRIC_DTYPES)
 def test_all_to_all(
     fabric_mesh_shape,
     collective_operations,
     torch_dtype,
     ttnn_dtype,
-    rtol,
-    atol,
 ):
     device_count = prod(fabric_mesh_shape)
     logical_shape = (device_count * device_count * TILE_SIZE, TILE_SIZE)
@@ -500,4 +494,4 @@ def test_all_to_all(
         device_count, device_count, TILE_SIZE, TILE_SIZE
     )
     expected = source_destination_tiles.transpose(0, 1).reshape(logical_shape)
-    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+    assert_allclose(result.float(), expected.float(), rtol=0.0, atol=0.0)

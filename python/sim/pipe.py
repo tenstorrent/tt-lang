@@ -11,7 +11,6 @@ This module provides:
 """
 
 from dataclasses import dataclass
-import inspect
 from typing import (
     Any,
     Callable,
@@ -27,7 +26,11 @@ from typing import (
 
 from ttl._pipenets import NodeCoord as PipeNodeCoord
 from ttl._pipenets import NodeRange as PipeNodeRange
-from ttl._pipenets import OperationPipeNets, PipeUse
+from ttl._pipenets import (
+    OperationPipeNets,
+    PipeUse,
+    iter_referenced_function_values,
+)
 
 from .nodecontext import node, flatten_node_index, grid_size
 from .typedefs import NodeCoord, NodeRange
@@ -372,11 +375,9 @@ def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
 
 
 def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
-    closure_vars = inspect.getclosurevars(func)
-    for namespace in (closure_vars.nonlocals, closure_vars.globals):
-        for value in namespace.values():
-            if isinstance(value, PipeNet):
-                yield value
+    for value in iter_referenced_function_values(func):
+        if isinstance(value, PipeNet):
+            yield value
 
 
 class PipeNet(Generic[DstT]):

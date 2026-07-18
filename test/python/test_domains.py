@@ -58,6 +58,11 @@ def test_product_domain_resolves_named_device_refs():
     assert edge.destination.coordinates == ((1,), (2,))
 
 
+def test_device_ref_equality_uses_resolved_coordinates():
+    assert DeviceRef(device=2) == DeviceRef((2,))
+    assert hash(DeviceRef(device=2)) == hash(DeviceRef((2,)))
+
+
 def test_product_domain_rejects_missing_component():
     domain = DeviceDomain.product(board=(2,), device=(4,))
 
@@ -97,12 +102,10 @@ def test_axis_neighbor_edges_are_materialized_from_compact_relation():
     ]
 
 
-def test_gather_edges_preserve_other_product_components():
+def test_gather_edges_repeat_component_local_root_in_each_product_slice():
     domain = DeviceDomain.product(board=(2,), device=(2,))
 
-    graph = TransferGraph.gather(
-        domain, DeviceRef(board=0, device=0), component="device"
-    )
+    graph = TransferGraph.gather(domain, DeviceRef(device=0), component="device")
 
     assert list(graph.iter_edges()) == [
         TransferEdge(DeviceRef((0,), (1,)), DeviceRef((0,), (0,))),
@@ -110,12 +113,10 @@ def test_gather_edges_preserve_other_product_components():
     ]
 
 
-def test_multicast_edges_preserve_other_product_components():
+def test_multicast_edges_repeat_component_local_source_in_each_product_slice():
     domain = DeviceDomain.product(board=(2,), device=(2,))
 
-    graph = TransferGraph.multicast(
-        domain, DeviceRef(board=0, device=0), component="device"
-    )
+    graph = TransferGraph.multicast(domain, DeviceRef(device=0), component="device")
 
     assert list(graph.iter_edges()) == [
         TransferEdge(DeviceRef((0,), (0,)), DeviceRef((0,), (1,))),
@@ -187,6 +188,41 @@ def test_direct_axis_neighbor_transfer_construction_is_validated():
                 offset=0,
                 wrap=False,
             ),
+        )
+
+
+@pytest.mark.parametrize(
+    "offset, wrap, message",
+    [
+        (4, True, "produces self-transfers"),
+        (4, False, "produces no transfers"),
+    ],
+)
+def test_axis_neighbor_rejects_empty_or_self_transfer_relations(offset, wrap, message):
+    domain = DeviceDomain((4,))
+
+    with pytest.raises(ValueError, match=message):
+        TransferGraph.axis_neighbor(domain, offset=offset, wrap=wrap)
+
+
+def test_explicit_transfer_graph_constructor_validates_edges():
+    domain = DeviceDomain((4,))
+
+    with pytest.raises(ValueError, match="self-transfer"):
+        TransferGraph(
+            domain,
+            edges=[TransferEdge(DeviceRef(0), DeviceRef(0))],
+        )
+
+
+def test_product_rooted_transfer_requires_component_local_reference():
+    domain = DeviceDomain.product(board=(2,), device=(2,))
+
+    with pytest.raises(ValueError, match="must name only component 'device'"):
+        TransferGraph.gather(
+            domain,
+            DeviceRef(board=0, device=0),
+            component="device",
         )
 
 

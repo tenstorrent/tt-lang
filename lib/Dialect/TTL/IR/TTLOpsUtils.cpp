@@ -9,6 +9,87 @@
 
 namespace mlir::tt::ttl {
 
+SmallVector<DeviceRefAttr> enumerateDeviceDomain(DeviceDomainAttr domain) {
+  SmallVector<SmallVector<int64_t>> coordinates;
+  for (DeviceDomainComponentAttr component : domain.getComponents()) {
+    coordinates.emplace_back(component.getExtent().size(), 0);
+  }
+
+  SmallVector<DeviceRefAttr> devices;
+  auto appendDevice = [&]() {
+    SmallVector<DenseI64ArrayAttr> coordinateAttrs;
+    coordinateAttrs.reserve(coordinates.size());
+    for (ArrayRef<int64_t> componentCoordinates : coordinates) {
+      coordinateAttrs.push_back(
+          DenseI64ArrayAttr::get(domain.getContext(), componentCoordinates));
+    }
+    devices.push_back(DeviceRefAttr::get(domain.getContext(), coordinateAttrs));
+  };
+
+  std::function<void(unsigned, unsigned)> enumerateAxis =
+      [&](unsigned componentIndex, unsigned axisIndex) {
+        if (componentIndex == domain.getComponents().size()) {
+          appendDevice();
+          return;
+        }
+
+        DeviceDomainComponentAttr component =
+            domain.getComponents()[componentIndex];
+        ArrayRef<int64_t> extent = component.getExtent().asArrayRef();
+        if (axisIndex == extent.size()) {
+          enumerateAxis(componentIndex + 1, 0);
+          return;
+        }
+
+        for (int64_t coordinate = 0; coordinate < extent[axisIndex];
+             ++coordinate) {
+          coordinates[componentIndex][axisIndex] = coordinate;
+          enumerateAxis(componentIndex, axisIndex + 1);
+        }
+      };
+  enumerateAxis(0, 0);
+  return devices;
+}
+
+bool deviceRangeContains(DeviceRangeAttr range, DeviceRefAttr device) {
+  for (auto [lowerCoordinates, coordinates, upperCoordinates] :
+       llvm::zip_equal(range.getLo().getCoordinates(), device.getCoordinates(),
+                       range.getHi().getCoordinates())) {
+    for (auto [lower, coordinate, upper] : llvm::zip_equal(
+             lowerCoordinates.asArrayRef(), coordinates.asArrayRef(),
+             upperCoordinates.asArrayRef())) {
+      if (coordinate < lower || coordinate >= upper) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+std::optional<int64_t> getDeviceLinearIndex(DeviceDomainAttr domain,
+                                            DeviceRefAttr device) {
+  if (domain.getComponents().size() != device.getCoordinates().size()) {
+    return std::nullopt;
+  }
+
+  int64_t index = 0;
+  for (auto [component, componentCoordinates] :
+       llvm::zip_equal(domain.getComponents(), device.getCoordinates())) {
+    ArrayRef<int64_t> extent = component.getExtent().asArrayRef();
+    ArrayRef<int64_t> coordinates = componentCoordinates.asArrayRef();
+    if (extent.size() != coordinates.size()) {
+      return std::nullopt;
+    }
+    for (auto [axisExtent, coordinate] : llvm::zip_equal(extent, coordinates)) {
+      if (coordinate < 0 || coordinate >= axisExtent) {
+        return std::nullopt;
+      }
+      index = index * axisExtent + coordinate;
+    }
+  }
+  return index;
+}
+
 //===----------------------------------------------------------------------===//
 // DST access interface defaults
 //===----------------------------------------------------------------------===//

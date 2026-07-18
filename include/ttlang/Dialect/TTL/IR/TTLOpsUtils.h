@@ -26,6 +26,21 @@
 
 namespace mlir::tt::ttl {
 
+/// Function attribute containing the logical device domain used by a kernel.
+inline constexpr llvm::StringLiteral kDeviceDomainAttrName =
+    "ttl.device_domain";
+
+/// Return every logical device in `domain` in row-major component and axis
+/// order.
+SmallVector<DeviceRefAttr> enumerateDeviceDomain(DeviceDomainAttr domain);
+
+/// Return true when `device` belongs to the half-open logical device range.
+bool deviceRangeContains(DeviceRangeAttr range, DeviceRefAttr device);
+
+/// Return the zero-based row-major index of `device` in `domain`.
+std::optional<int64_t> getDeviceLinearIndex(DeviceDomainAttr domain,
+                                            DeviceRefAttr device);
+
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
 inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {

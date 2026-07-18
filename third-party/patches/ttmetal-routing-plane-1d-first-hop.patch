@@ -1,0 +1,45 @@
+diff --git a/ttnn/cpp/ttnn-nanobind/fabric.cpp b/ttnn/cpp/ttnn-nanobind/fabric.cpp
+index e5feda07b5..4c444ac1d4 100644
+--- a/ttnn/cpp/ttnn-nanobind/fabric.cpp
++++ b/ttnn/cpp/ttnn-nanobind/fabric.cpp
+@@ -191,14 +191,32 @@ void bind_fabric_api(nb::module_& mod) {
+             std::vector<uint32_t> fabric_args;
+ 
+             tt::tt_metal::KernelHandle kernel_id = static_cast<tt::tt_metal::KernelHandle>(kernel_idx);
+-            tt::tt_fabric::append_routing_plane_connection_manager_rt_args<tt::tt_metal::ProgramDescriptor>(
+-                src_fabric_node_id,
+-                dst_nodes,
+-                connection_link_indices,
+-                program_descriptor,
+-                kernel_id,
+-                worker_core,
+-                fabric_args);
++            if (tt::tt_fabric::is_1d_fabric_config(tt::tt_fabric::GetFabricConfig())) {
++                std::vector<tt::tt_fabric::eth_chan_directions> forwarding_directions;
++                forwarding_directions.reserve(dst_nodes.size());
++                for (const auto& dst_node : dst_nodes) {
++                    auto direction = tt::tt_fabric::get_eth_forwarding_direction(src_fabric_node_id, dst_node);
++                    TT_FATAL(direction.has_value(), "No fabric route from {} to {}", src_fabric_node_id, dst_node);
++                    forwarding_directions.push_back(*direction);
++                }
++                tt::tt_fabric::append_routing_plane_connection_manager_rt_args<tt::tt_metal::ProgramDescriptor>(
++                    src_fabric_node_id,
++                    forwarding_directions,
++                    connection_link_indices,
++                    program_descriptor,
++                    kernel_id,
++                    worker_core,
++                    fabric_args);
++            } else {
++                tt::tt_fabric::append_routing_plane_connection_manager_rt_args<tt::tt_metal::ProgramDescriptor>(
++                    src_fabric_node_id,
++                    dst_nodes,
++                    connection_link_indices,
++                    program_descriptor,
++                    kernel_id,
++                    worker_core,
++                    fabric_args);
++            }
+ 
+             return fabric_args;
+         },

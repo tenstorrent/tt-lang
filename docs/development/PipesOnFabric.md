@@ -26,14 +26,21 @@ semantics used by both local NoC and fabric transports.
                          |
                          v
   +-----------------------------------------------------------+
-  | Source TENSIX node                                        |
-  | encode final destination -> fabric write + atomic         |
+  | Destination TENSIX node                                   |
+  | reserve destination DFB -> reverse ready atomic           |
   +-----------------------------------------------------------+
                          |
                          | TT-Metal fabric routing tables
                          v
   +-----------------------------------------------------------+
-  | Destination device                                        |
+  | Source TENSIX node                                        |
+  | ready wait -> encode destination -> payload + completion  |
+  +-----------------------------------------------------------+
+                         |
+                         | TT-Metal fabric routing tables
+                         v
+  +-----------------------------------------------------------+
+  | Destination TENSIX node                                   |
   | completion wait -> destination DFB consumption            |
   +-----------------------------------------------------------+
 ```
@@ -127,14 +134,51 @@ topology model or search connection tags.
 The selected operation is a target-runtime decision. Neither the fabric mode
 nor either route encoding is part of the TTL domain or transfer-graph model.
 
-### Payload and completion ordering
+### Readiness, payload, and completion ordering
 
-The current fabric transport uses the fused packet command
+Fabric PipeNets use computed receiver addresses with receiver-post
+synchronization. The receiver reserves its destination DFB block, then sends a
+reverse fabric atomic increment to the sender-ready counter. The sender waits
+for that counter before writing the payload. This readiness counter protects
+receiver-owned DFB storage; it is independent of the fabric connection's
+transmit-slot flow control.
+
+The forward transfer uses the fused packet command
 `to_noc_fused_unicast_write_atomic_inc`. The packet writes the payload to the
 destination DFB and increments the receiver-completion semaphore as one fabric
 command. The receiver waits for that semaphore before consuming the DFB block.
 
-The sender follows TT-Metal's packet lifecycle:
+One transfer has the following required order:
+
+```text
+receiver reserves destination DFB block
+  -> receiver sends reverse ready increment
+  -> sender waits for and resets ready counter
+  -> sender waits for an empty forward-connection write slot
+  -> sender submits payload and completion increment
+  -> receiver waits for completion
+  -> receiver pushes, consumes, and pops the DFB block
+```
+
+For a reused DFB slot, the previous pop precedes the next reserve. The order
+above therefore extends the local PipeNet no-clobber proof across devices:
+
+```text
+previous receiver pop
+  -> next receiver reserve
+  -> next ready increment
+  -> next sender write
+```
+
+Each reverse readiness signal follows TT-Metal's atomic-packet lifecycle:
+
+1. Reset and allocate a packet header.
+2. Encode the route to the source device.
+3. Encode the sender-ready atomic increment.
+4. Wait for an empty reverse-connection write slot.
+5. Flush the header with a blocking operation.
+
+The sender then follows TT-Metal's payload-packet lifecycle:
 
 1. Reset and allocate a packet header.
 2. Encode the chip route.
@@ -169,7 +213,8 @@ Fabric pipes extend PipeNet communication across devices without making the
 TTL programming model depend on a current Tenstorrent system topology. The
 design has the following invariants:
 
-- `DeviceDomain`, `DomainMap`, `DeviceRef`, and `TransferGraph` contain no
+- `DeviceDomain`, the planned `DomainMap`, `DeviceRef`, and `TransferGraph`
+  contain no
   fabric mode, physical mesh identifier, route direction, link index, packet
   limit, or NoC selection.
 - `DeviceRef` identifies a logical member of a `DeviceDomain`. It is not a
@@ -191,10 +236,16 @@ design has the following invariants:
 used by Chapel domains and locales: the domain defines membership, while a
 target-specific mapping determines physical placement.
 
-`DeviceRef` identifies one member of a device domain. `DomainMap` describes
-ownership and distribution over a domain. `TransferGraph` describes the
-logical communication relation. `PipeNet` applies the existing pipe protocol
-to that relation.
+`DeviceRef` identifies one member of a device domain. `TransferGraph` describes
+the logical communication relation. `PipeNet` applies the existing pipe
+protocol to that relation. These three abstractions are implemented by the
+current POC.
+
+`DomainMap` is the planned ownership and distribution mapping between data or
+operation index spaces and a device domain. It is not implemented by the
+current POC. Until it is available, tensor sharding remains explicit in the
+host program and the compiler cannot prove that data ownership agrees with a
+transfer relation.
 
 `DeviceDomain.current_index()` returns the zero-based row-major order of the
 current logical device. Pipe callback identities expose source and destination
@@ -223,11 +274,10 @@ forms such as scatter and all-to-all without adding target topology fields.
 
 ### Shared pipe protocol
 
-Local and fabric transfers use the same logical protocol:
+Local and fabric transfers preserve the same receiver-ownership contract:
 
 - the receiver owns and reserves the destination DFB block;
-- the receiver publishes readiness or participates in a proven capacity
-  protocol;
+- the sender waits for proof that receiver-owned storage is available;
 - the sender writes into the receiver-owned block;
 - the receiver waits for a completion signal before consuming the block;
 - source and destination roles are restricted by PipeNet guards;
@@ -237,21 +287,52 @@ Local and fabric transfers use the same logical protocol:
 The transport emitter maps that protocol onto either NoC or fabric
 operations. It does not redefine PipeNet semantics.
 
+Local NoC lowering supports the address and synchronization modes documented
+in [PipeNets](PipeNets.md). The fabric scope is restricted to `CA/RP`: the
+sender computes the receiver DFB address, and every receiver post increments a
+sender-ready counter. Fabric lowering must reject a transfer when it cannot
+prove a computed receiver address. It does not select receiver-authored
+addressing or capacity-counter synchronization for a cross-device transfer.
+
+Receiver-post synchronization is a per-transfer rendezvous. It permits
+independent transfers to proceed as soon as their own receivers have reserved
+storage. A multi-participant phase barrier would be correct only if every
+barrier arrival followed every required receiver reservation; that stronger
+condition would also make unrelated transfers wait for the slowest
+participant. [PipeNets](PipeNets.md#receiver-readiness-and-phase-barriers)
+gives the complete comparison.
+
+Future fabric protocol support may add `RA/RP` or `CA/CC` without changing
+PipeNet ownership semantics. `RA/RP` requires ordered remote publication of
+the reserved receiver address before the ready increment. `CA/CC` requires a
+remote capacity release after each proven receiver pop and a sender-side
+cumulative acquire count. Each extension requires explicit storage and route
+planning, legality proofs equivalent to the corresponding local protocol, and
+repeated-transfer hardware validation. Until those requirements are
+implemented, fabric legalization accepts only `CA/RP`.
+
 ### Synchronization storage
 
 The resource planner selects synchronization storage independently from
 PipeNet identity. Local transfers use densely allocated hardware semaphore ids
-when every access remains on one device. A completion counter targeted by a
-fabric atomic uses a host-created `GlobalSemaphore`; a local semaphore id
-cannot identify an object on another device.
+when every access remains on one device. Fabric `CA/RP` uses two remotely
+incremented counters:
+
+- the sender-ready counter resides on the source device and is incremented by
+  the receiver's reverse fabric atomic;
+- the receiver-completion counter resides on the destination device and is
+  incremented by the sender's fused payload command.
+
+Both counters use host-created `GlobalSemaphore` objects. A local semaphore id
+alone does not establish a stable address for an object targeted from another
+device.
 
 `GlobalSemaphore` provides a common L1 address on the selected TENSIX nodes of
-every device. The sender receives that address as a common runtime argument and
-combines it with the destination node coordinates to form the remote NoC
-address. The receiver uses the same runtime argument as the local address for
-its completion wait. Route metadata and synchronization storage are therefore
-independent: changing the selected route does not change PipeNet semantics or
-counter identity.
+every device. Each counter owner uses the common runtime argument as its local
+wait address. The remote participant combines the same address with the owner
+node coordinates to form the remote NoC address. Route metadata and
+synchronization storage are therefore independent: changing the selected
+route does not change PipeNet semantics or counter identity.
 
 ### Late route planning
 
@@ -263,13 +344,14 @@ that the active TT-Metal control plane can route. The current implementation:
 - queries the outgoing direction for each source-destination pair;
 - reuses one injection connection for destinations with the same direction;
 - lets TT-Metal select an eligible link for each connection;
-- supplies the final destination identifiers to TT-Metal's device routing
-  table decoder.
+- supplies each route's final destination identifiers to TT-Metal's device
+  routing table decoder.
 
-The resulting transport plan records the connection slot, final destination,
-source and destination TENSIX nodes, L1 addresses, payload constraints, and
-synchronization objects. It contains no topology inferred from a
-`DeviceDomain`.
+The resulting transport plan records sender-to-receiver payload routes and
+receiver-to-sender readiness routes. Each route records its connection slot,
+final destination, source and destination TENSIX nodes, L1 addresses, payload
+constraints, and synchronization objects. The plan contains no topology
+inferred from a `DeviceDomain`.
 
 A future route optimizer belongs in this late planner. When the control plane
 exposes multiple legal routes or links, the planner can reject candidates that
@@ -286,15 +368,17 @@ Collectives are transfer relations plus local computation. They should reuse
 the same route resolver and fabric transport emitter instead of implementing
 an unrelated communication subsystem.
 
-The fabric pytest suite is intended to cover:
+The current POC has the following collective status:
 
-- point-to-point;
-- broadcast;
-- reduce-to-root;
-- all-gather;
-- reduce-scatter;
-- all-reduce;
-- all-to-all.
+| Relation | Implementation | Full-system validation |
+| --- | --- | --- |
+| Point-to-point | Explicit edge lowering and BF16/FP32 pytests. | Required after every fabric compiler change. |
+| Broadcast | Multicast-relation expansion and BF16/FP32 pytests. | Required after every fabric compiler change. |
+| Scatter | Multicast-relation expansion with destination-indexed payloads and BF16/FP32 pytests. | Required after every fabric compiler change. |
+| Gather | Gather-relation expansion with source-indexed results and BF16/FP32 pytests. | Required after every fabric compiler change. |
+| All-gather | All-to-all expansion and BF16/FP32 pytests. | The 32-device cases exceed the TENSIX kernel configuration buffer and remain strict expected failures under issue #628. |
+| All-to-all | All-to-all expansion with destination-indexed payloads and BF16/FP32 pytests. | The 32-device cases fail the same kernel configuration buffer limit and are not expected failures. |
+| Reduce-to-root, reduce-scatter, and all-reduce | Not implemented. | Tests are required with the implementation. |
 
 Each collective may select a target-specific algorithm after the logical
 relation is known. Ring, tree, and direct-exchange algorithms are lowering
@@ -355,9 +439,10 @@ membership, coordinate rank, and transfer structure.
 ### Pipe lowering
 
 `lib/Dialect/TTL/Transforms/PipeLowering.cpp` builds one fabric-route plan for
-the module before lowering individual sends. The current POC records the
+the module before lowering individual transfers. The current POC records the
 logical local device, logical remote device, and source node set for each
-route. It assigns each fabric send a stable route index.
+route. It assigns stable route indices to forward payload operations and
+reverse readiness operations.
 
 The shared `PipeTransportEmitter` interface separates PipeNet protocol
 planning from transport emission. `NocPipeTransportEmitter` emits existing
@@ -367,14 +452,16 @@ atomics and fused payload-write-plus-completion operations.
 The resource planner resolves each synchronization counter to an L1 address
 before invoking the transport emitter. The emitter consumes that address and
 does not interpret a PipeNet id as a semaphore id. A PipeNet containing a
-cross-device transfer allocates its completion counter from the global
-semaphore namespace; local-only PipeNets allocate completion counters densely
-from the local namespace.
+cross-device transfer allocates its sender-ready and receiver-completion
+counters from the global semaphore namespace. Local-only PipeNets allocate
+synchronization counters densely from the local namespace.
 
 Current fabric lowering requires computed receiver DFB addresses. The sender
 uses the destination DFB base address supplied by the host runtime and builds
-the remote NoC address from the destination node coordinates. Receiver-
-published address-table fallback remains unsupported for fabric transfers.
+the remote NoC address from the destination node coordinates. The receiver
+uses the reverse route to increment the sender-ready counter after reserving
+that address. Receiver-published addressing and capacity-counter
+synchronization are unsupported for fabric transfers.
 
 ### TTKernel representation
 
@@ -498,10 +585,15 @@ structure:
 
 ```cpp
 tt::tt_fabric::RoutingPlaneConnectionManager connection_manager;
-open_connections(connection_manager, connection_count, runtime_arg_base);
+uint32_t route_id = 0;
+if (connection_count != 0) {
+  open_connections(connection_manager, connection_count, runtime_arg_base);
+  PacketHeaderPool::reset();
+  route_id = PacketHeaderPool::allocate_header_n(connection_count);
+}
 
-PacketHeaderPool::reset();
-auto* packet_header = PacketHeaderPool::allocate_header(1);
+auto* packet_header =
+    PacketHeaderPool::header_table[route_id].first + connection_slot;
 #if defined(FABRIC_2D)
 tt::tt_fabric::fabric_set_unicast_route(
     packet_header, destination_device_id, destination_mesh_id);
@@ -516,7 +608,9 @@ sender.wait_for_empty_write_slot();
 sender.send_payload_without_header_non_blocking_from_address(...);
 sender.send_payload_flush_blocking_from_address(...);
 
-close_connections(connection_manager, connection_count);
+if (connection_count != 0) {
+  close_connections(connection_manager);
+}
 ```
 
 The destination encoder is selected by TT-Metal's `FABRIC_2D` kernel define.
@@ -616,13 +710,19 @@ pass does not establish correctness without the full-system result.
 
 The POC still requires:
 
+- compact structured-relation lowering that represents sender and receiver
+  callbacks once and generates code and device resources in proportion to
+  local live participation rather than global relation cardinality;
+- broader readiness-protocol validation with multiple launch nodes and reused
+  receiver DFB slots; the current repeated-invocation point-to-point test
+  validates route and counter reuse on one launch node;
 - optional control-plane candidate enumeration for link scoring and
   program-wide contention planning;
 - payload packetization using the runtime maximum payload size;
-- receiver-published address support or a verified restriction to computed
-  receiver DFB addresses;
 - hardware pytests for reduce-to-root, reduce-scatter, and all-reduce in
   `test/python/fabric`;
+- a scalable relation-based tree reduction whose lowering selects the physical
+  tree and verifies data ownership against the communication relation;
 - tree-reduction, packet-boundary, full-duplex, backpressure, and cache behavior
   hardware pytests;
 - performance comparison of destination-table decoding and connection reuse

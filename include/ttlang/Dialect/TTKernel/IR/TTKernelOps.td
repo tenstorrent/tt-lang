@@ -4361,7 +4361,7 @@ def TTKernel_OpenRoutingPlaneConnectionsOp :
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
     I32:$connectionCount,
-    I64Attr:$runtimeArgBase
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$runtimeArgBase
   );
   let results = (outs I32:$routeId);
   let assemblyFormat = [{
@@ -4391,6 +4391,7 @@ def TTKernel_RoutingPlaneAtomicIncOp :
   let assemblyFormat = [{
     `(` operands `)` attr-dict `:` functional-type(operands, results)
   }];
+  let hasVerifier = 1;
 }
 
 def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
@@ -4418,6 +4419,7 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
   let assemblyFormat = [{
     `(` operands `)` attr-dict `:` functional-type(operands, results)
   }];
+  let hasVerifier = 1;
 }
 
 def TTKernel_CloseRoutingPlaneConnectionsOp :

@@ -17,6 +17,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
@@ -212,8 +213,40 @@ std::string LaunchNodeDomainState::netName(int64_t netId) const {
   return "net_" + std::to_string(netId);
 }
 
-LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
-                                                      PipeRole role) const {
+LaunchNodeDomain
+LaunchNodeDomainState::getRoleDomain(int64_t netId, PipeRole role,
+                                     DeviceRefAttr device) const {
+  auto getRoleForDevice = [&](PipeRole requestedRole) {
+    const auto &domainsByNet = requestedRole == PipeRole::Source
+                                   ? netSourceDomainsByDevice
+                                   : netDestinationDomainsByDevice;
+    const auto &localDomains = requestedRole == PipeRole::Source
+                                   ? localNetSourceDomains
+                                   : localNetDestinationDomains;
+    LaunchNodeDomain result;
+    if (auto domainIt = localDomains.find(netId);
+        domainIt != localDomains.end()) {
+      result = result.unionWith(domainIt->second);
+    }
+    auto netIt = domainsByNet.find(netId);
+    if (netIt == domainsByNet.end()) {
+      return result;
+    }
+    auto deviceIt = netIt->second.find(device);
+    if (deviceIt != netIt->second.end()) {
+      result = result.unionWith(deviceIt->second);
+    }
+    return result;
+  };
+
+  if (device) {
+    if (role == PipeRole::Source || role == PipeRole::Destination) {
+      return getRoleForDevice(role);
+    }
+    return getRoleForDevice(PipeRole::Source)
+        .unionWith(getRoleForDevice(PipeRole::Destination));
+  }
+
   if (role == PipeRole::Source) {
     auto it = netSourceDomains.find(netId);
     return it == netSourceDomains.end() ? LaunchNodeDomain{} : it->second;
@@ -234,13 +267,46 @@ LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
   return src.unionWith(dst);
 }
 
-void LaunchNodeDomainState::recordPipeNet(PipeType pipeType, Location loc,
+void LaunchNodeDomainState::recordPipeNet(PipeType pipeType,
+                                          DeviceTransferAttr transfer,
+                                          Location loc,
                                           std::optional<StringRef> name) {
   int64_t pipeNetId = pipeType.getPipeNetId();
-  netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
-      getPipeSourceLaunchNodeDomain(pipeType));
-  netDestinationDomains[pipeNetId] = netDestinationDomains[pipeNetId].unionWith(
-      getPipeDestinationLaunchNodeDomain(pipeType));
+  LaunchNodeDomain sourceDomain = getPipeSourceLaunchNodeDomain(pipeType);
+  LaunchNodeDomain destinationDomain =
+      getPipeDestinationLaunchNodeDomain(pipeType);
+  netSourceDomains[pipeNetId] =
+      netSourceDomains[pipeNetId].unionWith(sourceDomain);
+  netDestinationDomains[pipeNetId] =
+      netDestinationDomains[pipeNetId].unionWith(destinationDomain);
+  if (!transfer) {
+    localNetSourceDomains[pipeNetId] =
+        localNetSourceDomains[pipeNetId].unionWith(sourceDomain);
+    localNetDestinationDomains[pipeNetId] =
+        localNetDestinationDomains[pipeNetId].unionWith(destinationDomain);
+  } else {
+    TransferEdgeAttr edge = transfer.getEdge();
+    DeviceRefAttr sourceDevice = edge.getSource();
+    netSourceDomainsByDevice[pipeNetId][sourceDevice] =
+        netSourceDomainsByDevice[pipeNetId][sourceDevice].unionWith(
+            sourceDomain);
+    if (DeviceRefAttr destinationDevice = edge.getDestination()) {
+      netDestinationDomainsByDevice[pipeNetId][destinationDevice] =
+          netDestinationDomainsByDevice[pipeNetId][destinationDevice].unionWith(
+              destinationDomain);
+    } else {
+      DeviceRangeAttr destinationRange = edge.getDestinationRange();
+      for (DeviceRefAttr destinationDevice :
+           enumerateDeviceDomain(transfer.getDomain())) {
+        if (!deviceRangeContains(destinationRange, destinationDevice)) {
+          continue;
+        }
+        netDestinationDomainsByDevice[pipeNetId][destinationDevice] =
+            netDestinationDomainsByDevice[pipeNetId][destinationDevice]
+                .unionWith(destinationDomain);
+      }
+    }
+  }
   pipeNetLocs[pipeNetId].push_back(loc);
   auto &storedName = pipeNetNames[pipeNetId];
   if (storedName.empty() && name && !name->empty()) {
@@ -256,11 +322,17 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
   }
   int64_t pipeNetId = records.getPipeNetId();
   for (PipeRecordAttr record : records.getPipes()) {
-    netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
-        getPipeRecordSourceLaunchNodeDomain(record));
+    LaunchNodeDomain sourceDomain = getPipeRecordSourceLaunchNodeDomain(record);
+    LaunchNodeDomain destinationDomain =
+        getPipeRecordDestinationLaunchNodeDomain(record);
+    netSourceDomains[pipeNetId] =
+        netSourceDomains[pipeNetId].unionWith(sourceDomain);
     netDestinationDomains[pipeNetId] =
-        netDestinationDomains[pipeNetId].unionWith(
-            getPipeRecordDestinationLaunchNodeDomain(record));
+        netDestinationDomains[pipeNetId].unionWith(destinationDomain);
+    localNetSourceDomains[pipeNetId] =
+        localNetSourceDomains[pipeNetId].unionWith(sourceDomain);
+    localNetDestinationDomains[pipeNetId] =
+        localNetDestinationDomains[pipeNetId].unionWith(destinationDomain);
     pipeNetLocs[pipeNetId].push_back(loc);
   }
   auto &storedName = pipeNetNames[pipeNetId];
@@ -276,7 +348,7 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
       name = attr.getValue();
     }
     recordPipeNet(mlir::cast<PipeType>(pipe.getResult().getType()),
-                  pipe.getLoc(), name);
+                  pipe.getDeviceTransferAttr(), pipe.getLoc(), name);
   });
   module.walk([&](PipeNetForeachSrcOp op) {
     recordPipeNetRecords(op.getRecords(), op.getLoc());
@@ -309,7 +381,8 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
 
 /// Evaluate index expressions that are affine over `ttl.core_x`,
 /// `ttl.core_y`, and integer constants for one launch coordinate.
-static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
+static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord,
+                                        DeviceRefAttr currentDevice) {
   if (value.getDefiningOp<CoreXOp>()) {
     return coord.x;
   }
@@ -319,26 +392,32 @@ static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
   if (auto constant = getConstantIntValue(value)) {
     return *constant;
   }
+  if (auto currentDeviceIndex = value.getDefiningOp<CurrentDeviceIndexOp>()) {
+    if (!currentDevice) {
+      return std::nullopt;
+    }
+    return getDeviceLinearIndex(currentDeviceIndex.getDomain(), currentDevice);
+  }
   if (auto castOp = value.getDefiningOp<arith::IndexCastOp>()) {
-    return evalIndex(castOp.getIn(), coord);
+    return evalIndex(castOp.getIn(), coord, currentDevice);
   }
   if (auto addOp = value.getDefiningOp<arith::AddIOp>()) {
-    auto lhs = evalIndex(addOp.getLhs(), coord);
-    auto rhs = evalIndex(addOp.getRhs(), coord);
+    auto lhs = evalIndex(addOp.getLhs(), coord, currentDevice);
+    auto rhs = evalIndex(addOp.getRhs(), coord, currentDevice);
     if (lhs && rhs) {
       return *lhs + *rhs;
     }
   }
   if (auto subOp = value.getDefiningOp<arith::SubIOp>()) {
-    auto lhs = evalIndex(subOp.getLhs(), coord);
-    auto rhs = evalIndex(subOp.getRhs(), coord);
+    auto lhs = evalIndex(subOp.getLhs(), coord, currentDevice);
+    auto rhs = evalIndex(subOp.getRhs(), coord, currentDevice);
     if (lhs && rhs) {
       return *lhs - *rhs;
     }
   }
   if (auto mulOp = value.getDefiningOp<arith::MulIOp>()) {
-    auto lhs = evalIndex(mulOp.getLhs(), coord);
-    auto rhs = evalIndex(mulOp.getRhs(), coord);
+    auto lhs = evalIndex(mulOp.getLhs(), coord, currentDevice);
+    auto rhs = evalIndex(mulOp.getRhs(), coord, currentDevice);
     if (lhs && rhs) {
       return *lhs * *rhs;
     }
@@ -348,15 +427,26 @@ static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
 
 /// Evaluate boolean predicates composed from statically evaluable comparisons
 /// and integer boolean operations for one launch coordinate.
-static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord) {
+static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord,
+                                    DeviceRefAttr currentDevice) {
   if (value.getType().isInteger(1)) {
     if (auto constant = getConstantIntValue(value)) {
       return *constant != 0;
     }
   }
+  if (auto isDevice = value.getDefiningOp<IsDeviceOp>()) {
+    return currentDevice
+               ? std::optional<bool>(currentDevice == isDevice.getDevice())
+               : std::nullopt;
+  }
+  if (auto isDeviceInRange = value.getDefiningOp<IsDeviceInRangeOp>()) {
+    return currentDevice ? std::optional<bool>(deviceRangeContains(
+                               isDeviceInRange.getRange(), currentDevice))
+                         : std::nullopt;
+  }
   if (auto cmpOp = value.getDefiningOp<arith::CmpIOp>()) {
-    auto lhs = evalIndex(cmpOp.getLhs(), coord);
-    auto rhs = evalIndex(cmpOp.getRhs(), coord);
+    auto lhs = evalIndex(cmpOp.getLhs(), coord, currentDevice);
+    auto rhs = evalIndex(cmpOp.getRhs(), coord, currentDevice);
     if (!lhs || !rhs) {
       return std::nullopt;
     }
@@ -380,22 +470,22 @@ static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord) {
     }
   }
   if (auto andOp = value.getDefiningOp<arith::AndIOp>()) {
-    auto lhs = evalBool(andOp.getLhs(), coord);
-    auto rhs = evalBool(andOp.getRhs(), coord);
+    auto lhs = evalBool(andOp.getLhs(), coord, currentDevice);
+    auto rhs = evalBool(andOp.getRhs(), coord, currentDevice);
     if (lhs && rhs) {
       return *lhs && *rhs;
     }
   }
   if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
-    auto lhs = evalBool(orOp.getLhs(), coord);
-    auto rhs = evalBool(orOp.getRhs(), coord);
+    auto lhs = evalBool(orOp.getLhs(), coord, currentDevice);
+    auto rhs = evalBool(orOp.getRhs(), coord, currentDevice);
     if (lhs && rhs) {
       return *lhs || *rhs;
     }
   }
   if (auto xorOp = value.getDefiningOp<arith::XOrIOp>()) {
-    auto lhs = evalBool(xorOp.getLhs(), coord);
-    auto rhs = evalBool(xorOp.getRhs(), coord);
+    auto lhs = evalBool(xorOp.getLhs(), coord, currentDevice);
+    auto rhs = evalBool(xorOp.getRhs(), coord, currentDevice);
     if (lhs && rhs) {
       return *lhs != *rhs;
     }
@@ -405,18 +495,21 @@ static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord) {
 
 /// Return true if evaluating `value` can depend on the current launch
 /// coordinate.
-static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
+static bool dependsOnExecutionInstance(Value value, DeviceRefAttr currentDevice,
+                                       llvm::DenseMap<Value, bool> &cache) {
   if (auto it = cache.find(value); it != cache.end()) {
     return it->second;
   }
   Operation *op = value.getDefiningOp();
   bool result = false;
   if (op) {
-    if (mlir::isa<CoreXOp, CoreYOp>(op)) {
+    if (mlir::isa<CoreXOp, CoreYOp>(op) ||
+        (currentDevice &&
+         mlir::isa<IsDeviceOp, IsDeviceInRangeOp, CurrentDeviceIndexOp>(op))) {
       result = true;
     } else {
       for (Value operand : op->getOperands()) {
-        if (dependsOnCoord(operand, cache)) {
+        if (dependsOnExecutionInstance(operand, currentDevice, cache)) {
           result = true;
           break;
         }
@@ -430,7 +523,8 @@ static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
 /// Compute the exact set of launch nodes satisfying an `affine.if` integer set.
 static LaunchNodeDomainResult
 getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
-                            const LaunchNodeDomain &baseDomain) {
+                            const LaunchNodeDomain &baseDomain,
+                            DeviceRefAttr currentDevice) {
   IntegerSet set = ifOp.getIntegerSet();
   ValueRange operands = ifOp.getOperands();
   MLIRContext *ctx = ifOp.getContext();
@@ -448,7 +542,7 @@ getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
   for (LaunchNodeCoord coord : baseDomain.nodes) {
     bool resolved = true;
     for (unsigned idx = 0; idx < set.getNumInputs(); ++idx) {
-      auto value = evalIndex(operands[idx], coord);
+      auto value = evalIndex(operands[idx], coord, currentDevice);
       if (!value) {
         resolved = false;
         break;
@@ -541,17 +635,18 @@ exactBranches(const LaunchNodeDomain &trueDomain,
 static BranchLaunchNodeDomains
 getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
                      const LaunchNodeDomainState &state,
-                     llvm::DenseMap<Value, bool> &coordCache) {
+                     DeviceRefAttr currentDevice,
+                     llvm::DenseMap<Value, bool> &executionInstanceCache) {
   if (auto pred = condition.getDefiningOp<PipeNetPredicateOpInterface>()) {
     LaunchNodeDomain roleDomain = state.getRoleDomain(
-        pred.getReferencedPipeNetId(), pred.getReferencedRole());
+        pred.getReferencedPipeNetId(), pred.getReferencedRole(), currentDevice);
     return exactBranches(roleDomain, current, state.baseDomain);
   }
   if (auto andOp = condition.getDefiningOp<arith::AndIOp>()) {
-    BranchLaunchNodeDomains lhs =
-        getBranchDomainsImpl(andOp.getLhs(), current, state, coordCache);
-    BranchLaunchNodeDomains rhs =
-        getBranchDomainsImpl(andOp.getRhs(), current, state, coordCache);
+    BranchLaunchNodeDomains lhs = getBranchDomainsImpl(
+        andOp.getLhs(), current, state, currentDevice, executionInstanceCache);
+    BranchLaunchNodeDomains rhs = getBranchDomainsImpl(
+        andOp.getRhs(), current, state, currentDevice, executionInstanceCache);
     Operation *unanalyzable =
         pickEarlierBySourceLoc(lhs.unanalyzableOp, rhs.unanalyzableOp);
     return {
@@ -560,22 +655,23 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
         unanalyzable};
   }
   if (auto orOp = condition.getDefiningOp<arith::OrIOp>()) {
-    BranchLaunchNodeDomains lhs =
-        getBranchDomainsImpl(orOp.getLhs(), current, state, coordCache);
-    BranchLaunchNodeDomains rhs =
-        getBranchDomainsImpl(orOp.getRhs(), current, state, coordCache);
+    BranchLaunchNodeDomains lhs = getBranchDomainsImpl(
+        orOp.getLhs(), current, state, currentDevice, executionInstanceCache);
+    BranchLaunchNodeDomains rhs = getBranchDomainsImpl(
+        orOp.getRhs(), current, state, currentDevice, executionInstanceCache);
     Operation *unanalyzable =
         pickEarlierBySourceLoc(lhs.unanalyzableOp, rhs.unanalyzableOp);
     return {
         lhs.thenDomain.unionWith(lhs.elseDomain.intersectWith(rhs.thenDomain)),
         lhs.elseDomain.intersectWith(rhs.elseDomain), unanalyzable};
   }
-  if (!dependsOnCoord(condition, coordCache)) {
+  if (!dependsOnExecutionInstance(condition, currentDevice,
+                                  executionInstanceCache)) {
     return {current, current};
   }
   LaunchNodeDomain trueDomain;
   for (LaunchNodeCoord coord : state.baseDomain.nodes) {
-    std::optional<bool> value = evalBool(condition, coord);
+    std::optional<bool> value = evalBool(condition, coord, currentDevice);
     if (!value) {
       return {LaunchNodeDomain::unknown(), LaunchNodeDomain::unknown(),
               condition.getDefiningOp()};
@@ -592,15 +688,18 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
 /// Compute the true and false launch domains for a branch condition.
 static BranchLaunchNodeDomains
 getBranchLaunchNodeDomains(Value condition, const LaunchNodeDomain &current,
-                           const LaunchNodeDomainState &state) {
-  llvm::DenseMap<Value, bool> coordCache;
-  return getBranchDomainsImpl(condition, current, state, coordCache);
+                           const LaunchNodeDomainState &state,
+                           DeviceRefAttr currentDevice) {
+  llvm::DenseMap<Value, bool> executionInstanceCache;
+  return getBranchDomainsImpl(condition, current, state, currentDevice,
+                              executionInstanceCache);
 }
 
 /// Decode the PipeNet role metadata carried by one `ttl.pipenet_scope`.
 static std::optional<PipeNetScopeLaunchNodeDomains>
 getPipeNetScopeLaunchNodeDomains(PipeNetScopeOp scopeOp,
-                                 LaunchNodeDomainState &state) {
+                                 LaunchNodeDomainState &state,
+                                 DeviceRefAttr currentDevice) {
   SmallVector<int64_t> ids;
   SmallVector<int64_t> roles;
   if (!readI64ArrayAttr(scopeOp.getOperation(), kPipeNetIdsAttrName, ids) ||
@@ -625,7 +724,8 @@ getPipeNetScopeLaunchNodeDomains(PipeNetScopeOp scopeOp,
       return std::nullopt;
     }
     auto role = static_cast<PipeRole>(roleValue);
-    LaunchNodeDomain roleDomain = state.getRoleDomain(pipeNetId, role);
+    LaunchNodeDomain roleDomain =
+        state.getRoleDomain(pipeNetId, role, currentDevice);
     result.domain = result.domain.unionWith(roleDomain);
     result.roles.emplace_back(pipeNetId, role);
   }
@@ -723,15 +823,16 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
 
   TypeSwitch<Operation *>(op)
       .Case<scf::IfOp>([&](scf::IfOp ifOp) {
-        BranchLaunchNodeDomains domains = getBranchLaunchNodeDomains(
-            ifOp.getCondition(), before.getDomain(), state);
+        BranchLaunchNodeDomains domains =
+            getBranchLaunchNodeDomains(ifOp.getCondition(), before.getDomain(),
+                                       state, options.currentDevice);
         unanalyzableOp =
             pickEarlierBySourceLoc(unanalyzableOp, domains.unanalyzableOp);
         narrowed = (*regionTo == 0) ? domains.thenDomain : domains.elseDomain;
       })
       .Case<affine::AffineIfOp>([&](affine::AffineIfOp ifOp) {
-        LaunchNodeDomainResult condDomain =
-            getAffineIfLaunchNodeDomain(ifOp, state.baseDomain);
+        LaunchNodeDomainResult condDomain = getAffineIfLaunchNodeDomain(
+            ifOp, state.baseDomain, options.currentDevice);
         unanalyzableOp =
             pickEarlierBySourceLoc(unanalyzableOp, condDomain.unanalyzableOp);
         if (!condDomain.domain.known) {
@@ -745,13 +846,21 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
       })
       .Case<IfSrcOp>([&](IfSrcOp ifSrc) {
         auto pipeType = mlir::cast<PipeType>(ifSrc.getPipe().getType());
+        LaunchNodeDomain pipeDomain = getPipeSourceLaunchNodeDomain(pipeType);
+        LaunchNodeDomain deviceRoleDomain = state.getRoleDomain(
+            pipeType.getPipeNetId(), PipeRole::Source, options.currentDevice);
         narrowed = before.getDomain().intersectWith(
-            getPipeSourceLaunchNodeDomain(pipeType));
+            pipeDomain.intersectWith(deviceRoleDomain));
       })
       .Case<IfDstOp>([&](IfDstOp ifDst) {
         auto pipeType = mlir::cast<PipeType>(ifDst.getPipe().getType());
+        LaunchNodeDomain pipeDomain =
+            getPipeDestinationLaunchNodeDomain(pipeType);
+        LaunchNodeDomain deviceRoleDomain =
+            state.getRoleDomain(pipeType.getPipeNetId(), PipeRole::Destination,
+                                options.currentDevice);
         narrowed = before.getDomain().intersectWith(
-            getPipeDestinationLaunchNodeDomain(pipeType));
+            pipeDomain.intersectWith(deviceRoleDomain));
       })
       .Case<PipeNetForeachSrcOp>([&](PipeNetForeachSrcOp foreachSrc) {
         narrowed =
@@ -764,7 +873,8 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
                 foreachDst.getRecords(), PipeRole::Destination));
       })
       .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
-        auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state);
+        auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state,
+                                                      options.currentDevice);
         if (!scope) {
           return;
         }

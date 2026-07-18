@@ -40,6 +40,8 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
   };
 
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
+  llvm::DenseMap<Operation *, llvm::DenseMap<DeviceRefAttr, LaunchNodeDomain>>
+      operationExecutionDomains;
   DFBReleaseOwnerMaps dfbReleaseOwners;
   llvm::MapVector<PipeKey, PipeTransferInfo> transferInfos;
   SmallVector<PipeTransferPostOp> receiverPosts;
@@ -72,24 +74,89 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
   options.operationCallback = [&](Operation *op, const LaunchNodeDomain &domain,
                                   Operation * /*unanalyzableOp*/) {
     state.operationLaunchDomains[op] = domain;
+    auto func = op->getParentOfType<func::FuncOp>();
+    if (func && !func->hasAttr(kDeviceDomainAttrName)) {
+      state.operationExecutionDomains[op][{}] = domain;
+    }
   };
   solver.load<LaunchNodeDomainAnalysis>(state, options);
   if (failed(solver.initializeAndRun(mod))) {
     return failure();
   }
+
+  llvm::SetVector<DeviceRefAttr> devices;
+  mod.walk([&](func::FuncOp func) {
+    auto domain = func->getAttrOfType<DeviceDomainAttr>(kDeviceDomainAttrName);
+    if (!domain) {
+      return;
+    }
+    for (DeviceRefAttr device : enumerateDeviceDomain(domain)) {
+      devices.insert(device);
+    }
+  });
+
+  for (DeviceRefAttr device : devices) {
+    DataFlowSolver deviceSolver;
+    dataflow::loadBaselineAnalyses(deviceSolver);
+    LaunchNodeDomainAnalysisOptions deviceOptions;
+    deviceOptions.currentDevice = device;
+    deviceOptions.narrowPipeNetScopes = true;
+    deviceOptions.operationCallback = [&](Operation *op,
+                                          const LaunchNodeDomain &domain,
+                                          Operation * /*unanalyzableOp*/) {
+      auto func = op->getParentOfType<func::FuncOp>();
+      if (!func) {
+        return;
+      }
+      auto functionDomain =
+          func->getAttrOfType<DeviceDomainAttr>(kDeviceDomainAttrName);
+      if (!functionDomain ||
+          !getDeviceLinearIndex(functionDomain, device).has_value()) {
+        return;
+      }
+      state.operationExecutionDomains[op][device] = domain;
+    };
+    deviceSolver.load<LaunchNodeDomainAnalysis>(state, deviceOptions);
+    if (failed(deviceSolver.initializeAndRun(mod))) {
+      return failure();
+    }
+  }
   return success();
 }
 
 static LaunchNodeDomain
-lookupOperationLaunchDomain(Operation *op, PipeGraphAnalysisState &state) {
+lookupOperationLaunchDomain(Operation *op, DeviceRefAttr device,
+                            PipeGraphAnalysisState &state) {
   if (!state.hasLaunchGrid) {
     return LaunchNodeDomain::unknown();
   }
-  auto it = state.operationLaunchDomains.find(op);
-  if (it == state.operationLaunchDomains.end()) {
+  auto operationIt = state.operationExecutionDomains.find(op);
+  if (operationIt == state.operationExecutionDomains.end()) {
     return LaunchNodeDomain::unknown();
   }
-  return it->second;
+  auto deviceIt = operationIt->second.find(device);
+  if (deviceIt == operationIt->second.end()) {
+    return LaunchNodeDomain{};
+  }
+  return deviceIt->second;
+}
+
+template <typename Callback>
+static void forEachOperationExecutionDomain(Operation *op,
+                                            PipeGraphAnalysisState &state,
+                                            Callback &&callback) {
+  if (!state.hasLaunchGrid) {
+    callback(DeviceRefAttr(), LaunchNodeDomain::unknown());
+    return;
+  }
+  auto operationIt = state.operationExecutionDomains.find(op);
+  if (operationIt == state.operationExecutionDomains.end()) {
+    callback(DeviceRefAttr(), LaunchNodeDomain::unknown());
+    return;
+  }
+  for (const auto &[device, domain] : operationIt->second) {
+    callback(device, domain);
+  }
 }
 
 static LaunchNodeCoord getLaunchNodeCoord(PipeReceiverCoord receiver) {
@@ -103,23 +170,6 @@ static DeviceRefAttr getReceiverDevice(PipeTransferCreateOp transferCreate) {
   }
   DeviceTransferAttr transfer = createPipe.getDeviceTransferAttr();
   return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
-}
-
-static DeviceRefAttr getEnclosingReceiverDevice(Operation *op) {
-  for (Operation *ancestor = op->getParentOp(); ancestor;
-       ancestor = ancestor->getParentOp()) {
-    auto ifDst = dyn_cast<IfDstOp>(ancestor);
-    if (!ifDst) {
-      continue;
-    }
-    auto createPipe = ifDst.getPipe().getDefiningOp<CreatePipeOp>();
-    if (!createPipe) {
-      return {};
-    }
-    DeviceTransferAttr transfer = createPipe.getDeviceTransferAttr();
-    return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
-  }
-  return {};
 }
 
 static std::optional<PipeReceiverDFBStreamKey>
@@ -188,18 +238,12 @@ static void recordReceiverPost(PipeTransferPostOp postOp,
     return;
   }
 
-  Value dfb = getAttachedCB(postOp.getDst());
   FailureOr<PipeReference> pipeRef =
       getPipeReference(postOp, transferCreate.getPipe());
   assert(succeeded(pipeRef) && "pipe transfer post verifier failed");
   for (PipeType pipeType :
        getPipeTypesFromReference(postOp.getContext(), *pipeRef)) {
     state.receiverPostsByPipe[getPipeKey(pipeType)].push_back(postOp);
-  }
-  auto streamKey =
-      getReceiverDFBStreamKey(dfb, getReceiverDevice(transferCreate));
-  if (streamKey) {
-    state.receiverPostsByStream[*streamKey].push_back(postOp);
   }
 }
 
@@ -230,21 +274,11 @@ static void recordPipeSend(PipeTransferSendOp sendOp,
 }
 
 static void recordDFBPush(CBPushOp pushOp, PipeGraphAnalysisState &state) {
-  auto streamKey = getReceiverDFBStreamKey(pushOp.getCb(),
-                                           getEnclosingReceiverDevice(pushOp));
-  if (streamKey) {
-    state.pushesByStream[*streamKey].push_back(pushOp);
-  }
   getDFBLifecycleOperations(pushOp, state)
       .pushes.push_back(pushOp.getOperation());
 }
 
 static void recordDFBPop(CBPopOp popOp, PipeGraphAnalysisState &state) {
-  auto streamKey =
-      getReceiverDFBStreamKey(popOp.getCb(), getEnclosingReceiverDevice(popOp));
-  if (streamKey) {
-    state.popsByStream[*streamKey].push_back(popOp);
-  }
   state.receiverSlotEvents.push_back(popOp.getOperation());
   getDFBLifecycleOperations(popOp, state).pops.push_back(popOp.getOperation());
 }
@@ -281,25 +315,87 @@ static void collectPipeGraphOperations(ModuleOp mod,
   }
 }
 
+template <typename OpTy>
+static void appendStreamEvent(
+    llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<OpTy>> &eventsByStream,
+    PipeReceiverDFBStreamKey stream, OpTy op) {
+  SmallVector<OpTy> &events = eventsByStream[stream];
+  if (!llvm::is_contained(events, op)) {
+    events.push_back(op);
+  }
+}
+
+template <typename OpTy>
+static void indexDFBOperationByExecutionDevice(
+    OpTy op, Value dfb,
+    llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<OpTy>> &eventsByStream,
+    PipeGraphAnalysisState &state) {
+  std::optional<int64_t> dfbIndex = getCBIndex(dfb);
+  if (!dfbIndex) {
+    return;
+  }
+  bool hasDeviceInstance = false;
+  forEachOperationExecutionDomain(
+      op.getOperation(), state,
+      [&](DeviceRefAttr device, const LaunchNodeDomain &domain) {
+        if (domain.known && domain.nodes.empty()) {
+          return;
+        }
+        hasDeviceInstance = hasDeviceInstance || static_cast<bool>(device);
+        appendStreamEvent(eventsByStream, {device, *dfbIndex}, op);
+      });
+  if (hasDeviceInstance) {
+    appendStreamEvent(eventsByStream, {DeviceRefAttr(), *dfbIndex}, op);
+  }
+}
+
+static void indexReceiverDFBStreamEvents(PipeGraphAnalysisState &state) {
+  for (PipeTransferPostOp postOp : state.receiverPosts) {
+    PipeTransferCreateOp transferCreate =
+        findPipeTransferCreateForTransfer(postOp.getTransfer());
+    if (!transferCreate) {
+      continue;
+    }
+    Value dfb = getAttachedCB(postOp.getDst());
+    if (DeviceRefAttr receiverDevice = getReceiverDevice(transferCreate)) {
+      auto streamKey = getReceiverDFBStreamKey(dfb, receiverDevice);
+      if (streamKey) {
+        appendStreamEvent(state.receiverPostsByStream, *streamKey, postOp);
+      }
+      continue;
+    }
+    indexDFBOperationByExecutionDevice(postOp, dfb, state.receiverPostsByStream,
+                                       state);
+  }
+
+  for (auto &entry : state.dfbLifecycleByFunction) {
+    PipeGraphAnalysisState::DFBLifecycleOperations &lifecycle = entry.second;
+    for (Operation *operation : lifecycle.pushes) {
+      auto pushOp = cast<CBPushOp>(operation);
+      indexDFBOperationByExecutionDevice(pushOp, pushOp.getCb(),
+                                         state.pushesByStream, state);
+    }
+    for (Operation *operation : lifecycle.pops) {
+      auto popOp = cast<CBPopOp>(operation);
+      indexDFBOperationByExecutionDevice(popOp, popOp.getCb(),
+                                         state.popsByStream, state);
+    }
+  }
+}
+
 template <typename OpTy, typename Callback>
 static void forEachReceiverDFBStreamEvent(
     const llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<OpTy>>
         &eventsByStream,
     const PipeReceiverDFBKey &receiverDFB, Callback &&callback) {
-  auto visit = [&](DeviceRefAttr receiverDevice) {
-    PipeReceiverDFBStreamKey streamKey{receiverDevice, receiverDFB.dfbIndex};
-    auto eventsIt = eventsByStream.find(streamKey);
-    if (eventsIt == eventsByStream.end()) {
-      return;
-    }
-    for (OpTy event : eventsIt->second) {
-      callback(event);
-    }
-  };
-
-  visit(receiverDFB.receiverDevice);
-  if (receiverDFB.receiverDevice) {
-    visit({});
+  PipeReceiverDFBStreamKey streamKey{receiverDFB.receiverDevice,
+                                     receiverDFB.dfbIndex};
+  auto eventsIt = eventsByStream.find(streamKey);
+  if (eventsIt == eventsByStream.end()) {
+    return;
+  }
+  for (OpTy event : eventsIt->second) {
+    callback(event);
   }
 }
 
@@ -307,8 +403,8 @@ static bool isPostForReceiverDFB(
     PipeTransferPostOp postOp, const PipeReceiverDFBKey &receiverDFB,
     const llvm::MapVector<PipeKey, ReceiverDFBInfo> &receiverDFBs,
     PipeGraphAnalysisState &state) {
-  LaunchNodeDomain postDomain =
-      lookupOperationLaunchDomain(postOp.getOperation(), state);
+  LaunchNodeDomain postDomain = lookupOperationLaunchDomain(
+      postOp.getOperation(), receiverDFB.receiverDevice, state);
   if (!knownLaunchNodeDomainContains(
           postDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
     return false;
@@ -328,7 +424,8 @@ static bool isPostForReceiverDFB(
     auto receiverIt = receiverDFBs.find(pipeKey);
     if (receiverIt != receiverDFBs.end() &&
         receiverIt->second.dfbIndex == receiverDFB.dfbIndex &&
-        receiverIt->second.receiverDevice == receiverDFB.receiverDevice) {
+        (!receiverIt->second.receiverDevice ||
+         receiverIt->second.receiverDevice == receiverDFB.receiverDevice)) {
       return true;
     }
   }
@@ -365,7 +462,8 @@ static std::optional<int64_t> getReceiverSlotSpanBlocksForPost(
     auto receiverIt = receiverDFBs.find(pipeKey);
     if (receiverIt == receiverDFBs.end() ||
         receiverIt->second.dfbIndex != receiverDFB.dfbIndex ||
-        receiverIt->second.receiverDevice != receiverDFB.receiverDevice) {
+        (receiverIt->second.receiverDevice &&
+         receiverIt->second.receiverDevice != receiverDFB.receiverDevice)) {
       continue;
     }
     int64_t candidateSpan = receiverIt->second.receiverSlotSpanBlocks;
@@ -568,8 +666,6 @@ PipeGraph::assignReceiverSlotIndices(PipeGraphAnalysisState &analysisState) {
     if (failed(pipeRef)) {
       return failure();
     }
-    LaunchNodeDomain postDomain =
-        lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
     for (PipeType pipeType :
          getPipeTypesFromReference(postOp.getContext(), *pipeRef)) {
       PipeKey pipeKey = getPipeKey(pipeType);
@@ -587,36 +683,52 @@ PipeGraph::assignReceiverSlotIndices(PipeGraphAnalysisState &analysisState) {
       bool hasReceiver = false;
       bool nonUniformSlot = false;
       LogicalResult result = success();
-      pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-        if (failed(result) || (postDomain.known &&
-                               !knownLaunchNodeDomainContains(
-                                   postDomain, getLaunchNodeCoord(receiver)))) {
+      auto processDevice = [&](DeviceRefAttr receiverDevice,
+                               const LaunchNodeDomain &postDomain) {
+        if (postDomain.known && postDomain.nodes.empty()) {
           return;
         }
-        hasReceiver = true;
-        PipeReceiverDFBKey receiverDFB{receiverInfo.receiverDevice, receiver,
-                                       receiverInfo.dfbIndex};
-        auto &slotByReserve = slotByReceiverReserve[receiverDFB];
-        auto reserveIt = slotByReserve.find(receiverInfo.receiverReserveOp);
-        int64_t slot = 0;
-        if (reserveIt == slotByReserve.end()) {
-          FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
-              pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
-          if (failed(assignedSlot)) {
-            result = failure();
+        pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
+          if (failed(result) ||
+              (postDomain.known &&
+               !knownLaunchNodeDomainContains(postDomain,
+                                              getLaunchNodeCoord(receiver)))) {
             return;
           }
-          slot = *assignedSlot;
-          slotByReserve[receiverInfo.receiverReserveOp] = slot;
-        } else {
-          slot = reserveIt->second;
-        }
-        if (!uniformSlot) {
-          uniformSlot = slot;
-        } else if (*uniformSlot != slot) {
-          nonUniformSlot = true;
-        }
-      });
+          hasReceiver = true;
+          PipeReceiverDFBKey receiverDFB{receiverDevice, receiver,
+                                         receiverInfo.dfbIndex};
+          auto &slotByReserve = slotByReceiverReserve[receiverDFB];
+          auto reserveIt = slotByReserve.find(receiverInfo.receiverReserveOp);
+          int64_t slot = 0;
+          if (reserveIt == slotByReserve.end()) {
+            FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
+                pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
+            if (failed(assignedSlot)) {
+              result = failure();
+              return;
+            }
+            slot = *assignedSlot;
+            slotByReserve[receiverInfo.receiverReserveOp] = slot;
+          } else {
+            slot = reserveIt->second;
+          }
+          if (!uniformSlot) {
+            uniformSlot = slot;
+          } else if (*uniformSlot != slot) {
+            nonUniformSlot = true;
+          }
+        });
+      };
+      if (receiverInfo.receiverDevice) {
+        processDevice(receiverInfo.receiverDevice,
+                      lookupOperationLaunchDomain(postOp.getOperation(),
+                                                  receiverInfo.receiverDevice,
+                                                  analysisState));
+      } else {
+        forEachOperationExecutionDomain(postOp.getOperation(), analysisState,
+                                        processDevice);
+      }
       if (failed(result)) {
         return failure();
       }
@@ -638,31 +750,28 @@ PipeGraph::assignReceiverSlotIndices(PipeGraphAnalysisState &analysisState) {
     if (!releasedBlocks) {
       return success();
     }
-    LaunchNodeDomain popDomain =
-        lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
-    if (!popDomain.known) {
-      return success();
-    }
-    DeviceRefAttr receiverDevice = getEnclosingReceiverDevice(popOp);
-    if (receiverDevice) {
-      // Fabric senders use computed receiver addresses without a receiver-ready
-      // handshake. They can execute before later receiver posts, so a receiver
-      // pop cannot make that physical slot available to another fabric sender.
-      return success();
-    }
-    for (LaunchNodeCoord coord : popDomain.nodes) {
-      PipeReceiverDFBKey receiverDFB{
-          receiverDevice, PipeReceiverCoord{coord.x, coord.y}, *dfbIndex};
-      auto stateIt = slotStateByReceiverDFB.find(receiverDFB);
-      if (stateIt == slotStateByReceiverDFB.end()) {
-        continue;
-      }
-      if (failed(
-              releaseReceiverSlots(popOp, stateIt->second, *releasedBlocks))) {
-        return failure();
-      }
-    }
-    return success();
+    LogicalResult result = success();
+    forEachOperationExecutionDomain(
+        popOp.getOperation(), analysisState,
+        [&](DeviceRefAttr receiverDevice, const LaunchNodeDomain &popDomain) {
+          if (failed(result) || !popDomain.known) {
+            return;
+          }
+          for (LaunchNodeCoord coord : popDomain.nodes) {
+            PipeReceiverDFBKey receiverDFB{
+                receiverDevice, PipeReceiverCoord{coord.x, coord.y}, *dfbIndex};
+            auto stateIt = slotStateByReceiverDFB.find(receiverDFB);
+            if (stateIt == slotStateByReceiverDFB.end()) {
+              continue;
+            }
+            if (failed(releaseReceiverSlots(popOp, stateIt->second,
+                                            *releasedBlocks))) {
+              result = failure();
+              return;
+            }
+          }
+        });
+    return result;
   };
 
   for (Operation *op : analysisState.receiverSlotEvents) {
@@ -704,167 +813,214 @@ LogicalResult PipeGraph::verifyReceiverDFBBlockCounts() const {
   return success();
 }
 
+static bool provePipeOnlyReceiverStream(
+    const PipeReceiverDFBKey &receiverDFB,
+    const llvm::MapVector<PipeKey, ReceiverDFBInfo> &receiverDFBs,
+    PipeGraphAnalysisState &analysisState) {
+  LaunchNodeDomain receiverDomain =
+      getSingleLaunchNodeDomain(getLaunchNodeCoord(receiverDFB.receiver));
+
+  SmallVector<PipeTransferPostOp> posts;
+  forEachReceiverDFBStreamEvent(analysisState.receiverPostsByStream,
+                                receiverDFB, [&](PipeTransferPostOp postOp) {
+                                  if (isPostForReceiverDFB(postOp, receiverDFB,
+                                                           receiverDFBs,
+                                                           analysisState)) {
+                                    posts.push_back(postOp);
+                                  }
+                                });
+  if (posts.empty()) {
+    debugRejectPipeOnlyStream(receiverDFB, "no matching receiver posts");
+    return false;
+  }
+
+  bool valid = true;
+  auto reject = [&](llvm::StringRef reason) {
+    debugRejectPipeOnlyStream(receiverDFB, reason);
+    valid = false;
+  };
+  llvm::DenseSet<Operation *> postsWithPush;
+  llvm::DenseSet<Operation *> waitsWithPop;
+
+  forEachReceiverDFBStreamEvent(
+      analysisState.pushesByStream, receiverDFB, [&](CBPushOp pushOp) {
+        if (!valid) {
+          return;
+        }
+        LaunchNodeDomain pushDomain = lookupOperationLaunchDomain(
+            pushOp.getOperation(), receiverDFB.receiverDevice, analysisState);
+        if (!launchNodeDomainsOverlap(pushDomain, receiverDomain)) {
+          return;
+        }
+        if (!knownLaunchNodeDomainContains(
+                pushDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
+          reject("push is not in the receiver NOC domain");
+          return;
+        }
+        if (!isNocKernelThread(pushOp)) {
+          reject("push is not in the receiver NOC domain");
+          return;
+        }
+        std::optional<int64_t> pushedBlocks = getPushedBlockCount(pushOp);
+        if (!pushedBlocks) {
+          reject("push block count is not a whole DFB block count");
+          return;
+        }
+        auto reserveOp = lookupOwner<CBReserveOp>(
+            analysisState.dfbReleaseOwners.reserveByPush,
+            pushOp.getOperation());
+        if (!reserveOp) {
+          reject("push has no unique receiver reserve owner");
+          return;
+        }
+        SmallVector<PipeTransferPostOp> ownedPosts =
+            getPostsOwnedByReserve(reserveOp, posts);
+        if (ownedPosts.empty()) {
+          reject("push reserve owns no matching receiver post");
+          return;
+        }
+        int64_t postedBlocks = 0;
+        for (PipeTransferPostOp postOp : ownedPosts) {
+          if (!hasMatchingReceiveWaitBeforePush(
+                  postOp, pushOp, analysisState.receiveWaitsByPost)) {
+            reject("post has no receive wait before push");
+            return;
+          }
+          std::optional<int64_t> span = getReceiverSlotSpanBlocksForPost(
+              postOp, receiverDFB, receiverDFBs);
+          if (!span) {
+            reject("post has no receiver slot span");
+            return;
+          }
+          postedBlocks += *span;
+          if (!postsWithPush.insert(postOp.getOperation()).second) {
+            reject("post is consumed by more than one push");
+            return;
+          }
+        }
+        if (*pushedBlocks != postedBlocks) {
+          reject("push block count does not match posted receiver slot span");
+        }
+      });
+  if (!valid) {
+    return false;
+  }
+
+  for (PipeTransferPostOp postOp : posts) {
+    if (!postsWithPush.contains(postOp.getOperation())) {
+      reject("post is not consumed by a receiver push");
+      break;
+    }
+  }
+  if (!valid) {
+    return false;
+  }
+
+  forEachReceiverDFBStreamEvent(
+      analysisState.popsByStream, receiverDFB, [&](CBPopOp popOp) {
+        if (!valid) {
+          return;
+        }
+        LaunchNodeDomain popDomain = lookupOperationLaunchDomain(
+            popOp.getOperation(), receiverDFB.receiverDevice, analysisState);
+        if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
+          return;
+        }
+        if (!knownLaunchNodeDomainContains(
+                popDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
+          reject("pop is not in the receiver NOC domain");
+          return;
+        }
+        if (!isNocKernelThread(popOp)) {
+          reject("pop is not in the receiver NOC domain");
+          return;
+        }
+        std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
+        if (!releasedBlocks) {
+          reject("pop block count is not a whole DFB block count");
+          return;
+        }
+        auto waitOp = lookupOwner<CBWaitOp>(
+            analysisState.dfbReleaseOwners.waitByPop, popOp.getOperation());
+        if (!waitOp) {
+          reject("pop has no unique receiver wait owner");
+          return;
+        }
+        LaunchNodeDomain waitDomain = lookupOperationLaunchDomain(
+            waitOp.getOperation(), receiverDFB.receiverDevice, analysisState);
+        if (!knownLaunchNodeDomainContains(
+                waitDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
+          reject("wait is not in the receiver NOC domain");
+          return;
+        }
+        if (!isNocKernelThread(waitOp)) {
+          reject("wait is not in the receiver NOC domain");
+          return;
+        }
+        std::optional<int64_t> waitedBlocks = getWaitedBlockCount(waitOp);
+        if (!waitedBlocks) {
+          reject("wait and pop use different block counts");
+          return;
+        }
+        if (*waitedBlocks != *releasedBlocks) {
+          reject("wait and pop use different block counts");
+          return;
+        }
+        if (!waitsWithPop.insert(waitOp.getOperation()).second) {
+          reject("wait owns more than one pop");
+        }
+      });
+
+  if (valid) {
+    debugAcceptPipeOnlyStream(receiverDFB);
+  }
+  return valid;
+}
+
 LogicalResult
 PipeGraph::provePipeOnlyReceiverStreams(PipeGraphAnalysisState &analysisState) {
   for (PipeReceiverDFBNode &node : receiverDFBNodes) {
-    PipeReceiverDFBKey receiverDFB = node.receiverDFB;
-    LaunchNodeDomain receiverDomain =
-        getSingleLaunchNodeDomain(getLaunchNodeCoord(receiverDFB.receiver));
-
-    SmallVector<PipeTransferPostOp> posts;
-    forEachReceiverDFBStreamEvent(
-        analysisState.receiverPostsByStream, receiverDFB,
-        [&](PipeTransferPostOp postOp) {
-          if (isPostForReceiverDFB(postOp, receiverDFB, receiverDFBs,
-                                   analysisState)) {
-            posts.push_back(postOp);
-          }
-        });
-    if (posts.empty()) {
-      debugRejectPipeOnlyStream(receiverDFB, "no matching receiver posts");
-      continue;
-    }
-
-    bool valid = true;
-    auto reject = [&](llvm::StringRef reason) {
-      debugRejectPipeOnlyStream(receiverDFB, reason);
-      valid = false;
-    };
-    llvm::DenseSet<Operation *> postsWithPush;
-    llvm::DenseSet<Operation *> waitsWithPop;
-
-    forEachReceiverDFBStreamEvent(
-        analysisState.pushesByStream, receiverDFB, [&](CBPushOp pushOp) {
-          if (!valid) {
-            return;
-          }
-          LaunchNodeDomain pushDomain =
-              lookupOperationLaunchDomain(pushOp.getOperation(), analysisState);
-          if (!launchNodeDomainsOverlap(pushDomain, receiverDomain)) {
-            return;
-          }
-          if (!knownLaunchNodeDomainContains(
-                  pushDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
-            reject("push is not in the receiver NOC domain");
-            return;
-          }
-          if (!isNocKernelThread(pushOp)) {
-            reject("push is not in the receiver NOC domain");
-            return;
-          }
-          std::optional<int64_t> pushedBlocks = getPushedBlockCount(pushOp);
-          if (!pushedBlocks) {
-            reject("push block count is not a whole DFB block count");
-            return;
-          }
-          auto reserveOp = lookupOwner<CBReserveOp>(
-              analysisState.dfbReleaseOwners.reserveByPush,
-              pushOp.getOperation());
-          if (!reserveOp) {
-            reject("push has no unique receiver reserve owner");
-            return;
-          }
-          SmallVector<PipeTransferPostOp> ownedPosts =
-              getPostsOwnedByReserve(reserveOp, posts);
-          if (ownedPosts.empty()) {
-            reject("push reserve owns no matching receiver post");
-            return;
-          }
-          int64_t postedBlocks = 0;
-          for (PipeTransferPostOp postOp : ownedPosts) {
-            if (!hasMatchingReceiveWaitBeforePush(
-                    postOp, pushOp, analysisState.receiveWaitsByPost)) {
-              reject("post has no receive wait before push");
-              return;
-            }
-            std::optional<int64_t> span = getReceiverSlotSpanBlocksForPost(
-                postOp, receiverDFB, receiverDFBs);
-            if (!span) {
-              reject("post has no receiver slot span");
-              return;
-            }
-            postedBlocks += *span;
-            if (!postsWithPush.insert(postOp.getOperation()).second) {
-              reject("post is consumed by more than one push");
-              return;
-            }
-          }
-          if (*pushedBlocks != postedBlocks) {
-            reject("push block count does not match posted receiver slot span");
-          }
-        });
-    if (!valid) {
-      continue;
-    }
-
-    for (PipeTransferPostOp postOp : posts) {
-      if (!postsWithPush.contains(postOp.getOperation())) {
-        reject("post is not consumed by a receiver push");
-        break;
+    llvm::SetVector<DeviceRefAttr> receiverDevices;
+    if (node.receiverDFB.receiverDevice) {
+      receiverDevices.insert(node.receiverDFB.receiverDevice);
+    } else {
+      for (PipeReceiverEndpointId endpointId : node.writerEndpoints) {
+        const PipeReceiverEndpoint &endpoint =
+            pipeReceiverEndpoints[endpointId];
+        const PipeEdge &pipeEdge = pipeEdges[endpoint.pipeEdge];
+        auto postsIt = analysisState.receiverPostsByPipe.find(pipeEdge.pipe);
+        if (postsIt == analysisState.receiverPostsByPipe.end()) {
+          continue;
+        }
+        for (PipeTransferPostOp postOp : postsIt->second) {
+          forEachOperationExecutionDomain(
+              postOp.getOperation(), analysisState,
+              [&](DeviceRefAttr device, const LaunchNodeDomain &domain) {
+                if (!domain.known ||
+                    knownLaunchNodeDomainContains(
+                        domain,
+                        getLaunchNodeCoord(node.receiverDFB.receiver))) {
+                  receiverDevices.insert(device);
+                }
+              });
+        }
       }
     }
-    if (!valid) {
+
+    if (receiverDevices.empty()) {
+      debugRejectPipeOnlyStream(node.receiverDFB,
+                                "no matching receiver execution instance");
       continue;
     }
 
-    forEachReceiverDFBStreamEvent(
-        analysisState.popsByStream, receiverDFB, [&](CBPopOp popOp) {
-          if (!valid) {
-            return;
-          }
-          LaunchNodeDomain popDomain =
-              lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
-          if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
-            return;
-          }
-          if (!knownLaunchNodeDomainContains(
-                  popDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
-            reject("pop is not in the receiver NOC domain");
-            return;
-          }
-          if (!isNocKernelThread(popOp)) {
-            reject("pop is not in the receiver NOC domain");
-            return;
-          }
-          std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
-          if (!releasedBlocks) {
-            reject("pop block count is not a whole DFB block count");
-            return;
-          }
-          auto waitOp = lookupOwner<CBWaitOp>(
-              analysisState.dfbReleaseOwners.waitByPop, popOp.getOperation());
-          if (!waitOp) {
-            reject("pop has no unique receiver wait owner");
-            return;
-          }
-          LaunchNodeDomain waitDomain =
-              lookupOperationLaunchDomain(waitOp.getOperation(), analysisState);
-          if (!knownLaunchNodeDomainContains(
-                  waitDomain, getLaunchNodeCoord(receiverDFB.receiver))) {
-            reject("wait is not in the receiver NOC domain");
-            return;
-          }
-          if (!isNocKernelThread(waitOp)) {
-            reject("wait is not in the receiver NOC domain");
-            return;
-          }
-          std::optional<int64_t> waitedBlocks = getWaitedBlockCount(waitOp);
-          if (!waitedBlocks) {
-            reject("wait and pop use different block counts");
-            return;
-          }
-          if (*waitedBlocks != *releasedBlocks) {
-            reject("wait and pop use different block counts");
-            return;
-          }
-          if (!waitsWithPop.insert(waitOp.getOperation()).second) {
-            reject("wait owns more than one pop");
-          }
-        });
-
-    node.hasProvenPipeOnlyStream = valid;
-    if (valid) {
-      debugAcceptPipeOnlyStream(receiverDFB);
+    node.hasProvenPipeOnlyStream = true;
+    for (DeviceRefAttr receiverDevice : receiverDevices) {
+      PipeReceiverDFBKey receiverDFB = node.receiverDFB;
+      receiverDFB.receiverDevice = receiverDevice;
+      if (!provePipeOnlyReceiverStream(receiverDFB, receiverDFBs,
+                                       analysisState)) {
+        node.hasProvenPipeOnlyStream = false;
+      }
     }
   }
   return success();
@@ -1205,10 +1361,10 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
       }
       const PipeGraphAnalysisState::PipeTransferInfo &pipeInfo =
           pipeInfoIt->second;
-      if (failed(addPipeReceiver(
-              graph, postOp, key, getReceiverDevice(createOp),
-              pipeInfo.transferContract, pipeInfo.transferCreateOps,
-              postOp.getDst()))) {
+      if (failed(
+              addPipeReceiver(graph, postOp, key, getReceiverDevice(createOp),
+                              pipeInfo.transferContract,
+                              pipeInfo.transferCreateOps, postOp.getDst()))) {
         return failure();
       }
     }
@@ -1217,6 +1373,7 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   if (failed(collectLaunchNodeDomains(mod, analysisState))) {
     return failure();
   }
+  indexReceiverDFBStreamEvents(analysisState);
 
   if (failed(graph.assignReceiverSlotIndices(analysisState))) {
     return failure();

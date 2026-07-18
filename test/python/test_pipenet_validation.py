@@ -10,6 +10,9 @@ contract for invalid PipeNet shapes.
 
 import pytest
 import ttl
+import ttl.ttl_api as ttl_api
+
+from ttl._pipenets import iter_referenced_function_values
 
 
 def test_empty_pipenet_rejected():
@@ -50,6 +53,41 @@ def test_pipenet_graph_defers_target_routability_validation():
     net = ttl.PipeNet(graph=graph)
 
     assert net.graph is graph
+
+
+def test_graph_pipenet_requires_matching_operation_device_domain():
+    graph_domain = ttl.DeviceDomain((1, 2))
+    net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(graph_domain, edges=[((0, 0), (0, 1))])
+    )
+
+    def operation():
+        return net
+
+    with pytest.raises(ValueError, match="requires operation device_domain"):
+        ttl_api._build_operation_pipenets(operation, [])
+    with pytest.raises(ValueError, match="must match operation device_domain"):
+        ttl_api._build_operation_pipenets(operation, [], ttl.DeviceDomain((1, 3)))
+
+    pipenets = ttl_api._build_operation_pipenets(
+        operation, [], ttl.DeviceDomain((1, 2))
+    )
+    assert len(pipenets.graph_pipe_nets) == 1
+
+
+def test_capture_discovery_ignores_empty_closure_cells():
+    def make_function_with_empty_cell():
+        value = object()
+
+        def operation():
+            return value
+
+        del value
+        return operation
+
+    operation = make_function_with_empty_cell()
+
+    assert list(iter_referenced_function_values(operation)) == []
 
 
 def test_within_pipenet_overlapping_collective_dst_allowed():

@@ -427,6 +427,28 @@ static ::mlir::LogicalResult verifyNocAsyncAddressMode(Operation *op,
   return success();
 }
 
+static LogicalResult verifyRoutingPlaneRoute(Operation *op, Value manager,
+                                             Value routeId) {
+  auto openOp = routeId.getDefiningOp<OpenRoutingPlaneConnectionsOp>();
+  if (!openOp) {
+    return op->emitOpError("route id must be produced by "
+                           "ttkernel.routing_plane.open_connections");
+  }
+  if (openOp.getManager() != manager) {
+    return op->emitOpError(
+        "manager must match the manager that produced the route id");
+  }
+  return success();
+}
+
+LogicalResult RoutingPlaneAtomicIncOp::verify() {
+  return verifyRoutingPlaneRoute(getOperation(), getManager(), getRouteId());
+}
+
+LogicalResult RoutingPlaneFusedWriteAtomicIncOp::verify() {
+  return verifyRoutingPlaneRoute(getOperation(), getManager(), getRouteId());
+}
+
 //===----------------------------------------------------------------------===//
 // TensorAccessorArgsOp custom assembly format
 //===----------------------------------------------------------------------===//

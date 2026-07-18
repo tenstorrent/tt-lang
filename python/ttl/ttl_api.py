@@ -1094,7 +1094,7 @@ def _compile_ttnn_kernel(
     return compiled_kernel
 
 
-def _build_operation_pipenets(f: Callable, threads):
+def _build_operation_pipenets(f: Callable, threads, device_domain=None):
     """Discover PipeNets reachable from the operation and its threads, build
     the OperationPipeNets, validate it, and assign each Pipe its
     operation-local pipe-net id for AST emission.
@@ -1105,7 +1105,7 @@ def _build_operation_pipenets(f: Callable, threads):
     captured PipeNet referenced from multiple threads contributes one
     entry.
     """
-    from ._pipenets import OperationPipeNets
+    from ._pipenets import OperationPipeNets, iter_referenced_function_values
     from .pipe import _pipe_to_pipe_use
 
     seen: Dict[int, PipeNet] = {}
@@ -1113,11 +1113,9 @@ def _build_operation_pipenets(f: Callable, threads):
     def visit(func):
         if func is None:
             return
-        closure_vars = inspect.getclosurevars(func)
-        for namespace in (closure_vars.nonlocals, closure_vars.globals):
-            for value in namespace.values():
-                if isinstance(value, PipeNet) and id(value) not in seen:
-                    seen[id(value)] = value
+        for value in iter_referenced_function_values(func):
+            if isinstance(value, PipeNet) and id(value) not in seen:
+                seen[id(value)] = value
 
     visit(f)
     for thread in threads:
@@ -1126,6 +1124,12 @@ def _build_operation_pipenets(f: Callable, threads):
     graph = OperationPipeNets()
     for net in seen.values():
         if net.is_graph:
+            if device_domain is None:
+                raise ValueError("graph-based PipeNet requires operation device_domain")
+            if net.graph.domain != device_domain:
+                raise ValueError(
+                    "graph-based PipeNet domain must match operation device_domain"
+                )
             net_use = graph.add_graph_pipe_net(net.graph)
             net._graph_edges = net_use.edges
             net._graph_pipe_net_ids = net_use.pipe_net_ids
@@ -1567,7 +1571,7 @@ def _compile_kernel(
             "@ttl.datamovement() function inside your kernel."
         )
 
-    pipenets = _build_operation_pipenets(f, threads)
+    pipenets = _build_operation_pipenets(f, threads, device_domain)
 
     launch_grid = grid
 

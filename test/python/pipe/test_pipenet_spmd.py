@@ -10,13 +10,19 @@ core computes abs and writes tile (0, 1). Composing the mesh result proves that
 the same pipe schedule executes correctly on every device shard.
 """
 
+from math import prod
+
 import pytest
 import torch
 import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import assert_allclose, open_fabric_mesh
+from ttlang_test_utils import (
+    assert_allclose,
+    get_fabric_mesh_shape,
+    open_fabric_mesh,
+)
 
 # Opens a fabric mesh across all chips; run serially, not in the per-chip pool.
 pytestmark = pytest.mark.multi_device
@@ -65,11 +71,12 @@ def mesh_unicast_pipe_kernel(inp, out):
 
 @pytest.fixture
 def mesh_device():
-    num_devices = ttnn.get_num_devices()
+    mesh_shape = get_fabric_mesh_shape()
+    num_devices = prod(mesh_shape)
     if num_devices < MIN_DEVICES:
         pytest.skip(f"need >={MIN_DEVICES} devices, have {num_devices}")
 
-    with open_fabric_mesh() as mesh:
+    with open_fabric_mesh(requested_mesh_shape=mesh_shape) as mesh:
         yield mesh, num_devices
 
 

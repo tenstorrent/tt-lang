@@ -78,7 +78,7 @@ class DomainComponent:
         )
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True, init=False, eq=False)
 class DeviceRef:
     """Coordinate of one member of a `DeviceDomain`."""
 
@@ -110,6 +110,14 @@ class DeviceRef:
     @property
     def is_named(self) -> bool:
         return bool(self.component_names)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DeviceRef):
+            return NotImplemented
+        return self.coordinates == other.coordinates
+
+    def __hash__(self) -> int:
+        return hash(self.coordinates)
 
 
 @dataclass(frozen=True)
@@ -150,14 +158,14 @@ class AxisNeighborTransfer(StructuredTransfer):
 
 @dataclass(frozen=True)
 class GatherTransfer(StructuredTransfer):
-    """Transfer relation from every non-root device to one root."""
+    """Transfer relation to one component-local root in every product slice."""
 
     root: DeviceRef
 
 
 @dataclass(frozen=True)
 class MulticastTransfer(StructuredTransfer):
-    """Transfer relation from one source to every other device."""
+    """Transfer relation from one component-local source in every product slice."""
 
     source: DeviceRef
 
@@ -353,7 +361,11 @@ class TransferGraph:
         edges: Iterable[TransferEdge] = (),
         structured: Optional[StructuredTransfer] = None,
     ) -> None:
-        transfer_edges = tuple(edges)
+        if not isinstance(domain, DeviceDomain):
+            raise TypeError(f"domain must be a DeviceDomain, got {domain!r}")
+        transfer_edges = tuple(
+            self._normalize_explicit_edge(domain, edge) for edge in edges
+        )
         if structured is not None and transfer_edges:
             raise ValueError("TransferGraph must be explicit or structured, not both")
         if structured is None and not transfer_edges:
@@ -375,8 +387,6 @@ class TransferGraph:
             source_ref = domain.device_ref(source)
             if isinstance(destination, DeviceRange):
                 destination_ref = domain.resolve_device_range(destination)
-                if cls._range_contains(destination_ref, source_ref):
-                    raise ValueError("source-in-destination multicast is not supported")
             else:
                 destination_ref = domain.device_ref(destination)
             transfer_edges.append(TransferEdge(source_ref, destination_ref))
@@ -419,11 +429,14 @@ class TransferGraph:
     def gather(
         cls, domain: DeviceDomain, root: Any, *, component: Optional[str] = None
     ) -> "TransferGraph":
+        component_name = cls._default_component(domain, component)
         return cls(
             domain,
             structured=GatherTransfer(
-                component_name=cls._default_component(domain, component),
-                root=domain.device_ref(root),
+                component_name=component_name,
+                root=cls._component_device_ref(
+                    domain, component_name, root, "gather root"
+                ),
             ),
         )
 
@@ -431,11 +444,14 @@ class TransferGraph:
     def multicast(
         cls, domain: DeviceDomain, source: Any, *, component: Optional[str] = None
     ) -> "TransferGraph":
+        component_name = cls._default_component(domain, component)
         return cls(
             domain,
             structured=MulticastTransfer(
-                component_name=cls._default_component(domain, component),
-                source=domain.device_ref(source),
+                component_name=component_name,
+                source=cls._component_device_ref(
+                    domain, component_name, source, "multicast source"
+                ),
             ),
         )
 
@@ -510,7 +526,7 @@ class TransferGraph:
             for source in devices:
                 destination_coordinates = list(source.coordinates)
                 destination_coordinates[component_index] = (
-                    self.structured.root.coordinates[component_index]
+                    self.structured.root.coordinates[0]
                 )
                 destination = DeviceRef(*destination_coordinates)
                 if source != destination:
@@ -521,7 +537,7 @@ class TransferGraph:
             for destination in devices:
                 source_coordinates = list(destination.coordinates)
                 source_coordinates[component_index] = (
-                    self.structured.source.coordinates[component_index]
+                    self.structured.source.coordinates[0]
                 )
                 source = DeviceRef(*source_coordinates)
                 if source != destination:
@@ -590,18 +606,39 @@ class TransferGraph:
                 raise ValueError(f"offset must be positive, got {offset}")
             if not isinstance(structured.wrap, bool):
                 raise TypeError(f"wrap must be a bool, got {structured.wrap!r}")
+            axis_extent = component.extent[axis]
+            if structured.wrap and offset % axis_extent == 0:
+                raise ValueError(
+                    f"axis_neighbor offset {offset} produces self-transfers "
+                    f"for wrapped axis extent {axis_extent}"
+                )
+            if not structured.wrap and offset >= axis_extent:
+                raise ValueError(
+                    f"axis_neighbor offset {offset} produces no transfers for "
+                    f"axis extent {axis_extent} without wrapping"
+                )
             return structured
 
         if isinstance(structured, GatherTransfer):
             return GatherTransfer(
                 component_name=structured.component_name,
-                root=domain.resolve_device_ref(structured.root),
+                root=TransferGraph._component_device_ref(
+                    domain,
+                    structured.component_name,
+                    structured.root,
+                    "gather root",
+                ),
             )
 
         if isinstance(structured, MulticastTransfer):
             return MulticastTransfer(
                 component_name=structured.component_name,
-                source=domain.resolve_device_ref(structured.source),
+                source=TransferGraph._component_device_ref(
+                    domain,
+                    structured.component_name,
+                    structured.source,
+                    "multicast source",
+                ),
             )
 
         if isinstance(structured, AllToAllTransfer):
@@ -610,6 +647,63 @@ class TransferGraph:
         raise TypeError(
             f"unsupported structured transfer type {type(structured).__name__}"
         )
+
+    @staticmethod
+    def _normalize_explicit_edge(
+        domain: DeviceDomain, edge: TransferEdge
+    ) -> TransferEdge:
+        if not isinstance(edge, TransferEdge):
+            raise TypeError(f"explicit edge must be a TransferEdge, got {edge!r}")
+        source = domain.resolve_device_ref(edge.source)
+        if isinstance(edge.destination, DeviceRange):
+            destination = domain.resolve_device_range(edge.destination)
+            if TransferGraph._range_contains(destination, source):
+                raise ValueError("source-in-destination multicast is not supported")
+        elif isinstance(edge.destination, DeviceRef):
+            destination = domain.resolve_device_ref(edge.destination)
+            if source == destination:
+                raise ValueError("self-transfer edges are not supported")
+        else:
+            raise TypeError(
+                "explicit edge destination must be a DeviceRef or DeviceRange, "
+                f"got {edge.destination!r}"
+            )
+        return TransferEdge(source, destination)
+
+    @staticmethod
+    def _component_device_ref(
+        domain: DeviceDomain,
+        component_name: str,
+        value: Any,
+        context: str,
+    ) -> DeviceRef:
+        component = domain.components[domain.component_index(component_name)]
+        if isinstance(value, DeviceRef):
+            if value.is_named:
+                if value.component_names != (component_name,):
+                    raise ValueError(
+                        f"{context} must name only component {component_name!r}"
+                    )
+            elif len(value.coordinates) != 1:
+                raise ValueError(
+                    f"{context} must identify only component {component_name!r}"
+                )
+            coordinates = value.coordinates[0]
+        else:
+            coordinates = _normalize_coordinate(value, context)
+
+        if len(coordinates) != len(component.extent):
+            raise ValueError(
+                f"{context} has rank {len(coordinates)}, expected "
+                f"{len(component.extent)} for component {component_name!r}"
+            )
+        for axis, (coordinate, extent) in enumerate(zip(coordinates, component.extent)):
+            if coordinate >= extent:
+                raise ValueError(
+                    f"{context} axis {axis} requires 0 <= coord < {extent}, "
+                    f"got {coordinate}"
+                )
+        return DeviceRef(coordinates)
 
     @staticmethod
     def _range_contains(device_range: DeviceRange, device_ref: DeviceRef) -> bool:
