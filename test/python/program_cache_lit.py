@@ -24,39 +24,19 @@ from ttlang_test_utils import to_dram, to_l1
 
 @ttl.operation(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
-    """Simple add kernel for cache testing."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
-    @ttl.compute()
-    def compute():
-        l = lhs_dfb.wait()
-        r = rhs_dfb.wait()
-        o = out_dfb.reserve()
-        o.store(l + r)
-        l.pop()
-        r.pop()
-        o.push()
+    lhs_block = lhs_dfb.reserve()
+    ttl.copy(lhs[0:1, 0:1], lhs_block)
+    rhs_block = rhs_dfb.reserve()
+    ttl.copy(rhs[0:1, 0:1], rhs_block)
 
-    @ttl.datamovement()
-    def dm_read():
-        lhs_blk = lhs_dfb.reserve()
-        tx = ttl.copy(lhs[0, 0], lhs_blk)
-        tx.wait()
-        lhs_blk.push()
+    result = out_dfb.reserve()
+    result.store(lhs_dfb.wait() + rhs_dfb.wait())
 
-        rhs_blk = rhs_dfb.reserve()
-        tx = ttl.copy(rhs[0, 0], rhs_blk)
-        tx.wait()
-        rhs_blk.push()
-
-    @ttl.datamovement()
-    def dm_write():
-        out_blk = out_dfb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
-        tx.wait()
-        out_blk.pop()
+    ttl.copy(out_dfb.wait(), out[0:1, 0:1])
 
 
 @ttl.operation(grid=(1, 1))
@@ -135,7 +115,7 @@ try:
     print("Call 2 (should use cache):")
     # CHECK: Call 2 (should use cache)
     # CHECK-NOT: TTNN INTEROP: Compiling kernel
-    add_kernel(lhs2, rhs2, out2)
+    add_kernel(out=out2, rhs=rhs2, lhs=lhs2)
     result2 = ttnn.to_torch(out2)
     assert torch.allclose(result2.float(), torch.full((32, 32), 17.0), rtol=1e-2)
     print("Result 2 correct: 10 + 7 = 17")

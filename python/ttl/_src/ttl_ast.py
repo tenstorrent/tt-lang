@@ -661,6 +661,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 if not func_args and not kwargs and node.attr in ("shape", "dtype"):
                     value = self.visit(node.value)
                     if value is not None and hasattr(value, "type"):
+                        # A DFB block's .shape is its tile-block shape; checked
+                        # before the tensor case so cb.shape works too.
+                        cb_ty = ttl.CircularBufferType.maybe_downcast(value.type)
+                        if cb_ty is not None:
+                            return tuple(cb_ty.shape)
                         tensor_ty = RankedTensorType.maybe_downcast(value.type)
                         if tensor_ty is not None:
                             if node.attr == "shape":
