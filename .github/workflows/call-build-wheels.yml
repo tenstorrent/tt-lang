@@ -84,6 +84,9 @@ jobs:
         shell: bash
 
     steps:
+      - name: Maximize space
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
@@ -172,6 +175,12 @@ jobs:
           source /opt/ttlang-toolchain/venv/bin/activate
           python .github/scripts/check-wheel-bundled-payload.py --dist-dir dist
 
+      - name: Free disk space before wheel installation tests
+        run: |
+          rm -rf /tmp/ttlang-prefix build dist-raw .wheel-patch-src
+          python3.12 -m pip cache purge || true
+          df -h
+
       - name: Test tt-lang wheel
         run: |
           python3.12 -m venv /tmp/test-venv-hw
@@ -185,7 +194,7 @@ jobs:
 
       - name: Free disk space before remaining wheel tests
         run: |
-          rm -rf /tmp/test-venv-hw /tmp/ttlang-prefix build dist-raw
+          rm -rf /tmp/test-venv-hw
           python3.12 -m pip cache purge || true
           df -h
 

@@ -984,7 +984,12 @@ class TTCompilerBase(PyKernelAstBase):
 
     def visit_BinOp(self, node):
         def materialize(value):
-            if not value:
+            # A host int operand (e.g. a shape/grid-derived bound) becomes an
+            # index constant so it can combine with SSA values. Matches how
+            # captured int constants are emitted at function entry.
+            if isinstance(value, int) and not isinstance(value, bool):
+                return arith.ConstantOp(IndexType.get(self.ctx), value).result
+            if value is None:
                 raise ValueError("Binary operands not found")
             if isinstance(value, OpView):
                 value = value.result
