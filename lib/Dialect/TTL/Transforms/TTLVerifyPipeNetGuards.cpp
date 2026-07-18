@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <tuple>
@@ -45,6 +46,7 @@ namespace mlir::tt::ttl {
 namespace {
 
 constexpr std::size_t kMaxPipeScheduleCycleNotes = 8;
+constexpr std::uint64_t kMaxPipeExecutionProofIterations = 1'000'000;
 
 //===----------------------------------------------------------------------===//
 // Module state collected before the analysis runs and updated during it.
@@ -756,30 +758,6 @@ SmallVector<Operation *> getEnclosingLoopNest(Operation *op) {
   return loops;
 }
 
-/// One statically proven execution count for an enclosing loop.
-struct PipeLoopExecution {
-  Operation *op;
-  llvm::APInt tripCount;
-  std::optional<int64_t> lowerBound;
-  std::optional<int64_t> step;
-};
-
-/// One loop-IV-dependent branch that restricts an event's executions.
-struct PipeConditionalExecution {
-  Operation *op;
-  std::size_t regionNumber;
-
-  bool operator==(const PipeConditionalExecution &rhs) const {
-    return op == rhs.op && regionNumber == rhs.regionNumber;
-  }
-};
-
-/// Structured-control facts needed to prove dynamic event correspondence.
-struct PipeExecutionContext {
-  SmallVector<PipeLoopExecution> loops;
-  SmallVector<PipeConditionalExecution> conditionals;
-};
-
 /// Return an integer attribute with the type and value of `original`.
 IntegerAttr getIntegerAttr(Value original, int64_t value) {
   Builder builder(original.getContext());
@@ -790,19 +768,144 @@ IntegerAttr getIntegerAttr(Value original, int64_t value) {
                                 value);
 }
 
-/// Compute an `scf.for` trip count after evaluating its bounds at `coord`.
-std::optional<llvm::APInt> getTripCountAtLaunchNode(scf::ForOp forOp,
-                                                    LaunchNodeCoord coord) {
-  if (std::optional<llvm::APInt> tripCount = forOp.getStaticTripCount()) {
-    return tripCount;
+/// Return an APInt with the bit width of an integer or index SSA value.
+llvm::APInt getIntegerValue(Value value, int64_t integerValue) {
+  std::uint32_t bitWidth = 64;
+  if (auto integerType = mlir::dyn_cast<IntegerType>(value.getType())) {
+    bitWidth = integerType.getWidth();
+  }
+  return llvm::APInt(bitWidth, static_cast<std::uint64_t>(integerValue),
+                     /*isSigned=*/true);
+}
+
+/// Evaluate integer arithmetic at one loop iteration and launch node.
+std::optional<int64_t> evaluateIntegerAtIteration(
+    Value value, LaunchNodeCoord coord,
+    const llvm::DenseMap<Value, int64_t> &inductionValues) {
+  if (auto it = inductionValues.find(value); it != inductionValues.end()) {
+    return it->second;
+  }
+  if (std::optional<int64_t> launchValue =
+          evaluateIndexAtLaunchNode(value, coord)) {
+    return launchValue;
+  }
+  if (auto castOp = value.getDefiningOp<arith::IndexCastOp>()) {
+    return evaluateIntegerAtIteration(castOp.getIn(), coord, inductionValues);
+  }
+  if (auto castOp = value.getDefiningOp<arith::IndexCastUIOp>()) {
+    return evaluateIntegerAtIteration(castOp.getIn(), coord, inductionValues);
   }
 
+  auto evaluateBinary = [&](Value lhsValue, Value rhsValue,
+                            auto operation) -> std::optional<int64_t> {
+    std::optional<int64_t> lhs =
+        evaluateIntegerAtIteration(lhsValue, coord, inductionValues);
+    std::optional<int64_t> rhs =
+        evaluateIntegerAtIteration(rhsValue, coord, inductionValues);
+    if (!lhs || !rhs) {
+      return std::nullopt;
+    }
+    llvm::APInt result =
+        operation(getIntegerValue(value, *lhs), getIntegerValue(value, *rhs));
+    return result.getSExtValue();
+  };
+
+  if (auto addOp = value.getDefiningOp<arith::AddIOp>()) {
+    return evaluateBinary(
+        addOp.getLhs(), addOp.getRhs(),
+        [](llvm::APInt lhs, llvm::APInt rhs) { return lhs + rhs; });
+  }
+  if (auto subOp = value.getDefiningOp<arith::SubIOp>()) {
+    return evaluateBinary(
+        subOp.getLhs(), subOp.getRhs(),
+        [](llvm::APInt lhs, llvm::APInt rhs) { return lhs - rhs; });
+  }
+  if (auto mulOp = value.getDefiningOp<arith::MulIOp>()) {
+    return evaluateBinary(
+        mulOp.getLhs(), mulOp.getRhs(),
+        [](llvm::APInt lhs, llvm::APInt rhs) { return lhs * rhs; });
+  }
+  return std::nullopt;
+}
+
+/// Evaluate a branch condition at one loop iteration and launch node.
+std::optional<bool> evaluatePredicateAtIteration(
+    Value value, LaunchNodeCoord coord,
+    const llvm::DenseMap<Value, int64_t> &inductionValues,
+    const ModuleState &state) {
+  if (std::optional<bool> launchValue =
+          evaluatePredicateAtLaunchNode(value, coord, state)) {
+    return launchValue;
+  }
+  if (auto cmpOp = value.getDefiningOp<arith::CmpIOp>()) {
+    std::optional<int64_t> lhs =
+        evaluateIntegerAtIteration(cmpOp.getLhs(), coord, inductionValues);
+    std::optional<int64_t> rhs =
+        evaluateIntegerAtIteration(cmpOp.getRhs(), coord, inductionValues);
+    if (!lhs || !rhs) {
+      return std::nullopt;
+    }
+    llvm::APInt lhsValue = getIntegerValue(cmpOp.getLhs(), *lhs);
+    llvm::APInt rhsValue = getIntegerValue(cmpOp.getRhs(), *rhs);
+    switch (cmpOp.getPredicate()) {
+    case arith::CmpIPredicate::eq:
+      return lhsValue == rhsValue;
+    case arith::CmpIPredicate::ne:
+      return lhsValue != rhsValue;
+    case arith::CmpIPredicate::slt:
+      return lhsValue.slt(rhsValue);
+    case arith::CmpIPredicate::sle:
+      return lhsValue.sle(rhsValue);
+    case arith::CmpIPredicate::sgt:
+      return lhsValue.sgt(rhsValue);
+    case arith::CmpIPredicate::sge:
+      return lhsValue.sge(rhsValue);
+    case arith::CmpIPredicate::ult:
+      return lhsValue.ult(rhsValue);
+    case arith::CmpIPredicate::ule:
+      return lhsValue.ule(rhsValue);
+    case arith::CmpIPredicate::ugt:
+      return lhsValue.ugt(rhsValue);
+    case arith::CmpIPredicate::uge:
+      return lhsValue.uge(rhsValue);
+    }
+  }
+  auto evaluateBinary = [&](Value lhsValue, Value rhsValue,
+                            auto operation) -> std::optional<bool> {
+    std::optional<bool> lhs =
+        evaluatePredicateAtIteration(lhsValue, coord, inductionValues, state);
+    std::optional<bool> rhs =
+        evaluatePredicateAtIteration(rhsValue, coord, inductionValues, state);
+    if (!lhs || !rhs) {
+      return std::nullopt;
+    }
+    return operation(*lhs, *rhs);
+  };
+  if (auto andOp = value.getDefiningOp<arith::AndIOp>()) {
+    return evaluateBinary(andOp.getLhs(), andOp.getRhs(),
+                          [](bool lhs, bool rhs) { return lhs && rhs; });
+  }
+  if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
+    return evaluateBinary(orOp.getLhs(), orOp.getRhs(),
+                          [](bool lhs, bool rhs) { return lhs || rhs; });
+  }
+  if (auto xorOp = value.getDefiningOp<arith::XOrIOp>()) {
+    return evaluateBinary(xorOp.getLhs(), xorOp.getRhs(),
+                          [](bool lhs, bool rhs) { return lhs != rhs; });
+  }
+  return std::nullopt;
+}
+
+/// Compute an `scf.for` trip count at one loop iteration and launch node.
+std::optional<llvm::APInt>
+getTripCountAtIteration(scf::ForOp forOp, LaunchNodeCoord coord,
+                        const llvm::DenseMap<Value, int64_t> &inductionValues) {
   std::optional<int64_t> lowerBound =
-      evaluateIndexAtLaunchNode(forOp.getLowerBound(), coord);
+      evaluateIntegerAtIteration(forOp.getLowerBound(), coord, inductionValues);
   std::optional<int64_t> upperBound =
-      evaluateIndexAtLaunchNode(forOp.getUpperBound(), coord);
+      evaluateIntegerAtIteration(forOp.getUpperBound(), coord, inductionValues);
   std::optional<int64_t> step =
-      evaluateIndexAtLaunchNode(forOp.getStep(), coord);
+      evaluateIntegerAtIteration(forOp.getStep(), coord, inductionValues);
   if (!lowerBound || !upperBound || !step) {
     return std::nullopt;
   }
@@ -814,61 +917,10 @@ std::optional<llvm::APInt> getTripCountAtLaunchNode(scf::ForOp forOp,
                            scf::computeUbMinusLb);
 }
 
-/// Return true when `value` is a deterministic arithmetic expression of
-/// constants and induction variables from `loopNest`.
-bool isLoopInductionExpression(Value value, ArrayRef<Operation *> loopNest,
-                               llvm::DenseMap<Value, bool> &cache) {
-  if (auto cacheIt = cache.find(value); cacheIt != cache.end()) {
-    return cacheIt->second;
-  }
-  if (getConstantIntValue(value)) {
-    cache[value] = true;
-    return true;
-  }
-  if (auto blockArgument = mlir::dyn_cast<BlockArgument>(value)) {
-    bool isInductionVariable = llvm::any_of(loopNest, [&](Operation *loopOp) {
-      auto forOp = mlir::dyn_cast<scf::ForOp>(loopOp);
-      return forOp && forOp.getInductionVar() == blockArgument;
-    });
-    cache[value] = isInductionVariable;
-    return isInductionVariable;
-  }
-
-  Operation *definingOp = value.getDefiningOp();
-  if (!definingOp || definingOp->getDialect()->getNamespace() !=
-                         arith::ArithDialect::getDialectNamespace()) {
-    cache[value] = false;
-    return false;
-  }
-  bool supported = llvm::all_of(definingOp->getOperands(), [&](Value operand) {
-    return isLoopInductionExpression(operand, loopNest, cache);
-  });
-  cache[value] = supported;
-  return supported;
-}
-
-/// Build the structured-control proof for one event at one launch node.
-std::optional<PipeExecutionContext>
-getPipeExecutionContext(Operation *op, LaunchNodeCoord coord) {
-  PipeExecutionContext context;
-  SmallVector<Operation *> loopNest = getEnclosingLoopNest(op);
-  for (Operation *loopOp : loopNest) {
-    auto loopLike = mlir::cast<LoopLikeOpInterface>(loopOp);
-    std::optional<llvm::APInt> tripCount = loopLike.getStaticTripCount();
-    std::optional<int64_t> lowerBound;
-    std::optional<int64_t> step;
-    if (auto forOp = mlir::dyn_cast<scf::ForOp>(loopOp)) {
-      lowerBound = evaluateIndexAtLaunchNode(forOp.getLowerBound(), coord);
-      step = evaluateIndexAtLaunchNode(forOp.getStep(), coord);
-      tripCount = getTripCountAtLaunchNode(forOp, coord);
-    }
-    if (!tripCount) {
-      return std::nullopt;
-    }
-    context.loops.push_back({loopOp, *tripCount, lowerBound, step});
-  }
-
-  llvm::DenseMap<Value, bool> inductionExpressionCache;
+/// Return each `scf.if` region that controls one event.
+std::optional<SmallVector<std::pair<scf::IfOp, std::size_t>>>
+getEnclosingConditions(Operation *op) {
+  SmallVector<std::pair<scf::IfOp, std::size_t>> conditions;
   for (Operation *childOp = op, *parentOp = op->getParentOp(); parentOp;
        childOp = parentOp, parentOp = parentOp->getParentOp()) {
     auto ifOp = mlir::dyn_cast<scf::IfOp>(parentOp);
@@ -877,51 +929,93 @@ getPipeExecutionContext(Operation *op, LaunchNodeCoord coord) {
     }
     Region *childRegion = childOp->getParentRegion();
     std::size_t regionNumber = childRegion->getRegionNumber();
-    if (std::optional<bool> selected =
-            evaluatePredicateAtLaunchNode(ifOp.getCondition(), coord)) {
-      std::size_t selectedRegion = *selected ? 0 : 1;
-      assert(regionNumber == selectedRegion &&
-             "launch domain included an unselected scf.if region");
-      continue;
-    }
-    if (!isLoopInductionExpression(ifOp.getCondition(), loopNest,
-                                   inductionExpressionCache)) {
+    if (regionNumber > 1) {
       return std::nullopt;
     }
-    context.conditionals.push_back({parentOp, regionNumber});
+    conditions.emplace_back(ifOp, regionNumber);
   }
-  std::reverse(context.conditionals.begin(), context.conditionals.end());
-  return context;
+  std::reverse(conditions.begin(), conditions.end());
+  return conditions;
 }
 
-/// Return true when two contexts execute the corresponding static events the
-/// same number of times and under the same loop-IV predicates.
-bool haveMatchingExecutionContexts(const PipeExecutionContext &lhs,
-                                   const PipeExecutionContext &rhs) {
-  if (lhs.loops.size() != rhs.loops.size() ||
-      lhs.conditionals != rhs.conditionals) {
-    return false;
-  }
-  bool hasLoopConditional = !lhs.conditionals.empty();
-  for (auto [lhsLoop, rhsLoop] : llvm::zip(lhs.loops, rhs.loops)) {
-    if (lhsLoop.op != rhsLoop.op || lhsLoop.tripCount != rhsLoop.tripCount) {
-      return false;
+/// Count one event's executions by evaluating its structured control at a
+/// launch node. Bounded enumeration handles loop-IV-dependent conditions while
+/// conservatively rejecting schedules whose counts cannot be proven.
+std::optional<std::uint64_t> getPipeExecutionCount(Operation *op,
+                                                   LaunchNodeCoord coord,
+                                                   const ModuleState &state) {
+  SmallVector<Operation *> loopNest = getEnclosingLoopNest(op);
+  SmallVector<scf::ForOp> forOps;
+  forOps.reserve(loopNest.size());
+  for (Operation *loopOp : loopNest) {
+    auto forOp = mlir::dyn_cast<scf::ForOp>(loopOp);
+    if (!forOp) {
+      return std::nullopt;
     }
-    if (hasLoopConditional) {
-      if (!lhsLoop.lowerBound || !rhsLoop.lowerBound || !lhsLoop.step ||
-          !rhsLoop.step || lhsLoop.lowerBound != rhsLoop.lowerBound ||
-          lhsLoop.step != rhsLoop.step) {
-        return false;
+    forOps.push_back(forOp);
+  }
+  auto conditions = getEnclosingConditions(op);
+  if (!conditions) {
+    return std::nullopt;
+  }
+
+  llvm::DenseMap<Value, int64_t> inductionValues;
+  std::uint64_t remainingIterations = kMaxPipeExecutionProofIterations;
+  std::function<std::optional<std::uint64_t>(std::size_t)> countExecutions =
+      [&](std::size_t loopIndex) -> std::optional<std::uint64_t> {
+    if (loopIndex == forOps.size()) {
+      for (auto [ifOp, regionNumber] : *conditions) {
+        std::optional<bool> selected = evaluatePredicateAtIteration(
+            ifOp.getCondition(), coord, inductionValues, state);
+        if (!selected) {
+          return std::nullopt;
+        }
+        if ((*selected ? 0 : 1) != regionNumber) {
+          return 0;
+        }
       }
+      return 1;
     }
-  }
-  return true;
+
+    scf::ForOp forOp = forOps[loopIndex];
+    std::optional<int64_t> lowerBound = evaluateIntegerAtIteration(
+        forOp.getLowerBound(), coord, inductionValues);
+    std::optional<int64_t> step =
+        evaluateIntegerAtIteration(forOp.getStep(), coord, inductionValues);
+    std::optional<llvm::APInt> tripCount =
+        getTripCountAtIteration(forOp, coord, inductionValues);
+    if (!lowerBound || !step || !tripCount) {
+      return std::nullopt;
+    }
+    std::uint64_t iterations =
+        tripCount->getLimitedValue(kMaxPipeExecutionProofIterations + 1);
+    if (iterations > remainingIterations) {
+      return std::nullopt;
+    }
+
+    llvm::APInt inductionValue =
+        getIntegerValue(forOp.getInductionVar(), *lowerBound);
+    llvm::APInt stepValue = getIntegerValue(forOp.getStep(), *step);
+    std::uint64_t total = 0;
+    for (std::uint64_t iteration = 0; iteration < iterations; ++iteration) {
+      --remainingIterations;
+      inductionValues[forOp.getInductionVar()] = inductionValue.getSExtValue();
+      std::optional<std::uint64_t> nestedCount = countExecutions(loopIndex + 1);
+      if (!nestedCount) {
+        return std::nullopt;
+      }
+      total += *nestedCount;
+      inductionValue += stepValue;
+    }
+    inductionValues.erase(forOp.getInductionVar());
+    return total;
+  };
+  return countExecutions(0);
 }
 
 /// Add one-to-one FIFO dependencies for repeated events of one PipeKey.
-/// Static occurrences correspond only when their counts and proven structured
-/// execution contexts agree; otherwise their dynamic rendezvous counts can
-/// differ.
+/// Static occurrences correspond only when their dynamic execution counts
+/// agree; otherwise the endpoint rendezvous counts can differ.
 LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
                                      ArrayRef<PipeScheduleNodeId> predecessors,
                                      ArrayRef<PipeScheduleNodeId> successors,
@@ -945,14 +1039,12 @@ LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
     return failure();
   }
   for (auto [predecessor, successor] : llvm::zip(predecessors, successors)) {
-    std::optional<PipeExecutionContext> predecessorContext =
-        getPipeExecutionContext(nodes[predecessor].op,
-                                nodes[predecessor].coord);
-    std::optional<PipeExecutionContext> successorContext =
-        getPipeExecutionContext(nodes[successor].op, nodes[successor].coord);
-    if (!predecessorContext || !successorContext ||
-        !haveMatchingExecutionContexts(*predecessorContext,
-                                       *successorContext)) {
+    std::optional<std::uint64_t> predecessorCount = getPipeExecutionCount(
+        nodes[predecessor].op, nodes[predecessor].coord, state);
+    std::optional<std::uint64_t> successorCount = getPipeExecutionCount(
+        nodes[successor].op, nodes[successor].coord, state);
+    if (!predecessorCount || !successorCount ||
+        predecessorCount != successorCount) {
       auto diag = nodes[successor].op->emitOpError()
                   << "cannot prove a one-to-one synchronization schedule on "
                      "PipeNet "

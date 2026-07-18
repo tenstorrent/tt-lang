@@ -152,6 +152,12 @@ struct LaunchNodeDomainState {
   void initialize(ModuleOp module);
 };
 
+/// Evaluate a predicate at one launch coordinate using PipeNet role domains in
+/// addition to the expressions supported by the state-independent overload.
+std::optional<bool>
+evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
+                              const LaunchNodeDomainState &state);
+
 /// Return the operation with the earlier source location.
 ///
 /// Diagnostics use this to attach a single note for combined unknown domains

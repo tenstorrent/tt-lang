@@ -341,6 +341,62 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// Corresponding events may use different structured control after thread
+// splitting. The receiver posts once, and the sender executes only on the last
+// loop iteration, so both endpoints execute one rendezvous event.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @post_outside_sender_loop
+  // CHECK: return
+  func.func @post_outside_sender_loop() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
+    scf.if %is_dst {
+      %recv_reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      ttl.wait %recv : !ttl.transfer_handle
+    }
+    func.return
+  }
+
+  // CHECK-LABEL: func.func @send_on_last_iteration
+  // CHECK: return
+  func.func @send_on_last_iteration() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %c4 = arith.constant 4 : index
+    %is_src = ttl.is_src {pipe_net_id = 0 : i64}
+    scf.if %is_src {
+      scf.for %iteration = %c0 to %c4 step %c1 {
+        %is_last = arith.cmpi eq, %iteration, %c3 : index
+        scf.if %is_last {
+          %send = ttl.copy %send_cb, %pipe
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // ttl.is_active in a scope spanning both src and dst roles.
 
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {

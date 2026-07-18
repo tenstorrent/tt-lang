@@ -278,10 +278,20 @@ std::optional<int64_t> evaluateIndexAtLaunchNode(Value value,
   return std::nullopt;
 }
 
-/// Evaluate boolean predicates composed from statically evaluable comparisons
-/// and integer boolean operations for one launch coordinate.
-std::optional<bool> evaluatePredicateAtLaunchNode(Value value,
-                                                  LaunchNodeCoord coord) {
+/// Evaluate boolean predicates composed from statically evaluable comparisons,
+/// PipeNet roles, and integer boolean operations for one launch coordinate.
+static std::optional<bool>
+evaluatePredicateAtLaunchNodeImpl(Value value, LaunchNodeCoord coord,
+                                  const LaunchNodeDomainState *state) {
+  if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
+    if (!state) {
+      return std::nullopt;
+    }
+    return knownLaunchNodeDomainContains(
+        state->getRoleDomain(predicate.getReferencedPipeNetId(),
+                             predicate.getReferencedRole()),
+        coord);
+  }
   if (value.getType().isInteger(1)) {
     if (auto constant = getConstantIntValue(value)) {
       return *constant != 0;
@@ -313,27 +323,38 @@ std::optional<bool> evaluatePredicateAtLaunchNode(Value value,
     }
   }
   if (auto andOp = value.getDefiningOp<arith::AndIOp>()) {
-    auto lhs = evaluatePredicateAtLaunchNode(andOp.getLhs(), coord);
-    auto rhs = evaluatePredicateAtLaunchNode(andOp.getRhs(), coord);
+    auto lhs = evaluatePredicateAtLaunchNodeImpl(andOp.getLhs(), coord, state);
+    auto rhs = evaluatePredicateAtLaunchNodeImpl(andOp.getRhs(), coord, state);
     if (lhs && rhs) {
       return *lhs && *rhs;
     }
   }
   if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
-    auto lhs = evaluatePredicateAtLaunchNode(orOp.getLhs(), coord);
-    auto rhs = evaluatePredicateAtLaunchNode(orOp.getRhs(), coord);
+    auto lhs = evaluatePredicateAtLaunchNodeImpl(orOp.getLhs(), coord, state);
+    auto rhs = evaluatePredicateAtLaunchNodeImpl(orOp.getRhs(), coord, state);
     if (lhs && rhs) {
       return *lhs || *rhs;
     }
   }
   if (auto xorOp = value.getDefiningOp<arith::XOrIOp>()) {
-    auto lhs = evaluatePredicateAtLaunchNode(xorOp.getLhs(), coord);
-    auto rhs = evaluatePredicateAtLaunchNode(xorOp.getRhs(), coord);
+    auto lhs = evaluatePredicateAtLaunchNodeImpl(xorOp.getLhs(), coord, state);
+    auto rhs = evaluatePredicateAtLaunchNodeImpl(xorOp.getRhs(), coord, state);
     if (lhs && rhs) {
       return *lhs != *rhs;
     }
   }
   return std::nullopt;
+}
+
+std::optional<bool> evaluatePredicateAtLaunchNode(Value value,
+                                                  LaunchNodeCoord coord) {
+  return evaluatePredicateAtLaunchNodeImpl(value, coord, nullptr);
+}
+
+std::optional<bool>
+evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
+                              const LaunchNodeDomainState &state) {
+  return evaluatePredicateAtLaunchNodeImpl(value, coord, &state);
 }
 
 /// Return true if evaluating `value` can depend on the current launch
