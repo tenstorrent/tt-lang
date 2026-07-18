@@ -4,7 +4,7 @@
 
 # REQUIRES: ttnn, tt-device
 #
-# RUN: env TTLANG_FINAL_MLIR=%t.final.mlir timeout 180 %python %s > %t.output 2>&1
+# RUN: env TTLANG_FINAL_MLIR=%t.final.mlir timeout 240 %python %s > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=FINAL < %t.final.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: FileCheck %s --check-prefix=RUNTIME < %t.output
@@ -16,8 +16,8 @@ https://github.com/tenstorrent/tt-lang/issues/625. The report stated that
 either PipeNet delivery route alone completed, while enabling both routes
 deadlocked.
 
-The runtime RUN uses GRID_DIM=2, the original small issue-625 reproducer. It
-keeps the same row/column/helper PipeNet structure, both-route semantics,
+The runtime RUN uses GRID_DIM=7 to cover the issue-628 code-size reproducer.
+It keeps the same row/column/helper PipeNet structure, both-route semantics,
 float32 tensors, and compute-side DFB waits. It fixes the schedule by posting
 loopback receives before sending and by popping send DFB blocks before reusing
 them. Each node writes one result tile per K-pair, which verifies both
@@ -30,10 +30,7 @@ constant:
 
 The output is an OUTPUT_K_PAIRS*GRID_DIM x (GRID_DIM+1) tile grid. Each output
 tile is the sum of the row-route tile and column-route tile received by that
-node. For the runtime GRID_DIM=2 run, the expected output tile values are:
-
-  4 6 2
-  4 8 6
+node. make_expected_output computes the full GRID_DIM=7 expected tensor.
 """
 
 import contextlib  # noqa: E402
@@ -47,9 +44,7 @@ import ttl  # noqa: E402
 from ttlang_test_utils import assert_allclose, to_dram  # noqa: E402
 
 TILE = 32
-# TODO(#628): increase toward 7 after PipeNet data-movement lowering stops
-# duplicating transfer bodies per participating coordinate.
-GRID_DIM = 2
+GRID_DIM = 7
 
 
 def get_transfer_k_tiles(grid_dim):
@@ -313,22 +308,23 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 
 # Transfers with disjoint receiver sets reuse completion semaphores. The six
 # completion semaphores are followed by the sender-ready semaphore at index 6.
+# Table-driven transfers publish receiver addresses in one 32-byte SRAM table.
 # FINAL-LABEL: module attributes
-# FINAL-SAME: ttl.pipe_sync_semaphore_count = 7 : i64
-# FINAL-NOT: ttl.pipe_sram_scratch_bytes
+# FINAL-DAG: ttl.pipe_sync_semaphore_count = 7 : i64
+# FINAL-DAG: ttl.pipe_sram_scratch_bytes = 32 : i64
 # FINAL-NOT: ttl.pipe_global_semaphore_count
 # FINAL: func.func @post_receives_and_send
-# FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0, 1>
+# FINAL-NOT: ttl.pipe_computed_address_dfb_indices
 #
 # CHECK-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
-# CHECK-CPP-DAG: {{(size_t|int32_t)}} [[READY:v[0-9]+]] = 6;
-# Receiver DFB bases are loop-invariant and may be materialized before the
-# synchronization sequence.
-# CHECK-CPP-DAG: get_common_arg_val<uint32_t>
-# CHECK-CPP: get_semaphore([[READY]])
+# CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
+# CHECK-CPP: noc0.async_write_barrier
+# CHECK-CPP: size_t [[SELECTED_READY:v[0-9]+]] = experimental::constant_table_lookup<
+# CHECK-CPP-NEXT: int32_t {{v[0-9]+}} = get_semaphore([[SELECTED_READY]]);
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait
 # CHECK-CPP: noc0.async_write(
+# CHECK-CPP: noc0.async_write_multicast
 # CHECK-CPP: noc_semaphore_inc
 #
 # RUNTIME: PASS: ksplit_resource_allocation result verified
