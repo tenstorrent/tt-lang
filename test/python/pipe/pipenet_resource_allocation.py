@@ -312,14 +312,14 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # FINAL-NOT: ttl.pipe_global_semaphore_count
 #
 # CHECK-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
-# CHECK-CPP-DAG: {{(size_t|int32_t)}} [[READY:v[0-9]+]] = 10;
 # CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
-# CHECK-CPP: get_semaphore([[READY]])
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait
 # CHECK-CPP: noc0.async_write_multicast
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc_semaphore_inc
+# CHECK-CPP: size_t [[READY:v[0-9]+]] = experimental::constant_table_lookup<10,
+# CHECK-CPP-NEXT: int32_t {{v[0-9]+}} = get_semaphore([[READY]]);
 #
 # RUNTIME: PASS: ksplit_resource_allocation result verified
 def make_expected_output(input_torch, grid_dim):

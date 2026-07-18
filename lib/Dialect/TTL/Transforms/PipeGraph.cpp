@@ -383,9 +383,9 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
       bool nonUniformSlot = false;
       LogicalResult result = success();
       pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-        if (failed(result) ||
-            (postDomain.known && !knownLaunchNodeDomainContains(
-                                     postDomain, getLaunchNodeCoord(receiver)))) {
+        if (failed(result) || (postDomain.known &&
+                               !knownLaunchNodeDomainContains(
+                                   postDomain, getLaunchNodeCoord(receiver)))) {
           return;
         }
         hasReceiver = true;

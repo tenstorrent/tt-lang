@@ -862,15 +862,76 @@ public:
   LogicalResult emitPayloadWrite(Value srcAddr, Value dstAddr,
                                  Value totalSizeBytes) override {
     if (!fields.isCollective) {
-      TranslatedCore dstStartCore = getDstStartCore();
-      ttk::NocAsyncWriteOp::create(
-          rewriter, loc, srcAddr, ValueRange{dstStartCore.x, dstStartCore.y},
-          ValueRange{}, dstAddr, totalSizeBytes, nocVal);
+      emitUnicastPayloadWrite(srcAddr, dstAddr, totalSizeBytes);
       return success();
     }
 
     DestinationRange destinationRange = getDestinationRange();
     Value numDests = getNumDests();
+    // Collective syntax can describe one receiver. Match static lowering so a
+    // loopback-only record never emits a zero-recipient multicast increment.
+    auto singleReceiverIf = scf::IfOp::create(
+        rewriter, loc, getHasSingleReceiver(), /*withElseRegion=*/true);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(
+          &singleReceiverIf.getThenRegion().front());
+      emitUnicastPayloadWrite(srcAddr, dstAddr, totalSizeBytes);
+      rewriter.setInsertionPointToStart(
+          &singleReceiverIf.getElseRegion().front());
+      emitMulticastPayloadWrite(srcAddr, dstAddr, totalSizeBytes, numDests,
+                                destinationRange);
+    }
+    rewriter.setInsertionPointAfter(singleReceiverIf);
+    return success();
+  }
+
+  LogicalResult
+  emitReceiverCompletionIncrement(int64_t receiverCompletionSemIdx) override {
+    auto receiverCompletionCounterSemIdx =
+        arith::ConstantIndexOp::create(rewriter, loc, receiverCompletionSemIdx);
+    auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
+        rewriter, loc, receiverCompletionCounterSemIdx);
+    auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+    if (!fields.isCollective) {
+      emitUnicastCompletionIncrement(receiverCompletionCounterAddr,
+                                     completionIncrement);
+      return success();
+    }
+
+    DestinationRange destinationRange = getDestinationRange();
+    Value numDests = getNumDests();
+    auto singleReceiverIf = scf::IfOp::create(
+        rewriter, loc, getHasSingleReceiver(), /*withElseRegion=*/true);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(
+          &singleReceiverIf.getThenRegion().front());
+      emitUnicastCompletionIncrement(receiverCompletionCounterAddr,
+                                     completionIncrement);
+      rewriter.setInsertionPointToStart(
+          &singleReceiverIf.getElseRegion().front());
+      emitMulticastCompletionIncrement(receiverCompletionCounterAddr,
+                                       completionIncrement, numDests,
+                                       destinationRange);
+    }
+    rewriter.setInsertionPointAfter(singleReceiverIf);
+    return success();
+  }
+
+private:
+  void emitUnicastPayloadWrite(Value srcAddr, Value dstAddr,
+                               Value totalSizeBytes) {
+    TranslatedCore dstStartCore = getDstStartCore();
+    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
+                                 ValueRange{dstStartCore.x, dstStartCore.y},
+                                 ValueRange{}, dstAddr, totalSizeBytes, nocVal);
+  }
+
+  void emitMulticastPayloadWrite(Value srcAddr, Value dstAddr,
+                                 Value totalSizeBytes, Value numDests,
+                                 DestinationRange destinationRange) {
     auto loopbackIf = scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
                                         /*withElseRegion=*/true);
     {
@@ -889,32 +950,25 @@ public:
           /*linked=*/nullptr);
     }
     rewriter.setInsertionPointAfter(loopbackIf);
-    return success();
   }
 
-  LogicalResult
-  emitReceiverCompletionIncrement(int64_t receiverCompletionSemIdx) override {
-    auto receiverCompletionCounterSemIdx =
-        arith::ConstantIndexOp::create(rewriter, loc, receiverCompletionSemIdx);
-    auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
-        rewriter, loc, receiverCompletionCounterSemIdx);
-    auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  void emitUnicastCompletionIncrement(Value receiverCompletionCounterAddr,
+                                      Value completionIncrement) {
+    TranslatedCore dstStartCore = getDstStartCore();
+    auto receiverCompletionNocAddr =
+        ttk::GetNocAddrOp::create(rewriter, loc, dstStartCore.x, dstStartCore.y,
+                                  receiverCompletionCounterAddr, nocVal);
+    ttk::NocSemaphoreIncOp::create(
+        rewriter, loc, receiverCompletionNocAddr.getResult(),
+        completionIncrement, nocVal, /*posted=*/BoolAttr());
+  }
 
-    if (!fields.isCollective) {
-      TranslatedCore dstStartCore = getDstStartCore();
-      auto receiverCompletionNocAddr = ttk::GetNocAddrOp::create(
-          rewriter, loc, dstStartCore.x, dstStartCore.y,
-          receiverCompletionCounterAddr, nocVal);
-      ttk::NocSemaphoreIncOp::create(
-          rewriter, loc, receiverCompletionNocAddr.getResult(),
-          completionIncrement, nocVal, /*posted=*/BoolAttr());
-      return success();
-    }
-
-    DestinationRange destinationRange = getDestinationRange();
+  void emitMulticastCompletionIncrement(Value receiverCompletionCounterAddr,
+                                        Value completionIncrement,
+                                        Value numDests,
+                                        DestinationRange destinationRange) {
     auto one = arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
                                          rewriter.getI32IntegerAttr(1));
-    Value numDests = getNumDests();
     Value numRemoteWithLoopback =
         arith::SubIOp::create(rewriter, loc, numDests, one);
     Value numRemoteDests = arith::SelectOp::create(
@@ -943,10 +997,17 @@ public:
           completionIncrement, nocVal, /*posted=*/BoolAttr());
     }
     rewriter.setInsertionPointAfter(localIncrementIf);
-    return success();
   }
 
-private:
+  Value getHasSingleReceiver() {
+    if (!hasSingleReceiver) {
+      Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      hasSingleReceiver = arith::CmpIOp::create(
+          rewriter, loc, arith::CmpIPredicate::eq, fields.numDests, one);
+    }
+    return hasSingleReceiver;
+  }
+
   TranslatedCore getSourceCore() override {
     if (!sourceCore) {
       sourceCore = buildTranslatedCore(fields.srcX, fields.srcY);
@@ -986,6 +1047,7 @@ private:
   }
 
   SelectedPipeFields fields;
+  Value hasSingleReceiver;
   Value numDests;
   std::optional<TranslatedCore> sourceCore;
   std::optional<TranslatedCore> dstStartCore;
