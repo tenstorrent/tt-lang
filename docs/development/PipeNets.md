@@ -115,11 +115,11 @@ of the following applies:
 - The destination tile offset is dynamic.
 - The receiver DFB stream can contain non-pipe writes, which can advance
   the hardware DFB ring without a corresponding pipe post.
-- Receiver DFB posts occur in different data-movement functions or different
+- Receiver DFB posts occur in different data-movement functions or dynamic
   loop or branch regions.
 - One PipeKey has multiple static posts to the receiver DFB.
-- A receiver DFB pop that can affect slot reuse occurs in a different control
-  context from the posts.
+- Static slot assignment would reuse a live receiver slot without a DFB pop in
+  the producer reservation context to release it.
 - One transfer allocation unit does not contain exactly one receive post
   and one send.
 - Multicast receiver DFBs do not have one uniform receiver batch size.
@@ -533,9 +533,9 @@ For ordinary point-to-point transfers, `%static_receiver_slot_index` is
 usually 0. For gather or allgather-style receivers, `PipeGraph` assigns
 a physical receiver slot only after proving one receiver DFB reservation
 sequence.
-Receiver DFB pops release physical slots, so a later batch can reuse the
-same slot after the compiler has observed the pop. Static tensor
-subviews add `%static_byte_offset` inside the selected DFB block.
+Receiver DFB pops in that reservation context release physical slots, so a
+later static batch can reuse the same slot. Static tensor subviews add
+`%static_byte_offset` inside the selected DFB block.
 
 When the receiver DFB `block_count` is larger than one proven receiver
 batch, the sender uses a local slot counter instead of a single constant
@@ -607,17 +607,20 @@ context because they do not select among dynamic executions on that receiver.
 
 | Predicate | Required facts |
 | --- | --- |
-| `single_context(D)` | Every post in `posts(D)` belongs to the same receiver function and the same loop and branch regions. Every DFB pop that may release a slot from `D` has that context. |
+| `single_context(D)` | Every post in `posts(D)` belongs to the same receiver function and the same dynamic loop and branch regions. |
 | `single_occurrence(D)` | Each PipeKey occurs exactly once in `posts(D)`. The sender representation has one initial slot plus one repeated-batch stride, so it cannot represent two distinct static positions for one PipeKey. |
-| `ordered_batch(D)` | Within the common context, operation order gives one sequential order for all posts and relevant pops. Slot assignment never reuses a live block or extends beyond `block_count(D)`. |
+| `ordered_batch(D)` | Within the common context, operation order gives one sequential order for all posts. Matching-context DFB pops release complete live slots in first-in, first-out order. Slot assignment never reuses a live block or extends beyond `block_count(D)`. |
 | `uniform_slot(edge)` | Every receiver endpoint of a collective edge assigns that edge the same physical slot. |
 | `uniform_advancement(edge)` | Every collective receiver DFB advances only through modeled pipe receives, and every receiver's repeated batch contains the same number of DFB blocks. This keeps their runtime write pointers equal across iterations. |
 
 Posts in different data-movement functions have no program order. Posts in
-different `scf.if` regions may execute in either branch, and a post inside a
-loop may execute more times than a post outside it. Lexical module order does
-not order any of those dynamic reservations. Such a DFB does not satisfy
-`single_context(D)`, so every point-to-point writer to it uses `RA/RP`.
+different dynamic `scf.if` regions may execute in either branch, and a post
+inside a loop may execute more times than a post outside it. Lexical module
+order does not order any of those dynamic reservations. Such a DFB does not
+satisfy `single_context(D)`, so every point-to-point writer to it uses `RA/RP`.
+Consumer pops in another function or thread do not order producer
+reservations. They neither invalidate the producer schedule nor prove that a
+later static post can reuse a live slot.
 
 Posts in one common loop body can satisfy the proof. Each loop iteration then
 executes the same ordered batch, and the sender-local slot counter advances by
@@ -636,10 +639,11 @@ for D in pipe_graph.receiver_dfbs:
         schedule[D] = unproven
         continue
 
-    for operation in program_order(common_context(posts)):
+    context = common_context(posts)
+    for operation in program_order(context):
         if operation posts to D:
             slot[pipe(operation), D] = reserve_next_blocks(D)
-        if operation pops D:
+        if operation pops D and control_context(operation) == context:
             release_oldest_blocks(D)
     schedule[D] = proven
 
@@ -656,10 +660,10 @@ for edge in pipe_graph.edges:
 ```
 
 `remaining_address_predicates` includes a static destination offset, a
-pipe-only receiver DFB stream, exactly one static post and send per transfer
-allocation unit, a uniform receiver batch size, non-wrapping repeated batches,
-tile-based address geometry, one sender function, and supported 32-bit address
-arithmetic.
+pipe-only receiver DFB producer stream, exactly one static post and send per
+transfer allocation unit, a uniform receiver batch size, non-wrapping repeated
+batches, tile-based address geometry, one sender function, and supported
+32-bit address arithmetic.
 
 For a point-to-point edge, `computed_address(edge) = false` selects `RA/RP`.
 For a collective edge, `uniform_advancement` is required independently of the
@@ -689,7 +693,7 @@ the following predicates:
 | --- | --- |
 | `single_writer(E, D)` | `writer_endpoints(D) == {E}`. |
 | `unit_span(E)` | The receiver reserve for `E` spans one DFB block. |
-| `pipe_only(D)` | Every push whose domain overlaps the receiver node has a known domain containing that node, executes on its NOC thread, pushes a whole number of blocks, and has one owning reserve. That reserve owns one or more matching posts; each post has a receive wait before the push; each post belongs to exactly one push; and the push block count equals the sum of the posts' receiver-slot spans. Every overlapping pop and its owning DFB wait have known domains containing the receiver node, execute on its NOC thread, and use the same whole block count. No wait owns more than one pop. |
+| `pipe_only_producer(D)` | Every push whose domain overlaps the receiver node has a known domain containing that node, executes on its NOC thread, pushes a whole number of blocks, and has one owning reserve. That reserve owns one or more matching posts; each post has a receive completion wait before the push in the same receiver control context; each post belongs to exactly one push; and the push block count equals the sum of the posts' receiver-slot spans. Receiver-role wrappers known to execute on the node preserve this order. |
 | `valid_posts(E, D)` | At least one matching post exists. Every post overlapping the receiver node has exactly that node's domain, executes on its NOC thread, and targets `D`. |
 | `valid_sends(E)` | At least one matching send exists. Every send has exactly the source-node domain and executes on its NOC thread. |
 | `valid_pops(E, D)` | At least one matching pop exists. Every pop overlapping the receiver node has exactly that node's domain, executes on its NOC thread, releases one block, and has one owning DFB wait that has the same domain, thread, and block count. |
@@ -706,7 +710,7 @@ for E in pipe_graph.receiver_endpoints:
     D = receiver_dfb(E)
     if not (single_writer(E, D)
             and unit_span(E)
-            and pipe_only(D)
+            and pipe_only_producer(D)
             and valid_posts(E, D)
             and valid_sends(E)
             and valid_pops(E, D)):
@@ -1067,15 +1071,17 @@ sender's data lands in its own slot of the receiver's dataflow buffer.
 ### Data layout: physical receiver slots
 
 Slot assignment is deterministic only after the address proof establishes one
-receiver control context for every post and relevant pop in the physical DFB.
-Within that context, `PipeGraph` follows program order, assigns the next
-physical slot, and releases slots at proven receiver DFB pops. It does not infer
-order between functions, threads, loop regions, or branch regions from their
-lexical module positions. For multicast, every receiver for the same pipe must
-reserve the same physical slot because TT-Metal NoC multicast carries one
-destination address. Pipes that are simultaneously live at one receiver use
-distinct physical slots. After the receiver consumes and pops a batch, later
-receive posts can reuse those physical slots.
+receiver control context for every post in the physical DFB. Within that
+context, `PipeGraph` follows program order, assigns the next physical slot, and
+releases slots at matching-context receiver DFB pops. It does not infer order
+between functions, threads, loop regions, or branch regions from their lexical
+module positions. A consumer pop in another function does not change the
+producer schedule and cannot prove static slot reuse. For multicast, every
+receiver for the same pipe must reserve the same physical slot because
+TT-Metal NoC multicast carries one destination address. Pipes that are
+simultaneously live at one receiver use distinct physical slots. A later static
+receive post can reuse a physical slot after a matching-context pop releases
+it.
 
 Each receive post identifies one concrete DFB write pointer. When the
 static slot proof succeeds, the sender computes the same address from
@@ -1140,14 +1146,14 @@ Slot-per-sender preserves every parallelism property of a non-overlapping
 collective. The proof tracks four points in the lowered IR:
 
 1. Receiver slot assignment is static within each proven live batch.
-   `PipeGraph` first proves one receiver control context for every writer to
-   the physical DFB. It then follows program order in that context, assigns
-   each pipe a physical receiver DFB slot index, releases slots at proven DFB
-   pops, and verifies that every multicast receiver uses the same slot for
-   that pipe. `CA/RP` and `CA/CC` use that slot index directly or use a
-   sender-local slot counter that advances by one receiver batch per repeated
-   execution. `RA/RP` uses the receiver-published DFB write pointer recorded
-   in the source node's SRAM address table.
+   `PipeGraph` first proves one receiver control context for every post to the
+   physical DFB. It then follows program order in that context, assigns each
+   pipe a physical receiver DFB slot index, releases slots only at
+   matching-context DFB pops, and verifies that every multicast receiver uses
+   the same slot for that pipe. `CA/RP` and `CA/CC` use that slot index directly
+   or use a sender-local slot counter that advances by one receiver batch per
+   repeated execution. `RA/RP` uses the receiver-published DFB write pointer
+   recorded in the source node's SRAM address table.
 2. No inter-sender wait. In `RP`, each sender waits only for its own
    receivers to post. In `CC`, each sender waits only for its own capacity
    counter. The sender then performs its NoC write and increments the
