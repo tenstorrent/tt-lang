@@ -581,16 +581,17 @@ def build_generic_op_io_tensors(
     pipe_sram_scratch_tensors: List[Any],
     pipe_computed_address_dfb_tensors: Optional[Dict[int, Any]] = None,
 ) -> List[Any]:
-    """Return io_tensors for ttnn.generic_op, including pipe SRAM scratch."""
+    """Return io_tensors with the user-visible output in the final position."""
+    if not tensors:
+        raise ValueError("kernel must have at least one output tensor")
+
     computed_address_dfb_tensors = [
         pipe_computed_address_dfb_tensors[dfb_index]
         for dfb_index in sorted(pipe_computed_address_dfb_tensors or {})
     ]
     io_tensors = (
-        list(tensors) + list(pipe_sram_scratch_tensors) + computed_address_dfb_tensors
+        list(pipe_sram_scratch_tensors) + computed_address_dfb_tensors + list(tensors)
     )
-    if not io_tensors:
-        raise ValueError("kernel must have at least one output tensor")
     if len(io_tensors) < 2:
         io_tensors = [io_tensors[-1]] + io_tensors
     return io_tensors

@@ -351,6 +351,28 @@ def test_build_generic_op_io_tensors_duplicates_single_output():
     ]
 
 
+def test_build_generic_op_io_tensors_keeps_user_output_last():
+    inp = object()
+    output = object()
+    scratch = object()
+    computed_dfb_1 = object()
+    computed_dfb_3 = object()
+
+    io_tensors = kernel_runner.build_generic_op_io_tensors(
+        [inp, output],
+        [scratch],
+        {3: computed_dfb_3, 1: computed_dfb_1},
+    )
+
+    assert io_tensors == [scratch, computed_dfb_1, computed_dfb_3, inp, output]
+    assert io_tensors[-1] is output
+
+
+def test_build_generic_op_io_tensors_requires_user_output():
+    with pytest.raises(ValueError, match="kernel must have at least one output tensor"):
+        kernel_runner.build_generic_op_io_tensors([], [object()])
+
+
 def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
