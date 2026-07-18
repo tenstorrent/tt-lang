@@ -122,11 +122,6 @@ static std::optional<int64_t> getReceiverSlotSpanBlocksForPost(
   return receiverIt->second.receiverSlotSpanBlocks;
 }
 
-static bool isBeforeInSameBlock(Operation *before, Operation *after) {
-  return before->getBlock() == after->getBlock() &&
-         before->isBeforeInBlock(after);
-}
-
 static void collectReceiveWaitsByPost(
     ModuleOp mod,
     llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>> &waitsByPost) {
@@ -137,23 +132,6 @@ static void collectReceiveWaitsByPost(
     }
     waitsByPost[postOp.getOperation()].push_back(waitOp);
   });
-}
-
-static bool hasMatchingReceiveWaitBeforePush(
-    PipeTransferPostOp postOp, CBPushOp pushOp,
-    const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
-        &waitsByPost) {
-  auto waitIt = waitsByPost.find(postOp.getOperation());
-  if (waitIt == waitsByPost.end()) {
-    return false;
-  }
-  for (PipeTransferWaitOp waitOp : waitIt->second) {
-    if (isBeforeInSameBlock(postOp, waitOp) &&
-        isBeforeInSameBlock(waitOp, pushOp)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 static void
@@ -278,6 +256,56 @@ getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
   std::reverse(context.dynamicRegionBlocks.begin(),
                context.dynamicRegionBlocks.end());
   return context;
+}
+
+/// Return true when `before` precedes `after` in one receiver control context.
+/// Projecting a node-selected wrapper into the enclosing block preserves the
+/// per-node order without treating unrelated blocks as sequential.
+static bool
+isBeforeInReceiverControlContext(Operation *before, Operation *after,
+                                 PipeReceiverCoord receiver,
+                                 const PipeGraphAnalysisState &analysisState) {
+  std::optional<ReceiverControlContext> beforeContext =
+      getReceiverControlContext(before, receiver, analysisState);
+  std::optional<ReceiverControlContext> afterContext =
+      getReceiverControlContext(after, receiver, analysisState);
+  if (!beforeContext || beforeContext != afterContext) {
+    return false;
+  }
+  Operation *projectedBefore = before;
+  for (Block *block = before->getBlock(); block;) {
+    Operation *projectedAfter = after->getBlock() == block
+                                    ? after
+                                    : block->findAncestorOpInBlock(*after);
+    if (projectedAfter) {
+      return projectedBefore != projectedAfter &&
+             projectedBefore->isBeforeInBlock(projectedAfter);
+    }
+    Operation *parent = block->getParentOp();
+    if (!parent) {
+      break;
+    }
+    projectedBefore = parent;
+    block = parent->getBlock();
+  }
+  return false;
+}
+
+static bool hasMatchingReceiveWaitBeforePush(
+    PipeTransferPostOp postOp, CBPushOp pushOp,
+    const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
+        &waitsByPost,
+    PipeReceiverCoord receiver, const PipeGraphAnalysisState &analysisState) {
+  auto waitIt = waitsByPost.find(postOp.getOperation());
+  if (waitIt == waitsByPost.end()) {
+    return false;
+  }
+  return llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
+    return isBeforeInReceiverControlContext(postOp, waitOp, receiver,
+                                            analysisState) &&
+           isBeforeInReceiverControlContext(waitOp, pushOp, receiver,
+                                            analysisState);
+  });
 }
 
 /// Group posts by physical DFB because its writers share one reservation ring.
@@ -751,7 +779,9 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
       }
       int64_t postedBlocks = 0;
       for (PipeTransferPostOp postOp : ownedPosts) {
-        if (!hasMatchingReceiveWaitBeforePush(postOp, pushOp, waitsByPost)) {
+        if (!hasMatchingReceiveWaitBeforePush(postOp, pushOp, waitsByPost,
+                                              receiverDFB.receiver,
+                                              analysisState)) {
           reject("post has no receive wait before push");
           return;
         }
