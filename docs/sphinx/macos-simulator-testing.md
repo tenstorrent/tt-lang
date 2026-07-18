@@ -101,10 +101,10 @@ against a craq-sim `libttsim.so` with no silicon. tt-mlir is **not** needed.
 
 This is the verified flow: fresh VM → current LLVM + tt-metal from the submodules
 → tt-lang → craq-sim `libttsim.so` → a passing device test. Helper scripts that
-encode the aarch64 fixes live in `~/tt/tt-lang-hw-sim/`
-(`craqsim-vm.yaml`, `vm-build-toolchain.sh`, `vm-build-ttlang.sh`,
-`vm-resume-build.sh`). They assume the host `~/tt` is mounted in the guest at the
-same absolute path (Lima's default); adjust `SRC_HOST` in the scripts otherwise.
+encode the aarch64 fixes live in the repo at `test/hw-sim/` (`craqsim-vm.yaml`,
+`vm-build-toolchain.sh`, `vm-build-ttlang.sh`, `vm-resume-build.sh`). They run
+inside the VM against the mounted source, auto-detecting it via the virtiofs
+`~/tt` mount (override with `SRC_HOST`).
 
 **Prerequisites:** Homebrew, `brew install lima`, and ~80 GB free host disk. The
 LLVM + tt-metal build tree lands on the VM's disk image, which draws from host
@@ -124,24 +124,27 @@ free space and is not reclaimed by deleting files inside the VM (see disk note).
 
 ### Build and run
 
+Run from the tt-lang repo root on the host. The scripts are in `test/hw-sim/`;
+Lima mounts the host `~/tt` in the guest at the same absolute path, so `HW` below
+points at the mounted scripts dir.
+
 ```bash
-# 1. Host: init tt-metal's submodules (umd, tracy) so the build finds them.
+HW=/Users/$USER/tt/tt-lang/test/hw-sim     # host ~/tt, as mounted in the guest
+
+# 1. Init tt-metal's submodules (umd, tracy) so the build finds them.
 git -C third-party/tt-metal submodule update --init --depth 1
 
 # 2. Create the VM (Ubuntu 24.04 aarch64, mounts ~/tt).
-limactl start --tty=false --name=ttlang-craqsim ~/tt/tt-lang-hw-sim/craqsim-vm.yaml
+limactl start --tty=false --name=ttlang-craqsim "$HW/craqsim-vm.yaml"
 
-# 3. Provision + build the toolchain (LLVM + tt-metal) from a VM-local source
-#    copy. Detached so it survives a dropped SSH session; log to the shared tree.
+# 3. Provision + build the toolchain (LLVM + tt-metal) and install tt-metal into
+#    it, from a VM-local source copy. Detached so it survives a dropped SSH session.
 limactl shell ttlang-craqsim -- bash -c \
-  'setsid bash ~/tt/tt-lang-hw-sim/vm-build-toolchain.sh </dev/null >/dev/null 2>&1 & disown'
-#    watch ~/tt/tt-lang-hw-sim/toolchain-build.log; when done, install tt-metal:
-limactl shell ttlang-craqsim -- bash -c \
-  'cd /var/tmp/tt-lang && CMAKE_BINARY_DIR=/var/tmp/build-toolchain \
-     TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain ./scripts/build-and-install.sh --install-ttmetal'
+  "setsid bash $HW/vm-build-toolchain.sh >/var/tmp/toolchain-build.log 2>&1 </dev/null & disown"
+#    watch: limactl shell ttlang-craqsim -- tail -f /var/tmp/toolchain-build.log
 
 # 4. Build tt-lang against the toolchain.
-limactl shell ttlang-craqsim -- bash ~/tt/tt-lang-hw-sim/vm-build-ttlang.sh
+limactl shell ttlang-craqsim -- bash "$HW/vm-build-ttlang.sh"
 
 # 5. Build craq-sim's libttsim.so (Linux aarch64), stage it with the SOC descriptor.
 limactl shell ttlang-craqsim -- bash -c '
@@ -161,6 +164,34 @@ limactl shell ttlang-craqsim -- bash -c '
 
 VM paths: source copies under `/var/tmp/{tt-lang,craq-sim}`, build dir
 `/var/tmp/build-toolchain`, toolchain `/opt/ttlang-toolchain`, sim `/var/tmp/sim/`.
+
+### Running tests interactively
+
+`limactl shell ttlang-craqsim` opens an interactive shell in the VM, just like
+`docker exec -it`. Append the two simulator `export`s to the VM's `~/.bashrc` so
+every interactive shell sets them automatically; `source build/env/activate` is
+still per-shell (venv + paths). Then run any suite:
+
+```bash
+limactl shell ttlang-craqsim              # interactive shell in the VM
+cd /var/tmp/tt-lang
+source build/env/activate
+export TT_METAL_SIMULATOR=/var/tmp/sim/libttsim.so TT_METAL_SLOW_DISPATCH_MODE=1
+
+# pytest -- test/python/test_*.py and me2e (run against test/):
+python -m pytest test/python/pipe/test_broadcast_2d.py -xvs
+python -m pytest test/me2e/test_compute_ops.py -k add -xvs
+
+# python lit test -- run against the build-configured tree, NOT the source tree:
+llvm-lit -v build/test/python/dram_interleaved_add.py
+
+# a lit test file as a plain script:
+python3 test/python/dram_interleaved_add.py
+```
+
+Remember the split: **pytest runs against `test/…`, lit against `build/test/…`**.
+`llvm-lit test/…` on the source tree fails (`AttributeError: … python_executable`)
+because the generated `lit.site.cfg.py` lives in the build dir.
 
 ### Operational notes
 
