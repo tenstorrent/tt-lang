@@ -581,7 +581,7 @@ class CompiledTTNNKernel:
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet ready counters used by this kernel.
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
-                L1 bases are supplied as compile-time args.
+                L1 bases are supplied as common runtime args.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs

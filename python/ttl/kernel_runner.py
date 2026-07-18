@@ -164,9 +164,10 @@ def build_kernel_descriptors(
         grid_rows: Number of grid rows (y dimension).
         num_cbs: Total number of circular buffers (including intermediate CBs).
         pipe_computed_address_base_addresses: L1 base address by receiver DFB index for
-            compiler-selected computed pipe addressing.
+            compiler-selected computed pipe addressing. These addresses are
+            passed as common runtime arguments.
         extra_common_runtime_args: Compiler-managed common runtime args appended
-            after tensor buffer addresses.
+            after tensor buffer addresses and computed receiver DFB bases.
         expected_extra_common_runtime_args: Expected number of compiler-managed
             pipe runtime args from the compiled resource plan.
 
@@ -199,8 +200,6 @@ def build_kernel_descriptors(
         common_runtime_args = [
             tensors[idx].buffer_address() for idx in spec.tensor_indices
         ]
-        common_runtime_args.extend(extra_args)
-
         computed_address_base_args = []
         for dfb_index in spec.pipe_computed_address_dfb_indices:
             if dfb_index not in computed_address_base_addresses:
@@ -210,15 +209,16 @@ def build_kernel_descriptors(
             computed_address_base_args.append(
                 computed_address_base_addresses[dfb_index]
             )
+        common_runtime_args.extend(computed_address_base_args)
+        common_runtime_args.extend(extra_args)
 
-        # Compile-time args are DFB indices, then computed pipe base addresses.
-        # DM kernels then receive TensorAccessorArgs config.
+        # Compile-time args are DFB indices followed by TensorAccessorArgs for
+        # data-movement kernels. Allocation-dependent DFB bases remain runtime
+        # args so cached programs do not retain stale addresses.
         if spec.thread_type == "compute":
-            kernel_compile_time_args = cb_indices + computed_address_base_args
+            kernel_compile_time_args = cb_indices
         else:
-            kernel_compile_time_args = (
-                cb_indices + computed_address_base_args + list(tensor_accessor_args)
-            )
+            kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
 
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
@@ -511,7 +511,7 @@ def build_cb_descriptors(
             Each DFB has shape, block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for DFB allocation.
         pipe_computed_address_backing_tensors: Hidden L1 backing tensors for DFBs whose
-            receiver base is passed as a compile-time pipe arg.
+            receiver base is passed as a common runtime argument.
 
     Returns:
         List of ttnn.CBDescriptor objects.

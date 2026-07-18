@@ -398,11 +398,12 @@ The host runtime reads `ttl.pipe_sram_scratch_bytes` and allocates one
 height-sharded TTNN tensor in L1. Each launched node receives one shard
 large enough to hold the aligned byte count. The tensor buffer address
 is the SRAM scratch base for that node. `build_pipe_runtime_resources`
-passes that buffer address as the first extra common runtime argument,
-followed by any GlobalSemaphore addresses. TTKernel lowering accounts
-for the normal tensor common runtime arguments, so pipe runtime arg 0
-becomes common runtime arg index `num_tensor_args + 0`. It reads the
-scratch base with `get_common_arg_val` at that index and adds the
+passes that buffer address as the first pipe-resource common runtime
+argument, followed by any GlobalSemaphore addresses. Computed receiver
+DFB bases, when present, precede these pipe-resource arguments. TTKernel
+lowering therefore maps pipe runtime arg 0 to common runtime arg index
+`num_tensor_args + num_computed_dfb_bases + 0`. It reads the scratch base
+with `get_common_arg_val` at that index and adds the
 compiler-selected byte offset (`resourceColor * 4`) for the transfer's
 address-table slot.
 
@@ -512,9 +513,9 @@ not consume semaphore ids.
 ### CA/RP and CA/CC: computed receiver address
 
 Some transfers do not need receiver-authored address publication. When
-the compiler can prove the receiver DFB base address and slot geometry
-statically, the sender computes the destination address directly from
-compile-time arguments:
+the compiler can prove the receiver DFB identity and slot geometry, the
+sender computes the destination address from the host-bound DFB base and
+compile-time offsets:
 
 ```mlir
 %receiver_slot = %static_receiver_slot_index
@@ -522,6 +523,11 @@ compile-time arguments:
           + %receiver_slot * %receiver_block_stride_bytes
           + %static_byte_offset
 ```
+
+The host passes `%receiver_dfb_base` as a common runtime argument because
+the backing L1 allocation can change between invocations. Keeping the base
+out of compile-time arguments lets the program cache reuse the kernel binary
+without retaining an address from an earlier allocation.
 
 For ordinary point-to-point transfers, `%static_receiver_slot_index` is
 usually 0. For gather or allgather-style receivers, `PipeGraph` assigns

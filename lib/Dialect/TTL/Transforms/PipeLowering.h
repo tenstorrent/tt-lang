@@ -36,7 +36,7 @@ struct PipeSramAddressTableInfo {
 /// a dynamic counter is needed when execution repeats the proven schedule.
 struct PipeComputedAddressInfo {
   int64_t receiverDFBIndex = 0;
-  int64_t baseCompileTimeArgIndex = 0;
+  int64_t baseRuntimeCommonArgIndex = 0;
   /// Initial physical receiver DFB block assigned to this transfer.
   int64_t receiverSlotIndex = 0;
   /// Number of receiver DFB blocks reserved by one statically proven batch.
