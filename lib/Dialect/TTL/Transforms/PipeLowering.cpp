@@ -981,6 +981,9 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
   Value numTiles = computeDFBPopNumTiles(op, originalCb, rewriter, loc);
   ttk::CBPopFrontOp::create(rewriter, loc, *convertedCb, numTiles);
 
+  // A receiver DFB pop makes one slot available to its sender. Emit the
+  // release immediately after the pop so both execute under the same control
+  // flow.
   ArrayRef<PipeCapacityReleaseInfo> releases =
       pipeCapacityPlan ? pipeCapacityPlan->lookupReleases(op)
                        : ArrayRef<PipeCapacityReleaseInfo>{};
