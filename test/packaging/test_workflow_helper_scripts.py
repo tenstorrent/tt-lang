@@ -375,6 +375,20 @@ def test_publish_pypi_supports_release_sha_from_main() -> None:
     assert "inputs.ttlang_sha" not in publish_job
 
 
+def test_publish_pypi_terminal_jobs_override_skipped_docker_build_status() -> None:
+    workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+    publish_job = workflow.split("\n  publish:", 1)[1].split("\n  dry-run-summary:", 1)[
+        0
+    ]
+    dry_run_summary_job = workflow.split("\n  dry-run-summary:", 1)[1]
+
+    for terminal_job in (publish_job, dry_run_summary_job):
+        assert "!cancelled()" in terminal_job
+        assert "needs.preflight.result == 'success'" in terminal_job
+        assert "needs.build-wheels.result == 'success'" in terminal_job
+    assert "needs.test-dist-tutorials.result == 'success'" in publish_job
+
+
 def test_dist_tutorial_workflow_supports_pinned_ref() -> None:
     workflow = CALL_TEST_DIST_TUTORIALS_WORKFLOW.read_text()
 
