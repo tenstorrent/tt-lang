@@ -68,7 +68,7 @@ Useful to confirm the simulator compiles and passes host-driven checks, but the
 resulting `.so` is an arm64 Mach-O and only loads on macOS:
 
 ```bash
-cd ~/tt/craq-sim   # or your ttsim checkout
+cd craq-sim   # your ttsim/craq-sim checkout
 ./make.py src/_out/release_wh/libttsim.so src/_out/release_bh/libttsim.so
 ```
 
@@ -103,8 +103,8 @@ This is the verified flow: fresh VM → current LLVM + tt-metal from the submodu
 → tt-lang → craq-sim `libttsim.so` → a passing device test. Helper scripts that
 encode the aarch64 fixes live in the repo at `test/hw-sim/` (`craqsim-vm.yaml`,
 `vm-build-toolchain.sh`, `vm-build-ttlang.sh`, `vm-resume-build.sh`). They run
-inside the VM against the mounted source, auto-detecting it via the virtiofs
-`~/tt` mount (override with `SRC_HOST`).
+inside the VM against the mounted source, auto-detecting the virtiofs mount that
+contains `tt-lang` (override with `SRC_HOST`).
 
 **Prerequisites:** Homebrew, `brew install lima`, and ~80 GB free host disk. The
 LLVM + tt-metal build tree lands on the VM's disk image, which draws from host
@@ -124,19 +124,22 @@ free space and is not reclaimed by deleting files inside the VM (see disk note).
 
 ### Build and run
 
-Run from the tt-lang repo root on the host. The scripts are in `test/hw-sim/`.
-Lima mounts the host `~/tt` in the guest at the host's absolute path; the steps
-below discover that mount point rather than assuming it.
+Run from the tt-lang repo root on the host. tt-lang and craq-sim are assumed to
+sit under a common **TT root** that the VM mounts — default `~/tt`, set by the
+`mounts:` entry in `test/hw-sim/craqsim-vm.yaml` (change it if your clones live
+elsewhere). Host-side commands below are relative to the repo root; guest-side
+paths are discovered from the mount.
 
 ```bash
 # 1. Init tt-metal's submodules (umd, tracy) so the build finds them.
 git -C third-party/tt-metal submodule update --init --depth 1
 
-# 2. Create the VM (Ubuntu 24.04 aarch64, mounts ~/tt). Config is read on the host.
-limactl start --tty=false --name=ttlang-craqsim ~/tt/tt-lang/test/hw-sim/craqsim-vm.yaml
+# 2. Create the VM (Ubuntu 24.04 aarch64). Config path is relative to the repo root.
+limactl start --tty=false --name=ttlang-craqsim test/hw-sim/craqsim-vm.yaml
 
-# Point HW at the scripts dir as mounted inside the guest:
-HW="$(limactl shell ttlang-craqsim -- findmnt -nt virtiofs -o TARGET | grep -m1 '/tt$')/tt-lang/test/hw-sim"
+# Discover where the TT root (the dir holding tt-lang) is mounted in the guest:
+TT="$(limactl shell ttlang-craqsim -- bash -c 'findmnt -nrt virtiofs -o TARGET | while read m; do [ -d "$m/tt-lang" ] && { echo "$m"; break; }; done')"
+HW="$TT/tt-lang/test/hw-sim"
 
 # 3. Provision + build the toolchain (LLVM + tt-metal) and install tt-metal into
 #    it, from a VM-local source copy. Detached so it survives a dropped SSH session.
@@ -203,8 +206,9 @@ tt-lang directly from the **mounted** source into a separate `build-lima/` dir
 reused, so this compiles only tt-lang's own dialects/bindings.
 
 ```bash
-# tt-lang as mounted inside the guest:
-TTLANG="$(limactl shell ttlang-craqsim -- findmnt -nt virtiofs -o TARGET | grep -m1 '/tt$')/tt-lang"
+# Discover the mounted TT root (dir holding tt-lang), then point at tt-lang:
+TT="$(limactl shell ttlang-craqsim -- bash -c 'findmnt -nrt virtiofs -o TARGET | while read m; do [ -d "$m/tt-lang" ] && { echo "$m"; break; }; done')"
+TTLANG="$TT/tt-lang"
 
 # Configure once, against the prebuilt toolchain:
 limactl shell ttlang-craqsim -- bash -c \
@@ -218,7 +222,7 @@ limactl shell ttlang-craqsim -- bash -c "
   python -m pytest test/python/pipe/test_broadcast_2d.py -xvs"
 ```
 
-`build-lima/` lives in the host tree (`~/tt/tt-lang/build-lima`), so its
+`build-lima/` lives in your tt-lang checkout on the host, so its
 `build.log` and artifacts are visible on the host. Use `source
 build-lima/env/activate` (not `build/…`) for this build. The `/var/tmp` copy is
 only needed for the one-time toolchain build (LLVM + tt-metal can't build over
@@ -228,7 +232,8 @@ virtiofs).
 
 - **Detach long builds** (`setsid … & disown`) and have them write an exit-code
   marker; a dropped `limactl shell` otherwise orphans the build. Mirror the VM
-  log into `~/tt` for host visibility (`limactl shell <vm> -- tail -F <vmlog> > ~/tt/…`).
+  log into the mounted tree for host visibility
+  (`limactl shell <vm> -- tail -F <vmlog> > <mounted-tree>/…`).
 - **Disk:** the VM diffdisk grows with the build and is not returned to the host
   when files are deleted inside the VM (`fstrim` did not reclaim it here). If it
   bloats across failed attempts, delete and recreate the VM to reclaim the space.

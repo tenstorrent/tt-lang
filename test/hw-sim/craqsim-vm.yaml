@@ -17,8 +17,10 @@ disk: "120GiB"
 vmType: "vz"
 mountType: "virtiofs"
 
-# Mount the host TT tree. Lima mounts it at the host's absolute path in the
-# guest; the build scripts discover it and read the source from there.
+# Mount your TT root -- the parent dir holding the tt-lang and craq-sim clones.
+# Default is ~/tt; change the location below if your clones live elsewhere. Lima
+# mounts it at the host's absolute path in the guest, and the build scripts
+# discover it (they look for the virtiofs mount that contains tt-lang).
 mounts:
   - location: "~/tt"
     writable: true

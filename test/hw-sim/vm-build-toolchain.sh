@@ -14,10 +14,14 @@
 #    writes fail over the virtiofs mount, so build from a VM-local ext4 copy.
 set -euo pipefail
 
-# Host ~/tt as mounted in the guest (Lima mounts it at the host's absolute path).
-# Auto-detect the virtiofs mount, or set SRC_HOST explicitly.
-SRC_HOST="${SRC_HOST:-$(findmnt -nt virtiofs -o TARGET 2>/dev/null | grep -m1 '/tt$' || true)}"
-: "${SRC_HOST:?set SRC_HOST to your host ~/tt path as mounted in the guest}"
+# Host TT root (the dir holding the tt-lang and craq-sim clones), as mounted in
+# the guest. Auto-detect the virtiofs mount that contains tt-lang, or set SRC_HOST.
+if [ -z "${SRC_HOST:-}" ]; then
+  for _m in $(findmnt -nrt virtiofs -o TARGET 2>/dev/null); do
+    [ -d "$_m/tt-lang" ] && { SRC_HOST="$_m"; break; }
+  done
+fi
+: "${SRC_HOST:?set SRC_HOST to the mounted TT root (the dir holding tt-lang and craq-sim)}"
 VM_LOCAL="${VM_LOCAL:-/var/tmp}"
 TOOLCHAIN="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"
 
