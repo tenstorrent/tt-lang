@@ -65,6 +65,62 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
 // -----
 
+// A consumer thread can pop the receiver DFB without changing the reservation
+// order established by the data-movement thread. The cross-thread pop must not
+// disable the uniform computed address required by multicast.
+
+// CHECK-LABEL: func.func @multicast_post
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK: ttkernel.noc_async_write_multicast
+// CHECK-LABEL: func.func @multicast_consume
+// CHECK: ttkernel.cb_pop_front
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  func.func @multicast_post() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %recv = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post = ttl.copy %pipe, %recv
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+
+  func.func @multicast_consume() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %ready = ttl.cb_wait %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Mutually exclusive branches do not establish an order between receiver
 // posts, even when their regions have a fixed lexical order.
 

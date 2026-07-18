@@ -401,9 +401,10 @@ void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
 
     const PipeReceiverDFBNode &receiverDFBNode =
         pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
-    if (!receiverDFBNode.hasProvenPipeOnlyStream) {
+    if (!receiverDFBNode.hasProvenPipeOnlyProducerStream) {
       debugRejectEndpoint(endpoint,
-                          "receiver DFB stream is not proven pipe-only");
+                          "receiver DFB producer stream is not proven "
+                          "pipe-only");
       continue;
     }
 

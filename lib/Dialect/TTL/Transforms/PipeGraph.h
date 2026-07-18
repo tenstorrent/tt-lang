@@ -195,7 +195,10 @@ struct PipeReceiverDFBNode {
   /// Number of blocks in one proven receiver reservation sequence, or null
   /// when the graph cannot prove one receiver order.
   std::optional<int64_t> receiverBatchSize;
-  bool hasProvenPipeOnlyStream = false;
+  /// Every producer-side DFB advance belongs to a pipe receive. Consumer
+  /// releases are validated separately because they do not move the write
+  /// pointer.
+  bool hasProvenPipeOnlyProducerStream = false;
 };
 
 /// Return the semantic transfer contract used by pipe synchronization. The
@@ -317,8 +320,9 @@ private:
 
   void rebuildEndpointGraph();
 
-  LogicalResult provePipeOnlyReceiverStreams(ModuleOp mod,
-                                             PipeGraphAnalysisState &state);
+  LogicalResult
+  provePipeOnlyReceiverProducerStreams(ModuleOp mod,
+                                       PipeGraphAnalysisState &state);
 
   llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
   SmallVector<PipeEdge, 0> pipeEdges;

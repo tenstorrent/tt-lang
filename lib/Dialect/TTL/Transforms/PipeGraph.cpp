@@ -7,6 +7,7 @@
 #include "DFBAcquireReleaseAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
@@ -155,18 +156,20 @@ static bool hasMatchingReceiveWaitBeforePush(
   return false;
 }
 
-static void debugRejectPipeOnlyStream(const PipeReceiverDFBKey &receiverDFB,
-                                      llvm::StringRef reason) {
+static void
+debugRejectPipeOnlyProducerStream(const PipeReceiverDFBKey &receiverDFB,
+                                  llvm::StringRef reason) {
   LLVM_DEBUG({
-    llvm::dbgs() << "PipeGraph: reject pipe-only stream for ";
+    llvm::dbgs() << "PipeGraph: reject pipe-only producer stream for ";
     printReceiverDFB(llvm::dbgs(), receiverDFB);
     llvm::dbgs() << ": " << reason << "\n";
   });
 }
 
-static void debugAcceptPipeOnlyStream(const PipeReceiverDFBKey &receiverDFB) {
+static void
+debugAcceptPipeOnlyProducerStream(const PipeReceiverDFBKey &receiverDFB) {
   LLVM_DEBUG({
-    llvm::dbgs() << "PipeGraph: accept pipe-only stream for ";
+    llvm::dbgs() << "PipeGraph: accept pipe-only producer stream for ";
     printReceiverDFB(llvm::dbgs(), receiverDFB);
     llvm::dbgs() << "\n";
   });
@@ -199,40 +202,81 @@ struct ReceiverPostOccurrence {
 using ReceiverPostsByDFB =
     llvm::DenseMap<PipeReceiverDFBKey, SmallVector<ReceiverPostOccurrence>>;
 
+/// Structured control that orders one receiver DFB reservation sequence.
+struct ReceiverControlContext {
+  Operation *function = nullptr;
+  SmallVector<Block *> dynamicRegionBlocks;
+
+  bool operator==(const ReceiverControlContext &rhs) const {
+    return function == rhs.function &&
+           dynamicRegionBlocks == rhs.dynamicRegionBlocks;
+  }
+
+  bool operator!=(const ReceiverControlContext &rhs) const {
+    return !(*this == rhs);
+  }
+};
+
 /// Ignore receiver-role wrappers that are statically true on this receiver.
 static bool isTransparentReceiverScope(Operation *op,
                                        PipeReceiverCoord receiver) {
   if (mlir::isa<PipeNetScopeOp>(op)) {
     return true;
   }
-  auto ifDstOp = mlir::dyn_cast<IfDstOp>(op);
-  if (!ifDstOp) {
-    return false;
+  if (auto ifDstOp = mlir::dyn_cast<IfDstOp>(op)) {
+    auto pipeType = mlir::cast<PipeType>(ifDstOp.getPipe().getType());
+    return knownLaunchNodeDomainContains(
+        getPipeDestinationLaunchNodeDomain(pipeType),
+        getLaunchNodeCoord(receiver));
   }
-  auto pipeType = mlir::cast<PipeType>(ifDstOp.getPipe().getType());
-  return knownLaunchNodeDomainContains(
-      getPipeDestinationLaunchNodeDomain(pipeType),
-      getLaunchNodeCoord(receiver));
+  if (auto ifSrcOp = mlir::dyn_cast<IfSrcOp>(op)) {
+    auto pipeType = mlir::cast<PipeType>(ifSrcOp.getPipe().getType());
+    return knownLaunchNodeDomainContains(
+        getPipeSourceLaunchNodeDomain(pipeType), getLaunchNodeCoord(receiver));
+  }
+  return false;
 }
 
-/// Preserve only blocks that can change dynamic execution on this receiver.
-static SmallVector<Block *>
-getReceiverControlContext(Operation *op, PipeReceiverCoord receiver) {
-  SmallVector<Block *> context;
+/// Return the dynamic regions that order this receiver's DFB reservations.
+/// Node-selected role regions do not add dynamic control on that receiver.
+static std::optional<ReceiverControlContext>
+getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
+                          const PipeGraphAnalysisState &analysisState) {
+  ReceiverControlContext context;
   Operation *current = op;
   while (Block *block = current->getBlock()) {
     Operation *parent = block->getParentOp();
+    if (mlir::isa_and_nonnull<func::FuncOp>(parent)) {
+      context.function = parent;
+      break;
+    }
     if (parent && isTransparentReceiverScope(parent, receiver)) {
       current = parent;
       continue;
     }
-    context.push_back(block);
-    if (!parent || mlir::isa<func::FuncOp>(parent)) {
-      break;
+    if (auto ifOp = mlir::dyn_cast_if_present<scf::IfOp>(parent)) {
+      if (std::optional<bool> selected = evaluatePredicateAtLaunchNode(
+              ifOp.getCondition(), getLaunchNodeCoord(receiver),
+              analysisState)) {
+        std::size_t selectedRegion = *selected ? 0 : 1;
+        if (block->getParent()->getRegionNumber() != selectedRegion) {
+          return std::nullopt;
+        }
+        current = parent;
+        continue;
+      }
+    }
+    context.dynamicRegionBlocks.push_back(block);
+    if (!parent) {
+      return std::nullopt;
     }
     current = parent;
   }
-  std::reverse(context.begin(), context.end());
+  if (!context.function) {
+    return std::nullopt;
+  }
+  std::reverse(context.dynamicRegionBlocks.begin(),
+               context.dynamicRegionBlocks.end());
   return context;
 }
 
@@ -277,32 +321,40 @@ static void debugRejectReceiverSchedule(const PipeReceiverDFBKey &receiverDFB,
 
 /// Require one control context and one static post per PipeKey because the
 /// sender stores one initial slot and one repeated-batch stride per PipeKey.
-static bool hasProvenReceiverSchedule(const PipeReceiverDFBKey &receiverDFB,
-                                      ArrayRef<ReceiverPostOccurrence> posts) {
+static std::optional<ReceiverControlContext>
+getProvenReceiverScheduleContext(const PipeReceiverDFBKey &receiverDFB,
+                                 ArrayRef<ReceiverPostOccurrence> posts,
+                                 const PipeGraphAnalysisState &analysisState) {
   if (posts.empty()) {
     debugRejectReceiverSchedule(receiverDFB, "no receiver posts");
-    return false;
+    return std::nullopt;
   }
 
-  SmallVector<Block *> controlContext =
-      getReceiverControlContext(posts.front().postOp, receiverDFB.receiver);
+  std::optional<ReceiverControlContext> controlContext =
+      getReceiverControlContext(posts.front().postOp, receiverDFB.receiver,
+                                analysisState);
+  if (!controlContext) {
+    debugRejectReceiverSchedule(receiverDFB,
+                                "receiver control cannot be evaluated");
+    return std::nullopt;
+  }
   llvm::DenseSet<PipeKey> seenPipes;
   for (const ReceiverPostOccurrence &post : posts) {
     if (!seenPipes.insert(post.pipe).second) {
       debugRejectReceiverSchedule(
           receiverDFB,
           "one pipe has multiple static occurrences in the receiver batch");
-      return false;
+      return std::nullopt;
     }
-    if (getReceiverControlContext(post.postOp, receiverDFB.receiver) !=
-        controlContext) {
+    if (getReceiverControlContext(post.postOp, receiverDFB.receiver,
+                                  analysisState) != controlContext) {
       debugRejectReceiverSchedule(
           receiverDFB,
           "receiver posts do not share one sequential control context");
-      return false;
+      return std::nullopt;
     }
   }
-  return true;
+  return controlContext;
 }
 
 struct LiveReceiverSlot {
@@ -444,7 +496,8 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
                                      PipeGraphAnalysisState &analysisState) {
   ReceiverPostsByDFB postsByReceiverDFB =
       collectReceiverPostsByDFB(mod, receiverDFBs, analysisState);
-  llvm::DenseMap<PipeReceiverDFBKey, bool> provenScheduleByReceiverDFB;
+  llvm::DenseMap<PipeReceiverDFBKey, std::optional<ReceiverControlContext>>
+      scheduleContextByReceiverDFB;
   for (const auto &entry : receiverDFBs) {
     const PipeKey &pipe = entry.first;
     const ReceiverDFBInfo &receiverInfo = entry.second;
@@ -455,40 +508,11 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
       if (postIt != postsByReceiverDFB.end()) {
         posts = postIt->second;
       }
-      provenScheduleByReceiverDFB.try_emplace(
-          receiverDFB, hasProvenReceiverSchedule(receiverDFB, posts));
+      scheduleContextByReceiverDFB.try_emplace(
+          receiverDFB,
+          getProvenReceiverScheduleContext(receiverDFB, posts, analysisState));
     });
   }
-
-  // A pop in another dynamic control context cannot establish that a slot is
-  // released before the next reserve in the receiver schedule.
-  mod.walk([&](CBPopOp popOp) {
-    std::optional<int64_t> dfbIndex = getCBIndex(popOp.getCb());
-    if (!dfbIndex) {
-      return;
-    }
-    LaunchNodeDomain popDomain =
-        lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
-    for (auto &[receiverDFB, proven] : provenScheduleByReceiverDFB) {
-      if (!proven || receiverDFB.dfbIndex != *dfbIndex ||
-          (popDomain.known &&
-           !knownLaunchNodeDomainContains(
-               popDomain, getLaunchNodeCoord(receiverDFB.receiver)))) {
-        continue;
-      }
-      auto postIt = postsByReceiverDFB.find(receiverDFB);
-      assert(postIt != postsByReceiverDFB.end() && !postIt->second.empty() &&
-             "proven receiver schedule must have a post");
-      if (getReceiverControlContext(popOp, receiverDFB.receiver) !=
-          getReceiverControlContext(postIt->second.front().postOp,
-                                    receiverDFB.receiver)) {
-        debugRejectReceiverSchedule(
-            receiverDFB,
-            "receiver pop does not share the post control context");
-        proven = false;
-      }
-    }
-  });
 
   struct PipeSlotAssignment {
     // NoC multicast carries one address, so all receiver endpoints must agree.
@@ -530,7 +554,7 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
       }
       hasReceiver = true;
       PipeReceiverDFBKey receiverDFB{receiver, receiverInfo.dfbIndex};
-      if (!provenScheduleByReceiverDFB.lookup(receiverDFB)) {
+      if (!scheduleContextByReceiverDFB.lookup(receiverDFB)) {
         pipeAssignment.valid = false;
         return;
       }
@@ -581,7 +605,14 @@ PipeGraph::assignReceiverSlotIndices(ModuleOp mod,
     for (LaunchNodeCoord coord : popDomain.nodes) {
       PipeReceiverDFBKey receiverDFB{PipeReceiverCoord{coord.x, coord.y},
                                      *dfbIndex};
-      if (!provenScheduleByReceiverDFB.lookup(receiverDFB)) {
+      auto contextIt = scheduleContextByReceiverDFB.find(receiverDFB);
+      if (contextIt == scheduleContextByReceiverDFB.end() ||
+          !contextIt->second) {
+        continue;
+      }
+      std::optional<ReceiverControlContext> popContext =
+          getReceiverControlContext(popOp, receiverDFB.receiver, analysisState);
+      if (popContext != contextIt->second) {
         continue;
       }
       auto stateIt = slotStateByReceiverDFB.find(receiverDFB);
@@ -656,9 +687,8 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
   return success();
 }
 
-LogicalResult
-PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
-                                        PipeGraphAnalysisState &analysisState) {
+LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
+    ModuleOp mod, PipeGraphAnalysisState &analysisState) {
   llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>> waitsByPost;
   collectReceiveWaitsByPost(mod, waitsByPost);
 
@@ -675,17 +705,17 @@ PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
       }
     });
     if (posts.empty()) {
-      debugRejectPipeOnlyStream(receiverDFB, "no matching receiver posts");
+      debugRejectPipeOnlyProducerStream(receiverDFB,
+                                        "no matching receiver posts");
       continue;
     }
 
     bool valid = true;
     auto reject = [&](llvm::StringRef reason) {
-      debugRejectPipeOnlyStream(receiverDFB, reason);
+      debugRejectPipeOnlyProducerStream(receiverDFB, reason);
       valid = false;
     };
     llvm::DenseSet<Operation *> postsWithPush;
-    llvm::DenseSet<Operation *> waitsWithPop;
 
     mod.walk([&](CBPushOp pushOp) {
       if (!valid || !isReceiverDFB(pushOp.getCb(), receiverDFB)) {
@@ -755,53 +785,9 @@ PipeGraph::provePipeOnlyReceiverStreams(ModuleOp mod,
       continue;
     }
 
-    mod.walk([&](CBPopOp popOp) {
-      if (!valid || !isReceiverDFB(popOp.getCb(), receiverDFB)) {
-        return;
-      }
-      LaunchNodeDomain popDomain =
-          lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
-      if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
-        return;
-      }
-      if (!knownLaunchNodeDomainContains(
-              popDomain, getLaunchNodeCoord(receiverDFB.receiver)) ||
-          !isNocKernelThread(popOp)) {
-        reject("pop is not in the receiver NOC domain");
-        return;
-      }
-      std::optional<int64_t> releasedBlocks = getReleasedBlockCount(popOp);
-      if (!releasedBlocks) {
-        reject("pop block count is not a whole DFB block count");
-        return;
-      }
-      auto waitOp = lookupOwner<CBWaitOp>(
-          analysisState.dfbReleaseOwners.waitByPop, popOp.getOperation());
-      if (!waitOp) {
-        reject("pop has no unique receiver wait owner");
-        return;
-      }
-      LaunchNodeDomain waitDomain =
-          lookupOperationLaunchDomain(waitOp.getOperation(), analysisState);
-      if (!knownLaunchNodeDomainContains(
-              waitDomain, getLaunchNodeCoord(receiverDFB.receiver)) ||
-          !isNocKernelThread(waitOp)) {
-        reject("wait is not in the receiver NOC domain");
-        return;
-      }
-      std::optional<int64_t> waitedBlocks = getWaitedBlockCount(waitOp);
-      if (!waitedBlocks || *waitedBlocks != *releasedBlocks) {
-        reject("wait and pop use different block counts");
-        return;
-      }
-      if (!waitsWithPop.insert(waitOp.getOperation()).second) {
-        reject("wait owns more than one pop");
-      }
-    });
-
-    node.hasProvenPipeOnlyStream = valid;
+    node.hasProvenPipeOnlyProducerStream = valid;
     if (valid) {
-      debugAcceptPipeOnlyStream(receiverDFB);
+      debugAcceptPipeOnlyProducerStream(receiverDFB);
     }
   }
   return success();
@@ -834,7 +820,7 @@ PipeGraph::getProvenUniformReceiverBatchSize(PipeEdgeId pipeEdgeId) const {
     const PipeReceiverEndpoint &endpoint = getPipeReceiverEndpoint(endpointId);
     const PipeReceiverDFBNode &receiverDFBNode =
         getReceiverDFBNode(endpoint.receiverDFBNode);
-    if (!receiverDFBNode.hasProvenPipeOnlyStream ||
+    if (!receiverDFBNode.hasProvenPipeOnlyProducerStream ||
         !receiverDFBNode.receiverBatchSize) {
       return std::nullopt;
     }
@@ -1161,7 +1147,7 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   }
 
   graph.rebuildEndpointGraph();
-  if (failed(graph.provePipeOnlyReceiverStreams(mod, analysisState))) {
+  if (failed(graph.provePipeOnlyReceiverProducerStreams(mod, analysisState))) {
     return failure();
   }
   if (failed(graph.verifyCollectiveReceiverAddresses())) {

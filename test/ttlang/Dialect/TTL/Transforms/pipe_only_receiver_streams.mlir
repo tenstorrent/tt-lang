@@ -1,17 +1,18 @@
-// Summary: PipeGraph debug output reports why a receiver DFB stream is or is
-// not proven pipe-only before pipe capacity analysis consumes the graph fact.
+// Summary: PipeGraph debug output reports why a receiver DFB producer stream
+// is or is not proven pipe-only before pipe capacity analysis consumes the
+// graph fact.
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel -debug-only=ttl-pipe-graph 2>&1 >/dev/null | FileCheck %s --check-prefix=GRAPH
 
-// GRAPH: PipeGraph: accept pipe-only stream for receiver(1, 0) DFB 1
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: push reserve owns no matching receiver post
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: post has no receive wait before push
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: wait and pop use different block counts
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: post is not consumed by a receiver push
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: pop has no unique receiver wait owner
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: push has no unique receiver reserve owner
+// GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: push reserve owns no matching receiver post
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: post has no receive wait before push
+// GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: post is not consumed by a receiver push
+// GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: push has no unique receiver reserve owner
 
-// Purpose: the canonical one-post, one-push, one-wait, one-pop stream is
-// proven pipe-only.
+// Purpose: the canonical one-post, one-push producer stream is proven
+// pipe-only.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @accepted_pipe_only_stream()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -102,8 +103,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// Purpose: the receiver wait and pop must consume the same number of DFB
-// blocks, otherwise the pop cannot be mapped to one capacity release.
+// Purpose: consumer wait and pop counts do not affect the producer write
+// pointer proof. Capacity analysis validates their release accounting.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @wait_pop_count_mismatch()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -159,8 +160,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// Purpose: a receiver pop without an owned receiver wait cannot release sender
-// capacity.
+// Purpose: a pop without a wait owner does not affect the producer write
+// pointer proof. Capacity analysis rejects it as a sender-capacity release.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @pop_without_wait_owner()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
