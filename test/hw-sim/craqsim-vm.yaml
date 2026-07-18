@@ -17,8 +17,8 @@ disk: "120GiB"
 vmType: "vz"
 mountType: "virtiofs"
 
-# Mount the host TT tree. Lima mounts it at the same absolute path in the guest
-# (e.g. /Users/<you>/tt); the build scripts read the source from there.
+# Mount the host TT tree. Lima mounts it at the host's absolute path in the
+# guest; the build scripts discover it and read the source from there.
 mounts:
   - location: "~/tt"
     writable: true

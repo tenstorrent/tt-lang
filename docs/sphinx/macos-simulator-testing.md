@@ -124,18 +124,19 @@ free space and is not reclaimed by deleting files inside the VM (see disk note).
 
 ### Build and run
 
-Run from the tt-lang repo root on the host. The scripts are in `test/hw-sim/`;
-Lima mounts the host `~/tt` in the guest at the same absolute path, so `HW` below
-points at the mounted scripts dir.
+Run from the tt-lang repo root on the host. The scripts are in `test/hw-sim/`.
+Lima mounts the host `~/tt` in the guest at the host's absolute path; the steps
+below discover that mount point rather than assuming it.
 
 ```bash
-HW=/Users/$USER/tt/tt-lang/test/hw-sim     # host ~/tt, as mounted in the guest
-
 # 1. Init tt-metal's submodules (umd, tracy) so the build finds them.
 git -C third-party/tt-metal submodule update --init --depth 1
 
-# 2. Create the VM (Ubuntu 24.04 aarch64, mounts ~/tt).
-limactl start --tty=false --name=ttlang-craqsim "$HW/craqsim-vm.yaml"
+# 2. Create the VM (Ubuntu 24.04 aarch64, mounts ~/tt). Config is read on the host.
+limactl start --tty=false --name=ttlang-craqsim ~/tt/tt-lang/test/hw-sim/craqsim-vm.yaml
+
+# Point HW at the scripts dir as mounted inside the guest:
+HW="$(limactl shell ttlang-craqsim -- findmnt -nt virtiofs -o TARGET | grep -m1 '/tt$')/tt-lang/test/hw-sim"
 
 # 3. Provision + build the toolchain (LLVM + tt-metal) and install tt-metal into
 #    it, from a VM-local source copy. Detached so it survives a dropped SSH session.
@@ -202,7 +203,8 @@ tt-lang directly from the **mounted** source into a separate `build-lima/` dir
 reused, so this compiles only tt-lang's own dialects/bindings.
 
 ```bash
-TTLANG=/Users/$USER/tt/tt-lang       # host ~/tt/tt-lang, as mounted in the guest
+# tt-lang as mounted inside the guest:
+TTLANG="$(limactl shell ttlang-craqsim -- findmnt -nt virtiofs -o TARGET | grep -m1 '/tt$')/tt-lang"
 
 # Configure once, against the prebuilt toolchain:
 limactl shell ttlang-craqsim -- bash -c \

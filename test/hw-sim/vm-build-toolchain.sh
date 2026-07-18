@@ -14,8 +14,8 @@
 #    writes fail over the virtiofs mount, so build from a VM-local ext4 copy.
 set -euo pipefail
 
-# Host ~/tt as mounted in the guest. Lima mounts it at the host's absolute path
-# (e.g. /Users/<you>/tt); auto-detect the virtiofs mount, or set SRC_HOST.
+# Host ~/tt as mounted in the guest (Lima mounts it at the host's absolute path).
+# Auto-detect the virtiofs mount, or set SRC_HOST explicitly.
 SRC_HOST="${SRC_HOST:-$(findmnt -nt virtiofs -o TARGET 2>/dev/null | grep -m1 '/tt$' || true)}"
 : "${SRC_HOST:?set SRC_HOST to your host ~/tt path as mounted in the guest}"
 VM_LOCAL="${VM_LOCAL:-/var/tmp}"
