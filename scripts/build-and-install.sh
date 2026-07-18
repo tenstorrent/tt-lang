@@ -42,13 +42,8 @@
 
 set -Eeo pipefail
 
-# Robust failure handling so a failure can never be reported as success: exit
-# non-zero on any error (-e), have the ERR trap fire inside functions/subshells
-# too (-E), and treat a failing stage in any pipeline as a failure (pipefail).
-# The trap prints the failing command so failures are never silent. Note: a
-# caller that pipes our output (e.g. `... | tee`) still sees the pipe's exit
-# status, not ours -- invoke without a masking pipe, or set pipefail in the
-# caller.
+# Fail loudly and non-zero on any error -- inside functions (-E) and pipelines
+# (pipefail) too -- so a failure is never reported as success.
 trap 'rc=$?; echo "ERROR: build-and-install.sh failed (exit $rc) at: ${BASH_COMMAND}" >&2; exit $rc' ERR
 
 # When running inside a Docker container with volume-mounted repos, git
@@ -280,21 +275,28 @@ do_build_and_install() {
 
 # ---- Finalize (normalize toolchain + cleanup) ----
 do_finalize() {
-    echo "=== Normalizing and cleaning up toolchain ==="
-    if [ -f /tmp/normalize-toolchain-install.sh ]; then
-        bash /tmp/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
-    elif [ -f .github/scripts/normalize-toolchain-install.sh ]; then
-        bash .github/scripts/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
-    fi
+    # Normalize (relocatable packaging) + cleanup (stubbing binaries to slim
+    # Docker images) are Linux-CI artifact steps: they need GNU coreutils/bash 4
+    # and would gut a local in-place toolchain. Only run them on Linux.
+    if [ "$(uname -s)" = "Linux" ]; then
+        echo "=== Normalizing and cleaning up toolchain ==="
+        if [ -f /tmp/normalize-toolchain-install.sh ]; then
+            bash /tmp/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
+        elif [ -f .github/scripts/normalize-toolchain-install.sh ]; then
+            bash .github/scripts/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
+        fi
 
-    if [ -f /tmp/cleanup-toolchain.sh ]; then
-        bash /tmp/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
-    elif [ -f .github/containers/cleanup-toolchain.sh ]; then
-        bash .github/containers/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
-    fi
+        if [ -f /tmp/cleanup-toolchain.sh ]; then
+            bash /tmp/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
+        elif [ -f .github/containers/cleanup-toolchain.sh ]; then
+            bash .github/containers/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
+        fi
 
-    # Clean up temp scripts
-    rm -f /tmp/normalize-toolchain-install.sh /tmp/cleanup-toolchain.sh
+        # Clean up temp scripts
+        rm -f /tmp/normalize-toolchain-install.sh /tmp/cleanup-toolchain.sh
+    else
+        echo "=== Skipping toolchain normalize/cleanup on $(uname -s) (Linux-CI packaging only; toolchain used in place) ==="
+    fi
 
     if [ "$REMOVE_BUILD_DIR" = true ]; then
         echo "=== Removing build directory: $CMAKE_BINARY_DIR ==="
