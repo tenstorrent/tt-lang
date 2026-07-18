@@ -193,6 +193,35 @@ Remember the split: **pytest runs against `test/…`, lit against `build/test/�
 `llvm-lit test/…` on the source tree fails (`AttributeError: … python_executable`)
 because the generated `lit.site.cfg.py` lives in the build dir.
 
+### Iterating on tt-lang from the host tree (`build-lima`)
+
+The steps above build tt-lang from a VM-local copy (`/var/tmp/tt-lang`), so host
+edits don't appear there. For an edit-on-host / build-and-test-in-VM loop, build
+tt-lang directly from the **mounted** source into a separate `build-lima/` dir
+(tt-lang — unlike tt-metal — builds fine over virtiofs). The prebuilt toolchain is
+reused, so this compiles only tt-lang's own dialects/bindings.
+
+```bash
+TTLANG=/Users/$USER/tt/tt-lang       # host ~/tt/tt-lang, as mounted in the guest
+
+# Configure once, against the prebuilt toolchain:
+limactl shell ttlang-craqsim -- bash -c \
+  "cd $TTLANG && cmake -G Ninja -B build-lima -DTTLANG_USE_TOOLCHAIN=ON -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain"
+
+# After editing tt-lang on the host: rebuild (incremental) and test.
+limactl shell ttlang-craqsim -- bash -c "cd $TTLANG && cmake --build build-lima"
+limactl shell ttlang-craqsim -- bash -c "
+  cd $TTLANG && source build-lima/env/activate
+  export TT_METAL_SIMULATOR=/var/tmp/sim/libttsim.so TT_METAL_SLOW_DISPATCH_MODE=1
+  python -m pytest test/python/pipe/test_broadcast_2d.py -xvs"
+```
+
+`build-lima/` lives in the host tree (`~/tt/tt-lang/build-lima`), so its
+`build.log` and artifacts are visible on the host. Use `source
+build-lima/env/activate` (not `build/…`) for this build. The `/var/tmp` copy is
+only needed for the one-time toolchain build (LLVM + tt-metal can't build over
+virtiofs).
+
 ### Operational notes
 
 - **Detach long builds** (`setsid … & disown`) and have them write an exit-code
