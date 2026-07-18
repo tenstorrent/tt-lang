@@ -98,9 +98,9 @@ add_custom_target(check-ttlang
 
 # When configured against the simulator (TT_METAL_SIMULATOR set), run the device
 # pytest suites in parallel: each pytest-xdist worker starts its own libttsim.so
-# device. Bounded (default 4) because N simulator instances are memory-heavy;
-# override with -DTTLANG_SIM_PYTEST_JOBS=<N>.
-set(TTLANG_SIM_PYTEST_JOBS "4" CACHE STRING
+# device. Each is memory-heavy (~2-3 GiB), so the default of 2 suits the 16 GiB
+# reference VM; raise it (and the VM's memory) with -DTTLANG_SIM_PYTEST_JOBS=<N>.
+set(TTLANG_SIM_PYTEST_JOBS "2" CACHE STRING
   "pytest-xdist worker count for simulator (TT_METAL_SIMULATOR) test runs")
 set(_ttlang_pytest_parallel "")
 if(DEFINED ENV{TT_METAL_SIMULATOR})
