@@ -17,9 +17,9 @@ set -euo pipefail
 # Host TT root (the dir holding the tt-lang and craq-sim clones), as mounted in
 # the guest. Auto-detect the virtiofs mount that contains tt-lang, or set SRC_HOST.
 if [ -z "${SRC_HOST:-}" ]; then
-  for _m in $(findmnt -nrt virtiofs -o TARGET 2>/dev/null); do
+  while IFS= read -r _m; do
     [ -d "$_m/tt-lang" ] && { SRC_HOST="$_m"; break; }
-  done
+  done < <(findmnt -nrt virtiofs -o TARGET 2>/dev/null)
 fi
 : "${SRC_HOST:?set SRC_HOST to the mounted TT root (the dir holding tt-lang and craq-sim)}"
 VM_LOCAL="${VM_LOCAL:-/var/tmp}"

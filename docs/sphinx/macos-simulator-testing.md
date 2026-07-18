@@ -15,7 +15,7 @@ Do not conflate them:
 | Name | `tt-lang-sim` | ttsim / `libttsim.so` (local fork: craq-sim) |
 | What it is | tt-lang ops as pure Python (torch-backed) | Simulates the Tensix/RISC-V device; loaded by tt-metal via `TT_METAL_SIMULATOR` |
 | Needs tt-metal? | No | Yes |
-| Runs on macOS host? | Yes (native) | No — needs Linux (Lima VM) |
+| Runs on macOS host? | Yes (native) | No -- needs Linux (Lima VM) |
 | Docs | [simulator.md](simulator.md) | this page |
 
 This page is about the hardware simulator. For `tt-lang-sim`, see
@@ -49,8 +49,8 @@ Three changes make the script work correctly on macOS (`/bin/bash` 3.2, BSD
 coreutils):
 - `set -Eeo pipefail` + an `ERR` trap so any failure exits non-zero with a
   message (a failure can never be reported as success). Note a caller that pipes
-  output through `tee` still masks the code — invoke without a masking pipe.
-- `df -BM` → `df -h` (GNU-only flag; BSD `df` errors on `-BM`).
+  output through `tee` still masks the code -- invoke without a masking pipe.
+- `df -BM` -> `df -h` (GNU-only flag; BSD `df` errors on `-BM`).
 - The `do_finalize` normalize + cleanup steps run only on Linux. They are
   CI/Docker packaging (relocatable install; stub non-essential LLVM binaries to
   slim the image) and rely on bash 4 (`mapfile`, `declare -A`) and GNU tools
@@ -72,7 +72,7 @@ cd craq-sim   # your ttsim/craq-sim checkout
 ./make.py src/_out/release_wh/libttsim.so src/_out/release_bh/libttsim.so
 ```
 
-- Build only the `.so` targets — not `./make.py :build`, which pulls in
+- Build only the `.so` targets -- not `./make.py :build`, which pulls in
   `tests/:build` and requires the SFPI RISC-V cross-compiler (Linux-only).
 - Host-native smoke test (no SFPI): `rv32_alu`/`rv64_alu` inject RISC-V
   instructions from the host and load the `.so`:
@@ -80,12 +80,12 @@ cd craq-sim   # your ttsim/craq-sim checkout
   ./make.py tests/_out/rv32_alu
   tests/_out/rv32_alu --sim src/_out/release_wh/libttsim.so --loops 0 1000
   ```
-  `tensix_fpu`/`tensix_sfpu` and the `*.elf` tests are gated to Linux — their
+  `tensix_fpu`/`tensix_sfpu` and the `*.elf` tests are gated to Linux -- their
   on-device kernels are compiled with the SFPI cross-compiler.
 
 Apple clang (`-Werror`) may flag `static inline` helpers that GCC (Linux) does
 not; annotate them `[[maybe_unused]]` following the file's existing idiom. Such
-patches are host-side only — GCC in the VM does not need them.
+patches are host-side only -- GCC in the VM does not need them.
 
 ### In the Lima VM (for the runtime-test loop)
 
@@ -99,8 +99,8 @@ load under Linux) and place it at the path the run harness expects
 tt-metal builds and runs there, so tt-lang's `REQUIRES: tt-device` tests execute
 against a craq-sim `libttsim.so` with no silicon. tt-mlir is **not** needed.
 
-This is the verified flow: fresh VM → current LLVM + tt-metal from the submodules
-→ tt-lang → craq-sim `libttsim.so` → a passing device test. Helper scripts that
+This is the verified flow: fresh VM -> current LLVM + tt-metal from the submodules
+-> tt-lang -> craq-sim `libttsim.so` -> a passing device test. Helper scripts that
 encode the aarch64 fixes live in the repo at `test/hw-sim/` (`craqsim-vm.yaml`,
 `vm-build-toolchain.sh`, `vm-build-ttlang.sh`, `vm-resume-build.sh`). They run
 inside the VM against the mounted source, auto-detecting the virtiofs mount that
@@ -117,7 +117,7 @@ free space and is not reclaimed by deleting files inside the VM (see disk note).
 - A wrong-arch **x86-64 `cmake`** in `/usr/local/bin` can shadow the apt arm64
   one; remove it.
 - apt installs versioned `clang-20` only, but tt-lang's CMake wants bare
-  `clang`/`clang++` — add them with `update-alternatives`.
+  `clang`/`clang++` -- add them with `update-alternatives`.
 - Build from a **VM-local copy** of the source, not the virtiofs mount: tt-metal
   writes into its own tree (CPM cache, firmware ELFs) and those writes fail over
   virtiofs.
@@ -125,7 +125,7 @@ free space and is not reclaimed by deleting files inside the VM (see disk note).
 ### Build and run
 
 Run from the tt-lang repo root on the host. tt-lang and craq-sim are assumed to
-sit under a common **TT root** that the VM mounts — default `~/tt`, set by the
+sit under a common **TT root** that the VM mounts -- default `~/tt`, set by the
 `mounts:` entry in `test/hw-sim/craqsim-vm.yaml` (change it if your clones live
 elsewhere). Host-side commands below are relative to the repo root; guest-side
 paths are discovered from the mount.
@@ -193,8 +193,8 @@ llvm-lit -v build/test/python/dram_interleaved_add.py
 python3 test/python/dram_interleaved_add.py
 ```
 
-Remember the split: **pytest runs against `test/…`, lit against `build/test/…`**.
-`llvm-lit test/…` on the source tree fails (`AttributeError: … python_executable`)
+Remember the split: **pytest runs against `test/...`, lit against `build/test/...`**.
+`llvm-lit test/...` on the source tree fails (`AttributeError: ... python_executable`)
 because the generated `lit.site.cfg.py` lives in the build dir.
 
 ### Iterating on tt-lang from the host tree (`build-lima`)
@@ -202,7 +202,7 @@ because the generated `lit.site.cfg.py` lives in the build dir.
 The steps above build tt-lang from a VM-local copy (`/var/tmp/tt-lang`), so host
 edits don't appear there. For an edit-on-host / build-and-test-in-VM loop, build
 tt-lang directly from the **mounted** source into a separate `build-lima/` dir
-(tt-lang — unlike tt-metal — builds fine over virtiofs). The prebuilt toolchain is
+(tt-lang -- unlike tt-metal -- builds fine over virtiofs). The prebuilt toolchain is
 reused, so this compiles only tt-lang's own dialects/bindings.
 
 ```bash
@@ -224,21 +224,21 @@ limactl shell ttlang-craqsim -- bash -c "
 
 `build-lima/` lives in your tt-lang checkout on the host, so its
 `build.log` and artifacts are visible on the host. Use `source
-build-lima/env/activate` (not `build/…`) for this build. The `/var/tmp` copy is
+build-lima/env/activate` (not `build/...`) for this build. The `/var/tmp` copy is
 only needed for the one-time toolchain build (LLVM + tt-metal can't build over
 virtiofs).
 
 ### Operational notes
 
-- **Detach long builds** (`setsid … & disown`) and have them write an exit-code
+- **Detach long builds** (`setsid ... & disown`) and have them write an exit-code
   marker; a dropped `limactl shell` otherwise orphans the build. Mirror the VM
   log into the mounted tree for host visibility
-  (`limactl shell <vm> -- tail -F <vmlog> > <mounted-tree>/…`).
+  (`limactl shell <vm> -- tail -F <vmlog> > <mounted-tree>/...`).
 - **Disk:** the VM diffdisk grows with the build and is not returned to the host
   when files are deleted inside the VM (`fstrim` did not reclaim it here). If it
   bloats across failed attempts, delete and recreate the VM to reclaim the space.
 - **Post-uplift:** after bumping the LLVM/tt-metal submodules, re-init tt-metal's
-  submodules (step 1) and rebuild with a *clean* toolchain — pass `--force-rebuild`
+  submodules (step 1) and rebuild with a *clean* toolchain -- pass `--force-rebuild`
   to `build-and-install.sh` (or `rm -rf /opt/ttlang-toolchain` first), because
   toolchain reuse is keyed on file existence, not the submodule SHA (see
   [build.md](build.md)).
