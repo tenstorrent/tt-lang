@@ -1,6 +1,8 @@
 # Lit Test configuration
 # (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
 
+add_subdirectory(lib/Analysis)
+
 # Generate pytest.ini with correct build directory paths.
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini.in
@@ -28,6 +30,7 @@ configure_lit_site_cfg(
 )
 
 set(TTLANG_TEST_DEPENDS
+  ttlang-execution-count-test
   ttlang-opt
   ttlang-translate
 )
