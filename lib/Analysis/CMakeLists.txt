@@ -11,6 +11,5 @@ add_mlir_library(TTLangAnalysis
   MLIRControlFlowInterfaces
   MLIRIR
   MLIRLoopLikeInterface
-  MLIRPresburger
   MLIRSCFDialect
 )

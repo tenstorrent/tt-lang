@@ -188,40 +188,44 @@ for the root operation. These standard analyses provide context-independent
 constant and executability facts. The per-query integer evaluator can prove
 additional branch operands from consumer facts and enclosing induction values.
 Dead-code analysis determines whether a block or edge may execute; it does not
-determine how many times it executes. Exact block counts therefore require the
-flow equations below.
+determine how many times it executes.
 
-For one region invocation, let `B(block)` be a block invocation count and let
-`E(source, successor)` be the number of times one successor edge executes. All
-variables are nonnegative integers. The analysis constructs these equations:
+For each region and induction environment, the analysis constructs a possible
+block control-flow graph (CFG). Its nodes are the region's blocks. Its edges
+exclude branches proven dead by dead-code analysis and successors excluded by
+compile-time branch selection. The graph preserves correlations between branch
+arms and their merges.
 
-```text
-B(block) = entry(block) + sum(E(edge) for edge entering block)
+A strongly connected component (SCC) is a maximal set of blocks in which every
+block can reach every other block. An SCC is cyclic when it contains multiple
+blocks or a single block with an edge to itself. A block post-dominates the
+entry when every terminating or nonterminating continuation from the entry
+passes through that block.
 
-B(block) = sum(E(edge) for edge leaving block)
-    for each block with successors
-```
+Within one region invocation, an unreachable block has count zero. A block in a
+reachable cyclic SCC may execute more than once. The SCC may also never exit,
+so every block reachable from it has an unknown count. Every other reachable
+block executes at most once. Its count is one exactly when it post-dominates the
+entry block in the possible CFG; otherwise, its count is unknown.
 
-`entry(block)` is one for the region entry block and zero otherwise. Edges
-excluded by dead-code analysis or a compile-time branch selection are omitted.
-Blocks disconnected from the entry block have count zero.
+LLVM's SCC analysis identifies cycles. LLVM's post-dominator construction
+treats ordinary exits and nonterminating loops as successors of a common
+virtual exit. This distinction prevents a non-exiting cycle from incorrectly
+forcing execution of a sibling block. A block before the branch can still
+post-dominate the entry and have count one.
 
-The equations preserve correlations through control flow. For example, each
-arm of a runtime-selected diamond has an unknown count, but the common merge
-block has count one. A runtime branch that conditionally enters one block also
-leaves that block unknown while its unconditional merge still has count one.
+For example, each arm of a runtime-selected diamond has an unknown count, but
+the common merge block has count one. A runtime branch that conditionally
+enters one block leaves that block unknown while its unconditional merge still
+has count one. A block after a reachable cycle remains unknown because the
+cycle may execute repeatedly or never exit.
 
-The analysis represents the equations as an MLIR Presburger integer relation.
-It computes the minimum and maximum integer value of the queried block count
-with `presburger::Simplex`. The block count is exact only when both bounds are
-finite and equal.
+The analysis computes one SCC decomposition and one post-dominator tree for
+each distinct possible block CFG in a region. It caches all block results from
+that graph. Induction environments that select the same edges reuse the result.
 
-Finite flow conservation assumes that an invoked region eventually exits. A
-reachable cyclic block graph does not prove that assumption. The analysis
-therefore returns unknown for blocks in or reachable from a possible cycle.
-Blocks that execute before the cycle can still have exact counts. Structured
-loops remain supported through `LoopLikeOpInterface` because their trip counts
-are modeled explicitly outside the block equations.
+Structured loops remain supported through `LoopLikeOpInterface` because their
+trip counts are modeled explicitly outside the block CFG analysis.
 
 ## Algorithm
 
@@ -242,6 +246,23 @@ charged whether that attempt proves a count or falls back to enumerating the
 current loop.
 
 ```text
+exact_block_invocation_count(region, target_block, analysis_context,
+                             induction_environment):
+    graph = possible_block_cfg(region, analysis_context,
+                               induction_environment)
+    if graph is unknown:
+        return unknown
+    reachable = blocks_reachable_from(graph.entry)
+    if target_block is not in reachable:
+        return 0
+    cyclic = blocks in reachable cyclic SCCs
+    cycle_affected = blocks_reachable_from(cyclic)
+    if target_block is in cycle_affected:
+        return unknown
+    if target_block post-dominates graph.entry:
+        return 1
+    return unknown
+
 execution_count(operation, root_region, analysis_context):
     if operation is outside root_region:
         return unknown
@@ -423,10 +444,11 @@ Tests cover:
   unknown.
 - Unconditional multi-block sequences and compile-time-selected successors.
 - Runtime-selected blocks with unknown counts and merge blocks with exact
-  counts established by flow conservation.
+  counts established by post-dominance.
 - Disconnected blocks with count zero and duplicate successor edges.
 - Block predicates derived from enclosing induction variables.
-- Possible cyclic block control flow producing unknown for the cycle and
+- Possible cyclic block control flow, including non-exiting self-loops and
+  multi-block cycles, producing unknown for affected cycle, sibling, and
   subsequent blocks.
 - Parentless operations and operations outside the root region producing
   unknown.

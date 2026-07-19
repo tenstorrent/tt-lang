@@ -7,8 +7,6 @@
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
-#include "mlir/Analysis/Presburger/IntegerRelation.h"
-#include "mlir/Analysis/Presburger/Simplex.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -17,14 +15,103 @@
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/GenericDomTreeConstruction.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <iterator>
 #include <utility>
+
+namespace mlir::tt::execution_count_detail {
+
+struct BlockFlowGraph;
+
+/// A block and its possible control-flow edges for one induction environment.
+struct BlockFlowNode {
+  BlockFlowGraph *parent = nullptr;
+  Block *block = nullptr;
+  SmallVector<BlockFlowNode *> successors;
+  SmallVector<BlockFlowNode *> predecessors;
+
+  /// Supply the parent required by LLVM's generic dominator tree.
+  BlockFlowGraph *getParent() const { return parent; }
+
+  /// Print the corresponding MLIR block in LLVM graph diagnostics.
+  void printAsOperand(llvm::raw_ostream &output, bool printType) const {
+    block->printAsOperand(output, printType);
+  }
+};
+
+/// The possible block CFG for one region and induction environment.
+struct BlockFlowGraph {
+  using NodeList = SmallVector<BlockFlowNode>;
+
+  NodeList nodes;
+  BlockFlowNode *entry = nullptr;
+
+  /// Supply the entry required by LLVM's generic dominator tree.
+  BlockFlowNode &front() { return *entry; }
+};
+
+} // namespace mlir::tt::execution_count_detail
+
+namespace llvm {
+
+/// Restrict LLVM graph traversal to successors possible in this context.
+template <>
+struct GraphTraits<mlir::tt::execution_count_detail::BlockFlowNode *> {
+  using NodeRef = mlir::tt::execution_count_detail::BlockFlowNode *;
+  using ChildIteratorType = SmallVector<NodeRef>::const_iterator;
+
+  static NodeRef getEntryNode(NodeRef node) { return node; }
+  static ChildIteratorType child_begin(NodeRef node) {
+    return node->successors.begin();
+  }
+  static ChildIteratorType child_end(NodeRef node) {
+    return node->successors.end();
+  }
+};
+
+/// Provide the reverse contextual edges required by post-dominance.
+template <>
+struct GraphTraits<Inverse<mlir::tt::execution_count_detail::BlockFlowNode *>> {
+  using NodeRef = mlir::tt::execution_count_detail::BlockFlowNode *;
+  using ChildIteratorType = SmallVector<NodeRef>::const_iterator;
+
+  static NodeRef getEntryNode(Inverse<NodeRef> graph) { return graph.Graph; }
+  static ChildIteratorType child_begin(NodeRef node) {
+    return node->predecessors.begin();
+  }
+  static ChildIteratorType child_end(NodeRef node) {
+    return node->predecessors.end();
+  }
+};
+
+/// Let post-dominance inspect every node, including disconnected blocks.
+template <>
+struct GraphTraits<mlir::tt::execution_count_detail::BlockFlowGraph *>
+    : GraphTraits<mlir::tt::execution_count_detail::BlockFlowNode *> {
+  using GraphType = mlir::tt::execution_count_detail::BlockFlowGraph *;
+  using NodeRef = mlir::tt::execution_count_detail::BlockFlowNode *;
+  using nodes_iterator = pointer_iterator<
+      mlir::tt::execution_count_detail::BlockFlowGraph::NodeList::iterator>;
+
+  static NodeRef getEntryNode(GraphType graph) { return graph->entry; }
+  static nodes_iterator nodes_begin(GraphType graph) {
+    return nodes_iterator(graph->nodes.begin());
+  }
+  static nodes_iterator nodes_end(GraphType graph) {
+    return nodes_iterator(graph->nodes.end());
+  }
+};
+
+} // namespace llvm
 
 namespace mlir::tt {
 
@@ -36,10 +123,13 @@ struct ControlFrame {
   Block *targetBlock = nullptr;
 };
 
-struct BlockFlowEdge {
-  Block *source = nullptr;
-  Block *target = nullptr;
-  unsigned variable = 0;
+/// One byte per successor edge, ordered by block and successor position.
+using BlockFlowKey = SmallVector<std::uint8_t>;
+
+/// Exact block counts for one possible block CFG.
+struct BlockCountResult {
+  /// Map every block to zero, one, or an unknown invocation count.
+  llvm::DenseMap<Block *, std::optional<std::uint64_t>> blockCounts;
 };
 
 class EnumerationBudget {
@@ -86,41 +176,6 @@ bool isRegionReachable(RegionBranchOpInterface branch, Region &sourceRegion,
     }
   }
   return false;
-}
-
-bool isBlockReachable(
-    Block *source, Block *target,
-    const llvm::DenseMap<Block *, SmallVector<Block *>> &successors) {
-  SmallVector<Block *> worklist{source};
-  llvm::DenseSet<Block *> visited{source};
-  while (!worklist.empty()) {
-    Block *block = worklist.pop_back_val();
-    if (block == target) {
-      return true;
-    }
-    for (Block *successor : successors.lookup(block)) {
-      if (visited.insert(successor).second) {
-        worklist.push_back(successor);
-      }
-    }
-  }
-  return false;
-}
-
-std::optional<std::uint64_t> convertToUInt64(const llvm::DynamicAPInt &value) {
-  if (value < 0) {
-    return std::nullopt;
-  }
-
-  constexpr std::uint64_t radix = std::uint64_t{1} << 32;
-  const llvm::DynamicAPInt dynamicRadix(static_cast<std::int64_t>(radix));
-  llvm::DynamicAPInt high = value / dynamicRadix;
-  llvm::DynamicAPInt low = value % dynamicRadix;
-  if (high >= static_cast<std::int64_t>(radix)) {
-    return std::nullopt;
-  }
-  return (static_cast<std::uint64_t>(static_cast<std::int64_t>(high)) << 32) |
-         static_cast<std::uint64_t>(static_cast<std::int64_t>(low));
 }
 
 } // namespace
@@ -266,32 +321,52 @@ private:
     return executable && !executable->isLive();
   }
 
+  /// Return the target block's exact count from its possible control-flow CFG.
   std::optional<std::uint64_t> getExactBlockInvocationCount(
       Region &region, Block *targetBlock,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
     if (!targetBlock || targetBlock->getParent() != &region || region.empty()) {
       return std::nullopt;
     }
 
-    llvm::DenseMap<Block *, unsigned> blockVariables;
-    unsigned variableCount = 0;
-    for (Block &block : region) {
-      blockVariables.try_emplace(&block, variableCount++);
+    FailureOr<BlockFlowKey> maybeFlowKey =
+        getBlockFlowKey(region, inductionValues);
+    if (failed(maybeFlowKey)) {
+      return std::nullopt;
+    }
+    auto &regionCache = blockCountCache[&region];
+    auto resultIt = regionCache.find(*maybeFlowKey);
+    if (resultIt == regionCache.end()) {
+      BlockCountResult result = classifyBlockCounts(region, *maybeFlowKey);
+      auto [insertedIt, inserted] =
+          regionCache.try_emplace(std::move(*maybeFlowKey), std::move(result));
+      assert(inserted && "new block CFG must be inserted");
+      resultIt = insertedIt;
     }
 
-    SmallVector<BlockFlowEdge> edges;
-    llvm::DenseMap<Block *, SmallVector<Block *>> possibleSuccessors;
+    BlockCountResult &result = resultIt->second;
+    auto countIt = result.blockCounts.find(targetBlock);
+    assert(countIt != result.blockCounts.end() &&
+           "block-count result must contain every block");
+    return countIt->second;
+  }
+
+  /// Encode the successor edges possible under the current induction values.
+  FailureOr<BlockFlowKey> getBlockFlowKey(
+      Region &region,
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+    BlockFlowKey flowKey;
     for (Block &block : region) {
       Operation *terminator = block.getTerminator();
       if (!terminator) {
-        return std::nullopt;
+        return failure();
       }
       if (terminator->getNumSuccessors() == 0) {
         continue;
       }
       auto branch = dyn_cast<BranchOpInterface>(terminator);
       if (!branch) {
-        return std::nullopt;
+        return failure();
       }
 
       SmallVector<Attribute> operands =
@@ -299,96 +374,105 @@ private:
       Block *selectedSuccessor = branch.getSuccessorForOperands(operands);
       if (selectedSuccessor &&
           !llvm::is_contained(terminator->getSuccessors(), selectedSuccessor)) {
-        return std::nullopt;
+        return failure();
       }
 
       for (Block *successor : terminator->getSuccessors()) {
-        if (isKnownDead(&block) || isKnownDead(successor) ||
-            isKnownDead(&block, successor) ||
-            (selectedSuccessor && successor != selectedSuccessor)) {
-          continue;
-        }
-        possibleSuccessors[&block].push_back(successor);
-        edges.push_back({&block, successor, variableCount++});
+        bool isPossible =
+            !isKnownDead(&block) && !isKnownDead(successor) &&
+            !isKnownDead(&block, successor) &&
+            (!selectedSuccessor || successor == selectedSuccessor);
+        flowKey.push_back(isPossible);
       }
     }
+    return flowKey;
+  }
 
-    Block *entryBlock = &region.front();
-    llvm::DenseSet<Block *> reachableBlocks;
-    SmallVector<Block *> worklist{entryBlock};
-    reachableBlocks.insert(entryBlock);
+  /// Classify every block in one invocation of the possible block CFG.
+  BlockCountResult classifyBlockCounts(Region &region,
+                                       ArrayRef<std::uint8_t> flowKey) const {
+    using execution_count_detail::BlockFlowGraph;
+    using execution_count_detail::BlockFlowNode;
+
+    BlockCountResult result;
+    BlockFlowGraph graph;
+    graph.nodes.reserve(std::distance(region.begin(), region.end()));
+    llvm::DenseMap<Block *, BlockFlowNode *> nodesByBlock;
+    for (Block &block : region) {
+      BlockFlowNode &node = graph.nodes.emplace_back();
+      node.parent = &graph;
+      node.block = &block;
+      nodesByBlock.try_emplace(&block, &node);
+    }
+    graph.entry = nodesByBlock.lookup(&region.front());
+
+    std::size_t edgePosition = 0;
+    for (Block &block : region) {
+      BlockFlowNode *sourceNode = nodesByBlock.lookup(&block);
+      Operation *terminator = block.getTerminator();
+      for (Block *successor : terminator->getSuccessors()) {
+        assert(edgePosition < flowKey.size() && "block-flow key is too short");
+        if (!flowKey[edgePosition++]) {
+          continue;
+        }
+        BlockFlowNode *successorNode = nodesByBlock.lookup(successor);
+        assert(successorNode && "successor must belong to the same region");
+        if (!llvm::is_contained(sourceNode->successors, successorNode)) {
+          sourceNode->successors.push_back(successorNode);
+          successorNode->predecessors.push_back(sourceNode);
+        }
+      }
+    }
+    assert(edgePosition == flowKey.size() && "block-flow key is too long");
+
+    llvm::DenseSet<BlockFlowNode *> reachableNodes;
+    SmallVector<BlockFlowNode *> worklist{graph.entry};
+    reachableNodes.insert(graph.entry);
     while (!worklist.empty()) {
-      Block *block = worklist.pop_back_val();
-      for (Block *successor : possibleSuccessors.lookup(block)) {
-        if (reachableBlocks.insert(successor).second) {
+      BlockFlowNode *node = worklist.pop_back_val();
+      for (BlockFlowNode *successor : node->successors) {
+        if (reachableNodes.insert(successor).second) {
           worklist.push_back(successor);
         }
       }
     }
-    if (!reachableBlocks.contains(targetBlock)) {
-      return 0;
-    }
 
-    // Flow conservation assumes that an invoked region eventually exits.
-    // A possible cycle cannot establish that property for itself or any block
-    // that may execute after it.
-    for (Block *block : reachableBlocks) {
-      bool participatesInCycle =
-          llvm::any_of(possibleSuccessors.lookup(block), [&](Block *successor) {
-            return isBlockReachable(successor, block, possibleSuccessors);
-          });
-      if (participatesInCycle &&
-          isBlockReachable(block, targetBlock, possibleSuccessors)) {
-        return std::nullopt;
+    // Blocks in a possible cycle may repeat, and its successors may never run.
+    llvm::DenseSet<BlockFlowNode *> cycleAffectedNodes;
+    for (auto sccIt = llvm::scc_begin(&graph); !sccIt.isAtEnd(); ++sccIt) {
+      if (!sccIt.hasCycle()) {
+        continue;
       }
-    }
-
-    presburger::IntegerRelation relation(
-        presburger::PresburgerSpace::getSetSpace(variableCount));
-    for (unsigned variable = 0; variable < variableCount; ++variable) {
-      relation.addBound(presburger::BoundType::LB, variable, 0);
-    }
-
-    for (Block &block : region) {
-      SmallVector<std::int64_t> incoming(variableCount + 1, 0);
-      incoming[blockVariables.lookup(&block)] = 1;
-      for (const BlockFlowEdge &edge : edges) {
-        if (edge.target == &block) {
-          incoming[edge.variable] = -1;
+      for (BlockFlowNode *node : *sccIt) {
+        if (cycleAffectedNodes.insert(node).second) {
+          worklist.push_back(node);
         }
       }
-      incoming.back() = &block == entryBlock ? -1 : 0;
-      relation.addEquality(incoming);
-
-      SmallVector<std::int64_t> outgoing(variableCount + 1, 0);
-      bool hasOutgoingEdge = false;
-      for (const BlockFlowEdge &edge : edges) {
-        if (edge.source == &block) {
-          outgoing[edge.variable] = -1;
-          hasOutgoingEdge = true;
+    }
+    while (!worklist.empty()) {
+      BlockFlowNode *node = worklist.pop_back_val();
+      for (BlockFlowNode *successor : node->successors) {
+        if (cycleAffectedNodes.insert(successor).second) {
+          worklist.push_back(successor);
         }
       }
-      if (block.getNumSuccessors() != 0) {
-        outgoing[blockVariables.lookup(&block)] = 1;
-        relation.addEquality(outgoing);
-      } else {
-        assert(!hasOutgoingEdge && "exit block cannot have flow edges");
-      }
-
-      if (!reachableBlocks.contains(&block)) {
-        relation.addBound(presburger::BoundType::EQ,
-                          blockVariables.lookup(&block), 0);
-      }
     }
 
-    presburger::Simplex simplex(relation);
-    SmallVector<llvm::DynamicAPInt> expression(variableCount + 1);
-    expression[blockVariables.lookup(targetBlock)] = llvm::DynamicAPInt(1);
-    auto [minimum, maximum] = simplex.computeIntegerBounds(expression);
-    if (!minimum.isBounded() || !maximum.isBounded() || *minimum != *maximum) {
-      return std::nullopt;
+    // In the remaining acyclic graph, a reachable block executes exactly once
+    // iff every terminating or nonterminating continuation visits it.
+    llvm::PostDomTreeBase<BlockFlowNode> postDominance;
+    postDominance.recalculate(graph);
+    for (BlockFlowNode &node : graph.nodes) {
+      std::optional<std::uint64_t> maybeCount;
+      if (!reachableNodes.contains(&node)) {
+        maybeCount = 0;
+      } else if (!cycleAffectedNodes.contains(&node) &&
+                 postDominance.dominates(&node, graph.entry)) {
+        maybeCount = 1;
+      }
+      result.blockCounts.try_emplace(node.block, maybeCount);
     }
-    return convertToUInt64(*minimum);
+    return result;
   }
 
   std::optional<std::uint64_t> getExactRegionInvocationCount(
@@ -503,7 +587,7 @@ private:
   std::optional<std::uint64_t>
   countInsideFrame(ArrayRef<ControlFrame> frames, std::size_t frameIndex,
                    llvm::DenseMap<Value, llvm::APInt> &inductionValues,
-                   EnumerationBudget &enumerationBudget) const {
+                   EnumerationBudget &enumerationBudget) {
     ControlFrame frame = frames[frameIndex];
     std::optional<std::uint64_t> maybeBlockCount = getExactBlockInvocationCount(
         *frame.region, frame.targetBlock, inductionValues);
@@ -520,7 +604,7 @@ private:
   std::optional<std::uint64_t>
   countExecutions(ArrayRef<ControlFrame> frames, std::size_t frameIndex,
                   llvm::DenseMap<Value, llvm::APInt> &inductionValues,
-                  EnumerationBudget &enumerationBudget) const {
+                  EnumerationBudget &enumerationBudget) {
     if (frameIndex == frames.size()) {
       return 1;
     }
@@ -617,6 +701,9 @@ private:
   Options options;
   std::unique_ptr<DataFlowSolver> dataFlowSolver;
   llvm::DenseMap<Operation *, std::optional<std::uint64_t>> executionCountCache;
+  /// Reuse block counts when different induction values select the same edges.
+  llvm::DenseMap<Region *, llvm::DenseMap<BlockFlowKey, BlockCountResult>>
+      blockCountCache;
 };
 
 ExecutionCountAnalysis::ExecutionCountAnalysis(

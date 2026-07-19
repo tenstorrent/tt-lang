@@ -518,6 +518,78 @@ func.func @possible_block_cycle(%condition: i1) {
 // CHECK-LABEL: possible_block_cycle_loop = unknown
 // CHECK-LABEL: possible_block_cycle_exit = unknown
 
+// A possible non-exiting cycle makes the sibling target unknown while an
+// unconditional prefix remains exact.
+func.func @non_exiting_cycle_sibling(%condition: i1) {
+  %zero = arith.constant 0 : index
+  cf.br ^prefix
+
+^prefix:
+  %prefix_target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "non_exiting_cycle_sibling_prefix"
+  } : index
+  cf.cond_br %condition, ^spin, ^target
+
+^spin:
+  cf.br ^spin
+
+^target:
+  %target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "non_exiting_cycle_sibling_target"
+  } : index
+  return
+}
+// CHECK-LABEL: non_exiting_cycle_sibling_prefix = 1
+// CHECK-LABEL: non_exiting_cycle_sibling_target = unknown
+
+// A non-exiting cycle spanning multiple blocks has the same effect as a
+// self-loop on an alternative branch.
+func.func @non_exiting_multi_block_cycle(%condition: i1) {
+  %zero = arith.constant 0 : index
+  cf.cond_br %condition, ^spin_a, ^target
+
+^spin_a:
+  cf.br ^spin_b
+
+^spin_b:
+  cf.br ^spin_a
+
+^target:
+  %target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "non_exiting_multi_block_cycle"
+  } : index
+  return
+}
+// CHECK-LABEL: non_exiting_multi_block_cycle = unknown
+
+// A non-exiting CFG cycle inside a structured loop must not produce an exact
+// sibling count multiplied by the loop trip count.
+func.func @nested_non_exiting_cycle(%condition: i1) {
+  %zero = arith.constant 0 : index
+  %upper = arith.constant 4 : index
+  %step = arith.constant 1 : index
+  scf.for %iteration = %zero to %upper step %step {
+    scf.execute_region {
+      cf.cond_br %condition, ^spin, ^target
+
+    ^spin:
+      cf.br ^spin
+
+    ^target:
+      %target = arith.addi %iteration, %iteration {
+        test.expected_count = "unknown",
+        test.label = "nested_non_exiting_cycle"
+      } : index
+      scf.yield
+    }
+  }
+  return
+}
+// CHECK-LABEL: nested_non_exiting_cycle = unknown
+
 // Removing a cycle with a constant branch restores exact downstream counts.
 func.func @unselected_block_cycle() {
   %false = arith.constant false
