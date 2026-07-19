@@ -277,6 +277,22 @@ executes and how often each branch to an earlier block executes. Those block
 counts compose with the region and loop factors defined above without changing
 the definition of an operation count.
 
+## Toy operation-statistics client
+
+`ttlang-op-stats` is a test-only toy client. It demonstrates how a consumer
+can query the analysis and provides integration coverage for the public API; it
+is not installed as a supported tool. The client groups operations by name
+within each `func.func` and reports:
+
+- `static_occurrences`: the number of operations with that name in the IR.
+- `dynamic_instances`: the sum of their exact execution counts.
+
+`dynamic_instances` is unknown if any contributing operation count is unknown
+or the sum exceeds 64 bits. The tool sorts operation names so its output is
+deterministic. It supplies no consumer-specific callback facts; counts that
+require launch coordinates or custom region semantics therefore remain
+unknown.
+
 ## Cost-model feature extraction
 
 An optimization candidate is one legal IR configuration being compared with

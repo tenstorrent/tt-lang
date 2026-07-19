@@ -33,6 +33,7 @@ configure_lit_site_cfg(
 
 set(TTLANG_TEST_DEPENDS
   ttlang-execution-count-test
+  ttlang-op-stats
   ttlang-opt
   ttlang-translate
 )
