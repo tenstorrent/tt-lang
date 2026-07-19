@@ -332,8 +332,102 @@ func.func @unsupported_loop(%upper: index) {
 }
 // CHECK-LABEL: unsupported_loop = unknown
 
-// Multi-block region control flow is unknown until block execution counts are
-// proven.
+// An unconditional chain executes every block once.
+func.func @multi_block_chain() {
+  %zero = arith.constant 0 : index
+  cf.br ^middle
+
+^middle:
+  %target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "multi_block_chain"
+  } : index
+  cf.br ^exit
+
+^exit:
+  return
+}
+// CHECK-LABEL: multi_block_chain = 1
+
+// A constant condition proves both the selected and unselected block counts.
+func.func @constant_block_branch() {
+  %true = arith.constant true
+  %zero = arith.constant 0 : index
+  cf.cond_br %true, ^selected, ^unselected
+
+^selected:
+  %selected_target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "constant_block_branch_selected"
+  } : index
+  cf.br ^merge
+
+^unselected:
+  %unselected_target = arith.addi %zero, %zero {
+    test.expected_count = 0 : i64,
+    test.label = "constant_block_branch_unselected"
+  } : index
+  cf.br ^merge
+
+^merge:
+  %merge_target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "constant_block_branch_merge"
+  } : index
+  return
+}
+// CHECK-LABEL: constant_block_branch_selected = 1
+// CHECK-LABEL: constant_block_branch_unselected = 0
+// CHECK-LABEL: constant_block_branch_merge = 1
+
+// Flow conservation proves the merge count even though neither branch count
+// is exact.
+func.func @dynamic_block_diamond(%condition: i1) {
+  %zero = arith.constant 0 : index
+  cf.cond_br %condition, ^then, ^else
+
+^then:
+  %then_target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "dynamic_block_diamond_then"
+  } : index
+  cf.br ^merge
+
+^else:
+  %else_target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "dynamic_block_diamond_else"
+  } : index
+  cf.br ^merge
+
+^merge:
+  %merge_target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "dynamic_block_diamond_merge"
+  } : index
+  return
+}
+// CHECK-LABEL: dynamic_block_diamond_then = unknown
+// CHECK-LABEL: dynamic_block_diamond_else = unknown
+// CHECK-LABEL: dynamic_block_diamond_merge = 1
+
+// Parallel successor edges to the same block still produce one block
+// invocation.
+func.func @duplicate_successor(%condition: i1) {
+  %zero = arith.constant 0 : index
+  cf.cond_br %condition, ^merge, ^merge
+
+^merge:
+  %target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "duplicate_successor"
+  } : index
+  return
+}
+// CHECK-LABEL: duplicate_successor = 1
+
+// A conditional block has an unknown count while its merge still executes
+// once.
 func.func @multi_block(%condition: i1) {
   %zero = arith.constant 0 : index
   cf.cond_br %condition, ^selected, ^exit
@@ -346,9 +440,101 @@ func.func @multi_block(%condition: i1) {
   cf.br ^exit
 
 ^exit:
+  %merge_target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "multi_block_merge"
+  } : index
   return
 }
 // CHECK-LABEL: multi_block = unknown
+// CHECK-LABEL: multi_block_merge = 1
+
+// A disconnected block has an exact count of zero.
+func.func @unreachable_block() {
+  %zero = arith.constant 0 : index
+  return
+
+^unreachable:
+  %target = arith.addi %zero, %zero {
+    test.expected_count = 0 : i64,
+    test.label = "unreachable_block"
+  } : index
+  return
+}
+// CHECK-LABEL: unreachable_block = 0
+
+// A block predicate derived from an enclosing induction variable is
+// enumerated with the loop.
+func.func @induction_dependent_block_branch() {
+  %zero = arith.constant 0 : index
+  %upper = arith.constant 8 : index
+  %three = arith.constant 3 : index
+  %step = arith.constant 1 : index
+  scf.for %iteration = %zero to %upper step %step {
+    %selected = arith.cmpi slt, %iteration, %three : index
+    scf.execute_region {
+      cf.cond_br %selected, ^selected, ^exit
+
+    ^selected:
+      %target = arith.addi %iteration, %iteration {
+        test.expected_count = 3 : i64,
+        test.label = "induction_dependent_block_branch"
+      } : index
+      cf.br ^exit
+
+    ^exit:
+      scf.yield
+    }
+  }
+  return
+}
+// CHECK-LABEL: induction_dependent_block_branch = 3
+
+// A possible CFG cycle does not prove that its blocks or subsequent blocks
+// execute a finite number of times.
+func.func @possible_block_cycle(%condition: i1) {
+  %zero = arith.constant 0 : index
+  %entry_target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "possible_block_cycle_entry"
+  } : index
+  cf.br ^loop
+
+^loop:
+  %loop_target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "possible_block_cycle_loop"
+  } : index
+  cf.cond_br %condition, ^loop, ^exit
+
+^exit:
+  %exit_target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "possible_block_cycle_exit"
+  } : index
+  return
+}
+// CHECK-LABEL: possible_block_cycle_entry = 1
+// CHECK-LABEL: possible_block_cycle_loop = unknown
+// CHECK-LABEL: possible_block_cycle_exit = unknown
+
+// Removing a cycle with a constant branch restores exact downstream counts.
+func.func @unselected_block_cycle() {
+  %false = arith.constant false
+  %zero = arith.constant 0 : index
+  cf.br ^loop
+
+^loop:
+  cf.cond_br %false, ^loop, ^exit
+
+^exit:
+  %target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "unselected_block_cycle"
+  } : index
+  return
+}
+// CHECK-LABEL: unselected_block_cycle = 1
 
 // Enumeration limits and arithmetic overflow produce unknown rather than an
 // incomplete or wrapped count.

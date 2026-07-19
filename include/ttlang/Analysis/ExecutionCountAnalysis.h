@@ -5,12 +5,11 @@
 #ifndef TTLANG_ANALYSIS_EXECUTIONCOUNTANALYSIS_H
 #define TTLANG_ANALYSIS_EXECUTIONCOUNTANALYSIS_H
 
+#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
+
 #include "mlir/IR/Region.h"
-#include "mlir/IR/Value.h"
-#include "llvm/ADT/APInt.h"
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 
@@ -28,7 +27,7 @@ public:
   /// Evaluates context-specific integer values, such as launch coordinates.
   /// The returned bit width must match the SSA value type. Return nullopt for
   /// other values so the analysis can evaluate supported integer expressions.
-  using SymbolValueEvaluator = std::function<std::optional<llvm::APInt>(Value)>;
+  using SymbolValueEvaluator = IntegerExpressionEvaluator::ValueEvaluator;
 
   /// Returns an exact invocation count for a context-specific non-loop region.
   /// Returning nullopt delegates to RegionBranchOpInterface.

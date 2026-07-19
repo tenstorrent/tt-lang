@@ -65,9 +65,9 @@ callbacks:
   regions and for the unconditional `ttl.pipenet_scope` region.
 
 A loop induction variable is the SSA value that identifies the current
-iteration. The shared analysis evaluates constants, loop induction variables,
-integer casts, addition, subtraction, multiplication, bitwise AND, OR, and XOR,
-and integer comparisons. Consumers do not duplicate those rules.
+iteration. The shared integer-expression evaluator combines constants, loop
+induction variables, and consumer facts, then uses each operation's standard
+folding semantics. Consumers do not duplicate integer operation rules.
 
 Integer evaluation uses an explicit worklist and a memo table for each stable
 induction environment. Each value in a shared expression graph is evaluated at
@@ -80,19 +80,29 @@ proves an exact value or count.
 
 ## Control-flow representation
 
-A control frame pairs a parent operation with one of its child regions. Its
-region invocation count is the number of times the parent invokes that child
-region. For an operation nested under structured control flow, the analysis
-records an ordered control-frame sequence from the root region to the
-operation. This document names that sequence `control_frames`.
+A block invocation is one execution of a block during one invocation of its
+containing region. The block invocation count is relative to one region
+invocation. The root block is the block in the root region that contains the
+outermost operation relevant to the query.
 
-A control-frame sequence is induction-independent when no frame's invocation
-count depends on an induction variable from an earlier loop frame. Its
-operation count is the product of the frame invocation counts:
+A control frame contains a parent operation, one child region of that parent,
+and the block in that child region that contains the next nested operation. Its
+region invocation count is the number of times the parent invokes that child
+region. Its block invocation count is the number of times its block executes
+per child-region invocation. For an operation nested under structured control
+flow, the analysis records an ordered control-frame sequence from the root
+region to the operation. This document names that sequence `control_frames`.
+
+A control-frame sequence is induction-independent when no region or block
+invocation count depends on an induction variable from an earlier loop frame.
+Its operation count is:
 
 ```text
 operation_count =
-    product(region_invocation_count(frame) for frame in control_frames)
+    block_invocation_count(root_block)
+    * product(region_invocation_count(frame)
+              * block_invocation_count(frame.block)
+              for frame in control_frames)
 ```
 
 The product is valid only when every factor is exact. An exact zero ends the
@@ -130,6 +140,9 @@ The analysis uses MLIR interfaces as the primary semantic source:
   invocation bounds: the minimum and maximum number of times the parent may
   invoke each child region. A region count is exact only when its lower and
   upper bounds are equal.
+- `BranchOpInterface::getSuccessorForOperands()` identifies a unique block
+  successor when the branch operands are compile-time constants. Otherwise,
+  the analysis retains every successor that may execute.
 
 Constant operands are passed to `getRegionInvocationBounds()`. Integer
 operands that become constant in the current analysis context are also passed
@@ -170,6 +183,46 @@ infer execution semantics from traits such as `SingleBlock` or
 `SingleBlockImplicitTerminator`; those traits constrain IR structure, not how
 often a region executes.
 
+The analysis runs MLIR sparse constant propagation and dead-code analysis once
+for the root operation. These standard analyses provide context-independent
+constant and executability facts. The per-query integer evaluator can prove
+additional branch operands from consumer facts and enclosing induction values.
+Dead-code analysis determines whether a block or edge may execute; it does not
+determine how many times it executes. Exact block counts therefore require the
+flow equations below.
+
+For one region invocation, let `B(block)` be a block invocation count and let
+`E(source, successor)` be the number of times one successor edge executes. All
+variables are nonnegative integers. The analysis constructs these equations:
+
+```text
+B(block) = entry(block) + sum(E(edge) for edge entering block)
+
+B(block) = sum(E(edge) for edge leaving block)
+    for each block with successors
+```
+
+`entry(block)` is one for the region entry block and zero otherwise. Edges
+excluded by dead-code analysis or a compile-time branch selection are omitted.
+Blocks disconnected from the entry block have count zero.
+
+The equations preserve correlations through control flow. For example, each
+arm of a runtime-selected diamond has an unknown count, but the common merge
+block has count one. A runtime branch that conditionally enters one block also
+leaves that block unknown while its unconditional merge still has count one.
+
+The analysis represents the equations as an MLIR Presburger integer relation.
+It computes the minimum and maximum integer value of the queried block count
+with `presburger::Simplex`. The block count is exact only when both bounds are
+finite and equal.
+
+Finite flow conservation assumes that an invoked region eventually exits. A
+reachable cyclic block graph does not prove that assumption. The analysis
+therefore returns unknown for blocks in or reachable from a possible cycle.
+Blocks that execute before the cycle can still have exact counts. Structured
+loops remain supported through `LoopLikeOpInterface` because their trip counts
+are modeled explicitly outside the block equations.
+
 ## Algorithm
 
 In the pseudocode, `enumeration_budget` is the remaining number of loop
@@ -178,8 +231,7 @@ initialized to the configured enumeration limit and is passed by reference, so
 recursive calls consume the same budget. `try_consume` returns false when the
 budget is zero; otherwise, it decrements the budget and returns true.
 `empty_induction_environment` is an induction environment with no assigned loop
-values. A relevant region is the root region or a child region in
-`control_frames`. `frame_index` is a zero-based index into `control_frames`.
+values. `frame_index` is a zero-based index into `control_frames`.
 `enumerate_induction_values` computes the current loop's induction-variable
 sequence from its lower bound, trip count, and step. Checked arithmetic returns
 unknown on overflow.
@@ -193,11 +245,31 @@ current loop.
 execution_count(operation, root_region, analysis_context):
     if operation is outside root_region:
         return unknown
-    control_frames = enclosing_control_frames(root_region, operation)
-    if any relevant region has multiple blocks or block successors:
+    root_block, control_frames =
+        enclosing_control_frames(root_region, operation)
+    root_block_count = exact_block_invocation_count(
+        root_region, root_block, analysis_context,
+        empty_induction_environment)
+    if root_block_count is unknown:
         return unknown
-    return count_frames(control_frames, 0, analysis_context,
-                        empty_induction_environment, enumeration_limit)
+    if root_block_count == 0:
+        return 0
+    nested = count_frames(control_frames, 0, analysis_context,
+                          empty_induction_environment, enumeration_limit)
+    return checked_multiply(root_block_count, nested)
+
+count_inside_frame(control_frames, frame_index, analysis_context,
+                   induction_environment, enumeration_budget):
+    frame = control_frames[frame_index]
+    block_count = exact_block_invocation_count(
+        frame.region, frame.block, analysis_context, induction_environment)
+    if block_count is unknown:
+        return unknown
+    if block_count == 0:
+        return 0
+    nested = count_frames(control_frames, frame_index + 1, analysis_context,
+                          induction_environment, enumeration_budget)
+    return checked_multiply(block_count, nested)
 
 count_frames(control_frames, frame_index, analysis_context,
              induction_environment, enumeration_budget):
@@ -213,9 +285,9 @@ count_frames(control_frames, frame_index, analysis_context,
             return unknown
         if invocations == 0:
             return 0
-        nested = count_frames(control_frames, frame_index + 1,
-                              analysis_context,
-                              induction_environment, enumeration_budget)
+        nested = count_inside_frame(control_frames, frame_index,
+                                    analysis_context,
+                                    induction_environment, enumeration_budget)
         if nested is unknown:
             return unknown
         return checked_multiply(invocations, nested)
@@ -229,8 +301,8 @@ count_frames(control_frames, frame_index, analysis_context,
     if trip_count == 0:
         return 0
 
-    nested = count_frames(control_frames, frame_index + 1, analysis_context,
-                          induction_environment, enumeration_budget)
+    nested = count_inside_frame(control_frames, frame_index, analysis_context,
+                                induction_environment, enumeration_budget)
     if nested is exact:
         return checked_multiply(trip_count, nested)
 
@@ -250,9 +322,9 @@ count_frames(control_frames, frame_index, analysis_context,
         iteration_environment =
             induction_environment with frame's induction variable assigned
                                   to induction_value
-        nested = count_frames(control_frames, frame_index + 1,
-                              analysis_context,
-                              iteration_environment, enumeration_budget)
+        nested = count_inside_frame(control_frames, frame_index,
+                                    analysis_context,
+                                    iteration_environment, enumeration_budget)
         if nested is unknown:
             return unknown
         next_total = checked_add(total, nested)
@@ -261,21 +333,6 @@ count_frames(control_frames, frame_index, analysis_context,
         total = next_total
     return total
 ```
-
-## Multi-block control flow
-
-A block successor is another block that a block terminator may execute next.
-Region invocation counts do not determine how often each block inside a region
-executes. Until the analysis can prove an exact execution count for every
-block, it requires one block with no block successors in every relevant region.
-It returns unknown for multi-block control flow. This prevents a conditional
-branch or a branch to an earlier block from being treated as one execution.
-
-Supporting multi-block regions requires exact block counts computed from
-`BranchOpInterface` successors. The analysis must determine which successor
-executes and how often each branch to an earlier block executes. Those block
-counts compose with the region and loop factors defined above without changing
-the definition of an operation count.
 
 ## Toy operation-statistics client
 
@@ -364,7 +421,13 @@ Tests cover:
   producing unknown.
 - Loops and region operations without a supported exact-count model producing
   unknown.
-- Multi-block region control flow producing unknown.
+- Unconditional multi-block sequences and compile-time-selected successors.
+- Runtime-selected blocks with unknown counts and merge blocks with exact
+  counts established by flow conservation.
+- Disconnected blocks with count zero and duplicate successor edges.
+- Block predicates derived from enclosing induction variables.
+- Possible cyclic block control flow producing unknown for the cycle and
+  subsequent blocks.
 - Parentless operations and operations outside the root region producing
   unknown.
 - Enumeration-limit boundaries and arithmetic overflow handling.
