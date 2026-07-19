@@ -237,9 +237,9 @@ model. Cost models for subblock selection, fusion, and block planning can use
 the same operation-instance features when comparing legal candidates, then add
 latency, resource, and concurrency terms appropriate to the decision.
 
-## Required coverage
+## Test coverage
 
-Tests must cover:
+Tests cover:
 
 - Straight-line operations with count one.
 - Constant and context-evaluable loop bounds and predicates.
