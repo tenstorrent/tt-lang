@@ -26,12 +26,12 @@ namespace mlir::tt {
 class ExecutionCountAnalysis {
 public:
   /// Evaluates context-specific integer values, such as launch coordinates.
-  /// Return nullopt for other values so the analysis can evaluate constants,
-  /// induction variables, and supported integer arithmetic.
+  /// The returned bit width must match the SSA value type. Return nullopt for
+  /// other values so the analysis can evaluate supported integer expressions.
   using SymbolValueEvaluator = std::function<std::optional<llvm::APInt>(Value)>;
 
-  /// Returns an exact invocation count for a context-specific region.
-  /// Returning nullopt delegates to the region branch and loop interfaces.
+  /// Returns an exact invocation count for a context-specific non-loop region.
+  /// Returning nullopt delegates to RegionBranchOpInterface.
   using RegionInvocationCountEvaluator =
       std::function<std::optional<std::uint64_t>(Region &)>;
 

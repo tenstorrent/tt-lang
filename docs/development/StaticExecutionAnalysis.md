@@ -69,7 +69,9 @@ handling compile-time-evaluable predicates such as
 The analysis uses MLIR interfaces as the primary semantic source:
 
 - `LoopLikeOpInterface::getStaticTripCount()` supplies an exact loop trip
-  count when the loop operation can compute one.
+  count when the loop operation can compute one. The analysis requires one
+  loop region because the interface does not define separate invocation counts
+  for regions in a multi-region loop.
 - `RegionBranchOpInterface::getRegionInvocationBounds()` supplies region
   invocation bounds. A region count is exact only when its lower and upper
   bounds are equal.
@@ -86,6 +88,10 @@ only return to the parent operation. This proves structured selection without
 operation-specific condition handling. The analysis does not otherwise treat
 a region's upper bound as exact; doing so for an arbitrary
 `RegionBranchOpInterface` would be unsound.
+
+When a constant selector identifies another entry region, the analysis walks
+the interface successor graph. A target region has count zero only when no
+successor sequence from the selected region can reach it.
 
 `scf.for` receives additional support for context-evaluable lower bounds, upper
 bounds, and steps. The loop is still statically countable when those values
@@ -105,16 +111,16 @@ Some compile-time values are known only to a consumer. The analysis accepts two
 callbacks:
 
 - A symbol-value evaluator returns an integer value for context-specific SSA
-  values. PipeNet analysis uses it for launch coordinates and PipeNet role
-  predicates.
-- A region-invocation evaluator returns an exact count for
-  context-specific region semantics. PipeNet analysis uses it for
-  coordinate-dependent `ttl.if_src` and `ttl.if_dst` regions and for the
-  unconditional `ttl.pipenet_scope` region.
+  values. Its result must have the same bit width as the SSA value. PipeNet
+  analysis uses it for launch coordinates and PipeNet role predicates.
+- A region-invocation evaluator returns an exact count for context-specific
+  non-loop region semantics. PipeNet analysis uses it for coordinate-dependent
+  `ttl.if_src` and `ttl.if_dst` regions and for the unconditional
+  `ttl.pipenet_scope` region.
 
 The shared analysis evaluates constants, induction variables, integer casts,
-integer arithmetic, comparisons, and boolean integer operations. Consumers do
-not duplicate those rules.
+addition, subtraction, multiplication, bitwise boolean operations, and integer
+comparisons. Consumers do not duplicate those rules.
 
 Callbacks return facts, not defaults. An unevaluable symbol or region remains
 unknown and is processed through the standard MLIR interfaces when possible.
@@ -236,14 +242,17 @@ latency, resource, and concurrency terms appropriate to the decision.
 Tests must cover:
 
 - Straight-line operations with count one.
-- Constant and context-evaluable loop bounds.
+- Constant and context-evaluable loop bounds and predicates.
+- Consumer symbol values with valid and invalid bit widths.
+- Consumer-defined non-loop region invocation counts.
 - Large induction-independent rectangular loop nests without enumeration.
 - Induction-dependent branches with exact enumerated counts.
-- Exact zero for an unselected region.
+- Exact zero for an unreachable region or zero-trip enclosing loop.
+- Signed and unsigned loop comparison semantics.
 - Dynamic bounds or conditions producing unknown.
 - Unsupported loop and region semantics producing unknown.
 - Multi-block region control flow producing unknown.
-- Enumeration-limit and arithmetic-overflow handling.
+- Enumeration-limit boundaries and arithmetic-overflow handling.
 
 PipeNet regression tests additionally verify that send and receiver-post
 counts match for compile-time-evaluable loop and branch combinations, and that

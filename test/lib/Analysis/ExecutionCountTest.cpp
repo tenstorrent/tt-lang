@@ -22,6 +22,8 @@ constexpr llvm::StringLiteral kExpectedCountAttrName = "test.expected_count";
 constexpr llvm::StringLiteral kLabelAttrName = "test.label";
 constexpr llvm::StringLiteral kMaxIterationsAttrName =
     "test.max_enumerated_iterations";
+constexpr llvm::StringLiteral kRegionInvocationCountAttrName =
+    "test.region_invocation_count";
 constexpr llvm::StringLiteral kValueAttrName = "test.value";
 
 std::optional<llvm::APInt> evaluateFunctionArgument(mlir::func::FuncOp function,
@@ -30,13 +32,14 @@ std::optional<llvm::APInt> evaluateFunctionArgument(mlir::func::FuncOp function,
   if (!argument || argument.getOwner() != &function.getBody().front()) {
     return std::nullopt;
   }
-  auto valueAttr = function.getArgAttrOfType<mlir::IntegerAttr>(
+  auto maybeValueAttr = function.getArgAttrOfType<mlir::IntegerAttr>(
       argument.getArgNumber(), kValueAttrName);
-  return valueAttr ? std::optional(valueAttr.getValue()) : std::nullopt;
+  return maybeValueAttr ? std::optional(maybeValueAttr.getValue())
+                        : std::nullopt;
 }
 
 bool verifyExpectedCount(mlir::Operation *operation,
-                         std::optional<std::uint64_t> actualCount) {
+                         std::optional<std::uint64_t> maybeActualCount) {
   mlir::Attribute expectedAttr = operation->getAttr(kExpectedCountAttrName);
   auto labelAttr = operation->getAttrOfType<mlir::StringAttr>(kLabelAttrName);
   if (!expectedAttr || !labelAttr) {
@@ -47,20 +50,20 @@ bool verifyExpectedCount(mlir::Operation *operation,
   }
 
   llvm::outs() << labelAttr.getValue() << " = ";
-  if (actualCount) {
-    llvm::outs() << *actualCount << "\n";
+  if (maybeActualCount) {
+    llvm::outs() << *maybeActualCount << "\n";
   } else {
     llvm::outs() << "unknown\n";
   }
 
   if (auto expectedInteger = mlir::dyn_cast<mlir::IntegerAttr>(expectedAttr)) {
-    if (actualCount && expectedInteger.getValue().getActiveBits() <= 64 &&
-        *actualCount == expectedInteger.getValue().getZExtValue()) {
+    if (maybeActualCount && expectedInteger.getValue().getActiveBits() <= 64 &&
+        *maybeActualCount == expectedInteger.getValue().getZExtValue()) {
       return true;
     }
   } else if (auto expectedString =
                  mlir::dyn_cast<mlir::StringAttr>(expectedAttr)) {
-    if (expectedString.getValue() == "unknown" && !actualCount) {
+    if (expectedString.getValue() == "unknown" && !maybeActualCount) {
       return true;
     }
   }
@@ -70,15 +73,25 @@ bool verifyExpectedCount(mlir::Operation *operation,
   return false;
 }
 
+std::optional<std::uint64_t>
+evaluateRegionInvocationCount(mlir::Region &region) {
+  auto maybeCountAttr = region.getParentOp()->getAttrOfType<mlir::IntegerAttr>(
+      kRegionInvocationCountAttrName);
+  if (!maybeCountAttr || maybeCountAttr.getValue().getActiveBits() > 64) {
+    return std::nullopt;
+  }
+  return maybeCountAttr.getValue().getZExtValue();
+}
+
 bool verifyFunction(mlir::func::FuncOp function) {
   mlir::tt::ExecutionCountAnalysis::Options options;
-  if (auto limit =
+  if (auto maybeLimit =
           function->getAttrOfType<mlir::IntegerAttr>(kMaxIterationsAttrName)) {
-    if (limit.getValue().getActiveBits() > 64) {
+    if (maybeLimit.getValue().getActiveBits() > 64) {
       function.emitError() << kMaxIterationsAttrName << " does not fit uint64";
       return false;
     }
-    options.maxEnumeratedIterations = limit.getValue().getZExtValue();
+    options.maxEnumeratedIterations = maybeLimit.getValue().getZExtValue();
   }
 
   mlir::tt::ExecutionCountAnalysis analysis(
@@ -86,7 +99,7 @@ bool verifyFunction(mlir::func::FuncOp function) {
       [&](mlir::Value value) {
         return evaluateFunctionArgument(function, value);
       },
-      /*regionInvocationCountEvaluator=*/{}, options);
+      evaluateRegionInvocationCount, options);
 
   bool succeeded = true;
   function.walk([&](mlir::Operation *operation) {

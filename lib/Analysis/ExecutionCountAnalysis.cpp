@@ -13,10 +13,11 @@
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/CheckedArithmetic.h"
 
 #include <algorithm>
-#include <limits>
 #include <utility>
 
 namespace mlir::tt {
@@ -33,29 +34,13 @@ static std::uint32_t getIntegerBitWidth(Type type) {
     return integerType.getWidth();
   }
   assert(type.isIndex() && "expected an integer or index type");
-  return 64;
+  return IndexType::kInternalStorageBitWidth;
 }
 
 static llvm::APInt convertIntegerWidth(llvm::APInt value, Type type,
                                        bool isSigned) {
   std::uint32_t width = getIntegerBitWidth(type);
   return isSigned ? value.sextOrTrunc(width) : value.zextOrTrunc(width);
-}
-
-static std::optional<std::uint64_t> checkedMultiply(std::uint64_t lhs,
-                                                    std::uint64_t rhs) {
-  if (rhs != 0 && lhs > std::numeric_limits<std::uint64_t>::max() / rhs) {
-    return std::nullopt;
-  }
-  return lhs * rhs;
-}
-
-static std::optional<std::uint64_t> checkedAdd(std::uint64_t lhs,
-                                               std::uint64_t rhs) {
-  if (lhs > std::numeric_limits<std::uint64_t>::max() - rhs) {
-    return std::nullopt;
-  }
-  return lhs + rhs;
 }
 
 static bool hasOneLinearBlock(Region &region) {
@@ -65,6 +50,31 @@ static bool hasOneLinearBlock(Region &region) {
   Operation &terminator = region.front().back();
   return terminator.hasTrait<OpTrait::IsTerminator>() &&
          terminator.getNumSuccessors() == 0;
+}
+
+static bool isRegionReachable(RegionBranchOpInterface branch,
+                              Region &sourceRegion, Region &targetRegion) {
+  SmallVector<Region *> worklist{&sourceRegion};
+  llvm::SmallPtrSet<Region *, 4> visited;
+  visited.insert(&sourceRegion);
+  while (!worklist.empty()) {
+    Region *region = worklist.pop_back_val();
+    SmallVector<RegionSuccessor> successors;
+    branch.getSuccessorRegions(*region, successors);
+    for (RegionSuccessor successor : successors) {
+      Region *successorRegion = successor.getSuccessor();
+      if (!successorRegion) {
+        continue;
+      }
+      if (successorRegion == &targetRegion) {
+        return true;
+      }
+      if (visited.insert(successorRegion).second) {
+        worklist.push_back(successorRegion);
+      }
+    }
+  }
+  return false;
 }
 
 } // namespace
@@ -94,10 +104,10 @@ public:
 
     llvm::DenseMap<Value, llvm::APInt> inductionValues;
     std::uint64_t remainingIterations = options.maxEnumeratedIterations;
-    std::optional<std::uint64_t> count =
+    std::optional<std::uint64_t> maybeCount =
         countExecutions(frames, 0, inductionValues, remainingIterations);
-    executionCountCache.try_emplace(operation, count);
-    return count;
+    executionCountCache.try_emplace(operation, maybeCount);
+    return maybeCount;
   }
 
 private:
@@ -142,9 +152,12 @@ private:
       }
     }
     if (symbolValueEvaluator) {
-      if (std::optional<llvm::APInt> symbol = symbolValueEvaluator(value)) {
-        return convertIntegerWidth(*symbol, value.getType(),
-                                   /*isSigned=*/true);
+      if (std::optional<llvm::APInt> maybeSymbol =
+              symbolValueEvaluator(value)) {
+        if (maybeSymbol->getBitWidth() != getIntegerBitWidth(value.getType())) {
+          return std::nullopt;
+        }
+        return maybeSymbol;
       }
     }
 
@@ -155,51 +168,52 @@ private:
 
     auto evaluateBinary = [&](Value lhsValue, Value rhsValue,
                               auto operation) -> std::optional<llvm::APInt> {
-      std::optional<llvm::APInt> lhs =
+      std::optional<llvm::APInt> maybeLhs =
           evaluateInteger(lhsValue, inductionValues);
-      std::optional<llvm::APInt> rhs =
+      std::optional<llvm::APInt> maybeRhs =
           evaluateInteger(rhsValue, inductionValues);
-      if (!lhs || !rhs) {
+      if (!maybeLhs || !maybeRhs) {
         return std::nullopt;
       }
       std::uint32_t width = getIntegerBitWidth(value.getType());
-      return operation(lhs->sextOrTrunc(width), rhs->sextOrTrunc(width));
+      return operation(maybeLhs->sextOrTrunc(width),
+                       maybeRhs->sextOrTrunc(width));
     };
 
     if (auto castOp = dyn_cast<arith::IndexCastOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
+      std::optional<llvm::APInt> maybeInput =
           evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(convertIntegerWidth(*input, value.getType(),
-                                                       /*isSigned=*/true))
-                   : std::nullopt;
+      return maybeInput ? std::optional(convertIntegerWidth(
+                              *maybeInput, value.getType(), /*isSigned=*/true))
+                        : std::nullopt;
     }
     if (auto castOp = dyn_cast<arith::IndexCastUIOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
+      std::optional<llvm::APInt> maybeInput =
           evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(convertIntegerWidth(*input, value.getType(),
-                                                       /*isSigned=*/false))
-                   : std::nullopt;
+      return maybeInput ? std::optional(convertIntegerWidth(
+                              *maybeInput, value.getType(), /*isSigned=*/false))
+                        : std::nullopt;
     }
     if (auto castOp = dyn_cast<arith::ExtSIOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
+      std::optional<llvm::APInt> maybeInput =
           evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(convertIntegerWidth(*input, value.getType(),
-                                                       /*isSigned=*/true))
-                   : std::nullopt;
+      return maybeInput ? std::optional(convertIntegerWidth(
+                              *maybeInput, value.getType(), /*isSigned=*/true))
+                        : std::nullopt;
     }
     if (auto castOp = dyn_cast<arith::ExtUIOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
+      std::optional<llvm::APInt> maybeInput =
           evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(convertIntegerWidth(*input, value.getType(),
-                                                       /*isSigned=*/false))
-                   : std::nullopt;
+      return maybeInput ? std::optional(convertIntegerWidth(
+                              *maybeInput, value.getType(), /*isSigned=*/false))
+                        : std::nullopt;
     }
     if (auto castOp = dyn_cast<arith::TruncIOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
+      std::optional<llvm::APInt> maybeInput =
           evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(
-                         input->trunc(getIntegerBitWidth(value.getType())))
-                   : std::nullopt;
+      return maybeInput ? std::optional(maybeInput->trunc(
+                              getIntegerBitWidth(value.getType())))
+                        : std::nullopt;
     }
     if (auto addOp = dyn_cast<arith::AddIOp>(definingOp)) {
       return evaluateBinary(
@@ -232,44 +246,44 @@ private:
           [](llvm::APInt lhs, llvm::APInt rhs) { return lhs ^ rhs; });
     }
     if (auto cmpOp = dyn_cast<arith::CmpIOp>(definingOp)) {
-      std::optional<llvm::APInt> lhs =
+      std::optional<llvm::APInt> maybeLhs =
           evaluateInteger(cmpOp.getLhs(), inductionValues);
-      std::optional<llvm::APInt> rhs =
+      std::optional<llvm::APInt> maybeRhs =
           evaluateInteger(cmpOp.getRhs(), inductionValues);
-      if (!lhs || !rhs) {
+      if (!maybeLhs || !maybeRhs) {
         return std::nullopt;
       }
       bool result = false;
       switch (cmpOp.getPredicate()) {
       case arith::CmpIPredicate::eq:
-        result = *lhs == *rhs;
+        result = *maybeLhs == *maybeRhs;
         break;
       case arith::CmpIPredicate::ne:
-        result = *lhs != *rhs;
+        result = *maybeLhs != *maybeRhs;
         break;
       case arith::CmpIPredicate::slt:
-        result = lhs->slt(*rhs);
+        result = maybeLhs->slt(*maybeRhs);
         break;
       case arith::CmpIPredicate::sle:
-        result = lhs->sle(*rhs);
+        result = maybeLhs->sle(*maybeRhs);
         break;
       case arith::CmpIPredicate::sgt:
-        result = lhs->sgt(*rhs);
+        result = maybeLhs->sgt(*maybeRhs);
         break;
       case arith::CmpIPredicate::sge:
-        result = lhs->sge(*rhs);
+        result = maybeLhs->sge(*maybeRhs);
         break;
       case arith::CmpIPredicate::ult:
-        result = lhs->ult(*rhs);
+        result = maybeLhs->ult(*maybeRhs);
         break;
       case arith::CmpIPredicate::ule:
-        result = lhs->ule(*rhs);
+        result = maybeLhs->ule(*maybeRhs);
         break;
       case arith::CmpIPredicate::ugt:
-        result = lhs->ugt(*rhs);
+        result = maybeLhs->ugt(*maybeRhs);
         break;
       case arith::CmpIPredicate::uge:
-        result = lhs->uge(*rhs);
+        result = maybeLhs->uge(*maybeRhs);
         break;
       }
       return llvm::APInt(/*numBits=*/1, result);
@@ -281,9 +295,9 @@ private:
       ControlFrame frame,
       const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
     if (regionInvocationCountEvaluator) {
-      if (std::optional<std::uint64_t> count =
+      if (std::optional<std::uint64_t> maybeCount =
               regionInvocationCountEvaluator(*frame.region)) {
-        return count;
+        return maybeCount;
       }
     }
 
@@ -295,12 +309,12 @@ private:
     SmallVector<Attribute> operands;
     operands.reserve(frame.parent->getNumOperands());
     for (Value operand : frame.parent->getOperands()) {
-      std::optional<llvm::APInt> integer =
+      std::optional<llvm::APInt> maybeInteger =
           operand.getType().isIntOrIndex()
               ? evaluateInteger(operand, inductionValues)
               : std::nullopt;
-      if (integer) {
-        operands.push_back(IntegerAttr::get(operand.getType(), *integer));
+      if (maybeInteger) {
+        operands.push_back(IntegerAttr::get(operand.getType(), *maybeInteger));
         continue;
       }
       Attribute constant;
@@ -316,7 +330,7 @@ private:
       return std::nullopt;
     }
     const InvocationBounds &regionBounds = bounds[regionNumber];
-    auto upperBound = regionBounds.getUpperBound();
+    auto maybeUpperBound = regionBounds.getUpperBound();
     SmallVector<RegionSuccessor> entrySuccessors;
     branch.getEntrySuccessorRegions(operands, entrySuccessors);
     if (entrySuccessors.size() == 1) {
@@ -325,55 +339,60 @@ private:
         return 0;
       }
       if (selectedRegion != frame.region) {
-        if (upperBound && regionBounds.getLowerBound() == 0 &&
-            *upperBound == 0) {
+        if (maybeUpperBound && regionBounds.getLowerBound() == 0 &&
+            *maybeUpperBound == 0) {
+          return 0;
+        }
+        if (!isRegionReachable(branch, *selectedRegion, *frame.region)) {
           return 0;
         }
         return std::nullopt;
       }
-      if (upperBound && *upperBound == 1) {
+      if (maybeUpperBound && *maybeUpperBound == 1) {
         return 1;
       }
 
       SmallVector<RegionSuccessor> regionSuccessors;
       branch.getSuccessorRegions(*selectedRegion, regionSuccessors);
-      if (llvm::all_of(regionSuccessors,
-                       [](RegionSuccessor successor) {
-                         return successor.isOperation();
-                       })) {
+      if (llvm::all_of(regionSuccessors, [](RegionSuccessor successor) {
+            return successor.isOperation();
+          })) {
         return 1;
       }
       return std::nullopt;
     }
 
-    if (!upperBound || regionBounds.getLowerBound() != *upperBound) {
+    if (!maybeUpperBound || regionBounds.getLowerBound() != *maybeUpperBound) {
       return std::nullopt;
     }
-    return *upperBound;
+    return *maybeUpperBound;
   }
 
   std::optional<llvm::APInt> getSCFForTripCount(
       scf::ForOp forOp,
       const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
-    if (std::optional<llvm::APInt> tripCount = forOp.getStaticTripCount()) {
-      return tripCount;
+    if (std::optional<llvm::APInt> maybeTripCount =
+            forOp.getStaticTripCount()) {
+      return maybeTripCount;
     }
 
-    std::optional<llvm::APInt> lowerBound =
+    std::optional<llvm::APInt> maybeLowerBound =
         evaluateInteger(forOp.getLowerBound(), inductionValues);
-    std::optional<llvm::APInt> upperBound =
+    std::optional<llvm::APInt> maybeUpperBound =
         evaluateInteger(forOp.getUpperBound(), inductionValues);
-    std::optional<llvm::APInt> step =
+    std::optional<llvm::APInt> maybeStep =
         evaluateInteger(forOp.getStep(), inductionValues);
-    if (!lowerBound || !upperBound || !step || step->isZero()) {
+    if (!maybeLowerBound || !maybeUpperBound || !maybeStep ||
+        maybeStep->isZero()) {
       return std::nullopt;
     }
 
     IntegerAttr lowerBoundAttr =
-        IntegerAttr::get(forOp.getLowerBound().getType(), *lowerBound);
+        IntegerAttr::get(forOp.getLowerBound().getType(), *maybeLowerBound);
     IntegerAttr upperBoundAttr =
-        IntegerAttr::get(forOp.getUpperBound().getType(), *upperBound);
-    IntegerAttr stepAttr = IntegerAttr::get(forOp.getStep().getType(), *step);
+        IntegerAttr::get(forOp.getUpperBound().getType(), *maybeUpperBound);
+    IntegerAttr stepAttr =
+        IntegerAttr::get(forOp.getStep().getType(), *maybeStep);
     return constantTripCount(lowerBoundAttr, upperBoundAttr, stepAttr,
                              /*isSigned=*/!forOp.getUnsignedCmp(),
                              scf::computeUbMinusLb);
@@ -382,16 +401,16 @@ private:
   std::optional<std::uint64_t>
   getLoopTripCount(LoopLikeOpInterface loop,
                    const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
-    std::optional<llvm::APInt> tripCount = loop.getStaticTripCount();
-    if (!tripCount) {
+    std::optional<llvm::APInt> maybeTripCount = loop.getStaticTripCount();
+    if (!maybeTripCount) {
       if (auto forOp = dyn_cast<scf::ForOp>(loop.getOperation())) {
-        tripCount = getSCFForTripCount(forOp, inductionValues);
+        maybeTripCount = getSCFForTripCount(forOp, inductionValues);
       }
     }
-    if (!tripCount || tripCount->getActiveBits() > 64) {
+    if (!maybeTripCount || maybeTripCount->getActiveBits() > 64) {
       return std::nullopt;
     }
-    return tripCount->getZExtValue();
+    return maybeTripCount->getZExtValue();
   }
 
   std::optional<std::uint64_t>
@@ -404,72 +423,85 @@ private:
 
     ControlFrame frame = frames[frameIndex];
     auto loop = dyn_cast<LoopLikeOpInterface>(frame.parent);
-    if (!loop || !llvm::is_contained(loop.getLoopRegions(), frame.region)) {
-      std::optional<std::uint64_t> invocationCount =
+    SmallVector<Region *> loopRegions;
+    if (loop) {
+      loopRegions = loop.getLoopRegions();
+    }
+    if (!loop || !llvm::is_contained(loopRegions, frame.region)) {
+      std::optional<std::uint64_t> maybeInvocationCount =
           getExactRegionInvocationCount(frame, inductionValues);
-      if (!invocationCount) {
+      if (!maybeInvocationCount) {
         return std::nullopt;
       }
-      if (*invocationCount == 0) {
+      if (*maybeInvocationCount == 0) {
         return 0;
       }
-      std::optional<std::uint64_t> nestedCount = countExecutions(
+      std::optional<std::uint64_t> maybeNestedCount = countExecutions(
           frames, frameIndex + 1, inductionValues, remainingIterations);
-      return nestedCount ? checkedMultiply(*invocationCount, *nestedCount)
-                         : std::nullopt;
+      return maybeNestedCount ? llvm::checkedMulUnsigned(*maybeInvocationCount,
+                                                         *maybeNestedCount)
+                              : std::nullopt;
     }
 
-    std::optional<std::uint64_t> tripCount =
+    std::optional<std::uint64_t> maybeTripCount =
         getLoopTripCount(loop, inductionValues);
-    if (!tripCount) {
+    if (!maybeTripCount) {
       return std::nullopt;
     }
-    if (*tripCount == 0) {
+
+    // A trip count does not define the invocation count of each region in a
+    // multi-region loop.
+    if (loopRegions.size() != 1) {
+      return std::nullopt;
+    }
+    if (*maybeTripCount == 0) {
       return 0;
     }
 
     // Multiplication avoids enumerating loops when nested control flow and
     // inner trip counts do not depend on this loop's induction variable.
     std::uint64_t independentProofBudget = remainingIterations;
-    if (std::optional<std::uint64_t> nestedCount = countExecutions(
+    if (std::optional<std::uint64_t> maybeNestedCount = countExecutions(
             frames, frameIndex + 1, inductionValues, independentProofBudget)) {
       remainingIterations = independentProofBudget;
-      return checkedMultiply(*tripCount, *nestedCount);
+      return llvm::checkedMulUnsigned(*maybeTripCount, *maybeNestedCount);
     }
 
     auto forOp = dyn_cast<scf::ForOp>(frame.parent);
-    if (!forOp || *tripCount > remainingIterations) {
+    if (!forOp || *maybeTripCount > remainingIterations) {
       return std::nullopt;
     }
-    std::optional<llvm::APInt> inductionValue =
+    std::optional<llvm::APInt> maybeInductionValue =
         evaluateInteger(forOp.getLowerBound(), inductionValues);
-    std::optional<llvm::APInt> step =
+    std::optional<llvm::APInt> maybeStep =
         evaluateInteger(forOp.getStep(), inductionValues);
-    if (!inductionValue || !step) {
+    if (!maybeInductionValue || !maybeStep) {
       return std::nullopt;
     }
 
     std::uint32_t inductionWidth =
         getIntegerBitWidth(forOp.getInductionVar().getType());
-    *inductionValue = inductionValue->sextOrTrunc(inductionWidth);
-    *step = step->sextOrTrunc(inductionWidth);
+    *maybeInductionValue = maybeInductionValue->sextOrTrunc(inductionWidth);
+    *maybeStep = maybeStep->sextOrTrunc(inductionWidth);
     std::uint64_t total = 0;
-    for (std::uint64_t iteration = 0; iteration < *tripCount; ++iteration) {
+    for (std::uint64_t iteration = 0; iteration < *maybeTripCount;
+         ++iteration) {
       --remainingIterations;
-      inductionValues[forOp.getInductionVar()] = *inductionValue;
-      std::optional<std::uint64_t> nestedCount = countExecutions(
+      inductionValues[forOp.getInductionVar()] = *maybeInductionValue;
+      std::optional<std::uint64_t> maybeNestedCount = countExecutions(
           frames, frameIndex + 1, inductionValues, remainingIterations);
-      if (!nestedCount) {
+      if (!maybeNestedCount) {
         inductionValues.erase(forOp.getInductionVar());
         return std::nullopt;
       }
-      std::optional<std::uint64_t> nextTotal = checkedAdd(total, *nestedCount);
-      if (!nextTotal) {
+      std::optional<std::uint64_t> maybeNextTotal =
+          llvm::checkedAddUnsigned(total, *maybeNestedCount);
+      if (!maybeNextTotal) {
         inductionValues.erase(forOp.getInductionVar());
         return std::nullopt;
       }
-      total = *nextTotal;
-      *inductionValue += *step;
+      total = *maybeNextTotal;
+      *maybeInductionValue += *maybeStep;
     }
     inductionValues.erase(forOp.getInductionVar());
     return total;
