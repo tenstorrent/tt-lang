@@ -12,9 +12,12 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
 #include <algorithm>
@@ -29,7 +32,36 @@ struct ControlFrame {
   Region *region = nullptr;
 };
 
-static std::uint32_t getIntegerBitWidth(Type type) {
+class EnumerationBudget {
+public:
+  explicit EnumerationBudget(std::uint64_t remainingIterations)
+      : remainingIterations(remainingIterations) {}
+
+  bool canConsume(std::uint64_t iterationCount) const {
+    return iterationCount <= remainingIterations;
+  }
+
+  bool tryConsume() {
+    if (remainingIterations == 0) {
+      return false;
+    }
+    --remainingIterations;
+    return true;
+  }
+
+private:
+  std::uint64_t remainingIterations;
+};
+
+using IntegerEvaluationCache =
+    llvm::DenseMap<Value, std::optional<llvm::APInt>>;
+
+struct IntegerEvaluationTask {
+  Value value;
+  bool operandsReady = false;
+};
+
+std::uint32_t getIntegerBitWidth(Type type) {
   if (auto integerType = dyn_cast<IntegerType>(type)) {
     return integerType.getWidth();
   }
@@ -37,13 +69,12 @@ static std::uint32_t getIntegerBitWidth(Type type) {
   return IndexType::kInternalStorageBitWidth;
 }
 
-static llvm::APInt convertIntegerWidth(llvm::APInt value, Type type,
-                                       bool isSigned) {
+llvm::APInt convertIntegerWidth(llvm::APInt value, Type type, bool isSigned) {
   std::uint32_t width = getIntegerBitWidth(type);
   return isSigned ? value.sextOrTrunc(width) : value.zextOrTrunc(width);
 }
 
-static bool hasOneLinearBlock(Region &region) {
+bool hasOneLinearBlock(Region &region) {
   if (!region.hasOneBlock() || region.front().empty()) {
     return false;
   }
@@ -52,8 +83,8 @@ static bool hasOneLinearBlock(Region &region) {
          terminator.getNumSuccessors() == 0;
 }
 
-static bool isRegionReachable(RegionBranchOpInterface branch,
-                              Region &sourceRegion, Region &targetRegion) {
+bool isRegionReachable(RegionBranchOpInterface branch, Region &sourceRegion,
+                       Region &targetRegion) {
   SmallVector<Region *> worklist{&sourceRegion};
   llvm::SmallPtrSet<Region *, 4> visited;
   visited.insert(&sourceRegion);
@@ -91,6 +122,9 @@ public:
         options(options) {}
 
   std::optional<std::uint64_t> getExecutionCount(Operation *operation) {
+    if (!operation) {
+      return std::nullopt;
+    }
     auto cached = executionCountCache.find(operation);
     if (cached != executionCountCache.end()) {
       return cached->second;
@@ -103,9 +137,9 @@ public:
     }
 
     llvm::DenseMap<Value, llvm::APInt> inductionValues;
-    std::uint64_t remainingIterations = options.maxEnumeratedIterations;
+    EnumerationBudget enumerationBudget(options.maxEnumeratedIterations);
     std::optional<std::uint64_t> maybeCount =
-        countExecutions(frames, 0, inductionValues, remainingIterations);
+        countExecutions(frames, 0, inductionValues, enumerationBudget);
     executionCountCache.try_emplace(operation, maybeCount);
     return maybeCount;
   }
@@ -113,7 +147,8 @@ public:
 private:
   bool collectControlFrames(Operation *operation,
                             SmallVectorImpl<ControlFrame> &frames) const {
-    if (!rootRegion.isAncestor(operation->getParentRegion())) {
+    Region *parentRegion = operation->getParentRegion();
+    if (!parentRegion || !rootRegion.isAncestor(parentRegion)) {
       return false;
     }
 
@@ -137,163 +172,202 @@ private:
     return true;
   }
 
+  static bool isSupportedIntegerOperation(Operation *operation) {
+    return isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+               arith::ExtUIOp, arith::TruncIOp, arith::AddIOp, arith::SubIOp,
+               arith::MulIOp, arith::AndIOp, arith::OrIOp, arith::XOrIOp,
+               arith::CmpIOp>(operation);
+  }
+
   std::optional<llvm::APInt>
-  evaluateInteger(Value value,
-                  const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
-    if (auto known = inductionValues.find(value);
-        known != inductionValues.end()) {
-      return known->second;
-    }
-
-    Attribute constant;
-    if (matchPattern(value, m_Constant(&constant))) {
-      if (auto integer = dyn_cast_or_null<IntegerAttr>(constant)) {
-        return integer.getValue();
-      }
-    }
-    if (symbolValueEvaluator) {
-      if (std::optional<llvm::APInt> maybeSymbol =
-              symbolValueEvaluator(value)) {
-        if (maybeSymbol->getBitWidth() != getIntegerBitWidth(value.getType())) {
-          return std::nullopt;
-        }
-        return maybeSymbol;
-      }
-    }
-
-    Operation *definingOp = value.getDefiningOp();
-    if (!definingOp || definingOp->getNumResults() != 1) {
-      return std::nullopt;
-    }
-
-    auto evaluateBinary = [&](Value lhsValue, Value rhsValue,
-                              auto operation) -> std::optional<llvm::APInt> {
-      std::optional<llvm::APInt> maybeLhs =
-          evaluateInteger(lhsValue, inductionValues);
-      std::optional<llvm::APInt> maybeRhs =
-          evaluateInteger(rhsValue, inductionValues);
+  evaluateIntegerOperation(Value result, Operation *operation,
+                           const IntegerEvaluationCache &cache) const {
+    auto getCached = [&](Value operand) -> std::optional<llvm::APInt> {
+      auto cached = cache.find(operand);
+      assert(cached != cache.end() && "operand must be evaluated first");
+      return cached->second;
+    };
+    auto evaluateWidthCast = [&](Value input,
+                                 bool isSigned) -> std::optional<llvm::APInt> {
+      std::optional<llvm::APInt> maybeInput = getCached(input);
+      return maybeInput ? std::optional(convertIntegerWidth(
+                              *maybeInput, result.getType(), isSigned))
+                        : std::nullopt;
+    };
+    auto evaluateBinary =
+        [&](Value lhsValue, Value rhsValue,
+            auto binaryOperation) -> std::optional<llvm::APInt> {
+      std::optional<llvm::APInt> maybeLhs = getCached(lhsValue);
+      std::optional<llvm::APInt> maybeRhs = getCached(rhsValue);
       if (!maybeLhs || !maybeRhs) {
         return std::nullopt;
       }
-      std::uint32_t width = getIntegerBitWidth(value.getType());
-      return operation(maybeLhs->sextOrTrunc(width),
-                       maybeRhs->sextOrTrunc(width));
+      std::uint32_t width = getIntegerBitWidth(result.getType());
+      return binaryOperation(maybeLhs->sextOrTrunc(width),
+                             maybeRhs->sextOrTrunc(width));
     };
 
-    if (auto castOp = dyn_cast<arith::IndexCastOp>(definingOp)) {
-      std::optional<llvm::APInt> maybeInput =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return maybeInput ? std::optional(convertIntegerWidth(
-                              *maybeInput, value.getType(), /*isSigned=*/true))
-                        : std::nullopt;
-    }
-    if (auto castOp = dyn_cast<arith::IndexCastUIOp>(definingOp)) {
-      std::optional<llvm::APInt> maybeInput =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return maybeInput ? std::optional(convertIntegerWidth(
-                              *maybeInput, value.getType(), /*isSigned=*/false))
-                        : std::nullopt;
-    }
-    if (auto castOp = dyn_cast<arith::ExtSIOp>(definingOp)) {
-      std::optional<llvm::APInt> maybeInput =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return maybeInput ? std::optional(convertIntegerWidth(
-                              *maybeInput, value.getType(), /*isSigned=*/true))
-                        : std::nullopt;
-    }
-    if (auto castOp = dyn_cast<arith::ExtUIOp>(definingOp)) {
-      std::optional<llvm::APInt> maybeInput =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return maybeInput ? std::optional(convertIntegerWidth(
-                              *maybeInput, value.getType(), /*isSigned=*/false))
-                        : std::nullopt;
-    }
-    if (auto castOp = dyn_cast<arith::TruncIOp>(definingOp)) {
-      std::optional<llvm::APInt> maybeInput =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return maybeInput ? std::optional(maybeInput->trunc(
-                              getIntegerBitWidth(value.getType())))
-                        : std::nullopt;
-    }
-    if (auto addOp = dyn_cast<arith::AddIOp>(definingOp)) {
-      return evaluateBinary(
-          addOp.getLhs(), addOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs + rhs; });
-    }
-    if (auto subOp = dyn_cast<arith::SubIOp>(definingOp)) {
-      return evaluateBinary(
-          subOp.getLhs(), subOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs - rhs; });
-    }
-    if (auto mulOp = dyn_cast<arith::MulIOp>(definingOp)) {
-      return evaluateBinary(
-          mulOp.getLhs(), mulOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs * rhs; });
-    }
-    if (auto andOp = dyn_cast<arith::AndIOp>(definingOp)) {
-      return evaluateBinary(
-          andOp.getLhs(), andOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs & rhs; });
-    }
-    if (auto orOp = dyn_cast<arith::OrIOp>(definingOp)) {
-      return evaluateBinary(
-          orOp.getLhs(), orOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs | rhs; });
-    }
-    if (auto xorOp = dyn_cast<arith::XOrIOp>(definingOp)) {
-      return evaluateBinary(
-          xorOp.getLhs(), xorOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs ^ rhs; });
-    }
-    if (auto cmpOp = dyn_cast<arith::CmpIOp>(definingOp)) {
-      std::optional<llvm::APInt> maybeLhs =
-          evaluateInteger(cmpOp.getLhs(), inductionValues);
-      std::optional<llvm::APInt> maybeRhs =
-          evaluateInteger(cmpOp.getRhs(), inductionValues);
-      if (!maybeLhs || !maybeRhs) {
-        return std::nullopt;
+    using MaybeInteger = std::optional<llvm::APInt>;
+    return llvm::TypeSwitch<Operation *, MaybeInteger>(operation)
+        .Case<arith::IndexCastOp, arith::ExtSIOp>([&](auto castOp) {
+          return evaluateWidthCast(castOp.getIn(), /*isSigned=*/true);
+        })
+        .Case<arith::IndexCastUIOp, arith::ExtUIOp>([&](auto castOp) {
+          return evaluateWidthCast(castOp.getIn(), /*isSigned=*/false);
+        })
+        .Case<arith::TruncIOp>([&](arith::TruncIOp castOp) -> MaybeInteger {
+          MaybeInteger maybeInput = getCached(castOp.getIn());
+          return maybeInput ? MaybeInteger(maybeInput->trunc(
+                                  getIntegerBitWidth(result.getType())))
+                            : std::nullopt;
+        })
+        .Case<arith::AddIOp>([&](arith::AddIOp binaryOp) {
+          return evaluateBinary(
+              binaryOp.getLhs(), binaryOp.getRhs(),
+              [](llvm::APInt lhs, llvm::APInt rhs) { return lhs + rhs; });
+        })
+        .Case<arith::SubIOp>([&](arith::SubIOp binaryOp) {
+          return evaluateBinary(
+              binaryOp.getLhs(), binaryOp.getRhs(),
+              [](llvm::APInt lhs, llvm::APInt rhs) { return lhs - rhs; });
+        })
+        .Case<arith::MulIOp>([&](arith::MulIOp binaryOp) {
+          return evaluateBinary(
+              binaryOp.getLhs(), binaryOp.getRhs(),
+              [](llvm::APInt lhs, llvm::APInt rhs) { return lhs * rhs; });
+        })
+        .Case<arith::AndIOp>([&](arith::AndIOp binaryOp) {
+          return evaluateBinary(
+              binaryOp.getLhs(), binaryOp.getRhs(),
+              [](llvm::APInt lhs, llvm::APInt rhs) { return lhs & rhs; });
+        })
+        .Case<arith::OrIOp>([&](arith::OrIOp binaryOp) {
+          return evaluateBinary(
+              binaryOp.getLhs(), binaryOp.getRhs(),
+              [](llvm::APInt lhs, llvm::APInt rhs) { return lhs | rhs; });
+        })
+        .Case<arith::XOrIOp>([&](arith::XOrIOp binaryOp) {
+          return evaluateBinary(
+              binaryOp.getLhs(), binaryOp.getRhs(),
+              [](llvm::APInt lhs, llvm::APInt rhs) { return lhs ^ rhs; });
+        })
+        .Case<arith::CmpIOp>([&](arith::CmpIOp compareOp) -> MaybeInteger {
+          MaybeInteger maybeLhs = getCached(compareOp.getLhs());
+          MaybeInteger maybeRhs = getCached(compareOp.getRhs());
+          if (!maybeLhs || !maybeRhs) {
+            return std::nullopt;
+          }
+          bool comparisonResult = false;
+          switch (compareOp.getPredicate()) {
+          case arith::CmpIPredicate::eq:
+            comparisonResult = *maybeLhs == *maybeRhs;
+            break;
+          case arith::CmpIPredicate::ne:
+            comparisonResult = *maybeLhs != *maybeRhs;
+            break;
+          case arith::CmpIPredicate::slt:
+            comparisonResult = maybeLhs->slt(*maybeRhs);
+            break;
+          case arith::CmpIPredicate::sle:
+            comparisonResult = maybeLhs->sle(*maybeRhs);
+            break;
+          case arith::CmpIPredicate::sgt:
+            comparisonResult = maybeLhs->sgt(*maybeRhs);
+            break;
+          case arith::CmpIPredicate::sge:
+            comparisonResult = maybeLhs->sge(*maybeRhs);
+            break;
+          case arith::CmpIPredicate::ult:
+            comparisonResult = maybeLhs->ult(*maybeRhs);
+            break;
+          case arith::CmpIPredicate::ule:
+            comparisonResult = maybeLhs->ule(*maybeRhs);
+            break;
+          case arith::CmpIPredicate::ugt:
+            comparisonResult = maybeLhs->ugt(*maybeRhs);
+            break;
+          case arith::CmpIPredicate::uge:
+            comparisonResult = maybeLhs->uge(*maybeRhs);
+            break;
+          }
+          return llvm::APInt(/*numBits=*/1, comparisonResult);
+        })
+        .Default([](Operation *) -> MaybeInteger { return std::nullopt; });
+  }
+
+  std::optional<llvm::APInt>
+  evaluateInteger(Value value,
+                  const llvm::DenseMap<Value, llvm::APInt> &inductionValues,
+                  IntegerEvaluationCache &cache) const {
+    SmallVector<IntegerEvaluationTask> worklist{{value, false}};
+    llvm::DenseSet<Value> activeValues;
+    while (!worklist.empty()) {
+      IntegerEvaluationTask task = worklist.pop_back_val();
+      if (cache.contains(task.value)) {
+        if (task.operandsReady) {
+          activeValues.erase(task.value);
+        }
+        continue;
       }
-      bool result = false;
-      switch (cmpOp.getPredicate()) {
-      case arith::CmpIPredicate::eq:
-        result = *maybeLhs == *maybeRhs;
-        break;
-      case arith::CmpIPredicate::ne:
-        result = *maybeLhs != *maybeRhs;
-        break;
-      case arith::CmpIPredicate::slt:
-        result = maybeLhs->slt(*maybeRhs);
-        break;
-      case arith::CmpIPredicate::sle:
-        result = maybeLhs->sle(*maybeRhs);
-        break;
-      case arith::CmpIPredicate::sgt:
-        result = maybeLhs->sgt(*maybeRhs);
-        break;
-      case arith::CmpIPredicate::sge:
-        result = maybeLhs->sge(*maybeRhs);
-        break;
-      case arith::CmpIPredicate::ult:
-        result = maybeLhs->ult(*maybeRhs);
-        break;
-      case arith::CmpIPredicate::ule:
-        result = maybeLhs->ule(*maybeRhs);
-        break;
-      case arith::CmpIPredicate::ugt:
-        result = maybeLhs->ugt(*maybeRhs);
-        break;
-      case arith::CmpIPredicate::uge:
-        result = maybeLhs->uge(*maybeRhs);
-        break;
+
+      if (task.operandsReady) {
+        activeValues.erase(task.value);
+        Operation *operation = task.value.getDefiningOp();
+        cache.try_emplace(
+            task.value, evaluateIntegerOperation(task.value, operation, cache));
+        continue;
       }
-      return llvm::APInt(/*numBits=*/1, result);
+
+      if (auto known = inductionValues.find(task.value);
+          known != inductionValues.end()) {
+        cache.try_emplace(task.value, known->second);
+        continue;
+      }
+
+      Attribute constant;
+      if (matchPattern(task.value, m_Constant(&constant))) {
+        if (auto integer = dyn_cast_or_null<IntegerAttr>(constant)) {
+          cache.try_emplace(task.value, integer.getValue());
+          continue;
+        }
+      }
+      if (symbolValueEvaluator) {
+        if (std::optional<llvm::APInt> maybeSymbol =
+                symbolValueEvaluator(task.value)) {
+          cache.try_emplace(task.value,
+                            maybeSymbol->getBitWidth() ==
+                                    getIntegerBitWidth(task.value.getType())
+                                ? maybeSymbol
+                                : std::nullopt);
+          continue;
+        }
+      }
+
+      Operation *operation = task.value.getDefiningOp();
+      if (!operation || operation->getNumResults() != 1 ||
+          !isSupportedIntegerOperation(operation)) {
+        cache.try_emplace(task.value, std::nullopt);
+        continue;
+      }
+
+      if (!activeValues.insert(task.value).second) {
+        cache.try_emplace(task.value, std::nullopt);
+        continue;
+      }
+      worklist.push_back({task.value, true});
+      for (Value operand : llvm::reverse(operation->getOperands())) {
+        worklist.push_back({operand, false});
+      }
     }
-    return std::nullopt;
+
+    auto result = cache.find(value);
+    assert(result != cache.end() && "evaluation must cache its result");
+    return result->second;
   }
 
   std::optional<std::uint64_t> getExactRegionInvocationCount(
       ControlFrame frame,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
     if (regionInvocationCountEvaluator) {
       if (std::optional<std::uint64_t> maybeCount =
               regionInvocationCountEvaluator(*frame.region)) {
@@ -308,10 +382,11 @@ private:
 
     SmallVector<Attribute> operands;
     operands.reserve(frame.parent->getNumOperands());
+    IntegerEvaluationCache evaluationCache;
     for (Value operand : frame.parent->getOperands()) {
       std::optional<llvm::APInt> maybeInteger =
           operand.getType().isIntOrIndex()
-              ? evaluateInteger(operand, inductionValues)
+              ? evaluateInteger(operand, inductionValues, evaluationCache)
               : std::nullopt;
       if (maybeInteger) {
         operands.push_back(IntegerAttr::get(operand.getType(), *maybeInteger));
@@ -339,8 +414,7 @@ private:
         return 0;
       }
       if (selectedRegion != frame.region) {
-        if (maybeUpperBound && regionBounds.getLowerBound() == 0 &&
-            *maybeUpperBound == 0) {
+        if (maybeUpperBound && *maybeUpperBound == 0) {
           return 0;
         }
         if (!isRegionReachable(branch, *selectedRegion, *frame.region)) {
@@ -370,18 +444,19 @@ private:
 
   std::optional<llvm::APInt> getSCFForTripCount(
       scf::ForOp forOp,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
     if (std::optional<llvm::APInt> maybeTripCount =
             forOp.getStaticTripCount()) {
       return maybeTripCount;
     }
 
-    std::optional<llvm::APInt> maybeLowerBound =
-        evaluateInteger(forOp.getLowerBound(), inductionValues);
-    std::optional<llvm::APInt> maybeUpperBound =
-        evaluateInteger(forOp.getUpperBound(), inductionValues);
+    IntegerEvaluationCache evaluationCache;
+    std::optional<llvm::APInt> maybeLowerBound = evaluateInteger(
+        forOp.getLowerBound(), inductionValues, evaluationCache);
+    std::optional<llvm::APInt> maybeUpperBound = evaluateInteger(
+        forOp.getUpperBound(), inductionValues, evaluationCache);
     std::optional<llvm::APInt> maybeStep =
-        evaluateInteger(forOp.getStep(), inductionValues);
+        evaluateInteger(forOp.getStep(), inductionValues, evaluationCache);
     if (!maybeLowerBound || !maybeUpperBound || !maybeStep ||
         maybeStep->isZero()) {
       return std::nullopt;
@@ -398,9 +473,9 @@ private:
                              scf::computeUbMinusLb);
   }
 
-  std::optional<std::uint64_t>
-  getLoopTripCount(LoopLikeOpInterface loop,
-                   const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
+  std::optional<std::uint64_t> getLoopTripCount(
+      LoopLikeOpInterface loop,
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
     std::optional<llvm::APInt> maybeTripCount = loop.getStaticTripCount();
     if (!maybeTripCount) {
       if (auto forOp = dyn_cast<scf::ForOp>(loop.getOperation())) {
@@ -416,7 +491,7 @@ private:
   std::optional<std::uint64_t>
   countExecutions(ArrayRef<ControlFrame> frames, std::size_t frameIndex,
                   llvm::DenseMap<Value, llvm::APInt> &inductionValues,
-                  std::uint64_t &remainingIterations) {
+                  EnumerationBudget &enumerationBudget) const {
     if (frameIndex == frames.size()) {
       return 1;
     }
@@ -437,7 +512,7 @@ private:
         return 0;
       }
       std::optional<std::uint64_t> maybeNestedCount = countExecutions(
-          frames, frameIndex + 1, inductionValues, remainingIterations);
+          frames, frameIndex + 1, inductionValues, enumerationBudget);
       return maybeNestedCount ? llvm::checkedMulUnsigned(*maybeInvocationCount,
                                                          *maybeNestedCount)
                               : std::nullopt;
@@ -458,23 +533,23 @@ private:
       return 0;
     }
 
-    // Multiplication avoids enumerating loops when nested control flow and
-    // inner trip counts do not depend on this loop's induction variable.
-    std::uint64_t independentProofBudget = remainingIterations;
-    if (std::optional<std::uint64_t> maybeNestedCount = countExecutions(
-            frames, frameIndex + 1, inductionValues, independentProofBudget)) {
-      remainingIterations = independentProofBudget;
+    // Try multiplication before enumeration. Passing the same budget charges
+    // nested enumeration even when this attempt cannot prove a count.
+    std::optional<std::uint64_t> maybeNestedCount = countExecutions(
+        frames, frameIndex + 1, inductionValues, enumerationBudget);
+    if (maybeNestedCount) {
       return llvm::checkedMulUnsigned(*maybeTripCount, *maybeNestedCount);
     }
 
     auto forOp = dyn_cast<scf::ForOp>(frame.parent);
-    if (!forOp || *maybeTripCount > remainingIterations) {
+    if (!forOp || !enumerationBudget.canConsume(*maybeTripCount)) {
       return std::nullopt;
     }
-    std::optional<llvm::APInt> maybeInductionValue =
-        evaluateInteger(forOp.getLowerBound(), inductionValues);
+    IntegerEvaluationCache evaluationCache;
+    std::optional<llvm::APInt> maybeInductionValue = evaluateInteger(
+        forOp.getLowerBound(), inductionValues, evaluationCache);
     std::optional<llvm::APInt> maybeStep =
-        evaluateInteger(forOp.getStep(), inductionValues);
+        evaluateInteger(forOp.getStep(), inductionValues, evaluationCache);
     if (!maybeInductionValue || !maybeStep) {
       return std::nullopt;
     }
@@ -483,27 +558,28 @@ private:
         getIntegerBitWidth(forOp.getInductionVar().getType());
     *maybeInductionValue = maybeInductionValue->sextOrTrunc(inductionWidth);
     *maybeStep = maybeStep->sextOrTrunc(inductionWidth);
+    llvm::scope_exit restoreInductionValue(
+        [&] { inductionValues.erase(forOp.getInductionVar()); });
     std::uint64_t total = 0;
     for (std::uint64_t iteration = 0; iteration < *maybeTripCount;
          ++iteration) {
-      --remainingIterations;
+      if (!enumerationBudget.tryConsume()) {
+        return std::nullopt;
+      }
       inductionValues[forOp.getInductionVar()] = *maybeInductionValue;
-      std::optional<std::uint64_t> maybeNestedCount = countExecutions(
-          frames, frameIndex + 1, inductionValues, remainingIterations);
+      maybeNestedCount = countExecutions(frames, frameIndex + 1,
+                                         inductionValues, enumerationBudget);
       if (!maybeNestedCount) {
-        inductionValues.erase(forOp.getInductionVar());
         return std::nullopt;
       }
       std::optional<std::uint64_t> maybeNextTotal =
           llvm::checkedAddUnsigned(total, *maybeNestedCount);
       if (!maybeNextTotal) {
-        inductionValues.erase(forOp.getInductionVar());
         return std::nullopt;
       }
       total = *maybeNextTotal;
       *maybeInductionValue += *maybeStep;
     }
-    inductionValues.erase(forOp.getInductionVar());
     return total;
   }
 
@@ -513,6 +589,13 @@ private:
   Options options;
   llvm::DenseMap<Operation *, std::optional<std::uint64_t>> executionCountCache;
 };
+
+ExecutionCountAnalysis::ExecutionCountAnalysis(
+    Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,
+    RegionInvocationCountEvaluator regionInvocationCountEvaluator)
+    : ExecutionCountAnalysis(rootRegion, std::move(symbolValueEvaluator),
+                             std::move(regionInvocationCountEvaluator),
+                             Options{}) {}
 
 ExecutionCountAnalysis::ExecutionCountAnalysis(
     Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,

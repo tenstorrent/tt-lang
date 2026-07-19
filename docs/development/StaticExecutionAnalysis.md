@@ -69,6 +69,10 @@ iteration. The shared analysis evaluates constants, loop induction variables,
 integer casts, addition, subtraction, multiplication, bitwise AND, OR, and XOR,
 and integer comparisons. Consumers do not duplicate those rules.
 
+Integer evaluation uses an explicit worklist and a memo table for each stable
+induction environment. Each value in a shared expression graph is evaluated at
+most once, and expression depth does not consume the C++ call stack.
+
 Callbacks return facts, not defaults. If a callback supplies no fact, the
 analysis uses the standard Multi-Level Intermediate Representation (MLIR)
 interfaces when possible. The result remains unknown when neither mechanism
@@ -169,19 +173,21 @@ often a region executes.
 ## Algorithm
 
 In the pseudocode, `enumeration_budget` is the remaining number of loop
-iterations that the analysis may inspect. It is initialized to the configured
-enumeration limit and is passed by reference, so recursive calls consume the
-same budget. `empty_induction_environment` is an induction environment with no
-assigned loop values. A relevant region is the root region or a child region in
+iterations that the analysis may inspect across all proof attempts. It is
+initialized to the configured enumeration limit and is passed by reference, so
+recursive calls consume the same budget. `try_consume` returns false when the
+budget is zero; otherwise, it decrements the budget and returns true.
+`empty_induction_environment` is an induction environment with no assigned loop
+values. A relevant region is the root region or a child region in
 `control_frames`. `frame_index` is a zero-based index into `control_frames`.
 `enumerate_induction_values` computes the current loop's induction-variable
 sequence from its lower bound, trip count, and step. Checked arithmetic returns
 unknown on overflow.
 
-For a loop frame, the recursive call first attempts the
-induction-independent product. It receives a copy of the enumeration budget. A
-successful proof commits any budget consumed by nested loops; a failed proof
-discards that consumption before enumerating the current loop.
+For a loop frame, the recursive call first attempts the induction-independent
+product. It uses the shared enumeration budget. Nested iterations remain
+charged whether that attempt proves a count or falls back to enumerating the
+current loop.
 
 ```text
 execution_count(operation, root_region, analysis_context):
@@ -223,11 +229,9 @@ count_frames(control_frames, frame_index, analysis_context,
     if trip_count == 0:
         return 0
 
-    independent_budget = enumeration_budget
     nested = count_frames(control_frames, frame_index + 1, analysis_context,
-                          induction_environment, independent_budget)
+                          induction_environment, enumeration_budget)
     if nested is exact:
-        enumeration_budget = independent_budget
         return checked_multiply(trip_count, nested)
 
     if frame.parent is not an scf.for:
@@ -241,7 +245,8 @@ count_frames(control_frames, frame_index, analysis_context,
 
     total = 0
     for each induction_value in induction_values:
-        enumeration_budget = enumeration_budget - 1
+        if not try_consume(enumeration_budget):
+            return unknown
         iteration_environment =
             induction_environment with frame's induction variable assigned
                                   to induction_value
@@ -335,13 +340,17 @@ Tests cover:
 - Consumer-defined non-loop region invocation counts.
 - Large rectangular loop nests without enumeration.
 - Induction-dependent branches with exact enumerated counts.
+- Nested and failed proof attempts respecting the shared enumeration limit.
+- Shared expression graphs and multiple induction-variable bindings.
 - Exact zero for an unreachable region or zero-trip enclosing loop.
-- Signed and unsigned loop comparison semantics.
+- Signed and unsigned loop comparison and integer-cast semantics.
 - Loop bounds or branch conditions that depend on unevaluated runtime values
   producing unknown.
 - Loops and region operations without a supported exact-count model producing
   unknown.
 - Multi-block region control flow producing unknown.
+- Parentless operations and operations outside the root region producing
+  unknown.
 - Enumeration-limit boundaries and arithmetic overflow handling.
 
 In a receiver-post PipeNet protocol, each receiver announces that it has

@@ -36,19 +36,20 @@ public:
       std::function<std::optional<std::uint64_t>(Region &)>;
 
   struct Options {
-    explicit Options(std::uint64_t maxEnumeratedIterations = 1'000'000)
-        : maxEnumeratedIterations(maxEnumeratedIterations) {}
-
-    /// Maximum number of loop iterations examined while proving a count.
-    std::uint64_t maxEnumeratedIterations;
+    /// Maximum number of loop iterations examined across all proof attempts.
+    std::uint64_t maxEnumeratedIterations = 1'000'000;
   };
 
   /// `rootRegion` is assumed to execute once. Counts are relative to that
   /// invocation and are unknown for operations outside the region.
   explicit ExecutionCountAnalysis(
       Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator = {},
-      RegionInvocationCountEvaluator regionInvocationCountEvaluator = {},
-      Options options = Options());
+      RegionInvocationCountEvaluator regionInvocationCountEvaluator = {});
+  /// Allows the consumer to set a different enumeration limit.
+  ExecutionCountAnalysis(
+      Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,
+      RegionInvocationCountEvaluator regionInvocationCountEvaluator,
+      Options options);
   ~ExecutionCountAnalysis();
 
   ExecutionCountAnalysis(ExecutionCountAnalysis &&) noexcept;
@@ -58,8 +59,9 @@ public:
   ExecutionCountAnalysis &operator=(const ExecutionCountAnalysis &) = delete;
 
   /// Returns the exact number of executions, or nullopt when it is not proven.
-  /// The analyzed IR and callback results must remain unchanged between
-  /// queries because results are cached by operation.
+  /// This includes null operations, parentless operations, and operations
+  /// outside `rootRegion`. The analyzed IR and callback results must remain
+  /// unchanged between queries because results are cached by operation.
   std::optional<std::uint64_t> getExecutionCount(Operation *operation);
 
 private:

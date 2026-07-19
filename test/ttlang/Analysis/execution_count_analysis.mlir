@@ -371,7 +371,7 @@ func.func @enumeration_limit() attributes {
 }
 // CHECK-LABEL: enumeration_limit = unknown
 
-// The proof limit permits exactly the configured number of iterations.
+// The enumeration limit permits exactly the configured number of iterations.
 func.func @enumeration_limit_boundary() attributes {
     test.max_enumerated_iterations = 8 : i64} {
   %zero = arith.constant 0 : index
@@ -407,3 +407,239 @@ func.func @count_overflow() {
   return
 }
 // CHECK-LABEL: count_overflow = unknown
+
+// Zero extension preserves the unsigned value of a narrow bit pattern.
+func.func @zero_extension() {
+  %zero = arith.constant 0 : i16
+  %narrow = arith.constant -2 : i8
+  %upper = arith.extui %narrow : i8 to i16
+  %step = arith.constant 1 : i16
+  scf.for %iteration = %zero to %upper step %step : i16 {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 254 : i64,
+      test.label = "zero_extension"
+    } : i16
+  }
+  return
+}
+// CHECK-LABEL: zero_extension = 254
+
+// Sign extension preserves the negative value and produces a zero-trip loop.
+func.func @sign_extension() {
+  %zero = arith.constant 0 : i16
+  %narrow = arith.constant -2 : i8
+  %upper = arith.extsi %narrow : i8 to i16
+  %step = arith.constant 1 : i16
+  scf.for %iteration = %zero to %upper step %step : i16 {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 0 : i64,
+      test.label = "sign_extension"
+    } : i16
+  }
+  return
+}
+// CHECK-LABEL: sign_extension = 0
+
+// Truncation uses the narrowed bit pattern when computing a trip count.
+func.func @integer_truncation() {
+  %wide = arith.constant 261 : i32
+  %upper = arith.trunci %wide : i32 to i8
+  %zero = arith.constant 0 : i8
+  %step = arith.constant 1 : i8
+  scf.for %iteration = %zero to %upper step %step : i8 {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 5 : i64,
+      test.label = "integer_truncation"
+    } : i8
+  }
+  return
+}
+// CHECK-LABEL: integer_truncation = 5
+
+// Unsigned index casting zero-extends a narrow value with its sign bit set.
+func.func @unsigned_index_cast() {
+  %narrow = arith.constant -2 : i8
+  %upper = arith.index_castui %narrow : i8 to index
+  %zero = arith.constant 0 : index
+  %step = arith.constant 1 : index
+  scf.for %iteration = %zero to %upper step %step {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 254 : i64,
+      test.label = "unsigned_index_cast"
+    } : index
+  }
+  return
+}
+// CHECK-LABEL: unsigned_index_cast = 254
+
+// A non-unit step uses the ceiling of the iteration-distance quotient.
+func.func @non_unit_step() {
+  %zero = arith.constant 0 : index
+  %upper = arith.constant 10 : index
+  %step = arith.constant 3 : index
+  scf.for %iteration = %zero to %upper step %step {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 4 : i64,
+      test.label = "non_unit_step"
+    } : index
+  }
+  return
+}
+// CHECK-LABEL: non_unit_step = 4
+
+// Unsigned comparison treats an all-ones bit pattern as greater than zero.
+func.func @unsigned_predicate() {
+  %all_ones = arith.constant -1 : i32
+  %zero = arith.constant 0 : i32
+  %selected = arith.cmpi ugt, %all_ones, %zero : i32
+  scf.if %selected {
+    %target = arith.addi %zero, %zero {
+      test.expected_count = 1 : i64,
+      test.label = "unsigned_predicate"
+    } : i32
+  }
+  return
+}
+// CHECK-LABEL: unsigned_predicate = 1
+
+// A constant false condition selects the else region exactly once.
+func.func @selected_else_region() {
+  %false = arith.constant false
+  %zero = arith.constant 0 : index
+  scf.if %false {
+  } else {
+    %target = arith.addi %zero, %zero {
+      test.expected_count = 1 : i64,
+      test.label = "selected_else_region"
+    } : index
+  }
+  return
+}
+// CHECK-LABEL: selected_else_region = 1
+
+// An unmatched index-switch selector selects the default region exactly once.
+func.func @selected_index_switch_default() {
+  %selector = arith.constant 7 : index
+  %zero = arith.constant 0 : index
+  scf.index_switch %selector
+  case 1 {
+    scf.yield
+  }
+  default {
+    %target = arith.addi %zero, %zero {
+      test.expected_count = 1 : i64,
+      test.label = "selected_index_switch_default"
+    } : index
+    scf.yield
+  }
+  return
+}
+// CHECK-LABEL: selected_index_switch_default = 1
+
+// Nested enumeration cannot consume the remaining budget and then underflow
+// it in a later outer iteration.
+func.func @nested_enumeration_budget() attributes {
+    test.max_enumerated_iterations = 3 : i64} {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %three = arith.constant 3 : index
+  scf.for %outer = %zero to %three step %one {
+    scf.for %middle = %zero to %outer step %one {
+      scf.for %inner = %zero to %middle step %one {
+        %target = arith.addi %outer, %inner {
+          test.expected_count = "unknown",
+          test.label = "nested_enumeration_budget"
+        } : index
+      }
+    }
+  }
+  return
+}
+// CHECK-LABEL: nested_enumeration_budget = unknown
+
+// A failed induction-independent attempt consumes the iterations it examines,
+// so speculative work is included in the enumeration limit.
+func.func @failed_attempt_consumes_budget() attributes {
+    test.max_enumerated_iterations = 2 : i64} {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %two = arith.constant 2 : index
+  scf.for %outer = %zero to %two step %one {
+    scf.for %inner = %zero to %two step %one {
+      %selected = arith.cmpi eq, %outer, %zero : index
+      scf.if %selected {
+        %target = arith.addi %outer, %inner {
+          test.expected_count = "unknown",
+          test.label = "failed_attempt_consumes_budget"
+        } : index
+      }
+    }
+  }
+  return
+}
+// CHECK-LABEL: failed_attempt_consumes_budget = unknown
+
+// Shared expression operands are evaluated once per induction environment.
+// The depth makes non-memoized recursive evaluation prohibitively expensive.
+func.func @shared_expression_dag() {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %two = arith.constant 2 : index
+  %limit = arith.constant 100000000 : index
+  scf.for %iteration = %zero to %two step %one {
+    %value0 = arith.addi %iteration, %one : index
+    %value1 = arith.addi %value0, %value0 : index
+    %value2 = arith.addi %value1, %value1 : index
+    %value3 = arith.addi %value2, %value2 : index
+    %value4 = arith.addi %value3, %value3 : index
+    %value5 = arith.addi %value4, %value4 : index
+    %value6 = arith.addi %value5, %value5 : index
+    %value7 = arith.addi %value6, %value6 : index
+    %value8 = arith.addi %value7, %value7 : index
+    %value9 = arith.addi %value8, %value8 : index
+    %value10 = arith.addi %value9, %value9 : index
+    %value11 = arith.addi %value10, %value10 : index
+    %value12 = arith.addi %value11, %value11 : index
+    %value13 = arith.addi %value12, %value12 : index
+    %value14 = arith.addi %value13, %value13 : index
+    %value15 = arith.addi %value14, %value14 : index
+    %value16 = arith.addi %value15, %value15 : index
+    %value17 = arith.addi %value16, %value16 : index
+    %value18 = arith.addi %value17, %value17 : index
+    %value19 = arith.addi %value18, %value18 : index
+    %value20 = arith.addi %value19, %value19 : index
+    %value21 = arith.addi %value20, %value20 : index
+    %value22 = arith.addi %value21, %value21 : index
+    %selected = arith.cmpi slt, %value22, %limit : index
+    scf.if %selected {
+      %target = arith.addi %iteration, %iteration {
+        test.expected_count = 2 : i64,
+        test.label = "shared_expression_dag"
+      } : index
+    }
+  }
+  return
+}
+// CHECK-LABEL: shared_expression_dag = 2
+
+// Values depending on two enclosing induction variables are recomputed for
+// each environment, and both bindings are restored after enumeration.
+func.func @two_induction_variables() {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %two = arith.constant 2 : index
+  scf.for %outer = %zero to %two step %one {
+    scf.for %inner = %zero to %two step %one {
+      %sum = arith.addi %outer, %inner : index
+      %selected = arith.cmpi slt, %sum, %two : index
+      scf.if %selected {
+        %target = arith.addi %outer, %inner {
+          test.expected_count = 3 : i64,
+          test.label = "two_induction_variables"
+        } : index
+      }
+    }
+  }
+  return
+}
+// CHECK-LABEL: two_induction_variables = 3

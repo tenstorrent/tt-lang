@@ -11,6 +11,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Parser/Parser.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -18,6 +19,7 @@
 
 namespace {
 
+constexpr llvm::StringLiteral kAnalysisRootAttrName = "test.analysis_root";
 constexpr llvm::StringLiteral kExpectedCountAttrName = "test.expected_count";
 constexpr llvm::StringLiteral kLabelAttrName = "test.label";
 constexpr llvm::StringLiteral kMaxIterationsAttrName =
@@ -49,6 +51,15 @@ bool verifyExpectedCount(mlir::Operation *operation,
     return false;
   }
 
+  auto expectedInteger = mlir::dyn_cast<mlir::IntegerAttr>(expectedAttr);
+  auto expectedString = mlir::dyn_cast<mlir::StringAttr>(expectedAttr);
+  if ((!expectedInteger && !expectedString) ||
+      (expectedString && expectedString.getValue() != "unknown")) {
+    operation->emitError() << kExpectedCountAttrName
+                           << " must be an integer or the string \"unknown\"";
+    return false;
+  }
+
   llvm::outs() << labelAttr.getValue() << " = ";
   if (maybeActualCount) {
     llvm::outs() << *maybeActualCount << "\n";
@@ -56,16 +67,13 @@ bool verifyExpectedCount(mlir::Operation *operation,
     llvm::outs() << "unknown\n";
   }
 
-  if (auto expectedInteger = mlir::dyn_cast<mlir::IntegerAttr>(expectedAttr)) {
+  if (expectedInteger) {
     if (maybeActualCount && expectedInteger.getValue().getActiveBits() <= 64 &&
         *maybeActualCount == expectedInteger.getValue().getZExtValue()) {
       return true;
     }
-  } else if (auto expectedString =
-                 mlir::dyn_cast<mlir::StringAttr>(expectedAttr)) {
-    if (expectedString.getValue() == "unknown" && !maybeActualCount) {
-      return true;
-    }
+  } else if (!maybeActualCount) {
+    return true;
   }
 
   operation->emitError() << "execution count does not match "
@@ -75,15 +83,20 @@ bool verifyExpectedCount(mlir::Operation *operation,
 
 std::optional<std::uint64_t>
 evaluateRegionInvocationCount(mlir::Region &region) {
-  auto maybeCountAttr = region.getParentOp()->getAttrOfType<mlir::IntegerAttr>(
-      kRegionInvocationCountAttrName);
+  mlir::Operation *parent = region.getParentOp();
+  // The parent attribute cannot assign different counts to multiple regions.
+  if (parent->getNumRegions() != 1) {
+    return std::nullopt;
+  }
+  auto maybeCountAttr =
+      parent->getAttrOfType<mlir::IntegerAttr>(kRegionInvocationCountAttrName);
   if (!maybeCountAttr || maybeCountAttr.getValue().getActiveBits() > 64) {
     return std::nullopt;
   }
   return maybeCountAttr.getValue().getZExtValue();
 }
 
-bool verifyFunction(mlir::func::FuncOp function) {
+bool verifyTargets(mlir::func::FuncOp function, mlir::Operation *targetScope) {
   mlir::tt::ExecutionCountAnalysis::Options options;
   if (auto maybeLimit =
           function->getAttrOfType<mlir::IntegerAttr>(kMaxIterationsAttrName)) {
@@ -102,7 +115,7 @@ bool verifyFunction(mlir::func::FuncOp function) {
       evaluateRegionInvocationCount, options);
 
   bool succeeded = true;
-  function.walk([&](mlir::Operation *operation) {
+  targetScope->walk([&](mlir::Operation *operation) {
     if (!operation->hasAttr(kExpectedCountAttrName)) {
       return;
     }
@@ -132,8 +145,21 @@ int main(int argumentCount, char **argumentValues) {
   }
 
   bool succeeded = true;
+  llvm::SmallVector<mlir::func::FuncOp> analysisRoots;
   module->walk([&](mlir::func::FuncOp function) {
-    succeeded &= verifyFunction(function);
+    if (function->hasAttr(kAnalysisRootAttrName)) {
+      analysisRoots.push_back(function);
+    }
   });
+  if (analysisRoots.size() > 1) {
+    module->emitError() << "expected at most one " << kAnalysisRootAttrName;
+    return 1;
+  } else if (analysisRoots.size() == 1) {
+    succeeded &= verifyTargets(analysisRoots.front(), module.get());
+  } else {
+    module->walk([&](mlir::func::FuncOp function) {
+      succeeded &= verifyTargets(function, function);
+    });
+  }
   return succeeded ? 0 : 1;
 }
