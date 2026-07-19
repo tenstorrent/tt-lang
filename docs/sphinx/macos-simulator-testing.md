@@ -150,6 +150,7 @@ limactl shell ttlang-craqsim -- bash -c \
 
 # 4. Build craq-sim's libttsim.so (Linux aarch64) and stage it with a SOC descriptor.
 limactl shell ttlang-craqsim -- bash -c "
+  set -e
   cd $TT/craq-sim && ./make.py src/_out/release_wh/libttsim.so
   mkdir -p /opt/ttlang-toolchain/sim
   cp src/_out/release_wh/libttsim.so /opt/ttlang-toolchain/sim/libttsim.so
@@ -192,12 +193,14 @@ python_executable`).
 
 ### Parallel test runs
 
-The CMake device-test targets run pytest-xdist in parallel when configured against
-the simulator: `check-ttlang-pytest` and `check-ttlang-me2e` append
-`-n ${TTLANG_SIM_PYTEST_JOBS}` when `TT_METAL_SIMULATOR` is set. Each worker starts
-its own `libttsim.so` device and uses ~2-3 GiB, so the default of 2 suits the
-16 GiB reference VM; raise it (and the VM's `memory:`) with
-`-DTTLANG_SIM_PYTEST_JOBS=<N>`.
+`check-ttlang-pytest` and `check-ttlang-me2e` append `-n ${TTLANG_SIM_PYTEST_JOBS}`
+to pytest when `TT_METAL_SIMULATOR` is defined **at configure time** -- the signal
+that this build targets the simulator. An interactive shell exports it via
+`~/.bashrc` and `vm-build-ttlang.sh` sets it explicitly, so configuring through
+either enables parallelism; a bare `cmake` in a shell that lacks it configures the
+targets serially. Each worker starts its own `libttsim.so` device (~2-3 GiB), so
+the default of 2 suits the 16 GiB reference VM; raise it (with the VM's `memory:`)
+via `-DTTLANG_SIM_PYTEST_JOBS=<N>`.
 
 ```bash
 ninja -C build-lima check-ttlang-me2e     # runs pytest -n 2 under the sim
