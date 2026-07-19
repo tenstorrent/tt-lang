@@ -71,9 +71,10 @@ echo "=== install tt-metal into the toolchain (_ttnn.so etc.) ==="
 CMAKE_BINARY_DIR="$VM_LOCAL/build-toolchain" TTLANG_TOOLCHAIN_DIR="$TOOLCHAIN" \
   ./scripts/build-and-install.sh --install-ttmetal
 
-# Reclaim the build scratch: the toolchain now lives at $TOOLCHAIN, and tt-lang
-# itself is built from your checkout (build-lima) rather than this copy.
+# Reclaim the build scratch (best-effort: the build already succeeded, so a
+# cleanup hiccup must not fail the run). The toolchain now lives at $TOOLCHAIN,
+# and tt-lang itself is built from your checkout (build-lima), not this copy.
 cd /
-rm -rf "$VM_LOCAL/tt-lang" "$VM_LOCAL/build-toolchain" "$VM_LOCAL/cpmcache"
+rm -rf "$VM_LOCAL/tt-lang" "$VM_LOCAL/build-toolchain" "$VM_LOCAL/cpmcache" || true
 
 echo "=== DONE: toolchain at $TOOLCHAIN ==="
