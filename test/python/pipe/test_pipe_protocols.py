@@ -27,6 +27,7 @@ from utils.correctness import assert_pcc
 
 TILE = 32
 N_ITERS = 4
+COMPLETION_ORDER_DELAY = 64
 
 
 def _make_point_to_point(recv_block_count, options=None):
@@ -82,6 +83,74 @@ def _make_point_to_point_ops(recv_block_count):
     )
 
 
+@ttl.operation(grid=(3, 1))
+def transfer_specific_completion(inp, out):
+    """Verify one transfer's completion cannot satisfy another transfer's wait."""
+    multicast_pipe = ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0))
+    single_receiver_pipe = ttl.Pipe(src=(0, 0), dst=(slice(1, 2), 0))
+    pipe_net = ttl.PipeNet([multicast_pipe, single_receiver_pipe])
+    send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    delay_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+    multicast_recv_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+    single_receiver_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=(1, 1), block_count=1
+    )
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm():
+        node_x, _node_y = ttl.node(dims=2)
+
+        if pipe_net.is_src():
+            with send_dfb.reserve() as send_block:
+                ttl.copy(inp[0, 1], send_block).wait()
+            with send_dfb.wait() as send_block:
+                ttl.copy(send_block, single_receiver_pipe).wait()
+
+            # Keep the first completion observable before the multicast send.
+            for _delay_index in range(COMPLETION_ORDER_DELAY):
+                with delay_dfb.reserve() as delay_block:
+                    ttl.copy(inp[0, 1], delay_block).wait()
+                with delay_dfb.wait() as _discarded_block:
+                    pass
+
+            with send_dfb.reserve() as send_block:
+                ttl.copy(inp[0, 0], send_block).wait()
+            with send_dfb.wait() as send_block:
+                ttl.copy(send_block, multicast_pipe).wait()
+
+        if node_x == 1:
+            multicast_block = multicast_recv_dfb.reserve()
+            multicast_receive = ttl.copy(multicast_pipe, multicast_block)
+            single_receiver_block = single_receiver_dfb.reserve()
+            single_receiver_receive = ttl.copy(
+                single_receiver_pipe, single_receiver_block
+            )
+
+            multicast_receive.wait()
+            ttl.copy(multicast_block, out[0, 0]).wait()
+            multicast_block.push()
+
+            single_receiver_receive.wait()
+            ttl.copy(single_receiver_block, out[0, 1]).wait()
+            single_receiver_block.push()
+        elif node_x == 2:
+            multicast_block = multicast_recv_dfb.reserve()
+            multicast_receive = ttl.copy(multicast_pipe, multicast_block)
+            multicast_receive.wait()
+            ttl.copy(multicast_block, out[0, 2]).wait()
+            multicast_block.push()
+
+    @ttl.datamovement()
+    def dm_brisc():
+        pass
+
+
+# Capacity-counter, receiver-post, and receiver-published protocols must
+# produce identical point-to-point results.
 @pytest.mark.parametrize("recv_block_count", [1, 2], ids=["bc1", "bc2"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_pipe_protocols_match(device, dtype, recv_block_count):
@@ -99,6 +168,22 @@ def test_pipe_protocols_match(device, dtype, recv_block_count):
         assert_pcc(protocol_result, inp_torch.float())
     for protocol_result in protocol_results[1:]:
         assert_pcc(protocol_results[0], protocol_result)
+
+
+# The first same-PipeNet transfer must not satisfy the delayed multicast's
+# receive wait, even though both transfers share a receiver.
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_receive_wait_uses_transfer_specific_completion(device, dtype):
+    inp_torch = torch.randn(TILE, 2 * TILE, dtype=dtype)
+    output = to_dram(torch.zeros(TILE, 3 * TILE, dtype=dtype), device)
+
+    transfer_specific_completion(to_dram(inp_torch, device), output)
+    ttnn.synchronize_device(device)
+
+    expected = torch.cat(
+        (inp_torch[:, :TILE], inp_torch[:, TILE:], inp_torch[:, :TILE]), dim=1
+    )
+    assert_pcc(expected.float(), ttnn.to_torch(output).float())
 
 
 @ttl.operation(grid=(3, 1))
@@ -474,6 +559,8 @@ def _random_tiles(count, dtype):
     return torch.randn((TILE, count * TILE), generator=generator).to(dtype)
 
 
+# Unequal transfer multiplicities require published addresses to preserve the
+# receiver's DFB order.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_loop_multiplicity_uses_published_addresses(device, dtype):
     inp_torch = _random_tiles(2, dtype)
@@ -485,6 +572,8 @@ def test_loop_multiplicity_uses_published_addresses(device, dtype):
     assert_pcc(inp_torch[:, TILE:].float(), ttnn.to_torch(output).float())
 
 
+# Mutually exclusive branches require published addresses to preserve the
+# receiver's DFB order.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_branch_order_uses_published_addresses(device, dtype):
     inp_torch = _random_tiles(2, dtype)
@@ -497,6 +586,8 @@ def test_branch_order_uses_published_addresses(device, dtype):
     assert_pcc(expected.float(), ttnn.to_torch(output).float())
 
 
+# Two transfer definitions for one PipeKey must use distinct computed DFB
+# slots.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_repeated_pipe_key_uses_computed_addresses(device, dtype):
     inp_torch = _random_tiles(3, dtype)
@@ -508,6 +599,8 @@ def test_repeated_pipe_key_uses_computed_addresses(device, dtype):
     assert_pcc(inp_torch[:, TILE : 2 * TILE].float(), ttnn.to_torch(output).float())
 
 
+# Multicast must reject receivers whose prior DFB traffic produces different
+# destination addresses.
 def test_multicast_rejects_asymmetric_receiver_dfb_traffic(device):
     inp_torch = _random_tiles(1, torch.bfloat16)
     output = to_dram(torch.zeros((TILE, 2 * TILE), dtype=torch.bfloat16), device)
@@ -523,6 +616,8 @@ def test_multicast_rejects_asymmetric_receiver_dfb_traffic(device):
         asymmetric_multicast_receiver_traffic(to_dram(inp_torch, device), output)
 
 
+# Multicast must reject receiver address sequences that diverge after the
+# initial transfer.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_multicast_rejects_repeated_nonuniform_addresses(device, dtype):
     inp_torch = _random_tiles(1, dtype)
@@ -540,6 +635,7 @@ def test_multicast_rejects_repeated_nonuniform_addresses(device, dtype):
         repeated_nonuniform_multicast(inp, output)
 
 
+# A receiver post executed once cannot synchronize with a send executed twice.
 def test_pipe_rejects_different_rendezvous_execution_contexts(device):
     inp_torch = _random_tiles(1, torch.bfloat16)
     output = to_dram(torch.zeros((TILE, TILE), dtype=torch.bfloat16), device)
@@ -555,6 +651,7 @@ def test_pipe_rejects_different_rendezvous_execution_contexts(device):
         mismatched_pipe_occurrences(to_dram(inp_torch, device), output)
 
 
+# Rendezvous counts that vary by node cannot prove a one-to-one schedule.
 def test_pipe_rejects_node_dependent_rendezvous_count(device):
     inp_torch = _random_tiles(1, torch.bfloat16)
     output = to_dram(torch.zeros((TILE, TILE), dtype=torch.bfloat16), device)
@@ -570,6 +667,8 @@ def test_pipe_rejects_node_dependent_rendezvous_count(device):
         node_dependent_rendezvous_count(to_dram(inp_torch, device), output)
 
 
+# A conditional send cannot synchronize with an unconditional receive in each
+# loop iteration.
 def test_pipe_rejects_loop_conditional_rendezvous_count(device):
     inp_torch = _random_tiles(1, torch.bfloat16)
     output = to_dram(torch.zeros((TILE, TILE), dtype=torch.bfloat16), device)

@@ -60,6 +60,8 @@ def _capacity_loop_op(recv_block_count):
     return unicast_dataflow_capacity_loop
 
 
+# Concurrent sender acquires and receiver releases must preserve the unicast
+# capacity counter for every supported DFB depth.
 @pytest.mark.parametrize("recv_block_count", [1, 2, 3], ids=["bc1", "bc2", "bc3"])
 @pytest.mark.parametrize(
     ("dtype", "rtol", "atol"),

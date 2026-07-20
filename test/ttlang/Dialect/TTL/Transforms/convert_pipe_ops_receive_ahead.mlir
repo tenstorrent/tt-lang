@@ -7,8 +7,8 @@
 // send in one control-flow branch. Each transfer definition receives distinct
 // source-node address-table storage and sender-ready synchronization.
 // CHECK-LABEL: func.func @same_pipe_receive_ahead_across_blocks_allocates_two_slots
-// CHECK-DAG: %[[FIRST_READY_IDX:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[SECOND_READY_IDX:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[FIRST_READY_IDX:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[SECOND_READY_IDX:.*]] = arith.constant 3 : index
 // CHECK-DAG: %[[SECOND_TABLE_OFF:.*]] = arith.constant 4 : i32
 // CHECK: ttkernel.noc_inline_dw_write
 // CHECK: scf.if
