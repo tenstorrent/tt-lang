@@ -193,9 +193,8 @@ jobs:
       # /opt to a directory with cp -a) avoids a full second copy of the
       # multi-GB toolchain on disk during the dist image build. dist-toolchain
       # is unused when targeting ird but must be a valid path.
-      - name: Clean up Docker before ird image build
+      - name: Clean up Docker build cache before ird image build
         run: |
-          docker system prune -af --volumes || true
           docker builder prune -af || true
           df -h
 
@@ -254,7 +253,13 @@ jobs:
 
       - name: Remove local ird image to free space
         run: |
-          docker rmi "${{ steps.build-ird.outputs.local-image }}" || true
+          # Remove by image ID so all tags (local, registry, :latest) are
+          # dropped; removing only the local tag would leave the layers
+          # referenced by the pushed tags and free nothing.
+          ird_iid="$(docker images -q "${{ steps.build-ird.outputs.local-image }}")"
+          if [ -n "$ird_iid" ]; then
+            docker rmi -f "$ird_iid" || true
+          fi
           docker builder prune -af || true
           df -h
 
@@ -289,8 +294,11 @@ jobs:
 
       - name: Clean up Docker before packaging
         run: |
-          docker system prune -af --volumes || true
+          # Prune build cache and dangling layers but keep tagged images so the
+          # base image survives for the dist build; system prune -a would delete
+          # it and force a no-retry re-pull.
           docker builder prune -af || true
+          docker image prune -f || true
           df -h
 
       - name: Build dist Docker image (local only)
@@ -345,12 +353,6 @@ jobs:
           docker tag "$LOCAL" "$LATEST"
           docker push "$LATEST"
 
-      - name: Remove toolchain to free space
-        if: always()
-        run: |
-          sudo rm -rf /opt/ttlang-toolchain ird-toolchain || true
-          df -h
-
       - name: Clean up Docker after build
         if: always()
         run: |
@@ -368,3 +370,12 @@ jobs:
           echo ""
           echo "=== Docker Disk Usage ==="
           docker system df || true
+
+      # Runs after "Show disk usage on failure" so the toolchain is still on
+      # disk for that diagnostic. Self-hosted-runner hygiene: /opt persists
+      # across jobs otherwise.
+      - name: Remove toolchain to free space
+        if: always()
+        run: |
+          sudo rm -rf /opt/ttlang-toolchain || true
+          df -h

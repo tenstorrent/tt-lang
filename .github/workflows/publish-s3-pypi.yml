@@ -294,19 +294,20 @@ jobs:
 
     steps:
       - name: Verify upstream wheel builds succeeded
+        env:
+          NEEDS_STANDARD: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') || contains(fromJSON(needs.preflight.outputs.wheel_variants), 'pypi') }}
+          NEEDS_LIGHT: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
+          STANDARD_RESULT: ${{ needs.build-standard-wheels.result }}
+          LIGHT_RESULT: ${{ needs.collect-light-wheels.result }}
         run: |
           fail=0
-          if [[ "${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') }}" == "true" || "${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'pypi') }}" == "true" ]]; then
-            if [[ "${{ needs.build-standard-wheels.result }}" != "success" ]]; then
-              echo "::error::Standard wheel build did not succeed (result=${{ needs.build-standard-wheels.result }}); not publishing. See the build-docker / build-standard-wheels jobs for the underlying failure."
-              fail=1
-            fi
+          if [[ "$NEEDS_STANDARD" == "true" && "$STANDARD_RESULT" != "success" ]]; then
+            echo "::error::Standard wheel build did not succeed (result=$STANDARD_RESULT); not publishing. See the build-docker / build-standard-wheels jobs for the underlying failure."
+            fail=1
           fi
-          if [[ "${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}" == "true" ]]; then
-            if [[ "${{ needs.collect-light-wheels.result }}" != "success" ]]; then
-              echo "::error::Light wheel collection did not succeed (result=${{ needs.collect-light-wheels.result }}); not publishing. See the build-light-wheels / collect-light-wheels jobs for the underlying failure."
-              fail=1
-            fi
+          if [[ "$NEEDS_LIGHT" == "true" && "$LIGHT_RESULT" != "success" ]]; then
+            echo "::error::Light wheel collection did not succeed (result=$LIGHT_RESULT); not publishing. See the build-light-wheels / collect-light-wheels jobs for the underlying failure."
+            fail=1
           fi
           exit "$fail"
 
