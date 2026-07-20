@@ -25,7 +25,6 @@ M_BLOCK = N_BLOCK = K_BLOCK = 4
 M_PARTITIONS = N_PARTITIONS = 4
 K_ITERATIONS = K_SIZE // (K_BLOCK * TILE_SIZE)
 SCORE_ITERATIONS = SCORE_SIZE // (N_BLOCK * TILE_SIZE)
-WORKER_L1_SIZE = 1_448_000
 
 
 @ttl.operation(grid=(N_PARTITIONS, M_PARTITIONS), fp32_dest_acc_en=False)
@@ -259,7 +258,7 @@ def to_dram(device, tensor):
 
 
 def main():
-    device = ttnn.open_device(device_id=0, worker_l1_size=WORKER_L1_SIZE)
+    device = ttnn.open_device(device_id=0)
     try:
         query = to_dram(device, torch.zeros((M_SIZE, K_SIZE), dtype=torch.bfloat16))
         key = to_dram(device, torch.zeros((K_SIZE, SCORE_SIZE), dtype=torch.bfloat16))
