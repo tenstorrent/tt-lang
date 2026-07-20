@@ -18,6 +18,14 @@ repos:
       - id: check-added-large-files
       - id: check-yaml
       - id: check-toml
+  - repo: local
+    hooks:
+      - id: build-spec
+        name: Regenerate TTLangSpecification.md from externalized examples
+        entry: python3 docs/sphinx/specs/build_spec.py
+        language: system
+        pass_filenames: false
+        files: ^(docs/sphinx/specs/TTLangSpecification\.externalized\.md|examples/spec/.*)$
   - repo: https://github.com/espressif/check-copyright/
     rev: v1.0.3
     hooks:
