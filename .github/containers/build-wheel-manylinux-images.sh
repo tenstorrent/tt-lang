@@ -157,6 +157,16 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
         continue
     fi
 
+    # Skip the multi-hour LLVM + tt-metal rebuild when an image already exists
+    # at this tag. get-version-tag.sh derives the tag from the container inputs
+    # (llvm-project, tt-metal, this Dockerfile, requirements-runtime.txt via
+    # UPLIFT_PATHS), so a matching tag means the toolchain is unchanged and the
+    # image is up to date. Mirrors build-docker-images.sh --check-only.
+    if [ "$NO_PUSH" != true ] && ${DOCKER:-docker} manifest inspect "$registry_image" >/dev/null 2>&1; then
+        echo "Image already exists, skipping build: $registry_image"
+        continue
+    fi
+
     if [ "$NO_PUSH" = true ]; then
         echo "Building local image: $local_image"
         ${DOCKER:-docker} build "$@" -t "$local_image" -f "$dockerfile" "$repo_root"
