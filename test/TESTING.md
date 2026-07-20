@@ -249,20 +249,34 @@ too slow for the simulator at the default matrix size.
 pytest test/sim/test_examples.py --run-matmul-tutorial-dry -m matmul_tutorial
 ```
 
-### Running with Simulator
+### Running with a simulator
 
-For testing without hardware, set `TT_METAL_SIMULATOR` to enable the TT device
-simulator. This makes the `tt-device` lit feature available and enables
-device-requiring tests:
+Device-requiring tests (`REQUIRES: tt-device`; the me2e suite) can run without
+silicon two ways. In both, `TT_METAL_SIMULATOR` being *set* is what flips the
+`tt-device` gate on -- but they differ in what actually executes the kernel:
 
-```bash
-export TT_METAL_SIMULATOR=1
-```
+- *Functional simulator* -- tt-lang's pure-Python backend (`tt-lang-sim`); no
+  tt-metal, runs on any host. It is driven by its own launcher/targets, not by
+  setting `TT_METAL_SIMULATOR` by hand; see
+  [simulator.md](../docs/sphinx/simulator.md).
+- *Hardware simulator* -- ttsim's `libttsim.so`, which tt-metal loads and runs.
+  Point `TT_METAL_SIMULATOR` at the `.so` (its directory must also hold
+  `soc_descriptor.yaml`), then run pytest/lit as usual:
 
-Then run tests as normal. ME2E tests with simulator:
-```bash
-TT_METAL_SIMULATOR=1 pytest -v test/me2e/
-```
+  ```bash
+  export TT_METAL_SIMULATOR=/path/to/sim/libttsim.so
+  pytest -v test/me2e/
+  ```
+
+`TT_METAL_SIMULATOR` must be a real `.so` path: a bare `TT_METAL_SIMULATOR=1`
+satisfies the gate but then fails at device open
+(`RuntimeError: bad file: 1/soc_descriptor.yaml`). On Linux, get the `.so` from
+[`tenstorrent/ttsim`](https://github.com/tenstorrent/ttsim) releases (e.g.
+`libttsim_wh.so` for x86_64) and copy the matching tt-metal SOC descriptor beside
+it as `soc_descriptor.yaml`. macOS tt-metal is Linux-only, so run the hardware
+simulator in a Lima VM -- see
+[macOS simulator testing](../docs/sphinx/macos-simulator-testing.md), whose
+`vm-install-sim.sh` fetches and stages the `.so` for you.
 
 ## Shell-script unit tests (bats)
 
