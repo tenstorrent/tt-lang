@@ -170,6 +170,9 @@ jobs:
       packages: read
 
     steps:
+      - name: Maximize space
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
@@ -273,7 +276,11 @@ jobs:
   publish:
     name: "Publish wheels to S3 PyPI"
     needs: [preflight, build-standard-wheels, collect-light-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-standard-wheels.result == 'success' || needs.build-standard-wheels.result == 'skipped') && (needs.collect-light-wheels.result == 'success' || needs.collect-light-wheels.result == 'skipped') && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
+    # Attempt to publish on every main-branch or dry-run trigger. The first step
+    # verifies that each requested wheel variant was actually produced and fails
+    # with an explicit message otherwise, instead of surfacing an upstream build
+    # failure here as a cryptic "artifact not found" during download.
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -286,6 +293,23 @@ jobs:
       id-token: write
 
     steps:
+      - name: Verify upstream wheel builds succeeded
+        run: |
+          fail=0
+          if [[ "${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') }}" == "true" || "${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'pypi') }}" == "true" ]]; then
+            if [[ "${{ needs.build-standard-wheels.result }}" != "success" ]]; then
+              echo "::error::Standard wheel build did not succeed (result=${{ needs.build-standard-wheels.result }}); not publishing. See the build-docker / build-standard-wheels jobs for the underlying failure."
+              fail=1
+            fi
+          fi
+          if [[ "${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}" == "true" ]]; then
+            if [[ "${{ needs.collect-light-wheels.result }}" != "success" ]]; then
+              echo "::error::Light wheel collection did not succeed (result=${{ needs.collect-light-wheels.result }}); not publishing. See the build-light-wheels / collect-light-wheels jobs for the underlying failure."
+              fail=1
+            fi
+          fi
+          exit "$fail"
+
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
