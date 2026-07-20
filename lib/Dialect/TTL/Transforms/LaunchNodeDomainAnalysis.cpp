@@ -8,6 +8,9 @@
 
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
+#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -15,8 +18,6 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
-#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
-#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
@@ -219,6 +220,7 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   baseDomain = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]);
 }
 
+/// Substitute the given launch coordinates while evaluating integer values.
 IntegerExpressionEvaluator
 createLaunchNodeIntegerEvaluator(LaunchNodeCoord coord) {
   return IntegerExpressionEvaluator(

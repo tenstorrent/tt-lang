@@ -19,9 +19,9 @@ namespace mlir::tt {
 ///
 /// The analysis composes exact loop trip counts and exact region invocation
 /// counts. When a branch depends on an induction variable, it may enumerate a
-/// bounded number of loop iterations. A result is unknown when the relevant
-/// control flow is dynamic, unsupported, exceeds the enumeration limit, or
-/// overflows a 64-bit count.
+/// bounded number of loop iterations. A result is unknown when an exact count
+/// depends on unresolved runtime selection or data, unsupported control
+/// flow, more iterations than the enumeration limit, or 64-bit overflow.
 class ExecutionCountAnalysis {
 public:
   /// Evaluates context-specific integer values, such as launch coordinates.
@@ -34,6 +34,7 @@ public:
   using RegionInvocationCountEvaluator =
       std::function<std::optional<std::uint64_t>(Region &)>;
 
+  /// Configures bounded loop-iteration enumeration.
   struct Options {
     /// Maximum number of loop iterations examined across all proof attempts.
     std::uint64_t maxEnumeratedIterations = 1'000'000;

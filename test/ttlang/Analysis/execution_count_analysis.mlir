@@ -65,7 +65,7 @@ func.func @context_value_width_mismatch(
 }
 // CHECK-LABEL: context_value_width_mismatch = unknown
 
-// Context values compose through the integer expressions used by launch-role
+// Context values compose through the integer expressions used by launch-node
 // predicates and loop bounds.
 func.func @context_integer_expression(
     %coordinate: index {test.value = 2 : i64}) {
@@ -380,8 +380,8 @@ func.func @constant_block_branch() {
 // CHECK-LABEL: constant_block_branch_unselected = 0
 // CHECK-LABEL: constant_block_branch_merge = 1
 
-// Flow conservation proves the merge count even though neither branch count
-// is exact.
+// The merge post-dominates the entry and therefore executes once even though
+// neither branch count is exact.
 func.func @dynamic_block_diamond(%condition: i1) {
   %zero = arith.constant 0 : index
   cf.cond_br %condition, ^then, ^else
@@ -565,6 +565,60 @@ func.func @non_exiting_multi_block_cycle(%condition: i1) {
 }
 // CHECK-LABEL: non_exiting_multi_block_cycle = unknown
 
+// A cycle with two entry edges is irreducible. Its blocks and any possible
+// exit remain unknown while the unconditional prefix executes once.
+func.func @irreducible_cycle(%entry_condition: i1, %exit_condition: i1) {
+  %zero = arith.constant 0 : index
+  %prefix = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "irreducible_cycle_prefix"
+  } : index
+  cf.cond_br %entry_condition, ^left, ^right
+
+^left:
+  %left_target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "irreducible_cycle_left"
+  } : index
+  cf.cond_br %exit_condition, ^exit, ^right
+
+^right:
+  %right_target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "irreducible_cycle_right"
+  } : index
+  cf.cond_br %exit_condition, ^exit, ^left
+
+^exit:
+  %exit_target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "irreducible_cycle_exit"
+  } : index
+  return
+}
+// CHECK-LABEL: irreducible_cycle_prefix = 1
+// CHECK-LABEL: irreducible_cycle_left = unknown
+// CHECK-LABEL: irreducible_cycle_right = unknown
+// CHECK-LABEL: irreducible_cycle_exit = unknown
+
+// A disconnected cycle cannot change the count of a block reached directly
+// from the entry, even when the cycle also has an edge to that block.
+func.func @disconnected_cycle_to_reachable_block(%condition: i1) {
+  %zero = arith.constant 0 : index
+  cf.br ^target
+
+^cycle:
+  cf.cond_br %condition, ^cycle, ^target
+
+^target:
+  %target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "disconnected_cycle_to_reachable_block"
+  } : index
+  return
+}
+// CHECK-LABEL: disconnected_cycle_to_reachable_block = 1
+
 // A non-exiting CFG cycle inside a structured loop must not produce an exact
 // sibling count multiplied by the loop trip count.
 func.func @nested_non_exiting_cycle(%condition: i1) {
@@ -713,6 +767,41 @@ func.func @integer_truncation() {
   return
 }
 // CHECK-LABEL: integer_truncation = 5
+
+// Some fold hooks first replace an operand and return their own result. The
+// evaluator repeats that fold on a clone and leaves the input IR unchanged.
+func.func @in_place_fold_before_constant_fold() {
+  %narrow = arith.constant 5 : i16
+  %extended = arith.extui %narrow : i16 to i32
+  %upper = arith.trunci %extended : i32 to i8
+  %zero = arith.constant 0 : i8
+  %step = arith.constant 1 : i8
+  scf.for %iteration = %zero to %upper step %step : i8 {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 5 : i64,
+      test.label = "in_place_fold_before_constant_fold"
+    } : i8
+  }
+  return
+}
+// CHECK-LABEL: in_place_fold_before_constant_fold = 5
+
+// A fold may replace its result with another SSA value whose exact value was
+// evaluated independently.
+func.func @external_fold_replacement(%condition: i1) {
+  %five = arith.constant 5 : index
+  %upper = arith.select %condition, %five, %five : index
+  %zero = arith.constant 0 : index
+  %step = arith.constant 1 : index
+  scf.for %iteration = %zero to %upper step %step {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 5 : i64,
+      test.label = "external_fold_replacement"
+    } : index
+  }
+  return
+}
+// CHECK-LABEL: external_fold_replacement = 5
 
 // Unsigned index casting zero-extends a narrow value with its sign bit set.
 func.func @unsigned_index_cast() {

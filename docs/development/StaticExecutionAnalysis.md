@@ -39,8 +39,9 @@ requires an exact count must reject an unknown result. A consumer estimating
 performance may preserve the unknown value or use another analysis that
 represents unknown values symbolically or as numeric bounds.
 
-An operation in a loop has an exact count when the analysis proves the loop's
-iteration count. A count is unknown when it depends on runtime data that the
+An exact loop iteration count is necessary but not sufficient for operations
+inside the loop. The analysis must also prove how often the nested regions and
+blocks execute. A count is unknown when it depends on runtime data that the
 analysis context cannot evaluate, such as a function argument, a memory load,
 or a value modified by successive loop iterations without a proven constant.
 
@@ -198,9 +199,10 @@ arms and their merges.
 
 A strongly connected component (SCC) is a maximal set of blocks in which every
 block can reach every other block. An SCC is cyclic when it contains multiple
-blocks or a single block with an edge to itself. A block post-dominates the
-entry when every terminating or nonterminating continuation from the entry
-passes through that block.
+blocks or a single block with an edge to itself. A cyclic SCC is irreducible
+when control flow can enter it through more than one block. A block
+post-dominates the entry when every terminating or nonterminating continuation
+from the entry passes through that block.
 
 Within one region invocation, an unreachable block has count zero. A block in a
 reachable cyclic SCC may execute more than once. The SCC may also never exit,
@@ -438,6 +440,8 @@ Tests cover:
 - Shared expression graphs and multiple induction-variable bindings.
 - Exact zero for an unreachable region or zero-trip enclosing loop.
 - Signed and unsigned loop comparison and integer-cast semantics.
+- Operation folds that return constants, replace results with other SSA values,
+  or first modify a detached clone before producing a constant.
 - Loop bounds or branch conditions that depend on unevaluated runtime values
   producing unknown.
 - Loops and region operations without a supported exact-count model producing
@@ -448,8 +452,9 @@ Tests cover:
 - Disconnected blocks with count zero and duplicate successor edges.
 - Block predicates derived from enclosing induction variables.
 - Possible cyclic block control flow, including non-exiting self-loops and
-  multi-block cycles, producing unknown for affected cycle, sibling, and
-  subsequent blocks.
+  reducible or irreducible multi-block cycles, producing unknown for affected
+  cycle, sibling, and subsequent blocks.
+- Disconnected cycles remaining unable to affect reachable block counts.
 - Parentless operations and operations outside the root region producing
   unknown.
 - Enumeration-limit boundaries and arithmetic overflow handling.

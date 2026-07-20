@@ -117,13 +117,16 @@ namespace mlir::tt {
 
 namespace {
 
+/// One nesting level between the root region and the queried operation. The
+/// block contains either the query or its next inner enclosing operation.
 struct ControlFrame {
   Operation *parent = nullptr;
   Region *region = nullptr;
   Block *targetBlock = nullptr;
 };
 
-/// One byte per successor edge, ordered by block and successor position.
+/// Record whether each successor edge is possible, ordered by block and
+/// successor position.
 using BlockFlowKey = SmallVector<std::uint8_t>;
 
 /// Exact block counts for one possible block CFG.
@@ -132,15 +135,18 @@ struct BlockCountResult {
   llvm::DenseMap<Block *, std::optional<std::uint64_t>> blockCounts;
 };
 
+/// Bounds the loop iterations examined while proving one operation count.
 class EnumerationBudget {
 public:
   explicit EnumerationBudget(std::uint64_t remainingIterations)
       : remainingIterations(remainingIterations) {}
 
+  /// Return whether the requested iterations fit without consuming them.
   bool canConsume(std::uint64_t iterationCount) const {
     return iterationCount <= remainingIterations;
   }
 
+  /// Consume one iteration, or return false when no budget remains.
   bool tryConsume() {
     if (remainingIterations == 0) {
       return false;
@@ -153,6 +159,7 @@ private:
   std::uint64_t remainingIterations;
 };
 
+/// Return whether the parent may transition between the two child regions.
 bool isRegionReachable(RegionBranchOpInterface branch, Region &sourceRegion,
                        Region &targetRegion) {
   SmallVector<Region *> worklist{&sourceRegion};
@@ -396,6 +403,7 @@ private:
 
     BlockCountResult result;
     BlockFlowGraph graph;
+    // Successor lists store node pointers, so allocate every node first.
     graph.nodes.reserve(std::distance(region.begin(), region.end()));
     llvm::DenseMap<Block *, BlockFlowNode *> nodesByBlock;
     for (Block &block : region) {

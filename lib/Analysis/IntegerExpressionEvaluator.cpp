@@ -7,11 +7,13 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 
@@ -19,14 +21,17 @@ namespace mlir::tt {
 
 namespace {
 
+/// Action performed when the evaluator pops a worklist task.
 enum class EvaluationTaskKind { Discover, Fold, ResolveReplacement };
 
+/// Deferred work needed to evaluate one SSA value without recursion.
 struct EvaluationTask {
   Value value;
   EvaluationTaskKind kind = EvaluationTaskKind::Discover;
   Value replacement;
 };
 
+/// Return the scalar bit width used to evaluate an integer or index value.
 std::optional<std::uint32_t> getIntegerBitWidth(Type type) {
   if (auto integerType = dyn_cast<IntegerType>(type)) {
     return integerType.getWidth();
@@ -91,7 +96,8 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
 
       auto result = dyn_cast<OpResult>(task.value);
       Operation *operation = task.value.getDefiningOp();
-      if (!result || !operation || operation->getNumRegions() != 0) {
+      if (!result || !operation || operation->getNumRegions() != 0 ||
+          operation->getNumSuccessors() != 0) {
         cache.try_emplace(task.value, std::nullopt);
         continue;
       }
@@ -120,79 +126,90 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
 
     Operation *operation = task.value.getDefiningOp();
     assert(operation && "fold task requires a defining operation");
-    SmallVector<Attribute> operandConstants;
-    operandConstants.reserve(operation->getNumOperands());
-    for (Value operand : operation->getOperands()) {
-      if (operand.getType().isIntOrIndex()) {
-        auto cached = cache.find(operand);
-        assert(cached != cache.end() && "integer operand must be evaluated");
-        if (cached->second) {
-          operandConstants.push_back(
-              IntegerAttr::get(operand.getType(), *cached->second));
-          continue;
-        }
-      }
-      Attribute constant;
-      operandConstants.push_back(matchPattern(operand, m_Constant(&constant))
-                                     ? constant
-                                     : Attribute());
-    }
 
-    SmallVector<Value> originalOperands(operation->getOperands());
-    DictionaryAttr originalAttrs = operation->getAttrDictionary();
+    // Fold a detached clone because a fold hook may modify its operation in
+    // place. Repeat after a modification until the fold returns a constant or
+    // external replacement, or the operation state repeats.
+    OwningOpRef<Operation *> foldedOperation(operation->cloneWithoutRegions());
+    llvm::SmallDenseSet<llvm::hash_code, 4> seenFoldStates;
     SmallVector<OpFoldResult> foldResults;
-    LogicalResult foldStatus = operation->fold(operandConstants, foldResults);
-    llvm::scope_exit restoreOperation([&] {
-      operation->setOperands(originalOperands);
-      operation->setAttrs(originalAttrs);
-    });
-    if (failed(foldStatus)) {
-      activeValues.erase(task.value);
-      cache.try_emplace(task.value, std::nullopt);
-      continue;
-    }
-    if (foldResults.empty()) {
-      activeValues.erase(task.value);
-      cache.try_emplace(task.value, std::nullopt);
-      continue;
-    }
-    if (foldResults.size() != operation->getNumResults()) {
-      activeValues.erase(task.value);
-      cache.try_emplace(task.value, std::nullopt);
-      continue;
+    bool deferredReplacement = false;
+    while (true) {
+      llvm::hash_code stateHash =
+          OperationEquivalence::computeHash(*foldedOperation);
+      if (!seenFoldStates.insert(stateHash).second) {
+        break;
+      }
+
+      SmallVector<Attribute> operandConstants;
+      operandConstants.reserve((*foldedOperation)->getNumOperands());
+      for (Value operand : (*foldedOperation)->getOperands()) {
+        if (operand.getType().isIntOrIndex()) {
+          auto cached = cache.find(operand);
+          if (cached != cache.end() && cached->second) {
+            operandConstants.push_back(
+                IntegerAttr::get(operand.getType(), *cached->second));
+            continue;
+          }
+        }
+        Attribute constant;
+        operandConstants.push_back(matchPattern(operand, m_Constant(&constant))
+                                       ? constant
+                                       : Attribute());
+      }
+
+      foldResults.clear();
+      if (failed((*foldedOperation)->fold(operandConstants, foldResults))) {
+        break;
+      }
+      if (foldResults.empty()) {
+        continue;
+      }
+      if (foldResults.size() != (*foldedOperation)->getNumResults()) {
+        break;
+      }
+
+      std::size_t resultNumber = cast<OpResult>(task.value).getResultNumber();
+      OpFoldResult foldResult = foldResults[resultNumber];
+      if (Attribute attribute = dyn_cast<Attribute>(foldResult)) {
+        auto integer = dyn_cast<IntegerAttr>(attribute);
+        std::optional<std::uint32_t> maybeBitWidth =
+            getIntegerBitWidth(task.value.getType());
+        activeValues.erase(task.value);
+        cache.try_emplace(task.value,
+                          integer && maybeBitWidth &&
+                                  integer.getValue().getBitWidth() ==
+                                      *maybeBitWidth
+                              ? std::optional(integer.getValue())
+                              : std::nullopt);
+        break;
+      }
+
+      Value replacement = cast<Value>(foldResult);
+      if (replacement && replacement.getDefiningOp() == foldedOperation.get()) {
+        continue;
+      }
+      if (!replacement || replacement == task.value ||
+          !replacement.getType().isIntOrIndex()) {
+        break;
+      }
+      auto cachedReplacement = cache.find(replacement);
+      if (cachedReplacement != cache.end()) {
+        activeValues.erase(task.value);
+        cache.try_emplace(task.value, cachedReplacement->second);
+        break;
+      }
+      worklist.push_back(
+          {task.value, EvaluationTaskKind::ResolveReplacement, replacement});
+      worklist.push_back({replacement, EvaluationTaskKind::Discover, Value()});
+      deferredReplacement = true;
+      break;
     }
 
-    unsigned resultNumber = cast<OpResult>(task.value).getResultNumber();
-    OpFoldResult foldResult = foldResults[resultNumber];
-    if (Attribute attribute = dyn_cast<Attribute>(foldResult)) {
-      auto integer = dyn_cast<IntegerAttr>(attribute);
-      std::optional<std::uint32_t> maybeBitWidth =
-          getIntegerBitWidth(task.value.getType());
-      activeValues.erase(task.value);
-      cache.try_emplace(task.value, integer && maybeBitWidth &&
-                                            integer.getValue().getBitWidth() ==
-                                                *maybeBitWidth
-                                        ? std::optional(integer.getValue())
-                                        : std::nullopt);
-      continue;
-    }
-
-    Value replacement = cast<Value>(foldResult);
-    if (!replacement || replacement == task.value ||
-        !replacement.getType().isIntOrIndex()) {
+    if (!cache.contains(task.value) && !deferredReplacement) {
       activeValues.erase(task.value);
       cache.try_emplace(task.value, std::nullopt);
-      continue;
     }
-    auto cachedReplacement = cache.find(replacement);
-    if (cachedReplacement != cache.end()) {
-      activeValues.erase(task.value);
-      cache.try_emplace(task.value, cachedReplacement->second);
-      continue;
-    }
-    worklist.push_back(
-        {task.value, EvaluationTaskKind::ResolveReplacement, replacement});
-    worklist.push_back({replacement, EvaluationTaskKind::Discover, Value()});
   }
 
   auto result = cache.find(requestedValue);

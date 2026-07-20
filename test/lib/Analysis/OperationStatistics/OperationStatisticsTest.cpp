@@ -26,11 +26,13 @@
 
 namespace {
 
+/// Counts static operations and their total runtime instances for one name.
 struct OperationStatistics {
   std::uint64_t staticOccurrences = 0;
   std::optional<std::uint64_t> dynamicInstances = 0;
 };
 
+/// Add one operation, preserving unknown when any dynamic count is unknown.
 void addOperationCount(OperationStatistics &statistics,
                        std::optional<std::uint64_t> maybeExecutionCount) {
   ++statistics.staticOccurrences;
@@ -42,6 +44,7 @@ void addOperationCount(OperationStatistics &statistics,
       *statistics.dynamicInstances, *maybeExecutionCount);
 }
 
+/// Print deterministic operation statistics for one function body invocation.
 void printFunctionStatistics(mlir::func::FuncOp function) {
   mlir::tt::ExecutionCountAnalysis analysis(function.getBody());
   llvm::StringMap<OperationStatistics> statisticsByName;

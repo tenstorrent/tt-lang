@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace {
 
@@ -144,6 +145,12 @@ int main(int argumentCount, char **argumentValues) {
     return 1;
   }
 
+  std::string originalIR;
+  {
+    llvm::raw_string_ostream output(originalIR);
+    module->print(output);
+  }
+
   bool succeeded = true;
   llvm::SmallVector<mlir::func::FuncOp> analysisRoots;
   module->walk([&](mlir::func::FuncOp function) {
@@ -160,6 +167,18 @@ int main(int argumentCount, char **argumentValues) {
     module->walk([&](mlir::func::FuncOp function) {
       succeeded &= verifyTargets(function, function);
     });
+  }
+
+  // The public analysis contract excludes mutations, including those performed
+  // by operation fold hooks.
+  std::string analyzedIR;
+  {
+    llvm::raw_string_ostream output(analyzedIR);
+    module->print(output);
+  }
+  if (originalIR != analyzedIR) {
+    module->emitError("execution-count analysis modified the input IR");
+    return 1;
   }
   return succeeded ? 0 : 1;
 }

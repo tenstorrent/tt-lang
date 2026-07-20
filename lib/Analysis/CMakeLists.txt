@@ -6,7 +6,6 @@ add_mlir_library(TTLangAnalysis
   ${PROJECT_SOURCE_DIR}/include/ttlang
 
   LINK_LIBS PUBLIC
-  MLIRArithDialect
   MLIRAnalysis
   MLIRControlFlowInterfaces
   MLIRIR
