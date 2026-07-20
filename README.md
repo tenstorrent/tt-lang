@@ -11,7 +11,7 @@
 </picture>
 
 </div>
-pl<br>
+<br>
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 ![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue.svg)

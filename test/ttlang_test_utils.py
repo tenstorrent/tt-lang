@@ -159,21 +159,25 @@ class FabricMeshUnavailable(RuntimeError):
 
 @contextmanager
 def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
-    """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
-    control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
-    mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
-    override topology discovery.
-    """
+    """Open a 1D fabric mesh spanning every visible device by default."""
     ttnn_module = _get_ttnn()
     if ttnn_module is None:
         raise FabricMeshUnavailable("TTNN not available")
 
     if requested_mesh_shape is None:
-        requested_mesh_shape = tuple(
-            ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
-        )
+        # FABRIC_1D requires a 1D topology even when physical discovery is 2-D.
+        requested_mesh_shape = (1, ttnn_module.get_num_devices())
     else:
         requested_mesh_shape = tuple(requested_mesh_shape)
+    if (
+        len(requested_mesh_shape) != 2
+        or requested_mesh_shape[0] != 1
+        or requested_mesh_shape[1] < 1
+    ):
+        raise ValueError(
+            "FABRIC_1D requires a logical mesh shape of (1, num_devices) with "
+            "num_devices greater than zero"
+        )
 
     mesh_device = None
     try:

@@ -11,13 +11,13 @@
 * @tenstorrent/tt-lang-maintainers
 
 # Protect repository policy and automation configuration.
+/.github/ @tenstorrent/tt-lang-maintainers @brnorris03 @phizalev-TT
 /.github/CODEOWNERS @tenstorrent/tt-lang-maintainers
-/.github/ @tenstorrent/tt-lang-maintainers
 
 # Build and packaging infrastructure.
-/cmake/ bnorris@tenstorrent.com
-/scripts/ bnorris@tenstorrent.com phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com
-/packaging/ bnorris@tenstorrent.com phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com
+/cmake/ @tenstorrent/tt-lang-maintainers @brnorris03 @phizalev-TT
+/scripts/ @tenstorrent/tt-lang-maintainers @brnorris03 @phizalev-TT
+/packaging/ @tenstorrent/tt-lang-maintainers @brnorris03 @phizalev-TT
 
 # Core compiler and dialect implementation.
 /include/ bnorris@tenstorrent.com zcarver@tenstorrent.com vtsilytskyi@tenstorrent.com arichins@tenstorrent.com
@@ -30,6 +30,7 @@
 # Tests and examples.
 /test/ bnorris@tenstorrent.com zcarver@tenstorrent.com kfragkiadakis@tenstorrent.com
 /test/sim/ kfragkiadakis@tenstorrent.com phizalev@tenstorrent.com
+/test/packaging/ @tenstorrent/tt-lang-maintainers @brnorris03 @phizalev-TT
 /examples/ phizalev@tenstorrent.com kfragkiadakis@tenstorrent.com arichins@tenstorrent.com
 /examples/metal_examples/ arichins@tenstorrent.com
 /examples/matmul-tutorial/ phizalev@tenstorrent.com

@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       runs-on:
-        description: 'Hardware type (runner suffix), e.g. n150, n300-llmbox'
+        description: 'Hardware type (runner suffix), e.g. n150, bh-loudbox-viommu'
         required: false
         type: string
-        default: 'n300-llmbox'
+        default: 'bh-loudbox-viommu'
       pytest_args:
         description: 'Pytest selection, e.g. test/python/test_reduce.py -k "reduce_multi_tile and fp32"'
         required: true

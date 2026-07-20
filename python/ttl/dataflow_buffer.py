@@ -60,22 +60,37 @@ class DataflowBuffer:
         tensor: Any,
         shape: Tuple[int, ...],
         block_count: int,
+        dtype: Any = None,
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
         if block_count < 1 or block_count > 32:
             raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
+        # A buffer's dtype has one source: a backing tensor or an explicit
+        # dtype. Supplying both is only valid when they resolve to the same type.
+        if dtype is not None and getattr(tensor, "dtype", None) is not None:
+            if _resolve_dfb_dtype(dtype) != _resolve_dfb_dtype(tensor.dtype):
+                raise ValueError(
+                    f"DataflowBuffer dtype {dtype!r} conflicts with backing "
+                    f"tensor dtype {tensor.dtype!r}; pass only one"
+                )
 
         self.tensor = tensor
         self.shape = shape
         self.block_count = block_count
+        self._dtype = dtype
         self._cb_index = _next_cb_index()
 
     @property
     def dtype(self):
+        if self._dtype is not None:
+            return self._dtype
         if hasattr(self.tensor, "dtype"):
             return self.tensor.dtype
-        raise ValueError("tensor has no dtype attribute")
+        raise ValueError(
+            "DataflowBuffer has no dtype: build it with a tensor "
+            "(make_dataflow_buffer_like) or an explicit dtype (make_dfb)"
+        )
 
     def wait(ast_self: "DataflowBuffer") -> "TensorBlock":
         """
@@ -154,3 +169,45 @@ def make_dataflow_buffer_like(
         DataflowBuffer for use in thread function closures
     """
     return DataflowBuffer(tensor, shape, block_count)
+
+
+def _resolve_dfb_dtype(dtype: Any):
+    """Resolve a ``make_dfb`` dtype argument to a ttnn.DataType.
+
+    Accepts a data-format name string ("bf16", "float32", ...), a ttnn
+    dtype (returned as-is), or a torch dtype.
+    """
+    from .dtype_utils import format_name_to_ttnn_dtype, torch_dtype_to_ttnn_datatype
+
+    if isinstance(dtype, str):
+        return format_name_to_ttnn_dtype(dtype)
+    if hasattr(dtype, "name"):  # already a ttnn.DataType enum
+        return dtype
+    return torch_dtype_to_ttnn_datatype(dtype)
+
+
+def make_dfb(
+    dtype: Any,
+    shape: Tuple[int, ...],
+    block_count: int = 2,
+) -> DataflowBuffer:
+    """
+    Create a dataflow buffer from an explicit dtype, with no backing tensor.
+
+    Unlike make_dataflow_buffer_like, no dummy tensor is needed.
+
+    Args:
+        dtype: Element data type. Accepts a data-format name string
+            ("bf16", "float32", ...), a ttnn dtype, or a torch dtype.
+        shape: Tile counts per dimension for wait/reserve operations
+        block_count: Capacity multiplier (default 2 for double-buffering)
+
+    Returns:
+        DataflowBuffer for use in thread function closures
+    """
+    return DataflowBuffer(
+        tensor=None,
+        shape=shape,
+        block_count=block_count,
+        dtype=_resolve_dfb_dtype(dtype),
+    )
