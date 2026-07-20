@@ -265,8 +265,12 @@ silicon two ways. In both, `TT_METAL_SIMULATOR` being *set* is what flips the
 
   ```bash
   export TT_METAL_SIMULATOR=/path/to/sim/libttsim.so
-  pytest -v test/me2e/
+  pytest -v test/python/test_bcast_add.py               # a pytest
+  llvm-lit -v build/test/python/dram_interleaved_add.py # a python lit test
   ```
+
+  pytest runs against the source `test/...`; lit runs against the configured
+  build tree (`build/test/...`, where the generated `lit.site.cfg.py` lives).
 
 `TT_METAL_SIMULATOR` must be a real `.so` path: a bare `TT_METAL_SIMULATOR=1`
 satisfies the gate but then fails at device open
