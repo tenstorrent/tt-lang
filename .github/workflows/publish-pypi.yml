@@ -158,7 +158,8 @@ jobs:
   publish:
     name: "Publish to PyPI"
     needs: [preflight, build-wheels, test-dist-tutorials]
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != true && needs.test-dist-tutorials.result == 'success' }}
+    # Existing Docker tags skip build-docker, so override transitive skip propagation.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.dry_run != true && needs.preflight.result == 'success' && needs.build-wheels.result == 'success' && needs.test-dist-tutorials.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: pypi
@@ -187,7 +188,8 @@ jobs:
   dry-run-summary:
     name: "Dry-run summary"
     needs: [preflight, build-wheels]
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+    # Existing Docker tags skip build-docker, so override transitive skip propagation.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.dry_run == true && needs.preflight.result == 'success' && needs.build-wheels.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

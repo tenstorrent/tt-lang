@@ -574,6 +574,7 @@ def node(*, dims):
     return (ttl.core_x(), ttl.core_y())
 
 
+@syntax("grid_size")
 def grid_size(*, dims):
     """
     Get the size of the grid.

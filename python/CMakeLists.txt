@@ -126,6 +126,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
+    atom.py
     dataflow_buffer.py
     compiler_options.py
     constants.py
@@ -156,6 +157,8 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
+    _src/atom_split.py
+    _src/atom_inline.py
     _src/auto_profile.py
     _src/perf_summary.py
     _src/perf_trace_server.py

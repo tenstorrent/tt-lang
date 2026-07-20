@@ -54,6 +54,12 @@ struct TTLToTTKernelPipelineOptions
                      "computations. When disabled, emit an error if any "
                      "operation requires a compiler-allocated DFB."),
       llvm::cl::init(true)};
+  Option<bool> specializeCores{
+      *this, "specialize-cores",
+      llvm::cl::desc(
+          "Clone TTKernel functions that branch on a core coordinate once "
+          "per launch coordinate (ttkernel-specialize-cores)."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
