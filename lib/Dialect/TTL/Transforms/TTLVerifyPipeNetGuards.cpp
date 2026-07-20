@@ -15,6 +15,7 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -778,54 +779,32 @@ llvm::APInt getIntegerValue(Value value, int64_t integerValue) {
                      /*isSigned=*/true);
 }
 
+/// Use shared integer folding with the loop and launch facts for one transfer.
+IntegerExpressionEvaluator createIterationIntegerEvaluator(
+    LaunchNodeCoord coord,
+    const llvm::DenseMap<Value, int64_t> &inductionValues,
+    const ModuleState *state = nullptr) {
+  return IntegerExpressionEvaluator(
+      [coord, &inductionValues,
+       state](Value value) -> std::optional<llvm::APInt> {
+        if (auto it = inductionValues.find(value);
+            it != inductionValues.end()) {
+          return getIntegerValue(value, it->second);
+        }
+        return evaluateLaunchNodeContextValue(value, coord, state);
+      });
+}
+
 /// Evaluate integer arithmetic at one loop iteration and launch node.
 std::optional<int64_t> evaluateIntegerAtIteration(
     Value value, LaunchNodeCoord coord,
     const llvm::DenseMap<Value, int64_t> &inductionValues) {
-  if (auto it = inductionValues.find(value); it != inductionValues.end()) {
-    return it->second;
+  std::optional<llvm::APInt> maybeValue =
+      createIterationIntegerEvaluator(coord, inductionValues).evaluate(value);
+  if (!maybeValue || maybeValue->getBitWidth() > 64) {
+    return std::nullopt;
   }
-  if (std::optional<int64_t> launchValue =
-          evaluateIndexAtLaunchNode(value, coord)) {
-    return launchValue;
-  }
-  if (auto castOp = value.getDefiningOp<arith::IndexCastOp>()) {
-    return evaluateIntegerAtIteration(castOp.getIn(), coord, inductionValues);
-  }
-  if (auto castOp = value.getDefiningOp<arith::IndexCastUIOp>()) {
-    return evaluateIntegerAtIteration(castOp.getIn(), coord, inductionValues);
-  }
-
-  auto evaluateBinary = [&](Value lhsValue, Value rhsValue,
-                            auto operation) -> std::optional<int64_t> {
-    std::optional<int64_t> lhs =
-        evaluateIntegerAtIteration(lhsValue, coord, inductionValues);
-    std::optional<int64_t> rhs =
-        evaluateIntegerAtIteration(rhsValue, coord, inductionValues);
-    if (!lhs || !rhs) {
-      return std::nullopt;
-    }
-    llvm::APInt result =
-        operation(getIntegerValue(value, *lhs), getIntegerValue(value, *rhs));
-    return result.getSExtValue();
-  };
-
-  if (auto addOp = value.getDefiningOp<arith::AddIOp>()) {
-    return evaluateBinary(
-        addOp.getLhs(), addOp.getRhs(),
-        [](llvm::APInt lhs, llvm::APInt rhs) { return lhs + rhs; });
-  }
-  if (auto subOp = value.getDefiningOp<arith::SubIOp>()) {
-    return evaluateBinary(
-        subOp.getLhs(), subOp.getRhs(),
-        [](llvm::APInt lhs, llvm::APInt rhs) { return lhs - rhs; });
-  }
-  if (auto mulOp = value.getDefiningOp<arith::MulIOp>()) {
-    return evaluateBinary(
-        mulOp.getLhs(), mulOp.getRhs(),
-        [](llvm::APInt lhs, llvm::APInt rhs) { return lhs * rhs; });
-  }
-  return std::nullopt;
+  return maybeValue->getSExtValue();
 }
 
 /// Evaluate a branch condition at one loop iteration and launch node.
@@ -833,67 +812,13 @@ std::optional<bool> evaluatePredicateAtIteration(
     Value value, LaunchNodeCoord coord,
     const llvm::DenseMap<Value, int64_t> &inductionValues,
     const ModuleState &state) {
-  if (std::optional<bool> launchValue =
-          evaluatePredicateAtLaunchNode(value, coord, state)) {
-    return launchValue;
+  std::optional<llvm::APInt> maybeValue =
+      createIterationIntegerEvaluator(coord, inductionValues, &state)
+          .evaluate(value);
+  if (!maybeValue || maybeValue->getBitWidth() != 1) {
+    return std::nullopt;
   }
-  if (auto cmpOp = value.getDefiningOp<arith::CmpIOp>()) {
-    std::optional<int64_t> lhs =
-        evaluateIntegerAtIteration(cmpOp.getLhs(), coord, inductionValues);
-    std::optional<int64_t> rhs =
-        evaluateIntegerAtIteration(cmpOp.getRhs(), coord, inductionValues);
-    if (!lhs || !rhs) {
-      return std::nullopt;
-    }
-    llvm::APInt lhsValue = getIntegerValue(cmpOp.getLhs(), *lhs);
-    llvm::APInt rhsValue = getIntegerValue(cmpOp.getRhs(), *rhs);
-    switch (cmpOp.getPredicate()) {
-    case arith::CmpIPredicate::eq:
-      return lhsValue == rhsValue;
-    case arith::CmpIPredicate::ne:
-      return lhsValue != rhsValue;
-    case arith::CmpIPredicate::slt:
-      return lhsValue.slt(rhsValue);
-    case arith::CmpIPredicate::sle:
-      return lhsValue.sle(rhsValue);
-    case arith::CmpIPredicate::sgt:
-      return lhsValue.sgt(rhsValue);
-    case arith::CmpIPredicate::sge:
-      return lhsValue.sge(rhsValue);
-    case arith::CmpIPredicate::ult:
-      return lhsValue.ult(rhsValue);
-    case arith::CmpIPredicate::ule:
-      return lhsValue.ule(rhsValue);
-    case arith::CmpIPredicate::ugt:
-      return lhsValue.ugt(rhsValue);
-    case arith::CmpIPredicate::uge:
-      return lhsValue.uge(rhsValue);
-    }
-  }
-  auto evaluateBinary = [&](Value lhsValue, Value rhsValue,
-                            auto operation) -> std::optional<bool> {
-    std::optional<bool> lhs =
-        evaluatePredicateAtIteration(lhsValue, coord, inductionValues, state);
-    std::optional<bool> rhs =
-        evaluatePredicateAtIteration(rhsValue, coord, inductionValues, state);
-    if (!lhs || !rhs) {
-      return std::nullopt;
-    }
-    return operation(*lhs, *rhs);
-  };
-  if (auto andOp = value.getDefiningOp<arith::AndIOp>()) {
-    return evaluateBinary(andOp.getLhs(), andOp.getRhs(),
-                          [](bool lhs, bool rhs) { return lhs && rhs; });
-  }
-  if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
-    return evaluateBinary(orOp.getLhs(), orOp.getRhs(),
-                          [](bool lhs, bool rhs) { return lhs || rhs; });
-  }
-  if (auto xorOp = value.getDefiningOp<arith::XOrIOp>()) {
-    return evaluateBinary(xorOp.getLhs(), xorOp.getRhs(),
-                          [](bool lhs, bool rhs) { return lhs != rhs; });
-  }
-  return std::nullopt;
+  return maybeValue->getBoolValue();
 }
 
 /// Compute an `scf.for` trip count at one loop iteration and launch node.

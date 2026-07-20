@@ -65,6 +65,12 @@ struct TTLToTTKernelPipelineOptions
                      "transfers. When disabled, computed-address transfers "
                      "use receiver-post synchronization."),
       llvm::cl::init(true)};
+  Option<bool> specializeCores{
+      *this, "specialize-cores",
+      llvm::cl::desc(
+          "Clone TTKernel functions that branch on a core coordinate once "
+          "per launch coordinate (ttkernel-specialize-cores)."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

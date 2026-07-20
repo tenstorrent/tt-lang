@@ -1672,7 +1672,7 @@ compile-time properties not runtime-observable.
 | 51 | OperationPipeNets.work_extent: empty / point-to-point / collective |     |  X  |     |
 | 52 | OperationPipeNets.work_extent: union, mixed-rank padding  |     |  X  |     |
 | 53 | grid="auto" and grid="full" both launch the device grid   |  X  |  X  |     |
-| 54 | Verifier accepts every `arith.cmpi` predicate kind, `andi`/`ori`/`xori` boolean composition, `subi`/`muli`/`index_cast` in `evaluateIndexAtLaunchNode` |  |  |  X  |
+| 54 | Verifier accepts every `arith.cmpi` predicate kind and integer expression supported by `IntegerExpressionEvaluator` |  |  |  X  |
 | 55 | Verifier accepts `affine.if` over `Mul`, `Mod`, `FloorDiv` (non-zero), `CeilDiv`, `AffineSymbolExpr`, else-branch |  |  |  X  |
 | 56 | Verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
 | 57 | Verifier rejects malformed `pipenet_scope`: missing attrs, length mismatch, role out of {0, 1} |  |  |  X  |

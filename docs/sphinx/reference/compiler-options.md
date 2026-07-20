@@ -21,6 +21,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs at fusion split points where an operation requires DFB-attached inputs (reduce, broadcast, matmul, transpose). When disabled, the compiler emits an error if any fused computation requires an intermediate DFB. |
 | `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization for eligible computed-address PipeNet transfers. When disabled, computed-address transfers use receiver-post synchronization. |
+| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 ### Other Ways to Set These
 
@@ -119,6 +120,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for fused computations. Error if disabled and any operation requires one. |
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization for eligible computed-address PipeNet transfers. When disabled, computed-address transfers use receiver-post synchronization. |
+| `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
 The pipeline runs these passes in order:
@@ -140,6 +142,7 @@ The pipeline runs these passes in order:
 - `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
+- `ttkernel-specialize-cores`, then `canonicalize`, `cse` — per-core clone and const-fold of coordinate branches; tags clones with `ttl.core_coord` *(only if `specialize-cores=true`)*
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
@@ -224,4 +227,28 @@ Analyze dataflow buffer producer/consumer relationships and dump the flow graph.
 
 ```bash
 ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
+```
+
+#### `ttkernel-specialize-cores`
+
+Clone TTKernel functions that branch on a core coordinate once per launch
+coordinate. Requires a module-level `ttl.launch_grid` attribute (an i64 array
+of length 2 with positive entries). Missing or malformed `ttl.launch_grid` is
+a hard error. A valid single-core grid (product <= 1) skips specialization.
+
+Only `scf.if` conditions derived from `ttkernel.my_logical_x_` /
+`ttkernel.my_logical_y_` trigger cloning. Functions with symbol uses (for
+example `func.call` targets) are left unspecialized with a warning so erasing
+the original does not leave dangling `SymbolRefAttr`s; unrelated functions in
+the module are still specialized. Each clone replaces coordinate reads with
+`arith.constant`s and is tagged with `ttl.core_coord` for runtime dispatch.
+Downstream `canonicalize` / `cse` fold the now-constant branches.
+
+This pass is off by default. Enable it through the pipeline option
+`specialize-cores` (Python: `--ttl-specialize-cores`):
+
+```bash
+ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{specialize-cores=true lower-to-emitc=true}'
+# Or stand-alone:
+ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-cores,canonicalize,cse)'
 ```

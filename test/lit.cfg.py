@@ -96,7 +96,12 @@ if llvm_config is not None:
         llvm_config.with_environment("PATH", dirs, append_path=True)
 
 # Add tt-lang tools used by lit tests.
-tools = ["ttlang-execution-count-test", "ttlang-opt", "ttlang-translate"]
+tools = [
+    "ttlang-execution-count-test",
+    "ttlang-op-stats",
+    "ttlang-opt",
+    "ttlang-translate",
+]
 
 if llvm_config is not None:
     llvm_config.add_tool_substitutions(tools, tool_dirs)

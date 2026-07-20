@@ -4,7 +4,10 @@
 
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
+#include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
+#include "mlir/Analysis/DataFlow/Utils.h"
+#include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -12,59 +15,175 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/GenericDomTreeConstruction.h"
 
 #include <algorithm>
-#include <limits>
+#include <cstdint>
+#include <iterator>
 #include <utility>
+
+namespace mlir::tt::execution_count_detail {
+
+struct BlockFlowGraph;
+
+/// A block and its possible control-flow edges for one induction environment.
+struct BlockFlowNode {
+  BlockFlowGraph *parent = nullptr;
+  Block *block = nullptr;
+  SmallVector<BlockFlowNode *> successors;
+  SmallVector<BlockFlowNode *> predecessors;
+
+  /// Supply the parent required by LLVM's generic dominator tree.
+  BlockFlowGraph *getParent() const { return parent; }
+
+  /// Print the corresponding MLIR block in LLVM graph diagnostics.
+  void printAsOperand(llvm::raw_ostream &output, bool printType) const {
+    block->printAsOperand(output, printType);
+  }
+};
+
+/// The possible block CFG for one region and induction environment.
+struct BlockFlowGraph {
+  using NodeList = SmallVector<BlockFlowNode>;
+
+  NodeList nodes;
+  BlockFlowNode *entry = nullptr;
+
+  /// Supply the entry required by LLVM's generic dominator tree.
+  BlockFlowNode &front() { return *entry; }
+};
+
+} // namespace mlir::tt::execution_count_detail
+
+namespace llvm {
+
+/// Restrict LLVM graph traversal to successors possible in this context.
+template <>
+struct GraphTraits<mlir::tt::execution_count_detail::BlockFlowNode *> {
+  using NodeRef = mlir::tt::execution_count_detail::BlockFlowNode *;
+  using ChildIteratorType = SmallVector<NodeRef>::const_iterator;
+
+  static NodeRef getEntryNode(NodeRef node) { return node; }
+  static ChildIteratorType child_begin(NodeRef node) {
+    return node->successors.begin();
+  }
+  static ChildIteratorType child_end(NodeRef node) {
+    return node->successors.end();
+  }
+};
+
+/// Provide the reverse contextual edges required by post-dominance.
+template <>
+struct GraphTraits<Inverse<mlir::tt::execution_count_detail::BlockFlowNode *>> {
+  using NodeRef = mlir::tt::execution_count_detail::BlockFlowNode *;
+  using ChildIteratorType = SmallVector<NodeRef>::const_iterator;
+
+  static NodeRef getEntryNode(Inverse<NodeRef> graph) { return graph.Graph; }
+  static ChildIteratorType child_begin(NodeRef node) {
+    return node->predecessors.begin();
+  }
+  static ChildIteratorType child_end(NodeRef node) {
+    return node->predecessors.end();
+  }
+};
+
+/// Let post-dominance inspect every node, including disconnected blocks.
+template <>
+struct GraphTraits<mlir::tt::execution_count_detail::BlockFlowGraph *>
+    : GraphTraits<mlir::tt::execution_count_detail::BlockFlowNode *> {
+  using GraphType = mlir::tt::execution_count_detail::BlockFlowGraph *;
+  using NodeRef = mlir::tt::execution_count_detail::BlockFlowNode *;
+  using nodes_iterator = pointer_iterator<
+      mlir::tt::execution_count_detail::BlockFlowGraph::NodeList::iterator>;
+
+  static NodeRef getEntryNode(GraphType graph) { return graph->entry; }
+  static nodes_iterator nodes_begin(GraphType graph) {
+    return nodes_iterator(graph->nodes.begin());
+  }
+  static nodes_iterator nodes_end(GraphType graph) {
+    return nodes_iterator(graph->nodes.end());
+  }
+};
+
+} // namespace llvm
 
 namespace mlir::tt {
 
 namespace {
 
+/// One nesting level between the root region and the queried operation. The
+/// block contains either the query or its next inner enclosing operation.
 struct ControlFrame {
   Operation *parent = nullptr;
   Region *region = nullptr;
+  Block *targetBlock = nullptr;
 };
 
-static std::uint32_t getIntegerBitWidth(Type type) {
-  if (auto integerType = dyn_cast<IntegerType>(type)) {
-    return integerType.getWidth();
-  }
-  assert(type.isIndex() && "expected an integer or index type");
-  return 64;
-}
+/// Record whether each successor edge is possible, ordered by block and
+/// successor position.
+using BlockFlowKey = SmallVector<std::uint8_t>;
 
-static llvm::APInt convertIntegerWidth(llvm::APInt value, Type type,
-                                       bool isSigned) {
-  std::uint32_t width = getIntegerBitWidth(type);
-  return isSigned ? value.sextOrTrunc(width) : value.zextOrTrunc(width);
-}
+/// Exact block counts for one possible block CFG.
+struct BlockCountResult {
+  /// Map every block to zero, one, or an unknown invocation count.
+  llvm::DenseMap<Block *, std::optional<std::uint64_t>> blockCounts;
+};
 
-static std::optional<std::uint64_t> checkedMultiply(std::uint64_t lhs,
-                                                    std::uint64_t rhs) {
-  if (rhs != 0 && lhs > std::numeric_limits<std::uint64_t>::max() / rhs) {
-    return std::nullopt;
-  }
-  return lhs * rhs;
-}
+/// Bounds the loop iterations examined while proving one operation count.
+class EnumerationBudget {
+public:
+  explicit EnumerationBudget(std::uint64_t remainingIterations)
+      : remainingIterations(remainingIterations) {}
 
-static std::optional<std::uint64_t> checkedAdd(std::uint64_t lhs,
-                                               std::uint64_t rhs) {
-  if (lhs > std::numeric_limits<std::uint64_t>::max() - rhs) {
-    return std::nullopt;
+  /// Return whether the requested iterations fit without consuming them.
+  bool canConsume(std::uint64_t iterationCount) const {
+    return iterationCount <= remainingIterations;
   }
-  return lhs + rhs;
-}
 
-static bool hasOneLinearBlock(Region &region) {
-  if (!region.hasOneBlock() || region.front().empty()) {
-    return false;
+  /// Consume one iteration, or return false when no budget remains.
+  bool tryConsume() {
+    if (remainingIterations == 0) {
+      return false;
+    }
+    --remainingIterations;
+    return true;
   }
-  Operation &terminator = region.front().back();
-  return terminator.hasTrait<OpTrait::IsTerminator>() &&
-         terminator.getNumSuccessors() == 0;
+
+private:
+  std::uint64_t remainingIterations;
+};
+
+/// Return whether the parent may transition between the two child regions.
+bool isRegionReachable(RegionBranchOpInterface branch, Region &sourceRegion,
+                       Region &targetRegion) {
+  SmallVector<Region *> worklist{&sourceRegion};
+  llvm::SmallPtrSet<Region *, 4> visited;
+  visited.insert(&sourceRegion);
+  while (!worklist.empty()) {
+    Region *region = worklist.pop_back_val();
+    SmallVector<RegionSuccessor> successors;
+    branch.getSuccessorRegions(*region, successors);
+    for (RegionSuccessor successor : successors) {
+      Region *successorRegion = successor.getSuccessor();
+      if (!successorRegion) {
+        continue;
+      }
+      if (successorRegion == &targetRegion) {
+        return true;
+      }
+      if (visited.insert(successorRegion).second) {
+        worklist.push_back(successorRegion);
+      }
+    }
+  }
+  return false;
 }
 
 } // namespace
@@ -78,212 +197,325 @@ public:
         symbolValueEvaluator(std::move(symbolValueEvaluator)),
         regionInvocationCountEvaluator(
             std::move(regionInvocationCountEvaluator)),
-        options(options) {}
+        options(options) {
+    Operation *parent = rootRegion.getParentOp();
+    if (!parent) {
+      return;
+    }
+    dataFlowSolver = std::make_unique<DataFlowSolver>();
+    dataflow::loadBaselineAnalyses(*dataFlowSolver);
+    if (failed(dataFlowSolver->initializeAndRun(parent))) {
+      dataFlowSolver.reset();
+    }
+  }
 
   std::optional<std::uint64_t> getExecutionCount(Operation *operation) {
-    auto cached = executionCountCache.find(operation);
-    if (cached != executionCountCache.end()) {
+    if (!operation) {
+      return std::nullopt;
+    }
+    Block *operationBlock = operation->getBlock();
+    if (!operationBlock) {
+      return std::nullopt;
+    }
+    // Every operation in a block executes once per block invocation, so reuse
+    // the control-flow proof for all operations in that block.
+    auto cached = blockExecutionCountCache.find(operationBlock);
+    if (cached != blockExecutionCountCache.end()) {
       return cached->second;
     }
 
     SmallVector<ControlFrame> frames;
-    if (!collectControlFrames(operation, frames)) {
-      executionCountCache.try_emplace(operation, std::nullopt);
+    Block *rootBlock = nullptr;
+    if (!collectControlFrames(operation, frames, rootBlock)) {
+      blockExecutionCountCache.try_emplace(operationBlock, std::nullopt);
       return std::nullopt;
     }
 
     llvm::DenseMap<Value, llvm::APInt> inductionValues;
-    std::uint64_t remainingIterations = options.maxEnumeratedIterations;
-    std::optional<std::uint64_t> count =
-        countExecutions(frames, 0, inductionValues, remainingIterations);
-    executionCountCache.try_emplace(operation, count);
-    return count;
+    EnumerationBudget enumerationBudget(options.maxEnumeratedIterations);
+    std::optional<std::uint64_t> maybeRootBlockCount =
+        getExactBlockInvocationCount(rootRegion, rootBlock, inductionValues);
+    std::optional<std::uint64_t> maybeCount;
+    if (!maybeRootBlockCount || *maybeRootBlockCount == 0) {
+      maybeCount = maybeRootBlockCount;
+    } else {
+      std::optional<std::uint64_t> maybeNestedCount =
+          countExecutions(frames, 0, inductionValues, enumerationBudget);
+      maybeCount = maybeNestedCount
+                       ? llvm::checkedMulUnsigned(*maybeRootBlockCount,
+                                                  *maybeNestedCount)
+                       : std::nullopt;
+    }
+    blockExecutionCountCache.try_emplace(operationBlock, maybeCount);
+    return maybeCount;
   }
 
 private:
   bool collectControlFrames(Operation *operation,
-                            SmallVectorImpl<ControlFrame> &frames) const {
-    if (!rootRegion.isAncestor(operation->getParentRegion())) {
+                            SmallVectorImpl<ControlFrame> &frames,
+                            Block *&rootBlock) const {
+    Region *parentRegion = operation->getParentRegion();
+    if (!parentRegion || !rootRegion.isAncestor(parentRegion)) {
       return false;
     }
 
     for (Operation *child = operation;
          child->getParentRegion() != &rootRegion;) {
       Region *region = child->getParentRegion();
-      if (!hasOneLinearBlock(*region)) {
-        return false;
-      }
       Operation *parent = region->getParentOp();
       if (!parent) {
         return false;
       }
-      frames.push_back({parent, region});
+      frames.push_back({parent, region, child->getBlock()});
       child = parent;
     }
-    if (!hasOneLinearBlock(rootRegion)) {
+    Operation *rootChild = frames.empty() ? operation : frames.back().parent;
+    rootBlock = rootChild->getBlock();
+    if (!rootBlock || rootBlock->getParent() != &rootRegion) {
       return false;
     }
     std::reverse(frames.begin(), frames.end());
     return true;
   }
 
-  std::optional<llvm::APInt>
-  evaluateInteger(Value value,
-                  const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
-    if (auto known = inductionValues.find(value);
-        known != inductionValues.end()) {
-      return known->second;
-    }
+  IntegerExpressionEvaluator createIntegerEvaluator(
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+    return IntegerExpressionEvaluator(
+        [this, &inductionValues](Value value) -> std::optional<llvm::APInt> {
+          if (auto inductionValue = inductionValues.find(value);
+              inductionValue != inductionValues.end()) {
+            return inductionValue->second;
+          }
+          if (std::optional<llvm::APInt> maybeConstant =
+                  getDataFlowIntegerConstant(value)) {
+            return maybeConstant;
+          }
+          return symbolValueEvaluator ? symbolValueEvaluator(value)
+                                      : std::nullopt;
+        });
+  }
 
-    Attribute constant;
-    if (matchPattern(value, m_Constant(&constant))) {
-      if (auto integer = dyn_cast_or_null<IntegerAttr>(constant)) {
-        return integer.getValue();
-      }
+  /// Return an integer constant propagated through block and region arguments.
+  std::optional<llvm::APInt> getDataFlowIntegerConstant(Value value) const {
+    if (!dataFlowSolver) {
+      return std::nullopt;
     }
-    if (symbolValueEvaluator) {
-      if (std::optional<llvm::APInt> symbol = symbolValueEvaluator(value)) {
-        return convertIntegerWidth(*symbol, value.getType(),
-                                   /*isSigned=*/true);
-      }
+    using ConstantLattice = dataflow::Lattice<dataflow::ConstantValue>;
+    const auto *lattice = dataFlowSolver->lookupState<ConstantLattice>(value);
+    if (!lattice || lattice->getValue().isUninitialized()) {
+      return std::nullopt;
     }
+    auto integerAttr =
+        dyn_cast_or_null<IntegerAttr>(lattice->getValue().getConstantValue());
+    return integerAttr ? std::optional(integerAttr.getValue()) : std::nullopt;
+  }
 
-    Operation *definingOp = value.getDefiningOp();
-    if (!definingOp || definingOp->getNumResults() != 1) {
+  SmallVector<Attribute> evaluateOperands(
+      Operation *operation,
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+    SmallVector<Attribute> operands;
+    operands.reserve(operation->getNumOperands());
+    IntegerExpressionEvaluator integerEvaluator =
+        createIntegerEvaluator(inductionValues);
+    for (Value operand : operation->getOperands()) {
+      std::optional<llvm::APInt> maybeInteger =
+          operand.getType().isIntOrIndex() ? integerEvaluator.evaluate(operand)
+                                           : std::nullopt;
+      if (maybeInteger) {
+        operands.push_back(IntegerAttr::get(operand.getType(), *maybeInteger));
+        continue;
+      }
+      Attribute constant;
+      operands.push_back(matchPattern(operand, m_Constant(&constant))
+                             ? constant
+                             : Attribute());
+    }
+    return operands;
+  }
+
+  bool isKnownDead(Block *block) const {
+    if (!dataFlowSolver) {
+      return false;
+    }
+    ProgramPoint *blockStart = dataFlowSolver->getProgramPointBefore(block);
+    const auto *executable =
+        dataFlowSolver->lookupState<dataflow::Executable>(blockStart);
+    return executable && !executable->isLive();
+  }
+
+  bool isKnownDead(Block *source, Block *target) const {
+    if (!dataFlowSolver) {
+      return false;
+    }
+    dataflow::CFGEdge *edge =
+        dataFlowSolver->getLatticeAnchor<dataflow::CFGEdge>(source, target);
+    const auto *executable =
+        dataFlowSolver->lookupState<dataflow::Executable>(edge);
+    return executable && !executable->isLive();
+  }
+
+  /// Return the target block's exact count from its possible control-flow CFG.
+  std::optional<std::uint64_t> getExactBlockInvocationCount(
+      Region &region, Block *targetBlock,
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
+    if (!targetBlock || targetBlock->getParent() != &region || region.empty()) {
       return std::nullopt;
     }
 
-    auto evaluateBinary = [&](Value lhsValue, Value rhsValue,
-                              auto operation) -> std::optional<llvm::APInt> {
-      std::optional<llvm::APInt> lhs =
-          evaluateInteger(lhsValue, inductionValues);
-      std::optional<llvm::APInt> rhs =
-          evaluateInteger(rhsValue, inductionValues);
-      if (!lhs || !rhs) {
-        return std::nullopt;
-      }
-      std::uint32_t width = getIntegerBitWidth(value.getType());
-      return operation(lhs->sextOrTrunc(width), rhs->sextOrTrunc(width));
-    };
+    FailureOr<BlockFlowKey> maybeFlowKey =
+        getBlockFlowKey(region, inductionValues);
+    if (failed(maybeFlowKey)) {
+      return std::nullopt;
+    }
+    auto &regionCache = blockCountCache[&region];
+    auto resultIt = regionCache.find(*maybeFlowKey);
+    if (resultIt == regionCache.end()) {
+      BlockCountResult result = classifyBlockCounts(region, *maybeFlowKey);
+      auto [insertedIt, inserted] =
+          regionCache.try_emplace(std::move(*maybeFlowKey), std::move(result));
+      assert(inserted && "new block CFG must be inserted");
+      resultIt = insertedIt;
+    }
 
-    if (auto castOp = dyn_cast<arith::IndexCastOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(convertIntegerWidth(*input, value.getType(),
-                                                       /*isSigned=*/true))
-                   : std::nullopt;
-    }
-    if (auto castOp = dyn_cast<arith::IndexCastUIOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(convertIntegerWidth(*input, value.getType(),
-                                                       /*isSigned=*/false))
-                   : std::nullopt;
-    }
-    if (auto castOp = dyn_cast<arith::ExtSIOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(convertIntegerWidth(*input, value.getType(),
-                                                       /*isSigned=*/true))
-                   : std::nullopt;
-    }
-    if (auto castOp = dyn_cast<arith::ExtUIOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(convertIntegerWidth(*input, value.getType(),
-                                                       /*isSigned=*/false))
-                   : std::nullopt;
-    }
-    if (auto castOp = dyn_cast<arith::TruncIOp>(definingOp)) {
-      std::optional<llvm::APInt> input =
-          evaluateInteger(castOp.getIn(), inductionValues);
-      return input ? std::optional(
-                         input->trunc(getIntegerBitWidth(value.getType())))
-                   : std::nullopt;
-    }
-    if (auto addOp = dyn_cast<arith::AddIOp>(definingOp)) {
-      return evaluateBinary(
-          addOp.getLhs(), addOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs + rhs; });
-    }
-    if (auto subOp = dyn_cast<arith::SubIOp>(definingOp)) {
-      return evaluateBinary(
-          subOp.getLhs(), subOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs - rhs; });
-    }
-    if (auto mulOp = dyn_cast<arith::MulIOp>(definingOp)) {
-      return evaluateBinary(
-          mulOp.getLhs(), mulOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs * rhs; });
-    }
-    if (auto andOp = dyn_cast<arith::AndIOp>(definingOp)) {
-      return evaluateBinary(
-          andOp.getLhs(), andOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs & rhs; });
-    }
-    if (auto orOp = dyn_cast<arith::OrIOp>(definingOp)) {
-      return evaluateBinary(
-          orOp.getLhs(), orOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs | rhs; });
-    }
-    if (auto xorOp = dyn_cast<arith::XOrIOp>(definingOp)) {
-      return evaluateBinary(
-          xorOp.getLhs(), xorOp.getRhs(),
-          [](llvm::APInt lhs, llvm::APInt rhs) { return lhs ^ rhs; });
-    }
-    if (auto cmpOp = dyn_cast<arith::CmpIOp>(definingOp)) {
-      std::optional<llvm::APInt> lhs =
-          evaluateInteger(cmpOp.getLhs(), inductionValues);
-      std::optional<llvm::APInt> rhs =
-          evaluateInteger(cmpOp.getRhs(), inductionValues);
-      if (!lhs || !rhs) {
-        return std::nullopt;
+    BlockCountResult &result = resultIt->second;
+    auto countIt = result.blockCounts.find(targetBlock);
+    assert(countIt != result.blockCounts.end() &&
+           "block-count result must contain every block");
+    return countIt->second;
+  }
+
+  /// Encode the successor edges possible under the current induction values.
+  FailureOr<BlockFlowKey> getBlockFlowKey(
+      Region &region,
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+    BlockFlowKey flowKey;
+    for (Block &block : region) {
+      Operation *terminator = block.getTerminator();
+      if (!terminator) {
+        return failure();
       }
-      bool result = false;
-      switch (cmpOp.getPredicate()) {
-      case arith::CmpIPredicate::eq:
-        result = *lhs == *rhs;
-        break;
-      case arith::CmpIPredicate::ne:
-        result = *lhs != *rhs;
-        break;
-      case arith::CmpIPredicate::slt:
-        result = lhs->slt(*rhs);
-        break;
-      case arith::CmpIPredicate::sle:
-        result = lhs->sle(*rhs);
-        break;
-      case arith::CmpIPredicate::sgt:
-        result = lhs->sgt(*rhs);
-        break;
-      case arith::CmpIPredicate::sge:
-        result = lhs->sge(*rhs);
-        break;
-      case arith::CmpIPredicate::ult:
-        result = lhs->ult(*rhs);
-        break;
-      case arith::CmpIPredicate::ule:
-        result = lhs->ule(*rhs);
-        break;
-      case arith::CmpIPredicate::ugt:
-        result = lhs->ugt(*rhs);
-        break;
-      case arith::CmpIPredicate::uge:
-        result = lhs->uge(*rhs);
-        break;
+      if (terminator->getNumSuccessors() == 0) {
+        continue;
       }
-      return llvm::APInt(/*numBits=*/1, result);
+      auto branch = dyn_cast<BranchOpInterface>(terminator);
+      if (!branch) {
+        return failure();
+      }
+
+      SmallVector<Attribute> operands =
+          evaluateOperands(terminator, inductionValues);
+      Block *selectedSuccessor = branch.getSuccessorForOperands(operands);
+      if (selectedSuccessor &&
+          !llvm::is_contained(terminator->getSuccessors(), selectedSuccessor)) {
+        return failure();
+      }
+
+      for (Block *successor : terminator->getSuccessors()) {
+        bool isPossible =
+            !isKnownDead(&block) && !isKnownDead(successor) &&
+            !isKnownDead(&block, successor) &&
+            (!selectedSuccessor || successor == selectedSuccessor);
+        flowKey.push_back(isPossible);
+      }
     }
-    return std::nullopt;
+    return flowKey;
+  }
+
+  /// Classify every block in one invocation of the possible block CFG.
+  BlockCountResult classifyBlockCounts(Region &region,
+                                       ArrayRef<std::uint8_t> flowKey) const {
+    using execution_count_detail::BlockFlowGraph;
+    using execution_count_detail::BlockFlowNode;
+
+    BlockCountResult result;
+    BlockFlowGraph graph;
+    // Successor lists store node pointers, so allocate every node first.
+    graph.nodes.reserve(std::distance(region.begin(), region.end()));
+    llvm::DenseMap<Block *, BlockFlowNode *> nodesByBlock;
+    for (Block &block : region) {
+      BlockFlowNode &node = graph.nodes.emplace_back();
+      node.parent = &graph;
+      node.block = &block;
+      nodesByBlock.try_emplace(&block, &node);
+    }
+    graph.entry = nodesByBlock.lookup(&region.front());
+
+    std::size_t edgePosition = 0;
+    for (Block &block : region) {
+      BlockFlowNode *sourceNode = nodesByBlock.lookup(&block);
+      Operation *terminator = block.getTerminator();
+      for (Block *successor : terminator->getSuccessors()) {
+        assert(edgePosition < flowKey.size() && "block-flow key is too short");
+        if (!flowKey[edgePosition++]) {
+          continue;
+        }
+        BlockFlowNode *successorNode = nodesByBlock.lookup(successor);
+        assert(successorNode && "successor must belong to the same region");
+        if (!llvm::is_contained(sourceNode->successors, successorNode)) {
+          sourceNode->successors.push_back(successorNode);
+          successorNode->predecessors.push_back(sourceNode);
+        }
+      }
+    }
+    assert(edgePosition == flowKey.size() && "block-flow key is too long");
+
+    llvm::DenseSet<BlockFlowNode *> reachableNodes;
+    SmallVector<BlockFlowNode *> worklist{graph.entry};
+    reachableNodes.insert(graph.entry);
+    while (!worklist.empty()) {
+      BlockFlowNode *node = worklist.pop_back_val();
+      for (BlockFlowNode *successor : node->successors) {
+        if (reachableNodes.insert(successor).second) {
+          worklist.push_back(successor);
+        }
+      }
+    }
+
+    // Blocks in a possible cycle may repeat, and its successors may never run.
+    llvm::DenseSet<BlockFlowNode *> cycleAffectedNodes;
+    for (auto sccIt = llvm::scc_begin(&graph); !sccIt.isAtEnd(); ++sccIt) {
+      if (!sccIt.hasCycle()) {
+        continue;
+      }
+      for (BlockFlowNode *node : *sccIt) {
+        if (cycleAffectedNodes.insert(node).second) {
+          worklist.push_back(node);
+        }
+      }
+    }
+    while (!worklist.empty()) {
+      BlockFlowNode *node = worklist.pop_back_val();
+      for (BlockFlowNode *successor : node->successors) {
+        if (cycleAffectedNodes.insert(successor).second) {
+          worklist.push_back(successor);
+        }
+      }
+    }
+
+    // In the remaining acyclic graph, a reachable block executes exactly once
+    // iff every terminating or nonterminating continuation visits it.
+    llvm::PostDomTreeBase<BlockFlowNode> postDominance;
+    postDominance.recalculate(graph);
+    for (BlockFlowNode &node : graph.nodes) {
+      std::optional<std::uint64_t> maybeCount;
+      if (!reachableNodes.contains(&node)) {
+        maybeCount = 0;
+      } else if (!cycleAffectedNodes.contains(&node) &&
+                 postDominance.dominates(&node, graph.entry)) {
+        maybeCount = 1;
+      }
+      result.blockCounts.try_emplace(node.block, maybeCount);
+    }
+    return result;
   }
 
   std::optional<std::uint64_t> getExactRegionInvocationCount(
       ControlFrame frame,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
     if (regionInvocationCountEvaluator) {
-      if (std::optional<std::uint64_t> count =
+      if (std::optional<std::uint64_t> maybeCount =
               regionInvocationCountEvaluator(*frame.region)) {
-        return count;
+        return maybeCount;
       }
     }
 
@@ -292,22 +524,8 @@ private:
       return std::nullopt;
     }
 
-    SmallVector<Attribute> operands;
-    operands.reserve(frame.parent->getNumOperands());
-    for (Value operand : frame.parent->getOperands()) {
-      std::optional<llvm::APInt> integer =
-          operand.getType().isIntOrIndex()
-              ? evaluateInteger(operand, inductionValues)
-              : std::nullopt;
-      if (integer) {
-        operands.push_back(IntegerAttr::get(operand.getType(), *integer));
-        continue;
-      }
-      Attribute constant;
-      operands.push_back(matchPattern(operand, m_Constant(&constant))
-                             ? constant
-                             : Attribute());
-    }
+    SmallVector<Attribute> operands =
+        evaluateOperands(frame.parent, inductionValues);
 
     SmallVector<InvocationBounds> bounds;
     branch.getRegionInvocationBounds(operands, bounds);
@@ -316,7 +534,7 @@ private:
       return std::nullopt;
     }
     const InvocationBounds &regionBounds = bounds[regionNumber];
-    auto upperBound = regionBounds.getUpperBound();
+    auto maybeUpperBound = regionBounds.getUpperBound();
     SmallVector<RegionSuccessor> entrySuccessors;
     branch.getEntrySuccessorRegions(operands, entrySuccessors);
     if (entrySuccessors.size() == 1) {
@@ -325,153 +543,189 @@ private:
         return 0;
       }
       if (selectedRegion != frame.region) {
-        if (upperBound && regionBounds.getLowerBound() == 0 &&
-            *upperBound == 0) {
+        if (maybeUpperBound && *maybeUpperBound == 0) {
+          return 0;
+        }
+        if (!isRegionReachable(branch, *selectedRegion, *frame.region)) {
           return 0;
         }
         return std::nullopt;
       }
-      if (upperBound && *upperBound == 1) {
+      if (maybeUpperBound && *maybeUpperBound == 1) {
         return 1;
       }
 
       SmallVector<RegionSuccessor> regionSuccessors;
       branch.getSuccessorRegions(*selectedRegion, regionSuccessors);
-      if (llvm::all_of(regionSuccessors,
-                       [](RegionSuccessor successor) {
-                         return successor.isOperation();
-                       })) {
+      if (llvm::all_of(regionSuccessors, [](RegionSuccessor successor) {
+            return successor.isOperation();
+          })) {
         return 1;
       }
       return std::nullopt;
     }
 
-    if (!upperBound || regionBounds.getLowerBound() != *upperBound) {
+    if (!maybeUpperBound || regionBounds.getLowerBound() != *maybeUpperBound) {
       return std::nullopt;
     }
-    return *upperBound;
+    return *maybeUpperBound;
   }
 
   std::optional<llvm::APInt> getSCFForTripCount(
       scf::ForOp forOp,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
-    if (std::optional<llvm::APInt> tripCount = forOp.getStaticTripCount()) {
-      return tripCount;
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+    if (std::optional<llvm::APInt> maybeTripCount =
+            forOp.getStaticTripCount()) {
+      return maybeTripCount;
     }
 
-    std::optional<llvm::APInt> lowerBound =
-        evaluateInteger(forOp.getLowerBound(), inductionValues);
-    std::optional<llvm::APInt> upperBound =
-        evaluateInteger(forOp.getUpperBound(), inductionValues);
-    std::optional<llvm::APInt> step =
-        evaluateInteger(forOp.getStep(), inductionValues);
-    if (!lowerBound || !upperBound || !step || step->isZero()) {
+    IntegerExpressionEvaluator integerEvaluator =
+        createIntegerEvaluator(inductionValues);
+    std::optional<llvm::APInt> maybeLowerBound =
+        integerEvaluator.evaluate(forOp.getLowerBound());
+    std::optional<llvm::APInt> maybeUpperBound =
+        integerEvaluator.evaluate(forOp.getUpperBound());
+    std::optional<llvm::APInt> maybeStep =
+        integerEvaluator.evaluate(forOp.getStep());
+    if (!maybeLowerBound || !maybeUpperBound || !maybeStep ||
+        maybeStep->isZero()) {
       return std::nullopt;
     }
 
     IntegerAttr lowerBoundAttr =
-        IntegerAttr::get(forOp.getLowerBound().getType(), *lowerBound);
+        IntegerAttr::get(forOp.getLowerBound().getType(), *maybeLowerBound);
     IntegerAttr upperBoundAttr =
-        IntegerAttr::get(forOp.getUpperBound().getType(), *upperBound);
-    IntegerAttr stepAttr = IntegerAttr::get(forOp.getStep().getType(), *step);
+        IntegerAttr::get(forOp.getUpperBound().getType(), *maybeUpperBound);
+    IntegerAttr stepAttr =
+        IntegerAttr::get(forOp.getStep().getType(), *maybeStep);
     return constantTripCount(lowerBoundAttr, upperBoundAttr, stepAttr,
                              /*isSigned=*/!forOp.getUnsignedCmp(),
                              scf::computeUbMinusLb);
   }
 
-  std::optional<std::uint64_t>
-  getLoopTripCount(LoopLikeOpInterface loop,
-                   const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
-    std::optional<llvm::APInt> tripCount = loop.getStaticTripCount();
-    if (!tripCount) {
+  std::optional<std::uint64_t> getLoopTripCount(
+      LoopLikeOpInterface loop,
+      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+    std::optional<llvm::APInt> maybeTripCount = loop.getStaticTripCount();
+    if (!maybeTripCount) {
       if (auto forOp = dyn_cast<scf::ForOp>(loop.getOperation())) {
-        tripCount = getSCFForTripCount(forOp, inductionValues);
+        maybeTripCount = getSCFForTripCount(forOp, inductionValues);
       }
     }
-    if (!tripCount || tripCount->getActiveBits() > 64) {
+    if (!maybeTripCount || maybeTripCount->getActiveBits() > 64) {
       return std::nullopt;
     }
-    return tripCount->getZExtValue();
+    return maybeTripCount->getZExtValue();
+  }
+
+  std::optional<std::uint64_t>
+  countInsideFrame(ArrayRef<ControlFrame> frames, std::size_t frameIndex,
+                   llvm::DenseMap<Value, llvm::APInt> &inductionValues,
+                   EnumerationBudget &enumerationBudget) {
+    ControlFrame frame = frames[frameIndex];
+    std::optional<std::uint64_t> maybeBlockCount = getExactBlockInvocationCount(
+        *frame.region, frame.targetBlock, inductionValues);
+    if (!maybeBlockCount || *maybeBlockCount == 0) {
+      return maybeBlockCount;
+    }
+    std::optional<std::uint64_t> maybeNestedCount = countExecutions(
+        frames, frameIndex + 1, inductionValues, enumerationBudget);
+    return maybeNestedCount
+               ? llvm::checkedMulUnsigned(*maybeBlockCount, *maybeNestedCount)
+               : std::nullopt;
   }
 
   std::optional<std::uint64_t>
   countExecutions(ArrayRef<ControlFrame> frames, std::size_t frameIndex,
                   llvm::DenseMap<Value, llvm::APInt> &inductionValues,
-                  std::uint64_t &remainingIterations) {
+                  EnumerationBudget &enumerationBudget) {
     if (frameIndex == frames.size()) {
       return 1;
     }
 
     ControlFrame frame = frames[frameIndex];
     auto loop = dyn_cast<LoopLikeOpInterface>(frame.parent);
-    if (!loop || !llvm::is_contained(loop.getLoopRegions(), frame.region)) {
-      std::optional<std::uint64_t> invocationCount =
+    SmallVector<Region *> loopRegions;
+    if (loop) {
+      loopRegions = loop.getLoopRegions();
+    }
+    if (!loop || !llvm::is_contained(loopRegions, frame.region)) {
+      std::optional<std::uint64_t> maybeInvocationCount =
           getExactRegionInvocationCount(frame, inductionValues);
-      if (!invocationCount) {
+      if (!maybeInvocationCount) {
         return std::nullopt;
       }
-      if (*invocationCount == 0) {
+      if (*maybeInvocationCount == 0) {
         return 0;
       }
-      std::optional<std::uint64_t> nestedCount = countExecutions(
-          frames, frameIndex + 1, inductionValues, remainingIterations);
-      return nestedCount ? checkedMultiply(*invocationCount, *nestedCount)
-                         : std::nullopt;
+      std::optional<std::uint64_t> maybeNestedCount = countInsideFrame(
+          frames, frameIndex, inductionValues, enumerationBudget);
+      return maybeNestedCount ? llvm::checkedMulUnsigned(*maybeInvocationCount,
+                                                         *maybeNestedCount)
+                              : std::nullopt;
     }
 
-    std::optional<std::uint64_t> tripCount =
+    std::optional<std::uint64_t> maybeTripCount =
         getLoopTripCount(loop, inductionValues);
-    if (!tripCount) {
+    if (!maybeTripCount) {
       return std::nullopt;
     }
-    if (*tripCount == 0) {
+
+    // A trip count does not define the invocation count of each region in a
+    // multi-region loop.
+    if (loopRegions.size() != 1) {
+      return std::nullopt;
+    }
+    if (*maybeTripCount == 0) {
       return 0;
     }
 
-    // Multiplication avoids enumerating loops when nested control flow and
-    // inner trip counts do not depend on this loop's induction variable.
-    std::uint64_t independentProofBudget = remainingIterations;
-    if (std::optional<std::uint64_t> nestedCount = countExecutions(
-            frames, frameIndex + 1, inductionValues, independentProofBudget)) {
-      remainingIterations = independentProofBudget;
-      return checkedMultiply(*tripCount, *nestedCount);
+    // Try multiplication before enumeration. Passing the same budget charges
+    // nested enumeration even when this attempt cannot prove a count.
+    std::optional<std::uint64_t> maybeNestedCount = countInsideFrame(
+        frames, frameIndex, inductionValues, enumerationBudget);
+    if (maybeNestedCount) {
+      return llvm::checkedMulUnsigned(*maybeTripCount, *maybeNestedCount);
     }
 
     auto forOp = dyn_cast<scf::ForOp>(frame.parent);
-    if (!forOp || *tripCount > remainingIterations) {
+    if (!forOp || !enumerationBudget.canConsume(*maybeTripCount)) {
       return std::nullopt;
     }
-    std::optional<llvm::APInt> inductionValue =
-        evaluateInteger(forOp.getLowerBound(), inductionValues);
-    std::optional<llvm::APInt> step =
-        evaluateInteger(forOp.getStep(), inductionValues);
-    if (!inductionValue || !step) {
+    IntegerExpressionEvaluator integerEvaluator =
+        createIntegerEvaluator(inductionValues);
+    std::optional<llvm::APInt> maybeInductionValue =
+        integerEvaluator.evaluate(forOp.getLowerBound());
+    std::optional<llvm::APInt> maybeStep =
+        integerEvaluator.evaluate(forOp.getStep());
+    if (!maybeInductionValue || !maybeStep) {
       return std::nullopt;
     }
 
-    std::uint32_t inductionWidth =
-        getIntegerBitWidth(forOp.getInductionVar().getType());
-    *inductionValue = inductionValue->sextOrTrunc(inductionWidth);
-    *step = step->sextOrTrunc(inductionWidth);
+    assert(maybeInductionValue->getBitWidth() == maybeStep->getBitWidth() &&
+           "loop bounds and step must have the same bit width");
+    llvm::scope_exit restoreInductionValue(
+        [&] { inductionValues.erase(forOp.getInductionVar()); });
     std::uint64_t total = 0;
-    for (std::uint64_t iteration = 0; iteration < *tripCount; ++iteration) {
-      --remainingIterations;
-      inductionValues[forOp.getInductionVar()] = *inductionValue;
-      std::optional<std::uint64_t> nestedCount = countExecutions(
-          frames, frameIndex + 1, inductionValues, remainingIterations);
-      if (!nestedCount) {
-        inductionValues.erase(forOp.getInductionVar());
+    for (std::uint64_t iteration = 0; iteration < *maybeTripCount;
+         ++iteration) {
+      if (!enumerationBudget.tryConsume()) {
         return std::nullopt;
       }
-      std::optional<std::uint64_t> nextTotal = checkedAdd(total, *nestedCount);
-      if (!nextTotal) {
-        inductionValues.erase(forOp.getInductionVar());
+      inductionValues[forOp.getInductionVar()] = *maybeInductionValue;
+      maybeNestedCount = countInsideFrame(frames, frameIndex, inductionValues,
+                                          enumerationBudget);
+      if (!maybeNestedCount) {
         return std::nullopt;
       }
-      total = *nextTotal;
-      *inductionValue += *step;
+      std::optional<std::uint64_t> maybeNextTotal =
+          llvm::checkedAddUnsigned(total, *maybeNestedCount);
+      if (!maybeNextTotal) {
+        return std::nullopt;
+      }
+      total = *maybeNextTotal;
+      *maybeInductionValue += *maybeStep;
     }
-    inductionValues.erase(forOp.getInductionVar());
     return total;
   }
 
@@ -479,8 +733,20 @@ private:
   SymbolValueEvaluator symbolValueEvaluator;
   RegionInvocationCountEvaluator regionInvocationCountEvaluator;
   Options options;
-  llvm::DenseMap<Operation *, std::optional<std::uint64_t>> executionCountCache;
+  std::unique_ptr<DataFlowSolver> dataFlowSolver;
+  llvm::DenseMap<Block *, std::optional<std::uint64_t>>
+      blockExecutionCountCache;
+  /// Reuse block counts when different induction values select the same edges.
+  llvm::DenseMap<Region *, llvm::DenseMap<BlockFlowKey, BlockCountResult>>
+      blockCountCache;
 };
+
+ExecutionCountAnalysis::ExecutionCountAnalysis(
+    Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,
+    RegionInvocationCountEvaluator regionInvocationCountEvaluator)
+    : ExecutionCountAnalysis(rootRegion, std::move(symbolValueEvaluator),
+                             std::move(regionInvocationCountEvaluator),
+                             Options{}) {}
 
 ExecutionCountAnalysis::ExecutionCountAnalysis(
     Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,

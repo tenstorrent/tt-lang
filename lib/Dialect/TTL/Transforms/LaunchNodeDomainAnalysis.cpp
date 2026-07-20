@@ -8,15 +8,16 @@
 
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
+#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
-#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
@@ -238,123 +239,46 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   baseDomain = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]);
 }
 
-/// Evaluate index expressions that are affine over `ttl.core_x`,
-/// `ttl.core_y`, and integer constants for one launch coordinate.
-std::optional<int64_t> evaluateIndexAtLaunchNode(Value value,
-                                                 LaunchNodeCoord coord) {
+std::optional<llvm::APInt>
+evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
+                               const LaunchNodeDomainState *state) {
   if (value.getDefiningOp<CoreXOp>()) {
-    return coord.x;
+    return llvm::APInt(IndexType::kInternalStorageBitWidth, coord.x);
   }
   if (value.getDefiningOp<CoreYOp>()) {
-    return coord.y;
+    return llvm::APInt(IndexType::kInternalStorageBitWidth, coord.y);
   }
-  if (auto constant = getConstantIntValue(value)) {
-    return *constant;
-  }
-  if (auto castOp = value.getDefiningOp<arith::IndexCastOp>()) {
-    return evaluateIndexAtLaunchNode(castOp.getIn(), coord);
-  }
-  if (auto addOp = value.getDefiningOp<arith::AddIOp>()) {
-    auto lhs = evaluateIndexAtLaunchNode(addOp.getLhs(), coord);
-    auto rhs = evaluateIndexAtLaunchNode(addOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs + *rhs;
-    }
-  }
-  if (auto subOp = value.getDefiningOp<arith::SubIOp>()) {
-    auto lhs = evaluateIndexAtLaunchNode(subOp.getLhs(), coord);
-    auto rhs = evaluateIndexAtLaunchNode(subOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs - *rhs;
-    }
-  }
-  if (auto mulOp = value.getDefiningOp<arith::MulIOp>()) {
-    auto lhs = evaluateIndexAtLaunchNode(mulOp.getLhs(), coord);
-    auto rhs = evaluateIndexAtLaunchNode(mulOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs * *rhs;
+  if (state) {
+    if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
+      bool selected = knownLaunchNodeDomainContains(
+          state->getRoleDomain(predicate.getReferencedPipeNetId(),
+                               predicate.getReferencedRole()),
+          coord);
+      return llvm::APInt(/*numBits=*/1, selected);
     }
   }
   return std::nullopt;
 }
 
-/// Evaluate boolean predicates composed from statically evaluable comparisons,
-/// PipeNet roles, and integer boolean operations for one launch coordinate.
-static std::optional<bool>
-evaluatePredicateAtLaunchNodeImpl(Value value, LaunchNodeCoord coord,
-                                  const LaunchNodeDomainState *state) {
-  if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
-    if (!state) {
-      return std::nullopt;
-    }
-    return knownLaunchNodeDomainContains(
-        state->getRoleDomain(predicate.getReferencedPipeNetId(),
-                             predicate.getReferencedRole()),
-        coord);
-  }
-  if (value.getType().isInteger(1)) {
-    if (auto constant = getConstantIntValue(value)) {
-      return *constant != 0;
-    }
-  }
-  if (auto cmpOp = value.getDefiningOp<arith::CmpIOp>()) {
-    auto lhs = evaluateIndexAtLaunchNode(cmpOp.getLhs(), coord);
-    auto rhs = evaluateIndexAtLaunchNode(cmpOp.getRhs(), coord);
-    if (!lhs || !rhs) {
-      return std::nullopt;
-    }
-    switch (cmpOp.getPredicate()) {
-    case arith::CmpIPredicate::eq:
-      return *lhs == *rhs;
-    case arith::CmpIPredicate::ne:
-      return *lhs != *rhs;
-    case arith::CmpIPredicate::slt:
-    case arith::CmpIPredicate::ult:
-      return *lhs < *rhs;
-    case arith::CmpIPredicate::sle:
-    case arith::CmpIPredicate::ule:
-      return *lhs <= *rhs;
-    case arith::CmpIPredicate::sgt:
-    case arith::CmpIPredicate::ugt:
-      return *lhs > *rhs;
-    case arith::CmpIPredicate::sge:
-    case arith::CmpIPredicate::uge:
-      return *lhs >= *rhs;
-    }
-  }
-  if (auto andOp = value.getDefiningOp<arith::AndIOp>()) {
-    auto lhs = evaluatePredicateAtLaunchNodeImpl(andOp.getLhs(), coord, state);
-    auto rhs = evaluatePredicateAtLaunchNodeImpl(andOp.getRhs(), coord, state);
-    if (lhs && rhs) {
-      return *lhs && *rhs;
-    }
-  }
-  if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
-    auto lhs = evaluatePredicateAtLaunchNodeImpl(orOp.getLhs(), coord, state);
-    auto rhs = evaluatePredicateAtLaunchNodeImpl(orOp.getRhs(), coord, state);
-    if (lhs && rhs) {
-      return *lhs || *rhs;
-    }
-  }
-  if (auto xorOp = value.getDefiningOp<arith::XOrIOp>()) {
-    auto lhs = evaluatePredicateAtLaunchNodeImpl(xorOp.getLhs(), coord, state);
-    auto rhs = evaluatePredicateAtLaunchNodeImpl(xorOp.getRhs(), coord, state);
-    if (lhs && rhs) {
-      return *lhs != *rhs;
-    }
-  }
-  return std::nullopt;
-}
-
-std::optional<bool> evaluatePredicateAtLaunchNode(Value value,
-                                                  LaunchNodeCoord coord) {
-  return evaluatePredicateAtLaunchNodeImpl(value, coord, nullptr);
+/// Use shared integer folding for every launch-domain expression.
+static IntegerExpressionEvaluator
+createLaunchNodeIntegerEvaluator(LaunchNodeCoord coord,
+                                 const LaunchNodeDomainState *state = nullptr) {
+  return IntegerExpressionEvaluator(
+      [coord, state](Value value) -> std::optional<llvm::APInt> {
+        return evaluateLaunchNodeContextValue(value, coord, state);
+      });
 }
 
 std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state) {
-  return evaluatePredicateAtLaunchNodeImpl(value, coord, &state);
+  std::optional<llvm::APInt> maybeValue =
+      createLaunchNodeIntegerEvaluator(coord, &state).evaluate(value);
+  if (!maybeValue || maybeValue->getBitWidth() != 1) {
+    return std::nullopt;
+  }
+  return maybeValue->getBoolValue();
 }
 
 /// Return true if evaluating `value` can depend on the current launch
@@ -400,14 +324,18 @@ getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
   LaunchNodeDomain result;
   SmallVector<Attribute> operandConstants(set.getNumInputs());
   for (LaunchNodeCoord coord : baseDomain.nodes) {
+    IntegerExpressionEvaluator integerEvaluator =
+        createLaunchNodeIntegerEvaluator(coord);
     bool resolved = true;
     for (unsigned idx = 0; idx < set.getNumInputs(); ++idx) {
-      auto value = evaluateIndexAtLaunchNode(operands[idx], coord);
-      if (!value) {
+      std::optional<llvm::APInt> maybeValue =
+          integerEvaluator.evaluate(operands[idx]);
+      if (!maybeValue) {
         resolved = false;
         break;
       }
-      operandConstants[idx] = IntegerAttr::get(IndexType::get(ctx), *value);
+      operandConstants[idx] =
+          IntegerAttr::get(operands[idx].getType(), *maybeValue);
     }
     if (!resolved) {
       return {LaunchNodeDomain::unknown(), ifOp};
@@ -529,12 +457,13 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
   }
   LaunchNodeDomain trueDomain;
   for (LaunchNodeCoord coord : state.baseDomain.nodes) {
-    std::optional<bool> value = evaluatePredicateAtLaunchNode(condition, coord);
-    if (!value) {
+    std::optional<bool> maybeValue =
+        evaluatePredicateAtLaunchNode(condition, coord, state);
+    if (!maybeValue) {
       return {LaunchNodeDomain::unknown(), LaunchNodeDomain::unknown(),
               condition.getDefiningOp()};
     }
-    if (*value) {
+    if (*maybeValue) {
       trueDomain.nodes.insert(coord);
     }
   }

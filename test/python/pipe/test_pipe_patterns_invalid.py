@@ -115,12 +115,21 @@ def loopback_send_before_receive_post_kernel(inp):
 def receive_wait_unanalyzable_guard_kernel(inp):
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
 
+    guard_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
 
     @ttl.datamovement()
-    def receive_wait_under_unsupported_coord_guard():
+    def receive_wait_under_runtime_guard():
         node_x, _node_y = ttl.node(dims=2)
+        with guard_cb.reserve() as guard_blk:
+            ttl.copy(inp[0, 0], guard_blk).wait()
+
+        with guard_cb.wait() as guard_blk:
+            runtime_lhs = ttl.raw_element_read(guard_blk, 0, 0)
+            runtime_rhs = ttl.raw_element_read(guard_blk, 0, 1)
+            runtime_selected = runtime_lhs > runtime_rhs
+        coordinate_selected = node_x == 1
 
         def send(pipe):
             with send_cb.reserve() as send_blk:
@@ -132,7 +141,7 @@ def receive_wait_unanalyzable_guard_kernel(inp):
         def recv(pipe):
             with recv_cb.reserve() as recv_blk:
                 recv_tx = ttl.copy(pipe, recv_blk)
-                if (node_x % 2) == 0:
+                if coordinate_selected != runtime_selected:
                     recv_tx.wait()
 
         net.if_dst(recv)

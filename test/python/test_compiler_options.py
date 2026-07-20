@@ -21,6 +21,7 @@ class TestDefaults:
         assert opts.subblock_sync is False
         assert opts.pipe_computed_addresses is True
         assert opts.pipe_capacity_sync is True
+        assert opts.specialize_cores is False
         assert opts._explicit == frozenset()
 
     def test_frozen(self):
@@ -63,6 +64,11 @@ class TestFromString:
         opts = CompilerOptions.from_string("--ttl-subblock-sync")
         assert opts.subblock_sync is True
         assert "subblock_sync" in opts._explicit
+
+    def test_enable_specialize_cores(self):
+        opts = CompilerOptions.from_string("--ttl-specialize-cores")
+        assert opts.specialize_cores is True
+        assert "specialize_cores" in opts._explicit
 
     def test_enable_flags_explicitly(self):
         opts = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")

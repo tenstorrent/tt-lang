@@ -33,7 +33,9 @@ module {
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
+// Preserve the NOC index used by runtime reader/writer dispatch.
 // TTKERNEL-LABEL: func.func @cb_to_tensor
+// TTKERNEL-SAME: ttl.noc_index = 1 : i64
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 1 : i8
 // TTKERNEL: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, f32>>

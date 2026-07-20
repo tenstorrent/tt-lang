@@ -22,6 +22,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -105,16 +106,6 @@ bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
 
-/// Evaluate an integer expression at one launch coordinate when its operands
-/// are launch coordinates, integer constants, or supported arithmetic.
-std::optional<int64_t> evaluateIndexAtLaunchNode(Value value,
-                                                 LaunchNodeCoord coord);
-
-/// Evaluate a predicate at one launch coordinate when its integer operands are
-/// statically evaluable by `evaluateIndexAtLaunchNode`.
-std::optional<bool> evaluatePredicateAtLaunchNode(Value value,
-                                                  LaunchNodeCoord coord);
-
 /// Read the PipeNet ids selected by a `ttl.pipenet_scope`.
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp, SmallVectorImpl<int64_t> &ids);
 
@@ -152,8 +143,14 @@ struct LaunchNodeDomainState {
   void initialize(ModuleOp module);
 };
 
+/// Return the value supplied by launch-node context for a core coordinate or
+/// PipeNet role predicate. PipeNet predicates require `state`.
+std::optional<llvm::APInt>
+evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
+                               const LaunchNodeDomainState *state = nullptr);
+
 /// Evaluate a predicate at one launch coordinate using PipeNet role domains in
-/// addition to the expressions supported by the state-independent overload.
+/// addition to integer constants and core-coordinate expressions.
 std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state);
