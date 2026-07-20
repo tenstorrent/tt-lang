@@ -1,9 +1,9 @@
 # Lima VM for building the current tt-lang toolchain (LLVM + tt-metal from
-# submodules) and running tt-lang runtime tests against a craq-sim libttsim.so.
+# submodules) and running tt-lang runtime tests against a ttsim libttsim.so.
 # Ubuntu 24.04 aarch64: native cmake 3.28+ and gcc 13 (meets build.md prereqs).
 #
 # Create with:
-#   limactl start --tty=false --name=ttlang-craqsim <path>/craqsim-vm.yaml
+#   limactl start --tty=false --name=ttlang-ttsim <path>/ttsim-vm.yaml
 minimumLimaVersion: "1.0.0"
 
 images:
@@ -17,8 +17,8 @@ disk: "120GiB"
 vmType: "vz"
 mountType: "virtiofs"
 
-# Mount your TT root -- the parent dir holding the tt-lang and craq-sim clones.
-# Default is ~/tt; change the location below if your clones live elsewhere. Lima
+# Mount your TT root -- the parent dir holding the tt-lang clone (and any custom
+# simulator source tree). Default is ~/tt; change the location below otherwise. Lima
 # mounts it at the host's absolute path in the guest, and the build scripts
 # discover it (they look for the virtiofs mount that contains tt-lang).
 mounts:
